@@ -215,12 +215,15 @@ def load_config() -> AppConfig:
     allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
 
-    default_workbench_root = str((Path.home() / "Desktop" / "workbench").resolve())
+    default_extra_roots = [
+        str((Path.home() / "Desktop" / "workbench").resolve()),
+        str((Path.home() / "Downloads").resolve()),
+    ]
     extra_allowed_roots_raw = (
         _env(
             "OFFICETOOL_EXTRA_ALLOWED_ROOTS",
             "OFFCIATOOL_EXTRA_ALLOWED_ROOTS",
-            default=default_workbench_root,
+            default=os.pathsep.join(default_extra_roots),
         )
         or ""
     ).strip()

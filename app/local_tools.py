@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
-from app.document_text import extract_pdf_text_from_bytes
+from app.document_text import extract_pdf_page_texts_from_path, extract_pdf_text_from_bytes
 from app.sandbox import DockerSandboxManager
 
 
@@ -543,6 +543,16 @@ def _page_hint_for_offset(text: str, offset: int) -> int | None:
 
 def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
     return left[0] < right[1] and right[0] < left[1]
+
+
+def _looks_like_pdf_path(path: Path) -> bool:
+    if path.suffix.lower() == ".pdf":
+        return True
+    try:
+        with path.open("rb") as fp:
+            return fp.read(5).startswith(b"%PDF-")
+    except Exception:
+        return False
 
 
 def _safe_filename(name: str) -> str:
@@ -1231,17 +1241,70 @@ class LocalToolExecutor:
             if not normalized_query:
                 return {"ok": False, "error": "query is empty"}
 
+            variants = _expand_search_variants(normalized_query)
+            limit = max(1, min(20, int(max_matches)))
+            window = max(40, min(2000, int(context_chars)))
+            matches: list[dict[str, Any]] = []
+
+            real_path = _resolve_source_path(self.config, path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+
+            if _looks_like_pdf_path(real_path):
+                pages = extract_pdf_page_texts_from_path(real_path)
+                for variant in variants:
+                    pattern = _build_search_pattern(variant)
+                    if pattern is None:
+                        continue
+                    for page_num, body in pages:
+                        for found in pattern.finditer(body):
+                            span = found.span()
+                            start = max(0, span[0] - window)
+                            end = min(len(body), span[1] + window)
+                            matches.append(
+                                {
+                                    "query_variant": variant,
+                                    "matched_text": found.group(0),
+                                    "start_char": span[0],
+                                    "end_char": span[1],
+                                    "page_hint": page_num,
+                                    "context": body[start:end].strip(),
+                                    "read_hint": {
+                                        "page_hint": page_num,
+                                        "start_char": max(0, span[0] - 2000),
+                                        "max_chars": 6000,
+                                    },
+                                }
+                            )
+                            if len(matches) >= limit:
+                                break
+                        if len(matches) >= limit:
+                            break
+                    if len(matches) >= limit:
+                        break
+
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "source_format": "pdf_text_extracted",
+                    "query": normalized_query,
+                    "searched_variants": variants,
+                    "match_count": len(matches),
+                    "matches": matches,
+                    "note": (
+                        "Search was run page-by-page over extracted PDF text. "
+                        "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
+                    ),
+                }
+
             base = self.read_text_file(path=path, start_char=0, max_chars=1_000_000)
             if not bool(base.get("ok")):
                 return base
 
             text = str(base.get("content") or "")
-            variants = _expand_search_variants(normalized_query)
-            limit = max(1, min(20, int(max_matches)))
-            window = max(40, min(2000, int(context_chars)))
             seen_spans: list[tuple[int, int]] = []
-            matches: list[dict[str, Any]] = []
-
             for variant in variants:
                 pattern = _build_search_pattern(variant)
                 if pattern is None:
@@ -1276,7 +1339,7 @@ class LocalToolExecutor:
 
             return {
                 "ok": True,
-                "path": str(base.get("path") or path),
+                "path": str(base.get("path") or real_path),
                 "source_format": base.get("source_format") or "text_utf8",
                 "query": normalized_query,
                 "searched_variants": variants,

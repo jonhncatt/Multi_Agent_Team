@@ -41,12 +41,10 @@ def _table_to_lines(table: list[list[object]] | None) -> list[str]:
     return lines
 
 
-def _extract_pdf_with_pdfplumber(raw_pdf: bytes, max_chars: int) -> str:
+def _pdfplumber_page_texts(raw_pdf: bytes) -> list[tuple[int, str]]:
     import pdfplumber  # lazy import
 
-    chunks: list[str] = []
-    total = 0
-    limit = max(512, int(max_chars))
+    pages: list[tuple[int, str]] = []
     with pdfplumber.open(io.BytesIO(raw_pdf)) as pdf:
         for idx, page in enumerate(pdf.pages, start=1):
             text = (page.extract_text(layout=True) or "").strip()
@@ -63,22 +61,61 @@ def _extract_pdf_with_pdfplumber(raw_pdf: bytes, max_chars: int) -> str:
             if table_lines:
                 body_parts.append("[Extracted tables]")
                 body_parts.extend(table_lines)
-            total, reached = _append_page_block(chunks, idx, "\n".join(body_parts), total, limit)
-            if reached:
-                break
+            body = "\n".join(body_parts).strip()
+            if body:
+                pages.append((idx, body))
+    return pages
+
+
+def _pypdf_page_texts(raw_pdf: bytes) -> list[tuple[int, str]]:
+    from pypdf import PdfReader  # lazy import
+
+    reader = PdfReader(io.BytesIO(raw_pdf))
+    pages: list[tuple[int, str]] = []
+    for idx, page in enumerate(reader.pages, start=1):
+        body = (page.extract_text() or "").strip()
+        if body:
+            pages.append((idx, body))
+    return pages
+
+
+def extract_pdf_page_texts_from_bytes(raw_pdf: bytes) -> list[tuple[int, str]]:
+    errors: list[str] = []
+    for extractor in (_pdfplumber_page_texts, _pypdf_page_texts):
+        try:
+            pages = extractor(raw_pdf)
+        except Exception as exc:
+            errors.append(f"{extractor.__name__}: {exc}")
+            continue
+        if pages:
+            return pages
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return []
+
+
+def extract_pdf_page_texts_from_path(path: Path) -> list[tuple[int, str]]:
+    return extract_pdf_page_texts_from_bytes(path.read_bytes())
+
+
+def _extract_pdf_with_pdfplumber(raw_pdf: bytes, max_chars: int) -> str:
+    chunks: list[str] = []
+    total = 0
+    limit = max(512, int(max_chars))
+    for idx, body in _pdfplumber_page_texts(raw_pdf):
+        total, reached = _append_page_block(chunks, idx, body, total, limit)
+        if reached:
+            break
     return truncate_text("".join(chunks).strip(), limit)
 
 
 def _extract_pdf_with_pypdf(raw_pdf: bytes, max_chars: int) -> str:
-    from pypdf import PdfReader  # lazy import
-
-    reader = PdfReader(io.BytesIO(raw_pdf))
     chunks: list[str] = []
     total = 0
     limit = max(512, int(max_chars))
-    for idx, page in enumerate(reader.pages, start=1):
-        part = page.extract_text() or ""
-        total, reached = _append_page_block(chunks, idx, part, total, limit)
+    for idx, body in _pypdf_page_texts(raw_pdf):
+        total, reached = _append_page_block(chunks, idx, body, total, limit)
         if reached:
             break
     return truncate_text("".join(chunks).strip(), limit)

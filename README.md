@@ -136,6 +136,8 @@ cd $HOME\Desktop\officetool
 .\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
 ```
 
+默认额外可读目录包含 `~/Desktop/workbench` 和 `~/Downloads`。如果你要读别的目录，再通过 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 追加。
+
 如果助手仍说“只能看当前目录”，先确认：
 
 - 左侧 `启用本地工具执行` 已勾选

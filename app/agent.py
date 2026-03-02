@@ -1060,6 +1060,10 @@ class OfficeAgent:
                     "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
                     "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链，"
                     "或最终答复没有引用页码/章节/命中片段时，verdict 必须是 needs_attention。"
+                    "你还要使用自己的通识和领域知识做冲突检测："
+                    "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
+                    "即使文案表面自洽，也必须标记为 needs_attention，并在 risks/followups 中明确要求重新取证。"
+                    "但你的知识只能用于报警和指出不一致，不能替代工具证据直接宣称文档事实。"
                     "不要输出思维链。"
                     '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
                     "verdict 只能是 pass 或 needs_attention；confidence 只能是 high, medium, low。"
@@ -1148,6 +1152,9 @@ class OfficeAgent:
                     "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
                     "如果当前答复已经足够好，可以保持原文不变。"
                     "禁止引入新的未经工具或上下文支持的事实。"
+                    "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
+                    "你应把最终答复改成更保守的表述，例如说明当前证据不足、需要继续核对原文，"
+                    "而不是继续维持一个可疑的确定性结论。"
                     '只返回 JSON 对象，字段固定为 changed, summary, key_changes, final_answer。'
                     "changed 必须是 true 或 false；key_changes 最多 4 条。"
                 )
