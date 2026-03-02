@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field as dc_field
 import json
 import os
 import re
@@ -143,6 +144,18 @@ _SPECIALIST_LABELS = {
     "summarizer": "Summarizer",
     "fixer": "Fixer",
 }
+
+
+@dataclass
+class ExecutionState:
+    task_type: str = "standard"
+    complexity: str = "medium"
+    tool_mode: str = "auto"  # off | auto | on | forced
+    tool_latch: bool = False
+    attempts: int = 0
+    max_attempts: int = 24
+    status: str = "initialized"
+    transitions: list[str] = dc_field(default_factory=list)
 
 
 class RunShellArgs(BaseModel):
@@ -459,7 +472,13 @@ class OfficeAgent:
                 summary=self._shorten(summary_text, 500 if not debug_raw else 4000),
                 bullets=self._normalize_string_list(bullets or [], limit=8, item_limit=220),
             )
-            agent_panels.append(panel.model_dump())
+            payload = panel.model_dump()
+            for idx, existing in enumerate(agent_panels):
+                if str(existing.get("role") or "") == role:
+                    agent_panels[idx] = payload
+                    emit_agent_state()
+                    return
+            agent_panels.append(payload)
             emit_agent_state()
 
         messages: list[Any] = [
@@ -620,18 +639,20 @@ class OfficeAgent:
             attachment_metas=attachment_metas,
             settings=settings,
         )
+        execution_state = self._coordinator_init_state(
+            route=route,
+            settings=settings,
+            force_tool_followup=force_tool_followup,
+        )
         if force_tool_followup and not route.get("use_worker_tools"):
-            route = self._normalize_route_decision(
-                {
-                    "task_type": "followup_tool_continuation",
-                    "complexity": str(route.get("complexity") or "medium"),
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "reason": "followup_execution_ack_forces_tool_continuation",
-                    "summary": "检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
-                },
-                fallback=route,
+            route = self._coordinator_apply_tool_mode(
+                state=execution_state,
+                route=route,
                 settings=settings,
+                tool_mode="forced",
+                reason="followup_execution_ack_forces_tool_continuation",
+                summary="检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
+                use_planner=True,
             )
             router_raw = json.dumps(
                 {
@@ -663,6 +684,12 @@ class OfficeAgent:
             "Router",
             str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
             self._format_router_panel_bullets(route),
+        )
+        add_panel(
+            "coordinator",
+            "Coordinator",
+            self._coordinator_summary(execution_state),
+            self._coordinator_panel_bullets(execution_state),
         )
 
         router_system_hint = self._router_system_hint(route)
@@ -871,7 +898,8 @@ class OfficeAgent:
             detail=(
                 f"requested_model={requested_model}\n"
                 f"execution_mode={requested_execution_mode}\n"
-                f"enable_tools={bool(route.get('use_worker_tools'))}\n"
+                f"enable_tools={self._coordinator_tools_enabled(execution_state)}\n"
+                f"tool_mode={execution_state.tool_mode}\n"
                 f"attachments={len(attachment_metas)}\n"
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}"
             ),
@@ -880,7 +908,8 @@ class OfficeAgent:
             stage="backend_to_llm",
             title="后端编排器 -> Worker",
             detail=(
-                f"model={requested_model}, enable_tools={bool(route.get('use_worker_tools'))}, max_output_tokens={settings.max_output_tokens}, "
+                f"model={requested_model}, enable_tools={self._coordinator_tools_enabled(execution_state)}, max_output_tokens={settings.max_output_tokens}, "
+                f"tool_mode={execution_state.tool_mode}, "
                 f"debug_raw={debug_raw}, "
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}, "
                 f"attachments={len(attachment_metas)}\n"
@@ -890,26 +919,63 @@ class OfficeAgent:
             ),
         )
 
+        def invoke_worker_turn(
+            *,
+            title: str,
+            model: str,
+            current_runner: Any | None = None,
+        ) -> tuple[Any, Any, str, list[str]]:
+            execution_state.attempts += 1
+            execution_state.status = "worker_running"
+            execution_state.transitions.append(f"invoke:{execution_state.tool_mode}")
+            add_panel(
+                "coordinator",
+                "Coordinator",
+                self._coordinator_summary(execution_state),
+                self._coordinator_panel_bullets(execution_state),
+            )
+            if current_runner is None:
+                next_msg, next_runner, next_model, failover_notes = self._invoke_chat_with_runner(
+                    messages=messages,
+                    model=model,
+                    max_output_tokens=settings.max_output_tokens,
+                    enable_tools=self._coordinator_tools_enabled(execution_state),
+                )
+            else:
+                next_msg, next_runner, next_model, failover_notes = self._invoke_with_runner_recovery(
+                    runner=current_runner,
+                    messages=messages,
+                    model=model,
+                    max_output_tokens=settings.max_output_tokens,
+                    enable_tools=self._coordinator_tools_enabled(execution_state),
+                )
+            for note in failover_notes:
+                add_trace(note)
+            execution_state.status = "worker_returned"
+            add_panel(
+                "coordinator",
+                "Coordinator",
+                self._coordinator_summary(execution_state),
+                self._coordinator_panel_bullets(execution_state),
+            )
+            add_debug(
+                stage="llm_to_backend",
+                title=title,
+                detail=(
+                    f"effective_model={next_model}\n"
+                    f"{self._summarize_ai_response(next_msg, raw_mode=debug_raw)}"
+                ),
+            )
+            return next_msg, next_runner, next_model, failover_notes
+
         add_trace("开始模型推理。")
 
         try:
-            ai_msg, runner, effective_model, failover_notes = self._invoke_chat_with_runner(
-                messages=messages,
-                model=requested_model,
-                max_output_tokens=settings.max_output_tokens,
-                enable_tools=bool(route.get("use_worker_tools")),
-            )
-            for note in failover_notes:
-                add_trace(note)
-            usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-            add_debug(
-                stage="llm_to_backend",
+            ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
                 title="Worker -> 后端编排器（首次响应）",
-                detail=(
-                    f"effective_model={effective_model}\n"
-                    f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
-                ),
+                model=requested_model,
             )
+            usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
         except Exception as exc:
             add_trace(f"模型请求失败: {exc}")
             add_debug(stage="llm_error", title="Worker 模型调用失败", detail=str(exc))
@@ -929,35 +995,44 @@ class OfficeAgent:
         has_attachments = bool(attachment_metas)
         attachments_need_tooling = any(self._attachment_needs_tooling(meta) for meta in attachment_metas)
         has_msg_attachment = any(str(meta.get("suffix", "") or "").lower() == ".msg" for meta in attachment_metas)
-        request_requires_tools = bool(route.get("use_worker_tools")) or attachments_need_tooling
-        auto_nudge_budget = 4 if has_attachments else 2
-        for _ in range(24):
+        request_requires_tools = self._coordinator_tools_enabled(execution_state) or attachments_need_tooling
+        auto_nudge_budget = min(execution_state.max_attempts, 4 if has_attachments else 2)
+        for _ in range(execution_state.max_attempts):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
-            if not route.get("use_worker_tools") or not tool_calls:
+            if not self._coordinator_tools_enabled(execution_state) or not tool_calls:
                 if (
-                    not route.get("use_worker_tools")
+                    not self._coordinator_tools_enabled(execution_state)
                     and settings.enable_tools
                     and auto_nudge_budget > 0
                     and self._request_likely_requires_tools(planner_user_message, attachment_metas)
                     and self._looks_like_tool_escalation_needed(self._content_to_text(getattr(ai_msg, "content", "")))
                 ):
                     auto_nudge_budget -= 1
-                    route = self._normalize_route_decision(
-                        {
-                            "task_type": "backend_tool_escalation",
-                            "complexity": str(route.get("complexity") or "medium"),
-                            "use_worker_tools": True,
-                            "reason": "worker_requested_code_search_backend_escalated",
-                            "summary": "Worker 已暴露需要代码/文件搜索，后端已强制升级到工具链。",
-                        },
-                        fallback=route,
+                    route = self._coordinator_apply_tool_mode(
+                        state=execution_state,
+                        route=route,
                         settings=settings,
+                        tool_mode="forced",
+                        reason="worker_requested_code_search_backend_escalated",
+                        summary="Worker 已暴露需要代码/文件搜索，后端已强制升级到工具链。",
                     )
                     request_requires_tools = True
                     execution_plan[:] = self._build_execution_plan(
                         attachment_metas=attachment_metas,
                         settings=settings,
                         route=route,
+                    )
+                    add_panel(
+                        "router",
+                        "Router",
+                        str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
+                        self._format_router_panel_bullets(route),
+                    )
+                    add_panel(
+                        "coordinator",
+                        "Coordinator",
+                        self._coordinator_summary(execution_state),
+                        self._coordinator_panel_bullets(execution_state),
                     )
                     add_trace("检测到 Worker 误判为无工具路径，后端已强制升级为工具链重跑。")
                     add_debug(
@@ -976,30 +1051,18 @@ class OfficeAgent:
                         )
                     )
                     try:
-                        ai_msg, runner, effective_model, failover_notes = self._invoke_chat_with_runner(
-                            messages=messages,
-                            model=effective_model,
-                            max_output_tokens=settings.max_output_tokens,
-                            enable_tools=True,
-                        )
-                        for note in failover_notes:
-                            add_trace(note)
-                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-                        add_debug(
-                            stage="llm_to_backend",
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
                             title="Worker -> 后端编排器（升级工具链后响应）",
-                            detail=(
-                                f"effective_model={effective_model}\n"
-                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
-                            ),
+                            model=effective_model,
                         )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         continue
                     except Exception as exc:
                         add_trace(f"升级工具链后推理失败: {exc}")
                         add_debug(stage="llm_error", title="Worker 工具链升级失败", detail=str(exc))
                         break
                 if (
-                    route.get("use_worker_tools")
+                    self._coordinator_tools_enabled(execution_state)
                     and evidence_required_mode
                     and auto_nudge_budget > 0
                     and self._evidence_mode_needs_more_support(
@@ -1028,24 +1091,12 @@ class OfficeAgent:
                         )
                     )
                     try:
-                        ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
-                            runner=runner,
-                            messages=messages,
-                            model=effective_model,
-                            max_output_tokens=settings.max_output_tokens,
-                            enable_tools=bool(route.get("use_worker_tools")),
-                        )
-                        for note in failover_notes:
-                            add_trace(note)
-                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-                        add_debug(
-                            stage="llm_to_backend",
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
                             title="Worker -> 后端编排器（补足证据后响应）",
-                            detail=(
-                                f"effective_model={effective_model}\n"
-                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
-                            ),
+                            model=effective_model,
+                            current_runner=runner,
                         )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         continue
                     except Exception as exc:
                         add_trace(f"证据补强后推理失败: {exc}")
@@ -1060,6 +1111,7 @@ class OfficeAgent:
                     )
                 ):
                     auto_nudge_budget -= 1
+                    rerun_needs_rebind = False
                     add_trace("检测到模型回复出现流程化确认/占位话术，后端已追加纠偏指令。")
                     add_debug(
                         stage="backend_warning",
@@ -1105,24 +1157,54 @@ class OfficeAgent:
                         )
                     )
                     try:
-                        ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
-                            runner=runner,
-                            messages=messages,
-                            model=effective_model,
-                            max_output_tokens=settings.max_output_tokens,
-                            enable_tools=bool(route.get("use_worker_tools")),
-                        )
-                        for note in failover_notes:
-                            add_trace(note)
-                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-                        add_debug(
-                            stage="llm_to_backend",
+                        if (
+                            not self._coordinator_tools_enabled(execution_state)
+                            and settings.enable_tools
+                            and self._should_force_initial_tool_execution(planner_user_message, attachment_metas)
+                        ):
+                            route = self._coordinator_apply_tool_mode(
+                                state=execution_state,
+                                route=route,
+                                settings=settings,
+                                tool_mode="forced",
+                                reason="permission_gate_forced_tool_continuation",
+                                summary="检测到拖延式确认话术，Coordinator 已强制切换到工具执行模式。",
+                                use_planner=True,
+                            )
+                            request_requires_tools = True
+                            execution_plan[:] = self._build_execution_plan(
+                                attachment_metas=attachment_metas,
+                                settings=settings,
+                                route=route,
+                            )
+                            add_panel(
+                                "router",
+                                "Router",
+                                str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
+                                self._format_router_panel_bullets(route),
+                            )
+                            add_panel(
+                                "coordinator",
+                                "Coordinator",
+                                self._coordinator_summary(execution_state),
+                                self._coordinator_panel_bullets(execution_state),
+                            )
+                            rerun_needs_rebind = True
+                            messages.append(
+                                self._SystemMessage(
+                                    content=(
+                                        "不要再询问是否直接搜索、是否确认、是否需要绝对路径。"
+                                        "当前任务已被 Coordinator 判定为本地搜索/代码定位任务。"
+                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/list_directory/read_text_file 完成任务。"
+                                    )
+                                )
+                            )
+                        ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
                             title="Worker -> 后端编排器（自动纠偏后响应）",
-                            detail=(
-                                f"effective_model={effective_model}\n"
-                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
-                            ),
+                            model=effective_model,
+                            current_runner=None if rerun_needs_rebind else runner,
                         )
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         continue
                     except Exception as exc:
                         add_trace(f"自动纠偏后推理失败: {exc}")
@@ -1194,24 +1276,12 @@ class OfficeAgent:
                 pruned = self._prune_old_tool_messages(messages)
                 if pruned > 0:
                     add_trace(f"已裁剪旧工具上下文 {pruned} 条，降低上下文膨胀。")
-                ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
-                    runner=runner,
-                    messages=messages,
-                    model=effective_model,
-                    max_output_tokens=settings.max_output_tokens,
-                    enable_tools=bool(route.get("use_worker_tools")),
-                )
-                for note in failover_notes:
-                    add_trace(note)
-                usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
-                add_debug(
-                    stage="llm_to_backend",
+                ai_msg, runner, effective_model, failover_notes = invoke_worker_turn(
                     title="Worker -> 后端编排器（后续响应）",
-                    detail=(
-                        f"effective_model={effective_model}\n"
-                        f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
-                    ),
+                    model=effective_model,
+                    current_runner=runner,
                 )
+                usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
             except Exception as exc:
                 add_trace(f"工具后续推理失败: {exc}")
                 add_debug(stage="llm_error", title="Worker 工具后续推理失败", detail=str(exc))
@@ -1235,6 +1305,7 @@ class OfficeAgent:
         worker_bullets = [
             f"执行环境: {requested_execution_mode}",
             f"工具调用次数: {len(tool_events)}",
+            f"tool_mode: {execution_state.tool_mode}",
             f"附件数量: {len(attachment_metas)}",
             f"历史消息载入: {min(len(history_turns), settings.max_context_turns)}",
         ]
@@ -1242,7 +1313,7 @@ class OfficeAgent:
             worker_bullets.append(f"自动预搜索: {prefetch_payload.get('count', 0)} 条")
         worker_summary = (
             "主执行 Agent 已完成取证、工具调用与作答。"
-            if route.get("use_worker_tools")
+            if self._coordinator_tools_enabled(execution_state)
             else "主执行 Agent 已基于当前上下文直接完成作答。"
         )
         add_panel("worker", "Worker", worker_summary, worker_bullets)
@@ -2504,6 +2575,84 @@ class OfficeAgent:
         )
         return any(verb in text for verb in search_verbs) and any(target in text for target in local_targets)
 
+    def _looks_like_local_code_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if attachment_metas:
+            return False
+        if self._looks_like_inline_document_payload(user_message):
+            return False
+        text = str(user_message or "").strip().lower()
+        if not text:
+            return False
+        if "http://" in text or "https://" in text or any(hint in text for hint in _NEWS_HINTS):
+            return False
+
+        local_scope_hints = (
+            "路径",
+            "目录",
+            "文件夹",
+            "目录下",
+            "文件夹下",
+            "路径下",
+            "项目",
+            "仓库",
+            "repo",
+            "workbench",
+            "workspace",
+            "folder",
+            "directory",
+            "repo",
+            "project",
+        )
+        code_target_hints = (
+            "函数",
+            "方法",
+            "实现",
+            "定义",
+            "声明",
+            "调用点",
+            "module",
+            "function",
+            "method",
+            "implementation",
+            "call site",
+            "definition",
+        )
+        lookup_hints = (
+            "找",
+            "查",
+            "搜",
+            "搜索",
+            "查找",
+            "定位",
+            "解释",
+            "分析",
+            "说明",
+            "梳理",
+            "看看",
+            "看下",
+            "look for",
+            "find",
+            "search",
+            "locate",
+            "explain",
+            "analyze",
+        )
+        has_local_scope = self._message_has_explicit_local_path(user_message) or any(hint in text for hint in local_scope_hints)
+        has_code_target = any(hint in text for hint in code_target_hints)
+        has_lookup_intent = any(hint in text for hint in lookup_hints)
+        return has_code_target and has_lookup_intent and (has_local_scope or self._should_auto_search_default_roots(user_message, attachment_metas))
+
+    def _should_force_initial_tool_execution(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if attachment_metas:
+            return False
+        if self._looks_like_inline_document_payload(user_message):
+            return False
+        if self._looks_like_local_code_lookup_request(user_message, attachment_metas):
+            return True
+        if self._should_auto_search_default_roots(user_message, attachment_metas):
+            return self._request_likely_requires_tools(user_message, attachment_metas)
+        return False
+
     def _should_force_tool_followup_continuation(
         self,
         *,
@@ -2522,6 +2671,86 @@ class OfficeAgent:
         if not topic:
             return False
         return self._request_likely_requires_tools(topic, attachment_metas)
+
+    def _coordinator_init_state(
+        self,
+        *,
+        route: dict[str, Any],
+        settings: ChatSettings,
+        force_tool_followup: bool = False,
+    ) -> ExecutionState:
+        task_type = str(route.get("task_type") or "standard").strip() or "standard"
+        complexity = str(route.get("complexity") or "medium").strip().lower() or "medium"
+        if not settings.enable_tools:
+            tool_mode = "off"
+        elif force_tool_followup:
+            tool_mode = "forced"
+        elif bool(route.get("use_worker_tools")):
+            tool_mode = "on"
+        else:
+            tool_mode = "auto"
+        state = ExecutionState(
+            task_type=task_type,
+            complexity=complexity,
+            tool_mode=tool_mode,
+            tool_latch=tool_mode in {"on", "forced"},
+            status="ready",
+        )
+        state.transitions.append(f"init:{tool_mode}")
+        return state
+
+    def _coordinator_tools_enabled(self, state: ExecutionState) -> bool:
+        return state.tool_mode in {"on", "forced"}
+
+    def _coordinator_apply_tool_mode(
+        self,
+        *,
+        state: ExecutionState,
+        route: dict[str, Any],
+        settings: ChatSettings,
+        tool_mode: str,
+        reason: str,
+        summary: str,
+        use_planner: bool | None = None,
+    ) -> dict[str, Any]:
+        normalized_mode = str(tool_mode or "auto").strip().lower()
+        if normalized_mode not in {"off", "auto", "on", "forced"}:
+            normalized_mode = "auto"
+        if state.tool_latch and normalized_mode in {"off", "auto"}:
+            normalized_mode = "on" if state.tool_mode in {"on", "forced"} else "on"
+        state.tool_mode = normalized_mode
+        if normalized_mode in {"on", "forced"}:
+            state.tool_latch = True
+        state.task_type = str(route.get("task_type") or state.task_type or "standard").strip() or "standard"
+        state.complexity = str(route.get("complexity") or state.complexity or "medium").strip().lower() or "medium"
+        state.transitions.append(reason)
+        update: dict[str, Any] = {
+            "task_type": state.task_type,
+            "complexity": state.complexity,
+            "use_worker_tools": self._coordinator_tools_enabled(state),
+            "reason": reason,
+            "summary": summary,
+        }
+        if use_planner is not None:
+            update["use_planner"] = bool(use_planner)
+        return self._normalize_route_decision(update, fallback=route, settings=settings)
+
+    def _coordinator_summary(self, state: ExecutionState) -> str:
+        tool_state = f"tool_mode={state.tool_mode}"
+        if state.tool_latch:
+            tool_state += ", latched"
+        return f"Coordinator 正在管理运行时状态（{tool_state}，attempts={state.attempts}/{state.max_attempts}）。"
+
+    def _coordinator_panel_bullets(self, state: ExecutionState) -> list[str]:
+        base = [
+            f"task_type: {state.task_type}",
+            f"complexity: {state.complexity}",
+            f"tool_mode: {state.tool_mode}",
+            f"tool_latch: {str(state.tool_latch).lower()}",
+            f"attempts: {state.attempts}/{state.max_attempts}",
+        ]
+        transitions = [f"transition: {item}" for item in state.transitions[-3:]]
+        return self._normalize_string_list([*base, *transitions], limit=8, item_limit=220)
 
     def _looks_like_tool_escalation_needed(self, text: str) -> bool:
         raw = str(text or "").strip().lower()
@@ -3675,6 +3904,26 @@ class OfficeAgent:
                 settings=settings,
             )
 
+        if self._looks_like_local_code_lookup_request(user_message, attachment_metas):
+            return self._normalize_route_decision(
+                {
+                    "task_type": "code_lookup",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "reason": "rules_local_code_lookup_request",
+                    "summary": "检测到本地代码定位/函数解释请求，直接启用 Worker 工具链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
         if has_attachments and inline_parseable_attachments and understanding_request and not attachment_needs_tooling:
             return self._normalize_route_decision(
                 {
@@ -3880,7 +4129,7 @@ class OfficeAgent:
         )
         if not rules_route.get("needs_llm_router"):
             return rules_route, json.dumps({"source": "rules", "task_type": rules_route.get("task_type")}, ensure_ascii=False)
-        return self._run_router(
+        route, raw = self._run_router(
             requested_model=requested_model,
             user_message=user_message,
             summary=summary,
@@ -3888,6 +4137,41 @@ class OfficeAgent:
             settings=settings,
             rules_route=rules_route,
         )
+        if (
+            settings.enable_tools
+            and not route.get("use_worker_tools")
+            and self._should_force_initial_tool_execution(user_message, attachment_metas)
+        ):
+            forced_route = self._normalize_route_decision(
+                {
+                    "task_type": "code_lookup" if self._looks_like_local_code_lookup_request(user_message, attachment_metas) else route.get("task_type"),
+                    "complexity": route.get("complexity") or "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"] if self._looks_like_local_code_lookup_request(user_message, attachment_metas) else route.get("specialists") or [],
+                    "reason": "backend_force_initial_tool_execution",
+                    "summary": "后端判定本轮属于本地搜索/代码定位任务，直接升级为 Worker 工具链。",
+                    "source": "backend_override",
+                },
+                fallback=route,
+                settings=settings,
+            )
+            raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "force_initial_tool_execution",
+                    "previous_source": route.get("source"),
+                    "task_type": forced_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            return forced_route, raw
+        return route, raw
 
     def _router_system_hint(self, route: dict[str, Any]) -> str:
         task_type = str(route.get("task_type") or "standard").strip()
@@ -3909,6 +4193,12 @@ class OfficeAgent:
             return "本轮附件需要工具预处理。先用必要工具完成读取/解包，再给结论。"
         if task_type == "web_research":
             return "本轮属于联网信息任务。优先用联网工具取证，再回答。"
+        if task_type == "code_lookup":
+            return (
+                "本轮属于本地代码定位/函数解释任务。"
+                "直接调用 search_codebase、list_directory、read_text_file 等工具搜索并读取上下文。"
+                "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
+            )
         if task_type == "evidence_lookup":
             return "本轮属于查证/定位任务。优先完整取证，再给可复核答案。"
         return ""
@@ -3924,6 +4214,7 @@ class OfficeAgent:
         plan = [
             f"Router 分诊任务类型与链路（task_type={str(route.get('task_type') or 'standard')}, complexity={str(route.get('complexity') or 'medium')}）。"
         ]
+        plan.append("Coordinator 持有运行时状态，决定 Worker 是否重绑工具并继续执行。")
         for specialist in specialists:
             plan.append(self._specialist_plan_line(specialist))
         if route.get("use_planner"):

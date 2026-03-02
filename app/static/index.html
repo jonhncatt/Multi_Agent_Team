@@ -128,26 +128,27 @@
             <pre class="runtime-pre">阶段 3 状态: MVP 已完成
 
 固定角色:
-Router -> Worker
+Router -> Coordinator -> Worker
 
 按需角色:
-Router -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
+Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
 
 说明:
 - [?] = 由 Router 决定是否启用
+- Coordinator = 运行时状态机，负责切换 tool_mode、重绑 Worker、抑制反复确认
 - Worker 一定存在
 - worker_mode=direct_answer: Worker 直接回答
 - worker_mode=uses_tools: Worker 会调用工具链
 
 常见路径:
 1. 简单理解
-   Router -> Summarizer -> Worker
+   Router -> Coordinator -> Summarizer -> Worker
 
 2. 联网查证
-   Router -> Researcher -> Planner -> Worker(tools) -> Reviewer -> Revision? -> Structurer
+   Router -> Coordinator -> Researcher -> Planner -> Worker(tools) -> Reviewer -> Revision? -> Structurer
 
 3. 文档定位
-   Router -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
+   Router -> Coordinator -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
           </details>
           <details class="runtime-details">
             <summary>多 Agent 透明层</summary>

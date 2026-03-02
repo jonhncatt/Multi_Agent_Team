@@ -824,6 +824,63 @@
     }
   },
   {
+    "name": "helper_local_code_lookup_request_detects_folder_function_explain",
+    "kind": "helper",
+    "helper": "_looks_like_local_code_lookup_request",
+    "args": {
+      "user_message": "帮我解释 workbench 文件夹下的 handle_route 和 run_chat 这两个函数是怎么运作的。",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_local_code_lookup_uses_tools",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "帮我解释 workbench 文件夹下的 handle_route 和 run_chat 这两个函数是怎么运作的。",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "code_lookup",
+        "use_worker_tools": true,
+        "use_planner": true,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false
+      },
+      "contains": {
+        "summary": [
+          "本地代码定位/函数解释请求"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_force_initial_tool_execution_detects_code_lookup",
+    "kind": "helper",
+    "helper": "_should_force_initial_tool_execution",
+    "args": {
+      "user_message": "解释 workbench 文件夹下的两个函数 handle_route 和 run_chat",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",
