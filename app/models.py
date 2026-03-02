@@ -42,6 +42,36 @@ class AgentPanel(BaseModel):
     bullets: list[str] = Field(default_factory=list)
 
 
+class AnswerCitation(BaseModel):
+    id: str
+    source_type: Literal["web", "document", "codebase", "table", "tool", "other"] = "other"
+    tool: str = ""
+    label: str = ""
+    path: str | None = None
+    url: str | None = None
+    title: str | None = None
+    domain: str | None = None
+    locator: str | None = None
+    excerpt: str = ""
+    published_at: str | None = None
+    warning: str | None = None
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+
+class AnswerClaim(BaseModel):
+    statement: str
+    citation_ids: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    status: Literal["supported", "partially_supported", "needs_review"] = "supported"
+
+
+class AnswerBundle(BaseModel):
+    summary: str = ""
+    claims: list[AnswerClaim] = Field(default_factory=list)
+    citations: list[AnswerCitation] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -73,6 +103,7 @@ class ChatResponse(BaseModel):
     execution_trace: list[str] = Field(default_factory=list)
     debug_flow: list[DebugFlowItem] = Field(default_factory=list)
     agent_panels: list[AgentPanel] = Field(default_factory=list)
+    answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
@@ -101,6 +132,7 @@ class DeleteSessionResponse(BaseModel):
 class SessionTurn(BaseModel):
     role: str
     text: str
+    answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     created_at: str | None = None
 
 

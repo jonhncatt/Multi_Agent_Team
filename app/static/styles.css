@@ -455,6 +455,64 @@ button.small {
   text-decoration: underline;
 }
 
+.answer-bundle {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e1e6da;
+  display: grid;
+  gap: 10px;
+}
+
+.answer-bundle-summary {
+  font-size: 12px;
+  color: #466152;
+}
+
+.answer-bundle-section {
+  display: grid;
+  gap: 6px;
+}
+
+.answer-bundle-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #5c7567;
+}
+
+.answer-bundle-item {
+  border: 1px solid #dbe3d6;
+  background: #f7faf5;
+  border-radius: 8px;
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.answer-bundle-statement {
+  font-size: 13px;
+  color: #1d2d23;
+}
+
+.answer-bundle-meta,
+.answer-bundle-link {
+  font-size: 11px;
+  color: #567061;
+  word-break: break-word;
+}
+
+.answer-bundle-excerpt {
+  font-size: 12px;
+  color: #31453a;
+  white-space: pre-wrap;
+}
+
+.answer-bundle-warning {
+  font-size: 12px;
+  color: #7a3519;
+  white-space: pre-wrap;
+}
+
 .tool-box {
   margin-top: 8px;
   border: 1px solid #d7decf;

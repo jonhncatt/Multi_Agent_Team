@@ -201,6 +201,7 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
             SessionTurn(
                 role=str(item.get("role") or "user"),
                 text=str(item.get("text") or ""),
+                answer_bundle=item.get("answer_bundle") or {},
                 created_at=str(item.get("created_at")) if item.get("created_at") else None,
             )
         )
@@ -533,6 +534,7 @@ def _process_chat_request(
             execution_trace,
             debug_flow,
             agent_panels,
+            answer_bundle,
             token_usage,
             effective_model,
         ) = agent.run_chat(
@@ -569,7 +571,7 @@ def _process_chat_request(
             text=user_text,
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
-        session_store.append_turn(session, role="assistant", text=text)
+        session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
         session_store.save(session)
         _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
 
@@ -635,6 +637,7 @@ def _process_chat_request(
             execution_trace=execution_trace,
             debug_flow=debug_flow,
             agent_panels=agent_panels,
+            answer_bundle=answer_bundle,
             missing_attachment_ids=missing_attachment_ids,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),

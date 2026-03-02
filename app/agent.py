@@ -295,6 +295,7 @@ class OfficeAgent:
         list[str],
         list[dict[str, Any]],
         list[dict[str, Any]],
+        dict[str, Any],
         dict[str, int],
         str,
     ]:
@@ -305,6 +306,8 @@ class OfficeAgent:
         execution_trace: list[str] = []
         debug_flow: list[dict[str, Any]] = []
         agent_panels: list[dict[str, Any]] = []
+        worker_citation_candidates: list[dict[str, Any]] = []
+        answer_bundle: dict[str, Any] = {"summary": "", "claims": [], "citations": [], "warnings": []}
         usage_total = self._empty_usage()
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
         session_tools_hint = (
@@ -568,6 +571,14 @@ class OfficeAgent:
                     3200 if not debug_raw else 120000,
                 ),
             )
+            worker_citation_candidates = self._merge_citation_candidates(
+                worker_citation_candidates,
+                self._extract_citations_from_tool_result(
+                    name="search_web",
+                    arguments={"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
+                    result=prefetch_payload.get("raw_result", {}),
+                ),
+            )
 
         add_debug(
             stage="multi_agent_worker",
@@ -625,6 +636,7 @@ class OfficeAgent:
                 execution_trace,
                 debug_flow,
                 agent_panels,
+                answer_bundle,
                 usage_total,
                 effective_model,
             )
@@ -827,6 +839,10 @@ class OfficeAgent:
                         raw_mode=debug_raw,
                     ),
                 )
+                worker_citation_candidates = self._merge_citation_candidates(
+                    worker_citation_candidates,
+                    self._extract_citations_from_tool_result(name=name, arguments=arguments, result=result),
+                )
 
             try:
                 pruned = self._prune_old_tool_messages(messages)
@@ -861,6 +877,7 @@ class OfficeAgent:
                     execution_trace,
                     debug_flow,
                     agent_panels,
+                    answer_bundle,
                     usage_total,
                     effective_model,
                 )
@@ -1057,6 +1074,43 @@ class OfficeAgent:
         revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
         revision_bullets = self._normalize_string_list(revision_brief.get("key_changes") or [], limit=4, item_limit=180)
         add_panel("revision", "Revision", revision_summary, revision_bullets)
+        finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
+        structurer_request_detail = "\n".join(
+            [
+                f"requested_model={effective_model or requested_model}",
+                f"citation_count={len(finalized_citations)}",
+                f"final_text_chars={len(text)}",
+                f"final_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
+            ]
+        )
+        add_debug(
+            stage="backend_to_llm",
+            title="后端编排器 -> Structurer",
+            detail=structurer_request_detail,
+        )
+        answer_bundle, structurer_raw = self._run_answer_structurer(
+            requested_model=effective_model or requested_model,
+            final_text=text,
+            citations=finalized_citations,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
+        )
+        add_debug(
+            stage="llm_to_backend",
+            title="Structurer -> 后端编排器",
+            detail=self._shorten(structurer_raw, 4000 if debug_raw else 1200),
+        )
+        add_panel(
+            "structurer",
+            "Structured Output",
+            str(answer_bundle.get("summary") or "").strip() or "已生成结构化答案与证据链。",
+            self._normalize_string_list(
+                [f"claims={len(answer_bundle.get('claims') or [])}", f"citations={len(answer_bundle.get('citations') or [])}"]
+                + [f"warning: {item}" for item in (answer_bundle.get("warnings") or [])],
+                limit=6,
+                item_limit=180,
+            ),
+        )
         return (
             text,
             tool_events,
@@ -1065,6 +1119,7 @@ class OfficeAgent:
             execution_trace,
             debug_flow,
             agent_panels,
+            answer_bundle,
             usage_total,
             effective_model,
         )
@@ -1589,6 +1644,209 @@ class OfficeAgent:
             fallback["notes"] = [f"Revision 调用失败，已保留原答复: {self._shorten(exc, 180)}"]
             return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
 
+    def _run_answer_structurer(
+        self,
+        *,
+        requested_model: str,
+        final_text: str,
+        citations: list[dict[str, Any]],
+        reviewer_brief: dict[str, Any],
+        conflict_brief: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        fallback = self._fallback_answer_bundle(
+            final_text=final_text,
+            citations=citations,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
+        )
+        citation_lines: list[str] = []
+        for item in citations[:10]:
+            citation_lines.extend(
+                [
+                    f"id={item.get('id')}",
+                    f"tool={item.get('tool') or '(unknown)'}",
+                    f"source_type={item.get('source_type') or 'other'}",
+                    f"label={item.get('label') or '(none)'}",
+                    f"url={item.get('url') or '(none)'}",
+                    f"path={item.get('path') or '(none)'}",
+                    f"locator={item.get('locator') or '(none)'}",
+                    f"excerpt={self._shorten(item.get('excerpt') or '', 260)}",
+                    f"warning={item.get('warning') or '(none)'}",
+                    "",
+                ]
+            )
+        structurer_input = "\n".join(
+            [
+                f"final_answer:\n{final_text.strip() or '(empty)'}",
+                f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
+                "reviewer_risks:",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("risks") or [], limit=4)],
+                "reviewer_followups:",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
+                f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
+                "citations:",
+                *(citation_lines or ["(none)"]),
+            ]
+        )
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是 Answer Structurer。"
+                    "把最终答复整理为结构化证据包。"
+                    "不要改写事实本身，不要输出思维链。"
+                    "你只能使用输入里已经给出的 citation id，禁止捏造新来源。"
+                    "claims 最多 5 条，每条都必须简洁。"
+                    "如果某条结论没有足够证据，status 必须是 needs_review 或 partially_supported。"
+                    "warnings 应优先写来源 warning、证据不足、Reviewer 风险。"
+                    '只返回 JSON 对象，字段固定为 summary, claims, warnings。'
+                    "claims 中每项字段固定为 statement, citation_ids, confidence, status。"
+                    "confidence 只能是 high, medium, low；"
+                    "status 只能是 supported, partially_supported, needs_review。"
+                )
+            ),
+            self._HumanMessage(content=structurer_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model,
+                max_output_tokens=1400,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["notes"] = ["Structurer 未返回标准 JSON，已使用后端降级结构化结果。", *notes]
+                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["effective_model"] = effective_model
+                return self._strip_answer_bundle_meta(fallback), raw_text
+
+            valid_ids = {str(item.get("id") or "").strip() for item in citations}
+            claims_out: list[dict[str, Any]] = []
+            for item in parsed.get("claims") or []:
+                if not isinstance(item, dict):
+                    continue
+                statement = str(item.get("statement") or "").strip()
+                if not statement:
+                    continue
+                raw_ids = item.get("citation_ids") or []
+                if not isinstance(raw_ids, list):
+                    raw_ids = [raw_ids]
+                citation_ids = [str(cid).strip() for cid in raw_ids if str(cid).strip() in valid_ids][:4]
+                confidence = str(item.get("confidence") or "medium").strip().lower()
+                if confidence not in {"high", "medium", "low"}:
+                    confidence = "medium"
+                status = str(item.get("status") or "supported").strip().lower()
+                if status not in {"supported", "partially_supported", "needs_review"}:
+                    status = "supported" if citation_ids else "needs_review"
+                claims_out.append(
+                    {
+                        "statement": self._shorten(statement, 220),
+                        "citation_ids": citation_ids,
+                        "confidence": confidence,
+                        "status": status,
+                    }
+                )
+                if len(claims_out) >= 5:
+                    break
+
+            warnings = self._normalize_string_list(parsed.get("warnings") or [], limit=5, item_limit=220)
+            bundle = {
+                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+                "claims": claims_out or fallback["claims"],
+                "citations": citations,
+                "warnings": warnings or fallback["warnings"],
+                "usage": self._extract_usage_from_message(ai_msg),
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return self._strip_answer_bundle_meta(bundle), raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"Structurer 调用失败，已回退后端结构化结果: {self._shorten(exc, 180)}"]
+            return self._strip_answer_bundle_meta(fallback), json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _fallback_answer_bundle(
+        self,
+        *,
+        final_text: str,
+        citations: list[dict[str, Any]],
+        reviewer_brief: dict[str, Any],
+        conflict_brief: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        summary = self._extract_answer_summary(final_text)
+        citation_ids = [str(item.get("id") or "").strip() for item in citations if str(item.get("id") or "").strip()]
+        claims: list[dict[str, Any]] = []
+        for statement in self._split_claim_candidates(final_text)[:5]:
+            linked_ids = citation_ids[: min(2, len(citation_ids))]
+            claims.append(
+                {
+                    "statement": statement,
+                    "citation_ids": linked_ids,
+                    "confidence": "medium" if linked_ids else "low",
+                    "status": "supported" if linked_ids else "needs_review",
+                }
+            )
+        warnings = self._normalize_string_list(
+            list(reviewer_brief.get("risks") or [])
+            + list(reviewer_brief.get("followups") or [])
+            + list((conflict_brief or {}).get("concerns") or []),
+            limit=5,
+            item_limit=220,
+        )
+        return {
+            "summary": summary,
+            "claims": claims,
+            "citations": citations,
+            "warnings": warnings,
+            "usage": self._empty_usage(),
+            "effective_model": "",
+            "notes": [],
+        }
+
+    def _strip_answer_bundle_meta(self, bundle: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "summary": str(bundle.get("summary") or "").strip(),
+            "claims": list(bundle.get("claims") or []),
+            "citations": list(bundle.get("citations") or []),
+            "warnings": list(bundle.get("warnings") or []),
+        }
+
+    def _extract_answer_summary(self, final_text: str) -> str:
+        cleaned = " ".join(str(final_text or "").strip().split())
+        if not cleaned:
+            return ""
+        sentence = re.split(r"(?<=[。.!?！？])\s+", cleaned, maxsplit=1)[0]
+        return self._shorten(sentence or cleaned, 220)
+
+    def _split_claim_candidates(self, final_text: str) -> list[str]:
+        raw = str(final_text or "").strip()
+        if not raw:
+            return []
+        normalized = raw.replace("\r\n", "\n")
+        candidates: list[str] = []
+        for line in normalized.splitlines():
+            line = line.strip().lstrip("-*•").strip()
+            if not line:
+                continue
+            parts = [item.strip() for item in re.split(r"(?<=[。.!?！？])\s+", line) if item.strip()]
+            candidates.extend(parts or [line])
+            if len(candidates) >= 8:
+                break
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            compact = " ".join(item.split())
+            if len(compact) < 8:
+                continue
+            key = compact.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(self._shorten(compact, 220))
+            if len(out) >= 5:
+                break
+        return out
+
     def _format_planner_system_hint(self, planner_brief: dict[str, Any]) -> str:
         objective = str(planner_brief.get("objective") or "").strip()
         constraints = self._normalize_string_list(planner_brief.get("constraints") or [], limit=5, item_limit=180)
@@ -1737,6 +1995,238 @@ class OfficeAgent:
         return any(marker in text for marker in realtime_markers) and any(
             marker in text for marker in model_limit_markers
         )
+
+    def _extract_citations_from_tool_result(
+        self,
+        *,
+        name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            return []
+
+        path = str(result.get("path") or arguments.get("path") or "").strip() or None
+        out: list[dict[str, Any]] = []
+
+        if str(name).startswith("search_web"):
+            query = str(result.get("query") or arguments.get("query") or "").strip()
+            for row in list(result.get("results") or [])[:4]:
+                if not isinstance(row, dict):
+                    continue
+                url = str(row.get("url") or "").strip()
+                title = str(row.get("title") or "").strip()
+                snippet = str(row.get("snippet") or "").strip()
+                domain = str(row.get("domain") or self._domain_from_url(url) or "").strip() or None
+                if not url and not title:
+                    continue
+                out.append(
+                    {
+                        "source_type": "web",
+                        "tool": "search_web",
+                        "label": title or domain or url or "web result",
+                        "url": url or None,
+                        "title": title or None,
+                        "domain": domain,
+                        "locator": f"query={query}" if query else None,
+                        "excerpt": self._shorten(snippet, 280),
+                        "published_at": str(row.get("published_at") or "").strip() or None,
+                        "warning": str(result.get("warning") or "").strip() or None,
+                        "confidence": "medium",
+                    }
+                )
+            return out
+
+        if name == "fetch_web":
+            url = str(result.get("url") or arguments.get("url") or "").strip()
+            excerpt = str(result.get("content") or "").strip()
+            out.append(
+                {
+                    "source_type": "web",
+                    "tool": "fetch_web",
+                    "label": str(result.get("title") or self._domain_from_url(url) or url or "web page").strip(),
+                    "url": url or None,
+                    "title": str(result.get("title") or "").strip() or None,
+                    "domain": str(result.get("domain") or self._domain_from_url(url) or "").strip() or None,
+                    "locator": str(result.get("canonical_url") or "").strip() or None,
+                    "excerpt": self._shorten(excerpt, 320),
+                    "published_at": str(result.get("published_at") or "").strip() or None,
+                    "warning": str(result.get("warning") or "").strip() or None,
+                    "confidence": "high" if excerpt else "medium",
+                }
+            )
+            return out
+
+        if name == "search_text_in_file":
+            query = str(result.get("query") or arguments.get("query") or "").strip()
+            for match in list(result.get("matches") or [])[:4]:
+                if not isinstance(match, dict):
+                    continue
+                page_hint = int(match.get("page_hint") or 0)
+                locator = f"page {page_hint}" if page_hint > 0 else None
+                out.append(
+                    {
+                        "source_type": "document",
+                        "tool": "search_text_in_file",
+                        "label": Path(path or "document").name,
+                        "path": path,
+                        "locator": f"{locator}, query={query}" if locator and query else (locator or f"query={query}" if query else None),
+                        "excerpt": self._shorten(match.get("context") or "", 320),
+                        "warning": None,
+                        "confidence": "high",
+                    }
+                )
+            return out
+
+        if name == "read_section_by_heading":
+            matched_heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip()
+            page_start = int(result.get("page_start") or 0)
+            page_end = int(result.get("page_end") or 0)
+            locator = matched_heading or None
+            if page_start > 0:
+                locator = f"{locator or 'section'} | pages {page_start}-{page_end or page_start}"
+            out.append(
+                {
+                    "source_type": "document",
+                    "tool": "read_section_by_heading",
+                    "label": Path(path or "document").name,
+                    "path": path,
+                    "locator": locator,
+                    "excerpt": self._shorten(result.get("content") or "", 320),
+                    "warning": None,
+                    "confidence": "high",
+                }
+            )
+            return out
+
+        if name == "table_extract":
+            for table in list(result.get("tables") or [])[:3]:
+                if not isinstance(table, dict):
+                    continue
+                page = int(table.get("page") or 0)
+                sheet = str(table.get("sheet") or "").strip()
+                locator = f"page {page}" if page > 0 else (sheet or None)
+                rows = [str(row).strip() for row in list(table.get("rows") or [])[:3] if str(row).strip()]
+                out.append(
+                    {
+                        "source_type": "table",
+                        "tool": "table_extract",
+                        "label": Path(path or "table").name,
+                        "path": path,
+                        "locator": locator,
+                        "excerpt": self._shorten("\n".join(rows), 320),
+                        "warning": None,
+                        "confidence": "high",
+                    }
+                )
+            return out
+
+        if name == "search_codebase":
+            for match in list(result.get("matches") or [])[:4]:
+                if not isinstance(match, dict):
+                    continue
+                match_path = str(match.get("path") or "").strip()
+                line = int(match.get("line") or 0)
+                out.append(
+                    {
+                        "source_type": "codebase",
+                        "tool": "search_codebase",
+                        "label": Path(match_path or "code").name,
+                        "path": match_path or None,
+                        "locator": f"line {line}" if line > 0 else None,
+                        "excerpt": self._shorten(match.get("text") or "", 320),
+                        "warning": None,
+                        "confidence": "high",
+                    }
+                )
+            return out
+
+        if name == "fact_check_file":
+            for match in list(result.get("evidence") or [])[:3]:
+                if not isinstance(match, dict):
+                    continue
+                page_hint = int(match.get("page_hint") or 0)
+                out.append(
+                    {
+                        "source_type": "document",
+                        "tool": "fact_check_file",
+                        "label": Path(path or "document").name,
+                        "path": path,
+                        "locator": f"page {page_hint}" if page_hint > 0 else None,
+                        "excerpt": self._shorten(match.get("context") or "", 320),
+                        "warning": str(result.get("verdict") or "").strip() or None,
+                        "confidence": "medium",
+                    }
+                )
+            return out
+
+        return out
+
+    def _merge_citation_candidates(
+        self,
+        existing: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged = list(existing)
+        seen = {
+            (
+                str(item.get("tool") or "").strip().lower(),
+                str(item.get("url") or "").strip().lower(),
+                str(item.get("path") or "").strip().lower(),
+                str(item.get("locator") or "").strip().lower(),
+                str(item.get("excerpt") or "").strip().lower(),
+            )
+            for item in merged
+            if isinstance(item, dict)
+        }
+        for item in incoming:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("tool") or "").strip().lower(),
+                str(item.get("url") or "").strip().lower(),
+                str(item.get("path") or "").strip().lower(),
+                str(item.get("locator") or "").strip().lower(),
+                str(item.get("excerpt") or "").strip().lower(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
+    def _finalize_citation_candidates(self, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for idx, item in enumerate(citations[:12], start=1):
+            if not isinstance(item, dict):
+                continue
+            out.append(
+                {
+                    "id": f"c{idx}",
+                    "source_type": str(item.get("source_type") or "other").strip() or "other",
+                    "tool": str(item.get("tool") or "").strip(),
+                    "label": str(item.get("label") or "").strip() or f"source_{idx}",
+                    "path": str(item.get("path") or "").strip() or None,
+                    "url": str(item.get("url") or "").strip() or None,
+                    "title": str(item.get("title") or "").strip() or None,
+                    "domain": str(item.get("domain") or "").strip() or None,
+                    "locator": str(item.get("locator") or "").strip() or None,
+                    "excerpt": self._shorten(str(item.get("excerpt") or "").strip(), 360),
+                    "published_at": str(item.get("published_at") or "").strip() or None,
+                    "warning": str(item.get("warning") or "").strip() or None,
+                    "confidence": str(item.get("confidence") or "medium").strip().lower()
+                    if str(item.get("confidence") or "medium").strip().lower() in {"high", "medium", "low"}
+                    else "medium",
+                }
+            )
+        return out
+
+    def _domain_from_url(self, raw_url: str) -> str | None:
+        try:
+            host = (urlparse(str(raw_url or "")).hostname or "").strip().lower()
+        except Exception:
+            host = ""
+        return host or None
 
     def _normalize_string_list(
         self,

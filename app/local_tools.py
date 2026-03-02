@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import fnmatch
+import hashlib
 import re
 import shlex
 import shutil
 import ssl
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -183,6 +185,74 @@ def _extract_html_text(raw_html: str, max_chars: int) -> str:
     if len(out) > max_chars:
         out = out[:max_chars]
     return out
+
+
+def _find_html_meta_content(raw_html: str, attr_name: str, attr_value: str) -> str:
+    pattern = re.compile(
+        rf'(?is)<meta[^>]*{attr_name}\s*=\s*["\']{re.escape(attr_value)}["\'][^>]*content\s*=\s*["\'](.*?)["\']'
+    )
+    match = pattern.search(raw_html or "")
+    if match:
+        return _clean_html_fragment(match.group(1) or "")
+    return ""
+
+
+def _extract_html_metadata(raw_html: str, base_url: str = "") -> dict[str, str]:
+    html = raw_html or ""
+    title = ""
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html)
+    if title_match:
+        title = _clean_html_fragment(title_match.group(1) or "")
+    if not title:
+        title = _find_html_meta_content(html, "property", "og:title") or _find_html_meta_content(html, "name", "twitter:title")
+
+    published_at = (
+        _find_html_meta_content(html, "property", "article:published_time")
+        or _find_html_meta_content(html, "name", "article:published_time")
+        or _find_html_meta_content(html, "property", "og:updated_time")
+        or _find_html_meta_content(html, "name", "pubdate")
+        or _find_html_meta_content(html, "name", "publish-date")
+    )
+
+    canonical_url = ""
+    canonical_match = re.search(r'(?is)<link[^>]*rel\s*=\s*["\']canonical["\'][^>]*href\s*=\s*["\'](.*?)["\']', html)
+    if canonical_match:
+        canonical_url = unescape(canonical_match.group(1) or "").strip()
+        if canonical_url and base_url:
+            canonical_url = urllib.parse.urljoin(base_url, canonical_url)
+
+    return {
+        "title": title,
+        "published_at": published_at,
+        "canonical_url": canonical_url,
+    }
+
+
+def _tokenize_query(query: str) -> list[str]:
+    parts = re.split(r"[^a-z0-9]+", (query or "").lower())
+    return [item for item in parts if len(item) >= 2]
+
+
+def _score_web_result(query: str, item: dict[str, Any]) -> float:
+    title = str(item.get("title") or "").lower()
+    snippet = str(item.get("snippet") or "").lower()
+    domain = str(item.get("domain") or "").lower()
+    tokens = _tokenize_query(query)
+    score = 0.0
+    for token in tokens:
+        if token in title:
+            score += 4.0
+        if token in snippet:
+            score += 2.0
+        if token in domain:
+            score += 1.5
+    if domain.endswith(".gov") or domain.endswith(".edu"):
+        score += 2.5
+    if any(flag in domain for flag in ("official", "docs", "developer", "openai.com", "github.com")):
+        score += 1.5
+    if item.get("published_at"):
+        score += 0.5
+    return score
 
 
 def _looks_like_script_payload(text: str) -> bool:
@@ -782,6 +852,9 @@ class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self._runtime_ctx = threading.local()
+        self._web_cache_lock = threading.Lock()
+        self._web_cache_dir = (config.workspace_root / "app" / "data" / "web_cache").resolve()
+        self._web_cache_dir.mkdir(parents=True, exist_ok=True)
         self._docker_sandbox = DockerSandboxManager(
             workspace_root=config.workspace_root,
             allowed_roots=config.allowed_roots,
@@ -817,6 +890,38 @@ class LocalToolExecutor:
 
     def _current_session_id(self) -> str:
         return str(getattr(self._runtime_ctx, "session_id", "") or "__anon__")
+
+    def _web_cache_path(self, prefix: str, payload: dict[str, Any]) -> Path:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        return self._web_cache_dir / f"{prefix}_{digest}.json"
+
+    def _load_web_cache(self, prefix: str, payload: dict[str, Any], max_age_sec: int = 900) -> dict[str, Any] | None:
+        path = self._web_cache_path(prefix, payload)
+        if not path.is_file():
+            return None
+        try:
+            with self._web_cache_lock:
+                cached = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        saved_at = float(cached.get("saved_at") or 0)
+        if saved_at <= 0 or (time.time() - saved_at) > max_age_sec:
+            return None
+        payload_data = cached.get("payload")
+        return payload_data if isinstance(payload_data, dict) else None
+
+    def _save_web_cache(self, prefix: str, payload: dict[str, Any], result: dict[str, Any]) -> None:
+        path = self._web_cache_path(prefix, payload)
+        body = {
+            "saved_at": time.time(),
+            "payload": result,
+        }
+        try:
+            with self._web_cache_lock:
+                path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            return
 
     def docker_available(self) -> bool:
         return self._docker_sandbox.docker_available()
@@ -2515,6 +2620,10 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
+        cache_key = {"query": q, "max_results": limit}
+        cached = self._load_web_cache("search_web", cache_key, max_age_sec=900)
+        if cached:
+            return {**cached, "cached": True}
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
         ddg_allowed = self._domain_allowed("duckduckgo.com")
         prefer_news = _looks_news_like_query(q)
@@ -2722,17 +2831,41 @@ class LocalToolExecutor:
             if source == "unknown":
                 source = "none"
 
-            return {
+            normalized_results: list[dict[str, Any]] = []
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                row = dict(item)
+                url = str(row.get("url") or "").strip()
+                try:
+                    row["domain"] = (urllib.parse.urlsplit(url).hostname or "").strip().lower()
+                except Exception:
+                    row["domain"] = ""
+                row["score"] = round(_score_web_result(q, row), 3)
+                normalized_results.append(row)
+            normalized_results.sort(
+                key=lambda item: (
+                    float(item.get("score") or 0.0),
+                    bool(item.get("published_at")),
+                    len(str(item.get("title") or "")),
+                ),
+                reverse=True,
+            )
+
+            payload = {
                 "ok": True,
                 "query": q,
                 "engine": source,
                 "status": status,
                 "content_type": content_type,
-                "count": len(results),
-                "results": results,
+                "count": len(normalized_results),
+                "results": normalized_results,
                 "truncated": truncated,
                 "warning": warning,
+                "cached": False,
             }
+            self._save_web_cache("search_web", cache_key, payload)
+            return payload
         except urllib.error.HTTPError as exc:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
             return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
@@ -2889,6 +3022,10 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(512, min(500000, max_chars, self.config.web_fetch_max_chars))
+        cache_key = {"url": request_url, "max_chars": limit}
+        cached = self._load_web_cache("fetch_web", cache_key, max_age_sec=900)
+        if cached:
+            return {**cached, "cached": True}
         ssl_context: ssl.SSLContext | None = None
         if parsed.scheme == "https":
             if self.config.web_skip_tls_verify:
@@ -2973,18 +3110,22 @@ class LocalToolExecutor:
                                 if warning
                                 else "PDF 可读文本为空（可能是扫描件图片）。"
                             )
-                        return {
+                        payload = {
                             "ok": True,
                             "url": url,
                             "status": status,
                             "content_type": content_type,
+                            "domain": host,
                             "binary": False,
                             "truncated": truncated,
                             "content": pdf_text,
                             "length": len(pdf_text),
                             "source_format": "pdf_text_extracted",
                             "warning": warning,
+                            "cached": False,
                         }
+                        self._save_web_cache("fetch_web", cache_key, payload)
+                        return payload
                     except Exception as pdf_exc:
                         warning = (
                             f"{tls_warning} PDF 文本提取失败: {pdf_exc}"
@@ -3016,6 +3157,7 @@ class LocalToolExecutor:
 
                 text = raw.decode("utf-8", errors="ignore")
                 if _looks_like_html(content_type, text):
+                    metadata = _extract_html_metadata(text, base_url=url)
                     extracted = _extract_html_text(text, max_chars=limit)
                     warning = None
                     if len(extracted.strip()) < 80:
@@ -3055,18 +3197,25 @@ class LocalToolExecutor:
                                         if warning
                                         else f"已自动回退到 DuckDuckGo HTML 结果页（query={search_query}）。"
                                     )
-                                    return {
+                                    fallback_payload = {
                                         "ok": True,
                                         "url": url,
                                         "status": fb_status,
                                         "content_type": fb_ct,
+                                        "domain": host,
                                         "binary": False,
                                         "truncated": fb_truncated,
                                         "content": fb_extracted,
                                         "length": len(fb_extracted),
                                         "source_format": "search_fallback_duckduckgo_html",
                                         "warning": fallback_warning,
+                                        "title": metadata.get("title") or "",
+                                        "published_at": metadata.get("published_at") or "",
+                                        "canonical_url": metadata.get("canonical_url") or "",
+                                        "cached": False,
                                     }
+                                    self._save_web_cache("fetch_web", cache_key, fallback_payload)
+                                    return fallback_payload
                             except Exception as fb_exc:
                                 warning = (
                                     f"{warning} DuckDuckGo 回退失败: {fb_exc}"
@@ -3081,30 +3230,41 @@ class LocalToolExecutor:
                         )
                     if tls_warning:
                         warning = f"{tls_warning} {warning}" if warning else tls_warning
-                    return {
+                    payload = {
                         "ok": True,
                         "url": url,
                         "status": status,
                         "content_type": content_type,
+                        "domain": host,
                         "binary": False,
                         "truncated": truncated,
                         "content": extracted,
                         "length": len(extracted),
                         "source_format": "html_text_extracted",
                         "warning": warning,
+                        "title": metadata.get("title") or "",
+                        "published_at": metadata.get("published_at") or "",
+                        "canonical_url": metadata.get("canonical_url") or "",
+                        "cached": False,
                     }
+                    self._save_web_cache("fetch_web", cache_key, payload)
+                    return payload
 
-                return {
+                payload = {
                     "ok": True,
                     "url": url,
                     "status": status,
                     "content_type": content_type,
+                    "domain": host,
                     "binary": False,
                     "truncated": truncated,
                     "content": text,
                     "length": len(text),
                     "warning": tls_warning,
+                    "cached": False,
                 }
+                self._save_web_cache("fetch_web", cache_key, payload)
+                return payload
         except urllib.error.HTTPError as exc:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
             return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}

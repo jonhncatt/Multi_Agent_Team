@@ -210,6 +210,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         execution_trace,
         debug_flow,
         agent_panels,
+        answer_bundle,
         token_usage,
         effective_model,
     ) = agent.run_chat(
@@ -228,6 +229,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         "execution_trace": execution_trace,
         "debug_flow_count": len(debug_flow),
         "agent_panels": agent_panels,
+        "answer_bundle": answer_bundle,
         "tool_events": [item.model_dump() for item in tool_events],
         "tool_events_count": len(tool_events),
         "token_usage": token_usage,

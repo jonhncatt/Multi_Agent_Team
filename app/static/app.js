@@ -41,6 +41,7 @@ const runStepList = document.getElementById("runStepList");
 const runPayloadView = document.getElementById("runPayloadView");
 const runTraceView = document.getElementById("runTraceView");
 const runAgentPanelsView = document.getElementById("runAgentPanelsView");
+const runAnswerBundleView = document.getElementById("runAnswerBundleView");
 const runLlmFlowView = document.getElementById("runLlmFlowView");
 
 const RUN_FLOW_STEPS = [
@@ -115,12 +116,156 @@ function applyModePreset(mode, announce = true) {
   }
 }
 
-function addBubble(role, text) {
+function hasAnswerBundleContent(bundle) {
+  if (!bundle || typeof bundle !== "object") return false;
+  return Boolean(
+    String(bundle.summary || "").trim() ||
+      (Array.isArray(bundle.claims) && bundle.claims.length) ||
+      (Array.isArray(bundle.citations) && bundle.citations.length) ||
+      (Array.isArray(bundle.warnings) && bundle.warnings.length)
+  );
+}
+
+function buildAnswerBundleNode(bundle) {
+  const wrap = document.createElement("div");
+  wrap.className = "answer-bundle";
+
+  const summary = String(bundle?.summary || "").trim();
+  if (summary) {
+    const summaryNode = document.createElement("div");
+    summaryNode.className = "answer-bundle-summary";
+    summaryNode.textContent = summary;
+    wrap.appendChild(summaryNode);
+  }
+
+  const claims = Array.isArray(bundle?.claims) ? bundle.claims : [];
+  if (claims.length) {
+    const section = document.createElement("div");
+    section.className = "answer-bundle-section";
+    const title = document.createElement("div");
+    title.className = "answer-bundle-title";
+    title.textContent = "Claims";
+    section.appendChild(title);
+    claims.slice(0, 5).forEach((claim, idx) => {
+      const item = document.createElement("div");
+      item.className = "answer-bundle-item";
+      const statement = document.createElement("div");
+      statement.className = "answer-bundle-statement";
+      statement.textContent = `${idx + 1}. ${String(claim?.statement || "").trim()}`;
+      item.appendChild(statement);
+
+      const meta = [];
+      const citationIds = Array.isArray(claim?.citation_ids) ? claim.citation_ids.filter(Boolean) : [];
+      if (citationIds.length) meta.push(`sources: ${citationIds.join(", ")}`);
+      if (claim?.status) meta.push(`status: ${claim.status}`);
+      if (claim?.confidence) meta.push(`confidence: ${claim.confidence}`);
+      if (meta.length) {
+        const metaNode = document.createElement("div");
+        metaNode.className = "answer-bundle-meta";
+        metaNode.textContent = meta.join(" | ");
+        item.appendChild(metaNode);
+      }
+      section.appendChild(item);
+    });
+    wrap.appendChild(section);
+  }
+
+  const citations = Array.isArray(bundle?.citations) ? bundle.citations : [];
+  if (citations.length) {
+    const section = document.createElement("div");
+    section.className = "answer-bundle-section";
+    const title = document.createElement("div");
+    title.className = "answer-bundle-title";
+    title.textContent = "Sources";
+    section.appendChild(title);
+    citations.slice(0, 8).forEach((citation) => {
+      const item = document.createElement("div");
+      item.className = "answer-bundle-item";
+      const heading = document.createElement("div");
+      heading.className = "answer-bundle-statement";
+      const label = String(citation?.label || citation?.title || citation?.url || citation?.path || citation?.id || "source").trim();
+      heading.textContent = `${String(citation?.id || "").trim() || "-"} · ${label}`;
+      item.appendChild(heading);
+
+      const meta = [];
+      if (citation?.tool) meta.push(`tool: ${citation.tool}`);
+      if (citation?.domain) meta.push(`domain: ${citation.domain}`);
+      if (citation?.locator) meta.push(`locator: ${citation.locator}`);
+      if (citation?.published_at) meta.push(`published: ${citation.published_at}`);
+      if (meta.length) {
+        const metaNode = document.createElement("div");
+        metaNode.className = "answer-bundle-meta";
+        metaNode.textContent = meta.join(" | ");
+        item.appendChild(metaNode);
+      }
+
+      const excerpt = String(citation?.excerpt || "").trim();
+      if (excerpt) {
+        const excerptNode = document.createElement("div");
+        excerptNode.className = "answer-bundle-excerpt";
+        excerptNode.textContent = excerpt;
+        item.appendChild(excerptNode);
+      }
+
+      const link = String(citation?.url || "").trim();
+      if (link) {
+        const linkNode = document.createElement("a");
+        linkNode.className = "answer-bundle-link";
+        linkNode.href = link;
+        linkNode.target = "_blank";
+        linkNode.rel = "noreferrer noopener";
+        linkNode.textContent = link;
+        item.appendChild(linkNode);
+      } else if (citation?.path) {
+        const pathNode = document.createElement("div");
+        pathNode.className = "answer-bundle-meta";
+        pathNode.textContent = `path: ${citation.path}`;
+        item.appendChild(pathNode);
+      }
+
+      const warning = String(citation?.warning || "").trim();
+      if (warning) {
+        const warningNode = document.createElement("div");
+        warningNode.className = "answer-bundle-warning";
+        warningNode.textContent = `warning: ${warning}`;
+        item.appendChild(warningNode);
+      }
+      section.appendChild(item);
+    });
+    wrap.appendChild(section);
+  }
+
+  const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
+  if (warnings.length) {
+    const section = document.createElement("div");
+    section.className = "answer-bundle-section";
+    const title = document.createElement("div");
+    title.className = "answer-bundle-title";
+    title.textContent = "Warnings";
+    section.appendChild(title);
+    warnings.slice(0, 5).forEach((warning) => {
+      const item = document.createElement("div");
+      item.className = "answer-bundle-warning";
+      item.textContent = String(warning || "");
+      section.appendChild(item);
+    });
+    wrap.appendChild(section);
+  }
+
+  return wrap;
+}
+
+function addBubble(role, text, answerBundle = null) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${role}`;
   const value = typeof text === "string" ? text : String(text ?? "");
   if (role === "assistant") {
-    bubble.innerHTML = renderAssistantMarkdown(value);
+    const content = document.createElement("div");
+    content.innerHTML = renderAssistantMarkdown(value);
+    bubble.appendChild(content);
+    if (hasAnswerBundleContent(answerBundle)) {
+      bubble.appendChild(buildAnswerBundleNode(answerBundle));
+    }
   } else {
     bubble.textContent = value;
   }
@@ -416,7 +561,7 @@ async function loadSessionById(sessionId, { announceMode = "none" } = {}) {
     turns.forEach((turn) => {
       const role = turn?.role === "assistant" ? "assistant" : "user";
       const text = String(turn?.text || "").trim();
-      if (text) addBubble(role, text);
+      if (text) addBubble(role, text, role === "assistant" ? turn?.answer_bundle || null : null);
     });
     await refreshTokenStatsFromServer();
     await refreshSessionHistory();
@@ -724,6 +869,56 @@ function renderAgentPanels(panels = [], plan = []) {
   runAgentPanelsView.textContent = lines.join("\n").trim();
 }
 
+function renderAnswerBundle(bundle = {}) {
+  if (!runAnswerBundleView) return;
+  if (!hasAnswerBundleContent(bundle)) {
+    runAnswerBundleView.textContent = "暂无结构化证据包";
+    return;
+  }
+
+  const lines = [];
+  const summary = String(bundle?.summary || "").trim();
+  if (summary) {
+    lines.push(`summary: ${summary}`);
+    lines.push("");
+  }
+
+  const claims = Array.isArray(bundle?.claims) ? bundle.claims : [];
+  if (claims.length) {
+    lines.push("claims:");
+    claims.slice(0, 5).forEach((claim, idx) => {
+      const ids = Array.isArray(claim?.citation_ids) ? claim.citation_ids.join(", ") : "";
+      lines.push(`${idx + 1}. ${String(claim?.statement || "").trim()}`);
+      lines.push(`   status=${String(claim?.status || "supported")} confidence=${String(claim?.confidence || "medium")} citations=${ids || "(none)"}`);
+    });
+    lines.push("");
+  }
+
+  const citations = Array.isArray(bundle?.citations) ? bundle.citations : [];
+  if (citations.length) {
+    lines.push("citations:");
+    citations.slice(0, 8).forEach((citation) => {
+      lines.push(`- ${String(citation?.id || "-")} | ${String(citation?.tool || "")} | ${String(citation?.label || citation?.title || citation?.url || citation?.path || "")}`);
+      if (citation?.locator) lines.push(`  locator: ${citation.locator}`);
+      if (citation?.domain) lines.push(`  domain: ${citation.domain}`);
+      if (citation?.published_at) lines.push(`  published_at: ${citation.published_at}`);
+      if (citation?.url) lines.push(`  url: ${citation.url}`);
+      if (citation?.path) lines.push(`  path: ${citation.path}`);
+      if (citation?.excerpt) lines.push(`  excerpt: ${String(citation.excerpt).trim()}`);
+      if (citation?.warning) lines.push(`  warning: ${citation.warning}`);
+    });
+    lines.push("");
+  }
+
+  const warnings = Array.isArray(bundle?.warnings) ? bundle.warnings : [];
+  if (warnings.length) {
+    lines.push("warnings:");
+    warnings.slice(0, 5).forEach((warning, idx) => lines.push(`${idx + 1}. ${String(warning || "")}`));
+  }
+
+  runAnswerBundleView.textContent = lines.join("\n").trim();
+}
+
 function renderLlmFlow(items = []) {
   if (!runLlmFlowView) return;
   if (!Array.isArray(items) || !items.length) {
@@ -891,6 +1086,7 @@ async function runSandboxDrill() {
   }
   renderRunTrace(["沙盒演练请求已发送。"], []);
   renderAgentPanels([], []);
+  renderAnswerBundle({});
   renderLlmFlow([
     {
       step: 1,
@@ -933,6 +1129,7 @@ async function runSandboxDrill() {
     });
     renderRunTrace(trace, []);
     renderAgentPanels([], []);
+    renderAnswerBundle({});
     renderLlmFlow([
       {
         step: 1,
@@ -962,6 +1159,7 @@ async function runSandboxDrill() {
     const msg = `沙盒演练请求失败: ${String(err)}`;
     renderRunTrace([msg], []);
     renderAgentPanels([], []);
+    renderAnswerBundle({});
     renderLlmFlow([
       {
         step: 1,
@@ -1010,6 +1208,7 @@ async function runEvalHarness() {
   }
   renderRunTrace(["回归测试请求已发送。"], []);
   renderAgentPanels([], []);
+  renderAnswerBundle({});
   renderLlmFlow([
     {
       step: 1,
@@ -1079,6 +1278,7 @@ async function runEvalHarness() {
       });
     }
     renderAgentPanels(panels, []);
+    renderAnswerBundle({});
     renderLlmFlow([
       {
         step: 1,
@@ -1099,6 +1299,7 @@ async function runEvalHarness() {
     const msg = `回归测试请求失败: ${String(err)}`;
     renderRunTrace([msg], []);
     renderAgentPanels([], []);
+    renderAnswerBundle({});
     renderLlmFlow([
       {
         step: 1,
@@ -1180,6 +1381,7 @@ async function sendMessage() {
     let heartbeatCount = 0;
     renderRunTrace(liveTrace, liveToolEvents);
     renderAgentPanels([], []);
+    renderAnswerBundle({});
     renderLlmFlow(liveFlow);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
     const totalAttachmentBytes = state.attachments.reduce((sum, item) => {
@@ -1277,8 +1479,9 @@ async function sendMessage() {
 
       renderRunTrace(data.execution_trace || [], data.tool_events || []);
       renderAgentPanels(data.agent_panels || [], data.execution_plan || []);
+      renderAnswerBundle(data.answer_bundle || {});
       renderLlmFlow(data.debug_flow || []);
-      addBubble("assistant", data.text);
+      addBubble("assistant", data.text, data.answer_bundle || null);
     }
     await refreshSessionHistory();
     if (isForegroundSession()) {
@@ -1297,6 +1500,7 @@ async function sendMessage() {
     if (isForegroundSession()) {
       renderRunTrace([`请求失败: ${String(err)}`], []);
       renderAgentPanels([], []);
+      renderAnswerBundle({});
       renderLlmFlow([
         {
           step: 1,

@@ -1,71 +1,71 @@
-# Swarm Roadmap
+# Swarm 路线图
 
-## Current State
+## 当前状态
 
-Current architecture is a backend-orchestrated multi-agent pipeline:
+当前架构仍然是一个由后端编排的多 Agent 流水线：
 
-1. Backend orchestrator receives user input
-2. `Planner` generates objective, constraints, and plan
-3. `Worker` executes the main task and tool loop
-4. `Reviewer` checks coverage, risks, and confidence
-5. `Revision` optionally rewrites the final answer
+1. 后端编排器接收用户输入
+2. `Planner` 生成目标、约束和执行计划
+3. `Worker` 执行主任务与工具循环
+4. `Reviewer` 检查覆盖度、风险和置信度
+5. `Revision` 在需要时改写最终答复
 
-This is not a full swarm yet. It is a fixed sequential pipeline with strong observability.
+这还不是完整意义上的 swarm。它本质上仍然是一个固定顺序的串行流水线，只是已经具备较强的可观测性。
 
-## Why This Is Not Swarm Yet
+## 为什么现在还不算 Swarm
 
-- Roles are fixed per request
-- Execution order is fixed in Python code
-- There is no router/coordinator role yet
-- No parallel subtask execution
-- No dynamic spawning of multiple worker instances
-- No result aggregation from multiple concurrent agents
+- 每一轮请求的角色是固定的
+- 执行顺序写死在 Python 代码里
+- 还没有 `Router / Coordinator` 角色
+- 没有并行子任务
+- 没有动态拉起多个同类 Worker 实例
+- 没有多个并发 Agent 结果的聚合层
 
-## Direction
+## 演进方向
 
-Target direction is a lightweight, observable swarm:
+目标方向是一个“轻量、可观测、可控”的 swarm：
 
-- Backend remains the primary orchestrator
-- LLM assists with routing decisions
-- Subtasks can be split across multiple role instances
-- UI keeps showing clear execution flow and role-to-role exchange
+- 后端继续作为主编排器
+- LLM 负责辅助路由与分支决策
+- 子任务可以拆给多个角色实例
+- UI 仍然保持清晰的执行流程和角色交换可视化
 
-## Stage 1: Stabilize The Pipeline
+## 阶段 1：打稳当前流水线
 
-Status: in progress / mostly complete
+状态：进行中 / 大部分已完成
 
-Goals:
+目标：
 
-- Keep `Planner -> Worker -> Reviewer -> Revision`
-- Make role boundaries explicit
-- Make debug flow readable in backend-orchestrator terms
-- Make live transparency reliable over SSE
-- Keep failures isolated so one role can fail without corrupting the whole request
+- 保持 `Planner -> Worker -> Reviewer -> Revision`
+- 明确每个角色的职责边界
+- 让调试流以“后端编排器视角”清晰可读
+- 让 SSE 透明层稳定、实时
+- 让某个角色失败时不污染整轮请求
 
-Exit criteria:
+退出标准：
 
-- Team can explain every visible step in the debug panel
-- Tool execution traces are readable and attributable to `Worker`
-- Reviewer/Revision behavior is predictable on simple tasks
+- 团队能够解释调试面板上的每一步
+- 工具调用轨迹清楚且能归因到 `Worker`
+- `Reviewer / Revision` 在简单任务上的行为可预测
 
-## Stage 2: Add Routing / Triage
+## 阶段 2：加入路由 / 分诊
 
-Status: next
+状态：下一阶段
 
-Introduce a new lightweight role:
+新增一个轻量角色：
 
-- `Router` or `Coordinator`
+- `Router` 或 `Coordinator`
 
-Responsibilities:
+职责：
 
-- classify task type
-- estimate complexity
-- decide whether `Planner` is needed
-- decide whether `Reviewer` is needed
-- decide whether `Revision` is needed
-- decide whether a specialized role should be added
+- 判断任务类型
+- 估计复杂度
+- 决定是否需要 `Planner`
+- 决定是否需要 `Reviewer`
+- 决定是否需要 `Revision`
+- 决定是否需要额外的专门角色
 
-Example structured output:
+示例结构化输出：
 
 ```json
 {
@@ -79,22 +79,22 @@ Example structured output:
 }
 ```
 
-Recommended rules:
+建议规则：
 
-- simple knowledge question: `Worker` only
-- medium request: `Planner -> Worker`
-- tool-heavy request: `Planner -> Worker -> Reviewer`
-- high-risk / long-form / customer-facing request: `Planner -> Worker -> Reviewer -> Revision`
+- 简单知识问答：只走 `Worker`
+- 中等复杂请求：`Planner -> Worker`
+- 工具密集型请求：`Planner -> Worker -> Reviewer`
+- 高风险 / 长文本 / 面向客户的请求：`Planner -> Worker -> Reviewer -> Revision`
 
-Why this stage matters:
+这一阶段的重要性：
 
-- avoids always running four roles
-- makes orchestration feel intelligent
-- is the first real step toward swarm behavior
+- 避免所有请求都固定跑 4 个角色
+- 让编排开始体现“智能路由”
+- 这是从流水线迈向 swarm 的第一步
 
-## Stage 3: Specialized Roles
+## 阶段 3：专门角色
 
-Add reusable role templates such as:
+引入可复用的角色模板，例如：
 
 - `Researcher`
 - `FileReader`
@@ -103,86 +103,86 @@ Add reusable role templates such as:
 - `Fixer`
 - `Summarizer`
 
-Important note:
+重要说明：
 
-- these are not dynamically invented Python classes
-- they are predefined role templates or prompts
-- the system dynamically chooses which ones to instantiate
+- 这不是动态发明新的 Python 类
+- 而是预定义好的角色模板或 prompt
+- 系统在运行时动态选择要实例化哪些角色
 
-Example:
+示例：
 
-- `Researcher` gathers web evidence
-- `Worker` writes the answer
-- `Reviewer` checks consistency with the evidence
+- `Researcher` 负责收集网页证据
+- `Worker` 负责写答案
+- `Reviewer` 负责检查答案和证据是否一致
 
-## Stage 4: Multi-Instance Execution
+## 阶段 4：多实例执行
 
-Allow multiple instances of the same role:
+允许同一种角色同时启动多个实例：
 
-- `worker_1` reads attachment A
-- `worker_2` reads attachment B
-- `researcher_1` searches source A
-- `researcher_2` searches source B
+- `worker_1` 读取附件 A
+- `worker_2` 读取附件 B
+- `researcher_1` 搜索来源 A
+- `researcher_2` 搜索来源 B
 
-This is where the system starts feeling like a true swarm.
+从这一阶段开始，系统才会明显呈现出 swarm 的感觉。
 
-Required backend abilities:
+后端需要具备的能力：
 
-- subtask IDs
-- parent/child task relationships
-- shared scratchpad or aggregation context
-- result merging
-- timeout and retry policy per subtask
+- 子任务 ID
+- 父子任务关系
+- 共享 scratchpad 或聚合上下文
+- 结果合并机制
+- 针对子任务的超时和重试策略
 
-## Stage 5: Parallel Branching
+## 阶段 5：并行分支
 
-Enable parallel execution for independent subtasks.
+允许独立子任务并行执行。
 
-Examples:
+示例：
 
-- read attachment and search web at the same time
-- run code analysis and test analysis at the same time
-- gather multiple source summaries in parallel, then aggregate
+- 同时读取附件和搜索网页
+- 同时做代码分析和测试分析
+- 并行收集多个来源摘要，再统一聚合
 
-Requirements:
+要求：
 
-- bounded concurrency
-- deterministic merge rules
-- clear UI for parallel branches
-- cost and latency budgeting
+- 并发数可控
+- 合并规则确定
+- UI 能清楚展示并行分支
+- 有成本和时延预算
 
-## Stage 6: Aggregation Layer
+## 阶段 6：聚合层
 
-Add explicit aggregation roles or logic:
+加入明确的聚合角色或聚合逻辑：
 
-- `Coordinator` gathers outputs from sub-agents
-- resolves contradictions
-- chooses the final answer shape
-- decides whether another validation pass is needed
+- `Coordinator` 收集多个子 Agent 的结果
+- 解决结论冲突
+- 选择最终答案的组织方式
+- 决定是否需要再做一次验证
 
-This is the point where the system becomes a practical swarm rather than a fixed pipeline.
+到了这一阶段，系统才会从“固定流水线”真正变成“可实战的 swarm”。
 
-## Guardrails
+## 护栏
 
-Keep these guardrails even when moving toward swarm:
+即使逐步演进到 swarm，也要保留这些护栏：
 
-- backend remains source of truth for permissions and tool policy
-- not every role gets tool access
-- specialized roles should have narrow responsibilities
-- every spawned role should be visible in the UI
-- every merge decision should be inspectable
-- failures should degrade gracefully to a simpler path
+- 后端仍然是权限和工具策略的唯一真实来源
+- 不是每个角色都能访问所有工具
+- 专门角色必须职责收敛，避免变成万能 Agent
+- 每一个被拉起的角色都必须在 UI 中可见
+- 每一次结果合并都必须可检查
+- 失败时要能优雅退化到更简单的路径
 
-## Recommended Near-Term Plan
+## 近期建议路线
 
-1. Finish Stage 1 UI and terminology cleanup
-2. Implement Stage 2 `Router`
-3. Add one specialist role only: `Researcher` or `Fixer`
-4. Add multi-instance support only after routing is stable
+1. 完成阶段 1 的 UI 和术语清理
+2. 实现阶段 2 的 `Router`
+3. 先只加一个专门角色：`Researcher` 或 `Fixer`
+4. 等路由稳定后再做多实例支持
 
-## Non-Goals Right Now
+## 当前非目标
 
-- fully autonomous open-ended swarm
-- self-modifying agent code
-- unrestricted dynamic role creation
-- hidden orchestration that cannot be inspected
+- 完全自治、开放式的 swarm
+- 会自我修改代码的 Agent 系统
+- 无限制动态创建角色
+- 无法检查内部过程的黑盒编排

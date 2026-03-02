@@ -62,12 +62,20 @@ class SessionStore:
         with self._lock:
             path.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def append_turn(self, session: dict[str, Any], role: str, text: str, attachments: list[dict[str, Any]] | None = None) -> None:
+    def append_turn(
+        self,
+        session: dict[str, Any],
+        role: str,
+        text: str,
+        attachments: list[dict[str, Any]] | None = None,
+        answer_bundle: dict[str, Any] | None = None,
+    ) -> None:
         session.setdefault("turns", []).append(
             {
                 "role": role,
                 "text": text,
                 "attachments": attachments or [],
+                "answer_bundle": answer_bundle or {},
                 "created_at": now_iso(),
             }
         )
