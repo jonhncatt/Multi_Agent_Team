@@ -935,6 +935,70 @@ class OfficeAgent:
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not route.get("use_worker_tools") or not tool_calls:
                 if (
+                    not route.get("use_worker_tools")
+                    and settings.enable_tools
+                    and auto_nudge_budget > 0
+                    and self._request_likely_requires_tools(planner_user_message, attachment_metas)
+                    and self._looks_like_tool_escalation_needed(self._content_to_text(getattr(ai_msg, "content", "")))
+                ):
+                    auto_nudge_budget -= 1
+                    route = self._normalize_route_decision(
+                        {
+                            "task_type": "backend_tool_escalation",
+                            "complexity": str(route.get("complexity") or "medium"),
+                            "use_worker_tools": True,
+                            "reason": "worker_requested_code_search_backend_escalated",
+                            "summary": "Worker 已暴露需要代码/文件搜索，后端已强制升级到工具链。",
+                        },
+                        fallback=route,
+                        settings=settings,
+                    )
+                    request_requires_tools = True
+                    execution_plan[:] = self._build_execution_plan(
+                        attachment_metas=attachment_metas,
+                        settings=settings,
+                        route=route,
+                    )
+                    add_trace("检测到 Worker 误判为无工具路径，后端已强制升级为工具链重跑。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：升级到工具链",
+                        detail="Worker 表示需要代码/文件搜索或声称工具未启用，后端已强制开启工具链并重跑。",
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "后端已判定当前任务必须使用本地搜索工具。"
+                                "不要再说“代码搜索工具未启用”、不要要求用户提供源文件、不要再询问是否确认。"
+                                "请立即使用 search_codebase、list_directory、read_text_file 等必要工具继续完成任务。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg, runner, effective_model, failover_notes = self._invoke_chat_with_runner(
+                            messages=messages,
+                            model=effective_model,
+                            max_output_tokens=settings.max_output_tokens,
+                            enable_tools=True,
+                        )
+                        for note in failover_notes:
+                            add_trace(note)
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        add_debug(
+                            stage="llm_to_backend",
+                            title="Worker -> 后端编排器（升级工具链后响应）",
+                            detail=(
+                                f"effective_model={effective_model}\n"
+                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
+                            ),
+                        )
+                        continue
+                    except Exception as exc:
+                        add_trace(f"升级工具链后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="Worker 工具链升级失败", detail=str(exc))
+                        break
+                if (
                     route.get("use_worker_tools")
                     and evidence_required_mode
                     and auto_nudge_budget > 0
@@ -2458,6 +2522,37 @@ class OfficeAgent:
         if not topic:
             return False
         return self._request_likely_requires_tools(topic, attachment_metas)
+
+    def _looks_like_tool_escalation_needed(self, text: str) -> bool:
+        raw = str(text or "").strip().lower()
+        if not raw:
+            return False
+        patterns = (
+            "需要搜索代码",
+            "需要先搜索代码",
+            "需要代码搜索",
+            "需要先定位代码",
+            "需要在代码里找",
+            "要在代码里找",
+            "未启用代码搜索工具",
+            "没有启用代码搜索工具",
+            "当前环境中没有启用代码搜索工具",
+            "当前环境没有启用代码搜索工具",
+            "当前没有启用代码搜索工具",
+            "必须让我把代码源文件给它",
+            "必须提供代码源文件",
+            "需要你把代码源文件给我",
+            "需要你提供源文件",
+            "需要提供源文件",
+            "请把代码文件给我",
+            "请提供代码文件",
+            "code search tool is not enabled",
+            "code search is not enabled",
+            "need to search the code",
+            "need the source file",
+            "please provide the source file",
+        )
+        return any(pattern in raw for pattern in patterns)
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
         raw = str(final_text or "").strip()

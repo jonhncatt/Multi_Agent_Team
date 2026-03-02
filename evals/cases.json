@@ -787,6 +787,19 @@
     }
   },
   {
+    "name": "helper_tool_escalation_needed_detects_code_search_refusal",
+    "kind": "helper",
+    "helper": "_looks_like_tool_escalation_needed",
+    "args": {
+      "text": "抱歉，当前环境中没有启用代码搜索工具。若要解释这两个函数，我需要先在代码里找出来，请把代码源文件给我。"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_followup_tool_ack_keeps_tools_enabled",
     "kind": "helper",
     "helper": "_route_request_by_rules",
