@@ -999,6 +999,25 @@ class OfficeAgent:
         auto_nudge_budget = min(execution_state.max_attempts, 4 if has_attachments else 2)
         for _ in range(execution_state.max_attempts):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
+            if self._coordinator_tools_enabled(execution_state) and not tool_calls:
+                inferred_tool_call = self._infer_bare_tool_call_from_text(
+                    self._content_to_text(getattr(ai_msg, "content", "")),
+                    task_type=str(route.get("task_type") or ""),
+                )
+                if inferred_tool_call:
+                    tool_calls = [inferred_tool_call]
+                    add_trace(
+                        f"检测到 Worker 输出了裸工具参数 JSON，后端已自动转成 {inferred_tool_call['name']} 工具调用。"
+                    )
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：裸 JSON 工具参数",
+                        detail=(
+                            "Worker 没有发出正式 tool call，而是直接输出了 JSON 参数。"
+                            f"后端已自动改写为 {inferred_tool_call['name']} 调用，args="
+                            f"{self._shorten(json.dumps(inferred_tool_call.get('args') or {}, ensure_ascii=False), 1200 if not debug_raw else 50000)}"
+                        ),
+                    )
             if not self._coordinator_tools_enabled(execution_state) or not tool_calls:
                 if (
                     not self._coordinator_tools_enabled(execution_state)
@@ -3601,6 +3620,94 @@ class OfficeAgent:
                 continue
             if isinstance(data, dict):
                 return data
+        return None
+
+    def _infer_bare_tool_call_from_text(
+        self,
+        text: str,
+        *,
+        task_type: str = "",
+    ) -> dict[str, Any] | None:
+        parsed = self._parse_json_object(text)
+        if not isinstance(parsed, dict) or not parsed:
+            return None
+
+        wrapper_tool = str(parsed.get("tool") or parsed.get("name") or "").strip()
+        wrapper_args = parsed.get("args")
+        if wrapper_tool and isinstance(wrapper_args, dict):
+            return {
+                "id": f"inferred_{wrapper_tool}",
+                "name": wrapper_tool,
+                "args": wrapper_args,
+                "inferred": True,
+            }
+
+        keys = {str(key).strip() for key in parsed.keys()}
+        if not keys:
+            return None
+
+        search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
+        list_directory_keys = {"path", "max_entries"}
+        read_text_file_keys = {"path", "start_char", "max_chars"}
+        search_text_in_file_keys = {"path", "query", "max_matches", "context_chars"}
+
+        if "query" in keys and ("root" in keys or keys.issubset(search_codebase_keys) or task_type == "code_lookup"):
+            args: dict[str, Any] = {"query": str(parsed.get("query") or "").strip()}
+            if not args["query"]:
+                return None
+            args["root"] = str(parsed.get("root") or ".").strip() or "."
+            for optional in ("max_matches", "file_glob", "use_regex", "case_sensitive"):
+                if optional in parsed:
+                    args[optional] = parsed.get(optional)
+            return {
+                "id": "inferred_search_codebase",
+                "name": "search_codebase",
+                "args": args,
+                "inferred": True,
+            }
+
+        if "path" in keys and keys.issubset(search_text_in_file_keys) and "query" in keys:
+            path = str(parsed.get("path") or "").strip()
+            query = str(parsed.get("query") or "").strip()
+            if not path or not query:
+                return None
+            args = {"path": path, "query": query}
+            for optional in ("max_matches", "context_chars"):
+                if optional in parsed:
+                    args[optional] = parsed.get(optional)
+            return {
+                "id": "inferred_search_text_in_file",
+                "name": "search_text_in_file",
+                "args": args,
+                "inferred": True,
+            }
+
+        if "path" in keys and keys.issubset(read_text_file_keys):
+            path = str(parsed.get("path") or "").strip()
+            if not path:
+                return None
+            args = {"path": path}
+            for optional in ("start_char", "max_chars"):
+                if optional in parsed:
+                    args[optional] = parsed.get(optional)
+            return {
+                "id": "inferred_read_text_file",
+                "name": "read_text_file",
+                "args": args,
+                "inferred": True,
+            }
+
+        if "path" in keys and keys.issubset(list_directory_keys):
+            path = str(parsed.get("path") or "").strip() or "."
+            args = {"path": path}
+            if "max_entries" in parsed:
+                args["max_entries"] = parsed.get("max_entries")
+            return {
+                "id": "inferred_list_directory",
+                "name": "list_directory",
+                "args": args,
+                "inferred": True,
+            }
         return None
 
     def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:

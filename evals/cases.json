@@ -881,6 +881,46 @@
     }
   },
   {
+    "name": "helper_infer_bare_tool_call_from_text_search_codebase",
+    "kind": "helper",
+    "helper": "_infer_bare_tool_call_from_text",
+    "args": {
+      "text": "{\"root\":\"workbench\",\"query\":\"handle_route\"}",
+      "task_type": "code_lookup"
+    },
+    "assert": {
+      "equals": {
+        "name": "search_codebase"
+      },
+      "contains": {
+        "args.root": [
+          "workbench"
+        ],
+        "args.query": [
+          "handle_route"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_infer_bare_tool_call_from_text_read_text_file",
+    "kind": "helper",
+    "helper": "_infer_bare_tool_call_from_text",
+    "args": {
+      "text": "{\"path\":\"workbench/src/app.ts\",\"start_char\":0,\"max_chars\":2000}"
+    },
+    "assert": {
+      "equals": {
+        "name": "read_text_file"
+      },
+      "contains": {
+        "args.path": [
+          "workbench/src/app.ts"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",
