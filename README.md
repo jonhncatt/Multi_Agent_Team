@@ -205,6 +205,22 @@ cd $HOME\Desktop\officetool
 - 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
 - 前端默认走 `/api/chat/stream` 实时流式接口；如需非流式可继续使用 `/api/chat`
 
+### Regression Evals
+
+- 回归测试脚本：`python3 scripts/run_evals.py`
+- 默认运行工具级 regression cases，不依赖在线模型
+- 可选 case：
+  - `OPENAI_API_KEY=... python3 scripts/run_evals.py --include-optional`
+  - `EVAL_NVME_PDF=/absolute/path/to/spec.pdf python3 scripts/run_evals.py --include-optional`
+- 当前题库位置：
+  - [evals/cases.json](/Users/dalizhou/Desktop/new_validation_agent/evals/cases.json)
+  - [spec_excerpt.txt](/Users/dalizhou/Desktop/new_validation_agent/evals/fixtures/spec_excerpt.txt)
+  - [spec_without_15h.txt](/Users/dalizhou/Desktop/new_validation_agent/evals/fixtures/spec_without_15h.txt)
+- 设计原则：
+  - 正例和负例都要有
+  - 文档里没有 `15h` 时，正确结果应是“证据不足/未命中”，不是强行判存在或不存在
+  - agent 级 eval 默认可跳过，避免在无 API key 环境误报
+
 ### 沙盒演练（推荐先跑）
 
 - 前端左侧有“沙盒演练”按钮，会调用 `/api/sandbox/drill`

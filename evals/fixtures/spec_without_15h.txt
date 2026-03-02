@@ -1,0 +1,15 @@
+5 ADMIN COMMAND SET
+5.14 Format NVM command
+The Format NVM command formats the media.
+
+5.15 Get Features command
+The Get Features command returns the current value of a feature identifier.
+
+Figure 96: Status Code - Command Specific Status Values
+Value | Description
+0Ah | Invalid Format
+0Ch | Command Sequence Error
+20h | Namespace is Write Protected
+
+5.16 Get Log Page command
+The Get Log Page command retrieves one or more log pages from the controller.

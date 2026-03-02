@@ -1,0 +1,228 @@
+[
+  {
+    "name": "tool_search_positive_15h",
+    "kind": "tool",
+    "tool": "search_text_in_file",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "query": "15h",
+      "max_matches": 3,
+      "context_chars": 120
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 1
+      },
+      "contains": {
+        "matches.0.context": [
+          "Operation Denied"
+        ]
+      }
+    }
+  },
+  {
+    "name": "tool_search_negative_15h",
+    "kind": "tool",
+    "tool": "search_text_in_file",
+    "args": {
+      "path": "evals/fixtures/spec_without_15h.txt",
+      "query": "15h",
+      "max_matches": 3,
+      "context_chars": 120
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "match_count": 0
+      }
+    }
+  },
+  {
+    "name": "tool_multi_query_search",
+    "kind": "tool",
+    "tool": "multi_query_search",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "queries": [
+        "15h",
+        "Get Features"
+      ],
+      "per_query_max_matches": 2,
+      "context_chars": 120
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 2
+      }
+    }
+  },
+  {
+    "name": "tool_read_section_by_heading",
+    "kind": "tool",
+    "tool": "read_section_by_heading",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "heading": "5.15 Get Features command",
+      "max_chars": 2000
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "matched_section": "5.15"
+      },
+      "contains": {
+        "content": [
+          "Get Features command",
+          "feature identifier"
+        ]
+      }
+    }
+  },
+  {
+    "name": "tool_fact_check_conflicted_negative_claim",
+    "kind": "tool",
+    "tool": "fact_check_file",
+    "args": {
+      "path": "evals/fixtures/spec_excerpt.txt",
+      "claim": "There is no 15h entry in this document",
+      "queries": [
+        "15h"
+      ],
+      "max_evidence": 4
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "verdict": "conflicted"
+      },
+      "min_value": {
+        "evidence_count": 1
+      }
+    }
+  },
+  {
+    "name": "tool_fact_check_absence_is_not_auto_supported",
+    "kind": "tool",
+    "tool": "fact_check_file",
+    "args": {
+      "path": "evals/fixtures/spec_without_15h.txt",
+      "claim": "There is no 15h entry in this document",
+      "queries": [
+        "15h"
+      ],
+      "max_evidence": 4
+    },
+    "assert": {
+      "equals": {
+        "ok": true,
+        "verdict": "insufficient_evidence",
+        "evidence_count": 0
+      }
+    }
+  },
+  {
+    "name": "tool_search_codebase",
+    "kind": "tool",
+    "tool": "search_codebase",
+    "args": {
+      "query": "search_text_in_file",
+      "root": "app",
+      "max_matches": 5
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "match_count": 1
+      }
+    }
+  },
+  {
+    "name": "tool_table_extract_xlsx",
+    "kind": "tool",
+    "tool": "table_extract",
+    "args": {
+      "path": "evals/fixtures/generated/opcode_table.xlsx",
+      "query": "Operation Denied",
+      "max_tables": 2,
+      "max_rows": 6
+    },
+    "prepare": {
+      "fixture": "opcode_xlsx"
+    },
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "table_count": 1
+      },
+      "contains": {
+        "tables.0.rows.0": [
+          "15h"
+        ]
+      }
+    }
+  },
+  {
+    "name": "tool_doc_index_build_external_nvme_pdf",
+    "kind": "tool",
+    "tool": "doc_index_build",
+    "optional": true,
+    "args": {
+      "path": "${EVAL_NVME_PDF}",
+      "max_headings": 100
+    },
+    "skip_if_missing_env": [
+      "EVAL_NVME_PDF"
+    ],
+    "assert": {
+      "equals": {
+        "ok": true
+      },
+      "min_value": {
+        "page_count": 100,
+        "heading_count": 20
+      }
+    }
+  },
+  {
+    "name": "agent_optional_spec_lookup",
+    "kind": "agent",
+    "optional": true,
+    "skip_if_missing_env": [
+      "OPENAI_API_KEY"
+    ],
+    "message": "请在这份文档里查 15h 是什么，并给出证据。",
+    "attachments": [
+      {
+        "path": "evals/fixtures/spec_excerpt.txt",
+        "original_name": "spec_excerpt.txt",
+        "kind": "document",
+        "mime": "text/plain"
+      }
+    ],
+    "settings": {
+      "response_style": "short",
+      "enable_tools": true
+    },
+    "assert": {
+      "contains_any": {
+        "text": [
+          "15h",
+          "Operation Denied"
+        ]
+      },
+      "min_value": {
+        "tool_events_count": 1
+      }
+    }
+  }
+]

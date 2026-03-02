@@ -565,6 +565,26 @@ def _looks_like_pdf_path(path: Path) -> bool:
         return False
 
 
+def _xlsx_cell_to_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        try:
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+        except Exception:
+            pass
+        return str(value)
+    if hasattr(value, "isoformat"):
+        try:
+            return str(value.isoformat())
+        except Exception:
+            pass
+    return str(value).strip()
+
+
 def _heading_score(query_norm: str, heading_norm: str) -> float:
     if not query_norm or not heading_norm:
         return 0.0
