@@ -83,6 +83,13 @@ _UNDERSTANDING_HINTS = (
     "overview",
 )
 
+_SPECIALIST_LABELS = {
+    "researcher": "Researcher",
+    "file_reader": "FileReader",
+    "summarizer": "Summarizer",
+    "fixer": "Fixer",
+}
+
 
 class RunShellArgs(BaseModel):
     command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
@@ -556,6 +563,7 @@ class OfficeAgent:
                 f"task_type: {route.get('task_type')}",
                 f"complexity: {route.get('complexity')}",
                 f"source: {route.get('source')}",
+                f"specialists: {', '.join(route.get('specialists') or []) or '(none)'}",
                 f"planner: {str(bool(route.get('use_planner'))).lower()}",
                 f"worker_tools: {str(bool(route.get('use_worker_tools'))).lower()}",
                 f"reviewer: {str(bool(route.get('use_reviewer'))).lower()}",
@@ -660,7 +668,61 @@ class OfficeAgent:
         else:
             add_trace("Router 已跳过 Planner。")
 
-        prefetch_payload = self._auto_prefetch_web(user_message, bool(route.get("use_web_prefetch")))
+        specialist_prefetch_query = user_message
+        specialist_system_hints: list[str] = []
+        for specialist in self._normalize_specialists(route.get("specialists") or []):
+            specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
+            add_debug(
+                stage="backend_to_llm",
+                title=f"后端编排器 -> {specialist_label}",
+                detail=(
+                    f"model={self.config.summary_model or requested_model}\n"
+                    f"task_type={route.get('task_type')}\n"
+                    f"attachments={len(attachment_metas)}\n"
+                    f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}"
+                ),
+            )
+            specialist_brief, specialist_raw = self._run_specialist_role(
+                specialist=specialist,
+                requested_model=requested_model,
+                user_message=user_message,
+                summary=summary,
+                user_content=user_content,
+                attachment_metas=attachment_metas,
+                route=route,
+            )
+            specialist_model = str(specialist_brief.get("effective_model") or "").strip()
+            usage_total = self._merge_usage(usage_total, specialist_brief.get("usage") or self._empty_usage())
+            for note in self._normalize_string_list(specialist_brief.get("notes") or [], limit=3, item_limit=200):
+                add_trace(note)
+            add_trace(f"多 Agent: {specialist_label} 已生成专门简报。")
+            add_debug(
+                stage="llm_to_backend",
+                title=f"{specialist_label} -> 后端编排器",
+                detail=(
+                    f"effective_model={specialist_model or self.config.summary_model or requested_model}\n"
+                    f"{self._shorten(specialist_raw, 4000 if debug_raw else 1200)}"
+                ),
+            )
+            add_panel(
+                specialist,
+                specialist_label,
+                str(specialist_brief.get("summary") or "").strip() or f"{specialist_label} 已生成简报。",
+                self._normalize_string_list(specialist_brief.get("bullets") or [], limit=4, item_limit=180),
+            )
+            specialist_hint = self._format_specialist_system_hint(specialist, specialist_brief)
+            if specialist_hint:
+                specialist_system_hints.append(specialist_hint)
+            if specialist == "researcher":
+                suggested_queries = self._normalize_string_list(specialist_brief.get("queries") or [], limit=3, item_limit=80)
+                if suggested_queries:
+                    specialist_prefetch_query = suggested_queries[0]
+        for hint in reversed(specialist_system_hints):
+            messages.insert(1, self._SystemMessage(content=hint))
+        if specialist_system_hints:
+            add_trace("多 Agent: Worker 已加载专门角色摘要。")
+
+        prefetch_payload = self._auto_prefetch_web(specialist_prefetch_query, bool(route.get("use_web_prefetch")))
         if prefetch_payload:
             messages.append(self._SystemMessage(content=prefetch_payload["context"]))
             add_trace(
@@ -2178,6 +2240,223 @@ class OfficeAgent:
             lines.extend(f"- {item}" for item in success_signals)
         return "\n".join(lines) if len(lines) > 1 else ""
 
+    def _normalize_specialists(self, value: Any, *, limit: int = 3) -> list[str]:
+        if isinstance(value, str):
+            raw_items = [value]
+        elif isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            specialist = str(item or "").strip().lower()
+            if specialist not in _SPECIALIST_LABELS:
+                continue
+            if specialist in seen:
+                continue
+            seen.add(specialist)
+            out.append(specialist)
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    def _specialist_plan_line(self, specialist: str) -> str:
+        if specialist == "researcher":
+            return "Researcher 生成联网取证简报。"
+        if specialist == "file_reader":
+            return "FileReader 生成文件阅读与定位简报。"
+        if specialist == "summarizer":
+            return "Summarizer 生成内容提炼简报。"
+        if specialist == "fixer":
+            return "Fixer 生成问题修复简报。"
+        return f"{_SPECIALIST_LABELS.get(specialist, specialist)} 生成专门简报。"
+
+    def _specialist_fallback(
+        self,
+        *,
+        specialist: str,
+        requested_model: str,
+        attachment_metas: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
+        if specialist == "researcher":
+            return {
+                "role": specialist,
+                "summary": "优先聚焦公开来源、近期时间线与权威报道。",
+                "bullets": [
+                    "优先用 search_web 找候选，再用 fetch_web 读正文。",
+                    "优先查看权威媒体、官方赛事和可核实新闻来源。",
+                ],
+                "worker_hint": "先围绕时间、地点、事件三件事取证，再给结论，避免只基于搜索摘要。",
+                "queries": [],
+                "usage": self._empty_usage(),
+                "effective_model": requested_model,
+                "notes": [],
+            }
+        if specialist == "file_reader":
+            return {
+                "role": specialist,
+                "summary": "先缩小目标范围，再进入命中上下文或相关附件。",
+                "bullets": [
+                    f"附件概览: {self._shorten(attachment_summary, 120)}",
+                    "优先定位关键词、章节、表格或命中片段，再读取上下文。",
+                ],
+                "worker_hint": "文件任务先做定位，再精读命中附近内容，不要泛读整份文档。",
+                "queries": [],
+                "usage": self._empty_usage(),
+                "effective_model": requested_model,
+                "notes": [],
+            }
+        if specialist == "summarizer":
+            return {
+                "role": specialist,
+                "summary": "直接围绕用户问题提炼当前内联内容的核心信息。",
+                "bullets": [
+                    "先给结论，再补 2-4 条关键点。",
+                    "避免流程化话术，不要改写成取证报告。",
+                ],
+                "worker_hint": "直接总结当前消息和附件内容，不要解释内部流程，也不要假装缺少工具。",
+                "queries": [],
+                "usage": self._empty_usage(),
+                "effective_model": requested_model,
+                "notes": [],
+            }
+        return {
+            "role": specialist,
+            "summary": f"{_SPECIALIST_LABELS.get(specialist, specialist)} 已回退到默认简报。",
+            "bullets": [],
+            "worker_hint": "",
+            "queries": [],
+            "usage": self._empty_usage(),
+            "effective_model": requested_model,
+            "notes": [],
+        }
+
+    def _run_specialist_role(
+        self,
+        *,
+        specialist: str,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        user_content: Any,
+        attachment_metas: list[dict[str, Any]],
+        route: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        specialist = str(specialist or "").strip().lower()
+        fallback = self._specialist_fallback(
+            specialist=specialist,
+            requested_model=requested_model,
+            attachment_metas=attachment_metas,
+        )
+        if specialist not in _SPECIALIST_LABELS:
+            fallback["notes"] = [f"未知专门角色: {specialist}"]
+            return fallback, json.dumps({"error": "unknown specialist"}, ensure_ascii=False)
+
+        payload_preview = self._shorten(self._content_to_text(user_content), 16000)
+        route_summary = json.dumps(
+            {
+                "task_type": route.get("task_type"),
+                "complexity": route.get("complexity"),
+                "use_worker_tools": bool(route.get("use_worker_tools")),
+                "use_reviewer": bool(route.get("use_reviewer")),
+            },
+            ensure_ascii=False,
+        )
+        specialist_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{summary.strip() or '(none)'}",
+                f"route:\n{route_summary}",
+                f"attachments:\n{self._summarize_attachment_metas_for_agents(attachment_metas)}",
+                f"context_preview:\n{payload_preview or '(empty)'}",
+            ]
+        )
+
+        if specialist == "researcher":
+            system_prompt = (
+                "你是 Researcher 专门角色。"
+                "你的职责是为后续 Worker 生成联网取证简报，而不是直接回答用户。"
+                "聚焦：搜索角度、来源优先级、需要核对的时间/地点/人物关系。"
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
+                "bullets 最多 4 条，queries 最多 3 条。"
+            )
+        elif specialist == "file_reader":
+            system_prompt = (
+                "你是 FileReader 专门角色。"
+                "你的职责是为文档/附件任务生成阅读与定位简报，而不是直接回答用户。"
+                "聚焦：应优先看的文件、章节、关键词、命中策略。"
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
+                "bullets 最多 4 条，queries 最多 4 条。"
+            )
+        elif specialist == "summarizer":
+            system_prompt = (
+                "你是 Summarizer 专门角色。"
+                "你的职责是为简单理解任务生成内容提炼简报，而不是输出最终答复。"
+                "聚焦：用户真正要的结论、重点信息、回答组织方式。"
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
+                "bullets 最多 4 条；如果不需要 queries，就返回空数组。"
+            )
+        else:
+            system_prompt = (
+                "你是专门角色。"
+                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
+            )
+
+        messages = [
+            self._SystemMessage(content=system_prompt),
+            self._HumanMessage(content=specialist_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=self.config.summary_model or requested_model,
+                max_output_tokens=900,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            usage = self._extract_usage_from_message(ai_msg)
+            if not parsed:
+                fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 未返回标准 JSON，已回退默认简报。", *notes]
+                fallback["usage"] = usage
+                fallback["effective_model"] = effective_model
+                return fallback, raw_text
+            brief = {
+                "role": specialist,
+                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+                "bullets": self._normalize_string_list(parsed.get("bullets") or fallback["bullets"], limit=4, item_limit=180),
+                "worker_hint": str(parsed.get("worker_hint") or fallback["worker_hint"]).strip() or fallback["worker_hint"],
+                "queries": self._normalize_string_list(parsed.get("queries") or [], limit=4, item_limit=80),
+                "usage": usage,
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return brief, raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 调用失败，已回退默认简报: {self._shorten(exc, 180)}"]
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _format_specialist_system_hint(self, specialist: str, brief: dict[str, Any]) -> str:
+        label = _SPECIALIST_LABELS.get(specialist, specialist)
+        lines = [f"专门角色摘要（来自 {label}）："]
+        summary = str(brief.get("summary") or "").strip()
+        bullets = self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180)
+        worker_hint = str(brief.get("worker_hint") or "").strip()
+        queries = self._normalize_string_list(brief.get("queries") or [], limit=4, item_limit=80)
+        if summary:
+            lines.append(f"摘要: {summary}")
+        if bullets:
+            lines.append("要点:")
+            lines.extend(f"- {item}" for item in bullets)
+        if queries:
+            lines.append("建议关键词/查询:")
+            lines.extend(f"- {item}" for item in queries)
+        if worker_hint:
+            lines.append(f"执行提示: {worker_hint}")
+        return "\n".join(lines) if len(lines) > 1 else ""
+
     def _summarize_attachment_metas_for_agents(self, attachment_metas: list[dict[str, Any]]) -> str:
         if not attachment_metas:
             return "(none)"
@@ -2763,6 +3042,9 @@ class OfficeAgent:
         if complexity not in {"low", "medium", "high"}:
             complexity = "medium"
         normalized["complexity"] = complexity
+        normalized["specialists"] = self._normalize_specialists(
+            normalized.get("specialists") or fallback.get("specialists") or []
+        )
 
         for key in (
             "use_planner",
@@ -2830,6 +3112,7 @@ class OfficeAgent:
             "use_structurer": True,
             "use_web_prefetch": bool(settings.enable_tools and web_request),
             "use_conflict_detector": True,
+            "specialists": [],
             "needs_llm_router": False,
             "reason": "rules_default_full_pipeline",
             "source": "rules",
@@ -2849,6 +3132,7 @@ class OfficeAgent:
                     "use_structurer": True,
                     "use_web_prefetch": False,
                     "use_conflict_detector": True,
+                    "specialists": ["file_reader"] if has_attachments else [],
                     "reason": "rules_evidence_or_spec_request",
                     "summary": "检测到查证/定位类任务，保留完整取证链路。",
                 },
@@ -2868,6 +3152,7 @@ class OfficeAgent:
                     "use_structurer": True,
                     "use_web_prefetch": True,
                     "use_conflict_detector": True,
+                    "specialists": ["researcher"],
                     "reason": "rules_web_request",
                     "summary": "检测到联网/实时信息请求，启用联网取证链路。",
                 },
@@ -2887,6 +3172,7 @@ class OfficeAgent:
                     "use_structurer": False,
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
+                    "specialists": ["summarizer"],
                     "reason": "rules_small_parseable_attachment_understanding",
                     "summary": "小型可解析附件的理解任务，直接由 Worker 作答。",
                 },
@@ -2925,6 +3211,7 @@ class OfficeAgent:
                     "use_structurer": False,
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
                     "reason": "rules_attachment_requires_tooling",
                     "summary": "附件需要解包或分块读取，先走 Worker 工具链。",
                 },
@@ -2994,12 +3281,13 @@ class OfficeAgent:
                     "优先最小化角色数和工具数，但不能牺牲明显必要的取证。"
                     "只返回 JSON 对象，字段固定为 "
                     "task_type, complexity, use_planner, use_worker_tools, use_reviewer, use_revision, "
-                    "use_structurer, use_web_prefetch, use_conflict_detector, reason, summary。"
+                    "use_structurer, use_web_prefetch, use_conflict_detector, specialists, reason, summary。"
+                    "specialists 只能从 researcher, file_reader, summarizer, fixer 中选择。"
                     "complexity 只能是 low, medium, high。"
                     "典型规则："
-                    "简单文本理解/小附件摘要 => Worker 直接回答；"
-                    "规范定位/证据请求 => Planner + Worker tools + Reviewer；"
-                    "联网/实时问题 => Worker tools，必要时 Reviewer；"
+                    "简单文本理解/小附件摘要 => specialists 可选 summarizer；"
+                    "规范定位/证据请求 => specialists 可选 file_reader；"
+                    "联网/实时问题 => specialists 可选 researcher；"
                     "不要输出思维链。"
                 )
             ),
@@ -3023,10 +3311,10 @@ class OfficeAgent:
             normalized = self._normalize_route_decision(
                 {
                     **parsed,
-                    "source": "llm_router",
-                    "router_model": effective_model,
-                    "needs_llm_router": False,
-                },
+                        "source": "llm_router",
+                        "router_model": effective_model,
+                        "needs_llm_router": False,
+                    },
                 fallback=fallback,
                 settings=settings,
             )
@@ -3091,9 +3379,12 @@ class OfficeAgent:
         route: dict[str, Any] | None = None,
     ) -> list[str]:
         route = route or {}
+        specialists = self._normalize_specialists(route.get("specialists") or [])
         plan = [
             f"Router 分诊任务类型与链路（task_type={str(route.get('task_type') or 'standard')}, complexity={str(route.get('complexity') or 'medium')}）。"
         ]
+        for specialist in specialists:
+            plan.append(self._specialist_plan_line(specialist))
         if route.get("use_planner"):
             plan.append("Planner 提炼目标、约束与执行计划。")
         plan.append("Worker 根据当前链路执行与作答。")

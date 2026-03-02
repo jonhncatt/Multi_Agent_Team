@@ -4,6 +4,7 @@ import json
 import os
 import queue
 from pathlib import Path
+import subprocess
 import threading
 import time
 from typing import Any, Callable
@@ -47,6 +48,51 @@ session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 _agent: OfficeAgent | None = None
+APP_VERSION = "0.3.0"
+
+
+def _resolve_build_version() -> str:
+    override = str(os.environ.get("OFFICETOOL_BUILD_VERSION") or "").strip()
+    if override:
+        return override
+
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        commit = (
+            subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout.strip()
+        )
+    except Exception:
+        commit = ""
+    try:
+        branch = (
+            subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout.strip()
+        )
+    except Exception:
+        branch = ""
+
+    parts = [f"v{APP_VERSION}"]
+    if branch and commit:
+        parts.append(f"{branch}@{commit}")
+    elif commit:
+        parts.append(commit)
+    return " · ".join(parts)
+
+
+BUILD_VERSION = _resolve_build_version()
 
 
 class AgentRunQueue:
@@ -118,7 +164,7 @@ def get_agent() -> OfficeAgent:
         _agent = OfficeAgent(config)
     return _agent
 
-app = FastAPI(title="Officetool", version="0.1.0")
+app = FastAPI(title="Officetool", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -154,6 +200,8 @@ def health() -> HealthResponse:
     docker_ok, docker_msg = agent.tools.docker_status()
     return HealthResponse(
         ok=True,
+        app_version=APP_VERSION,
+        build_version=BUILD_VERSION,
         model_default=config.default_model,
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,

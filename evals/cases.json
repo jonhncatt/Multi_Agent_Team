@@ -331,6 +331,7 @@
     "assert": {
       "equals": {
         "task_type": "simple_understanding",
+        "specialists.0": "summarizer",
         "use_planner": false,
         "use_worker_tools": false,
         "use_reviewer": false,
@@ -354,6 +355,7 @@
     "assert": {
       "equals": {
         "task_type": "web_research",
+        "specialists.0": "researcher",
         "use_worker_tools": true,
         "use_reviewer": true,
         "use_web_prefetch": true
@@ -383,6 +385,7 @@
     "assert": {
       "equals": {
         "task_type": "evidence_lookup",
+        "specialists.0": "file_reader",
         "use_planner": true,
         "use_worker_tools": true,
         "use_reviewer": true,

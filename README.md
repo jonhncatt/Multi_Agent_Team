@@ -7,6 +7,7 @@
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行轨迹”，可见每次调用实际做了什么
 - 多 Agent 透明层：`Router -> Planner -> Worker -> Reviewer -> Revision`，按任务类型动态裁剪链路，可见分诊、执行计划、审阅结论与最终修订
+- 页面侧栏显示当前版本号/构建号，便于区分线上实例
 - 一键“沙盒演练”（按当前执行环境做只读健康检查，先验环境再跑复杂任务）
 - 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
@@ -251,12 +252,14 @@ cd $HOME\Desktop\officetool
 ### 多 Agent 透明层
 
 - `Router`：先做规则分诊；命中模糊场景时再调用轻量 LLM Router，决定是否需要 Planner、工具链、Reviewer 与 Structurer
+- `Researcher / FileReader / Summarizer`：可复用专门角色模板，按任务动态实例化，给 `Worker` 提供更窄职责的简报
 - `Planner`：先提炼目标、约束、执行计划，不直接调工具
 - `Worker`：沿用主 Agent 工具循环，负责取证、执行、生成答复
 - `Reviewer`：在最终答复后做一次独立审阅，给出置信度、风险与后续建议
 - `Revision`：根据 Reviewer 结论做最后一次修订；无必要时保留原答复
 - 简单理解/小附件摘要会直接走 `Router -> Worker`
 - 联网查证/规范定位会保留 `Planner -> Worker -> Reviewer`，必要时再进 `Revision`
+- 阶段 3 起，简单理解会优先挂 `Summarizer`，联网查证优先挂 `Researcher`，附件定位优先挂 `FileReader`
 - 页面“多 Agent 透明层”面板会展示：
   - Execution Plan
   - Router 分诊摘要

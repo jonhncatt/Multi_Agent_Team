@@ -79,6 +79,26 @@ body {
   letter-spacing: 0.2px;
 }
 
+.brand-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.version-badge {
+  flex-shrink: 0;
+  max-width: 140px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #c8d4c6;
+  background: #eef5eb;
+  color: #36523f;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+}
+
 .hint {
   margin: 0;
   font-size: 12px;

@@ -159,6 +159,8 @@ class SessionListResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
+    app_version: str = ""
+    build_version: str = ""
     model_default: str
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False

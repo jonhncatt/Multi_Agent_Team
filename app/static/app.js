@@ -23,6 +23,7 @@ const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
 const deleteSessionBtn = document.getElementById("deleteSessionBtn");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
+const appVersionView = document.getElementById("appVersionView");
 
 const modelInput = document.getElementById("modelInput");
 const execModeInput = document.getElementById("execModeInput");
@@ -68,6 +69,7 @@ const LLM_FLOW_STAGE_LABELS = {
   multi_agent_worker: "Worker",
   multi_agent_reviewer: "Reviewer",
   multi_agent_revision: "Revision",
+  multi_agent_specialist: "Specialist",
 };
 
 const MODE_PRESETS = {
@@ -391,6 +393,14 @@ function renderBackendPolicy(health = {}) {
   }
 
   backendPolicyView.textContent = lines.join("\n");
+}
+
+function renderAppVersion(health = {}) {
+  if (!appVersionView) return;
+  const buildVersion = String(health.build_version || "").trim();
+  const appVersion = String(health.app_version || "").trim();
+  appVersionView.textContent = buildVersion || (appVersion ? `v${appVersion}` : "版本未知");
+  appVersionView.title = buildVersion || appVersion || "版本未知";
 }
 
 function currentSessionKey() {
@@ -1663,6 +1673,7 @@ if (deleteSessionBtn) {
   renderLlmFlow([]);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
+    renderAppVersion(health);
     modelInput.placeholder = health.model_default || MODE_PRESETS.general.model;
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
@@ -1695,7 +1706,7 @@ if (deleteSessionBtn) {
         : `联网域名白名单：${webDomains.length ? webDomains.join(", ") : "(空)"}`;
       addBubble(
         "system",
-        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${pathPolicyTip}\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
+        `服务已启动，版本：${String(health.build_version || health.app_version || "unknown")}；默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${pathPolicyTip}\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
       );
     }
     await refreshTokenStatsFromServer();
