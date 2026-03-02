@@ -879,6 +879,7 @@ function renderAgentPanels(panels = [], plan = []) {
   if (!runAgentPanelsView) return;
 
   const lines = [];
+  const specialistRoles = new Set(["researcher", "file_reader", "summarizer", "fixer"]);
   if (Array.isArray(plan) && plan.length) {
     lines.push("Execution Plan:");
     plan.forEach((item, idx) => {
@@ -888,7 +889,22 @@ function renderAgentPanels(panels = [], plan = []) {
   }
 
   if (Array.isArray(panels) && panels.length) {
+    const fixedPanels = [];
+    const dynamicPanels = [];
     panels.forEach((panel, idx) => {
+      const role = String(panel?.role || `agent_${idx + 1}`);
+      if (specialistRoles.has(role)) {
+        dynamicPanels.push({ panel, idx });
+      } else {
+        fixedPanels.push({ panel, idx });
+      }
+    });
+
+    lines.push("Fixed Roles:");
+    if (!fixedPanels.length) {
+      lines.push("(none)");
+    }
+    fixedPanels.forEach(({ panel, idx }) => {
       const role = String(panel?.role || `agent_${idx + 1}`);
       const title = String(panel?.title || role);
       const summary = String(panel?.summary || "").trim();
@@ -898,6 +914,23 @@ function renderAgentPanels(panels = [], plan = []) {
       bullets.forEach((item) => lines.push(`- ${String(item || "")}`));
       lines.push("");
     });
+
+    lines.push("Dynamic Specialists:");
+    if (!dynamicPanels.length) {
+      lines.push("(none this run)");
+      lines.push("");
+    } else {
+      dynamicPanels.forEach(({ panel, idx }) => {
+        const role = String(panel?.role || `agent_${idx + 1}`);
+        const title = String(panel?.title || role);
+        const summary = String(panel?.summary || "").trim();
+        const bullets = Array.isArray(panel?.bullets) ? panel.bullets : [];
+        lines.push(`[${idx + 1}] ${title} (${role})`);
+        if (summary) lines.push(summary);
+        bullets.forEach((item) => lines.push(`- ${String(item || "")}`));
+        lines.push("");
+      });
+    }
   }
 
   if (!lines.length) {
