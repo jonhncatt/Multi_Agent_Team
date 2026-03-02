@@ -58,6 +58,26 @@ _FOLLOWUP_SEARCH_HINTS = (
     "帮我搜",
     "再搜",
 )
+_FOLLOWUP_EXECUTION_ACK_HINTS = (
+    "允许",
+    "允许吧",
+    "允许调用工具",
+    "允许用工具",
+    "开始",
+    "开始吧",
+    "开始搜索",
+    "开始查",
+    "开始搜",
+    "开始检索",
+    "继续",
+    "继续吧",
+    "继续执行",
+    "继续搜索",
+    "继续查",
+    "继续搜",
+    "搜吧",
+    "查吧",
+)
 
 _UNDERSTANDING_HINTS = (
     "总结",
@@ -564,7 +584,7 @@ class OfficeAgent:
 
         route, router_raw = self._route_request(
             requested_model=requested_model,
-            user_message=user_message,
+            user_message=planner_user_message,
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
@@ -598,8 +618,8 @@ class OfficeAgent:
             messages.insert(1, self._SystemMessage(content=router_system_hint))
             add_trace("多 Agent: Worker 已加载 Router 摘要。")
 
-        spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
-        evidence_required_mode = self._requires_evidence_mode(user_message, attachment_metas)
+        spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
+        evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
         if spec_lookup_request:
             messages.append(
                 self._SystemMessage(
@@ -2244,7 +2264,9 @@ class OfficeAgent:
 
     def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
         current = str(user_message or "").strip()
-        if not self._looks_like_short_followup_search(current):
+        short_followup_search = self._looks_like_short_followup_search(current)
+        short_execution_ack = self._looks_like_short_followup_execution_ack(current)
+        if not short_followup_search and not short_execution_ack:
             return ""
         for turn in reversed(history_turns):
             if str(turn.get("role") or "") != "user":
@@ -2253,6 +2275,8 @@ class OfficeAgent:
             if not text:
                 continue
             if text == current:
+                continue
+            if short_execution_ack and not self._request_likely_requires_tools(text, []):
                 continue
             return self._shorten(" ".join(text.split()), 280)
         return ""
@@ -2285,6 +2309,15 @@ class OfficeAgent:
         if any(marker in compact for marker in concrete_markers):
             return False
         return True
+
+    def _looks_like_short_followup_execution_ack(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        compact = re.sub(r"[\s\"'`“”‘’.,!?，。！？、;；:：()\[\]{}<>《》【】/\\|-]+", "", lowered)
+        if not compact or len(compact) > 16:
+            return False
+        return compact in _FOLLOWUP_EXECUTION_ACK_HINTS
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
         raw = str(final_text or "").strip()
@@ -4823,6 +4856,21 @@ class OfficeAgent:
         direct_hints = (
             "路径",
             "目录",
+            "文件夹",
+            "函数",
+            "方法",
+            "代码",
+            "源码",
+            "代码库",
+            "仓库",
+            "repo",
+            "项目",
+            "实现",
+            "调用点",
+            "定义",
+            "声明",
+            "在哪",
+            "搜索",
             "上网",
             "网上",
             "查一下",
@@ -4859,6 +4907,8 @@ class OfficeAgent:
             "citation",
         )
         if any(hint in text for hint in direct_hints):
+            return True
+        if re.search(r"(?:^|[\s(])(?:/[^\s]+|[a-z]:\\)", text):
             return True
         return any(hint in text for hint in _NEWS_HINTS)
 

@@ -337,6 +337,20 @@
     }
   },
   {
+    "name": "helper_codebase_function_lookup_requires_tools",
+    "kind": "helper",
+    "helper": "_request_likely_requires_tools",
+    "args": {
+      "user_message": "去 /Users/dalizhou/Desktop/new_validation_agent/app 下面找 handle_route 和 run_chat 这两个函数。",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_initial_content_triage_request_detected",
     "kind": "helper",
     "helper": "_looks_like_initial_content_triage_request",
@@ -665,6 +679,69 @@
         "result": [
           "大谷翔平",
           "日本国内"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_followup_execution_ack_detected",
+    "kind": "helper",
+    "helper": "_looks_like_short_followup_execution_ack",
+    "args": {
+      "text": "开始搜索"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_followup_execution_ack_inherits_previous_tool_topic",
+    "kind": "helper",
+    "helper": "_build_followup_topic_hint",
+    "args": {
+      "user_message": "允许",
+      "history_turns": [
+        {
+          "role": "user",
+          "text": "去 /Users/dalizhou/Desktop/new_validation_agent/app 下面找 handle_route 和 run_chat 这两个函数。"
+        },
+        {
+          "role": "assistant",
+          "text": "你没有给我实际路径。"
+        }
+      ]
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "handle_route",
+          "run_chat"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_followup_tool_ack_keeps_tools_enabled",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "开始搜索\n\n[延续主题]\n去 /Users/dalizhou/Desktop/new_validation_agent/app 下面找 handle_route 和 run_chat 这两个函数。",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "use_worker_tools": true
+      },
+      "not_contains": {
+        "task_type": [
+          "simple_qa"
         ]
       }
     }
