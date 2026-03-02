@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fnmatch
 import re
 import shlex
 import shutil
@@ -1927,45 +1928,126 @@ class LocalToolExecutor:
                 return {"ok": False, "error": f"Not a directory: {root}"}
 
             limit = max(1, min(100, int(max_matches)))
-            argv = ["rg", "-n", "--no-heading", "--color", "never", "--max-count", str(limit)]
-            if not use_regex:
-                argv.append("-F")
-            if case_sensitive:
-                argv.append("-s")
-            else:
-                argv.append("-i")
-            if file_glob.strip():
-                argv.extend(["-g", file_glob.strip()])
-            argv.extend([cleaned_query, str(real_root)])
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
-            if proc.returncode not in {0, 1}:
-                return {"ok": False, "error": proc.stderr.strip() or proc.stdout.strip() or "rg failed"}
-
             matches: list[dict[str, Any]] = []
-            for line in (proc.stdout or "").splitlines():
-                parts = line.split(":", 2)
-                if len(parts) != 3:
-                    continue
-                file_path, line_no_raw, text_line = parts
-                try:
-                    line_no = int(line_no_raw)
-                except Exception:
-                    line_no = 0
-                matches.append(
-                    {
-                        "path": file_path,
-                        "line": line_no,
-                        "text": text_line.strip(),
-                    }
-                )
-                if len(matches) >= limit:
-                    break
+            parser_mode = "json"
+            if shutil.which("rg"):
+                argv_core = ["-n", "--color", "never", "--max-count", str(limit)]
+                if not use_regex:
+                    argv_core.append("-F")
+                if case_sensitive:
+                    argv_core.append("-s")
+                else:
+                    argv_core.append("-i")
+                if file_glob.strip():
+                    argv_core.extend(["-g", file_glob.strip()])
+                argv_tail = [cleaned_query, str(real_root)]
+
+                proc = subprocess.run(["rg", "--json", *argv_core, *argv_tail], capture_output=True, text=True, timeout=20)
+                stderr_text = (proc.stderr or "").strip()
+                if proc.returncode not in {0, 1} and "--json" in stderr_text.lower():
+                    parser_mode = "text_fallback"
+                    proc = subprocess.run(
+                        ["rg", *argv_core, "--no-heading", *argv_tail],
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+
+                if proc.returncode not in {0, 1}:
+                    return {"ok": False, "error": (proc.stderr or proc.stdout or "rg failed").strip()}
+
+                if parser_mode == "json":
+                    for raw_line in (proc.stdout or "").splitlines():
+                        try:
+                            event = json.loads(raw_line)
+                        except Exception:
+                            continue
+                        if str(event.get("type") or "") != "match":
+                            continue
+                        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                        path_block = data.get("path") if isinstance(data.get("path"), dict) else {}
+                        lines_block = data.get("lines") if isinstance(data.get("lines"), dict) else {}
+                        file_path = str(path_block.get("text") or "").strip()
+                        if not file_path:
+                            continue
+                        try:
+                            line_no = int(data.get("line_number") or 0)
+                        except Exception:
+                            line_no = 0
+                        text_line = str(lines_block.get("text") or "").rstrip("\r\n")
+                        matches.append(
+                            {
+                                "path": file_path,
+                                "line": line_no,
+                                "text": text_line.strip(),
+                            }
+                        )
+                        if len(matches) >= limit:
+                            break
+                else:
+                    for line in (proc.stdout or "").splitlines():
+                        parts = line.rsplit(":", 2)
+                        if len(parts) != 3:
+                            continue
+                        file_path, line_no_raw, text_line = parts
+                        try:
+                            line_no = int(line_no_raw)
+                        except Exception:
+                            line_no = 0
+                        matches.append(
+                            {
+                                "path": file_path,
+                                "line": line_no,
+                                "text": text_line.strip(),
+                            }
+                        )
+                        if len(matches) >= limit:
+                            break
+            else:
+                parser_mode = "python_fallback"
+                if use_regex:
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    pattern = re.compile(cleaned_query, flags)
+                else:
+                    needle = cleaned_query if case_sensitive else cleaned_query.lower()
+                    pattern = None
+
+                for file_path in real_root.rglob("*"):
+                    if not file_path.is_file():
+                        continue
+                    if file_glob.strip():
+                        rel = file_path.relative_to(real_root).as_posix()
+                        if not fnmatch.fnmatch(rel, file_glob.strip()):
+                            continue
+                    try:
+                        text = file_path.read_text(encoding="utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    if "\x00" in text:
+                        continue
+                    for idx, line in enumerate(text.splitlines(), start=1):
+                        hay = line if case_sensitive else line.lower()
+                        matched = bool(pattern.search(line)) if pattern is not None else needle in hay
+                        if not matched:
+                            continue
+                        matches.append(
+                            {
+                                "path": str(file_path),
+                                "line": idx,
+                                "text": line.strip(),
+                            }
+                        )
+                        if len(matches) >= limit:
+                            break
+                    if len(matches) >= limit:
+                        break
             return {
                 "ok": True,
                 "root": str(real_root),
                 "query": cleaned_query,
                 "match_count": len(matches),
                 "matches": matches,
+                "parser_mode": parser_mode,
             }
         except FileNotFoundError:
             return {"ok": False, "error": "rg not found"}

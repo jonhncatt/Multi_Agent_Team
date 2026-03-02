@@ -81,14 +81,32 @@ def _skip_reason(case: dict[str, Any]) -> str | None:
 
 def _assertions(payload: dict[str, Any], spec: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    payload_error = str(payload.get("error") or "").strip() if isinstance(payload, dict) else ""
+    missing = object()
+
+    def get_value(path: str) -> Any:
+        try:
+            return _get_path(payload, path)
+        except Exception as exc:
+            detail = f"{path}: missing in payload"
+            if payload_error:
+                detail += f" (payload error: {payload_error})"
+            else:
+                detail += f" ({exc})"
+            errors.append(detail)
+            return missing
 
     for path, expected in (spec.get("equals") or {}).items():
-        actual = _get_path(payload, path)
+        actual = get_value(path)
+        if actual is missing:
+            continue
         if actual != expected:
             errors.append(f"{path}: expected {expected!r}, got {actual!r}")
 
     for path, expected in (spec.get("min_value") or {}).items():
-        actual = _get_path(payload, path)
+        actual = get_value(path)
+        if actual is missing:
+            continue
         try:
             if float(actual) < float(expected):
                 errors.append(f"{path}: expected >= {expected!r}, got {actual!r}")
@@ -96,7 +114,9 @@ def _assertions(payload: dict[str, Any], spec: dict[str, Any]) -> list[str]:
             errors.append(f"{path}: expected numeric >= {expected!r}, got {actual!r}")
 
     for path, expected in (spec.get("max_value") or {}).items():
-        actual = _get_path(payload, path)
+        actual = get_value(path)
+        if actual is missing:
+            continue
         try:
             if float(actual) > float(expected):
                 errors.append(f"{path}: expected <= {expected!r}, got {actual!r}")
@@ -104,13 +124,19 @@ def _assertions(payload: dict[str, Any], spec: dict[str, Any]) -> list[str]:
             errors.append(f"{path}: expected numeric <= {expected!r}, got {actual!r}")
 
     for path, snippets in (spec.get("contains") or {}).items():
-        actual = str(_get_path(payload, path))
+        actual = get_value(path)
+        if actual is missing:
+            continue
+        actual = str(actual)
         for snippet in snippets:
             if str(snippet) not in actual:
                 errors.append(f"{path}: missing snippet {snippet!r}")
 
     for path, snippets in (spec.get("contains_any") or {}).items():
-        actual = str(_get_path(payload, path))
+        actual = get_value(path)
+        if actual is missing:
+            continue
+        actual = str(actual)
         if not any(str(snippet) in actual for snippet in snippets):
             errors.append(f"{path}: missing any of {snippets!r}")
 
