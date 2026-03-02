@@ -351,6 +351,20 @@
     }
   },
   {
+    "name": "helper_default_root_auto_search_for_code_lookup_without_path",
+    "kind": "helper",
+    "helper": "_should_auto_search_default_roots",
+    "args": {
+      "user_message": "帮我找下 handle_route 和 run_chat 这两个函数在哪。",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_initial_content_triage_request_detected",
     "kind": "helper",
     "helper": "_looks_like_initial_content_triage_request",

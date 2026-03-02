@@ -470,6 +470,9 @@ class OfficeAgent:
                     "当用户说“看表格/参数表/opcode 表”时，优先用 table_extract；"
                     "当用户要求核事实或复核结论时，可用 fact_check_file；"
                     "当用户要求搜代码、定位实现、找调用点时，优先用 search_codebase；"
+                    "如果用户要求找函数/找文件/搜代码但没有明确给路径，"
+                    "默认先在当前工作区根目录 '.' 调用 search_codebase 或 list_directory，不要先索取具体路径；"
+                    "只有在你至少完成一次默认搜索后仍无法缩小范围时，才向用户追问路径。\n"
                     "当需要对同一文件同时尝试多个关键词时，优先用 multi_query_search；"
                     "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
@@ -645,6 +648,18 @@ class OfficeAgent:
                 )
             )
             add_trace("已启用证据优先模式。")
+        if route.get("use_worker_tools") and self._should_auto_search_default_roots(planner_user_message, attachment_metas):
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "本轮属于本地搜索/代码定位任务，且用户未提供明确路径。"
+                        "请先直接尝试默认搜索：优先在当前工作区根目录 '.' 使用 search_codebase；"
+                        "若仍不够，再在允许访问根目录中选择最可能的项目目录继续搜索。"
+                        "不要先向用户索取路径，也不要要求用户提供工具调用格式。"
+                    )
+                )
+            )
+            add_trace("已启用默认根目录自动搜索策略。")
 
         planner_brief = {
             "objective": self._shorten(planner_user_message.strip(), 220),
@@ -748,7 +763,7 @@ class OfficeAgent:
             )
             add_panel(
                 specialist,
-                specialist_label,
+                f"Specialist · {specialist_label}",
                 str(specialist_brief.get("summary") or "").strip() or f"{specialist_label} 已生成简报。",
                 self._normalize_string_list(specialist_brief.get("bullets") or [], limit=4, item_limit=180),
             )
@@ -2318,6 +2333,62 @@ class OfficeAgent:
         if not compact or len(compact) > 16:
             return False
         return compact in _FOLLOWUP_EXECUTION_ACK_HINTS
+
+    def _message_has_explicit_local_path(self, text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        return bool(re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z]:\\[^\s]*)", raw))
+
+    def _should_auto_search_default_roots(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if attachment_metas:
+            return False
+        if self._looks_like_inline_document_payload(user_message):
+            return False
+        text = str(user_message or "").strip().lower()
+        if not text:
+            return False
+        if self._message_has_explicit_local_path(user_message):
+            return False
+        if "http://" in text or "https://" in text or any(hint in text for hint in _NEWS_HINTS):
+            return False
+
+        search_verbs = (
+            "找",
+            "查",
+            "搜",
+            "搜索",
+            "查找",
+            "定位",
+            "look for",
+            "find",
+            "search",
+            "locate",
+        )
+        local_targets = (
+            "函数",
+            "方法",
+            "代码",
+            "源码",
+            "文件",
+            "目录",
+            "文件夹",
+            "项目",
+            "仓库",
+            "repo",
+            "实现",
+            "定义",
+            "声明",
+            "调用点",
+            "module",
+            "function",
+            "method",
+            "file",
+            "directory",
+            "folder",
+            "implementation",
+        )
+        return any(verb in text for verb in search_verbs) and any(target in text for target in local_targets)
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
         raw = str(final_text or "").strip()
@@ -3977,7 +4048,10 @@ class OfficeAgent:
             ),
             self._StructuredTool.from_function(
                 name="search_codebase",
-                description="Search code/text files under a local root and return file, line, and excerpt matches.",
+                description=(
+                    "Search code/text files under a local root and return file, line, and excerpt matches. "
+                    "If root is omitted, it defaults to '.' (the current workspace root)."
+                ),
                 args_schema=SearchCodebaseArgs,
                 func=self._search_codebase_tool,
             ),
