@@ -38,8 +38,16 @@ class DebugFlowItem(BaseModel):
 class AgentPanel(BaseModel):
     role: str
     title: str
+    kind: Literal["agent", "processor", "hybrid"] = "agent"
     summary: str = ""
     bullets: list[str] = Field(default_factory=list)
+
+
+class RoleRuntimeState(BaseModel):
+    role: str
+    status: Literal["idle", "seen", "active", "current"] = "idle"
+    phase: str = ""
+    detail: str = ""
 
 
 class AnswerCitation(BaseModel):
@@ -104,6 +112,9 @@ class ChatResponse(BaseModel):
     execution_trace: list[str] = Field(default_factory=list)
     debug_flow: list[DebugFlowItem] = Field(default_factory=list)
     agent_panels: list[AgentPanel] = Field(default_factory=list)
+    active_roles: list[str] = Field(default_factory=list)
+    current_role: str | None = None
+    role_states: list[RoleRuntimeState] = Field(default_factory=list)
     answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)

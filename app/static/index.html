@@ -16,7 +16,7 @@
         <div class="brand-head">
           <div>
             <h1>openclaw agent</h1>
-            <p class="hint">办公室用 Agent，支持图片/文档和本地工具执行。</p>
+            <p class="hint">办公室用多 Role 工作流，支持图片/文档和本地工具执行。</p>
           </div>
           <div id="appVersionView" class="version-badge">版本加载中</div>
         </div>
@@ -114,6 +114,13 @@
             <span id="runStageBadge" class="stage-badge stage-idle">空闲</span>
             <span id="runStageText" class="runtime-head-text">等待发送请求</span>
           </div>
+          <section class="role-board-shell">
+            <div class="role-board-head">
+              <div class="role-board-title">Role 视图</div>
+              <div class="role-board-legend">role = 总称 · agent = LLM 驱动 · processor = 非 LLM · Router = agent + processor</div>
+            </div>
+            <div id="runRoleBoard" class="role-board"></div>
+          </section>
           <div id="runStepList" class="runtime-steps"></div>
           <details class="runtime-details">
             <summary>本轮发送信息</summary>
@@ -124,7 +131,7 @@
             <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
           </details>
           <details class="runtime-details">
-            <summary>多 Agent 图例</summary>
+            <summary>多 Role 图例</summary>
             <pre class="runtime-pre">阶段 3 状态: MVP 已完成
 
 固定角色:
@@ -133,9 +140,12 @@ Router -> Coordinator -> Worker
 按需角色:
 Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
 
-说明:
-- [?] = 由 Router 决定是否启用
-- Coordinator = 运行时状态机，负责切换 tool_mode、重绑 Worker、抑制反复确认
+术语:
+- role = 所有执行角色的总称
+- agent = 由 LLM 驱动的 role
+- processor = 不依赖 LLM 的 role
+- Router = agent + processor（规则路由 + 可选 LLM 路由）
+- Coordinator = processor，负责切换 tool_mode、重绑 Worker、抑制反复确认
 - Worker 一定存在
 - worker_mode=direct_answer: Worker 直接回答
 - worker_mode=uses_tools: Worker 会调用工具链
@@ -151,8 +161,8 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
    Router -> Coordinator -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
           </details>
           <details class="runtime-details">
-            <summary>多 Agent 透明层</summary>
-            <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Agent 摘要</pre>
+            <summary>多 Role 透明层</summary>
+            <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Role 摘要</pre>
           </details>
           <details class="runtime-details">
             <summary>结构化证据包</summary>

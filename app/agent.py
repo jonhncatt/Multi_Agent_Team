@@ -145,6 +145,21 @@ _SPECIALIST_LABELS = {
     "fixer": "Fixer",
 }
 
+_ROLE_KINDS = {
+    "router": "hybrid",
+    "coordinator": "processor",
+    "planner": "agent",
+    "researcher": "agent",
+    "file_reader": "agent",
+    "summarizer": "agent",
+    "fixer": "agent",
+    "worker": "agent",
+    "conflict_detector": "agent",
+    "reviewer": "agent",
+    "revision": "agent",
+    "structurer": "agent",
+}
+
 
 @dataclass
 class ExecutionState:
@@ -408,6 +423,9 @@ class OfficeAgent:
         list[str],
         list[dict[str, Any]],
         list[dict[str, Any]],
+        list[str],
+        str | None,
+        list[dict[str, Any]],
         dict[str, Any],
         dict[str, int],
         str,
@@ -419,6 +437,9 @@ class OfficeAgent:
         execution_trace: list[str] = []
         debug_flow: list[dict[str, Any]] = []
         agent_panels: list[dict[str, Any]] = []
+        active_roles: set[str] = set()
+        current_role: str | None = None
+        role_states: dict[str, dict[str, Any]] = {}
         worker_citation_candidates: list[dict[str, Any]] = []
         answer_bundle: dict[str, Any] = {"summary": "", "claims": [], "citations": [], "warnings": []}
         usage_total = self._empty_usage()
@@ -463,18 +484,88 @@ class OfficeAgent:
             emit_progress("tool_event", item=event.model_dump())
 
         def emit_agent_state() -> None:
-            emit_progress("agent_state", panels=list(agent_panels), execution_plan=list(execution_plan))
+            emit_progress(
+                "agent_state",
+                panels=list(agent_panels),
+                execution_plan=list(execution_plan),
+                active_roles=sorted(active_roles),
+                current_role=current_role,
+                role_states=list(role_states.values()),
+            )
+
+        def _normalize_role_status(value: str) -> str:
+            status = str(value or "").strip().lower()
+            if status in {"idle", "seen", "active", "current"}:
+                return status
+            return "seen"
+
+        def _upsert_role_state(
+            role: str,
+            *,
+            status: str | None = None,
+            phase: str | None = None,
+            detail: str | None = None,
+        ) -> None:
+            role_key = str(role or "").strip().lower()
+            if not role_key:
+                return
+            payload = dict(role_states.get(role_key) or {"role": role_key, "status": "seen", "phase": "", "detail": ""})
+            if status is not None:
+                payload["status"] = _normalize_role_status(status)
+            if phase is not None:
+                payload["phase"] = self._shorten(str(phase or "").strip(), 40)
+            if detail is not None:
+                payload["detail"] = self._shorten(str(detail or "").strip(), 90)
+            role_states[role_key] = payload
+
+        def set_role_activity(
+            *roles: str,
+            current: str | None = None,
+            phase: str | None = None,
+            detail: str | None = None,
+        ) -> None:
+            nonlocal current_role
+            normalized = {str(role or "").strip().lower() for role in roles if str(role or "").strip()}
+            previous_active = set(active_roles)
+            active_roles.clear()
+            active_roles.update(normalized)
+            current_role = str(current or "").strip().lower() or (next(iter(sorted(active_roles))) if active_roles else None)
+            for role_key in previous_active | set(role_states.keys()):
+                if role_key not in active_roles:
+                    _upsert_role_state(role_key, status="seen")
+            for role_key in active_roles:
+                is_current = role_key == current_role
+                role_phase = phase if is_current else ("协调" if role_key == "coordinator" else "协同")
+                role_detail = detail if is_current else ""
+                _upsert_role_state(
+                    role_key,
+                    status="current" if is_current else "active",
+                    phase=role_phase,
+                    detail=role_detail,
+                )
+            emit_agent_state()
+
+        def clear_role_activity() -> None:
+            nonlocal current_role
+            for role_key in list(active_roles):
+                _upsert_role_state(role_key, status="seen")
+            active_roles.clear()
+            current_role = None
+            emit_agent_state()
 
         def add_panel(role: str, title: str, summary_text: str, bullets: list[str] | None = None) -> None:
+            role_key = str(role or "").strip().lower()
             panel = AgentPanel(
-                role=role,
+                role=role_key,
                 title=title,
+                kind=str(_ROLE_KINDS.get(role_key, "agent")),
                 summary=self._shorten(summary_text, 500 if not debug_raw else 4000),
                 bullets=self._normalize_string_list(bullets or [], limit=8, item_limit=220),
             )
             payload = panel.model_dump()
+            _upsert_role_state(role_key, status=role_states.get(role_key, {}).get("status", "seen"))
             for idx, existing in enumerate(agent_panels):
-                if str(existing.get("role") or "") == role:
+                if str(existing.get("role") or "") == role_key:
                     agent_panels[idx] = payload
                     emit_agent_state()
                     return
@@ -744,11 +835,18 @@ class OfficeAgent:
             self._coordinator_summary(execution_state),
             self._coordinator_panel_bullets(execution_state),
         )
+        set_role_activity(
+            "router",
+            "coordinator",
+            current="router",
+            phase="分诊",
+            detail=f"task_type={route.get('task_type') or 'standard'}",
+        )
 
         router_system_hint = self._router_system_hint(route)
         if router_system_hint:
             messages.insert(1, self._SystemMessage(content=router_system_hint))
-            add_trace("多 Agent: Coordinator 已将 Router 摘要注入 Worker 请求。")
+            add_trace("多 Role: Coordinator 已将 Router 摘要注入 Worker 请求。")
             add_debug(
                 stage="backend_coordinator",
                 title="Coordinator 注入 Router 摘要",
@@ -808,6 +906,7 @@ class OfficeAgent:
         }
         planner_raw = ""
         if route.get("use_planner"):
+            set_role_activity("coordinator", "planner", current="planner", phase="规划", detail="整理目标与执行计划")
             planner_request_detail = "\n".join(
                 [
                     f"requested_model={requested_model}",
@@ -835,7 +934,7 @@ class OfficeAgent:
             usage_total = self._merge_usage(usage_total, planner_brief.get("usage") or self._empty_usage())
             for note in self._normalize_string_list(planner_brief.get("notes") or [], limit=4, item_limit=200):
                 add_trace(note)
-            add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
+            add_trace("多 Role: Planner 已生成目标摘要与执行计划。")
             add_debug(
                 stage="llm_to_backend",
                 title="Planner -> Coordinator",
@@ -856,7 +955,7 @@ class OfficeAgent:
             planner_system_hint = self._format_planner_system_hint(planner_brief)
             if planner_system_hint:
                 messages.insert(1, self._SystemMessage(content=planner_system_hint))
-                add_trace("多 Agent: Coordinator 已将 Planner 摘要注入 Worker 请求。")
+                add_trace("多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。")
                 add_debug(
                     stage="backend_coordinator",
                     title="Coordinator 注入 Planner 摘要",
@@ -869,6 +968,13 @@ class OfficeAgent:
         specialist_system_hints: list[str] = []
         for specialist in self._normalize_specialists(route.get("specialists") or []):
             specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
+            set_role_activity(
+                "coordinator",
+                specialist,
+                current=specialist,
+                phase="专门分析",
+                detail=f"{specialist_label} 正在生成简报",
+            )
             add_debug(
                 stage="backend_to_llm",
                 title=f"Coordinator -> {specialist_label}",
@@ -892,7 +998,7 @@ class OfficeAgent:
             usage_total = self._merge_usage(usage_total, specialist_brief.get("usage") or self._empty_usage())
             for note in self._normalize_string_list(specialist_brief.get("notes") or [], limit=3, item_limit=200):
                 add_trace(note)
-            add_trace(f"多 Agent: {specialist_label} 已生成专门简报。")
+                add_trace(f"多 Role: {specialist_label} 已生成专门简报。")
             add_debug(
                 stage="llm_to_backend",
                 title=f"{specialist_label} -> Coordinator",
@@ -917,7 +1023,7 @@ class OfficeAgent:
         for hint in reversed(specialist_system_hints):
             messages.insert(1, self._SystemMessage(content=hint))
         if specialist_system_hints:
-            add_trace("多 Agent: Coordinator 已将专门角色摘要注入 Worker 请求。")
+            add_trace("多 Role: Coordinator 已将专门角色摘要注入 Worker 请求。")
             add_debug(
                 stage="backend_coordinator",
                 title="Coordinator 注入专门角色摘要",
@@ -996,6 +1102,13 @@ class OfficeAgent:
             execution_state.attempts += 1
             execution_state.status = "worker_running"
             execution_state.transitions.append(f"invoke:{execution_state.tool_mode}")
+            set_role_activity(
+                "coordinator",
+                "worker",
+                current="worker",
+                phase="主执行",
+                detail=f"attempt={execution_state.attempts}/{execution_state.max_attempts}",
+            )
             add_panel(
                 "coordinator",
                 "Coordinator",
@@ -1047,6 +1160,13 @@ class OfficeAgent:
             nonlocal worker_citation_candidates
             result_json = json.dumps(result, ensure_ascii=False)
             if synthetic:
+                set_role_activity(
+                    "coordinator",
+                    "worker",
+                    current="coordinator",
+                    phase="工具调度",
+                    detail=f"自动补读 {name}",
+                )
                 add_trace(f"Coordinator 根据 {name} 上下文自动补充工具读取。")
                 add_debug(
                     stage="backend_coordinator",
@@ -1070,6 +1190,13 @@ class OfficeAgent:
                     )
                 )
             else:
+                set_role_activity(
+                    "coordinator",
+                    "worker",
+                    current="worker",
+                    phase="工具请求",
+                    detail=f"调用 {name}",
+                )
                 add_trace(f"执行工具: {name}")
                 add_debug(
                     stage="llm_to_backend",
@@ -1105,6 +1232,13 @@ class OfficeAgent:
                 title=f"Coordinator 执行工具结果 {name}",
                 detail=self._shorten(result_json, 1800 if not debug_raw else 120000),
             )
+            set_role_activity(
+                "coordinator",
+                "worker",
+                current="worker",
+                phase="继续推理",
+                detail=f"接收 {name} 结果",
+            )
             add_debug(
                 stage="backend_to_llm",
                 title=f"Coordinator -> Worker（工具结果 {name}）",
@@ -1131,6 +1265,7 @@ class OfficeAgent:
         except Exception as exc:
             add_trace(f"模型请求失败: {exc}")
             add_debug(stage="llm_error", title="Worker 模型调用失败", detail=str(exc))
+            clear_role_activity()
             return (
                 f"请求模型失败: {exc}",
                 tool_events,
@@ -1139,6 +1274,9 @@ class OfficeAgent:
                 execution_trace,
                 debug_flow,
                 agent_panels,
+                sorted(active_roles),
+                current_role,
+                list(role_states.values()),
                 answer_bundle,
                 usage_total,
                 effective_model,
@@ -1493,6 +1631,7 @@ class OfficeAgent:
             except Exception as exc:
                 add_trace(f"工具后续推理失败: {exc}")
                 add_debug(stage="llm_error", title="Worker 工具后续推理失败", detail=str(exc))
+                clear_role_activity()
                 return (
                     f"工具执行后续推理失败: {exc}",
                     tool_events,
@@ -1501,6 +1640,9 @@ class OfficeAgent:
                     execution_trace,
                     debug_flow,
                     agent_panels,
+                    sorted(active_roles),
+                    current_role,
+                    list(role_states.values()),
                     answer_bundle,
                     usage_total,
                     effective_model,
@@ -1520,9 +1662,9 @@ class OfficeAgent:
         if prefetch_payload:
             worker_bullets.append(f"自动预搜索: {prefetch_payload.get('count', 0)} 条")
         worker_summary = (
-            "主执行 Agent 已完成取证、工具调用与作答。"
+            "主执行 Role 已完成取证、工具调用与作答。"
             if self._coordinator_tools_enabled(execution_state)
-            else "主执行 Agent 已基于当前上下文直接完成作答。"
+            else "主执行 Role 已基于当前上下文直接完成作答。"
         )
         add_panel("worker", "Worker", worker_summary, worker_bullets)
         add_debug(
@@ -1563,6 +1705,13 @@ class OfficeAgent:
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
             while True:
                 if route.get("use_conflict_detector"):
+                    set_role_activity(
+                        "coordinator",
+                        "conflict_detector",
+                        current="conflict_detector",
+                        phase="风险检查",
+                        detail="检查常识冲突与过度确定性",
+                    )
                     conflict_request_detail = "\n".join(
                         [
                             f"requested_model={effective_model or requested_model}",
@@ -1610,6 +1759,13 @@ class OfficeAgent:
                 else:
                     add_trace("Router 已跳过 Conflict Detector。")
 
+                set_role_activity(
+                    "coordinator",
+                    "reviewer",
+                    current="reviewer",
+                    phase="最终审阅",
+                    detail="检查覆盖度、证据链与交付风险",
+                )
                 reviewer_request_detail = "\n".join(
                     [
                         f"requested_model={effective_model or requested_model}",
@@ -1652,11 +1808,11 @@ class OfficeAgent:
                 reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
                 reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
                 if reviewer_verdict == "block":
-                    add_trace(f"多 Agent: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
+                    add_trace(f"多 Role: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
                 elif reviewer_verdict == "warn":
-                    add_trace(f"多 Agent: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
+                    add_trace(f"多 Role: Reviewer 判定可保留但需补强，confidence={reviewer_confidence}。")
                 else:
-                    add_trace(f"多 Agent: Reviewer 通过，confidence={reviewer_confidence}。")
+                    add_trace(f"多 Role: Reviewer 通过，confidence={reviewer_confidence}。")
                 add_debug(
                     stage="llm_to_backend",
                     title="Reviewer -> Coordinator",
@@ -1787,6 +1943,13 @@ class OfficeAgent:
                     continue
 
                 if route.get("use_revision"):
+                    set_role_activity(
+                        "coordinator",
+                        "revision",
+                        current="revision",
+                        phase="最终修订",
+                        detail=f"根据 reviewer_verdict={reviewer_verdict} 调整答案",
+                    )
                     revision_request_detail = "\n".join(
                         [
                             f"requested_model={effective_model or requested_model}",
@@ -1844,9 +2007,9 @@ class OfficeAgent:
                             )
                         else:
                             text = revised_text
-                            add_trace("多 Agent: Revision 已应用到最终答复。")
+                            add_trace("多 Role: Revision 已应用到最终答复。")
                     else:
-                        add_trace("多 Agent: Revision 未修改最终答复。")
+                        add_trace("多 Role: Revision 未修改最终答复。")
                     add_debug(
                         stage="llm_to_backend",
                         title="Revision -> Coordinator",
@@ -1874,6 +2037,7 @@ class OfficeAgent:
         )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
         if not route.get("use_structurer"):
+            clear_role_activity()
             return (
                 text,
                 tool_events,
@@ -1882,11 +2046,15 @@ class OfficeAgent:
                 execution_trace,
                 debug_flow,
                 agent_panels,
+                sorted(active_roles),
+                current_role,
+                list(role_states.values()),
                 answer_bundle,
                 usage_total,
                 effective_model,
             )
         if not self._should_emit_answer_bundle(finalized_citations):
+            clear_role_activity()
             return (
                 text,
                 tool_events,
@@ -1895,6 +2063,9 @@ class OfficeAgent:
                 execution_trace,
                 debug_flow,
                 agent_panels,
+                sorted(active_roles),
+                current_role,
+                list(role_states.values()),
                 answer_bundle,
                 usage_total,
                 effective_model,
@@ -1911,6 +2082,13 @@ class OfficeAgent:
             stage="backend_to_llm",
             title="Coordinator -> Structurer",
             detail=structurer_request_detail,
+        )
+        set_role_activity(
+            "coordinator",
+            "structurer",
+            current="structurer",
+            phase="结构化整理",
+            detail=f"整理 {len(finalized_citations)} 条 citations",
         )
         answer_bundle, structurer_raw = self._run_answer_structurer(
             requested_model=effective_model or requested_model,
@@ -1935,6 +2113,7 @@ class OfficeAgent:
                 item_limit=180,
             ),
         )
+        clear_role_activity()
         return (
             text,
             tool_events,
@@ -1943,6 +2122,9 @@ class OfficeAgent:
             execution_trace,
             debug_flow,
             agent_panels,
+            sorted(active_roles),
+            current_role,
+            list(role_states.values()),
             answer_bundle,
             usage_total,
             effective_model,
@@ -3499,7 +3681,7 @@ class OfficeAgent:
         success_signals = self._normalize_string_list(
             planner_brief.get("success_signals") or [], limit=4, item_limit=180
         )
-        lines = ["多 Agent 协调摘要（来自 Planner）："]
+        lines = ["多 Role 协调摘要（来自 Planner）："]
         if objective:
             lines.append(f"目标: {objective}")
         if constraints:

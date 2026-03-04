@@ -297,6 +297,300 @@ button.small {
   color: #355442;
 }
 
+.role-board-shell {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border: 1px solid #d7e0d3;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(251, 253, 249, 0.95), rgba(239, 246, 236, 0.96)),
+    repeating-linear-gradient(
+      0deg,
+      rgba(31, 57, 43, 0.028) 0,
+      rgba(31, 57, 43, 0.028) 1px,
+      transparent 1px,
+      transparent 10px
+    );
+}
+
+.role-board-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.role-board-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #1d3a2a;
+}
+
+.role-board-legend {
+  font-size: 11px;
+  color: #567061;
+  line-height: 1.4;
+}
+
+.role-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.role-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: 8px;
+  min-height: 154px;
+  padding: 10px;
+  border: 1px solid #d6e0d1;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(239, 246, 238, 0.95)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(28, 51, 39, 0.028) 0,
+      rgba(28, 51, 39, 0.028) 1px,
+      transparent 1px,
+      transparent 11px
+    );
+  box-shadow: 0 8px 18px rgba(33, 65, 46, 0.08);
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.role-card::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 18px;
+  background: linear-gradient(180deg, transparent, rgba(19, 44, 31, 0.06));
+  pointer-events: none;
+}
+
+.role-card:hover {
+  transform: translateY(-1px);
+  border-color: #a6c0ad;
+}
+
+.role-card.is-seen {
+  border-color: #a9c4ae;
+  background:
+    linear-gradient(180deg, rgba(252, 255, 251, 0.98), rgba(231, 243, 232, 0.96)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(28, 51, 39, 0.03) 0,
+      rgba(28, 51, 39, 0.03) 1px,
+      transparent 1px,
+      transparent 11px
+    );
+}
+
+.role-card.is-active {
+  border-color: #3f8d61;
+  box-shadow: 0 0 0 1px rgba(63, 141, 97, 0.18), 0 12px 28px rgba(31, 90, 59, 0.2);
+}
+
+.role-card.is-current {
+  border-color: #1e7a4d;
+  box-shadow: 0 0 0 1px rgba(30, 122, 77, 0.24), 0 14px 30px rgba(22, 84, 54, 0.24);
+}
+
+.role-card.is-active::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 0%, rgba(111, 214, 153, 0.18) 48%, transparent 100%);
+  transform: translateX(-100%);
+  animation: role-scan 1.4s linear infinite;
+  pointer-events: none;
+}
+
+.role-card-head {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.role-sprite-wrap {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid #d7e0d3;
+  background:
+    linear-gradient(180deg, #fcfffb, #ebf4e9),
+    repeating-linear-gradient(
+      0deg,
+      rgba(21, 44, 30, 0.05) 0,
+      rgba(21, 44, 30, 0.05) 1px,
+      transparent 1px,
+      transparent 8px
+    );
+}
+
+.role-card.is-active .role-sprite-wrap {
+  border-color: #8cc39d;
+}
+
+.role-sprite {
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+  transform-origin: center bottom;
+}
+
+.role-card.is-active .role-sprite {
+  animation: role-bob 0.8s steps(2) infinite;
+  filter: drop-shadow(0 5px 0 rgba(20, 56, 34, 0.12)) drop-shadow(0 0 10px rgba(64, 155, 102, 0.28));
+}
+
+.role-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.role-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #203729;
+}
+
+.role-kind-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.role-kind,
+.role-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid #cdd9ca;
+  background: #f3f7f1;
+  color: #415949;
+}
+
+.role-kind.agent {
+  background: #ebf6ef;
+  border-color: #c2dfcb;
+  color: #1f7046;
+}
+
+.role-kind.processor {
+  background: #f6efe7;
+  border-color: #e4d0bf;
+  color: #8a4a22;
+}
+
+.role-kind.hybrid {
+  background: #eef2fb;
+  border-color: #c8d4ef;
+  color: #355d9a;
+}
+
+.role-state.active {
+  background: #e4f4ea;
+  border-color: #92c7a6;
+  color: #126a41;
+}
+
+.role-state.current {
+  background: #dff6e7;
+  border-color: #61ac81;
+  color: #0e633b;
+  font-weight: 700;
+}
+
+.role-state.seen {
+  background: #eef5ea;
+  border-color: #c8dac7;
+  color: #456353;
+}
+
+.role-state.idle {
+  background: #f4f4f0;
+  border-color: #d6dad3;
+  color: #6d776f;
+}
+
+.role-summary {
+  position: relative;
+  z-index: 1;
+  min-height: 38px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #4b6153;
+}
+
+.role-phase {
+  position: relative;
+  z-index: 1;
+  min-height: 18px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #1f6b43;
+  font-weight: 700;
+}
+
+.role-bullets {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.role-bullets li {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #385444;
+}
+
+.role-bullets li::before {
+  content: ">";
+  display: inline-block;
+  margin-right: 6px;
+  color: #1f7c4d;
+  font-weight: 700;
+}
+
+@keyframes role-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes role-scan {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
 .stage-badge {
   display: inline-flex;
   align-items: center;
@@ -638,10 +932,27 @@ textarea {
   .runtime-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .role-board {
+    grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  }
 }
 
 @media (max-width: 620px) {
   .runtime-steps {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role-card,
+  .role-sprite,
+  button {
+    transition: none;
+  }
+
+  .role-card.is-active::before,
+  .role-card.is-active .role-sprite {
+    animation: none;
   }
 }

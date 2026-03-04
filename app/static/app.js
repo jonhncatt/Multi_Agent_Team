@@ -44,6 +44,7 @@ const runTraceView = document.getElementById("runTraceView");
 const runAgentPanelsView = document.getElementById("runAgentPanelsView");
 const runAnswerBundleView = document.getElementById("runAnswerBundleView");
 const runLlmFlowView = document.getElementById("runLlmFlowView");
+const runRoleBoard = document.getElementById("runRoleBoard");
 
 const RUN_FLOW_STEPS = [
   { id: "prepare", label: "1. 准备请求" },
@@ -58,13 +59,13 @@ const LLM_FLOW_STAGE_LABELS = {
   frontend_error: "前端错误",
   backend_ingress: "后端接收输入",
   backend_router: "规则 Router 判定",
-  backend_to_llm: "Coordinator -> 模型角色",
-  llm_to_backend: "模型角色 -> Coordinator",
+  backend_to_llm: "Processor -> Agent",
+  llm_to_backend: "Agent -> Processor",
   backend_tool: "Coordinator 执行工具",
   backend_prefetch: "Coordinator 预取",
   backend_coordinator: "Coordinator 状态更新",
-  llm_final: "模型角色输出",
-  llm_error: "模型角色错误",
+  llm_final: "Agent 输出",
+  llm_error: "Agent 错误",
   backend_warning: "后端告警",
   backend_pricing: "计费处理",
   multi_agent_planner: "Planner",
@@ -92,6 +93,393 @@ const MODE_PRESETS = {
     enableTools: true,
   },
 };
+
+const ROLE_DEFS = [
+  {
+    id: "router",
+    title: "Router",
+    kindKey: "hybrid",
+    kindLabel: "Agent + Processor",
+    blurb: "为当前请求分诊，决定后续链路。",
+    colors: { accent: "#4f7eff", accent2: "#98b7ff" },
+  },
+  {
+    id: "coordinator",
+    title: "Coordinator",
+    kindKey: "processor",
+    kindLabel: "Processor",
+    blurb: "维护运行时状态，推动工具链与纠偏。",
+    colors: { accent: "#c66c2d", accent2: "#f3b170" },
+  },
+  {
+    id: "planner",
+    title: "Planner",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "提炼目标、限制与执行计划。",
+    colors: { accent: "#2d9f6f", accent2: "#8dd6b1" },
+  },
+  {
+    id: "researcher",
+    title: "Researcher",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "生成联网搜索与取证简报。",
+    colors: { accent: "#2e77bb", accent2: "#89bde9" },
+  },
+  {
+    id: "file_reader",
+    title: "FileReader",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "为文档和附件生成阅读定位策略。",
+    colors: { accent: "#7e5cff", accent2: "#c7b7ff" },
+  },
+  {
+    id: "summarizer",
+    title: "Summarizer",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "把大段内容压成高信息量摘要。",
+    colors: { accent: "#20a2a5", accent2: "#8ad9da" },
+  },
+  {
+    id: "fixer",
+    title: "Fixer",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "聚焦修复动作与补丁方向。",
+    colors: { accent: "#d98a1f", accent2: "#f5c06c" },
+  },
+  {
+    id: "worker",
+    title: "Worker",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "执行主任务，必要时调用工具链。",
+    colors: { accent: "#137a58", accent2: "#60c79f" },
+  },
+  {
+    id: "conflict_detector",
+    title: "Conflict Detector",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "报警明显冲突与高风险确定性。",
+    colors: { accent: "#c94a4a", accent2: "#f0a35c" },
+  },
+  {
+    id: "reviewer",
+    title: "Reviewer",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "审查覆盖度、证据链和交付风险。",
+    colors: { accent: "#2c8b4b", accent2: "#8cd2a1" },
+  },
+  {
+    id: "revision",
+    title: "Revision",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "按审阅结论做最后修订。",
+    colors: { accent: "#a45ad1", accent2: "#e3b8ff" },
+  },
+  {
+    id: "structurer",
+    title: "Structurer",
+    kindKey: "agent",
+    kindLabel: "Agent",
+    blurb: "整理结构化证据包与 claims。",
+    colors: { accent: "#3f7f9b", accent2: "#9fcbe0" },
+  },
+];
+
+const ROLE_DEF_MAP = new Map(ROLE_DEFS.map((item) => [item.id, item]));
+const ROLE_KIND_LABELS = {
+  agent: "Agent",
+  processor: "Processor",
+  hybrid: "Agent + Processor",
+};
+const ROLE_TOKEN_MAP = new Map([
+  ["router", "router"],
+  ["coordinator", "coordinator"],
+  ["planner", "planner"],
+  ["researcher", "researcher"],
+  ["file_reader", "file_reader"],
+  ["file reader", "file_reader"],
+  ["summarizer", "summarizer"],
+  ["fixer", "fixer"],
+  ["worker", "worker"],
+  ["reviewer", "reviewer"],
+  ["revision", "revision"],
+  ["structurer", "structurer"],
+  ["conflict_detector", "conflict_detector"],
+  ["conflict detector", "conflict_detector"],
+]);
+
+function normalizeRoleId(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  return ROLE_TOKEN_MAP.get(raw) || raw.replace(/\s+/g, "_");
+}
+
+function normalizeRoleKind(value, fallback = "agent") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "agent" || raw === "processor" || raw === "hybrid") return raw;
+  return fallback;
+}
+
+function normalizeRoleSet(value) {
+  const roles = new Set();
+  (Array.isArray(value) ? value : []).forEach((item) => {
+    const roleId = normalizeRoleId(item);
+    if (roleId) roles.add(roleId);
+  });
+  return roles;
+}
+
+function normalizeRoleStateMap(value) {
+  const states = new Map();
+  (Array.isArray(value) ? value : []).forEach((item) => {
+    const roleId = normalizeRoleId(item?.role);
+    if (!roleId) return;
+    states.set(roleId, {
+      role: roleId,
+      status: String(item?.status || "").trim().toLowerCase(),
+      phase: String(item?.phase || "").trim(),
+      detail: String(item?.detail || "").trim(),
+    });
+  });
+  return states;
+}
+
+function detectRolesFromText(text) {
+  const lower = String(text || "").toLowerCase();
+  const roles = new Set();
+  ROLE_TOKEN_MAP.forEach((roleId, token) => {
+    if (lower.includes(token)) roles.add(roleId);
+  });
+  if (lower.includes("specialist")) {
+    ["researcher", "file_reader", "summarizer", "fixer"].forEach((roleId) => {
+      if (lower.includes(roleId.replace("_", " ")) || lower.includes(roleId)) roles.add(roleId);
+    });
+  }
+  return roles;
+}
+
+function inferActiveRolesFromDebugItem(item) {
+  const roles = detectRolesFromText(`${String(item?.title || "")}\n${String(item?.detail || "")}`);
+  const stage = String(item?.stage || "").trim().toLowerCase();
+  if (stage === "backend_router") {
+    roles.add("router");
+    roles.add("coordinator");
+  }
+  if (stage === "backend_tool" || stage === "backend_prefetch" || stage === "backend_coordinator") {
+    roles.add("coordinator");
+  }
+  if (stage === "backend_to_llm" || stage === "llm_to_backend" || stage === "llm_final" || stage === "llm_error") {
+    if (roles.size) roles.add("coordinator");
+  }
+  return roles;
+}
+
+function svgRect(x, y, color, size = 4) {
+  return `<rect x="${x * size}" y="${y * size}" width="${size}" height="${size}" fill="${color}" />`;
+}
+
+function buildRoleSprite(roleId) {
+  const meta = ROLE_DEF_MAP.get(roleId) || ROLE_DEFS[0];
+  const outline = "#1f2f27";
+  const shell = "#dcefe2";
+  const shadow = "#a3c1b1";
+  const eye = meta.kindKey === "processor" ? "#fff1c9" : "#f6fff6";
+  const accent = meta.colors.accent;
+  const accent2 = meta.colors.accent2;
+  const px = [];
+  const add = (cells, color) => {
+    cells.forEach(([x, y]) => px.push(svgRect(x, y, color)));
+  };
+
+  add(
+    [
+      [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1],
+      [2, 2], [9, 2], [2, 3], [9, 3], [1, 3], [10, 3],
+      [2, 4], [9, 4], [1, 4], [10, 4],
+      [2, 5], [9, 5],
+      [2, 6], [9, 6],
+      [3, 7], [4, 7], [5, 7], [6, 7], [7, 7], [8, 7],
+      [3, 8], [8, 8], [3, 9], [8, 9],
+      [4, 10], [5, 10], [6, 10], [7, 10],
+      [4, 11], [7, 11],
+    ],
+    outline
+  );
+  add(
+    [
+      [3, 2], [4, 2], [5, 2], [6, 2], [7, 2], [8, 2],
+      [3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3],
+      [3, 4], [4, 4], [5, 4], [6, 4], [7, 4], [8, 4],
+      [3, 5], [4, 5], [5, 5], [6, 5], [7, 5], [8, 5],
+      [3, 6], [4, 6], [5, 6], [6, 6], [7, 6], [8, 6],
+      [4, 8], [5, 8], [6, 8], [7, 8],
+      [4, 9], [5, 9], [6, 9], [7, 9],
+      [5, 11], [6, 11],
+    ],
+    shell
+  );
+  add(
+    [
+      [4, 6], [5, 6], [6, 6], [7, 6],
+      [4, 9], [5, 9], [6, 9], [7, 9],
+    ],
+    shadow
+  );
+  add(
+    roleId === "conflict_detector" ? [[4, 4]] : [[4, 4], [7, 4]],
+    roleId === "conflict_detector" ? "#ffef78" : eye
+  );
+  if (roleId === "conflict_detector") {
+    add([[7, 4]], "#ff8872");
+  }
+
+  switch (roleId) {
+    case "router":
+      add([[2, 0], [3, 0], [8, 0], [9, 0], [5, 8], [6, 9]], accent);
+      add([[4, 0], [7, 0], [5, 9], [6, 8]], accent2);
+      break;
+    case "coordinator":
+      add([[4, 0], [5, 0], [6, 0], [7, 0], [5, 3], [6, 3], [5, 8], [6, 8]], accent);
+      add([[5, 1], [6, 1], [4, 8], [7, 8]], accent2);
+      break;
+    case "planner":
+      add([[2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0]], accent);
+      add([[4, 8], [5, 8], [6, 8], [7, 8], [4, 9], [7, 9]], accent2);
+      break;
+    case "researcher":
+      add([[6, 0], [6, 1], [10, 2], [10, 3], [8, 8], [8, 9]], accent);
+      add([[7, 1], [9, 2], [9, 3], [5, 8], [6, 8]], accent2);
+      break;
+    case "file_reader":
+      add([[4, 8], [4, 9], [5, 8], [5, 9]], accent);
+      add([[6, 8], [6, 9], [7, 8], [7, 9]], accent2);
+      add([[5, 9], [6, 9]], outline);
+      break;
+    case "summarizer":
+      add([[4, 5], [5, 5], [6, 5], [7, 5], [3, 9], [5, 8], [7, 9]], accent);
+      add([[4, 8], [6, 8], [8, 9]], accent2);
+      break;
+    case "fixer":
+      add([[0, 8], [1, 8], [2, 8], [8, 9], [9, 8], [10, 7]], accent);
+      add([[1, 7], [2, 9], [9, 7], [10, 8]], accent2);
+      break;
+    case "worker":
+      add([[3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3], [4, 9], [5, 9], [6, 9], [7, 9]], accent);
+      add([[3, 4], [8, 4], [4, 8], [7, 8]], accent2);
+      break;
+    case "conflict_detector":
+      add([[5, 0], [6, 0], [5, 8], [6, 8]], accent);
+      add([[4, 0], [7, 0], [4, 8], [7, 8]], accent2);
+      break;
+    case "reviewer":
+      add([[5, 8], [6, 8], [4, 9], [5, 9], [6, 9], [7, 9], [5, 10], [6, 10]], accent);
+      add([[5, 1], [6, 1], [5, 2], [6, 2]], accent2);
+      break;
+    case "revision":
+      add([[3, 0], [4, 1], [5, 2], [6, 3], [7, 4], [8, 5], [4, 9], [5, 8], [6, 9], [7, 8]], accent);
+      add([[4, 0], [5, 1], [6, 2], [7, 3], [8, 4]], accent2);
+      break;
+    case "structurer":
+      add([[4, 8], [5, 8], [6, 8], [7, 8], [4, 9], [7, 9], [4, 10], [5, 10], [6, 10], [7, 10]], accent);
+      add([[5, 9], [6, 9]], accent2);
+      break;
+    default:
+      add([[5, 8], [6, 8], [5, 9], [6, 9]], accent);
+      break;
+  }
+
+  return `<svg class="role-sprite" viewBox="0 0 48 48" aria-hidden="true">${px.join("")}</svg>`;
+}
+
+function renderRoleBoard(panels = [], activeRoles = new Set(), currentRole = null, roleStates = new Map()) {
+  if (!runRoleBoard) return;
+  const panelMap = new Map();
+  (Array.isArray(panels) ? panels : []).forEach((panel) => {
+    const roleId = normalizeRoleId(panel?.role);
+    if (roleId) panelMap.set(roleId, panel);
+  });
+
+  runRoleBoard.innerHTML = "";
+  ROLE_DEFS.forEach((meta) => {
+    const panel = panelMap.get(meta.id);
+    const roleState = roleStates instanceof Map ? roleStates.get(meta.id) : null;
+    const isActive = activeRoles instanceof Set ? activeRoles.has(meta.id) : false;
+    const isCurrent = normalizeRoleId(currentRole) === meta.id;
+    const isSeen = Boolean(panel) || isActive;
+    const card = document.createElement("article");
+    card.className = `role-card${isSeen ? " is-seen" : ""}${isActive ? " is-active" : ""}${isCurrent ? " is-current" : ""}`;
+    const kindKey = normalizeRoleKind(panel?.kind, meta.kindKey);
+    const kindLabel = ROLE_KIND_LABELS[kindKey] || meta.kindLabel;
+
+    const head = document.createElement("div");
+    head.className = "role-card-head";
+
+    const spriteWrap = document.createElement("div");
+    spriteWrap.className = "role-sprite-wrap";
+    spriteWrap.innerHTML = buildRoleSprite(meta.id);
+    head.appendChild(spriteWrap);
+
+    const metaNode = document.createElement("div");
+    metaNode.className = "role-meta";
+
+    const nameNode = document.createElement("div");
+    nameNode.className = "role-name";
+    nameNode.textContent = meta.title;
+    metaNode.appendChild(nameNode);
+
+    const kindRow = document.createElement("div");
+    kindRow.className = "role-kind-row";
+
+    const kindNode = document.createElement("span");
+    kindNode.className = `role-kind ${kindKey}`;
+    kindNode.textContent = kindLabel;
+    kindRow.appendChild(kindNode);
+
+    const stateNode = document.createElement("span");
+    stateNode.className = `role-state ${isCurrent ? "current" : isActive ? "active" : isSeen ? "seen" : "idle"}`;
+    stateNode.textContent = isCurrent ? "主工作中" : isActive ? "协同中" : isSeen ? "已参与" : "待命";
+    kindRow.appendChild(stateNode);
+
+    metaNode.appendChild(kindRow);
+    head.appendChild(metaNode);
+    card.appendChild(head);
+
+    const summaryNode = document.createElement("div");
+    summaryNode.className = "role-summary";
+    summaryNode.textContent = String(panel?.summary || meta.blurb || "").trim();
+    card.appendChild(summaryNode);
+
+    const phaseText = String(roleState?.phase || "").trim();
+    const detailText = String(roleState?.detail || "").trim();
+    if (phaseText || detailText) {
+      const phaseNode = document.createElement("div");
+      phaseNode.className = "role-phase";
+      phaseNode.textContent = phaseText ? `${phaseText}${detailText ? ` · ${detailText}` : ""}` : detailText;
+      card.appendChild(phaseNode);
+    }
+
+    const bullets = Array.isArray(panel?.bullets) ? panel.bullets.slice(0, 2) : [];
+    if (bullets.length) {
+      const list = document.createElement("ul");
+      list.className = "role-bullets";
+      bullets.forEach((item) => {
+        const li = document.createElement("li");
+        li.textContent = String(item || "");
+        list.appendChild(li);
+      });
+      card.appendChild(list);
+    }
+
+    runRoleBoard.appendChild(card);
+  });
+}
 
 function applyModePreset(mode, announce = true) {
   const preset = MODE_PRESETS[mode];
@@ -877,7 +1265,8 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
   runTraceView.textContent = lines.join("\n");
 }
 
-function renderAgentPanels(panels = [], plan = []) {
+function renderAgentPanels(panels = [], plan = [], activeRoles = new Set(), currentRole = null, roleStates = new Map()) {
+  renderRoleBoard(panels, activeRoles, currentRole, roleStates);
   if (!runAgentPanelsView) return;
 
   const lines = [];
@@ -902,22 +1291,23 @@ function renderAgentPanels(panels = [], plan = []) {
       }
     });
 
-    lines.push("Fixed Roles:");
+    lines.push("Core Roles:");
     if (!fixedPanels.length) {
       lines.push("(none)");
     }
     fixedPanels.forEach(({ panel, idx }) => {
       const role = String(panel?.role || `agent_${idx + 1}`);
       const title = String(panel?.title || role);
+      const kind = normalizeRoleKind(panel?.kind, "agent");
       const summary = String(panel?.summary || "").trim();
       const bullets = Array.isArray(panel?.bullets) ? panel.bullets : [];
-      lines.push(`[${idx + 1}] ${title} (${role})`);
+      lines.push(`[${idx + 1}] ${title} (${role}, ${kind})`);
       if (summary) lines.push(summary);
       bullets.forEach((item) => lines.push(`- ${String(item || "")}`));
       lines.push("");
     });
 
-    lines.push("Dynamic Specialists:");
+    lines.push("Specialist Roles:");
     if (!dynamicPanels.length) {
       lines.push("(none this run)");
       lines.push("");
@@ -925,9 +1315,10 @@ function renderAgentPanels(panels = [], plan = []) {
       dynamicPanels.forEach(({ panel, idx }) => {
         const role = String(panel?.role || `agent_${idx + 1}`);
         const title = String(panel?.title || role);
+        const kind = normalizeRoleKind(panel?.kind, "agent");
         const summary = String(panel?.summary || "").trim();
         const bullets = Array.isArray(panel?.bullets) ? panel.bullets : [];
-        lines.push(`[${idx + 1}] ${title} (${role})`);
+        lines.push(`[${idx + 1}] ${title} (${role}, ${kind})`);
         if (summary) lines.push(summary);
         bullets.forEach((item) => lines.push(`- ${String(item || "")}`));
         lines.push("");
@@ -936,7 +1327,7 @@ function renderAgentPanels(panels = [], plan = []) {
   }
 
   if (!lines.length) {
-    runAgentPanelsView.textContent = "暂无多 Agent 摘要";
+    runAgentPanelsView.textContent = "暂无多 Role 摘要";
     return;
   }
   runAgentPanelsView.textContent = lines.join("\n").trim();
@@ -1163,7 +1554,7 @@ async function runSandboxDrill() {
     runPayloadView.textContent = `sandbox drill payload:\n${formatJsonPreview(payload)}`;
   }
   renderRunTrace(["沙盒演练请求已发送。"], []);
-  renderAgentPanels([], []);
+  renderAgentPanels([], [], new Set(), null, new Map());
   renderAnswerBundle({});
   renderLlmFlow([
     {
@@ -1206,7 +1597,7 @@ async function runSandboxDrill() {
       );
     });
     renderRunTrace(trace, []);
-    renderAgentPanels([], []);
+    renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
     renderLlmFlow([
       {
@@ -1236,7 +1627,7 @@ async function runSandboxDrill() {
   } catch (err) {
     const msg = `沙盒演练请求失败: ${String(err)}`;
     renderRunTrace([msg], []);
-    renderAgentPanels([], []);
+    renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
     renderLlmFlow([
       {
@@ -1285,7 +1676,7 @@ async function runEvalHarness() {
     runPayloadView.textContent = `eval harness payload:\n${formatJsonPreview(payload)}`;
   }
   renderRunTrace(["回归测试请求已发送。"], []);
-  renderAgentPanels([], []);
+  renderAgentPanels([], [], new Set(), null, new Map());
   renderAnswerBundle({});
   renderLlmFlow([
     {
@@ -1355,7 +1746,7 @@ async function runEvalHarness() {
         bullets: skipped.slice(0, 6).map((item) => summarizeEvalResult(item)),
       });
     }
-    renderAgentPanels(panels, []);
+    renderAgentPanels(panels, [], new Set(), null, new Map());
     renderAnswerBundle({});
     renderLlmFlow([
       {
@@ -1376,7 +1767,7 @@ async function runEvalHarness() {
   } catch (err) {
     const msg = `回归测试请求失败: ${String(err)}`;
     renderRunTrace([msg], []);
-    renderAgentPanels([], []);
+    renderAgentPanels([], [], new Set(), null, new Map());
     renderAnswerBundle({});
     renderLlmFlow([
       {
@@ -1448,6 +1839,8 @@ async function sendMessage() {
     const liveToolEvents = [];
     let liveExecutionPlan = [];
     let liveAgentPanels = [];
+    let liveActiveRoles = new Set();
+    let liveRoleStates = new Map();
     const liveFlow = [
       {
         step: 1,
@@ -1458,7 +1851,7 @@ async function sendMessage() {
     ];
     let heartbeatCount = 0;
     renderRunTrace(liveTrace, liveToolEvents);
-    renderAgentPanels([], []);
+    renderAgentPanels([], [], liveActiveRoles, null, liveRoleStates);
     renderAnswerBundle({});
     renderLlmFlow(liveFlow);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
@@ -1492,6 +1885,10 @@ async function sendMessage() {
         const item = payload?.item;
         if (!item || typeof item !== "object") return;
         liveFlow.push(item);
+        if (!liveActiveRoles.size) {
+          liveActiveRoles = inferActiveRolesFromDebugItem(item);
+          renderRoleBoard(liveAgentPanels, liveActiveRoles, null, liveRoleStates);
+        }
         renderLlmFlow(liveFlow);
       },
       onToolEvent: (payload) => {
@@ -1505,7 +1902,11 @@ async function sendMessage() {
         if (!isForegroundSession()) return;
         liveExecutionPlan = Array.isArray(payload?.execution_plan) ? payload.execution_plan : liveExecutionPlan;
         liveAgentPanels = Array.isArray(payload?.panels) ? payload.panels : liveAgentPanels;
-        renderAgentPanels(liveAgentPanels, liveExecutionPlan);
+        liveActiveRoles = normalizeRoleSet(payload?.active_roles);
+        const liveCurrentRole = normalizeRoleId(payload?.current_role);
+        liveRoleStates = normalizeRoleStateMap(payload?.role_states);
+        if (liveCurrentRole) liveActiveRoles.add(liveCurrentRole);
+        renderAgentPanels(liveAgentPanels, liveExecutionPlan, liveActiveRoles, liveCurrentRole || null, liveRoleStates);
       },
       onHeartbeat: () => {
         if (!isForegroundSession()) return;
@@ -1556,7 +1957,10 @@ async function sendMessage() {
       }
 
       renderRunTrace(data.execution_trace || [], data.tool_events || []);
-      renderAgentPanels(data.agent_panels || [], data.execution_plan || []);
+      liveActiveRoles = normalizeRoleSet(data.active_roles);
+      const finalCurrentRole = normalizeRoleId(data.current_role);
+      liveRoleStates = normalizeRoleStateMap(data.role_states);
+      renderAgentPanels(data.agent_panels || [], data.execution_plan || [], liveActiveRoles, finalCurrentRole || null, liveRoleStates);
       renderAnswerBundle(data.answer_bundle || {});
       renderLlmFlow(data.debug_flow || []);
       addBubble("assistant", data.text, data.answer_bundle || null);
@@ -1577,7 +1981,7 @@ async function sendMessage() {
     }
     if (isForegroundSession()) {
       renderRunTrace([`请求失败: ${String(err)}`], []);
-      renderAgentPanels([], []);
+      renderAgentPanels([], [], new Set(), null, new Map());
       renderAnswerBundle({});
       renderLlmFlow([
         {
@@ -1704,7 +2108,7 @@ if (deleteSessionBtn) {
     []
   );
   renderRunTrace([], []);
-  renderAgentPanels([], []);
+  renderAgentPanels([], [], new Set(), null, new Map());
   renderLlmFlow([]);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
