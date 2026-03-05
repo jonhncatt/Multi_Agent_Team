@@ -87,6 +87,46 @@ _FOLLOWUP_EXECUTION_ACK_HINTS = (
     "搜吧",
     "查吧",
 )
+_FOLLOWUP_REFERENCE_HINTS = (
+    "这个",
+    "这个内容",
+    "这个结果",
+    "这份",
+    "这版",
+    "上述",
+    "上面",
+    "前面",
+    "刚才",
+    "刚刚",
+    "上一条",
+    "上一版",
+    "那个",
+    "that",
+    "this",
+    "above",
+    "previous",
+)
+_FOLLOWUP_TRANSFORM_HINTS = (
+    "归纳",
+    "整理",
+    "改写",
+    "重写",
+    "润色",
+    "写进",
+    "写到",
+    "放到",
+    "放进",
+    "改成",
+    "生成版本",
+    "几个版本",
+    "文档",
+    "报告",
+    "邮件",
+    "redmine",
+    "summarize",
+    "rewrite",
+    "polish",
+)
 
 _UNDERSTANDING_HINTS = (
     "总结",
@@ -3202,6 +3242,8 @@ class OfficeAgent:
 
         cleaned = original
         local_access_succeeded = self._has_successful_local_file_access(tool_events or [])
+        has_text_search_evidence = self._has_text_search_evidence(tool_events or [])
+        had_unverified_fulltext_claim = self._looks_like_unverified_fulltext_search_claim(original) and not has_text_search_evidence
         had_internal_meta = bool(
             re.search(r"(?i)\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b", original)
         )
@@ -3233,6 +3275,12 @@ class OfficeAgent:
         if self._request_likely_requires_tools(user_message, attachment_metas):
             cleaned = re.sub(r"(?is)[^。；\n]*(?:是否可直接访问|是否可以直接访问|是否能直接访问|可直接访问的目录|可访问的目录)[^。；\n]*[。；]?", "", cleaned)
             cleaned = re.sub(r"(?is)[^。；\n]*workbench[^。；\n]*(?:可直接访问|直接访问|访问目录)[^。；\n]*[。；]?", "", cleaned)
+        if had_unverified_fulltext_claim:
+            cleaned = re.sub(
+                r"(?is)[^。；\n]*(?:全文搜索|全文检索|对全文进行了搜索|全文件搜索|full[-\s]?text search|searched the entire|whole document search)[^。；\n]*[。；]?",
+                "",
+                cleaned,
+            )
 
         inferred_bare_tool = self._infer_bare_tool_call_from_text(cleaned)
         bare_tool_like_json = self._looks_like_bare_tool_arguments_text(cleaned)
@@ -3247,6 +3295,8 @@ class OfficeAgent:
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
             if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
                 return "我已经开始按当前路径和目标继续搜索，不需要你额外确认目录权限或工具格式。"
+            if had_unverified_fulltext_claim:
+                return "这轮我还没有执行完整关键词检索，不能直接声称已做全文搜索。若你要定位出处，我会先检索并给出页码/片段。"
             return original
         return cleaned
 
@@ -3561,6 +3611,7 @@ class OfficeAgent:
         current = str(user_message or "").strip()
         short_followup_search = self._looks_like_short_followup_search(current)
         short_execution_ack = self._looks_like_short_followup_execution_ack(current)
+        context_dependent_followup = self._looks_like_context_dependent_followup(current)
 
         # Inline code/test payloads in follow-up turns often carry raw content only.
         # If prior user turn is clearly "modify/generate code", inherit that intent.
@@ -3575,8 +3626,21 @@ class OfficeAgent:
                 if self._looks_like_code_generation_request(text, []) or self._looks_like_local_code_lookup_request(text, []):
                     return self._shorten(compact_text, 280)
 
-        if not short_followup_search and not short_execution_ack:
+        if not short_followup_search and not short_execution_ack and not context_dependent_followup:
             return ""
+
+        if context_dependent_followup:
+            for turn in reversed(history_turns):
+                role = str(turn.get("role") or "").strip().lower()
+                text = str(turn.get("text") or "").strip()
+                if not text or text == current:
+                    continue
+                compact_text = " ".join(text.split())
+                if role == "assistant" and len(compact_text) >= 40:
+                    return self._shorten(compact_text, 320)
+                if role == "user" and len(compact_text) >= 20:
+                    return self._shorten(compact_text, 320)
+
         for turn in reversed(history_turns):
             role = str(turn.get("role") or "").strip().lower()
             text = str(turn.get("text") or "").strip()
@@ -3637,6 +3701,22 @@ class OfficeAgent:
         if not compact or len(compact) > 16:
             return False
         return compact in _FOLLOWUP_EXECUTION_ACK_HINTS
+
+    def _looks_like_context_dependent_followup(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if self._looks_like_inline_document_payload(lowered):
+            return False
+        if self._looks_like_inline_code_payload(lowered):
+            return False
+        has_reference = any(hint in lowered for hint in _FOLLOWUP_REFERENCE_HINTS)
+        has_transform = any(hint in lowered for hint in _FOLLOWUP_TRANSFORM_HINTS)
+        if has_reference and has_transform:
+            return True
+        if has_reference and len(lowered) <= 120 and ("文档" in lowered or "版本" in lowered or "总结" in lowered):
+            return True
+        return False
 
     def _message_has_explicit_local_path(self, text: str) -> bool:
         raw = str(text or "").strip()
@@ -4715,6 +4795,32 @@ class OfficeAgent:
                 return True
         return False
 
+    def _has_text_search_evidence(self, tool_events: list[ToolEvent]) -> bool:
+        search_tools = {"search_text_in_file", "multi_query_search", "search_codebase"}
+        for event in tool_events:
+            if str(event.name or "").strip() not in search_tools:
+                continue
+            if self._tool_event_ok(event) is True:
+                return True
+        return False
+
+    def _looks_like_unverified_fulltext_search_claim(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        markers = (
+            "全文搜索",
+            "全文检索",
+            "对全文进行了搜索",
+            "全文件搜索",
+            "full text search",
+            "full-text search",
+            "searched the entire",
+            "whole document search",
+            "searched the whole document",
+        )
+        return any(marker in lowered for marker in markers)
+
     def _summarize_tool_events_for_review(self, tool_events: list[ToolEvent], limit: int = 12) -> list[str]:
         if not tool_events:
             return []
@@ -5601,6 +5707,33 @@ class OfficeAgent:
             return False
         return any(hint in text for hint in _UNDERSTANDING_HINTS)
 
+    def _looks_like_source_trace_request(self, user_message: str) -> bool:
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        hints = (
+            "在哪看到",
+            "哪里看到",
+            "哪儿看到",
+            "哪一页",
+            "哪页",
+            "原文位置",
+            "原文在哪",
+            "出处",
+            "来源",
+            "source",
+            "where did you see",
+            "where is it in",
+            "which page",
+            "show me where",
+        )
+        if any(hint in text for hint in hints):
+            return True
+        return bool(
+            re.search(r"(?:在哪|哪里|哪儿).{0,6}(?:看到|写到|提到)", text)
+            or re.search(r"(?:where).{0,18}(?:see|mention|found)", text)
+        )
+
     def _looks_like_meeting_minutes_request(self, user_message: str) -> bool:
         text = (user_message or "").strip().lower()
         if not text:
@@ -5831,6 +5964,7 @@ class OfficeAgent:
         )
         inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
+        source_trace_request = self._looks_like_source_trace_request(user_message)
         meeting_minutes_request = self._looks_like_meeting_minutes_request(user_message)
         has_url = "http://" in text or "https://" in text
         short_query_like = len(text) <= 280 and "\n" not in text
@@ -5907,6 +6041,26 @@ class OfficeAgent:
                     "specialists": ["file_reader"] if has_attachments else [],
                     "reason": "rules_code_generation_request",
                     "summary": "检测到代码生成/改写请求，直接交给 Worker 实现，不走事实审阅链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if has_attachments and source_trace_request:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "evidence_lookup",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": True,
+                    "use_revision": True,
+                    "use_structurer": True,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": True,
+                    "specialists": ["file_reader"],
+                    "reason": "rules_source_trace_request",
+                    "summary": "检测到来源定位请求，强制走取证链路并返回可复核出处。",
                 },
                 fallback=fallback,
                 settings=settings,
@@ -6346,7 +6500,11 @@ class OfficeAgent:
                 "不要把答案改写成事实审计或证据仲裁格式。"
             )
         if task_type == "evidence_lookup":
-            return "本轮属于查证/定位任务。优先完整取证，再给可复核答案。"
+            return (
+                "本轮属于查证/定位任务。优先完整取证，再给可复核答案。"
+                "当用户询问“你在哪看到的/哪一页”时，先执行关键词检索并给出处位置。"
+                "未实际执行检索前，不要声称“已全文搜索”。"
+            )
         return ""
 
     def _build_execution_plan(
@@ -7460,6 +7618,16 @@ class OfficeAgent:
             "根据原文",
             "according to",
             "citation",
+            "在哪看到",
+            "哪里看到",
+            "哪儿看到",
+            "哪一页",
+            "哪页",
+            "原文位置",
+            "原文在哪",
+            "show me where",
+            "which page",
+            "where did you see",
         )
         return any(hint in text for hint in hints)
 
