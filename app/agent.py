@@ -5850,6 +5850,51 @@ class OfficeAgent:
                 settings=settings,
             )
 
+        if (
+            has_attachments
+            and understanding_request
+            and not spec_lookup_request
+            and not evidence_required
+            and not web_request
+        ):
+            if attachment_needs_tooling or not inline_parseable_attachments:
+                return self._normalize_route_decision(
+                    {
+                        "task_type": "attachment_tooling",
+                        "complexity": "medium",
+                        "use_planner": True,
+                        "use_worker_tools": True,
+                        "use_reviewer": False,
+                        "use_revision": False,
+                        "use_structurer": False,
+                        "use_web_prefetch": False,
+                        "use_conflict_detector": False,
+                        "specialists": ["file_reader"],
+                        "reason": "rules_attachment_understanding_requires_tooling",
+                        "summary": "检测到附件理解任务，先由 FileReader + Worker 工具链完成读取，再输出结论。",
+                    },
+                    fallback=fallback,
+                    settings=settings,
+                )
+            return self._normalize_route_decision(
+                {
+                    "task_type": "simple_understanding",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader", "summarizer"],
+                    "reason": "rules_attachment_understanding",
+                    "summary": "检测到附件理解任务，直接基于附件内容组织解释，不进入事实审阅链。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
         if spec_lookup_request or evidence_required:
             return self._normalize_route_decision(
                 {
