@@ -3674,6 +3674,7 @@ class OfficeAgent:
             "创建",
             "新建",
             "改",
+            "修",
             "写",
             "编写",
             "实现",
@@ -3754,6 +3755,7 @@ class OfficeAgent:
                 "创建",
                 "新建",
                 "改",
+                "修",
                 "写",
                 "编写",
                 "实现",
@@ -5939,6 +5941,19 @@ class OfficeAgent:
                     "needs_llm_router": True,
                     "reason": "rules_ambiguous_general_request",
                     "summary": "普通问答但复杂度不够明确，交给轻量 Router 补判。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
+
+        if request_requires_tools:
+            return self._normalize_route_decision(
+                {
+                    "task_type": "standard",
+                    "complexity": "medium",
+                    "needs_llm_router": True,
+                    "reason": "rules_ambiguous_tool_intent",
+                    "summary": "检测到工具意图但规则分诊不够确定，交给轻量 Router 补判最小链路。",
                 },
                 fallback=fallback,
                 settings=settings,
