@@ -557,6 +557,141 @@ function hasAnswerBundleContent(bundle) {
   );
 }
 
+function normalizeCitationIds(rawIds) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(rawIds) ? rawIds : []).forEach((item) => {
+    const id = String(item || "").trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  });
+  return out;
+}
+
+function normalizeMatchText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u3400-\u9fff\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectLatinTokens(text) {
+  const matches = normalizeMatchText(text).match(/[a-z0-9_]{2,}/g) || [];
+  return Array.from(new Set(matches));
+}
+
+function collectCjkBigrams(text) {
+  const cjkChars = (String(text || "").match(/[\u3400-\u9fff]/g) || []).join("");
+  if (cjkChars.length < 2) return [];
+  const out = [];
+  for (let i = 0; i < cjkChars.length - 1; i += 1) {
+    out.push(cjkChars.slice(i, i + 2));
+  }
+  return Array.from(new Set(out));
+}
+
+function overlapRatio(sourceTokens, targetTokenSet) {
+  const tokens = Array.isArray(sourceTokens) ? sourceTokens : [];
+  if (!tokens.length) return 0;
+  let hit = 0;
+  tokens.forEach((token) => {
+    if (targetTokenSet.has(token)) hit += 1;
+  });
+  return hit / tokens.length;
+}
+
+function scoreClaimToNode(claimText, nodeText) {
+  const claimJoined = normalizeMatchText(claimText).replace(/\s+/g, "");
+  const nodeJoined = normalizeMatchText(nodeText).replace(/\s+/g, "");
+  if (!claimJoined || !nodeJoined) return { score: 0, matched: false };
+
+  let containmentScore = 0;
+  if (claimJoined.length >= 12 && nodeJoined.includes(claimJoined)) {
+    containmentScore = 1;
+  } else if (nodeJoined.length >= 12 && claimJoined.includes(nodeJoined)) {
+    containmentScore = 0.82;
+  }
+
+  const claimLatin = collectLatinTokens(claimText);
+  const claimCjk = collectCjkBigrams(claimText);
+  const nodeLatinSet = new Set(collectLatinTokens(nodeText));
+  const nodeCjkSet = new Set(collectCjkBigrams(nodeText));
+  const latinScore = overlapRatio(claimLatin, nodeLatinSet);
+  const cjkScore = overlapRatio(claimCjk, nodeCjkSet);
+
+  const lexicalScore =
+    claimLatin.length && claimCjk.length
+      ? latinScore * 0.55 + cjkScore * 0.45
+      : claimLatin.length
+      ? latinScore
+      : cjkScore;
+  const score = Math.max(containmentScore, lexicalScore);
+  const matched =
+    containmentScore >= 0.82 ||
+    latinScore >= 0.5 ||
+    cjkScore >= 0.45 ||
+    (score >= 0.42 && (claimLatin.length >= 2 || claimCjk.length >= 3));
+  return { score, matched };
+}
+
+function annotateAssistantInlineCitations(contentNode, bundle) {
+  if (!contentNode || !bundle || typeof bundle !== "object") return;
+  const claims = Array.isArray(bundle.claims) ? bundle.claims : [];
+  if (!claims.length) return;
+
+  let targetNodes = Array.from(
+    contentNode.querySelectorAll("p, li, blockquote, h1, h2, h3, h4, h5, h6")
+  ).filter((node) => {
+    const text = String(node?.textContent || "").trim();
+    return text.length >= 8;
+  });
+  if (!targetNodes.length) {
+    const fallbackText = String(contentNode.textContent || "").trim();
+    if (fallbackText.length >= 12) targetNodes = [contentNode];
+  }
+  if (!targetNodes.length) return;
+
+  const nodeCitations = new Map();
+  claims.forEach((claim) => {
+    const ids = normalizeCitationIds(claim?.citation_ids);
+    const statement = String(claim?.statement || "").trim();
+    if (!ids.length || !statement) return;
+
+    let bestNode = null;
+    let bestScore = 0;
+    targetNodes.forEach((node) => {
+      const text = String(node?.textContent || "").trim();
+      if (!text) return;
+      const match = scoreClaimToNode(statement, text);
+      if (!match.matched) return;
+      if (match.score > bestScore) {
+        bestScore = match.score;
+        bestNode = node;
+      }
+    });
+
+    if (!bestNode || bestScore < 0.42) return;
+    if (!nodeCitations.has(bestNode)) nodeCitations.set(bestNode, new Set());
+    const holder = nodeCitations.get(bestNode);
+    ids.forEach((id) => holder.add(id));
+  });
+
+  nodeCitations.forEach((idSet, node) => {
+    const merged = Array.from(idSet).filter(Boolean);
+    if (!merged.length) return;
+    const oldMarker = node.querySelector(".inline-citation-tag[data-generated='1']");
+    if (oldMarker) oldMarker.remove();
+
+    const marker = document.createElement("span");
+    marker.className = "inline-citation-tag";
+    marker.setAttribute("data-generated", "1");
+    marker.textContent = ` [${merged.join(", ")}]`;
+    node.appendChild(marker);
+  });
+}
+
 function partitionAnswerCitations(citations) {
   const evidence = [];
   const candidates = [];
@@ -723,9 +858,10 @@ function addBubble(role, text, answerBundle = null) {
   if (role === "assistant") {
     const content = document.createElement("div");
     content.innerHTML = renderAssistantMarkdown(value);
+    annotateAssistantInlineCitations(content, answerBundle);
     bubble.appendChild(content);
     if (hasAnswerBundleContent(answerBundle)) {
-      const bundleNode = buildAnswerBundleNode(answerBundle, { showSummary: false, showAssertions: false });
+      const bundleNode = buildAnswerBundleNode(answerBundle, { showSummary: false, showAssertions: true });
       if (bundleNode) {
         bubble.appendChild(bundleNode);
       }

@@ -802,6 +802,19 @@ body.panel-debug-off .role-summary {
   text-decoration: underline;
 }
 
+.inline-citation-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid #bfd7c8;
+  background: #edf7f0;
+  color: #2f5b45;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
 .answer-bundle {
   margin-top: 12px;
   padding-top: 10px;
