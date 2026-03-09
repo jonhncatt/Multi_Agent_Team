@@ -32,6 +32,8 @@ from app.models import (
     SessionListItem,
     SessionListResponse,
     SessionTurn,
+    UpdateSessionTitleRequest,
+    UpdateSessionTitleResponse,
     SandboxDrillRequest,
     SandboxDrillResponse,
     SandboxDrillStep,
@@ -231,6 +233,18 @@ def delete_session(session_id: str) -> DeleteSessionResponse:
     return DeleteSessionResponse(ok=True, session_id=session_id)
 
 
+@app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
+def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> UpdateSessionTitleResponse:
+    loaded = session_store.load(session_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    title = str(req.title or "").strip()[:120]
+    loaded["title"] = title
+    session_store.save(loaded)
+    return UpdateSessionTitleResponse(ok=True, session_id=session_id, title=title)
+
+
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
 def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
     loaded = session_store.load(session_id)
@@ -256,6 +270,7 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
 
     return SessionDetailResponse(
         session_id=session_id,
+        title=str(loaded.get("title") or ""),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
         turns=turns,

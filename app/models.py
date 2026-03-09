@@ -136,6 +136,16 @@ class NewSessionResponse(BaseModel):
     session_id: str
 
 
+class UpdateSessionTitleRequest(BaseModel):
+    title: str = Field(default="", max_length=120)
+
+
+class UpdateSessionTitleResponse(BaseModel):
+    ok: bool
+    session_id: str
+    title: str = ""
+
+
 class DeleteSessionResponse(BaseModel):
     ok: bool
     session_id: str
@@ -150,6 +160,7 @@ class SessionTurn(BaseModel):
 
 class SessionDetailResponse(BaseModel):
     session_id: str
+    title: str = ""
     summary: str = ""
     turn_count: int = 0
     turns: list[SessionTurn] = Field(default_factory=list)
@@ -158,6 +169,7 @@ class SessionDetailResponse(BaseModel):
 class SessionListItem(BaseModel):
     session_id: str
     title: str = ""
+    has_custom_title: bool = False
     preview: str = ""
     turn_count: int = 0
     updated_at: str = ""

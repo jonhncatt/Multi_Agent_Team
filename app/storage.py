@@ -35,6 +35,7 @@ class SessionStore:
             "id": str(uuid.uuid4()),
             "created_at": now_iso(),
             "updated_at": now_iso(),
+            "title": "",
             "summary": "",
             "turns": [],
         }
@@ -103,13 +104,16 @@ class SessionStore:
             if not isinstance(turns, list):
                 turns = []
 
-            title = "新会话"
-            for turn in turns:
-                if isinstance(turn, dict) and str(turn.get("role") or "") == "user":
-                    text = str(turn.get("text") or "").strip()
-                    if text:
-                        title = text.replace("\n", " ")[:48]
-                    break
+            custom_title = str(session.get("title") or "").strip()
+            title = custom_title
+            if not title:
+                title = "新会话"
+                for turn in turns:
+                    if isinstance(turn, dict) and str(turn.get("role") or "") == "user":
+                        text = str(turn.get("text") or "").strip()
+                        if text:
+                            title = text.replace("\n", " ")[:48]
+                        break
 
             preview = ""
             if turns:
@@ -121,6 +125,7 @@ class SessionStore:
                 {
                     "session_id": sid,
                     "title": title,
+                    "has_custom_title": bool(custom_title),
                     "preview": preview,
                     "turn_count": len(turns),
                     "updated_at": str(session.get("updated_at") or ""),

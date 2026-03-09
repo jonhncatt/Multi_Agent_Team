@@ -1066,6 +1066,11 @@ async function refreshSessionHistory() {
     sessions.forEach((item) => {
       const sid = String(item?.session_id || "");
       if (!sid) return;
+      const isCustomTitle = Boolean(item?.has_custom_title);
+      const sessionTitle = String(item?.title || "新会话");
+
+      const row = document.createElement("div");
+      row.className = "session-history-row";
 
       const openBtn = document.createElement("button");
       openBtn.type = "button";
@@ -1074,7 +1079,10 @@ async function refreshSessionHistory() {
 
       const title = document.createElement("div");
       title.className = "session-history-title";
-      title.textContent = String(item?.title || "新会话");
+      title.textContent = sessionTitle;
+      if (isCustomTitle) {
+        title.title = "已使用自定义会话名";
+      }
       openBtn.appendChild(title);
 
       const meta = document.createElement("div");
@@ -1093,12 +1101,56 @@ async function refreshSessionHistory() {
       openBtn.addEventListener("click", async () => {
         await loadSessionById(sid, { announceMode: "switch" });
       });
-      sessionHistoryView.appendChild(openBtn);
+
+      const renameBtn = document.createElement("button");
+      renameBtn.type = "button";
+      renameBtn.className = "session-history-rename";
+      renameBtn.textContent = "改名";
+      renameBtn.title = "自定义会话标题（留空恢复自动标题）";
+      renameBtn.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await renameSessionById(sid, sessionTitle);
+      });
+
+      row.appendChild(openBtn);
+      row.appendChild(renameBtn);
+      sessionHistoryView.appendChild(row);
     });
     return sessions;
   } catch {
     sessionHistoryView.textContent = "历史会话加载失败";
     return [];
+  }
+}
+
+async function renameSessionById(sessionId, currentTitle = "") {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+
+  const raw = window.prompt("请输入新的会话名称（留空恢复自动标题）", String(currentTitle || ""));
+  if (raw === null) return;
+
+  const title = String(raw || "").trim().slice(0, 120);
+  try {
+    const res = await fetch(`/api/session/${encodeURIComponent(sid)}/title`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      let detail = `改名失败: ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = `改名失败: ${data.detail}`;
+      } catch {}
+      throw new Error(detail);
+    }
+
+    await refreshSessionHistory();
+    addBubble("system", title ? `会话已改名：${title}` : "已清除自定义会话名，恢复自动标题。");
+  } catch (err) {
+    addBubble("system", String(err));
   }
 }
 
@@ -1660,6 +1712,58 @@ function refreshFileList() {
   });
 }
 
+function inferFileExtensionFromMime(mime) {
+  const raw = String(mime || "").toLowerCase();
+  if (raw.includes("png")) return "png";
+  if (raw.includes("jpeg") || raw.includes("jpg")) return "jpg";
+  if (raw.includes("webp")) return "webp";
+  if (raw.includes("gif")) return "gif";
+  if (raw.includes("bmp")) return "bmp";
+  if (raw.includes("heic")) return "heic";
+  return "png";
+}
+
+function buildClipboardImageName(file, index = 0) {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+  const ext = inferFileExtensionFromMime(file?.type);
+  const suffix = index > 0 ? `-${index + 1}` : "";
+  return `clipboard-image-${stamp}${suffix}.${ext}`;
+}
+
+function resolveUploadFileName(file, index = 0) {
+  const raw = String(file?.name || "").trim();
+  if (raw) return raw;
+  return buildClipboardImageName(file, index);
+}
+
+function extractPastedImageFiles(event) {
+  const clipboard = event?.clipboardData;
+  if (!clipboard) return [];
+
+  const files = Array.from(clipboard.files || []).filter((file) =>
+    String(file?.type || "").toLowerCase().startsWith("image/")
+  );
+  if (files.length) return files;
+
+  const items = Array.from(clipboard.items || []);
+  const fromItems = [];
+  items.forEach((item) => {
+    if (String(item?.kind || "").toLowerCase() !== "file") return;
+    if (!String(item?.type || "").toLowerCase().startsWith("image/")) return;
+    const file = item.getAsFile();
+    if (file) fromItems.push(file);
+  });
+  return fromItems;
+}
+
 async function createSession() {
   const res = await fetch("/api/session/new", { method: "POST" });
   if (!res.ok) throw new Error(`create session failed: ${res.status}`);
@@ -1670,9 +1774,10 @@ async function createSession() {
   await refreshSessionHistory();
 }
 
-async function uploadSingle(file) {
+async function uploadSingle(file, fileName = "") {
   const form = new FormData();
-  form.append("file", file);
+  const safeName = String(fileName || file?.name || "upload.bin").trim() || "upload.bin";
+  form.append("file", file, safeName);
 
   const res = await fetch("/api/upload", {
     method: "POST",
@@ -1680,26 +1785,33 @@ async function uploadSingle(file) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`上传失败 ${file.name}: ${res.status} ${text}`);
+    throw new Error(`上传失败 ${safeName}: ${res.status} ${text}`);
   }
   return res.json();
 }
 
 async function handleFiles(files) {
   if (!files || !files.length) return;
+  const preparedFiles = Array.from(files)
+    .map((file, idx) => ({
+      file,
+      name: resolveUploadFileName(file, idx),
+    }))
+    .filter((item) => item.file instanceof Blob);
+  if (!preparedFiles.length) return;
 
   state.uploading = true;
   updateSendAvailability();
-  addBubble("system", `正在上传 ${files.length} 个文件...`);
+  addBubble("system", `正在上传 ${preparedFiles.length} 个文件...`);
 
   try {
-    for (const file of files) {
-      const uploaded = await uploadSingle(file);
+    for (const item of preparedFiles) {
+      const uploaded = await uploadSingle(item.file, item.name);
       state.attachments.push(uploaded);
     }
     refreshFileList();
     const names = state.attachments.map((x) => x.name).join("，");
-    addBubble("system", `上传完成，共 ${files.length} 个文件。\n当前附件：${names}`);
+    addBubble("system", `上传完成，共 ${preparedFiles.length} 个文件。\n当前附件：${names}`);
   } catch (err) {
     addBubble("system", String(err));
   } finally {
@@ -2243,6 +2355,21 @@ messageInput.addEventListener("keydown", (e) => {
     e.preventDefault();
     sendMessage();
   }
+});
+
+document.addEventListener("paste", (e) => {
+  const target = e.target;
+  const isInputLike =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    Boolean(target && typeof target === "object" && "isContentEditable" in target && target.isContentEditable);
+  if (isInputLike && target !== messageInput) return;
+
+  const imageFiles = extractPastedImageFiles(e);
+  if (!imageFiles.length) return;
+
+  e.preventDefault();
+  handleFiles(imageFiles);
 });
 
 newSessionBtn.addEventListener("click", async () => {

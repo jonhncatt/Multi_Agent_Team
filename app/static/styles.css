@@ -221,6 +221,13 @@ button.small {
   color: #62786a;
 }
 
+.session-history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: stretch;
+}
+
 .session-history-item {
   width: 100%;
   text-align: left;
@@ -258,6 +265,22 @@ button.small {
   font-size: 11px;
   color: #395645;
   line-height: 1.25;
+}
+
+.session-history-rename {
+  align-self: center;
+  border: 1px solid #c2cfbf;
+  background: #e9efe7;
+  color: #284032;
+  border-radius: 8px;
+  padding: 0 9px;
+  font-size: 11px;
+  min-width: 46px;
+}
+
+.session-history-rename:hover {
+  transform: translateY(-1px);
+  border-color: #9cbca7;
 }
 
 .stats-view {
