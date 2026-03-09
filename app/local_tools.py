@@ -60,6 +60,7 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
     normalized_slash = raw.replace("\\", "/").strip("/")
     if normalized:
         # High-priority alias mapping, e.g. "workbench/a.txt" -> "<allowed_root_named_workbench>/a.txt"
+        # Also support short aliases from allowed root tails, e.g. "master/source" -> "<...>/master/source".
         for root in config.allowed_roots:
             root_norm = str(root).replace("\\", "/").rstrip("/").lower()
             if normalized == root_norm or normalized == root.name.lower():
@@ -69,6 +70,28 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
             if normalized.startswith(prefix):
                 suffix = normalized_slash[len(prefix) :]
                 add(root / suffix)
+
+            parent_name = root.parent.name.lower()
+            if parent_name:
+                if normalized == parent_name:
+                    add(root)
+                parent_prefix = f"{parent_name}/"
+                if normalized.startswith(parent_prefix):
+                    suffix = normalized_slash[len(parent_prefix) :]
+                    if suffix == root.name.lower():
+                        add(root)
+                    elif suffix.startswith(f"{root.name.lower()}/"):
+                        add(root / suffix[len(root.name) + 1 :])
+                    else:
+                        add(root / suffix)
+
+                parent_child = f"{parent_name}/{root.name.lower()}"
+                if normalized == parent_child:
+                    add(root)
+                parent_child_prefix = f"{parent_child}/"
+                if normalized.startswith(parent_child_prefix):
+                    suffix = normalized_slash[len(parent_child_prefix) :]
+                    add(root / suffix)
 
     # Default mapping keeps backward compatibility.
     add(config.workspace_root / path)
@@ -2367,12 +2390,85 @@ class LocalToolExecutor:
                             break
                     if len(matches) >= limit:
                         break
+
+            existing_paths = {str(item.get("path") or "").strip() for item in matches if str(item.get("path") or "").strip()}
+            path_match_count = 0
+            if len(matches) < limit:
+                query_for_path = cleaned_query if case_sensitive else cleaned_query.lower()
+                query_for_stem = query_for_path.rsplit(".", 1)[0] if "." in query_for_path else query_for_path
+                path_pattern: re.Pattern[str] | None = None
+                if use_regex:
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    try:
+                        path_pattern = re.compile(cleaned_query, flags)
+                    except Exception:
+                        path_pattern = None
+
+                file_candidates: list[Path] = []
+                if shutil.which("rg"):
+                    proc_files = subprocess.run(
+                        ["rg", "--files", str(real_root)],
+                        capture_output=True,
+                        text=True,
+                        timeout=20,
+                    )
+                    if proc_files.returncode == 0:
+                        for raw_line in (proc_files.stdout or "").splitlines():
+                            raw_item = str(raw_line or "").strip()
+                            if not raw_item:
+                                continue
+                            candidate = Path(raw_item)
+                            if not candidate.is_absolute():
+                                candidate = (real_root / raw_item).resolve()
+                            if candidate.is_file():
+                                file_candidates.append(candidate)
+                if not file_candidates:
+                    file_candidates = [item for item in real_root.rglob("*") if item.is_file()]
+
+                for candidate in file_candidates:
+                    if len(matches) >= limit:
+                        break
+                    try:
+                        rel = candidate.relative_to(real_root).as_posix()
+                    except Exception:
+                        rel = candidate.as_posix()
+                    if file_glob.strip() and not fnmatch.fnmatch(rel, file_glob.strip()):
+                        continue
+
+                    rel_text = rel if case_sensitive else rel.lower()
+                    stem_text = candidate.stem if case_sensitive else candidate.stem.lower()
+                    matched = False
+                    if path_pattern is not None:
+                        matched = bool(path_pattern.search(rel))
+                    else:
+                        matched = (
+                            (query_for_path in rel_text)
+                            or (query_for_path in stem_text)
+                            or (query_for_stem and query_for_stem in stem_text)
+                        )
+                    if not matched:
+                        continue
+
+                    candidate_path = str(candidate)
+                    if candidate_path in existing_paths:
+                        continue
+                    existing_paths.add(candidate_path)
+                    path_match_count += 1
+                    matches.append(
+                        {
+                            "path": candidate_path,
+                            "line": 0,
+                            "text": "[filename match]",
+                            "match_type": "path",
+                        }
+                    )
             return {
                 "ok": True,
                 "root": str(real_root),
                 "query": cleaned_query,
                 "match_count": len(matches),
                 "matches": matches,
+                "path_match_count": path_match_count,
                 "parser_mode": parser_mode,
             }
         except FileNotFoundError:

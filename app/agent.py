@@ -676,6 +676,9 @@ class OfficeAgent:
                     "如果用户给的是相对目录名或允许根目录的别名（例如 workbench），"
                     "可以直接把该名字作为 list_directory(path=...) 或 search_codebase(root=...) 的参数尝试；"
                     "不要先要求绝对路径。\n"
+                    "如果用户只给了文件关键词（例如 tcg_accl0030）且未带扩展名，"
+                    "默认先按 basename 进行模糊搜索（文件名/内容都可），不要先追问完整文件名或扩展名。\n"
+                    "当默认 root='.' 没有命中时，继续在其他可访问根目录自动重试，不要立即向用户追问地址。\n"
                     "当需要对同一文件同时尝试多个关键词时，优先用 multi_query_search；"
                     "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
@@ -3778,7 +3781,58 @@ class OfficeAgent:
         raw = str(text or "").strip()
         if not raw:
             return False
-        return bool(re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z]:\\[^\s]*)", raw))
+        return bool(re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z][:\\：][\\/][^\s]*)", raw))
+
+    def _has_file_like_lookup_token(self, text: str) -> bool:
+        raw = str(text or "").strip().lower()
+        if not raw:
+            return False
+        tokens = re.findall(r"[a-z0-9][a-z0-9._-]{4,}", raw)
+        tld_like_suffixes = (".com", ".cn", ".net", ".org", ".jp", ".io", ".dev")
+        code_exts = {
+            "c",
+            "cc",
+            "cpp",
+            "cxx",
+            "h",
+            "hpp",
+            "hh",
+            "py",
+            "js",
+            "jsx",
+            "ts",
+            "tsx",
+            "java",
+            "go",
+            "rs",
+            "swift",
+            "kt",
+            "rb",
+            "php",
+            "sh",
+            "ps1",
+            "yaml",
+            "yml",
+            "json",
+            "xml",
+            "toml",
+            "ini",
+            "cfg",
+            "md",
+            "txt",
+        }
+        for token in tokens:
+            if token.startswith(("http://", "https://", "www.")):
+                continue
+            if token.endswith(tld_like_suffixes):
+                continue
+            if "_" in token and len(token) >= 6:
+                return True
+            if "." in token:
+                stem, _, suffix = token.rpartition(".")
+                if stem and suffix in code_exts:
+                    return True
+        return False
 
     def _should_auto_search_default_roots(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if attachment_metas:
@@ -3810,12 +3864,20 @@ class OfficeAgent:
             "方法",
             "代码",
             "源码",
+            "测试",
+            "用例",
             "文件",
             "目录",
             "文件夹",
             "项目",
             "仓库",
             "repo",
+            "master",
+            "source",
+            "src",
+            "test",
+            "tests",
+            "case",
             "实现",
             "定义",
             "声明",
@@ -3828,7 +3890,9 @@ class OfficeAgent:
             "folder",
             "implementation",
         )
-        return any(verb in text for verb in search_verbs) and any(target in text for target in local_targets)
+        has_lookup_verb = any(verb in text for verb in search_verbs)
+        has_local_target = any(target in text for target in local_targets)
+        return has_lookup_verb and (has_local_target or self._has_file_like_lookup_token(text))
 
     def _looks_like_local_code_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if attachment_metas:
@@ -3853,6 +3917,11 @@ class OfficeAgent:
             "repo",
             "workbench",
             "workspace",
+            "master",
+            "source",
+            "src",
+            "test",
+            "tests",
             "folder",
             "directory",
             "repo",
@@ -3865,9 +3934,17 @@ class OfficeAgent:
             "定义",
             "声明",
             "调用点",
+            "测试",
+            "用例",
+            "测试文件",
+            "文件名",
             "module",
             "function",
             "method",
+            "test",
+            "case",
+            "filename",
+            "file name",
             "implementation",
             "call site",
             "definition",
@@ -3895,7 +3972,12 @@ class OfficeAgent:
         has_local_scope = self._message_has_explicit_local_path(user_message) or any(hint in text for hint in local_scope_hints)
         has_code_target = any(hint in text for hint in code_target_hints)
         has_lookup_intent = any(hint in text for hint in lookup_hints)
-        return has_code_target and has_lookup_intent and (has_local_scope or self._should_auto_search_default_roots(user_message, attachment_metas))
+        has_file_like_token = self._has_file_like_lookup_token(text)
+        return (
+            has_lookup_intent
+            and (has_code_target or has_file_like_token)
+            and (has_local_scope or self._should_auto_search_default_roots(user_message, attachment_metas))
+        )
 
     def _looks_like_code_generation_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         text = str(user_message or "").strip().lower()
@@ -4343,11 +4425,17 @@ class OfficeAgent:
             "需要提供源文件",
             "请把代码文件给我",
             "请提供代码文件",
+            "请提供完整文件名",
+            "请给出完整文件名",
+            "请提供扩展名",
+            "需要文件扩展名",
             "code search tool is not enabled",
             "code search is not enabled",
             "need to search the code",
             "need the source file",
             "please provide the source file",
+            "need full filename",
+            "need file extension",
             "没有可用的文件读取工具",
             "没有可用文件读取工具",
             "没有文件读取工具",
@@ -5168,6 +5256,13 @@ class OfficeAgent:
             "请给出路径",
             "必须提供路径",
             "需要本地文件路径",
+            "请提供完整文件名",
+            "请给出完整文件名",
+            "请提供完整的文件名",
+            "请提供扩展名",
+            "请给出扩展名",
+            "需要扩展名",
+            "需要文件扩展名",
             "无法进行可复核的解析",
         )
         return any(pattern in raw for pattern in patterns)
@@ -5571,6 +5666,14 @@ class OfficeAgent:
         if not keys:
             return None
 
+        if "root_path" in parsed and "root" not in parsed:
+            parsed["root"] = parsed.get("root_path")
+        if "query_text" in parsed and "query" not in parsed:
+            parsed["query"] = parsed.get("query_text")
+        if "keyword" in parsed and "query" not in parsed:
+            parsed["query"] = parsed.get("keyword")
+        keys = {str(key).strip() for key in parsed.keys()}
+
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
         list_directory_keys = {"path", "max_entries"}
         read_text_file_keys = {"path", "start_char", "max_chars", "start_line", "max_lines"}
@@ -5647,7 +5750,10 @@ class OfficeAgent:
             "name",
             "args",
             "query",
+            "query_text",
+            "keyword",
             "root",
+            "root_path",
             "path",
             "start_char",
             "max_chars",
@@ -6434,6 +6540,8 @@ class OfficeAgent:
                     "简单文本理解/小附件摘要 => specialists 可选 summarizer；"
                     "规范定位/证据请求 => specialists 可选 file_reader；"
                     "联网/实时问题 => specialists 可选 researcher；"
+                    "当用户在本地项目里找测试/文件/函数，且给了类似 tcg_accl0030 这类关键词时，"
+                    "应优先 use_worker_tools=true；先检索，不要先追问完整文件名或扩展名。"
                     "不要输出思维链。"
                 )
             ),
@@ -6566,6 +6674,8 @@ class OfficeAgent:
                 "本轮属于本地代码定位/函数解释任务。"
                 "直接调用 search_codebase、list_directory、read_text_file 等工具搜索并读取上下文。"
                 "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
+                "当用户只给了不带扩展名的关键词时，先按 basename 模糊搜索，不要先追问扩展名。"
+                "若 root='.' 首次未命中，自动在其余可访问根目录继续搜索。"
             )
         if task_type == "grounded_code_generation":
             return (
@@ -7255,6 +7365,48 @@ class OfficeAgent:
             use_regex=use_regex,
             case_sensitive=case_sensitive,
         )
+        base_root = str(root or ".").strip() or "."
+        try:
+            base_match_count = int((result or {}).get("match_count") or len((result or {}).get("matches") or []))
+        except Exception:
+            base_match_count = 0
+        base_ok = bool((result or {}).get("ok"))
+        if (
+            base_ok
+            and base_match_count <= 0
+            and base_root in {"", "."}
+            and not bool(file_glob.strip())
+            and bool(str(query or "").strip())
+        ):
+            searched_roots: list[str] = [str((result or {}).get("root") or base_root)]
+            for candidate in self.config.allowed_roots:
+                candidate_root = str(candidate)
+                if candidate_root in searched_roots:
+                    continue
+                extra = self.tools.search_codebase(
+                    query=query,
+                    root=candidate_root,
+                    max_matches=max_matches,
+                    file_glob=file_glob,
+                    use_regex=use_regex,
+                    case_sensitive=case_sensitive,
+                )
+                searched_roots.append(str((extra or {}).get("root") or candidate_root))
+                try:
+                    extra_match_count = int((extra or {}).get("match_count") or len((extra or {}).get("matches") or []))
+                except Exception:
+                    extra_match_count = 0
+                if bool((extra or {}).get("ok")) and extra_match_count > 0:
+                    merged = dict(extra)
+                    merged["auto_root_fallback"] = True
+                    merged["initial_root"] = "."
+                    merged["searched_roots"] = searched_roots
+                    return json.dumps(merged, ensure_ascii=False)
+            if isinstance(result, dict):
+                result = dict(result)
+                result["auto_root_fallback"] = True
+                result["initial_root"] = "."
+                result["searched_roots"] = searched_roots
         return json.dumps(result, ensure_ascii=False)
 
     def _copy_file_tool(
@@ -7832,6 +7984,11 @@ class OfficeAgent:
             "路径",
             "目录",
             "文件夹",
+            "测试",
+            "用例",
+            "测试文件",
+            "文件名",
+            "扩展名",
             "函数",
             "方法",
             "代码",
@@ -7844,6 +8001,12 @@ class OfficeAgent:
             "调用点",
             "定义",
             "声明",
+            "master",
+            "source",
+            "src",
+            "test",
+            "tests",
+            "case",
             "在哪",
             "搜索",
             "上网",
@@ -7883,7 +8046,9 @@ class OfficeAgent:
         )
         if any(hint in text for hint in direct_hints):
             return True
-        if re.search(r"(?:^|[\s(])(?:/[^\s]+|[a-z]:\\)", text):
+        if self._has_file_like_lookup_token(text):
+            return True
+        if re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z][:\\：][\\/][^\s]*)", text):
             return True
         return any(hint in text for hint in _NEWS_HINTS)
 
@@ -7986,6 +8151,21 @@ class OfficeAgent:
             "need to read the full document",
             "is workbench directly accessible",
             "is it directly accessible",
+            "请提供完整文件名",
+            "请给出完整文件名",
+            "请提供完整的文件名",
+            "请提供扩展名",
+            "请给出扩展名",
+            "需要扩展名",
+            "需要文件扩展名",
+            "需要完整文件名",
+            "带扩展名",
+            "完整文件名",
+            "完整的文件名",
+            "file extension",
+            "with extension",
+            "full filename",
+            "exact filename",
         )
         if not request_requires_tools and not has_attachments:
             return any(p in text for p in general_gate_patterns)
@@ -8049,6 +8229,10 @@ class OfficeAgent:
             "search directly",
             "absolute path",
             "full path",
+            "full filename",
+            "exact filename",
+            "file extension",
+            "with extension",
         )
         if re.search(r"请确认.{0,24}(?:读取|访问|查看).{0,24}(?:路径|文件|附件)", text):
             return True
@@ -8071,6 +8255,8 @@ class OfficeAgent:
             "邮件",
             "文档",
             "path",
+            "扩展名",
+            "文件名",
             "解析",
             "搜索",
             "函数",
