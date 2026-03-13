@@ -15,6 +15,7 @@ _MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
 _MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker in _MSG_MARKERS_ASCII)
 _XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 _PPTX_SUFFIXES = {".pptx", ".pptm"}
+_SAFE_IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 
 def _read_plain_text(path: Path, max_chars: int) -> str:
@@ -604,6 +605,46 @@ def _heic_to_jpeg_bytes(path: Path) -> bytes:
         ) from exc
 
 
+def _normalize_image_mime(mime: str, suffix: str) -> str:
+    normalized = str(mime or "").strip().lower()
+    if ";" in normalized:
+        normalized = normalized.split(";", 1)[0].strip()
+    if normalized == "image/jpg":
+        normalized = "image/jpeg"
+    if normalized in _SAFE_IMAGE_MIMES or normalized in {"image/heic", "image/heif"}:
+        return normalized
+
+    suffix_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".bmp": "image/bmp",
+        ".dib": "image/bmp",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
+    }
+    mapped = suffix_map.get(suffix)
+    if mapped:
+        return mapped
+    if normalized.startswith("image/"):
+        return normalized
+    return "image/png"
+
+
+def _image_to_png_bytes(path: Path) -> bytes:
+    from PIL import Image
+
+    with Image.open(path) as image:
+        converted = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        buffer = io.BytesIO()
+        converted.save(buffer, format="PNG", optimize=True)
+        return buffer.getvalue()
+
+
 def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
     """
     Returns (data_url, warning). For HEIC, fallback to original HEIC payload
@@ -612,20 +653,32 @@ def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     raw: bytes
-    out_mime = mime
+    out_mime = _normalize_image_mime(mime, suffix)
     warning: str | None = None
 
-    is_heic = suffix in {".heic", ".heif"} or mime in {"image/heic", "image/heif"}
+    is_heic = suffix in {".heic", ".heif"} or out_mime in {"image/heic", "image/heif"}
     if is_heic:
         try:
             raw = _heic_to_jpeg_bytes(file_path)
             out_mime = "image/jpeg"
         except Exception:
             raw = file_path.read_bytes()
-            out_mime = mime if mime.startswith("image/") else "image/heic"
+            out_mime = "image/heic"
             warning = "HEIC 未本地转码，已原始上传；若网关不支持 HEIC，请先转 JPG/PNG。"
     else:
-        raw = file_path.read_bytes()
+        if out_mime not in _SAFE_IMAGE_MIMES:
+            original_mime = out_mime
+            try:
+                raw = _image_to_png_bytes(file_path)
+                out_mime = "image/png"
+                warning = f"检测到非标准图片类型({original_mime})，已转为 PNG 再发送。"
+            except Exception as exc:
+                raise RuntimeError(f"不支持的图片类型({original_mime})，且转码失败: {exc}") from exc
+        else:
+            raw = file_path.read_bytes()
+
+    if not raw:
+        raise RuntimeError("图片内容为空，无法编码为 data URL。")
 
     encoded = base64.b64encode(raw).decode("ascii")
     return f"data:{out_mime};base64,{encoded}", warning

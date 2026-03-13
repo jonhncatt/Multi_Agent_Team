@@ -1774,6 +1774,16 @@ function extractPastedImageFiles(event) {
   return fromItems;
 }
 
+function clipboardLooksLikeTableText(clipboard) {
+  if (!clipboard || typeof clipboard.getData !== "function") return false;
+  const plain = String(clipboard.getData("text/plain") || "");
+  const html = String(clipboard.getData("text/html") || "").toLowerCase();
+  if (html && (html.includes("<table") || html.includes("mso-"))) return true;
+  if (!plain.trim()) return false;
+  const lines = plain.split(/\r?\n/).filter((line) => String(line || "").trim());
+  return plain.includes("\t") && lines.length >= 1;
+}
+
 async function createSession() {
   const res = await fetch("/api/session/new", { method: "POST" });
   if (!res.ok) throw new Error(`create session failed: ${res.status}`);
@@ -2383,8 +2393,10 @@ document.addEventListener("paste", (e) => {
     Boolean(target && typeof target === "object" && "isContentEditable" in target && target.isContentEditable);
   if (isInputLike && target !== messageInput) return;
 
+  const clipboard = e.clipboardData;
   const imageFiles = extractPastedImageFiles(e);
   if (!imageFiles.length) return;
+  if (clipboardLooksLikeTableText(clipboard)) return;
 
   e.preventDefault();
   handleFiles(imageFiles);
