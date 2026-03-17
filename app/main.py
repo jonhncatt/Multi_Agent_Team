@@ -784,6 +784,7 @@ def _process_chat_request(
             answer_bundle,
             token_usage,
             effective_model,
+            route_state,
         ) = agent.run_chat(
             history_turns=session.get("turns", []),
             summary=session.get("summary", ""),
@@ -791,6 +792,7 @@ def _process_chat_request(
             attachment_metas=attachments,
             settings=req.settings,
             session_id=session_id,
+            route_state=session.get("route_state"),
             progress_cb=progress_cb,
         )
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
@@ -833,6 +835,7 @@ def _process_chat_request(
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
+        session["route_state"] = route_state or {}
         session_store.save(session)
         _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
 

@@ -733,6 +733,120 @@
     }
   },
   {
+    "name": "helper_route_rules_short_followup_inherits_evidence_route_state",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "继续吧",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "route_state": {
+        "primary_intent": "evidence",
+        "execution_policy": "evidence_full_pipeline",
+        "task_type": "evidence_lookup",
+        "use_worker_tools": true,
+        "evidence_mode": true
+      },
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "evidence_lookup",
+        "primary_intent": "evidence",
+        "execution_policy": "evidence_full_pipeline",
+        "use_worker_tools": true,
+        "use_reviewer": true,
+        "use_structurer": true
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_holistic_doc_switches_out_of_evidence_route_state",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "请解释这个 TCG 协议设计文档的整体思路和整体框架。",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "route_state": {
+        "primary_intent": "evidence",
+        "execution_policy": "evidence_full_pipeline",
+        "task_type": "evidence_lookup",
+        "use_worker_tools": true,
+        "evidence_mode": true
+      },
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_holistic_understanding_with_tools",
+        "use_worker_tools": true,
+        "use_reviewer": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_short_followup_inherits_understanding_route_state",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "继续解释一下",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "route_state": {
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_holistic_understanding_with_tools",
+        "task_type": "attachment_tooling",
+        "use_worker_tools": true,
+        "evidence_mode": false
+      },
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      }
+    },
+    "assert": {
+      "equals": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_followup_understanding_with_tools",
+        "use_worker_tools": true,
+        "use_reviewer": false,
+        "use_structurer": false
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_simple_qa",
     "kind": "helper",
     "helper": "_route_request_by_rules",

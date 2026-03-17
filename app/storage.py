@@ -38,6 +38,8 @@ class SessionStore:
             "title": "",
             "summary": "",
             "turns": [],
+            "active_attachment_ids": [],
+            "route_state": {},
         }
         self.save(session)
         return session

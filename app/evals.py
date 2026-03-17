@@ -258,6 +258,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         answer_bundle,
         token_usage,
         effective_model,
+        route_state,
     ) = agent.run_chat(
         history_turns=[],
         summary="",
@@ -265,6 +266,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         attachment_metas=attachments,
         settings=settings,
         session_id="eval-harness",
+        route_state=case.get("route_state"),
     )
     elapsed_sec = time.perf_counter() - started
     return {
@@ -282,6 +284,7 @@ def _run_agent_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
         "tool_events_count": len(tool_events),
         "token_usage": token_usage,
         "effective_model": effective_model,
+        "route_state": route_state,
         "elapsed_sec": round(elapsed_sec, 3),
     }
 
