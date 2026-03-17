@@ -1375,6 +1375,70 @@
     }
   },
   {
+    "name": "helper_sanitize_final_answer_rewrites_unexpected_email_json",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "{\"subject\":\"项目进度更新\",\"to\":\"team@example.com\",\"body\":\"大家好，\\n本周我们完成了接口联调和回归测试。\\n如无问题我会在周五发布。\"}",
+      "user_message": "帮我写一封邮件",
+      "attachment_metas": [],
+      "inline_followup_context": false
+    },
+    "assert": {
+      "contains": {
+        "result": [
+          "邮件主题：项目进度更新",
+          "收件人：team@example.com",
+          "邮件正文：",
+          "本周我们完成了接口联调和回归测试"
+        ]
+      },
+      "not_contains": {
+        "result": [
+          "{\"subject\""
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_sanitize_final_answer_keeps_json_when_explicitly_requested",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "{\"subject\":\"项目进度更新\",\"to\":\"team@example.com\",\"body\":\"请确认发布时间。\"}",
+      "user_message": "请用 JSON 格式输出邮件草稿",
+      "attachment_metas": [],
+      "inline_followup_context": false
+    },
+    "assert": {
+      "contains": {
+        "result": [
+          "{\"subject\":\"项目进度更新\""
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_sanitize_final_answer_rewrites_unexpected_table_json_to_markdown",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "{\"rows\":[{\"姓名\":\"张三\",\"分数\":95},{\"姓名\":\"李四\",\"分数\":88}]}",
+      "user_message": "把数据整理成表格",
+      "attachment_metas": [],
+      "inline_followup_context": false
+    },
+    "assert": {
+      "contains": {
+        "result": [
+          "| 姓名 | 分数 |",
+          "| 张三 | 95 |",
+          "| 李四 | 88 |"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

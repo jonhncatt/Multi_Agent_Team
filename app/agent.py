@@ -855,6 +855,8 @@ class OfficeAgent:
                     "除非用户明确要求过程日志，否则直接给最终结果和必要说明。\n"
                     "对于纯知识问答（不需要读写文件或联网抓取），直接回答问题本身；"
                     "不要先输出“收到/会严格遵守/无需调用工具”等流程性话术。\n"
+                    "除非用户明确要求 JSON/机器可读格式，否则最终答复必须用自然语言或 Markdown，"
+                    "不要直接输出 JSON 对象。\n"
                     "不要给用户提供“方案A/方案B/二选一”来规避工具执行；"
                     "只要路径和目标明确，就直接调用工具完成并返回结果。\n"
                     "不要声称“工具未启用/工具未激活/系统无法触发工具”，"
@@ -3799,8 +3801,15 @@ class OfficeAgent:
 
         inferred_bare_tool = self._infer_bare_tool_call_from_text(cleaned)
         bare_tool_like_json = self._looks_like_bare_tool_arguments_text(cleaned)
+        explicit_json_requested = self._user_explicitly_requests_json_output(user_message)
+        had_unexpected_json_answer = False
         if inferred_bare_tool or bare_tool_like_json:
             cleaned = ""
+        elif not explicit_json_requested:
+            standalone_json_answer = self._extract_standalone_json_answer(cleaned)
+            if standalone_json_answer:
+                had_unexpected_json_answer = True
+                cleaned = self._render_json_answer_for_user(standalone_json_answer).strip()
 
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         if not cleaned:
@@ -3812,8 +3821,12 @@ class OfficeAgent:
                 return "我会直接基于你当前会话里已提供的文本继续整理，不需要本地路径或页码。请告诉我你想要的表格列和排序方式。"
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
-            if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
-                return "我上一条误输出了工具参数而不是最终结果。请直接重试同一句，我会继续检索并返回结论。"
+            if inferred_bare_tool or bare_tool_like_json:
+                if self._request_likely_requires_tools(user_message, attachment_metas):
+                    return "我上一条误输出了工具参数而不是最终结果。请直接重试同一句，我会继续检索并返回结论。"
+                return "我上一条误输出了结构化 JSON，而不是可读答复。请直接重试同一句，我会改成正常文本。"
+            if had_unexpected_json_answer:
+                return "我上一条误输出了结构化 JSON，而不是可读答复。请直接重试同一句，我会改成正常文本。"
             if had_unverified_fulltext_claim:
                 return "这轮我还没有执行完整关键词检索，不能直接声称已做全文搜索。若你要定位出处，我会先检索并给出页码/片段。"
             return original
@@ -6461,6 +6474,199 @@ class OfficeAgent:
         if text.startswith("{") and text.endswith("}"):
             return text
         return ""
+
+    def _extract_standalone_json_answer(self, text: str) -> dict[str, Any] | None:
+        payload = self._extract_standalone_object_payload(text)
+        if not payload:
+            return None
+        parsed = self._parse_json_object(payload)
+        if isinstance(parsed, dict) and parsed:
+            return parsed
+        return None
+
+    def _user_explicitly_requests_json_output(self, user_message: str) -> bool:
+        text = str(user_message or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if "```json" in lowered:
+            return True
+        if re.search(
+            r"(?is)(?:请|请你|帮我|给我|用|以|按|返回|输出|改成|转成|格式化为|return|respond|format(?:\s+as)?|convert(?:\s+to)?).{0,16}json",
+            text,
+        ):
+            return True
+        if re.search(r"(?is)json.{0,16}(?:格式|输出|返回|对象|数组|schema|字段|键|object|array)", text):
+            return True
+        if re.search(r"(?i)\b(?:package|tsconfig|composer|manifest)\.json\b", text):
+            return True
+        return False
+
+    def _render_json_answer_for_user(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict) or not payload:
+            return ""
+        email_payload = payload
+        for nested_key in ("email", "mail", "draft"):
+            nested = payload.get(nested_key)
+            if isinstance(nested, dict) and nested:
+                email_payload = nested
+                break
+        email_text = self._render_email_json_answer(email_payload)
+        if email_text:
+            return email_text
+
+        records = self._extract_json_records_for_table(payload)
+        if records:
+            table = self._render_records_markdown_table(records)
+            if table:
+                intro = str(payload.get("summary") or payload.get("title") or "").strip()
+                if intro:
+                    return f"{intro}\n\n{table}"
+                return table
+
+        lines: list[str] = []
+        for key, value in list(payload.items())[:12]:
+            label = str(key).strip() or "item"
+            rendered = self._render_json_value_for_user(value)
+            if not rendered:
+                continue
+            if "\n" in rendered:
+                lines.append(f"{label}:")
+                lines.append(rendered)
+            else:
+                lines.append(f"{label}: {rendered}")
+        return "\n".join(lines).strip()
+
+    def _render_email_json_answer(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict) or not payload:
+            return ""
+        pick = lambda *keys: next(
+            (
+                value
+                for value in (
+                    self._render_json_value_for_user(payload.get(key))
+                    for key in keys
+                )
+                if value
+            ),
+            "",
+        )
+        subject = pick("subject", "email_subject", "title", "topic")
+        to = pick("to", "recipient", "recipient_name")
+        cc = pick("cc")
+        greeting = pick("greeting", "salutation")
+        body = pick("body", "content", "email_body", "draft_text", "message", "text")
+        closing = pick("closing", "signature", "signoff")
+        if not any((subject, to, body, greeting, closing, cc)):
+            return ""
+        if not body and not (subject or to or cc):
+            return ""
+        lines: list[str] = []
+        if subject:
+            lines.append(f"邮件主题：{subject}")
+        if to:
+            lines.append(f"收件人：{to}")
+        if cc:
+            lines.append(f"抄送：{cc}")
+        if greeting:
+            lines.append("")
+            lines.append(greeting)
+        if body:
+            lines.append("")
+            lines.append("邮件正文：")
+            lines.append(body)
+        if closing:
+            lines.append("")
+            lines.append(closing)
+        return "\n".join(lines).strip()
+
+    def _extract_json_records_for_table(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates = (
+            payload.get("table"),
+            payload.get("rows"),
+            payload.get("records"),
+            payload.get("items"),
+            payload.get("data"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, list):
+                rows = [item for item in candidate if isinstance(item, dict) and item]
+                if rows:
+                    return rows[:30]
+        return []
+
+    def _render_records_markdown_table(self, records: list[dict[str, Any]]) -> str:
+        rows = [row for row in records if isinstance(row, dict) and row]
+        if not rows:
+            return ""
+        columns: list[str] = []
+        seen: set[str] = set()
+        for row in rows[:30]:
+            for raw_key in row.keys():
+                key = str(raw_key).strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                columns.append(key)
+                if len(columns) >= 10:
+                    break
+            if len(columns) >= 10:
+                break
+        if not columns:
+            return ""
+
+        def _cell(value: Any) -> str:
+            if value is None:
+                text = ""
+            elif isinstance(value, bool):
+                text = "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                text = str(value)
+            elif isinstance(value, str):
+                text = value.strip()
+            else:
+                text = self._shorten(json.dumps(value, ensure_ascii=False), 120)
+            return text.replace("|", r"\|").replace("\n", "<br>")
+
+        header = "| " + " | ".join(columns) + " |"
+        divider = "| " + " | ".join("---" for _ in columns) + " |"
+        body_lines: list[str] = []
+        for row in rows[:20]:
+            cells = [_cell(row.get(column)) for column in columns]
+            body_lines.append("| " + " | ".join(cells) + " |")
+        return "\n".join([header, divider, *body_lines]).strip()
+
+    def _render_json_value_for_user(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, dict):
+            lines: list[str] = []
+            for key, nested in list(value.items())[:8]:
+                nested_text = self._render_json_value_for_user(nested)
+                if not nested_text:
+                    continue
+                label = str(key).strip() or "item"
+                if "\n" in nested_text:
+                    lines.append(f"{label}:")
+                    lines.append(nested_text)
+                else:
+                    lines.append(f"{label}: {nested_text}")
+            return "\n".join(lines).strip()
+        if isinstance(value, list):
+            if not value:
+                return ""
+            if all(isinstance(item, str) for item in value[:8]):
+                return "\n".join(f"- {str(item).strip()}" for item in value[:8] if str(item).strip()).strip()
+            if all(isinstance(item, dict) for item in value[:8]):
+                return self._render_records_markdown_table([item for item in value if isinstance(item, dict)])
+            return self._shorten(json.dumps(value, ensure_ascii=False), 1000)
+        return str(value).strip()
 
     def _infer_bare_tool_call_from_text(
         self,
