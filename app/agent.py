@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field as dc_field, fields as dataclas
 import json
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -845,6 +846,57 @@ class OfficeAgent:
                 "last_repair_run": runtime.read_last_repair_run(),
                 "repair_runs": runtime.list_repair_runs(limit=5),
                 "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
+            }
+
+    def _debug_kernel_shadow_promote_rejects_path_refs(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-promote-path-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            source_dir = cfg.modules_dir / "router_rules" / "v1"
+            path_module_dir = runtime_dir / "shadow_router_path"
+            shutil.copytree(source_dir, path_module_dir)
+            stage = runtime.stage_shadow_manifest(overrides={"router": f"path:{path_module_dir}"})
+            promote_check = runtime.shadow_promote_check()
+            promotion = runtime.promote_shadow_manifest()
+            return {
+                "stage": stage,
+                "promote_check": promote_check,
+                "promotion": promotion,
+                "shadow_manifest": runtime.load_shadow_manifest().to_dict(),
+                "active_manifest": runtime.supervisor.load_active_manifest().to_dict(),
+            }
+
+    def _debug_kernel_shadow_patch_worker_persists_missing_tasks(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-patch-empty-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            patch_worker = runtime.run_shadow_patch_worker(
+                repair_run={"run_id": "synthetic-repair", "repair_tasks": []},
+                replay_record=None,
+                max_tasks=1,
+                max_rounds=3,
+                promote_if_healthy=False,
+            )
+            return {
+                "patch_worker": patch_worker,
+                "last_patch_worker_run": runtime.read_last_patch_worker_run(),
+                "patch_worker_runs": runtime.list_patch_worker_runs(limit=5),
             }
 
     def _module_registry(self):

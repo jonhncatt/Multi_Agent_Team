@@ -57,6 +57,9 @@ class KernelRuntime:
     def validate_active_manifest(self) -> dict[str, object]:
         return self.supervisor.validate_active_manifest()
 
+    def shadow_promote_check(self) -> dict[str, object]:
+        return self.supervisor.shadow_promote_check()
+
     def promote_shadow_manifest(self) -> dict[str, object]:
         result = self.supervisor.promote_shadow_manifest()
         if result.get("ok"):
@@ -87,10 +90,12 @@ class KernelRuntime:
         shadow.providers = providers
         self.write_shadow_manifest(shadow)
         validation = self.validate_shadow_manifest()
+        promote_check = self.shadow_promote_check()
         return {
             "ok": bool(validation.get("ok")),
             "shadow_manifest": shadow.to_dict(),
             "validation": validation,
+            "promote_check": promote_check,
         }
 
     def _last_shadow_run_path(self) -> Path:
@@ -439,13 +444,15 @@ class KernelRuntime:
                 "blocking_modules": [],
             }
         if promotion and not bool(promotion.get("ok")):
+            unsafe_refs = promotion.get("unsafe_refs")
+            blocking_modules = list(dict(unsafe_refs or {}).keys()) if isinstance(unsafe_refs, dict) else []
             return {
                 "ok": False,
                 "category": "promotion_failed",
                 "failed_stage": "promotion",
                 "reason": self._pipeline_failure_text(promotion) or "shadow_promotion_failed",
                 "retryable": False,
-                "blocking_modules": [],
+                "blocking_modules": blocking_modules,
             }
         return {
             "ok": True,
@@ -483,6 +490,8 @@ class KernelRuntime:
             hints.append("优先比对 replay.source_run_id 对应的 shadow log 和 replay.execution_trace，确认回放输入是否完整。")
             hints.append("如果 smoke 通过但 replay 失败，问题通常在多轮状态、附件上下文或最终整理链。")
         elif category == "promotion_failed":
+            if str(classification.get("reason") or "") == "path_ref_not_promotable":
+                hints.append("当前 shadow 还挂着 `path:` 临时模块引用。先把修好的模块变成正式版本引用，再 promote。")
             hints.append("先确认 validation/smoke/replay 全部为 ok，再检查 promote 的 rollback_pointer 和 active manifest 写入权限。")
         elif category == "stage_failed":
             hints.append("先确认 shadow manifest override 是否写入了有效模块引用。")
@@ -907,6 +916,7 @@ class KernelRuntime:
         started_at = datetime.now(timezone.utc).isoformat()
         stage = self.stage_shadow_manifest(overrides=overrides or {})
         validation = stage.get("validation") if isinstance(stage.get("validation"), dict) else self.validate_shadow_manifest()
+        promote_check = stage.get("promote_check") if isinstance(stage.get("promote_check"), dict) else self.shadow_promote_check()
         contracts = self.run_shadow_contracts()
         smoke: dict[str, object] = {}
         replay: dict[str, object] = {}
@@ -966,6 +976,7 @@ class KernelRuntime:
             "promotion_attempted": bool(req_ready),
             "stage": stage,
             "validation": validation,
+            "promote_check": promote_check,
             "contracts": contracts,
             "smoke": smoke,
             "replay": replay,
@@ -1116,6 +1127,7 @@ class KernelRuntime:
         repair_run: dict[str, object] | None = None,
         replay_record: dict[str, object] | None = None,
         max_tasks: int = 1,
+        max_rounds: int = 2,
         promote_if_healthy: bool | None = None,
     ) -> dict[str, object]:
         from app.agent import OfficeAgent
@@ -1133,82 +1145,109 @@ class KernelRuntime:
                 "started_at": started_at,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "reason": "missing_repair_tasks",
+                "max_tasks_requested": max(1, min(10, int(max_tasks))),
+                "max_rounds_requested": max(1, min(5, int(max_rounds))),
             }
+            self._write_json(self._patch_worker_runs_dir() / f"{run_id}.json", payload)
+            self._write_json(self._last_patch_worker_run_path(), payload)
             return payload
 
+        limit = max(1, min(10, int(max_tasks)))
+        base_pipeline = repair_payload.get("repaired_pipeline")
+        base_pipeline = dict(base_pipeline) if isinstance(base_pipeline, dict) else {}
+        smoke_message = str(base_pipeline.get("smoke_message") or "给我今天的新闻")
+        validate_provider = bool(base_pipeline.get("validate_provider", True))
+        promote_flag = bool(promote_if_healthy if promote_if_healthy is not None else base_pipeline.get("promote_if_healthy", False))
+        round_limit = max(1, min(5, int(max_rounds)))
+        rounds: list[dict[str, object]] = []
         executed_tasks: list[dict[str, object]] = []
         shadow_overrides: dict[str, object] = {}
-        limit = max(1, min(10, int(max_tasks)))
+        pipeline: dict[str, object] = dict(base_pipeline)
+        stop_reason = "max_rounds_reached"
+        previous_round: dict[str, object] = {}
 
-        for task in task_items[:limit]:
-            task_payload = dict(task or {})
-            task_dir = Path(str(task_payload.get("workspace_dir") or "")).resolve()
-            module_dir = task_dir / "module"
-            repair_task_path = task_dir / "repair_task.json"
-            before_hashes = self._hash_tree(module_dir)
-            worker_runtime_dir = task_dir / "_runtime"
-            worker_cfg = replace(
-                self.supervisor._config,
-                workspace_root=task_dir,
-                runtime_dir=worker_runtime_dir,
-                active_manifest_path=worker_runtime_dir / "active_manifest.json",
-                shadow_manifest_path=worker_runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=worker_runtime_dir / "rollback_pointer.json",
-                module_health_path=worker_runtime_dir / "module_health.json",
-                sessions_dir=task_dir / "_sessions",
-                uploads_dir=task_dir / "_uploads",
-                shadow_logs_dir=task_dir / "_shadow_logs",
-                token_stats_path=task_dir / "_token_stats.json",
-                allowed_roots=[task_dir],
-                default_extra_allowed_roots=[],
-                enable_shadow_logging=False,
-            )
-            worker_runtime = build_kernel_runtime(worker_cfg)
-            worker_agent = OfficeAgent(worker_cfg, kernel_runtime=worker_runtime)
-            settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
-            message = (
-                f"你正在修复一个 shadow 模块副本。先读取 {repair_task_path}，再检查并修改 {module_dir} 下文件。"
-                f"只允许修改 {module_dir} 内的文件，不要碰 live 代码，不要修改 {task_dir} 之外任何路径。"
-                "目标是让这个模块通过 repair_task.json 指定的修复目标。"
-                "必须实际调用读写工具完成修改。完成后简要说明修改了哪些文件。"
-            )
-            (
-                text,
-                tool_events,
-                _attachment_note,
-                execution_plan,
-                execution_trace,
-                pipeline_hooks,
-                _debug_flow,
-                _agent_panels,
-                active_roles,
-                current_role,
-                _role_states,
-                answer_bundle,
-                token_usage,
-                effective_model,
-                route_state,
-            ) = worker_agent.run_chat(
-                history_turns=[],
-                summary="",
-                user_message=message,
-                attachment_metas=[],
-                settings=settings,
-                session_id=f"repair-worker-{run_id}",
-                route_state={},
-                progress_cb=None,
-            )
-            after_hashes = self._hash_tree(module_dir)
-            changed_files = self._changed_files(before_hashes, after_hashes)
-            override = self._shadow_override_from_task(task_payload)
-            if "providers" in override:
-                shadow_overrides.setdefault("providers", {})
-                shadow_overrides["providers"].update(dict(override.get("providers") or {}))  # type: ignore[index]
-            else:
-                shadow_overrides.update(override)
-            executed_tasks.append(
-                {
+        for round_index in range(1, round_limit + 1):
+            round_tasks: list[dict[str, object]] = []
+            round_overrides: dict[str, object] = {}
+
+            for task in task_items[:limit]:
+                task_payload = dict(task or {})
+                task_dir = Path(str(task_payload.get("workspace_dir") or "")).resolve()
+                module_dir = task_dir / "module"
+                repair_task_path = task_dir / "repair_task.json"
+                repair_context = dict(task_payload)
+                repair_context["current_round"] = round_index
+                repair_context["max_rounds"] = round_limit
+                repair_context["last_pipeline_failure"] = dict(pipeline.get("failure_classification") or previous_round.get("failure_classification") or {})
+                repair_context["last_remediation_hints"] = list(pipeline.get("remediation_hints") or previous_round.get("remediation_hints") or [])
+                repair_context["previous_round_changed_files"] = list(previous_round.get("changed_files") or [])
+                self._write_json(repair_task_path, repair_context)
+                before_hashes = self._hash_tree(module_dir)
+                worker_runtime_dir = task_dir / "_runtime"
+                worker_cfg = replace(
+                    self.supervisor._config,
+                    workspace_root=task_dir,
+                    runtime_dir=worker_runtime_dir,
+                    active_manifest_path=worker_runtime_dir / "active_manifest.json",
+                    shadow_manifest_path=worker_runtime_dir / "shadow_manifest.json",
+                    rollback_pointer_path=worker_runtime_dir / "rollback_pointer.json",
+                    module_health_path=worker_runtime_dir / "module_health.json",
+                    sessions_dir=task_dir / "_sessions",
+                    uploads_dir=task_dir / "_uploads",
+                    shadow_logs_dir=task_dir / "_shadow_logs",
+                    token_stats_path=task_dir / "_token_stats.json",
+                    allowed_roots=[task_dir],
+                    default_extra_allowed_roots=[],
+                    enable_shadow_logging=False,
+                )
+                worker_runtime = build_kernel_runtime(worker_cfg)
+                worker_agent = OfficeAgent(worker_cfg, kernel_runtime=worker_runtime)
+                settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
+                message = (
+                    f"你正在修复一个 shadow 模块副本，第 {round_index}/{round_limit} 轮。"
+                    f"先读取 {repair_task_path}，再检查并修改 {module_dir} 下文件。"
+                    f"只允许修改 {module_dir} 内的文件，不要碰 live 代码，不要修改 {task_dir} 之外任何路径。"
+                    "目标是让这个模块通过 repair_task.json 指定的修复目标。"
+                    "如果上一轮还没修好，请优先根据 last_pipeline_failure 和 last_remediation_hints 继续修。"
+                    "必须实际调用读写工具完成修改。完成后简要说明修改了哪些文件。"
+                )
+                (
+                    text,
+                    tool_events,
+                    _attachment_note,
+                    execution_plan,
+                    execution_trace,
+                    pipeline_hooks,
+                    _debug_flow,
+                    _agent_panels,
+                    active_roles,
+                    current_role,
+                    _role_states,
+                    answer_bundle,
+                    token_usage,
+                    effective_model,
+                    route_state,
+                ) = worker_agent.run_chat(
+                    history_turns=[],
+                    summary="",
+                    user_message=message,
+                    attachment_metas=[],
+                    settings=settings,
+                    session_id=f"repair-worker-{run_id}-r{round_index}",
+                    route_state={},
+                    progress_cb=None,
+                )
+                after_hashes = self._hash_tree(module_dir)
+                changed_files = self._changed_files(before_hashes, after_hashes)
+                override = self._shadow_override_from_task(task_payload)
+                if "providers" in override:
+                    round_overrides.setdefault("providers", {})
+                    round_overrides["providers"].update(dict(override.get("providers") or {}))  # type: ignore[index]
+                else:
+                    round_overrides.update(override)
+                task_result = {
                     "label": str(task_payload.get("label") or ""),
+                    "round_index": round_index,
                     "workspace_dir": str(task_dir),
                     "module_dir": str(module_dir),
                     "changed_files": changed_files,
@@ -1224,28 +1263,59 @@ class KernelRuntime:
                     "effective_model": effective_model,
                     "route_state": route_state,
                 }
-            )
+                round_tasks.append(task_result)
+                executed_tasks.append(task_result)
 
-        base_pipeline = repair_payload.get("repaired_pipeline")
-        base_pipeline = dict(base_pipeline) if isinstance(base_pipeline, dict) else {}
-        smoke_message = str(base_pipeline.get("smoke_message") or "给我今天的新闻")
-        validate_provider = bool(base_pipeline.get("validate_provider", True))
-        promote_flag = bool(promote_if_healthy if promote_if_healthy is not None else base_pipeline.get("promote_if_healthy", False))
-        pipeline = self.run_shadow_pipeline(
-            overrides=shadow_overrides,
-            smoke_message=smoke_message,
-            validate_provider=validate_provider,
-            replay_record=replay_record,
-            promote_if_healthy=promote_flag,
-        )
+            shadow_overrides = round_overrides
+            pipeline = self.run_shadow_pipeline(
+                overrides=shadow_overrides,
+                smoke_message=smoke_message,
+                validate_provider=validate_provider,
+                replay_record=replay_record,
+                promote_if_healthy=promote_flag,
+            )
+            round_changed_files = sorted(
+                {
+                    changed_file
+                    for item in round_tasks
+                    for changed_file in list(item.get("changed_files") or [])
+                    if str(changed_file).strip()
+                }
+            )
+            round_record = {
+                "round_index": round_index,
+                "executed_tasks": round_tasks,
+                "changed_files": round_changed_files,
+                "changed_file_count": len(round_changed_files),
+                "shadow_overrides": dict(shadow_overrides),
+                "pipeline_run_id": str(pipeline.get("run_id") or ""),
+                "pipeline_ok": bool(pipeline.get("ok")),
+                "failure_classification": dict(pipeline.get("failure_classification") or {}),
+                "remediation_hints": list(pipeline.get("remediation_hints") or []),
+            }
+            rounds.append(round_record)
+            previous_round = round_record
+
+            if bool(pipeline.get("ok")):
+                stop_reason = "pipeline_ok"
+                break
+            if round_index == round_limit:
+                stop_reason = "max_rounds_reached"
+                break
+
         payload = {
             "ok": bool(pipeline.get("ok")),
             "run_id": run_id,
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "base_repair_run_id": str(repair_payload.get("run_id") or ""),
+            "max_tasks_requested": limit,
+            "max_rounds_requested": round_limit,
+            "stop_reason": stop_reason,
             "shadow_overrides": shadow_overrides,
             "executed_tasks": executed_tasks,
+            "rounds": rounds,
+            "round_count": len(rounds),
             "pipeline": pipeline,
         }
         patch_runs_dir = self._patch_worker_runs_dir()

@@ -185,11 +185,51 @@ class KernelSupervisor:
     def validate_shadow_manifest(self) -> dict[str, Any]:
         return self.validate_manifest(self.load_shadow_manifest())
 
+    def shadow_promote_check(self) -> dict[str, Any]:
+        return self.promote_check(self.load_shadow_manifest())
+
+    def promote_check(self, manifest: ActiveModuleManifest) -> dict[str, Any]:
+        unsafe_refs: dict[str, str] = {}
+
+        def collect(label: str, ref: str) -> None:
+            ref_text = str(ref or "").strip()
+            if ref_text.startswith("path:"):
+                unsafe_refs[label] = ref_text
+
+        collect("router", manifest.router)
+        collect("policy", manifest.policy)
+        collect("attachment_context", manifest.attachment_context)
+        collect("finalizer", manifest.finalizer)
+        collect("tool_registry", manifest.tool_registry)
+        for mode, ref in manifest.providers.items():
+            collect(f"provider:{mode}", ref)
+
+        if unsafe_refs:
+            return {
+                "ok": False,
+                "reason": "path_ref_not_promotable",
+                "unsafe_refs": unsafe_refs,
+            }
+        return {
+            "ok": True,
+            "reason": "",
+            "unsafe_refs": {},
+        }
+
     def promote_shadow_manifest(self) -> dict[str, Any]:
         shadow_manifest = self.load_shadow_manifest()
         validation = self.validate_manifest(shadow_manifest)
         if not validation["ok"]:
             return {"ok": False, "validation": validation}
+        promote_check = self.promote_check(shadow_manifest)
+        if not promote_check["ok"]:
+            return {
+                "ok": False,
+                "reason": str(promote_check.get("reason") or "shadow_manifest_not_promotable"),
+                "unsafe_refs": dict(promote_check.get("unsafe_refs") or {}),
+                "validation": validation,
+                "promote_check": promote_check,
+            }
 
         current_active = self.load_active_manifest()
         rollback_payload = {
@@ -202,6 +242,7 @@ class KernelSupervisor:
         return {
             "ok": True,
             "validation": validation,
+            "promote_check": promote_check,
             "active_manifest": shadow_manifest.to_dict(),
             "rollback_pointer": rollback_payload,
         }
@@ -376,6 +417,7 @@ class KernelSupervisor:
                 "last_shadow_run_path": str(self._config.runtime_dir / "last_shadow_run.json"),
                 "last_upgrade_run_path": str(self._config.runtime_dir / "last_upgrade_run.json"),
                 "last_repair_run_path": str(self._config.runtime_dir / "last_repair_run.json"),
+                "last_patch_worker_run_path": str(self._config.runtime_dir / "last_patch_worker_run.json"),
                 "shadow_runs_dir": str(self._config.runtime_dir / "shadow_runs"),
                 "upgrade_runs_dir": str(self._config.runtime_dir / "upgrade_runs"),
                 "repair_runs_dir": str(self._config.runtime_dir / "repair_runs"),

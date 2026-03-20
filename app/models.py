@@ -223,6 +223,7 @@ class HealthResponse(BaseModel):
     kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_promote_check: dict[str, object] = Field(default_factory=dict)
     kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
     kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
@@ -278,6 +279,7 @@ class KernelShadowPatchWorkerRequest(BaseModel):
     repair_run_id: str | None = None
     replay_run_id: str | None = None
     max_tasks: int = 1
+    max_rounds: int = 2
     promote_if_healthy: bool | None = None
 
 
@@ -294,6 +296,7 @@ class KernelRuntimeResponse(BaseModel):
     kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
     kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
+    kernel_shadow_promote_check: dict[str, object] = Field(default_factory=dict)
     kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
     kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
     kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)

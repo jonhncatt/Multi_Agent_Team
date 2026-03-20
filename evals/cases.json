@@ -2365,6 +2365,59 @@
     }
   },
   {
+    "name": "helper_debug_kernel_shadow_promote_rejects_path_refs",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_promote_rejects_path_refs",
+    "args": {},
+    "assert": {
+      "equals": {
+        "stage.ok": true,
+        "stage.promote_check.ok": false,
+        "promote_check.ok": false,
+        "promote_check.reason": "path_ref_not_promotable",
+        "promotion.ok": false,
+        "promotion.reason": "path_ref_not_promotable",
+        "active_manifest.router": "router_rules@1.0.0"
+      },
+      "contains": {
+        "shadow_manifest.router": [
+          "path:"
+        ],
+        "promote_check.unsafe_refs.router": [
+          "path:"
+        ],
+        "promotion.unsafe_refs.router": [
+          "path:"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_patch_worker_persists_missing_tasks",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_patch_worker_persists_missing_tasks",
+    "args": {},
+    "assert": {
+      "equals": {
+        "patch_worker.ok": false,
+        "patch_worker.reason": "missing_repair_tasks",
+        "last_patch_worker_run.reason": "missing_repair_tasks",
+        "patch_worker_runs.0.reason": "missing_repair_tasks"
+      },
+      "contains": {
+        "patch_worker.run_id": [
+          "-"
+        ],
+        "last_patch_worker_run.run_id": [
+          "-"
+        ],
+        "patch_worker_runs.0.run_id": [
+          "-"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

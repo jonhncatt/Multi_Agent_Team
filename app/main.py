@@ -242,6 +242,7 @@ def health() -> HealthResponse:
         kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
         kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
+        kernel_shadow_promote_check=dict(kernel_health.get("shadow_promote_check") or {}),
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
@@ -281,6 +282,7 @@ def _kernel_runtime_response(
         kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
         kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
+        kernel_shadow_promote_check=dict(kernel_health.get("shadow_promote_check") or {}),
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
@@ -355,6 +357,8 @@ def kernel_patch_worker_history(limit: int = 10) -> KernelRuntimeResponse:
             "ok": bool(item.get("ok")),
             "base_repair_run_id": str(item.get("base_repair_run_id") or ""),
             "task_count": len(item.get("executed_tasks") or []) if isinstance(item.get("executed_tasks"), list) else 0,
+            "round_count": int(item.get("round_count") or 0),
+            "stop_reason": str(item.get("stop_reason") or ""),
             "finished_at": str(item.get("finished_at") or ""),
         }
         for item in runs
@@ -407,6 +411,18 @@ def kernel_shadow_validate() -> KernelRuntimeResponse:
         ok=bool(validation.get("ok")),
         detail="shadow manifest 校验完成。",
         validation=validation,
+    )
+
+
+@app.get("/api/kernel/shadow/promote-check", response_model=KernelRuntimeResponse)
+def kernel_shadow_promote_check() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    promote_check = runtime.shadow_promote_check()
+    return _kernel_runtime_response(
+        ok=bool(promote_check.get("ok")),
+        detail="shadow promote 检查完成。",
+        validation=runtime.validate_shadow_manifest(),
+        pipeline={"promote_check": promote_check},
     )
 
 
@@ -579,6 +595,7 @@ def kernel_shadow_patch_worker(req: KernelShadowPatchWorkerRequest) -> KernelRun
         repair_run=repair_run,
         replay_record=replay_record if isinstance(replay_record, dict) else None,
         max_tasks=req.max_tasks,
+        max_rounds=req.max_rounds,
         promote_if_healthy=req.promote_if_healthy,
     )
     pipeline = patch_worker.get("pipeline") if isinstance(patch_worker.get("pipeline"), dict) else {}
