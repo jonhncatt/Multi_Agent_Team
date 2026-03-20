@@ -2226,6 +2226,28 @@
     }
   },
   {
+    "name": "helper_debug_kernel_shadow_contracts",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_contracts",
+    "args": {},
+    "assert": {
+      "equals": {
+        "contracts.ok": true
+      },
+      "contains": {
+        "contracts.checks.0.label": [
+          "router"
+        ],
+        "contracts.checks.0.resolved_ref": [
+          "router_rules@1.0.0"
+        ]
+      },
+      "min_value": {
+        "contracts.checks.0.ok": 1
+      }
+    }
+  },
+  {
     "name": "helper_debug_kernel_shadow_replay",
     "kind": "helper",
     "helper": "_debug_kernel_shadow_replay",
@@ -2240,6 +2262,35 @@
           "|",
           "表格",
           "张三"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_auto_repair_broken_manifest",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_auto_repair_broken_manifest",
+    "args": {},
+    "assert": {
+      "equals": {
+        "broken_pipeline.ok": false,
+        "broken_pipeline.failure_classification.category": "manifest_validation",
+        "repair.ok": true,
+        "repair.strategy": "reset_blocking_modules_to_active",
+        "repair.repaired_pipeline.ok": true,
+        "repair.repaired_pipeline.validation.ok": true,
+        "repair.repaired_pipeline.smoke.ok": true,
+        "last_repair_run.ok": true
+      },
+      "contains": {
+        "repair.applied_overrides.router": [
+          "router_rules@1.0.0"
+        ],
+        "shadow_manifest_after.router": [
+          "router_rules@1.0.0"
+        ],
+        "repair_runs.0.run_id": [
+          "-"
         ]
       }
     }

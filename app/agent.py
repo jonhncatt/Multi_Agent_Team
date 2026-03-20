@@ -723,6 +723,21 @@ class OfficeAgent:
             replay = runtime.run_shadow_replay(replay_record=replay_record)
             return {"replay": replay}
 
+    def _debug_kernel_shadow_contracts(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-contracts-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            contracts = runtime.run_shadow_contracts()
+            return {"contracts": contracts}
+
     def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-") as tmp_dir:
             runtime_dir = Path(tmp_dir).resolve()
@@ -792,6 +807,44 @@ class OfficeAgent:
                 "pipeline": pipeline,
                 "last_upgrade_run": runtime.read_last_upgrade_run(),
                 "upgrade_runs": runtime.list_upgrade_runs(limit=5),
+            }
+
+    def _debug_kernel_shadow_auto_repair_broken_manifest(
+        self,
+        broken_router_ref: str = "router_rules@999.0.0",
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-repair-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            broken_pipeline = runtime.run_shadow_pipeline(
+                overrides={"router": str(broken_router_ref)},
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
+                replay_record=None,
+                promote_if_healthy=False,
+            )
+            repair = runtime.run_shadow_auto_repair(
+                base_upgrade_run=broken_pipeline,
+                replay_record=None,
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
+                promote_if_healthy=False,
+                max_attempts=2,
+            )
+            return {
+                "broken_pipeline": broken_pipeline,
+                "repair": repair,
+                "last_repair_run": runtime.read_last_repair_run(),
+                "repair_runs": runtime.list_repair_runs(limit=5),
+                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
             }
 
     def _module_registry(self):

@@ -22,6 +22,7 @@ class KernelSupervisor:
     def _ensure_runtime_files(self) -> None:
         self._config.runtime_dir.mkdir(parents=True, exist_ok=True)
         (self._config.runtime_dir / "upgrade_runs").mkdir(parents=True, exist_ok=True)
+        (self._config.runtime_dir / "repair_runs").mkdir(parents=True, exist_ok=True)
         (self._config.runtime_dir / "shadow_runs").mkdir(parents=True, exist_ok=True)
         if not self._config.active_manifest_path.is_file():
             write_active_manifest(self._config.active_manifest_path, active_manifest_from_dict(DEFAULT_ACTIVE_MANIFEST))
@@ -130,6 +131,51 @@ class KernelSupervisor:
             "manifest": manifest.to_dict(),
             "resolved": resolved,
             "errors": errors,
+        }
+
+    def probe_manifest_contracts(self, manifest: ActiveModuleManifest) -> dict[str, Any]:
+        checks: list[dict[str, Any]] = []
+
+        def probe_one(kind: str, ref: str, *, label: str) -> None:
+            entry: dict[str, Any] = {
+                "label": label,
+                "kind": kind,
+                "requested_ref": ref,
+                "ok": False,
+            }
+            try:
+                module, reference = self._loader.load(ref, expected_kind=kind)
+                self._validate_module_instance(module, kind=kind, ref=reference.ref)
+                entry.update(
+                    {
+                        "ok": True,
+                        "resolved_ref": reference.ref,
+                        "module_id": reference.module_id,
+                        "version": reference.version,
+                        "capabilities": list(reference.capabilities),
+                    }
+                )
+                checker = getattr(module, "self_check", None)
+                if callable(checker):
+                    raw = checker()
+                    if isinstance(raw, dict):
+                        entry["self_check"] = dict(raw)
+            except Exception as exc:
+                entry["error"] = str(exc)
+            checks.append(entry)
+
+        probe_one("router", manifest.router, label="router")
+        probe_one("policy", manifest.policy, label="policy")
+        probe_one("attachment_context", manifest.attachment_context, label="attachment_context")
+        probe_one("finalizer", manifest.finalizer, label="finalizer")
+        probe_one("tool_registry", manifest.tool_registry, label="tool_registry")
+        for mode, ref in manifest.providers.items():
+            probe_one("provider", ref, label=f"provider:{mode}")
+
+        return {
+            "ok": all(bool(item.get("ok")) for item in checks),
+            "manifest": manifest.to_dict(),
+            "checks": checks,
         }
 
     def validate_active_manifest(self) -> dict[str, Any]:
@@ -328,7 +374,9 @@ class KernelSupervisor:
                 "module_health_path": str(self._config.module_health_path),
                 "last_shadow_run_path": str(self._config.runtime_dir / "last_shadow_run.json"),
                 "last_upgrade_run_path": str(self._config.runtime_dir / "last_upgrade_run.json"),
+                "last_repair_run_path": str(self._config.runtime_dir / "last_repair_run.json"),
                 "shadow_runs_dir": str(self._config.runtime_dir / "shadow_runs"),
                 "upgrade_runs_dir": str(self._config.runtime_dir / "upgrade_runs"),
+                "repair_runs_dir": str(self._config.runtime_dir / "repair_runs"),
             },
         )

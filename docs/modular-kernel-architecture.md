@@ -75,11 +75,13 @@ flowchart TD
 `shadow` 是唯一允许自我修复和试错的区域：
 
 - 先 stage
+- 再 contracts
 - 再 validate
 - 再 smoke
 - 再 replay
 - 通过后 promote
 - 不通过就 rollback
+- 确定性故障则走 auto-repair
 
 ## 未来闭环
 
@@ -110,6 +112,13 @@ flowchart TD
 4. 再做 replay 或真实回放
 5. 通过后原子切换 active manifest
 6. 失败则保留旧版本，继续修 shadow
+
+现在已经补上的运行时记录包括：
+
+- `last_upgrade_run`
+- `upgrade_runs`
+- `last_repair_run`
+- `repair_runs`
 
 这意味着：
 
@@ -156,9 +165,11 @@ flowchart TD
 
 所有升级先进入 `shadow`：
 
+- `contracts`
 - `validate`
 - `smoke`
 - `replay`
+- `auto-repair`
 - `promote`
 - `rollback`
 

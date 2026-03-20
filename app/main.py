@@ -32,6 +32,7 @@ from app.models import (
     HealthResponse,
     KernelManifestUpdateRequest,
     KernelShadowPipelineRequest,
+    KernelShadowAutoRepairRequest,
     KernelShadowReplayRequest,
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
@@ -243,6 +244,7 @@ def health() -> HealthResponse:
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
+        kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -255,9 +257,11 @@ def _kernel_runtime_response(
     ok: bool,
     detail: str = "",
     validation: dict[str, object] | None = None,
+    contracts: dict[str, object] | None = None,
     smoke: dict[str, object] | None = None,
     replay: dict[str, object] | None = None,
     pipeline: dict[str, object] | None = None,
+    repair: dict[str, object] | None = None,
 ) -> KernelRuntimeResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     tool_registry = get_agent()._debug_tool_registry_snapshot()
@@ -265,15 +269,18 @@ def _kernel_runtime_response(
         ok=ok,
         detail=detail,
         validation=dict(validation or {}),
+        contracts=dict(contracts or {}),
         smoke=dict(smoke or {}),
         replay=dict(replay or {}),
         pipeline=dict(pipeline or {}),
+        repair=dict(repair or {}),
         kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
         kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
         kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
         kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
         kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
         kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
+        kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
         kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
         kernel_module_health=dict(kernel_health.get("module_health") or {}),
         kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
@@ -289,6 +296,12 @@ def _find_shadow_replay_record(run_id: str | None = None) -> dict[str, Any] | No
     return recent[0] if recent else None
 
 
+def _find_upgrade_run(run_id: str | None = None) -> dict[str, Any] | None:
+    runtime = get_kernel_runtime()
+    payload = runtime.find_upgrade_run(run_id)
+    return payload if isinstance(payload, dict) and payload else None
+
+
 @app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
 def kernel_runtime_state() -> KernelRuntimeResponse:
     runtime = get_kernel_runtime()
@@ -296,6 +309,28 @@ def kernel_runtime_state() -> KernelRuntimeResponse:
         ok=True,
         detail="内核运行时状态。",
         validation=runtime.validate_shadow_manifest(),
+    )
+
+
+@app.get("/api/kernel/repairs", response_model=KernelRuntimeResponse)
+def kernel_repair_history(limit: int = 10) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    runs = runtime.list_repair_runs(limit=limit)
+    summary = [
+        {
+            "run_id": str(item.get("run_id") or ""),
+            "ok": bool(item.get("ok")),
+            "base_upgrade_run_id": str(item.get("base_upgrade_run_id") or ""),
+            "strategy": str(item.get("strategy") or ""),
+            "attempt_count": len(item.get("attempts") or []) if isinstance(item.get("attempts"), list) else 0,
+            "finished_at": str(item.get("finished_at") or ""),
+        }
+        for item in runs
+    ]
+    return _kernel_runtime_response(
+        ok=True,
+        detail="最近 repair attempts。",
+        repair={"repair_runs": summary},
     )
 
 
@@ -340,6 +375,19 @@ def kernel_shadow_validate() -> KernelRuntimeResponse:
         ok=bool(validation.get("ok")),
         detail="shadow manifest 校验完成。",
         validation=validation,
+    )
+
+
+@app.post("/api/kernel/shadow/contracts", response_model=KernelRuntimeResponse)
+def kernel_shadow_contracts() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    contracts = runtime.run_shadow_contracts()
+    validation = runtime.validate_shadow_manifest()
+    return _kernel_runtime_response(
+        ok=bool(contracts.get("ok")),
+        detail="shadow contracts 已执行。",
+        validation=validation,
+        contracts=contracts,
     )
 
 
@@ -434,6 +482,7 @@ def kernel_shadow_pipeline(req: KernelShadowPipelineRequest) -> KernelRuntimeRes
         promote_if_healthy=bool(req.promote_if_healthy),
     )
     validation = pipeline.get("validation") if isinstance(pipeline.get("validation"), dict) else {}
+    contracts = pipeline.get("contracts") if isinstance(pipeline.get("contracts"), dict) else {}
     smoke = pipeline.get("smoke") if isinstance(pipeline.get("smoke"), dict) else {}
     replay = pipeline.get("replay") if isinstance(pipeline.get("replay"), dict) else {}
 
@@ -441,9 +490,45 @@ def kernel_shadow_pipeline(req: KernelShadowPipelineRequest) -> KernelRuntimeRes
         ok=bool(pipeline.get("ok")),
         detail="shadow pipeline 已执行。",
         validation=validation,
+        contracts=contracts,
         smoke=smoke,
         replay=replay,
         pipeline=pipeline,
+    )
+
+
+@app.post("/api/kernel/shadow/auto-repair", response_model=KernelRuntimeResponse)
+def kernel_shadow_auto_repair(req: KernelShadowAutoRepairRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
+    if not isinstance(base_upgrade_run, dict):
+        return _kernel_runtime_response(
+            ok=False,
+            detail="未找到可修复的 upgrade attempt。",
+        )
+    replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
+    replay_record = _find_shadow_replay_record(replay_source_run_id)
+    repair = runtime.run_shadow_auto_repair(
+        base_upgrade_run=base_upgrade_run,
+        replay_record=replay_record if isinstance(replay_record, dict) else None,
+        smoke_message=req.smoke_message,
+        validate_provider=req.validate_provider,
+        promote_if_healthy=req.promote_if_healthy,
+        max_attempts=req.max_attempts,
+    )
+    repaired_pipeline = repair.get("repaired_pipeline") if isinstance(repair.get("repaired_pipeline"), dict) else {}
+    validation = repaired_pipeline.get("validation") if isinstance(repaired_pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
+    contracts = repaired_pipeline.get("contracts") if isinstance(repaired_pipeline.get("contracts"), dict) else {}
+    smoke = repaired_pipeline.get("smoke") if isinstance(repaired_pipeline.get("smoke"), dict) else {}
+    replay = repaired_pipeline.get("replay") if isinstance(repaired_pipeline.get("replay"), dict) else {}
+    return _kernel_runtime_response(
+        ok=bool(repair.get("ok")),
+        detail="shadow auto-repair 已执行。",
+        validation=validation,
+        contracts=contracts,
+        smoke=smoke,
+        replay=replay,
+        repair=repair,
     )
 
 

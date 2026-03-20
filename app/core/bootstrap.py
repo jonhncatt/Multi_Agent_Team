@@ -100,6 +100,12 @@ class KernelRuntime:
     def _last_upgrade_run_path(self) -> Path:
         return self.context.runtime_dir / "last_upgrade_run.json"
 
+    def _repair_runs_dir(self) -> Path:
+        return self.context.runtime_dir / "repair_runs"
+
+    def _last_repair_run_path(self) -> Path:
+        return self.context.runtime_dir / "last_repair_run.json"
+
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -124,6 +130,33 @@ class KernelRuntime:
     def list_upgrade_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
         max_items = max(1, min(200, int(limit)))
         files = sorted(self._upgrade_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
+        out: list[dict[str, object]] = []
+        for path in files:
+            payload = self._read_json_dict(path)
+            if payload:
+                out.append(payload)
+            if len(out) >= max_items:
+                break
+        return out
+
+    def find_upgrade_run(self, run_id: str | None) -> dict[str, object]:
+        wanted = str(run_id or "").strip()
+        if not wanted:
+            return self.read_last_upgrade_run()
+        path = self._upgrade_runs_dir() / f"{wanted}.json"
+        if path.is_file():
+            return self._read_json_dict(path)
+        for item in self.list_upgrade_runs(limit=200):
+            if str(item.get("run_id") or "").strip() == wanted:
+                return item
+        return {}
+
+    def read_last_repair_run(self) -> dict[str, object]:
+        return self._read_json_dict(self._last_repair_run_path())
+
+    def list_repair_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        max_items = max(1, min(200, int(limit)))
+        files = sorted(self._repair_runs_dir().glob("*.json"), key=lambda path: path.name, reverse=True)
         out: list[dict[str, object]] = []
         for path in files:
             payload = self._read_json_dict(path)
@@ -172,6 +205,23 @@ class KernelRuntime:
             if label and label not in labels:
                 labels.append(label)
         return labels
+
+    def _safe_active_override_for_label(self, label: str, active_manifest: ActiveModuleManifest) -> tuple[str, str] | None:
+        raw = str(label or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("provider:"):
+            mode = raw.split(":", 1)[1].strip()
+            if mode:
+                ref = str(active_manifest.providers.get(mode) or "").strip()
+                if ref:
+                    return (f"providers.{mode}", ref)
+            return None
+        if raw in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
+            ref = str(getattr(active_manifest, raw, "") or "").strip()
+            if ref:
+                return (raw, ref)
+        return None
 
     def _classify_pipeline_failure(
         self,
@@ -484,6 +534,13 @@ class KernelRuntime:
         self._write_json(self._last_shadow_run_path(), payload)
         return payload
 
+    def run_shadow_contracts(self) -> dict[str, object]:
+        shadow_manifest = self.load_shadow_manifest()
+        payload = self.supervisor.probe_manifest_contracts(shadow_manifest)
+        payload["shadow_manifest"] = shadow_manifest.to_dict()
+        payload["checked_at"] = datetime.now(timezone.utc).isoformat()
+        return payload
+
     def run_shadow_pipeline(
         self,
         *,
@@ -497,11 +554,12 @@ class KernelRuntime:
         started_at = datetime.now(timezone.utc).isoformat()
         stage = self.stage_shadow_manifest(overrides=overrides or {})
         validation = stage.get("validation") if isinstance(stage.get("validation"), dict) else self.validate_shadow_manifest()
+        contracts = self.run_shadow_contracts()
         smoke: dict[str, object] = {}
         replay: dict[str, object] = {}
         promotion: dict[str, object] = {}
 
-        if bool(validation.get("ok")):
+        if bool(validation.get("ok")) and bool(contracts.get("ok")):
             smoke = self.run_shadow_smoke(
                 user_message=smoke_message,
                 validate_provider=bool(validate_provider),
@@ -520,6 +578,7 @@ class KernelRuntime:
             req_ready = False
 
         overall_ok = bool(stage.get("ok")) and bool(validation.get("ok"))
+        overall_ok = overall_ok and bool(contracts.get("ok"))
         if smoke:
             overall_ok = overall_ok and bool(smoke.get("ok"))
         if replay:
@@ -547,11 +606,14 @@ class KernelRuntime:
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "target_overrides": dict(overrides or {}),
+            "smoke_message": str(smoke_message or ""),
+            "validate_provider": bool(validate_provider),
             "replay_source_run_id": str(replay_record.get("run_id") or "") if isinstance(replay_record, dict) else "",
             "promote_if_healthy": bool(promote_if_healthy),
             "promotion_attempted": bool(req_ready),
             "stage": stage,
             "validation": validation,
+            "contracts": contracts,
             "smoke": smoke,
             "replay": replay,
             "promotion": promotion,
@@ -560,6 +622,132 @@ class KernelRuntime:
         }
         self._write_json(self._upgrade_runs_dir() / f"{run_id}.json", payload)
         self._write_json(self._last_upgrade_run_path(), payload)
+        return payload
+
+    def run_shadow_auto_repair(
+        self,
+        *,
+        base_upgrade_run: dict[str, object] | None = None,
+        replay_record: dict[str, object] | None = None,
+        smoke_message: str | None = None,
+        validate_provider: bool | None = None,
+        promote_if_healthy: bool | None = None,
+        max_attempts: int = 1,
+    ) -> dict[str, object]:
+        base = dict(base_upgrade_run or self.read_last_upgrade_run())
+        repair_run_id = self._pipeline_run_id()
+        started_at = datetime.now(timezone.utc).isoformat()
+        if not base:
+            payload = {
+                "ok": False,
+                "run_id": repair_run_id,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "missing_base_upgrade_run",
+            }
+            self._write_json(self._repair_runs_dir() / f"{repair_run_id}.json", payload)
+            self._write_json(self._last_repair_run_path(), payload)
+            return payload
+
+        classification = base.get("failure_classification")
+        classification = dict(classification) if isinstance(classification, dict) else {}
+        category = str(classification.get("category") or "")
+        blocking_modules = [str(item).strip() for item in classification.get("blocking_modules") or [] if str(item).strip()]
+        active_manifest = self.supervisor.load_active_manifest()
+        attempt_limit = max(1, min(5, int(max_attempts)))
+        attempts: list[dict[str, object]] = []
+        applied_overrides: dict[str, object] = {}
+        strategy = ""
+        current_base = base
+
+        for attempt_index in range(1, attempt_limit + 1):
+            current_classification = current_base.get("failure_classification")
+            current_classification = dict(current_classification) if isinstance(current_classification, dict) else {}
+            current_category = str(current_classification.get("category") or "")
+            current_blocks = [str(item).strip() for item in current_classification.get("blocking_modules") or [] if str(item).strip()]
+
+            repair_plan: dict[str, object] = {"ok": False, "reason": "unsupported_failure_category", "strategy": "", "overrides": {}}
+            if current_category in {"manifest_validation", "stage_failed"} and current_blocks:
+                overrides: dict[str, object] = {}
+                provider_overrides: dict[str, str] = {}
+                for label in current_blocks:
+                    override = self._safe_active_override_for_label(label, active_manifest)
+                    if not override:
+                        continue
+                    key, ref = override
+                    if key.startswith("providers."):
+                        provider_overrides[key.split(".", 1)[1]] = ref
+                    else:
+                        overrides[key] = ref
+                if provider_overrides:
+                    overrides["providers"] = provider_overrides
+                if overrides:
+                    repair_plan = {
+                        "ok": True,
+                        "reason": "reset_blocking_modules_to_active",
+                        "strategy": "reset_blocking_modules_to_active",
+                        "overrides": overrides,
+                    }
+            elif current_category == "shadow_smoke":
+                provider_info = current_base.get("smoke")
+                provider_info = dict(provider_info) if isinstance(provider_info, dict) else {}
+                provider_payload = provider_info.get("provider")
+                provider_payload = dict(provider_payload) if isinstance(provider_payload, dict) else {}
+                mode = str(provider_payload.get("mode") or "").strip()
+                if mode:
+                    active_ref = str(active_manifest.providers.get(mode) or "").strip()
+                    if active_ref:
+                        repair_plan = {
+                            "ok": True,
+                            "reason": "reset_provider_to_active",
+                            "strategy": "reset_provider_to_active",
+                            "overrides": {"providers": {mode: active_ref}},
+                        }
+
+            attempt_record: dict[str, object] = {
+                "attempt_index": attempt_index,
+                "category": current_category,
+                "blocking_modules": current_blocks,
+                "plan": repair_plan,
+            }
+            attempts.append(attempt_record)
+            if not bool(repair_plan.get("ok")):
+                break
+
+            override_payload = dict(repair_plan.get("overrides") or {})
+            if override_payload == applied_overrides:
+                attempt_record["plan"] = dict(repair_plan) | {"ok": False, "reason": "duplicate_repair_plan"}
+                break
+
+            applied_overrides = override_payload
+            strategy = str(repair_plan.get("strategy") or "")
+            repaired_pipeline = self.run_shadow_pipeline(
+                overrides=applied_overrides,
+                smoke_message=str(smoke_message or current_base.get("smoke_message") or "给我今天的新闻"),
+                validate_provider=bool(validate_provider if validate_provider is not None else current_base.get("validate_provider", True)),
+                replay_record=replay_record,
+                promote_if_healthy=bool(promote_if_healthy if promote_if_healthy is not None else current_base.get("promote_if_healthy", False)),
+            )
+            attempt_record["pipeline_run_id"] = str(repaired_pipeline.get("run_id") or "")
+            attempt_record["pipeline_ok"] = bool(repaired_pipeline.get("ok"))
+            current_base = repaired_pipeline
+            if bool(repaired_pipeline.get("ok")):
+                break
+
+        payload = {
+            "ok": bool(current_base.get("ok")),
+            "run_id": repair_run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "base_upgrade_run_id": str(base.get("run_id") or ""),
+            "base_failure_classification": classification,
+            "strategy": strategy,
+            "applied_overrides": applied_overrides,
+            "attempts": attempts,
+            "repaired_pipeline": current_base if isinstance(current_base, dict) else {},
+        }
+        self._write_json(self._repair_runs_dir() / f"{repair_run_id}.json", payload)
+        self._write_json(self._last_repair_run_path(), payload)
         return payload
 
 
