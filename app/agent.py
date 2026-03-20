@@ -14,6 +14,27 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
+from app.agents.reviewer_helpers import (
+    normalize_reviewer_verdict as normalize_reviewer_verdict_helper,
+    reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
+    summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
+)
+from app.agents.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
+from app.agents.role_helpers import (
+    make_default_role_result as make_default_role_result_helper,
+    make_role_context as make_role_context_helper,
+    make_role_result as make_role_result_helper,
+    make_role_spec as make_role_spec_helper,
+    role_payload_dict as role_payload_dict_helper,
+)
+from app.agents.specialist_role import (
+    build_specialist_input_payload as build_specialist_input_payload_helper,
+    format_specialist_system_hint as format_specialist_system_hint_helper,
+    normalize_specialist_brief_payload as normalize_specialist_brief_payload_helper,
+    run_specialist_with_context as run_specialist_with_context_helper,
+    specialist_contract as specialist_contract_helper,
+    specialist_fallback as specialist_fallback_helper,
+)
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig
 from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
@@ -324,29 +345,6 @@ _INITIAL_CONTENT_TRIAGE_HINTS = (
     "can you read",
     "can you make sense",
 )
-
-_SPECIALIST_LABELS = {
-    "researcher": "Researcher",
-    "file_reader": "FileReader",
-    "summarizer": "Summarizer",
-    "fixer": "Fixer",
-}
-
-_ROLE_KINDS = {
-    "router": "hybrid",
-    "coordinator": "processor",
-    "pipeline_hooks": "processor",
-    "planner": "agent",
-    "researcher": "agent",
-    "file_reader": "agent",
-    "summarizer": "agent",
-    "fixer": "agent",
-    "worker": "agent",
-    "conflict_detector": "agent",
-    "reviewer": "agent",
-    "revision": "agent",
-    "structurer": "agent",
-}
 
 @dataclass
 class ExecutionState:
@@ -3335,15 +3333,12 @@ class OfficeAgent:
         tool_names: list[str] | tuple[str, ...] | None = None,
         output_keys: list[str] | tuple[str, ...] | None = None,
     ) -> RoleSpec:
-        role_key = str(role or "").strip().lower()
-        kind = _ROLE_KINDS.get(role_key, "agent")
-        return RoleSpec(
-            role=role_key,
-            kind=kind,
-            llm_driven=kind != "processor",
+        return make_role_spec_helper(
+            self,
+            role,
             description=description,
-            tool_names=tuple(tool_names or ()),
-            output_keys=tuple(output_keys or ()),
+            tool_names=tool_names,
+            output_keys=output_keys,
         )
 
     def _make_role_context(
@@ -3365,36 +3360,27 @@ class OfficeAgent:
         user_content: Any = None,
         extra: dict[str, Any] | None = None,
     ) -> RoleContext:
-        return RoleContext(
-            role=str(role or "").strip().lower(),
+        return make_role_context_helper(
+            self,
+            role,
             requested_model=requested_model,
             user_message=user_message,
             effective_user_message=effective_user_message,
             history_summary=history_summary,
-            attachment_metas=list(attachment_metas or []),
-            tool_events=list(tool_events or []),
-            planner_brief=dict(self._role_payload_dict(planner_brief)),
-            reviewer_brief=dict(self._role_payload_dict(reviewer_brief)),
-            conflict_brief=dict(self._role_payload_dict(conflict_brief)),
-            route=dict(route or {}),
-            execution_trace=list(execution_trace or []),
+            attachment_metas=attachment_metas,
+            tool_events=tool_events,
+            planner_brief=planner_brief,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
+            route=route,
+            execution_trace=execution_trace,
             response_text=response_text,
             user_content=user_content,
-            extra=dict(extra or {}),
+            extra=extra,
         )
 
     def _make_role_result(self, spec: RoleSpec, context: RoleContext, payload: dict[str, Any], raw_text: str) -> RoleResult:
-        summary = str(payload.get("summary") or payload.get("objective") or "").strip()
-        return RoleResult(
-            spec=spec,
-            context=context,
-            payload=payload,
-            raw_text=raw_text,
-            summary=summary,
-            usage=payload.get("usage") or self._empty_usage(),
-            effective_model=str(payload.get("effective_model") or context.requested_model).strip(),
-            notes=self._normalize_string_list(payload.get("notes") or [], limit=6, item_limit=220),
-        )
+        return make_role_result_helper(self, spec, context, payload, raw_text)
 
     def _make_default_role_result(
         self,
@@ -3420,8 +3406,10 @@ class OfficeAgent:
         output_keys: list[str] | tuple[str, ...] | None = None,
         raw_text: str = "",
     ) -> RoleResult:
-        context = self._make_role_context(
+        return make_default_role_result_helper(
+            self,
             role,
+            payload=payload,
             requested_model=requested_model,
             user_message=user_message,
             effective_user_message=effective_user_message,
@@ -3436,16 +3424,14 @@ class OfficeAgent:
             response_text=response_text,
             user_content=user_content,
             extra=extra,
+            description=description,
+            tool_names=tool_names,
+            output_keys=output_keys,
+            raw_text=raw_text,
         )
-        spec = self._make_role_spec(role, description=description, tool_names=tool_names, output_keys=output_keys)
-        return self._make_role_result(spec, context, payload, raw_text)
 
     def _role_payload_dict(self, value: RoleResult | dict[str, Any] | None) -> dict[str, Any]:
-        if isinstance(value, RoleResult):
-            return value.payload
-        if isinstance(value, dict):
-            return value
-        return {}
+        return role_payload_dict_helper(value)
 
     def _run_planner(
         self,
@@ -6215,58 +6201,7 @@ class OfficeAgent:
         return f"{_SPECIALIST_LABELS.get(specialist, specialist)} 生成专门简报。"
 
     def _specialist_contract(self, specialist: str, *, initial_triage_request: bool = False) -> dict[str, Any]:
-        key = str(specialist or "").strip().lower()
-        if key == "researcher":
-            return {
-                "bullet_limit": 4,
-                "query_limit": 4,
-                "allow_queries": True,
-                "scope": "生成联网取证策略与检索关键词，不直接下最终结论。",
-                "stop_rules": [
-                    "不要直接替 Worker 给最终答案。",
-                    "不要编造来源或未抓取证据。",
-                ],
-            }
-        if key == "file_reader":
-            return {
-                "bullet_limit": 4,
-                "query_limit": 4,
-                "allow_queries": True,
-                "scope": "生成文件定位与精读策略，不直接输出最终结论。",
-                "stop_rules": [
-                    "先定位命中再建议精读，不要泛读整库。",
-                    "不要把缺失路径当作最终结论。",
-                ],
-            }
-        if key == "summarizer":
-            return {
-                "bullet_limit": 5 if initial_triage_request else 4,
-                "query_limit": 0,
-                "allow_queries": False,
-                "scope": "生成回答组织建议与重点提炼，不直接输出最终答复。",
-                "stop_rules": [
-                    "不要停留在能力确认话术。",
-                    "不要改写成证据审计风格。",
-                ],
-            }
-        if key == "fixer":
-            return {
-                "bullet_limit": 4,
-                "query_limit": 2,
-                "allow_queries": False,
-                "scope": "生成修复优先级与变更建议，不直接改写最终输出。",
-                "stop_rules": [
-                    "不要执行写入动作。",
-                    "不要跳过风险说明。",
-                ],
-            }
-        return {
-            "bullet_limit": 4,
-            "query_limit": 2,
-            "allow_queries": False,
-            "scope": "生成专门简报，支持 Worker 执行。",
-            "stop_rules": ["不要直接输出最终答案。"],
-        }
+        return specialist_contract_helper(specialist, initial_triage_request=initial_triage_request)
 
     def _build_specialist_input_payload(
         self,
@@ -6277,17 +6212,14 @@ class OfficeAgent:
         payload_preview: str,
         contract: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
-            "specialist": str(specialist or "").strip().lower(),
-            "effective_user_request": context.primary_user_request or "(empty)",
-            "raw_user_message": context.user_message.strip() or "(empty)",
-            "history_summary": context.history_summary.strip() or "(none)",
-            "route": route_summary,
-            "attachments": self._summarize_attachment_metas_for_agents(context.attachment_metas),
-            "context_preview": payload_preview or "(empty)",
-            "scope": str(contract.get("scope") or "").strip(),
-            "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-        }
+        return build_specialist_input_payload_helper(
+            self,
+            specialist=specialist,
+            context=context,
+            route_summary=route_summary,
+            payload_preview=payload_preview,
+            contract=contract,
+        )
 
     def _normalize_specialist_brief_payload(
         self,
@@ -6301,50 +6233,17 @@ class OfficeAgent:
         contract: dict[str, Any],
         initial_triage_request: bool = False,
     ) -> dict[str, Any]:
-        bullet_limit = max(1, int(contract.get("bullet_limit") or 4))
-        query_limit = max(0, int(contract.get("query_limit") or 0))
-        allow_queries = bool(contract.get("allow_queries"))
-        brief = {
-            "role": specialist,
-            "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
-            "bullets": self._normalize_string_list(
-                parsed.get("bullets") or fallback["bullets"],
-                limit=bullet_limit,
-                item_limit=180,
-            ),
-            "worker_hint": str(parsed.get("worker_hint") or fallback["worker_hint"]).strip() or fallback["worker_hint"],
-            "queries": (
-                self._normalize_string_list(parsed.get("queries") or [], limit=query_limit, item_limit=80)
-                if allow_queries and query_limit > 0
-                else []
-            ),
-            "scope": str(parsed.get("scope") or fallback.get("scope") or contract.get("scope") or "").strip(),
-            "stop_rules": self._normalize_string_list(
-                parsed.get("stop_rules") or fallback.get("stop_rules") or contract.get("stop_rules") or [],
-                limit=3,
-                item_limit=120,
-            ),
-            "usage": usage,
-            "effective_model": effective_model,
-            "notes": notes,
-        }
-        if specialist == "summarizer" and initial_triage_request:
-            brief["bullets"] = self._normalize_string_list(
-                [
-                    "不要只回答“能理解/可以看懂”。",
-                    "首次回复先给一句结论，再给 3 到 5 条具体发现。",
-                    "优先提取主题、entry 含义、主要问题、时间线或状态变化。",
-                    *self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180),
-                ],
-                limit=5,
-                item_limit=180,
-            )
-            worker_hint = str(brief.get("worker_hint") or "").strip()
-            brief["worker_hint"] = (
-                "如果用户只是先确认你能不能理解内容，也要直接给高信息量摘要，不要停留在能力确认。"
-                + (f" {worker_hint}" if worker_hint else "")
-            ).strip()
-        return brief
+        return normalize_specialist_brief_payload_helper(
+            self,
+            specialist=specialist,
+            parsed=parsed,
+            fallback=fallback,
+            usage=usage,
+            effective_model=effective_model,
+            notes=notes,
+            contract=contract,
+            initial_triage_request=initial_triage_request,
+        )
 
     def _specialist_fallback(
         self,
@@ -6354,88 +6253,13 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         initial_triage_request: bool = False,
     ) -> dict[str, Any]:
-        contract = self._specialist_contract(specialist, initial_triage_request=initial_triage_request)
-        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
-        if specialist == "researcher":
-            return {
-                "role": specialist,
-                "summary": "优先聚焦公开来源、近期时间线与权威报道。",
-                "bullets": [
-                    "优先用 search_web 找候选，再用 fetch_web 读正文。",
-                    "优先查看权威媒体、官方赛事和可核实新闻来源。",
-                ],
-                "worker_hint": "先围绕时间、地点、事件三件事取证，再给结论，避免只基于搜索摘要。",
-                "queries": [],
-                "scope": str(contract.get("scope") or ""),
-                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-                "usage": self._empty_usage(),
-                "effective_model": requested_model,
-                "notes": [],
-            }
-        if specialist == "file_reader":
-            return {
-                "role": specialist,
-                "summary": "先缩小目标范围，再进入命中上下文或相关附件。",
-                "bullets": [
-                    f"附件概览: {self._shorten(attachment_summary, 120)}",
-                    "优先定位关键词、章节、表格或命中片段，再读取上下文。",
-                ],
-                "worker_hint": "文件任务先做定位，再精读命中附近内容，不要泛读整份文档。",
-                "queries": [],
-                "scope": str(contract.get("scope") or ""),
-                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-                "usage": self._empty_usage(),
-                "effective_model": requested_model,
-                "notes": [],
-            }
-        if specialist == "summarizer":
-            if initial_triage_request:
-                return {
-                    "role": specialist,
-                    "summary": "先确认内容可读，但主体必须直接给出高信息量首次摘要。",
-                    "bullets": [
-                        "首次回复先给一句结论，再补 3-5 条具体发现。",
-                        "优先提取主题、对象、entry 含义、主要问题、时间线或状态变化。",
-                        "避免停留在“可以理解 XML/Atom 结构”这类能力确认。",
-                    ],
-                    "worker_hint": (
-                        "用户是在确认你能不能理解内容时，也要直接给有帮助的摘要；"
-                        "不要把回答停留在能力确认或流程说明上。"
-                    ),
-                    "queries": [],
-                    "scope": str(contract.get("scope") or ""),
-                    "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-                    "usage": self._empty_usage(),
-                    "effective_model": requested_model,
-                    "notes": [],
-                }
-            return {
-                "role": specialist,
-                "summary": "直接围绕用户问题提炼当前内联内容的核心信息。",
-                "bullets": [
-                    "先给结论，再补 2-4 条关键点。",
-                    "避免流程化话术，不要改写成取证报告。",
-                ],
-                "worker_hint": "直接总结当前消息和附件内容，不要解释内部流程，也不要假装缺少工具。",
-                "queries": [],
-                "scope": str(contract.get("scope") or ""),
-                "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-                "usage": self._empty_usage(),
-                "effective_model": requested_model,
-                "notes": [],
-            }
-        return {
-            "role": specialist,
-            "summary": f"{_SPECIALIST_LABELS.get(specialist, specialist)} 已回退到默认简报。",
-            "bullets": [],
-            "worker_hint": "",
-            "queries": [],
-            "scope": str(contract.get("scope") or ""),
-            "stop_rules": self._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
-            "usage": self._empty_usage(),
-            "effective_model": requested_model,
-            "notes": [],
-        }
+        return specialist_fallback_helper(
+            self,
+            specialist=specialist,
+            requested_model=requested_model,
+            attachment_metas=attachment_metas,
+            initial_triage_request=initial_triage_request,
+        )
 
     def _run_specialist_role(
         self,
@@ -6462,155 +6286,10 @@ class OfficeAgent:
         return result.payload, result.raw_text
 
     def _run_specialist_with_context(self, *, context: RoleContext) -> RoleResult:
-        specialist = context.role
-        initial_triage_request = self._looks_like_initial_content_triage_request(context.user_message)
-        contract = self._specialist_contract(specialist, initial_triage_request=initial_triage_request)
-        spec = self._make_role_spec(
-            specialist,
-            description=f"{_SPECIALIST_LABELS.get(specialist, specialist)} 专门简报生成。",
-            output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-        )
-        fallback = self._specialist_fallback(
-            specialist=specialist,
-            requested_model=context.requested_model,
-            attachment_metas=context.attachment_metas,
-            initial_triage_request=initial_triage_request,
-        )
-        if specialist not in _SPECIALIST_LABELS:
-            fallback["notes"] = [f"未知专门角色: {specialist}"]
-            raw_text = json.dumps({"error": "unknown specialist"}, ensure_ascii=False)
-            return self._make_role_result(spec, context, fallback, raw_text)
-
-        payload_preview = self._shorten(self._content_to_text(context.user_content), 16000)
-        route_summary = json.dumps(
-            {
-                "task_type": context.route.get("task_type"),
-                "complexity": context.route.get("complexity"),
-                "use_worker_tools": bool(context.route.get("use_worker_tools")),
-                "use_reviewer": bool(context.route.get("use_reviewer")),
-            },
-            ensure_ascii=False,
-        )
-        specialist_input_payload = self._build_specialist_input_payload(
-            specialist=specialist,
-            context=context,
-            route_summary=route_summary,
-            payload_preview=payload_preview,
-            contract=contract,
-        )
-        specialist_input = json.dumps(specialist_input_payload, ensure_ascii=False, indent=2)
-
-        if specialist == "researcher":
-            system_prompt = (
-                "你是 Researcher 专门角色。"
-                "你的职责是为后续 Worker 生成联网取证简报，而不是直接回答用户。"
-                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
-                "必须以 effective_user_request 作为主要分析目标。"
-                "聚焦：搜索角度、来源优先级、需要核对的时间/地点/人物关系。"
-                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
-                "bullets 最多 4 条，queries 最多 4 条，stop_rules 最多 3 条。"
-            )
-        elif specialist == "file_reader":
-            system_prompt = (
-                "你是 FileReader 专门角色。"
-                "你的职责是为文档/附件任务生成阅读与定位简报，而不是直接回答用户。"
-                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
-                "必须以 effective_user_request 作为主要阅读目标。"
-                "聚焦：应优先看的文件、章节、关键词、命中策略。"
-                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
-                "bullets 最多 4 条，queries 最多 4 条，stop_rules 最多 3 条。"
-            )
-        elif specialist == "summarizer":
-            bullet_limit = max(1, int(contract.get("bullet_limit") or 4))
-            system_prompt = (
-                "你是 Summarizer 专门角色。"
-                "你的职责是为简单理解任务生成内容提炼简报，而不是输出最终答复。"
-                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
-                "必须以 effective_user_request 作为主要整理目标。"
-                "聚焦：用户真正要的结论、重点信息、回答组织方式。"
-                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
-                f"bullets 最多 {bullet_limit} 条；queries 必须返回空数组；stop_rules 最多 3 条。"
-            )
-            if initial_triage_request:
-                system_prompt += (
-                    "如果用户是在问“你能不能理解/帮我看一下”，"
-                    "不要只回答“可以理解”。"
-                    "你必须引导 Worker 直接给出高信息量首次摘要："
-                    "先一句结论，再给 3 到 5 条具体发现，"
-                    "例如主题、对象、时间、状态变化、异常点、主要问题或记录类型；"
-                    "最后再用一句话说明还能继续从哪些角度深挖。"
-                )
-        else:
-            system_prompt = (
-                "你是专门角色。"
-                f"scope 固定围绕：{str(contract.get('scope') or '').strip()} "
-                '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries, scope, stop_rules。'
-            )
-
-        messages = [
-            self._SystemMessage(content=system_prompt),
-            self._HumanMessage(content=specialist_input),
-        ]
-        try:
-            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
-                messages=messages,
-                model=self.config.summary_model or context.requested_model,
-                max_output_tokens=900,
-                enable_tools=False,
-            )
-            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
-            parsed = self._parse_json_object(raw_text)
-            usage = self._extract_usage_from_message(ai_msg)
-            if not parsed:
-                fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 未返回标准 JSON，已回退默认简报。", *notes]
-                fallback["usage"] = usage
-                fallback["effective_model"] = effective_model
-                return self._make_role_result(spec, context, fallback, raw_text)
-            brief = self._normalize_specialist_brief_payload(
-                specialist=specialist,
-                parsed=parsed,
-                fallback=fallback,
-                usage=usage,
-                effective_model=effective_model,
-                notes=notes,
-                contract=contract,
-                initial_triage_request=initial_triage_request,
-            )
-            return self._make_role_result(spec, context, brief, raw_text)
-        except Exception as exc:
-            fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 调用失败，已回退默认简报: {self._shorten(exc, 180)}"]
-            raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
-            return self._make_role_result(spec, context, fallback, raw_text)
+        return run_specialist_with_context_helper(self, context=context)
 
     def _format_specialist_system_hint(self, specialist: str, brief: RoleResult | dict[str, Any]) -> str:
-        brief_payload = self._role_payload_dict(brief)
-        label = _SPECIALIST_LABELS.get(specialist, specialist)
-        lines = [f"专门角色摘要（来自 {label}）："]
-        summary = str(brief_payload.get("summary") or "").strip()
-        bullets = self._normalize_string_list(brief_payload.get("bullets") or [], limit=5, item_limit=180)
-        worker_hint = str(brief_payload.get("worker_hint") or "").strip()
-        queries = self._normalize_string_list(brief_payload.get("queries") or [], limit=4, item_limit=80)
-        scope = str(brief_payload.get("scope") or "").strip()
-        stop_rules = self._normalize_string_list(brief_payload.get("stop_rules") or [], limit=3, item_limit=120)
-        if summary:
-            lines.append(f"摘要: {summary}")
-        if scope:
-            lines.append(f"范围: {scope}")
-        if bullets:
-            lines.append("要点:")
-            lines.extend(f"- {item}" for item in bullets)
-        if queries:
-            lines.append("建议关键词/查询:")
-            lines.extend(f"- {item}" for item in queries)
-        if stop_rules:
-            lines.append("边界:")
-            lines.extend(f"- {item}" for item in stop_rules)
-        if worker_hint:
-            lines.append(f"执行提示: {worker_hint}")
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return format_specialist_system_hint_helper(self, specialist, brief)
 
     def _summarize_attachment_metas_for_agents(self, attachment_metas: list[dict[str, Any]]) -> str:
         if not attachment_metas:
@@ -9820,19 +9499,7 @@ class OfficeAgent:
         return selected
 
     def _reviewer_readonly_tool_names(self) -> list[str]:
-        return [
-            "list_directory",
-            "read_text_file",
-            "search_text_in_file",
-            "multi_query_search",
-            "doc_index_build",
-            "read_section_by_heading",
-            "table_extract",
-            "fact_check_file",
-            "search_codebase",
-            "search_web",
-            "fetch_web",
-        ]
+        return reviewer_readonly_tool_names_helper()
 
     def _normalize_reviewer_verdict(
         self,
@@ -9848,149 +9515,22 @@ class OfficeAgent:
         web_tools_success: bool,
         attachment_context_available: bool = False,
     ) -> str:
-        verdict = str(raw_verdict or "pass").strip().lower()
-        if verdict == "needs_attention":
-            if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
-                spec_lookup_request and "search_text_in_file" not in set(readonly_checks)
-            ):
-                return "block"
-            if attachment_context_available and not readonly_checks:
-                return "warn"
-            return "warn"
-        if verdict in {"pass", "warn", "block"}:
-            if verdict == "block" and conflict_realtime_only and web_tools_success:
-                return "warn"
-            if verdict == "block" and attachment_context_available and not readonly_checks and not conflict_has_conflict:
-                return "warn"
-            return verdict
-
-        has_risks = bool(self._normalize_string_list(risks or [], limit=4, item_limit=180))
-        has_followups = bool(self._normalize_string_list(followups or [], limit=4, item_limit=180))
-        readonly_set = set(readonly_checks)
-        if conflict_has_conflict and not (conflict_realtime_only and web_tools_success):
-            return "block"
-        if spec_lookup_request and "search_text_in_file" not in readonly_set:
-            return "block"
-        if evidence_required_mode and not readonly_set:
-            return "block"
-        if has_risks or has_followups:
-            return "warn"
-        return "pass"
+        return normalize_reviewer_verdict_helper(
+            self,
+            raw_verdict,
+            risks=risks,
+            followups=followups,
+            spec_lookup_request=spec_lookup_request,
+            evidence_required_mode=evidence_required_mode,
+            readonly_checks=readonly_checks,
+            conflict_has_conflict=conflict_has_conflict,
+            conflict_realtime_only=conflict_realtime_only,
+            web_tools_success=web_tools_success,
+            attachment_context_available=attachment_context_available,
+        )
 
     def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:
-        if not isinstance(result, dict):
-            return f"{name} 返回了非结构化结果。"
-
-        if not bool(result.get("ok")):
-            return f"{name} 失败: {self._shorten(result.get('error') or 'unknown error', 120)}"
-
-        if name == "fact_check_file":
-            verdict = str(result.get("verdict") or "unknown").strip() or "unknown"
-            evidence_count = int(result.get("evidence_count") or 0)
-            queries = self._normalize_string_list(result.get("queries_used") or [], limit=3, item_limit=40)
-            query_text = ", ".join(queries) if queries else "(none)"
-            return f"fact_check_file verdict={verdict}, evidence={evidence_count}, queries={query_text}"
-
-        if name == "search_text_in_file":
-            query = str(result.get("query") or "").strip() or "(empty)"
-            matches = list(result.get("matches") or [])
-            match_count = int(result.get("match_count") or len(matches))
-            first = matches[0] if matches else {}
-            page_hint = int(first.get("page_hint") or 0)
-            matched_text = self._shorten(first.get("matched_text") or "", 60) if first else ""
-            if page_hint > 0:
-                return f"search_text_in_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
-            return f"search_text_in_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
-
-        if name == "multi_query_search":
-            queries = self._normalize_string_list(result.get("queries") or [], limit=4, item_limit=40)
-            matches = list(result.get("matches") or [])
-            match_count = int(result.get("match_count") or len(matches))
-            first = matches[0] if matches else {}
-            page_hint = int(first.get("page_hint") or 0)
-            return f"multi_query_search queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
-
-        if name == "doc_index_build":
-            page_count = int(result.get("page_count") or 0)
-            heading_count = int(result.get("heading_count") or 0)
-            cached = bool(result.get("cached"))
-            return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
-
-        if name == "read_section_by_heading":
-            heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip() or "(not found)"
-            page_start = int(result.get("page_start") or 0)
-            page_end = int(result.get("page_end") or 0)
-            if page_start > 0:
-                return f"read_section_by_heading matched={heading}, pages={page_start}-{page_end or page_start}"
-            return f"read_section_by_heading matched={heading}"
-
-        if name == "table_extract":
-            tables = list(result.get("tables") or [])
-            table_count = int(result.get("table_count") or len(tables))
-            first = tables[0] if tables else {}
-            page = int(first.get("page") or 0)
-            rows = len(first.get("rows") or []) if isinstance(first, dict) else 0
-            if page > 0:
-                return f"table_extract tables={table_count}, first_page={page}, first_rows={rows}"
-            return f"table_extract tables={table_count}, first_rows={rows}"
-
-        if name == "search_codebase":
-            matches = list(result.get("matches") or [])
-            match_count = int(result.get("match_count") or len(matches))
-            first = matches[0] if matches else {}
-            path = str(first.get("path") or "").strip()
-            line = int(first.get("line") or 0)
-            if path:
-                return f"search_codebase matches={match_count}, first={path}:{line or '?'}"
-            return f"search_codebase matches={match_count}"
-
-        if name == "search_web":
-            query = str(result.get("query") or "").strip() or "(empty)"
-            count = int(result.get("count") or 0)
-            engine = str(result.get("engine") or "unknown").strip() or "unknown"
-            rows = list(result.get("results") or [])
-            first = rows[0] if rows else {}
-            first_title = self._shorten(first.get("title") or "", 60) if isinstance(first, dict) else ""
-            return f"search_web query={query}, count={count}, engine={engine}, first={first_title or '(none)'}"
-
-        if name == "fetch_web":
-            url = str(result.get("url") or "").strip() or "(empty)"
-            source_format = str(result.get("source_format") or result.get("content_type") or "unknown").strip()
-            length = int(result.get("length") or 0)
-            warning = self._shorten(result.get("warning") or "", 80)
-            if warning:
-                return (
-                    f"fetch_web url={self._shorten(url, 80)}, format={source_format or 'unknown'}, "
-                    f"length={length}, warning={warning}"
-                )
-            return f"fetch_web url={self._shorten(url, 80)}, format={source_format or 'unknown'}, length={length}"
-
-        if name == "read_text_file":
-            path = str(result.get("path") or "").strip()
-            length = int(result.get("length") or 0)
-            start_char = int(result.get("start_char") or 0)
-            end_char = int(result.get("end_char") or 0)
-            truncated = bool(result.get("truncated"))
-            if bool(result.get("line_mode")):
-                start_line = int(result.get("start_line") or 0)
-                end_line = int(result.get("end_line") or 0)
-                total_lines = int(result.get("total_lines") or 0)
-                return (
-                    f"read_text_file path={self._shorten(path, 60)}, chars={length}, "
-                    f"lines={start_line}-{end_line}/{total_lines}, truncated={str(truncated).lower()}"
-                )
-            return (
-                f"read_text_file path={self._shorten(path, 60)}, chars={length}, "
-                f"range={start_char}-{end_char}, truncated={str(truncated).lower()}"
-            )
-
-        if name == "list_directory":
-            path = str(result.get("path") or "").strip() or "."
-            entries = result.get("entries") or []
-            count = len(entries) if isinstance(entries, list) else 0
-            return f"list_directory path={self._shorten(path, 60)}, entries={count}"
-
-        return f"{name} 已完成复核。"
+        return summarize_reviewer_tool_result_helper(self, name=name, result=result)
 
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
