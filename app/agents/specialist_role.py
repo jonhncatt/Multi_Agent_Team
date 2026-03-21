@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agents.planning_support import summarize_attachment_metas_for_agents
 from app.agents.role_catalog import SPECIALIST_LABELS
 from app.agents.role_helpers import make_role_result, make_role_spec
 from app.role_runtime import RoleContext, RoleResult
@@ -78,7 +79,7 @@ def build_specialist_input_payload(
         "raw_user_message": context.user_message.strip() or "(empty)",
         "history_summary": context.history_summary.strip() or "(none)",
         "route": route_summary,
-        "attachments": agent._summarize_attachment_metas_for_agents(context.attachment_metas),
+        "attachments": summarize_attachment_metas_for_agents(agent, context.attachment_metas),
         "context_preview": payload_preview or "(empty)",
         "scope": str(contract.get("scope") or "").strip(),
         "stop_rules": agent._normalize_string_list(contract.get("stop_rules") or [], limit=3, item_limit=120),
@@ -152,7 +153,7 @@ def specialist_fallback(
     initial_triage_request: bool = False,
 ) -> dict[str, Any]:
     contract = specialist_contract(specialist, initial_triage_request=initial_triage_request)
-    attachment_summary = agent._summarize_attachment_metas_for_agents(attachment_metas)
+    attachment_summary = summarize_attachment_metas_for_agents(agent, attachment_metas)
     if specialist == "researcher":
         return {
             "role": specialist,

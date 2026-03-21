@@ -2248,6 +2248,32 @@
     }
   },
   {
+    "name": "helper_debug_kernel_shadow_contracts_capability_smoke",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_contracts",
+    "args": {},
+    "assert": {
+      "equals": {
+        "contracts.ok": true
+      },
+      "contains": {
+        "contracts.capability_checks.0.label": [
+          "router:web_news"
+        ],
+        "contracts.capability_checks.5.detail": [
+          "| 姓名 | 分数 |"
+        ],
+        "contracts.capability_checks.6.detail": [
+          "邮件主题：测试邮件"
+        ]
+      },
+      "min_value": {
+        "contracts.capability_checks.0.ok": 1,
+        "contracts.capability_checks.6.ok": 1
+      }
+    }
+  },
+  {
     "name": "helper_debug_kernel_shadow_replay",
     "kind": "helper",
     "helper": "_debug_kernel_shadow_replay",

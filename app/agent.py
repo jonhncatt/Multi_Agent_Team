@@ -19,7 +19,29 @@ from app.agents.reviewer_helpers import (
     reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
     summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
 )
+from app.agents.answer_bundle_support import (
+    augment_bundle_warnings as augment_bundle_warnings_helper,
+    citation_kind as citation_kind_helper,
+    citation_strength as citation_strength_helper,
+    extract_answer_summary as extract_answer_summary_helper,
+    fallback_answer_bundle as fallback_answer_bundle_helper,
+    normalize_claim_record as normalize_claim_record_helper,
+    split_claim_candidates as split_claim_candidates_helper,
+    strip_answer_bundle_meta as strip_answer_bundle_meta_helper,
+)
+from app.agents.planning_support import (
+    build_execution_plan as build_execution_plan_helper,
+    summarize_attachment_metas_for_agents as summarize_attachment_metas_for_agents_helper,
+)
 from app.agents.planner_role import run_planner_role as run_planner_role_helper
+from app.agents.review_support import (
+    format_tool_event_for_review as format_tool_event_for_review_helper,
+    has_successful_local_file_access as has_successful_local_file_access_helper,
+    prepare_tool_result_for_llm as prepare_tool_result_for_llm_helper,
+    summarize_tool_events_for_review as summarize_tool_events_for_review_helper,
+    summarize_validation_context as summarize_validation_context_helper,
+    summarize_write_tool_events as summarize_write_tool_events_helper,
+)
 from app.agents.reviewer_role import run_reviewer_role as run_reviewer_role_helper
 from app.agents.revision_role import run_revision_role as run_revision_role_helper
 from app.agents.role_contracts import (
@@ -4129,59 +4151,16 @@ class OfficeAgent:
         reviewer_brief: RoleResult | dict[str, Any],
         conflict_brief: RoleResult | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        reviewer_payload = self._role_payload_dict(reviewer_brief)
-        conflict_payload = self._role_payload_dict(conflict_brief)
-        summary = self._extract_answer_summary(final_text)
-        citations_by_id = {
-            str(item.get("id") or "").strip(): item for item in citations if str(item.get("id") or "").strip()
-        }
-        evidence_ids = [
-            cid
-            for cid, item in citations_by_id.items()
-            if self._citation_kind(item) == "evidence"
-        ]
-        candidate_ids = [
-            cid
-            for cid, item in citations_by_id.items()
-            if self._citation_kind(item) == "candidate"
-        ]
-        claims: list[dict[str, Any]] = []
-        for statement in self._split_claim_candidates(final_text)[:5]:
-            linked_ids = evidence_ids[: min(2, len(evidence_ids))] or candidate_ids[: min(2, len(candidate_ids))]
-            claims.append(
-                self._normalize_claim_record(
-                    statement=statement,
-                    citation_ids=linked_ids,
-                    confidence="medium" if evidence_ids else "low",
-                    status="supported" if evidence_ids else "needs_review",
-                    citations_by_id=citations_by_id,
-                )
-            )
-        warnings = self._normalize_string_list(
-            list(reviewer_payload.get("risks") or [])
-            + list(reviewer_payload.get("followups") or [])
-            + list(conflict_payload.get("concerns") or []),
-            limit=5,
-            item_limit=220,
+        return fallback_answer_bundle_helper(
+            self,
+            final_text=final_text,
+            citations=citations,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
         )
-        warnings = self._augment_bundle_warnings(warnings=warnings, citations=citations)
-        return {
-            "summary": summary,
-            "claims": claims,
-            "citations": citations,
-            "warnings": warnings,
-            "usage": self._empty_usage(),
-            "effective_model": "",
-            "notes": [],
-        }
 
     def _strip_answer_bundle_meta(self, bundle: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "summary": str(bundle.get("summary") or "").strip(),
-            "claims": list(bundle.get("claims") or []),
-            "citations": list(bundle.get("citations") or []),
-            "warnings": list(bundle.get("warnings") or []),
-        }
+        return strip_answer_bundle_meta_helper(bundle)
 
     def _should_emit_answer_bundle(self, citations: list[dict[str, Any]]) -> bool:
         return bool(citations)
@@ -4199,16 +4178,10 @@ class OfficeAgent:
         return task_type in {"evidence_lookup", "attachment_tooling", "web_research"}
 
     def _citation_kind(self, citation: dict[str, Any]) -> str:
-        kind = str(citation.get("kind") or "").strip().lower()
-        if kind in {"evidence", "candidate"}:
-            return kind
-        return "candidate" if str(citation.get("tool") or "").strip() == "search_web" else "evidence"
+        return citation_kind_helper(citation)
 
     def _citation_strength(self, citation: dict[str, Any]) -> int:
-        if self._citation_kind(citation) != "evidence":
-            return 0
-        confidence = str(citation.get("confidence") or "medium").strip().lower()
-        return {"high": 3, "medium": 2, "low": 1}.get(confidence, 2)
+        return citation_strength_helper(citation)
 
     def _normalize_claim_record(
         self,
@@ -4219,51 +4192,20 @@ class OfficeAgent:
         status: str,
         citations_by_id: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        linked_ids = [cid for cid in citation_ids if cid in citations_by_id][:4]
-        linked_citations = [citations_by_id[cid] for cid in linked_ids]
-        evidence_strength = max((self._citation_strength(item) for item in linked_citations), default=0)
-        has_evidence = any(self._citation_kind(item) == "evidence" for item in linked_citations)
-
-        normalized_confidence = confidence if confidence in {"high", "medium", "low"} else "medium"
-        normalized_status = status if status in {"supported", "partially_supported", "needs_review"} else "needs_review"
-
-        if not linked_ids:
-            normalized_confidence = "low"
-            normalized_status = "needs_review"
-        elif not has_evidence:
-            normalized_confidence = "low"
-            normalized_status = "needs_review"
-        elif evidence_strength <= 1:
-            if normalized_confidence == "high":
-                normalized_confidence = "medium"
-            if normalized_status == "supported":
-                normalized_status = "partially_supported"
-
-        return {
-            "statement": self._shorten(statement, 220),
-            "citation_ids": linked_ids,
-            "confidence": normalized_confidence,
-            "status": normalized_status,
-        }
+        return normalize_claim_record_helper(
+            self,
+            statement=statement,
+            citation_ids=citation_ids,
+            confidence=confidence,
+            status=status,
+            citations_by_id=citations_by_id,
+        )
 
     def _augment_bundle_warnings(self, *, warnings: list[str], citations: list[dict[str, Any]]) -> list[str]:
-        normalized = self._normalize_string_list(warnings, limit=5, item_limit=220)
-        if not citations:
-            return normalized
-        if all(self._citation_kind(item) == "candidate" for item in citations if isinstance(item, dict)):
-            normalized = self._normalize_string_list(
-                ["当前来源仅为搜索候选链接，尚未抓取正文，结论需复核。", *normalized],
-                limit=5,
-                item_limit=220,
-            )
-        return normalized
+        return augment_bundle_warnings_helper(self, warnings=warnings, citations=citations)
 
     def _extract_answer_summary(self, final_text: str) -> str:
-        cleaned = " ".join(str(final_text or "").strip().split())
-        if not cleaned:
-            return ""
-        sentence = re.split(r"(?<=[。.!?！？])\s+", cleaned, maxsplit=1)[0]
-        return self._shorten(sentence or cleaned, 220)
+        return extract_answer_summary_helper(self, final_text)
 
     def _build_followup_topic_hint(self, *, user_message: str, history_turns: list[dict[str, Any]]) -> str:
         current = str(user_message or "").strip()
@@ -5789,33 +5731,7 @@ class OfficeAgent:
         return any(pattern in raw for pattern in patterns)
 
     def _split_claim_candidates(self, final_text: str) -> list[str]:
-        raw = str(final_text or "").strip()
-        if not raw:
-            return []
-        normalized = raw.replace("\r\n", "\n")
-        candidates: list[str] = []
-        for line in normalized.splitlines():
-            line = line.strip().lstrip("-*•").strip()
-            if not line:
-                continue
-            parts = [item.strip() for item in re.split(r"(?<=[。.!?！？])\s+", line) if item.strip()]
-            candidates.extend(parts or [line])
-            if len(candidates) >= 8:
-                break
-        out: list[str] = []
-        seen: set[str] = set()
-        for item in candidates:
-            compact = " ".join(item.split())
-            if len(compact) < 8:
-                continue
-            key = compact.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(self._shorten(compact, 220))
-            if len(out) >= 5:
-                break
-        return out
+        return split_claim_candidates_helper(self, final_text)
 
     def _format_planner_system_hint(self, planner_brief: RoleResult | dict[str, Any]) -> str:
         planner_payload = self._role_payload_dict(planner_brief)
@@ -5985,18 +5901,7 @@ class OfficeAgent:
         return format_specialist_system_hint_helper(self, specialist, brief)
 
     def _summarize_attachment_metas_for_agents(self, attachment_metas: list[dict[str, Any]]) -> str:
-        if not attachment_metas:
-            return "(none)"
-        lines: list[str] = []
-        for idx, meta in enumerate(attachment_metas[:8], start=1):
-            name = str(meta.get("original_name") or meta.get("name") or f"file_{idx}")
-            kind = str(meta.get("kind") or "other")
-            size = self._format_bytes(meta.get("size"))
-            suffix = str(meta.get("suffix") or "")
-            lines.append(f"{idx}. {name} kind={kind} size={size} suffix={suffix or '-'}")
-        if len(attachment_metas) > 8:
-            lines.append(f"... and {len(attachment_metas) - 8} more")
-        return "\n".join(lines)
+        return summarize_attachment_metas_for_agents_helper(self, attachment_metas)
 
     def _parse_tool_event_preview(self, event: ToolEvent) -> dict[str, Any] | None:
         raw = str(event.output_preview or "").strip()
@@ -6020,92 +5925,10 @@ class OfficeAgent:
         return None
 
     def _summarize_validation_context(self, tool_events: list[ToolEvent]) -> dict[str, Any]:
-        web_tool_prefixes = ("search_web", "fetch_web", "download_web_file")
-        notes: list[str] = []
-        warnings: list[str] = []
-        used = False
-        success = False
-
-        for event in tool_events:
-            base_name = str(event.name or "").strip()
-            if not base_name.startswith(web_tool_prefixes):
-                continue
-            used = True
-            ok_flag = self._tool_event_ok(event)
-            parsed = self._parse_tool_event_preview(event) or {}
-            if ok_flag is True:
-                success = True
-
-            detail = base_name
-            if base_name.startswith("search_web"):
-                query = str((event.input or {}).get("query") or parsed.get("query") or "").strip()
-                count = int(parsed.get("count") or 0)
-                engine = str(parsed.get("engine") or "").strip()
-                parts = [detail]
-                if query:
-                    parts.append(f"query={self._shorten(query, 60)}")
-                if count:
-                    parts.append(f"count={count}")
-                if engine:
-                    parts.append(f"engine={engine}")
-                detail = ", ".join(parts)
-            elif base_name == "fetch_web":
-                url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
-                source_format = str(parsed.get("source_format") or parsed.get("content_type") or "").strip()
-                parts = [detail]
-                if url:
-                    parts.append(f"url={self._shorten(url, 80)}")
-                if source_format:
-                    parts.append(f"format={source_format}")
-                detail = ", ".join(parts)
-            elif base_name == "download_web_file":
-                url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
-                path = str(parsed.get("path") or "").strip()
-                parts = [detail]
-                if url:
-                    parts.append(f"url={self._shorten(url, 80)}")
-                if path:
-                    parts.append(f"path={self._shorten(path, 80)}")
-                detail = ", ".join(parts)
-
-            if ok_flag is True:
-                detail += " [ok]"
-            elif ok_flag is False:
-                detail += " [failed]"
-            notes.append(detail)
-
-            warning = str(parsed.get("warning") or "").strip()
-            if warning:
-                warnings.append(f"{base_name}: {self._shorten(warning, 160)}")
-
-        return {
-            "web_tools_used": used,
-            "web_tools_success": success,
-            "web_tool_notes": self._normalize_string_list(notes, limit=6, item_limit=180),
-            "web_tool_warnings": self._normalize_string_list(warnings, limit=4, item_limit=180),
-        }
+        return summarize_validation_context_helper(self, tool_events)
 
     def _has_successful_local_file_access(self, tool_events: list[ToolEvent]) -> bool:
-        local_file_tools = {
-            "list_directory",
-            "read_text_file",
-            "search_text_in_file",
-            "multi_query_search",
-            "doc_index_build",
-            "read_section_by_heading",
-            "table_extract",
-            "fact_check_file",
-            "search_codebase",
-            "extract_zip",
-            "extract_msg_attachments",
-        }
-        for event in tool_events:
-            name = str(event.name or "").strip()
-            if name not in local_file_tools:
-                continue
-            if self._tool_event_ok(event) is True:
-                return True
-        return False
+        return has_successful_local_file_access_helper(self, tool_events)
 
     def _has_text_search_evidence(self, tool_events: list[ToolEvent]) -> bool:
         search_tools = {"search_text_in_file", "multi_query_search", "search_codebase"}
@@ -6134,105 +5957,13 @@ class OfficeAgent:
         return any(marker in lowered for marker in markers)
 
     def _summarize_tool_events_for_review(self, tool_events: list[ToolEvent], limit: int = 12) -> list[str]:
-        if not tool_events:
-            return []
-
-        keep_names = {
-            "write_text_file",
-            "append_text_file",
-            "replace_in_file",
-            "copy_file",
-            "extract_zip",
-            "extract_msg_attachments",
-        }
-        kept_indexes: list[int] = []
-        seen_indexes: set[int] = set()
-
-        for idx, event in enumerate(tool_events):
-            name = str(event.name or "").strip()
-            if name in keep_names:
-                kept_indexes.append(idx)
-                seen_indexes.add(idx)
-
-        tail_keep = max(0, limit - len(kept_indexes))
-        for idx in range(max(0, len(tool_events) - tail_keep), len(tool_events)):
-            if idx in seen_indexes:
-                continue
-            kept_indexes.append(idx)
-            seen_indexes.add(idx)
-
-        if not kept_indexes:
-            kept_indexes = list(range(max(0, len(tool_events) - limit), len(tool_events)))
-        kept_indexes = sorted(kept_indexes)[-max(1, limit) :]
-        return [
-            self._format_tool_event_for_review(idx=idx, event=tool_events[idx])
-            for idx in kept_indexes
-        ]
+        return summarize_tool_events_for_review_helper(self, tool_events, limit=limit)
 
     def _format_tool_event_for_review(self, *, idx: int, event: ToolEvent) -> str:
-        name = str(event.name or "unknown").strip() or "unknown"
-        args = json.dumps(event.input or {}, ensure_ascii=False)
-        parsed = self._parse_tool_event_preview(event) or {}
-        status = self._tool_event_ok(event)
-        details: list[str] = []
-        if status is True:
-            details.append("ok")
-        elif status is False:
-            details.append("failed")
-        path = str(parsed.get("path") or "").strip()
-        if path:
-            details.append(f"path={path}")
-        action = str(parsed.get("action") or "").strip()
-        if action:
-            details.append(f"action={action}")
-        query = str((event.input or {}).get("query") or parsed.get("query") or "").strip()
-        if query:
-            details.append(f"query={self._shorten(query, 80)}")
-        match_count = parsed.get("match_count")
-        if isinstance(match_count, int):
-            details.append(f"match_count={match_count}")
-        replacements = parsed.get("replacements")
-        if isinstance(replacements, int):
-            details.append(f"replacements={replacements}")
-        error = str(parsed.get("error") or "").strip()
-        if error:
-            details.append(f"error={self._shorten(error, 120)}")
-        if not details:
-            preview = self._shorten(str(event.output_preview or "").strip(), 120)
-            if preview:
-                details.append(preview)
-        detail_text = "; ".join(details)
-        return f"{idx + 1}. {name}({args}){f' -> {detail_text}' if detail_text else ''}"
+        return format_tool_event_for_review_helper(self, idx=idx, event=event)
 
     def _summarize_write_tool_events(self, tool_events: list[ToolEvent], limit: int = 6) -> list[str]:
-        lines: list[str] = []
-        for event in tool_events:
-            name = str(event.name or "").strip()
-            if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
-                continue
-            parsed = self._parse_tool_event_preview(event) or {}
-            ok = self._tool_event_ok(event)
-            path = str(parsed.get("path") or "").strip() or str((event.input or {}).get("path") or "").strip()
-            action = str(parsed.get("action") or "").strip()
-            if name == "copy_file" and not path:
-                path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
-            parts = [name]
-            if ok is True:
-                parts.append("ok")
-            elif ok is False:
-                parts.append("failed")
-            if action:
-                parts.append(f"action={action}")
-            if path:
-                parts.append(f"path={path}")
-            replacements = parsed.get("replacements")
-            if isinstance(replacements, int):
-                parts.append(f"replacements={replacements}")
-            error = str(parsed.get("error") or "").strip()
-            if error:
-                parts.append(f"error={self._shorten(error, 120)}")
-            lines.append(" | ".join(parts))
-        return lines[-max(1, limit) :]
+        return summarize_write_tool_events_helper(self, tool_events, limit=limit)
 
     def _successful_write_targets(self, tool_events: list[ToolEvent]) -> list[str]:
         targets: list[str] = []
@@ -8736,38 +8467,7 @@ class OfficeAgent:
         settings: ChatSettings,
         route: dict[str, Any] | None = None,
     ) -> list[str]:
-        route = route or {}
-        specialists = self._normalize_specialists(route.get("specialists") or [])
-        task_type = str(route.get("task_type") or "standard")
-        primary_intent = str(route.get("primary_intent") or self._task_type_to_primary_intent(task_type))
-        execution_policy = str(route.get("execution_policy") or self._task_type_to_execution_policy(task_type))
-        plan = [
-            (
-                "Router 分诊主意图与执行链路"
-                f"（task_type={task_type}, primary_intent={primary_intent}, "
-                f"execution_policy={execution_policy}, complexity={str(route.get('complexity') or 'medium')}）。"
-            )
-        ]
-        plan.append("Coordinator 持有运行时状态，决定 Worker 是否重绑工具并继续执行。")
-        for specialist in specialists:
-            plan.append(self._specialist_plan_line(specialist))
-        if route.get("use_planner"):
-            plan.append("Planner 提炼目标、约束与执行计划。")
-        plan.append("Worker 根据当前链路执行与作答。")
-        if attachment_metas:
-            plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
-        plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
-        if settings.enable_tools and route.get("use_worker_tools"):
-            plan.append("如有必要自动连续调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实，不逐步征询。")
-            if self.config.enable_session_tools:
-                plan.append("涉及历史对话时，自动调用会话工具检索旧 session。")
-        if route.get("use_reviewer"):
-            plan.append("Reviewer 做最终自检。")
-        if route.get("use_revision"):
-            plan.append("Revision 按审阅结果做最后修订。")
-        if route.get("use_structurer"):
-            plan.append("Structurer 在有来源时生成结构化证据包。")
-        return plan
+        return build_execution_plan_helper(self, attachment_metas=attachment_metas, settings=settings, route=route)
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         auth = self._auth_manager.require()
@@ -9645,34 +9345,13 @@ class OfficeAgent:
         raw_result: Any,
         raw_json: str,
     ) -> tuple[str, str | None]:
-        text = str(raw_json or "")
-        length = len(text)
-        soft = max(2000, int(self.config.tool_result_soft_trim_chars))
-        hard = max(soft + 1, int(self.config.tool_result_hard_clear_chars))
-        head = max(200, min(int(self.config.tool_result_head_chars), max(200, soft // 2)))
-        tail = max(200, min(int(self.config.tool_result_tail_chars), max(200, soft // 2)))
-
-        if length <= soft:
-            return text, None
-
-        if length >= hard:
-            compact_payload = {
-                "ok": raw_result.get("ok") if isinstance(raw_result, dict) else None,
-                "tool": name,
-                "arguments": arguments,
-                "trimmed": "hard",
-                "original_chars": length,
-                "content_preview_head": text[:head],
-                "content_preview_tail": text[-tail:] if tail > 0 else "",
-                "note": "Tool result was too large and hard-pruned for context safety.",
-            }
-            return (
-                json.dumps(compact_payload, ensure_ascii=False),
-                f"工具结果过大({length} chars)，已做硬裁剪后再喂给模型。",
-            )
-
-        trimmed = f"{text[:head]}\n...[tool_result_trimmed {length} chars]...\n{text[-tail:]}"
-        return trimmed, f"工具结果较大({length} chars)，已做软裁剪后继续推理。"
+        return prepare_tool_result_for_llm_helper(
+            self,
+            name=name,
+            arguments=arguments,
+            raw_result=raw_result,
+            raw_json=raw_json,
+        )
 
     def _prune_old_tool_messages(self, messages: list[Any]) -> int:
         keep_last = max(0, int(self.config.tool_context_prune_keep_last))

@@ -3,6 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agents.answer_bundle_support import (
+    augment_bundle_warnings,
+    fallback_answer_bundle,
+    normalize_claim_record,
+    strip_answer_bundle_meta,
+)
 from app.role_runtime import RoleContext, RoleResult
 
 
@@ -15,7 +21,8 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
     citations = list(context.extra.get("citations") or [])
     reviewer_payload = context.reviewer_brief
     conflict_payload = context.conflict_brief
-    fallback = agent._fallback_answer_bundle(
+    fallback = fallback_answer_bundle(
+        agent,
         final_text=context.response_text,
         citations=citations,
         reviewer_brief=reviewer_payload,
@@ -83,7 +90,7 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
             fallback["notes"] = ["Structurer 未返回标准 JSON，已使用后端降级结构化结果。", *notes]
             fallback["usage"] = agent._extract_usage_from_message(ai_msg)
             fallback["effective_model"] = effective_model
-            bundle = agent._strip_answer_bundle_meta(fallback)
+            bundle = strip_answer_bundle_meta(fallback)
             bundle["usage"] = fallback["usage"]
             bundle["effective_model"] = fallback["effective_model"]
             bundle["notes"] = fallback["notes"]
@@ -111,7 +118,8 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
             if status not in {"supported", "partially_supported", "needs_review"}:
                 status = "supported" if citation_ids else "needs_review"
             claims_out.append(
-                agent._normalize_claim_record(
+                normalize_claim_record(
+                    agent,
                     statement=statement,
                     citation_ids=citation_ids,
                     confidence=confidence,
@@ -123,7 +131,7 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
                 break
 
         warnings = agent._normalize_string_list(parsed.get("warnings") or [], limit=5, item_limit=220)
-        warnings = agent._augment_bundle_warnings(warnings=warnings, citations=citations)
+        warnings = augment_bundle_warnings(agent, warnings=warnings, citations=citations)
         bundle = {
             "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
             "claims": claims_out or fallback["claims"],
@@ -133,7 +141,7 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
             "effective_model": effective_model,
             "notes": notes,
         }
-        bundle = agent._strip_answer_bundle_meta(bundle) | {
+        bundle = strip_answer_bundle_meta(bundle) | {
             "usage": bundle["usage"],
             "effective_model": bundle["effective_model"],
             "notes": bundle["notes"],
@@ -142,7 +150,7 @@ def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:
     except Exception as exc:
         fallback["notes"] = [f"Structurer 调用失败，已回退后端结构化结果: {agent._shorten(exc, 180)}"]
         raw_text = json.dumps({"error": str(exc)}, ensure_ascii=False)
-        bundle = agent._strip_answer_bundle_meta(fallback) | {
+        bundle = strip_answer_bundle_meta(fallback) | {
             "usage": fallback["usage"],
             "effective_model": fallback["effective_model"],
             "notes": fallback["notes"],

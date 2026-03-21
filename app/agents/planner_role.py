@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agents.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
 from app.role_runtime import RoleContext, RoleResult
 
 
@@ -15,14 +16,14 @@ def run_planner_role(agent: Any, *, context: RoleContext, settings: Any) -> Role
     fallback = {
         "objective": agent._shorten(context.user_message.strip(), 220),
         "constraints": [],
-        "plan": agent._build_execution_plan(attachment_metas=context.attachment_metas, settings=settings),
+        "plan": build_execution_plan(agent, attachment_metas=context.attachment_metas, settings=settings),
         "watchouts": [],
         "success_signals": [],
         "usage": agent._empty_usage(),
         "effective_model": context.requested_model,
         "notes": [],
     }
-    attachment_summary = agent._summarize_attachment_metas_for_agents(context.attachment_metas)
+    attachment_summary = summarize_attachment_metas_for_agents(agent, context.attachment_metas)
     planner_input = "\n".join(
         [
             f"user_message:\n{context.user_message.strip() or '(empty)'}",

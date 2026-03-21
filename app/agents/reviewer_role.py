@@ -3,6 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+from app.agents.planning_support import summarize_attachment_metas_for_agents
+from app.agents.review_support import (
+    has_successful_local_file_access,
+    prepare_tool_result_for_llm,
+    summarize_tool_events_for_review,
+    summarize_validation_context,
+    summarize_write_tool_events,
+)
 from app.role_runtime import RoleContext, RoleResult
 
 
@@ -19,11 +27,11 @@ def run_reviewer_role(
         tool_names=agent._reviewer_readonly_tool_names(),
         output_keys=["verdict", "confidence", "summary", "strengths", "risks", "followups"],
     )
-    tool_summaries = agent._summarize_tool_events_for_review(context.tool_events, limit=12)
-    write_actions = agent._summarize_write_tool_events(context.tool_events, limit=6)
-    attachment_summary = agent._summarize_attachment_metas_for_agents(context.attachment_metas)
-    validation_context = agent._summarize_validation_context(context.tool_events)
-    local_access_succeeded = agent._has_successful_local_file_access(context.tool_events)
+    tool_summaries = summarize_tool_events_for_review(agent, context.tool_events, limit=12)
+    write_actions = summarize_write_tool_events(agent, context.tool_events, limit=6)
+    attachment_summary = summarize_attachment_metas_for_agents(agent, context.attachment_metas)
+    validation_context = summarize_validation_context(agent, context.tool_events)
+    local_access_succeeded = has_successful_local_file_access(agent, context.tool_events)
     conflict_lines = [
         f"conflict_has_conflict={str(bool(context.conflict_brief.get('has_conflict'))).lower()}",
         f"conflict_summary={str(context.conflict_brief.get('summary') or '').strip() or '(none)'}",
@@ -173,7 +181,8 @@ def run_reviewer_role(
                 result = agent.tools.execute(name, args)
                 result_json = json.dumps(result, ensure_ascii=False)
                 result_ok = bool(result.get("ok")) if isinstance(result, dict) else False
-                tool_payload, trim_note = agent._prepare_tool_result_for_llm(
+                tool_payload, trim_note = prepare_tool_result_for_llm(
+                    agent,
                     name=name,
                     arguments=args,
                     raw_result=result,

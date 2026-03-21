@@ -3,6 +3,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agents.planning_support import summarize_attachment_metas_for_agents
+from app.agents.review_support import (
+    has_successful_local_file_access,
+    summarize_tool_events_for_review,
+    summarize_write_tool_events,
+)
 from app.role_runtime import RoleContext, RoleResult
 
 
@@ -12,10 +18,10 @@ def run_revision_role(agent: Any, *, context: RoleContext) -> RoleResult:
         description="根据 reviewer 结论修订最终答复。",
         output_keys=["changed", "summary", "key_changes", "final_answer"],
     )
-    local_access_succeeded = agent._has_successful_local_file_access(context.tool_events)
-    tool_summaries = agent._summarize_tool_events_for_review(context.tool_events, limit=10)
-    write_actions = agent._summarize_write_tool_events(context.tool_events, limit=6)
-    attachment_summary = agent._summarize_attachment_metas_for_agents(context.attachment_metas)
+    local_access_succeeded = has_successful_local_file_access(agent, context.tool_events)
+    tool_summaries = summarize_tool_events_for_review(agent, context.tool_events, limit=10)
+    write_actions = summarize_write_tool_events(agent, context.tool_events, limit=6)
+    attachment_summary = summarize_attachment_metas_for_agents(agent, context.attachment_metas)
     revision_input = "\n".join(
         [
             f"effective_user_request:\n{context.primary_user_request or '(empty)'}",

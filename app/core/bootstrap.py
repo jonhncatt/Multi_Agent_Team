@@ -14,6 +14,7 @@ from app.agents.runtime_profiles import PATCH_WORKER_PROFILE
 from app.config import AppConfig
 from app.core.module_code import sync_python_module_version
 from app.core.module_loader import ModuleLoader
+from app.core.module_capability_smoke import run_module_capability_smoke
 from app.core.module_packager import ModulePackager
 from app.core.module_manifest import ActiveModuleManifest, read_module_manifest, write_active_manifest, write_module_manifest
 from app.core.module_registry import KernelModuleRegistry
@@ -398,6 +399,8 @@ class KernelRuntime:
                     if dep_label != label and self._manifest_ref_for_label(dep_label, shadow_manifest_dict)
                 ],
                 "target_api_version": "1",
+                "target_kind": kind,
+                "target_capabilities": list(self.supervisor._expected_capabilities_for_kind(kind)),
                 "target_runtime_profile": "",
                 "remediation_hints": list(base_upgrade_run.get("remediation_hints") or []),
             }
@@ -435,7 +438,17 @@ class KernelRuntime:
             if str(item).strip()
         )
         target_api_version = str(task_payload.get("target_api_version") or "1").strip() or "1"
+        target_kind = str(task_payload.get("target_kind") or updated_manifest.kind or "").strip()
+        target_capabilities = tuple(
+            str(item).strip()
+            for item in (task_payload.get("target_capabilities") or [])
+            if str(item).strip()
+        )
         target_runtime_profile = str(task_payload.get("target_runtime_profile") or "").strip()
+
+        if target_kind and updated_manifest.kind != target_kind:
+            updated_manifest = replace(updated_manifest, kind=target_kind)
+            actions.append(f"set kind={target_kind}")
 
         if updated_manifest.api_version != target_api_version:
             updated_manifest = replace(updated_manifest, api_version=target_api_version)
@@ -453,6 +466,16 @@ class KernelRuntime:
         if failure_reason == "runtime_profile_invalid" and updated_manifest.runtime_profile != target_runtime_profile:
             updated_manifest = replace(updated_manifest, runtime_profile=target_runtime_profile)
             actions.append(f"set runtime_profile={target_runtime_profile or '(empty)'}")
+
+        if target_capabilities:
+            existing_capabilities = tuple(str(item).strip() for item in updated_manifest.capabilities if str(item).strip())
+            merged_capabilities = tuple(dict.fromkeys([*existing_capabilities, *target_capabilities]))
+            if (
+                merged_capabilities != updated_manifest.capabilities
+                or failure_reason == "capability_missing"
+            ):
+                updated_manifest = replace(updated_manifest, capabilities=merged_capabilities)
+                actions.append("aligned capabilities with kernel contract")
 
         if updated_manifest != manifest:
             write_module_manifest(manifest_path, updated_manifest)
@@ -708,6 +731,8 @@ class KernelRuntime:
                 hints.append("当前模块依赖声明和 shadow manifest 不匹配。先对齐依赖模块引用，再 promote。")
             if str(classification.get("reason") or "") == "api_version_incompatible":
                 hints.append("当前模块 manifest 的 api_version 与稳定内核不兼容，不能直接 promote。")
+            if str(classification.get("reason") or "") == "kind_mismatch":
+                hints.append("当前模块 manifest 的 kind 与装配位点不一致，先改回正确 kind。")
             if str(classification.get("reason") or "") == "capability_missing":
                 hints.append("当前模块 manifest 的 capabilities 缺少该 kind 必需能力，先补齐再 promote。")
             if str(classification.get("reason") or "") == "module_version_mismatch":
@@ -942,12 +967,14 @@ class KernelRuntime:
         shadow_manifest = self.load_shadow_manifest()
         probe = self.supervisor.probe_manifest_contracts(shadow_manifest)
         checks: list[dict[str, object]] = []
+        capability_checks: list[dict[str, object]] = []
         payload: dict[str, object] = {
             "ok": bool(probe.get("ok")),
             "shadow_manifest": shadow_manifest.to_dict(),
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "probe": probe,
             "checks": checks,
+            "capability_checks": capability_checks,
         }
         if not bool(probe.get("ok")):
             return payload
@@ -1122,7 +1149,20 @@ class KernelRuntime:
                     )
                 )
 
-        payload["ok"] = bool(probe.get("ok")) and all(bool(item.get("ok")) for item in checks)
+        capability_checks.extend(
+            run_module_capability_smoke(
+                runtime=contract_runtime,
+                agent=contract_agent,
+                settings=settings,
+                artifact_root=run_dir,
+            )
+        )
+
+        payload["ok"] = (
+            bool(probe.get("ok"))
+            and all(bool(item.get("ok")) for item in checks)
+            and all(bool(item.get("ok")) for item in capability_checks)
+        )
         return payload
 
     def run_shadow_pipeline(
