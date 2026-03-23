@@ -171,6 +171,12 @@ button.secondary {
   gap: 8px;
 }
 
+.runtime-view-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 button.secondary.preset-active {
   background: #d6eadb;
   border-color: #7baa8f;

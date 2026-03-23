@@ -5,8 +5,11 @@ const state = {
   attachments: [],
   drilling: false,
   evaluating: false,
+  runtimeViewMode: null,
+  lastHealth: null,
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
+const RUNTIME_VIEW_STORAGE_KEY = "officetool.runtime_view";
 
 const chatList = document.getElementById("chatList");
 const fileInput = document.getElementById("fileInput");
@@ -38,6 +41,10 @@ const rawDebugInput = document.getElementById("rawDebugInput");
 const presetGeneralBtn = document.getElementById("presetGeneralBtn");
 const presetCodingBtn = document.getElementById("presetCodingBtn");
 const modeStatus = document.getElementById("modeStatus");
+const runtimeViewModulesBtn = document.getElementById("runtimeViewModulesBtn");
+const runtimeViewRolesBtn = document.getElementById("runtimeViewRolesBtn");
+const runtimeViewSplitBtn = document.getElementById("runtimeViewSplitBtn");
+const runtimeViewStatus = document.getElementById("runtimeViewStatus");
 const backendPolicyView = document.getElementById("backendPolicyView");
 const runStageBadge = document.getElementById("runStageBadge");
 const runStageText = document.getElementById("runStageText");
@@ -1244,8 +1251,6 @@ function renderProductProfile(health = {}) {
   const kernelSubtitle = String(health.product_kernel_subtitle || "").trim();
   const roleTitleText = String(health.product_role_title || "Role 视图").trim();
   const roleLegendText = String(health.product_role_legend || "").trim();
-  const showKernelConsole = health.show_kernel_console !== false;
-  const showRoleBoard = health.show_role_board !== false;
   const buildVersion = String(health.build_version || "").trim();
 
   document.body.dataset.productProfile = profile;
@@ -1257,8 +1262,44 @@ function renderProductProfile(health = {}) {
   }
   if (kernelConsoleTitle) kernelConsoleTitle.textContent = kernelTitle || "主核 / 模块舱 / 影子实验台";
   if (kernelConsoleSubtitle) kernelConsoleSubtitle.textContent = kernelSubtitle || "";
-  if (roleBoardTitle) roleBoardTitle.textContent = roleTitleText || "Role 视图";
+  if (roleBoardTitle) roleBoardTitle.textContent = roleTitleText || "像素小人 / 角色执行视图";
   if (roleBoardLegend) roleBoardLegend.textContent = roleLegendText || "";
+  applyRuntimeViewMode(health);
+}
+
+function getStoredRuntimeViewMode() {
+  try {
+    const raw = String(window.localStorage.getItem(RUNTIME_VIEW_STORAGE_KEY) || "").trim().toLowerCase();
+    if (raw === "modules" || raw === "roles" || raw === "split") return raw;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function defaultRuntimeViewMode(health = {}) {
+  const profile = String(health.product_profile || "kernel_robot").trim().toLowerCase();
+  if (profile === "role_agent_lab") return "roles";
+  return "modules";
+}
+
+function updateRuntimeViewButtons(mode) {
+  const isModules = mode === "modules";
+  const isRoles = mode === "roles";
+  const isSplit = mode === "split";
+  if (runtimeViewModulesBtn) runtimeViewModulesBtn.classList.toggle("preset-active", isModules);
+  if (runtimeViewRolesBtn) runtimeViewRolesBtn.classList.toggle("preset-active", isRoles);
+  if (runtimeViewSplitBtn) runtimeViewSplitBtn.classList.toggle("preset-active", isSplit);
+  if (runtimeViewStatus) {
+    const label = isRoles ? "像素小人" : isSplit ? "双视图" : "模块";
+    runtimeViewStatus.textContent = `当前视图：${label}`;
+  }
+}
+
+function applyRuntimeViewMode(health = {}, forcedMode = null) {
+  const mode = forcedMode || state.runtimeViewMode || getStoredRuntimeViewMode() || defaultRuntimeViewMode(health);
+  const showKernelConsole = mode === "modules" || mode === "split";
+  const showRoleBoard = mode === "roles" || mode === "split";
   if (kernelConsoleSection) {
     kernelConsoleSection.hidden = !showKernelConsole;
     kernelConsoleSection.style.display = showKernelConsole ? "" : "none";
@@ -1267,6 +1308,18 @@ function renderProductProfile(health = {}) {
     roleBoardSection.hidden = !showRoleBoard;
     roleBoardSection.style.display = showRoleBoard ? "" : "none";
   }
+  updateRuntimeViewButtons(mode);
+}
+
+function setRuntimeViewMode(mode) {
+  if (!["modules", "roles", "split"].includes(mode)) return;
+  state.runtimeViewMode = mode;
+  try {
+    window.localStorage.setItem(RUNTIME_VIEW_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage failures.
+  }
+  applyRuntimeViewMode(state.lastHealth || {}, mode);
 }
 
 const MODULE_LABELS = {
@@ -1872,6 +1925,7 @@ function renderKernelConsole(health = {}) {
 
 async function refreshSystemDashboard() {
   const health = await fetch("/api/health").then((r) => r.json());
+  state.lastHealth = health;
   renderProductProfile(health);
   renderAppVersion(health);
   renderBackendPolicy(health);
@@ -3270,6 +3324,18 @@ if (presetGeneralBtn) {
 
 if (presetCodingBtn) {
   presetCodingBtn.addEventListener("click", () => applyModePreset("coding"));
+}
+
+if (runtimeViewModulesBtn) {
+  runtimeViewModulesBtn.addEventListener("click", () => setRuntimeViewMode("modules"));
+}
+
+if (runtimeViewRolesBtn) {
+  runtimeViewRolesBtn.addEventListener("click", () => setRuntimeViewMode("roles"));
+}
+
+if (runtimeViewSplitBtn) {
+  runtimeViewSplitBtn.addEventListener("click", () => setRuntimeViewMode("split"));
 }
 
 if (sandboxDrillBtn) {
