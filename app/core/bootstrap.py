@@ -10,6 +10,7 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
+from packages.office_modules.execution_runtime import OfficeExecutionResult, adapt_office_execution_runtime
 from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE
 from app.config import AppConfig
 from app.core.module_code import sync_python_module_version
@@ -20,6 +21,43 @@ from app.core.module_manifest import ActiveModuleManifest, read_module_manifest,
 from app.core.module_registry import KernelModuleRegistry
 from app.core.module_types import ModuleHealthSnapshot, ModuleRuntimeContext
 from app.core.supervisor import KernelSupervisor
+
+
+def _shadow_replay_result_payload(
+    result: OfficeExecutionResult,
+    *,
+    selected_modules: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "effective_model": result.effective_model,
+        "text_preview": result.text[:600],
+        "tool_event_count": len(result.tool_events),
+        "execution_plan": list(result.execution_plan),
+        "execution_trace": list(result.execution_trace[-10:]),
+        "pipeline_hook_count": len(result.pipeline_hooks),
+        "active_roles": list(result.active_roles),
+        "current_role": result.current_role,
+        "answer_bundle": dict(result.answer_bundle),
+        "token_usage": dict(result.usage_total),
+        "route_state": dict(result.route_state),
+        "selected_modules": dict(selected_modules),
+    }
+
+
+def _shadow_patch_worker_result_payload(result: OfficeExecutionResult) -> dict[str, object]:
+    return {
+        "tool_event_count": len(result.tool_events),
+        "execution_plan": list(result.execution_plan),
+        "execution_trace_tail": list(result.execution_trace[-10:]),
+        "pipeline_hook_count": len(result.pipeline_hooks),
+        "active_roles": list(result.active_roles),
+        "current_role": result.current_role,
+        "answer_bundle": dict(result.answer_bundle),
+        "text_preview": result.text[:600],
+        "token_usage": dict(result.usage_total),
+        "effective_model": result.effective_model,
+        "route_state": dict(result.route_state),
+    }
 
 
 @dataclass(slots=True)
@@ -897,12 +935,13 @@ class KernelRuntime:
         try:
             shadow_runtime = build_kernel_runtime(smoke_config)
             shadow_agent = create_office_legacy_surface(smoke_config, kernel_runtime=shadow_runtime)
+            shadow_runtime_adapter = adapt_office_execution_runtime(shadow_agent)
             settings_payload = replay_record.get("settings")
             settings = ChatSettings(**settings_payload) if isinstance(settings_payload, dict) else ChatSettings()
             attachment_metas = replay_record.get("attachment_metas")
             history_turns_before = replay_record.get("history_turns_before")
             route_state_input = replay_record.get("route_state_input")
-            result = shadow_agent.run_chat(
+            result = shadow_runtime_adapter.run_chat(
                 history_turns=list(history_turns_before) if isinstance(history_turns_before, list) else [],
                 summary=str(replay_record.get("summary_before") or ""),
                 user_message=str(replay_record.get("message") or replay_record.get("message_preview") or ""),
@@ -912,38 +951,13 @@ class KernelRuntime:
                 route_state=dict(route_state_input) if isinstance(route_state_input, dict) else {},
                 progress_cb=None,
             )
-            (
-                text,
-                tool_events,
-                _attachment_note,
-                execution_plan,
-                execution_trace,
-                pipeline_hooks,
-                _debug_flow,
-                _agent_panels,
-                active_roles,
-                current_role,
-                _role_states,
-                answer_bundle,
-                token_usage,
-                effective_model,
-                route_state,
-            ) = result
             payload.update(
                 {
                     "ok": True,
-                    "effective_model": effective_model,
-                    "text_preview": str(text or "")[:600],
-                    "tool_event_count": len(tool_events),
-                    "execution_plan": execution_plan,
-                    "execution_trace": execution_trace[-10:],
-                    "pipeline_hook_count": len(pipeline_hooks),
-                    "active_roles": active_roles,
-                    "current_role": current_role,
-                    "answer_bundle": answer_bundle,
-                    "token_usage": token_usage,
-                    "route_state": route_state,
-                    "selected_modules": dict(shadow_runtime.registry.selected_refs),
+                    **_shadow_replay_result_payload(
+                        result,
+                        selected_modules=dict(shadow_runtime.registry.selected_refs),
+                    ),
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -1490,6 +1504,7 @@ class KernelRuntime:
                 )
                 worker_runtime = build_kernel_runtime(worker_cfg)
                 worker_agent = create_office_legacy_surface(worker_cfg, kernel_runtime=worker_runtime)
+                worker_runtime_adapter = adapt_office_execution_runtime(worker_agent)
                 settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
                 message = (
                     f"你正在修复一个 shadow 模块副本，第 {round_index}/{round_limit} 轮。"
@@ -1499,23 +1514,7 @@ class KernelRuntime:
                     "如果上一轮还没修好，请优先根据 last_pipeline_failure 和 last_remediation_hints 继续修。"
                     "必须实际调用读写工具完成修改。完成后简要说明修改了哪些文件。"
                 )
-                (
-                    text,
-                    tool_events,
-                    _attachment_note,
-                    execution_plan,
-                    execution_trace,
-                    pipeline_hooks,
-                    _debug_flow,
-                    _agent_panels,
-                    active_roles,
-                    current_role,
-                    _role_states,
-                    answer_bundle,
-                    token_usage,
-                    effective_model,
-                    route_state,
-                ) = worker_agent.run_chat(
+                result = worker_runtime_adapter.run_chat(
                     history_turns=[],
                     summary="",
                     user_message=message,
@@ -1540,17 +1539,7 @@ class KernelRuntime:
                     "module_dir": str(module_dir),
                     "recipe_actions": recipe_actions,
                     "changed_files": changed_files,
-                    "tool_event_count": len(tool_events),
-                    "execution_plan": execution_plan,
-                    "execution_trace_tail": execution_trace[-10:],
-                    "pipeline_hook_count": len(pipeline_hooks),
-                    "active_roles": active_roles,
-                    "current_role": current_role,
-                    "answer_bundle": answer_bundle,
-                    "text_preview": str(text or "")[:600],
-                    "token_usage": token_usage,
-                    "effective_model": effective_model,
-                    "route_state": route_state,
+                    **_shadow_patch_worker_result_payload(result),
                 }
                 round_tasks.append(task_result)
                 executed_tasks.append(task_result)

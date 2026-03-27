@@ -15,6 +15,7 @@ from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import now_iso
 from packages.office_modules.execution_state import ExecutionState
+from packages.office_modules.execution_runtime import adapt_office_execution_runtime, adapt_office_legacy_helper_surface
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_PATH = ROOT / "evals" / "cases.json"
 
@@ -256,23 +257,7 @@ def _run_agent_case(case: dict[str, Any], agent: Any) -> dict[str, Any]:
     attachments = [_attachment_meta(item) for item in case.get("attachments") or []]
     settings = ChatSettings(**(case.get("settings") or {}))
     started = time.perf_counter()
-    (
-        text,
-        tool_events,
-        attachment_note,
-        execution_plan,
-        execution_trace,
-        pipeline_hooks,
-        debug_flow,
-        agent_panels,
-        active_roles,
-        current_role,
-        role_states,
-        answer_bundle,
-        token_usage,
-        effective_model,
-        route_state,
-    ) = agent.run_chat(
+    result = agent.run_chat(
         history_turns=[],
         summary="",
         user_message=message,
@@ -282,23 +267,31 @@ def _run_agent_case(case: dict[str, Any], agent: Any) -> dict[str, Any]:
         route_state=case.get("route_state"),
     )
     elapsed_sec = time.perf_counter() - started
+    tool_events = []
+    for item in result.tool_events:
+        if hasattr(item, "model_dump"):
+            tool_events.append(item.model_dump())
+        elif isinstance(item, dict):
+            tool_events.append(dict(item))
+        else:
+            tool_events.append({"value": str(item)})
     return {
-        "text": text,
-        "attachment_note": attachment_note,
-        "execution_plan": execution_plan,
-        "execution_trace": execution_trace,
-        "pipeline_hooks": pipeline_hooks,
-        "debug_flow_count": len(debug_flow),
-        "agent_panels": agent_panels,
-        "active_roles": active_roles,
-        "current_role": current_role,
-        "role_states": role_states,
-        "answer_bundle": answer_bundle,
-        "tool_events": [item.model_dump() for item in tool_events],
-        "tool_events_count": len(tool_events),
-        "token_usage": token_usage,
-        "effective_model": effective_model,
-        "route_state": route_state,
+        "text": result.text,
+        "attachment_note": result.attachment_note,
+        "execution_plan": list(result.execution_plan),
+        "execution_trace": list(result.execution_trace),
+        "pipeline_hooks": list(result.pipeline_hooks),
+        "debug_flow_count": len(result.debug_flow),
+        "agent_panels": list(result.agent_panels),
+        "active_roles": list(result.active_roles),
+        "current_role": result.current_role,
+        "role_states": list(result.role_states),
+        "answer_bundle": dict(result.answer_bundle),
+        "tool_events": tool_events,
+        "tool_events_count": len(result.tool_events),
+        "token_usage": dict(result.usage_total),
+        "effective_model": result.effective_model,
+        "route_state": dict(result.route_state),
         "elapsed_sec": round(elapsed_sec, 3),
     }
 
@@ -524,10 +517,12 @@ def run_regression_evals(
     cfg = load_config()
     kernel_runtime = build_kernel_runtime(cfg)
     agent_os_runtime = assemble_runtime(cfg, kernel_runtime=kernel_runtime)
-    agent = agent_os_runtime.get_legacy_host()
-    if agent is None:
+    legacy_host = agent_os_runtime.get_legacy_host()
+    if legacy_host is None:
         raise RuntimeError("Agent OS runtime could not provide legacy host for eval harness")
-    tools = agent.tools
+    helper_surface = adapt_office_legacy_helper_surface(legacy_host)
+    execution_runtime = adapt_office_execution_runtime(helper_surface)
+    tools = helper_surface.tools
     attachment_module = kernel_runtime.registry.attachment_context
 
     results: list[dict[str, Any]] = []
@@ -557,13 +552,13 @@ def run_regression_evals(
             if kind == "tool":
                 payload = _run_tool_case(case, tools)
             elif kind == "helper":
-                payload = _run_helper_case(case, agent)
+                payload = _run_helper_case(case, helper_surface)
             elif kind == "agent":
-                payload = _run_agent_case(case, agent)
+                payload = _run_agent_case(case, execution_runtime)
             elif kind == "conversation":
                 payload = _run_conversation_case(
                     case,
-                    agent,
+                    helper_surface,
                     attachment_module=attachment_module,
                     kernel_runtime=kernel_runtime,
                 )

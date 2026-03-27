@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from functools import wraps
+import json
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
@@ -22,6 +27,11 @@ LEGACY_RUN_CHAT_FIELDS: tuple[str, ...] = (
     "effective_model",
     "route_state",
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LEGACY_HELPER_SURFACE_METRICS_PATH = REPO_ROOT / "artifacts" / "platform_metrics" / "office_legacy_helper_surface_calls.json"
+_LEGACY_HELPER_SURFACE_METRICS_LOCK = Lock()
+_LEGACY_HELPER_SURFACE_METRICS_CACHE: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -127,12 +137,85 @@ class OfficeLegacyHelperSurface(ABC):
         raise NotImplementedError
 
 
+def _default_legacy_helper_surface_metrics() -> dict[str, Any]:
+    return {
+        "updated_at": "",
+        "run_chat_calls": 0,
+        "method_calls": {},
+        "attribute_accesses": {},
+    }
+
+
+def _load_legacy_helper_surface_metrics() -> dict[str, Any]:
+    global _LEGACY_HELPER_SURFACE_METRICS_CACHE
+    if _LEGACY_HELPER_SURFACE_METRICS_CACHE is not None:
+        return _LEGACY_HELPER_SURFACE_METRICS_CACHE
+    if LEGACY_HELPER_SURFACE_METRICS_PATH.exists():
+        try:
+            loaded = json.loads(LEGACY_HELPER_SURFACE_METRICS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                metrics = _default_legacy_helper_surface_metrics()
+                metrics.update(loaded)
+                metrics["method_calls"] = dict(metrics.get("method_calls") or {})
+                metrics["attribute_accesses"] = dict(metrics.get("attribute_accesses") or {})
+                _LEGACY_HELPER_SURFACE_METRICS_CACHE = metrics
+                return metrics
+        except (OSError, ValueError, TypeError):
+            pass
+    _LEGACY_HELPER_SURFACE_METRICS_CACHE = _default_legacy_helper_surface_metrics()
+    return _LEGACY_HELPER_SURFACE_METRICS_CACHE
+
+
+def _persist_legacy_helper_surface_metrics(metrics: dict[str, Any]) -> None:
+    LEGACY_HELPER_SURFACE_METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LEGACY_HELPER_SURFACE_METRICS_PATH.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _record_legacy_helper_surface_usage(name: str, *, kind: str) -> None:
+    with _LEGACY_HELPER_SURFACE_METRICS_LOCK:
+        metrics = _load_legacy_helper_surface_metrics()
+        bucket = metrics["attribute_accesses"] if kind == "attribute" else metrics["method_calls"]
+        bucket[name] = int(bucket.get(name) or 0) + 1
+        if name == "run_chat" and kind == "method":
+            metrics["run_chat_calls"] = int(metrics.get("run_chat_calls") or 0) + 1
+        metrics["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _persist_legacy_helper_surface_metrics(metrics)
+
+
+def read_legacy_helper_surface_metrics() -> dict[str, Any]:
+    with _LEGACY_HELPER_SURFACE_METRICS_LOCK:
+        metrics = _load_legacy_helper_surface_metrics()
+        return {
+            "updated_at": str(metrics.get("updated_at") or ""),
+            "run_chat_calls": int(metrics.get("run_chat_calls") or 0),
+            "method_calls": dict(metrics.get("method_calls") or {}),
+            "attribute_accesses": dict(metrics.get("attribute_accesses") or {}),
+        }
+
+
+def reset_legacy_helper_surface_metrics() -> None:
+    global _LEGACY_HELPER_SURFACE_METRICS_CACHE
+    with _LEGACY_HELPER_SURFACE_METRICS_LOCK:
+        _LEGACY_HELPER_SURFACE_METRICS_CACHE = _default_legacy_helper_surface_metrics()
+        if LEGACY_HELPER_SURFACE_METRICS_PATH.exists():
+            LEGACY_HELPER_SURFACE_METRICS_PATH.unlink()
+
+
 class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
     def __init__(self, legacy_runtime: Any) -> None:
         self._legacy_runtime = legacy_runtime
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._legacy_runtime, name)
+        value = getattr(self._legacy_runtime, name)
+        if callable(value):
+            @wraps(value)
+            def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                _record_legacy_helper_surface_usage(name, kind="method")
+                return value(*args, **kwargs)
+
+            return _wrapped
+        _record_legacy_helper_surface_usage(name, kind="attribute")
+        return value
 
     def run_chat(
         self,
@@ -147,6 +230,7 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         progress_cb: Any | None = None,
         **extra: Any,
     ) -> Any:
+        _record_legacy_helper_surface_usage("run_chat", kind="method")
         return self._legacy_runtime.run_chat(
             history_turns,
             summary,
@@ -212,4 +296,6 @@ __all__ = [
     "adapt_office_execution_runtime",
     "adapt_office_legacy_helper_surface",
     "normalize_legacy_run_chat_result",
+    "read_legacy_helper_surface_metrics",
+    "reset_legacy_helper_surface_metrics",
 ]

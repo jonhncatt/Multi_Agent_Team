@@ -4,9 +4,15 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import sys
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from packages.office_modules.execution_runtime import read_legacy_helper_surface_metrics
+
 BUSINESS_MODULES_DIR = REPO_ROOT / "app" / "business_modules"
 MODULE_DOCS_DIR = REPO_ROOT / "docs" / "modules"
 INTEGRATION_TESTS_DIR = REPO_ROOT / "tests" / "integration"
@@ -126,6 +132,7 @@ def _shim_metrics() -> dict[str, object]:
     inventory_text = _read(SHIM_INVENTORY)
     active_documented = _extract_section_table_paths(inventory_text, "Active Inventory")
     retired_documented = _extract_section_table_paths(inventory_text, "Retired Shims")
+    office_legacy_helper_surface = read_legacy_helper_surface_metrics()
     active_shim_dependents: dict[str, list[str]] = {}
     for module_path in ACTIVE_SHIM_IMPORT_TARGETS:
         importers: list[str] = []
@@ -143,6 +150,7 @@ def _shim_metrics() -> dict[str, object]:
             module_path: len(importers) for module_path, importers in active_shim_dependents.items()
         },
         "active_shim_dependents": active_shim_dependents,
+        "office_legacy_helper_surface": office_legacy_helper_surface,
         "shim_inventory_documented_count": len(active_documented),
         "shim_inventory_paths": active_documented,
         "retired_inventory_documented_count": len(retired_documented),

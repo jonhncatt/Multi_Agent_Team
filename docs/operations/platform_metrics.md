@@ -20,6 +20,9 @@ CI also uploads the metrics artifact.
 - `retired_shim_paths`
 - `active_shim_dependency_counts`
 - `active_shim_dependents`
+- `office_legacy_helper_surface.run_chat_calls`
+- `office_legacy_helper_surface.method_calls`
+- `office_legacy_helper_surface.attribute_accesses`
 - `shim_inventory_documented_count`
 - `retired_inventory_documented_count`
 
@@ -28,6 +31,7 @@ Purpose:
 - track how many shims are still active
 - prove at least one shim has actually retired
 - track whether the remaining active shims are spreading to new runtime dependents
+- track which `OfficeLegacyHelperSurface` compatibility entrypoints are still being exercised
 - track whether active and retired shim inventories stay aligned with docs
 - verify the shim inventory stays aligned with the protected list
 
