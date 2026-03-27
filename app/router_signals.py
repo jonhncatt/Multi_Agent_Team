@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.context_assembly import coerce_active_task, infer_task_control, looks_like_translation_request
+from app.context_assembly import coerce_active_task, infer_task_control, looks_like_translation_request, translation_followup_flags
 from app.intent_constants import SHORT_FOLLOWUP_MAX_LEN
 from app.intent_schema import RequestSignals
 
@@ -153,6 +153,7 @@ class RouterSignalExtractor:
             reference_followup_like=reference_followup_like,
             transform_followup_like=transform_followup_like,
         )
+        translation_flags = translation_followup_flags(user_message)
 
         signals = RequestSignals(
             text=text,
@@ -179,6 +180,11 @@ class RouterSignalExtractor:
             default_root_search=default_root_search,
             translation_request=bool(looks_like_translation_request(user_message)),
             task_control_request=bool(infer_task_control(user_message, coerce_active_task(route_state.get("active_task") if isinstance(route_state, dict) else None)).is_active()),
+            translation_followup_like=bool(translation_flags["translation_followup_like"]),
+            translation_mode_switch_like=bool(translation_flags["translation_mode_switch_like"]),
+            translation_start_like=bool(translation_flags["translation_start_like"]),
+            translation_resume_like=bool(translation_flags["translation_resume_like"]),
+            translation_position_reset_like=bool(translation_flags["translation_position_reset_like"]),
             short_followup_like=short_followup_like,
             transform_followup_like=transform_followup_like,
             reference_followup_like=reference_followup_like,

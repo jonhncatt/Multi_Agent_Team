@@ -74,4 +74,6 @@ def test_verifier_reroutes_translation_task_control_out_of_safe_pipeline() -> No
         frame=ConversationFrame(dominant_intent="continue_existing_task"),
     )
     assert route["execution_policy"] == "translation_session_pipeline"
+    assert route["active_task_kind"] == "document_translation"
+    assert route["task_control_position"] == ""
     assert "reroute_to_translation_session_pipeline" in route["verifier_actions"]

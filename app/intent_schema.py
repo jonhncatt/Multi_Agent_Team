@@ -72,6 +72,11 @@ class RequestSignals(BaseModel):
     default_root_search: bool = False
     translation_request: bool = False
     task_control_request: bool = False
+    translation_followup_like: bool = False
+    translation_mode_switch_like: bool = False
+    translation_start_like: bool = False
+    translation_resume_like: bool = False
+    translation_position_reset_like: bool = False
     inherited_primary_intent: str = ""
     short_followup_like: bool = False
     transform_followup_like: bool = False
@@ -120,6 +125,11 @@ class ConversationFrame(BaseModel):
     working_set: list[str] = Field(default_factory=list)
     active_artifacts: list[str] = Field(default_factory=list)
     active_entities: list[str] = Field(default_factory=list)
+    current_task_type: str = ""
+    current_document_id: str = ""
+    current_document_kind: str = ""
+    current_operation_mode: str = ""
+    current_position: str = ""
     pending_transform: str = ""
     last_answer_shape: str = ""
     last_route_policy: str = ""
@@ -183,6 +193,9 @@ class RouteDecision(BaseModel):
     action_type: ActionType = "answer"
     task_control: TaskControl = Field(default_factory=TaskControl)
     active_task: ActiveTask | None = None
+    active_task_kind: str = ""
+    task_control_mode: str = ""
+    task_control_position: str = ""
     intent_confidence: float = 0.7
     intent_source: str = "rules_intent_classifier"
     intent_reason: str = ""
@@ -218,6 +231,9 @@ class DecisionTrace(BaseModel):
     target: str = ""
     active_task_summary: str = ""
     task_control: TaskControl = Field(default_factory=TaskControl)
+    active_task_kind: str = ""
+    task_control_mode: str = ""
+    task_control_position: str = ""
     confidence: float = 0.0
     margin: float = 0.0
     ambiguity_score: float = 0.0

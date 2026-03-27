@@ -324,6 +324,9 @@ class PolicyRouter:
             "action_type": str(decision.action_type or "answer"),
             "task_control": decision.task_control.model_copy(),
             "active_task": active_task.model_copy() if active_task is not None else None,
+            "active_task_kind": str(active_task.task_kind if active_task is not None else decision.task_kind or ""),
+            "task_control_mode": str(decision.task_control.mode_switch or ""),
+            "task_control_position": str(decision.task_control.position_reset or ""),
             "intent_confidence": float(decision.confidence),
             "intent_source": str(decision.source or "rules"),
             "intent_reason": str(decision.reason_short or ""),
@@ -920,6 +923,24 @@ class PolicyRouter:
             normalized["task_control"] = TaskControl().model_dump()
         active_task = coerce_active_task(normalized.get("active_task") or fallback.get("active_task"))
         normalized["active_task"] = active_task.model_dump() if active_task is not None else None
+        normalized["active_task_kind"] = str(
+            normalized.get("active_task_kind")
+            or (active_task.task_kind if active_task is not None else "")
+            or fallback.get("active_task_kind")
+            or ""
+        ).strip()
+        normalized["task_control_mode"] = str(
+            normalized.get("task_control_mode")
+            or normalized["task_control"].get("mode_switch")
+            or fallback.get("task_control_mode")
+            or ""
+        ).strip()
+        normalized["task_control_position"] = str(
+            normalized.get("task_control_position")
+            or normalized["task_control"].get("position_reset")
+            or fallback.get("task_control_position")
+            or ""
+        ).strip()
 
         for key in (
             "use_planner",

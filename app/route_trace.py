@@ -30,6 +30,11 @@ def build_signal_summary(signals: RequestSignals) -> dict[str, Any]:
         "default_root_search",
         "translation_request",
         "task_control_request",
+        "translation_followup_like",
+        "translation_mode_switch_like",
+        "translation_start_like",
+        "translation_resume_like",
+        "translation_position_reset_like",
         "short_followup_like",
         "transform_followup_like",
         "reference_followup_like",
@@ -51,6 +56,11 @@ def build_frame_summary(frame: ConversationFrame) -> dict[str, Any]:
         "working_set": list(frame.working_set or []),
         "active_artifacts": list(frame.active_artifacts or []),
         "active_entities": list(frame.active_entities or []),
+        "current_task_type": str(frame.current_task_type or ""),
+        "current_document_id": str(frame.current_document_id or ""),
+        "current_document_kind": str(frame.current_document_kind or ""),
+        "current_operation_mode": str(frame.current_operation_mode or ""),
+        "current_position": str(frame.current_position or ""),
         "last_answer_shape": str(frame.last_answer_shape or ""),
         "last_route_policy": str(frame.last_route_policy or ""),
     }
@@ -86,6 +96,16 @@ def build_route_trace(
                 f"progress={progress}; "
                 f"started={active_task.started}; finished={active_task.finished}"
             )
+    active_task_kind = str(route.get("active_task_kind") or "")
+    task_control_mode = str(route.get("task_control_mode") or "")
+    task_control_position = str(route.get("task_control_position") or "")
+    if not active_task_kind:
+        active_task = coerce_active_task(route.get("active_task"))
+        active_task_kind = str(active_task.task_kind if active_task is not None else decision.task_kind or "")
+    if not task_control_mode:
+        task_control_mode = str(decision.task_control.mode_switch or "")
+    if not task_control_position:
+        task_control_position = str(decision.task_control.position_reset or "")
     return RouteTrace(
         request_id=request_id,
         timestamp=timestamp,
@@ -100,6 +120,9 @@ def build_route_trace(
         target=str(decision.target or ""),
         active_task_summary=active_task_summary,
         task_control=decision.task_control.model_copy(),
+        active_task_kind=active_task_kind,
+        task_control_mode=task_control_mode,
+        task_control_position=task_control_position,
         confidence=max(0.0, min(1.0, float(decision.confidence or 0.0))),
         margin=max(0.0, min(1.0, float(decision.margin or 0.0))),
         ambiguity_score=max(0.0, min(1.0, float(signals.ambiguity_score or 0.0))),
@@ -139,6 +162,9 @@ def route_trace_payload(trace: RouteTrace, *, detailed: bool) -> dict[str, Any]:
         "sub_intent": trace.sub_intent,
         "target": trace.target,
         "active_task_summary": trace.active_task_summary,
+        "active_task_kind": trace.active_task_kind,
+        "task_control_mode": trace.task_control_mode,
+        "task_control_position": trace.task_control_position,
         "confidence": trace.confidence,
         "margin": trace.margin,
         "ambiguity_score": trace.ambiguity_score,

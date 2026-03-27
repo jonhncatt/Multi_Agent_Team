@@ -69,6 +69,9 @@ class RouteVerifier:
         active_task = coerce_active_task(updated.get("active_task")) or (
             assembled_context.active_task if assembled_context is not None else None
         ) or coerce_active_task((signals.route_state or {}).get("active_task") if isinstance(signals.route_state, dict) else None)
+        updated["active_task_kind"] = str(updated.get("active_task_kind") or (active_task.task_kind if active_task is not None else "") or "")
+        updated["task_control_mode"] = str(updated.get("task_control_mode") or decision.task_control.mode_switch or "")
+        updated["task_control_position"] = str(updated.get("task_control_position") or decision.task_control.position_reset or "")
         translation_control = bool(
             active_task is not None
             and active_task.task_kind == "document_translation"
@@ -95,6 +98,9 @@ class RouteVerifier:
             if active_task is not None:
                 updated["active_task"] = active_task.model_dump()
                 updated["target"] = str(updated.get("target") or active_task.target_id or "")
+                updated["active_task_kind"] = "document_translation"
+            updated["task_control_mode"] = str(updated.get("task_control_mode") or decision.task_control.mode_switch or "")
+            updated["task_control_position"] = str(updated.get("task_control_position") or decision.task_control.position_reset or "")
             notes.append("document translation task control routed to safe/task control path; switched to translation session pipeline.")
             actions.append("reroute_to_translation_session_pipeline")
 
