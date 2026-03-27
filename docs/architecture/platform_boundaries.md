@@ -27,6 +27,8 @@ These files exist to preserve legacy behavior and migration continuity. They are
 - `app/agent.py`
 - `packages/runtime_core/kernel_host.py`
 
+The preferred pattern for these zones is to push reusable logic into adjacent canonical helpers, leaving the shim file as a thin shell.
+
 ## Retired Compatibility Zones
 
 - `app/router_rules.py`

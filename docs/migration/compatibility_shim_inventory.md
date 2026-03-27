@@ -7,7 +7,7 @@ This file tracks every active compatibility shim as a managed migration object.
 | Path | Current Role | Why It Still Exists | Known Dependents | Retirement Condition |
 | --- | --- | --- | --- | --- |
 | `app/agent.py` | Legacy Office runtime and compatibility orchestration shim | `office_module` still delegates to `OfficeAgent` for the main office execution path | `packages/office_modules/agent_module.py`, shadow/bootstrap repair flows, router-layer tests | `office_module` runs its own pipeline end to end without `OfficeAgent` delegation |
-| `packages/runtime_core/kernel_host.py` | Legacy host compatibility surface | Agent OS assembly still needs a compatibility host object during legacy-office migration | bootstrap legacy host wiring | Agent OS runtime surfaces fully replace legacy host snapshots and lifecycle hooks |
+| `packages/runtime_core/kernel_host.py` | Legacy host compatibility shell | Agent OS assembly still needs a compatibility host object during legacy-office migration | bootstrap legacy host wiring | Agent OS runtime surfaces fully replace legacy host snapshots and lifecycle hooks |
 
 ## Retired Shims
 
