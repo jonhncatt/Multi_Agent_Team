@@ -71,6 +71,11 @@ from packages.office_modules.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
 )
+from packages.office_modules.legacy_runtime_support import (
+    compact_legacy_session as compact_legacy_session_helper,
+    legacy_role_lab_runtime_snapshot as legacy_role_lab_runtime_snapshot_helper,
+    legacy_tool_registry_snapshot as legacy_tool_registry_snapshot_helper,
+)
 from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
 from packages.office_modules.specialist_role import (
     build_specialist_input_payload as build_specialist_input_payload_helper,
@@ -781,23 +786,7 @@ class OfficeAgent:
         }
 
     def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        registry = self._module_registry()
-        module = getattr(registry, "tool_registry", None)
-        selected_ref = str((registry.selected_refs or {}).get("tool_registry") or "")
-        if module is None or not hasattr(module, "describe_tools"):
-            return {
-                "selected_ref": selected_ref,
-                "tool_count": len(self._lc_tools),
-                "tools": [
-                    {"name": str(getattr(tool, "name", "") or ""), "description": str(getattr(tool, "description", "") or "")[:200]}
-                    for tool in self._lc_tools
-                ],
-            }
-        payload = module.describe_tools(agent=self)
-        if isinstance(payload, dict):
-            payload.setdefault("selected_ref", selected_ref)
-            return payload
-        return {"selected_ref": selected_ref, "tool_count": len(self._lc_tools)}
+        return legacy_tool_registry_snapshot_helper(self)
 
     def _debug_evolution_overlay_snapshot(self) -> dict[str, Any]:
         store = EvolutionStore(self.config.overlay_profile_path, self.config.evolution_logs_dir)
@@ -836,7 +825,7 @@ class OfficeAgent:
             }
 
     def _debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
-        return self._role_runtime_controller.runtime_snapshot()
+        return legacy_role_lab_runtime_snapshot_helper(self)
 
     def _debug_role_lab_multi_instance_batch(self) -> dict[str, Any]:
         registry_role = self._role_registry.require("researcher")
@@ -1307,20 +1296,7 @@ class OfficeAgent:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_cert_path)
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        turns = session.get("turns", [])
-        if len(turns) <= self.config.summary_trigger_turns:
-            return False
-
-        keep = max(2, min(2000, keep_last_turns))
-        older = turns[:-keep]
-        recent = turns[-keep:]
-        if not older:
-            return False
-
-        existing_summary = session.get("summary", "")
-        session["summary"] = self._summarize_turns(existing_summary, older)
-        session["turns"] = recent
-        return True
+        return compact_legacy_session_helper(self, session, keep_last_turns)
 
     def _summarize_turns(self, existing_summary: str, older_turns: list[dict[str, Any]]) -> str:
         transcript = []

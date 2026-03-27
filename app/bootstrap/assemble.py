@@ -10,6 +10,11 @@ from app.contracts import TaskRequest, TaskResponse, ToolContract
 from app.kernel import KernelHost
 from app.local_tools import LocalToolExecutor
 from app.system_modules import MemoryModule, OutputModule, PolicyModule, ToolRuntimeModule
+from packages.office_modules.legacy_runtime_support import (
+    compact_legacy_session,
+    legacy_role_lab_runtime_snapshot,
+    legacy_tool_registry_snapshot,
+)
 from app.tool_providers import (
     HttpWebProvider,
     LocalFileProvider,
@@ -127,16 +132,25 @@ class AgentOSRuntime:
         return self._require_legacy_host().tools
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        return bool(self._require_legacy_host().maybe_compact_session(session, keep_last_turns))
+        host = self._require_legacy_host()
+        if hasattr(host, "_summarize_turns") and hasattr(host, "config"):
+            return bool(compact_legacy_session(host, session, keep_last_turns))
+        return bool(host.maybe_compact_session(session, keep_last_turns))
 
     def debug_kernel_host_snapshot(self) -> dict[str, Any]:
         return dict(self._require_legacy_host()._debug_kernel_host_snapshot() or {})
 
     def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
-        return dict(self._require_legacy_host()._debug_role_lab_runtime_snapshot() or {})
+        host = self._require_legacy_host()
+        if hasattr(host, "_role_runtime_controller"):
+            return dict(legacy_role_lab_runtime_snapshot(host) or {})
+        return dict(host._debug_role_lab_runtime_snapshot() or {})
 
     def debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        return dict(self._require_legacy_host()._debug_tool_registry_snapshot() or {})
+        host = self._require_legacy_host()
+        if hasattr(host, "_module_registry") and hasattr(host, "_lc_tools"):
+            return dict(legacy_tool_registry_snapshot(host) or {})
+        return dict(host._debug_tool_registry_snapshot() or {})
 
     def dispatch(self, request: TaskRequest, *, module_id: str | None = None) -> TaskResponse:
         return self.kernel.dispatch(request, module_id=module_id)
