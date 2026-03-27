@@ -11,7 +11,13 @@ from app.business_modules.office_module.workflow import ROLE_CHAIN, build_office
 from app.contracts import HealthReport, TaskRequest, TaskResponse
 from app.kernel.runtime_context import RuntimeContext
 from app.models import ChatSettings
-from packages.office_modules.agent_module import create_office_agent
+from packages.office_modules.agent_module import create_office_agent, create_office_runtime
+from packages.office_modules.execution_runtime import (
+    OfficeExecutionRuntime,
+    OfficeLegacyHelperSurface,
+    adapt_office_execution_runtime,
+    adapt_office_legacy_helper_surface,
+)
 
 
 class OfficeModule:
@@ -35,20 +41,34 @@ class OfficeModule:
         self._kernel_context: Any = None
         self._legacy_host = legacy_host
         self._kernel_runtime = kernel_runtime
-        self._agent: Any | None = None
+        self._execution_runtime: OfficeExecutionRuntime | None = None
+        self._legacy_surface: OfficeLegacyHelperSurface | None = None
 
     def init(self, kernel_context: Any) -> None:
         self._kernel_context = kernel_context
 
     def bind_legacy_host(self, legacy_host: Any) -> None:
         self._legacy_host = legacy_host
+        self._execution_runtime = None
+        self._legacy_surface = None
 
-    def _runtime(self) -> Any:
+    def _helper_surface(self) -> OfficeLegacyHelperSurface:
+        if self._legacy_surface is not None:
+            return self._legacy_surface
         if self._legacy_host is not None:
-            return self._legacy_host
-        if self._agent is None:
-            self._agent = create_office_agent(self._config, kernel_runtime=self._kernel_runtime)
-        return self._agent
+            self._legacy_surface = adapt_office_legacy_helper_surface(self._legacy_host)
+            return self._legacy_surface
+        self._legacy_surface = create_office_agent(self._config, kernel_runtime=self._kernel_runtime)
+        return self._legacy_surface
+
+    def _runtime(self) -> OfficeExecutionRuntime:
+        if self._execution_runtime is not None:
+            return self._execution_runtime
+        if self._legacy_host is not None:
+            self._execution_runtime = adapt_office_execution_runtime(self._legacy_host)
+            return self._execution_runtime
+        self._execution_runtime = create_office_runtime(self._config, kernel_runtime=self._kernel_runtime)
+        return self._execution_runtime
 
     def health_check(self) -> HealthReport:
         return HealthReport(
@@ -64,7 +84,8 @@ class OfficeModule:
         )
 
     def shutdown(self) -> None:
-        self._agent = None
+        self._execution_runtime = None
+        self._legacy_surface = None
 
     def handle(self, request: TaskRequest, context: RuntimeContext) -> TaskResponse:
         if self._should_run_minimal_demo(request):
@@ -82,7 +103,7 @@ class OfficeModule:
         context.metadata.setdefault("policy_set", list(OFFICE_MODULE_POLICY_SET))
         try:
             settings_obj = self._normalize_settings(request.settings)
-            run = runtime.run_chat(
+            result = runtime.run_chat(
                 request_context.get("history_turns") or [],
                 str(request_context.get("summary") or ""),
                 request.message,
@@ -92,7 +113,7 @@ class OfficeModule:
                 route_state=request_context.get("route_state") if isinstance(request_context.get("route_state"), dict) else None,
                 progress_cb=request_context.get("progress_cb"),
             )
-            payload = self._normalize_run_payload(run)
+            payload = result.to_payload()
             payload["module_id"] = self.manifest.module_id
             payload["selected_roles"] = list(context.selected_roles)
             payload["selected_tools"] = list(context.selected_tools)
@@ -132,7 +153,7 @@ class OfficeModule:
         route_state: dict[str, Any] | None = None,
         progress_cb: Any | None = None,
     ) -> Any:
-        runtime = self._runtime()
+        runtime = self._helper_surface()
         return runtime.run_chat(
             history_turns,
             summary,
@@ -165,25 +186,3 @@ class OfficeModule:
             except Exception:
                 pass
         return ChatSettings()
-
-    def _normalize_run_payload(self, run: Any) -> dict[str, Any]:
-        if not isinstance(run, tuple):
-            return {"text": str(run or ""), "raw": run}
-        fields = (
-            "text",
-            "tool_events",
-            "attachment_note",
-            "execution_plan",
-            "execution_trace",
-            "pipeline_hooks",
-            "debug_flow",
-            "agent_panels",
-            "active_roles",
-            "current_role",
-            "role_states",
-            "answer_bundle",
-            "usage_total",
-            "effective_model",
-            "route_state",
-        )
-        return {name: (run[idx] if idx < len(run) else None) for idx, name in enumerate(fields)}
