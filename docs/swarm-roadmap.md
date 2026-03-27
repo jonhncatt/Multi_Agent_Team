@@ -312,7 +312,7 @@
 
 ## 阶段 5：并行分支
 
-状态：未开始
+状态：合同已冻结，等待 MVP 实现
 
 目标：
 
@@ -331,9 +331,14 @@
 - 合并规则明确
 - UI 能展示 branch 和 join
 
+当前合同：
+
+- 参见 [Swarm Contract](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
+- 分支失败默认策略：`serial_replay`
+
 ## 阶段 6：聚合层
 
-状态：未开始
+状态：合同已冻结，等待 MVP 实现
 
 目标：
 
@@ -345,6 +350,12 @@
 - 解决结论冲突
 - 统一组织最终答案
 - 决定是否再触发验证或修订
+
+当前合同：
+
+- Aggregator 最小职责只允许：merge / deduplicate / mark conflicts
+- 冲突默认策略：`mark_only`
+- 参见 [Swarm Contract](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
 
 说明：
 

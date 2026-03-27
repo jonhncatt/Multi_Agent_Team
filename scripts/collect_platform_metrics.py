@@ -11,6 +11,8 @@ BUSINESS_MODULES_DIR = REPO_ROOT / "app" / "business_modules"
 MODULE_DOCS_DIR = REPO_ROOT / "docs" / "modules"
 INTEGRATION_TESTS_DIR = REPO_ROOT / "tests" / "integration"
 SWARM_ROADMAP = REPO_ROOT / "docs" / "swarm-roadmap.md"
+SWARM_CONTRACT = REPO_ROOT / "docs" / "architecture" / "swarm_contract.md"
+SWARM_CONTRACT_CODE = REPO_ROOT / "app" / "contracts" / "swarm.py"
 STATIC_APP = REPO_ROOT / "app" / "static" / "app.js"
 LEGACY_AGENT = REPO_ROOT / "app" / "agent.py"
 SHIM_INVENTORY = REPO_ROOT / "docs" / "migration" / "compatibility_shim_inventory.md"
@@ -89,13 +91,16 @@ def _shim_metrics() -> dict[str, object]:
 
 def _swarm_metrics() -> dict[str, object]:
     roadmap = _read(SWARM_ROADMAP)
+    contract_doc = _read(SWARM_CONTRACT)
+    contract_code = _read(SWARM_CONTRACT_CODE)
     static_app = _read(STATIC_APP)
     legacy_agent = _read(LEGACY_AGENT)
     return {
         "branch_join_runtime_present": 'node_type="branch"' in legacy_agent and 'node_type="join"' in legacy_agent,
         "branch_join_ui_present": 'if (nodeType === "join")' in static_app and 'if (nodeType === "branch")' in static_app,
-        "aggregator_contract_defined": "Aggregator" in roadmap,
-        "degradation_strategy_defined": ("串行补跑" in roadmap) or ("只标记" in roadmap),
+        "aggregator_contract_defined": ("Aggregator Minimum Responsibilities" in contract_doc) or ("merge / deduplicate / mark conflicts" in roadmap),
+        "degradation_strategy_defined": ("serial_replay" in contract_doc and "mark_only" in contract_doc),
+        "contract_code_present": "class SwarmJoinSpec" in contract_code and "class SwarmBranchSpec" in contract_code,
     }
 
 

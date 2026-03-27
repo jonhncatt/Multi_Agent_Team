@@ -157,14 +157,14 @@ const AGENT_OS_MILESTONES = [
   {
     id: "M4",
     title: "Swarm 合同冻结",
-    status: "active",
-    summary: "下一步定义 branch/join/aggregator contract，并明确至少一种失败退化策略。",
-    tags: ["branch/join", "aggregator", "degradation strategy"],
+    status: "done",
+    summary: "branch/join/aggregator contract 已冻结，默认退化策略已明确为 serial_replay + mark_only。",
+    tags: ["branch/join", "aggregator", "serial_replay", "mark_only"],
   },
   {
     id: "M5",
     title: "Swarm MVP",
-    status: "queued",
+    status: "active",
     summary: "范围只做多输入并行 + 最小聚合，并要求非开发者也能看懂。",
     tags: ["parallel inputs", "minimal aggregation", "demo readability"],
   },

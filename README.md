@@ -119,6 +119,7 @@ git pull
 - `research_module` 说明：[docs/modules/research_module.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/research_module.md)
 - 模块接入指南：[docs/modules/module_integration_guide.md](/Users/dalizhou/Desktop/new_validation_agent/docs/modules/module_integration_guide.md)
 - 平台边界规则：[docs/architecture/platform_boundaries.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/platform_boundaries.md)
+- Swarm 合同：[docs/architecture/swarm_contract.md](/Users/dalizhou/Desktop/new_validation_agent/docs/architecture/swarm_contract.md)
 - 兼容层台账：[docs/migration/compatibility_shim_inventory.md](/Users/dalizhou/Desktop/new_validation_agent/docs/migration/compatibility_shim_inventory.md)
 - 里程碑路线图：[docs/roadmap/agent_os_milestones.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/agent_os_milestones.md)
 - 第二模块选择记录：[docs/roadmap/second_module_selection.md](/Users/dalizhou/Desktop/new_validation_agent/docs/roadmap/second_module_selection.md)

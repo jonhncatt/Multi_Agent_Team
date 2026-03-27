@@ -43,6 +43,7 @@ Purpose:
 - `swarm.branch_join_ui_present`
 - `swarm.aggregator_contract_defined`
 - `swarm.degradation_strategy_defined`
+- `swarm.contract_code_present`
 
 Purpose:
 
