@@ -29,6 +29,29 @@ class DummyLegacyHost:
             {},
         )
 
+    def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
+        _ = keep_last_turns
+        session["compacted"] = True
+        return True
+
+    def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
+        return {"host": "ok"}
+
+    def _debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        return {"role_lab": "ok"}
+
+    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        return {"tool_registry": "ok"}
+
+    @property
+    def tools(self) -> Any:
+        class _Tools:
+            @staticmethod
+            def docker_status() -> tuple[bool, str]:
+                return True, "ok"
+
+        return _Tools()
+
 
 def test_modules_init_invoke_and_health() -> None:
     cfg = load_config()
@@ -81,3 +104,15 @@ def test_modules_init_invoke_and_health() -> None:
         )
         assert resp.ok is False
         assert "not implemented yet" in resp.error
+
+
+def test_agent_os_runtime_exposes_legacy_facade_methods() -> None:
+    runtime = assemble_runtime(load_config(), legacy_host=DummyLegacyHost())
+
+    session = {"turns": []}
+    assert runtime.maybe_compact_session(session, 10) is True
+    assert session["compacted"] is True
+    assert runtime.debug_kernel_host_snapshot() == {"host": "ok"}
+    assert runtime.debug_role_lab_runtime_snapshot() == {"role_lab": "ok"}
+    assert runtime.debug_tool_registry_snapshot() == {"tool_registry": "ok"}
+    assert runtime.legacy_tools().docker_status() == (True, "ok")

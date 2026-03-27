@@ -76,7 +76,6 @@ agent_os_runtime: AgentOSRuntime = assemble_runtime(
     config,
     kernel_runtime=kernel_runtime,
 )
-_agent: Any | None = None
 APP_VERSION = "0.3.5"
 
 
@@ -198,15 +197,6 @@ def get_evolution_store() -> EvolutionStore:
 def get_agent_os_runtime() -> AgentOSRuntime:
     return agent_os_runtime
 
-
-def get_agent() -> Any:
-    global _agent
-    legacy = get_agent_os_runtime().get_legacy_host()
-    if legacy is not None:
-        _agent = legacy
-        return legacy
-    raise RuntimeError("Legacy host is unavailable from AgentOSRuntime")
-
 app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
 
 app.add_middleware(
@@ -239,15 +229,15 @@ def index() -> FileResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    agent = get_agent()
-    docker_ok, docker_msg = agent.tools.docker_status()
+    runtime = get_agent_os_runtime()
+    docker_ok, docker_msg = runtime.legacy_tools().docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
-    host_runtime = agent._debug_kernel_host_snapshot()
+    host_runtime = runtime.debug_kernel_host_snapshot()
     host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
-    role_lab_runtime = agent._debug_role_lab_runtime_snapshot()
+    role_lab_runtime = runtime.debug_role_lab_runtime_snapshot()
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
-    tool_registry = agent._debug_tool_registry_snapshot()
+    tool_registry = runtime.debug_tool_registry_snapshot()
     return HealthResponse(
         ok=True,
         product_profile=PRODUCT_PROFILE.key,
@@ -299,8 +289,7 @@ def health() -> HealthResponse:
 
 @app.get("/api/role-lab/runtime", response_model=RoleLabRuntimeResponse)
 def role_lab_runtime() -> RoleLabRuntimeResponse:
-    agent = get_agent()
-    snapshot = agent._debug_role_lab_runtime_snapshot()
+    snapshot = get_agent_os_runtime().debug_role_lab_runtime_snapshot()
     return RoleLabRuntimeResponse(ok=True, detail="role-agent runtime snapshot", role_lab_runtime=dict(snapshot or {}))
 
 
@@ -318,7 +307,7 @@ def _kernel_runtime_response(
 ) -> KernelRuntimeResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
-    tool_registry = get_agent()._debug_tool_registry_snapshot()
+    tool_registry = get_agent_os_runtime().debug_tool_registry_snapshot()
     return KernelRuntimeResponse(
         ok=ok,
         detail=detail,
@@ -910,8 +899,8 @@ def _append_drill_step(
 def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
     run_id = str(uuid.uuid4())
     execution_mode = _resolve_execution_mode(req.execution_mode)
-    agent = get_agent()
-    docker_ok, docker_msg = agent.tools.docker_status()
+    tools = get_agent_os_runtime().legacy_tools()
+    docker_ok, docker_msg = tools.docker_status()
     steps: list[SandboxDrillStep] = []
     failed = 0
     drill_session_id = f"__drill__{run_id}"
@@ -939,10 +928,10 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         if not docker_step_ok:
             failed += 1
 
-    agent.tools.set_runtime_context(execution_mode=execution_mode, session_id=drill_session_id)
+    tools.set_runtime_context(execution_mode=execution_mode, session_id=drill_session_id)
     try:
         started = time.perf_counter()
-        list_result = agent.tools.list_directory(path=".", max_entries=20)
+        list_result = tools.list_directory(path=".", max_entries=20)
         list_ok = bool(list_result.get("ok"))
         list_detail = (
             f"path={list_result.get('path', '')}, entries={len(list_result.get('entries') or [])}"
@@ -960,7 +949,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
             failed += 1
 
         started = time.perf_counter()
-        pwd_result = agent.tools.run_shell(command="pwd", cwd=".", timeout_sec=12)
+        pwd_result = tools.run_shell(command="pwd", cwd=".", timeout_sec=12)
         pwd_ok = bool(pwd_result.get("ok"))
         pwd_detail = (
             f"mode={pwd_result.get('execution_mode')}, host_cwd={pwd_result.get('host_cwd')}, "
@@ -980,7 +969,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
 
         started = time.perf_counter()
         if "python3" in config.allowed_commands:
-            py_result = agent.tools.run_shell(command="python3 --version", cwd=".", timeout_sec=12)
+            py_result = tools.run_shell(command="python3 --version", cwd=".", timeout_sec=12)
             py_ok = bool(py_result.get("ok"))
             py_out = str(py_result.get("stdout") or py_result.get("stderr") or "").strip().splitlines()
             py_detail = py_out[0] if py_out else (
@@ -1027,7 +1016,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
             if not mapping_ok:
                 failed += 1
     finally:
-        agent.tools.clear_runtime_context()
+        tools.clear_runtime_context()
 
     if failed == 0:
         summary = f"沙盒演练通过（{len(steps)} 步）。"
@@ -1127,10 +1116,10 @@ def _process_chat_request(
             run_id=run_id,
             queue_wait_ms=queue_wait_ms,
         )
-        agent = get_agent()
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
-        summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
+        agent_os = get_agent_os_runtime()
+        summarized = agent_os.maybe_compact_session(session, req.settings.max_context_turns)
         if summarized:
             _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 

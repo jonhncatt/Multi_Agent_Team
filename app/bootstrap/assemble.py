@@ -117,6 +117,27 @@ class AgentOSRuntime:
         self.bind_legacy_host(self._legacy_host_factory())
         return self._legacy_host
 
+    def _require_legacy_host(self) -> Any:
+        host = self.get_legacy_host()
+        if host is None:
+            raise RuntimeError("Legacy host is unavailable from AgentOSRuntime")
+        return host
+
+    def legacy_tools(self) -> Any:
+        return self._require_legacy_host().tools
+
+    def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
+        return bool(self._require_legacy_host().maybe_compact_session(session, keep_last_turns))
+
+    def debug_kernel_host_snapshot(self) -> dict[str, Any]:
+        return dict(self._require_legacy_host()._debug_kernel_host_snapshot() or {})
+
+    def debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
+        return dict(self._require_legacy_host()._debug_role_lab_runtime_snapshot() or {})
+
+    def debug_tool_registry_snapshot(self) -> dict[str, Any]:
+        return dict(self._require_legacy_host()._debug_tool_registry_snapshot() or {})
+
     def dispatch(self, request: TaskRequest, *, module_id: str | None = None) -> TaskResponse:
         return self.kernel.dispatch(request, module_id=module_id)
 
