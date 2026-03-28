@@ -41,11 +41,12 @@ Status:
 - `get_legacy_host()`: no longer part of runtime behavior; retained only as a compatibility accessor entrypoint
 - blackboard orchestration: remains externalized in `packages/runtime_core/legacy_host_support.py`
 - remaining active shim focus: `app/agent.py`
+- `OfficeExecutionEngine`: canonical office runtime entry now exists, but still delegates into `OfficeAgent` for execution
 
 ## Sequence
 
-1. migrate office runtime internals into `app/business_modules/office_module/*`
-2. sever `office_module -> OfficeAgent` delegation
-3. replace runtime-path compatibility host usage with explicit legacy facade/helper bindings
-4. retire `packages/runtime_core/kernel_host.py`
-5. continue with the remaining `app/agent.py` execution-path retirement work
+1. move the main office execution path behind `OfficeExecutionEngine`
+2. migrate module wrappers off `OfficeAgent` private methods
+3. migrate shadow / smoke / replay / worker / eval helper consumers to explicit runtime/helper surfaces
+4. sever `OfficeExecutionEngine -> OfficeAgent` delegation
+5. retire `app/agent.py`

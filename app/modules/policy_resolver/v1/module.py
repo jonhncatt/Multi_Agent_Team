@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.office_modules.module_wrapper_surface import normalize_with_office_policy
+
 
 class PolicyResolverModule:
     module_id = "policy_resolver"
@@ -15,4 +17,9 @@ class PolicyResolverModule:
         fallback: dict[str, Any],
         settings: Any,
     ) -> dict[str, Any]:
-        return agent._normalize_route_decision_impl(route=route, fallback=fallback, settings=settings)
+        return normalize_with_office_policy(
+            agent,
+            route=route,
+            fallback=fallback,
+            settings=settings,
+        )

@@ -7,6 +7,7 @@ from packages.office_modules.execution_runtime import (
     LegacyOfficeExecutionRuntimeAdapter,
     normalize_legacy_run_chat_result,
 )
+from packages.office_modules.execution_engine import OfficeExecutionEngine
 
 
 def _make_legacy_tuple(**overrides: Any) -> tuple[Any, ...]:
@@ -34,9 +35,10 @@ def _make_legacy_tuple(**overrides: Any) -> tuple[Any, ...]:
 class _FakeLegacySurface:
     def __init__(self, result: Any) -> None:
         self._result = result
+        self.calls: list[dict[str, Any]] = []
 
     def run_chat(self, *args: Any, **kwargs: Any) -> Any:
-        _ = args, kwargs
+        self.calls.append({"args": list(args), "kwargs": dict(kwargs)})
         return self._result
 
 
@@ -102,3 +104,43 @@ def test_execution_runtime_adapter_returns_structured_result_from_legacy_surface
     assert result.execution_plan == ["router"]
     assert result.route_state["top_intent"] == "understanding"
     assert result.answer_bundle["summary"] == "adapter"
+
+
+def test_office_execution_engine_returns_structured_result() -> None:
+    backend = _FakeLegacySurface(
+        _make_legacy_tuple(
+            text="engine result",
+            execution_plan=["router", "worker"],
+            effective_model="gpt-engine",
+            route_state={"top_intent": "generation"},
+        )
+    )
+    runtime = OfficeExecutionEngine(backend=backend)
+
+    result = runtime.run_chat([], "", "hello", [], {}, session_id="s-2", route_state={"x": 1}, progress_cb=None)
+
+    assert result.text == "engine result"
+    assert result.execution_plan == ["router", "worker"]
+    assert result.effective_model == "gpt-engine"
+    assert result.route_state["top_intent"] == "generation"
+
+
+def test_office_execution_engine_forwards_blackboard_compatibility_kwarg() -> None:
+    backend = _FakeLegacySurface(_make_legacy_tuple(text="engine with blackboard"))
+    runtime = OfficeExecutionEngine(backend=backend)
+    marker = object()
+
+    result = runtime.run_chat(
+        [],
+        "",
+        "hello",
+        [],
+        {},
+        session_id="s-3",
+        route_state={},
+        progress_cb=None,
+        blackboard=marker,
+    )
+
+    assert result.text == "engine with blackboard"
+    assert backend.calls[-1]["kwargs"]["blackboard"] is marker

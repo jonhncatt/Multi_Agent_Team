@@ -117,6 +117,7 @@ class OfficeExecutionRuntime(ABC):
         session_id: str | None = None,
         route_state: dict[str, Any] | None = None,
         progress_cb: Any | None = None,
+        blackboard: Any | None = None,
     ) -> OfficeExecutionResult:
         raise NotImplementedError
 
@@ -162,6 +163,18 @@ class OfficeLegacyHelperSurface(ABC):
         fallback: dict[str, Any] | None = None,
         settings: Any | None = None,
     ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def sanitize_final_answer(
+        self,
+        text: str,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -390,6 +403,39 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             or {}
         )
 
+    def sanitize_final_answer(
+        self,
+        text: str,
+        *,
+        user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        tool_events: list[Any] | None = None,
+        inline_followup_context: bool = False,
+    ) -> str:
+        method = getattr(self._legacy_runtime, "sanitize_final_answer", None)
+        if callable(method):
+            return str(
+                method(
+                    text,
+                    user_message=user_message,
+                    attachment_metas=attachment_metas,
+                    tool_events=tool_events,
+                    inline_followup_context=inline_followup_context,
+                )
+                or ""
+            )
+        _record_legacy_helper_surface_usage("_sanitize_final_answer_text_impl", kind="method")
+        return str(
+            self._legacy_runtime._sanitize_final_answer_text_impl(
+                text,
+                user_message=user_message,
+                attachment_metas=attachment_metas,
+                tool_events=tool_events,
+                inline_followup_context=inline_followup_context,
+            )
+            or ""
+        )
+
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "_debug_kernel_module_snapshot", None)
         if callable(method):
@@ -511,6 +557,7 @@ class LegacyOfficeExecutionRuntimeAdapter(OfficeExecutionRuntime):
         session_id: str | None = None,
         route_state: dict[str, Any] | None = None,
         progress_cb: Any | None = None,
+        blackboard: Any | None = None,
     ) -> OfficeExecutionResult:
         return normalize_legacy_run_chat_result(
             self._legacy_surface.run_chat(
@@ -522,6 +569,7 @@ class LegacyOfficeExecutionRuntimeAdapter(OfficeExecutionRuntime):
                 session_id=session_id,
                 route_state=route_state,
                 progress_cb=progress_cb,
+                blackboard=blackboard,
             )
         )
 

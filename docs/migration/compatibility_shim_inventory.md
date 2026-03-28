@@ -6,7 +6,7 @@ This file tracks every active compatibility shim as a managed migration object.
 
 | Path | Current Role | Why It Still Exists | Known Dependents | Retirement Condition |
 | --- | --- | --- | --- | --- |
-| `app/agent.py` | Legacy Office runtime and compatibility orchestration shim | `office_module` still delegates to `OfficeAgent` for the main office execution path | `packages/office_modules/agent_module.py`, shadow/bootstrap repair flows, router-layer tests; session compaction plus auth/capability/kernel/evolution/role-lab/runtime-override debug helpers have been moved to `packages/office_modules/legacy_runtime_support.py` | `office_module` runs its own pipeline end to end without `OfficeAgent` delegation |
+| `app/agent.py` | Legacy Office runtime and compatibility orchestration shim | `office_module` main path now enters canonical `OfficeExecutionEngine`, but the engine still delegates into `OfficeAgent` for the core office execution path | `packages/office_modules/agent_module.py`, shadow/bootstrap repair flows, router-layer tests; session compaction plus auth/capability/kernel/evolution/role-lab/runtime-override debug helpers have been moved to `packages/office_modules/legacy_runtime_support.py` | `OfficeExecutionEngine` no longer delegates to `OfficeAgent`, and `packages/office_modules/agent_module.py` no longer imports `app.agent` |
 
 ## Retired Shims
 

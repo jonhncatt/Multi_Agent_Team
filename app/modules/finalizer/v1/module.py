@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.office_modules.module_wrapper_surface import sanitize_with_office_finalizer
+
 
 class FinalizerModule:
     module_id = "finalizer"
@@ -17,7 +19,8 @@ class FinalizerModule:
         tool_events: list[Any] | None = None,
         inline_followup_context: bool = False,
     ) -> str:
-        return agent._sanitize_final_answer_text_impl(
+        return sanitize_with_office_finalizer(
+            agent,
             text,
             user_message=user_message,
             attachment_metas=attachment_metas,

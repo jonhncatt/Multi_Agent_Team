@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.office_modules.execution_engine import OfficeExecutionEngine
 from packages.office_modules.execution_runtime import (
-    LegacyOfficeExecutionRuntimeAdapter,
     LegacyOfficeHelperAdapter,
     OfficeExecutionRuntime,
     OfficeLegacyHelperSurface,
@@ -55,7 +55,7 @@ def create_office_runtime(
         selected_agent_module_id=selected_agent_module_id,
         selected_tool_module_id=selected_tool_module_id,
     )
-    return LegacyOfficeExecutionRuntimeAdapter(legacy_surface)
+    return OfficeExecutionEngine(backend=legacy_surface)
 
 
 def create_office_agent(
