@@ -519,7 +519,7 @@ def run_regression_evals(
     agent_os_runtime = assemble_runtime(cfg, kernel_runtime=kernel_runtime)
     helper_surface = agent_os_runtime.legacy_helper_surface()
     execution_runtime = adapt_office_execution_runtime(helper_surface)
-    tools = helper_surface.tools
+    tools = agent_os_runtime.legacy_tools()
     attachment_module = kernel_runtime.registry.attachment_context
 
     results: list[dict[str, Any]] = []

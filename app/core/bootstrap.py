@@ -10,7 +10,7 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
-from packages.office_modules.execution_runtime import OfficeExecutionResult, adapt_office_execution_runtime
+from packages.office_modules.execution_runtime import OfficeExecutionResult
 from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE
 from app.config import AppConfig
 from app.core.module_code import sync_python_module_version
@@ -830,23 +830,23 @@ class KernelRuntime:
         try:
             smoke_runtime = build_kernel_runtime(smoke_config)
             active_validation = smoke_runtime.validate_active_manifest()
-            smoke_agent = create_office_legacy_surface(smoke_config, kernel_runtime=smoke_runtime)
+            smoke_helper = create_office_legacy_surface(smoke_config, kernel_runtime=smoke_runtime)
             settings = ChatSettings()
-            route = smoke_agent.route_request_by_rules(
+            route = smoke_helper.route_request_by_rules(
                 user_message=user_message,
                 attachment_metas=[],
                 settings=settings,
             )
-            finalizer_preview = smoke_agent._sanitize_final_answer_text(
+            finalizer_preview = smoke_helper.sanitize_final_answer(
                 '{"rows":[{"姓名":"张三","分数":95},{"姓名":"李四","分数":88}]}',
                 user_message="把数据整理成表格",
                 attachment_metas=[],
             )
             provider_info: dict[str, object] = {}
-            auth_summary = smoke_agent._debug_openai_auth_summary()
+            auth_summary = smoke_helper.debug_openai_auth_summary()
             if validate_provider and bool(auth_summary.get("available")):
                 try:
-                    runner = smoke_agent._build_llm(
+                    runner = smoke_helper.build_llm(
                         model=smoke_config.default_model,
                         max_output_tokens=256,
                         use_responses_api=False,
@@ -898,7 +898,7 @@ class KernelRuntime:
 
     def run_shadow_replay(self, *, replay_record: dict[str, object]) -> dict[str, object]:
         from app.models import ChatSettings
-        from packages.office_modules.agent_module import create_office_legacy_surface
+        from packages.office_modules.agent_module import create_office_runtime
 
         shadow_manifest = self.load_shadow_manifest()
         validation = self.supervisor.validate_manifest(shadow_manifest)
@@ -934,14 +934,13 @@ class KernelRuntime:
 
         try:
             shadow_runtime = build_kernel_runtime(smoke_config)
-            shadow_agent = create_office_legacy_surface(smoke_config, kernel_runtime=shadow_runtime)
-            shadow_runtime_adapter = adapt_office_execution_runtime(shadow_agent)
+            shadow_execution_runtime = create_office_runtime(smoke_config, kernel_runtime=shadow_runtime)
             settings_payload = replay_record.get("settings")
             settings = ChatSettings(**settings_payload) if isinstance(settings_payload, dict) else ChatSettings()
             attachment_metas = replay_record.get("attachment_metas")
             history_turns_before = replay_record.get("history_turns_before")
             route_state_input = replay_record.get("route_state_input")
-            result = shadow_runtime_adapter.run_chat(
+            result = shadow_execution_runtime.run_chat(
                 history_turns=list(history_turns_before) if isinstance(history_turns_before, list) else [],
                 summary=str(replay_record.get("summary_before") or ""),
                 user_message=str(replay_record.get("message") or replay_record.get("message_preview") or ""),
@@ -1013,12 +1012,12 @@ class KernelRuntime:
         write_active_manifest(contract_config.active_manifest_path, manifest)
         write_active_manifest(contract_config.shadow_manifest_path, manifest)
         contract_runtime = build_kernel_runtime(contract_config)
-        contract_agent = create_office_legacy_surface(contract_config, kernel_runtime=contract_runtime)
+        contract_helper = create_office_legacy_surface(contract_config, kernel_runtime=contract_runtime)
         settings = ChatSettings()
         route: dict[str, object] = {}
 
         try:
-            route = contract_agent.route_request_by_rules(
+            route = contract_helper.route_request_by_rules(
                 user_message="给我今天的新闻",
                 attachment_metas=[],
                 settings=settings,
@@ -1043,7 +1042,7 @@ class KernelRuntime:
                 "execution_policy": "qa_direct",
                 "use_worker_tools": False,
             }
-            normalized = contract_agent.normalize_route_decision(route=route_input, fallback=route_input, settings=settings)
+            normalized = contract_helper.normalize_route_decision(route=route_input, fallback=route_input, settings=settings)
             checks.append(
                 self._build_contract_check(
                     label="policy",
@@ -1091,7 +1090,7 @@ class KernelRuntime:
             checks.append(self._build_contract_check(label="attachment_context", kind="attachment_context", ok=False, detail=str(exc)))
 
         try:
-            sanitized = contract_agent._sanitize_final_answer_text(
+            sanitized = contract_helper.sanitize_final_answer(
                 '{"rows":[{"姓名":"张三","分数":95},{"姓名":"李四","分数":88}]}',
                 user_message="把数据整理成表格",
                 attachment_metas=[],
@@ -1110,7 +1109,7 @@ class KernelRuntime:
 
         try:
             tool_registry = contract_runtime.registry.tool_registry
-            tools = tool_registry.build_langchain_tools(agent=contract_agent)
+            tools = tool_registry.build_langchain_tools(agent=contract_helper)
             checks.append(
                 self._build_contract_check(
                     label="tool_registry",
@@ -1124,23 +1123,18 @@ class KernelRuntime:
         except Exception as exc:
             checks.append(self._build_contract_check(label="tool_registry", kind="tool_registry", ok=False, detail=str(exc)))
 
-        auth_summary = contract_agent._debug_openai_auth_summary()
+        auth_summary = contract_helper.debug_openai_auth_summary()
         for mode in sorted((contract_runtime.registry.providers or {}).keys()):
             provider = contract_runtime.registry.providers.get(mode)
             label = f"provider:{mode}"
             try:
-                if mode == "api_key":
-                    auth = contract_agent._auth_manager._resolve_api_key_auth()
-                elif mode == "codex_auth":
-                    auth = contract_agent._auth_manager._resolve_codex_auth()
-                else:
-                    auth = contract_agent._auth_manager.resolve()
+                auth = contract_helper.resolve_auth(mode)
                 if not bool(getattr(auth, "available", False)):
                     raise RuntimeError(str(getattr(auth, "reason", "") or f"{mode} auth unavailable"))
                 runner = provider.build_runner(  # type: ignore[union-attr]
-                    agent=contract_agent,
+                    agent=contract_helper,
                     auth=auth,
-                    model=contract_config.default_model,
+                    model=contract_helper.default_model(),
                     max_output_tokens=64,
                     use_responses_api=False,
                 )
@@ -1172,7 +1166,7 @@ class KernelRuntime:
         capability_checks.extend(
             run_module_capability_smoke(
                 runtime=contract_runtime,
-                agent=contract_agent,
+                agent=contract_helper,
                 settings=settings,
                 artifact_root=run_dir,
             )
@@ -1426,7 +1420,7 @@ class KernelRuntime:
         promote_if_healthy: bool | None = None,
     ) -> dict[str, object]:
         from app.models import ChatSettings
-        from packages.office_modules.agent_module import create_office_legacy_surface
+        from packages.office_modules.agent_module import create_office_runtime
 
         repair_payload = dict(repair_run or self.read_last_repair_run())
         run_id = self._pipeline_run_id()
@@ -1503,8 +1497,7 @@ class KernelRuntime:
                     enable_shadow_logging=False,
                 )
                 worker_runtime = build_kernel_runtime(worker_cfg)
-                worker_agent = create_office_legacy_surface(worker_cfg, kernel_runtime=worker_runtime)
-                worker_runtime_adapter = adapt_office_execution_runtime(worker_agent)
+                worker_execution_runtime = create_office_runtime(worker_cfg, kernel_runtime=worker_runtime)
                 settings = ChatSettings(enable_tools=True, response_style="short", max_output_tokens=12000)
                 message = (
                     f"你正在修复一个 shadow 模块副本，第 {round_index}/{round_limit} 轮。"
@@ -1514,7 +1507,7 @@ class KernelRuntime:
                     "如果上一轮还没修好，请优先根据 last_pipeline_failure 和 last_remediation_hints 继续修。"
                     "必须实际调用读写工具完成修改。完成后简要说明修改了哪些文件。"
                 )
-                result = worker_runtime_adapter.run_chat(
+                result = worker_execution_runtime.run_chat(
                     history_turns=[],
                     summary="",
                     user_message=message,

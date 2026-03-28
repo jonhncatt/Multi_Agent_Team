@@ -198,23 +198,18 @@ def run_module_capability_smoke(*, runtime: Any, agent: Any, settings: Any, arti
     except Exception as exc:
         checks.append(_check("tool_registry:describe", "tool_registry", False, detail=str(exc), resolved_ref=str(selected_refs.get("tool_registry") or "")))
 
-    auth_summary = agent._debug_openai_auth_summary()
+    auth_summary = agent.debug_openai_auth_summary()
     for mode in sorted((runtime.registry.providers or {}).keys()):
         provider = runtime.registry.providers.get(mode)
         label = f"provider:{mode}:runner_interface"
         try:
-            if mode == "api_key":
-                auth = agent._auth_manager._resolve_api_key_auth()
-            elif mode == "codex_auth":
-                auth = agent._auth_manager._resolve_codex_auth()
-            else:
-                auth = agent._auth_manager.resolve()
+            auth = agent.resolve_auth(mode)
             if not bool(getattr(auth, "available", False)):
                 raise RuntimeError(str(getattr(auth, "reason", "") or f"{mode} auth unavailable"))
             runner = provider.build_runner(  # type: ignore[union-attr]
                 agent=agent,
                 auth=auth,
-                model=agent.config.default_model,
+                model=agent.default_model(),
                 max_output_tokens=64,
                 use_responses_api=False,
             )

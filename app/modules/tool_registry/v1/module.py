@@ -8,10 +8,13 @@ class ToolRegistryModule:
     version = "1.0.0"
 
     def build_langchain_tools(self, *, agent: Any) -> list[Any]:
-        return agent._build_langchain_tools()
+        public_builder = getattr(agent, "build_langchain_tools", None)
+        if callable(public_builder):
+            return list(public_builder() or [])
+        return list(agent._build_langchain_tools() or [])
 
     def describe_tools(self, *, agent: Any) -> dict[str, Any]:
-        tools = list(getattr(agent, "_lc_tools", None) or self.build_langchain_tools(agent=agent))
+        tools = self.build_langchain_tools(agent=agent)
         items: list[dict[str, Any]] = []
         for tool in tools:
             items.append(

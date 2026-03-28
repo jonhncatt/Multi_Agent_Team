@@ -124,6 +124,10 @@ class OfficeExecutionRuntime(ABC):
 
 class OfficeLegacyHelperSurface(ABC):
     @abstractmethod
+    def build_langchain_tools(self) -> list[Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def run_chat(
         self,
         history_turns: list[dict[str, Any]],
@@ -175,6 +179,28 @@ class OfficeLegacyHelperSurface(ABC):
         tool_events: list[Any] | None = None,
         inline_followup_context: bool = False,
     ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def debug_openai_auth_summary(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_llm(
+        self,
+        *,
+        model: str,
+        max_output_tokens: int,
+        use_responses_api: bool | None = None,
+    ) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    def resolve_auth(self, mode: str) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    def default_model(self) -> str:
         raise NotImplementedError
 
     @abstractmethod
@@ -317,6 +343,13 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         _record_legacy_helper_surface_usage(name, kind="attribute")
         return value
 
+    def build_langchain_tools(self) -> list[Any]:
+        method = getattr(self._legacy_runtime, "build_langchain_tools", None)
+        if callable(method):
+            return list(method() or [])
+        _record_legacy_helper_surface_usage("_build_langchain_tools", kind="method")
+        return list(self._legacy_runtime._build_langchain_tools() or [])
+
     def run_chat(
         self,
         history_turns: list[dict[str, Any]],
@@ -435,6 +468,55 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             )
             or ""
         )
+
+    def debug_openai_auth_summary(self) -> dict[str, Any]:
+        method = getattr(self._legacy_runtime, "debug_openai_auth_summary", None)
+        if callable(method):
+            return dict(method() or {})
+        _record_legacy_helper_surface_usage("_debug_openai_auth_summary", kind="method")
+        return dict(self._legacy_runtime._debug_openai_auth_summary() or {})
+
+    def build_llm(
+        self,
+        *,
+        model: str,
+        max_output_tokens: int,
+        use_responses_api: bool | None = None,
+    ) -> Any:
+        method = getattr(self._legacy_runtime, "build_llm", None)
+        if callable(method):
+            return method(
+                model=model,
+                max_output_tokens=max_output_tokens,
+                use_responses_api=use_responses_api,
+            )
+        _record_legacy_helper_surface_usage("_build_llm", kind="method")
+        return self._legacy_runtime._build_llm(
+            model=model,
+            max_output_tokens=max_output_tokens,
+            use_responses_api=use_responses_api,
+        )
+
+    def resolve_auth(self, mode: str) -> Any:
+        method = getattr(self._legacy_runtime, "resolve_auth", None)
+        if callable(method):
+            return method(mode)
+        auth_manager = getattr(self._legacy_runtime, "_auth_manager", None)
+        if auth_manager is None:
+            raise AttributeError("resolve_auth")
+        normalized_mode = str(mode or "").strip().lower()
+        if normalized_mode == "api_key":
+            return auth_manager._resolve_api_key_auth()
+        if normalized_mode == "codex_auth":
+            return auth_manager._resolve_codex_auth()
+        return auth_manager.resolve()
+
+    def default_model(self) -> str:
+        method = getattr(self._legacy_runtime, "default_model", None)
+        if callable(method):
+            return str(method() or "")
+        config = getattr(self._legacy_runtime, "config", None)
+        return str(getattr(config, "default_model", "") or "")
 
     def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "_debug_kernel_module_snapshot", None)
