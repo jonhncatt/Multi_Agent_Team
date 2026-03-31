@@ -1,11 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="openclaw agent icon">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mat Multi_Agent_Robot logo">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e9e0ff" />
-      <stop offset="1" stop-color="#c9b7ff" />
+    <linearGradient id="matGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12c9d7" />
+      <stop offset="1" stop-color="#1ce48b" />
     </linearGradient>
   </defs>
-  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)" />
-  <path d="M20 34c0-6.8 5.4-12 12-12s12 5.2 12 12-5.4 12-12 12-12-5.2-12-12zm7.5 0c0 2.6 1.9 4.8 4.5 4.8s4.5-2.2 4.5-4.8-1.9-4.8-4.5-4.8-4.5 2.2-4.5 4.8z" fill="#4b2f8f" />
-  <path d="M47 41l-2.5-6.5L42 41h-7l7-18h5l7 18h-7z" fill="#4b2f8f" />
+  <rect width="64" height="64" rx="14" fill="#eef4f0" />
+  <rect x="3" y="3" width="58" height="58" rx="11" fill="#f8fbf9" stroke="#d8e6de" />
+  <text
+    x="50%"
+    y="53%"
+    text-anchor="middle"
+    dominant-baseline="middle"
+    fill="url(#matGradient)"
+    font-family="SF Pro Display, Inter, Arial, sans-serif"
+    font-weight="700"
+    font-size="36"
+    letter-spacing="-1.8"
+  >
+    M
+  </text>
 </svg>

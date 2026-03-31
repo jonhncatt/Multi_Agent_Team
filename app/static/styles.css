@@ -3482,30 +3482,26 @@ body.theme-openclaw .control-rail--openclaw {
 }
 
 body.theme-openclaw .sidebar-brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 6px 2px;
+  display: grid;
+  gap: 8px;
+  padding: 4px 6px 8px;
 }
 
-body.theme-openclaw .brand-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  background: var(--accent);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  box-shadow: none;
+body.theme-openclaw .sidebar-brand-logo {
+  width: 100%;
+  max-width: 188px;
+  height: auto;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid rgba(189, 212, 195, 0.52);
+  background: #eef4f0;
 }
 
-body.theme-openclaw .sidebar-brand-copy {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
+body.theme-openclaw .sidebar-brand-caption {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #6c7680;
+  padding-left: 2px;
 }
 
 body.theme-openclaw .sidebar-brand-kicker,
@@ -3524,14 +3520,6 @@ body.theme-openclaw .ops-gate-card span {
   color: #9299a4;
 }
 
-body.theme-openclaw .sidebar-brand-title {
-  font-size: 18px;
-  line-height: 1.1;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-}
-
-body.theme-openclaw .sidebar-brand-meta,
 body.theme-openclaw .sidebar-nav-meta {
   display: none;
 }

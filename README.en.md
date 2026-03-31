@@ -1,5 +1,7 @@
 # Multi_Agent_Robot
 
+![Mat Multi_Agent_Robot logo](docs/assets/brand/mat-logo-horizontal.jpg)
+
 [中文 README](README.md)
 
 [![Regression CI](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Robot/actions/workflows/regression-ci.yml)
