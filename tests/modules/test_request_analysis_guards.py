@@ -35,6 +35,11 @@ def test_permission_gate_detects_self_update_forbidden_refusal() -> None:
     assert looks_like_permission_gate_text(text, request_requires_tools=True) is True
 
 
+def test_permission_gate_detects_cannot_upgrade_module_refusal() -> None:
+    text = "当前系统无法升级模块，但可以直接解决这个问题。"
+    assert looks_like_permission_gate_text(text, request_requires_tools=True) is True
+
+
 def test_request_likely_requires_tools_for_evolution_request() -> None:
     agent = _AgentStub()
     assert request_likely_requires_tools(
@@ -50,6 +55,16 @@ def test_request_likely_requires_tools_for_github_repo_url() -> None:
     assert request_likely_requires_tools(
         agent,
         "读取 https://github.com/jonhncatt/Sequoia 里面所有内容。",
+        [],
+        news_hints=("news", "新闻"),
+    ) is True
+
+
+def test_request_likely_requires_tools_for_plain_upgrade_command() -> None:
+    agent = _AgentStub()
+    assert request_likely_requires_tools(
+        agent,
+        "你现在就去升级模块。",
         [],
         news_hints=("news", "新闻"),
     ) is True

@@ -34,6 +34,28 @@ class CandidateIntentGenerator:
             self._bump(scores, "web", 0.60, "web_request")
         if signals.local_code_lookup_request:
             self._bump(scores, "code_lookup", 0.65, "local_code_lookup_request")
+        text_value = str(signals.text or "").strip().lower()
+        kernel_upgrade_request = any(
+            marker in text_value
+            for marker in (
+                "升级",
+                "进化",
+                "热插拔",
+                "自我修复",
+                "自我更新",
+                "自我升级",
+                "self-upgrade",
+                "self upgrade",
+                "self-update",
+                "self update",
+                "patch_worker",
+                "shadow pipeline",
+                "shadow",
+            )
+        )
+        if kernel_upgrade_request:
+            self._bump(scores, "code_lookup", 0.66, "kernel_upgrade_request")
+            self._bump(scores, "generation", 0.22, "kernel_upgrade_request")
         if signals.local_code_lookup_request and (signals.source_trace_request or signals.evidence_required or signals.spec_lookup_request):
             self._bump(scores, "code_lookup", 0.28, "grounded_code_lookup + evidence_competition")
         if signals.grounded_code_generation_context and (
@@ -72,6 +94,7 @@ class CandidateIntentGenerator:
                 signals.spec_lookup_request,
                 signals.web_request,
                 signals.local_code_lookup_request,
+                kernel_upgrade_request,
                 signals.meeting_minutes_request,
                 (signals.has_attachments and signals.understanding_request),
             )

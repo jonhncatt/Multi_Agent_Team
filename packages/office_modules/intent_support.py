@@ -469,8 +469,9 @@ def request_likely_requires_tools(agent: Any, user_message: str, attachment_meta
         "write back", "overwrite", "replace", "update", "run_shell", "search_web", "fetch_web", "download_web_file", ".pdf",
         ".doc", ".docx", ".ppt", ".pptx", ".xlsx", ".csv", ".zip", ".msg", "页码", "定位", "命中", "查证", "核对",
         "according to", "citation", "github", "git clone", "clone repo", "读取仓库", "仓库内容",
-        "进化", "模块进化", "自我更新", "自我升级", "自我修复", "热插拔", "shadow", "self-upgrade",
-        "self upgrade", "self-update", "self update", "upgrade run", "patch_worker", "promote", "rollback",
+        "进化", "模块进化", "自我更新", "自我升级", "自我修复", "热插拔", "升级", "upgrade",
+        "shadow", "self-upgrade", "self upgrade", "self-update", "self update", "upgrade run", "patch_worker",
+        "promote", "rollback",
     )
     if any(hint in text for hint in direct_hints):
         return True

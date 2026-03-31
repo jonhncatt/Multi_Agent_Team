@@ -636,6 +636,26 @@ class ReadSessionHistoryArgs(BaseModel):
     max_turns: int = Field(default=80, ge=1, le=800)
 
 
+class KernelRuntimeStatusArgs(BaseModel):
+    include_roles: bool = True
+    include_runtime_files: bool = False
+
+
+class KernelShadowPipelineToolArgs(BaseModel):
+    smoke_message: str = "给我今天的新闻"
+    validate_provider: bool = True
+    promote_if_healthy: bool = False
+
+
+class KernelShadowSelfUpgradeToolArgs(BaseModel):
+    smoke_message: str = "给我今天的新闻"
+    validate_provider: bool = True
+    max_attempts: int = Field(default=1, ge=1, le=5)
+    max_tasks: int = Field(default=1, ge=1, le=10)
+    max_rounds: int = Field(default=2, ge=1, le=5)
+    promote_if_healthy: bool = True
+
+
 class OfficeAgent:
     """Canonical office execution runtime implementation."""
 
@@ -1477,6 +1497,8 @@ class OfficeAgent:
                     "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
                     "当用户要求模块进化、自我修复、自我升级时，允许在 shadow 副本执行修复与验证；"
                     "禁止的是未经验证直接覆盖在线核心，不要笼统回复“这是禁止能力”。\n"
+                    "这类升级任务优先调用 kernel_shadow_self_upgrade 或 kernel_shadow_pipeline / kernel_runtime_status，"
+                    "不要改成泛化问答或反复追问。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
                     "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
@@ -7441,6 +7463,32 @@ class OfficeAgent:
                 args_schema=SearchWebArgs,
                 func=self._search_web_tool,
             ),
+            self._StructuredTool.from_function(
+                name="kernel_runtime_status",
+                description=(
+                    "Read kernel runtime status, including selected modules, health, and office role runtime readiness."
+                ),
+                args_schema=KernelRuntimeStatusArgs,
+                func=self._kernel_runtime_status_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="kernel_shadow_pipeline",
+                description=(
+                    "Run shadow validation/contracts/smoke pipeline to generate an upgrade attempt "
+                    "without touching active modules."
+                ),
+                args_schema=KernelShadowPipelineToolArgs,
+                func=self._kernel_shadow_pipeline_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="kernel_shadow_self_upgrade",
+                description=(
+                    "Run shadow self-upgrade end-to-end. If no previous upgrade attempt exists, "
+                    "it auto-runs a baseline shadow pipeline first."
+                ),
+                args_schema=KernelShadowSelfUpgradeToolArgs,
+                func=self._kernel_shadow_self_upgrade_tool,
+            ),
         ]
         if self.config.enable_session_tools:
             tools.append(
@@ -7773,6 +7821,110 @@ class OfficeAgent:
     def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
         result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
+
+    def _kernel_runtime_status_tool(self, include_roles: bool = True, include_runtime_files: bool = False) -> str:
+        try:
+            snapshot = self._kernel_runtime.health_snapshot()
+            payload: dict[str, Any] = {
+                "ok": True,
+                "active_manifest": dict(snapshot.active_manifest),
+                "selected_modules": dict(snapshot.selected_modules),
+                "module_health": dict(snapshot.module_health),
+                "last_upgrade_run": self._kernel_runtime.read_last_upgrade_run(),
+                "last_repair_run": self._kernel_runtime.read_last_repair_run(),
+                "last_patch_worker_run": self._kernel_runtime.read_last_patch_worker_run(),
+                "last_package_run": self._kernel_runtime.read_last_package_run(),
+                "last_shadow_run": self._kernel_runtime.read_last_shadow_run(),
+            }
+            if include_runtime_files:
+                payload["runtime_files"] = dict(snapshot.runtime_files)
+            if include_roles:
+                payload["role_registry"] = self._role_registry.snapshot()
+                payload["stage4_readiness"] = self._role_runtime_controller.stage4_readiness()
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+    def _kernel_shadow_pipeline_tool(
+        self,
+        smoke_message: str = "给我今天的新闻",
+        validate_provider: bool = True,
+        promote_if_healthy: bool = False,
+    ) -> str:
+        try:
+            pipeline = self._kernel_runtime.run_shadow_pipeline(
+                overrides={},
+                smoke_message=smoke_message,
+                validate_provider=bool(validate_provider),
+                replay_record=None,
+                promote_if_healthy=bool(promote_if_healthy),
+            )
+            payload = {
+                "ok": bool(pipeline.get("ok")),
+                "run_id": str(pipeline.get("run_id") or ""),
+                "failure_classification": dict(pipeline.get("failure_classification") or {}),
+                "remediation_hints": list(pipeline.get("remediation_hints") or []),
+                "validation": dict(pipeline.get("validation") or {}),
+                "contracts": dict(pipeline.get("contracts") or {}),
+                "smoke": dict(pipeline.get("smoke") or {}),
+                "replay": dict(pipeline.get("replay") or {}),
+                "promotion": dict(pipeline.get("promotion") or {}),
+                "pipeline": pipeline,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
+    def _kernel_shadow_self_upgrade_tool(
+        self,
+        smoke_message: str = "给我今天的新闻",
+        validate_provider: bool = True,
+        max_attempts: int = 1,
+        max_tasks: int = 1,
+        max_rounds: int = 2,
+        promote_if_healthy: bool = True,
+    ) -> str:
+        try:
+            base_upgrade_run = self._kernel_runtime.read_last_upgrade_run()
+            bootstrap_pipeline: dict[str, Any] = {}
+            bootstrap_triggered = False
+            if not isinstance(base_upgrade_run, dict) or not base_upgrade_run:
+                bootstrap_triggered = True
+                bootstrap_pipeline = self._kernel_runtime.run_shadow_pipeline(
+                    overrides={},
+                    smoke_message=smoke_message,
+                    validate_provider=bool(validate_provider),
+                    replay_record=None,
+                    promote_if_healthy=False,
+                )
+                base_upgrade_run = bootstrap_pipeline
+
+            self_upgrade = self._kernel_runtime.run_shadow_self_upgrade(
+                base_upgrade_run=base_upgrade_run if isinstance(base_upgrade_run, dict) and base_upgrade_run else None,
+                replay_record=None,
+                smoke_message=smoke_message,
+                validate_provider=bool(validate_provider),
+                max_attempts=max(1, min(5, int(max_attempts))),
+                max_tasks=max(1, min(10, int(max_tasks))),
+                max_rounds=max(1, min(5, int(max_rounds))),
+                promote_if_healthy=bool(promote_if_healthy),
+            )
+            payload = {
+                "ok": bool(self_upgrade.get("ok")),
+                "bootstrap_triggered": bootstrap_triggered,
+                "bootstrap_upgrade_run_id": str(bootstrap_pipeline.get("run_id") or ""),
+                "base_upgrade_run_id": str((base_upgrade_run or {}).get("run_id") or ""),
+                "self_upgrade_run_id": str(self_upgrade.get("run_id") or ""),
+                "stop_reason": str(self_upgrade.get("stop_reason") or ""),
+                "final_pipeline": dict(self_upgrade.get("final_pipeline") or {}),
+                "promotion": dict(self_upgrade.get("promotion") or {}),
+                "repair": dict(self_upgrade.get("repair") or {}),
+                "patch_worker": dict(self_upgrade.get("patch_worker") or {}),
+                "self_upgrade": self_upgrade,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
     def _list_sessions_tool(self, max_sessions: int = 20) -> str:
         result = self.tools.list_sessions(max_sessions=max_sessions)

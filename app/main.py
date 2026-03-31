@@ -734,11 +734,18 @@ def kernel_shadow_package(req: KernelShadowPackageRequest) -> KernelRuntimeRespo
 def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRuntimeResponse:
     runtime = get_kernel_runtime()
     base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
-    if not isinstance(base_upgrade_run, dict):
-        return _kernel_runtime_response(
-            ok=False,
-            detail="未找到可执行 self-upgrade 的 upgrade run。",
+    bootstrap_pipeline: dict[str, Any] = {}
+    bootstrap_triggered = False
+    if not isinstance(base_upgrade_run, dict) or not base_upgrade_run:
+        bootstrap_triggered = True
+        bootstrap_pipeline = runtime.run_shadow_pipeline(
+            overrides={},
+            smoke_message=str(req.smoke_message or "给我今天的新闻"),
+            validate_provider=bool(req.validate_provider if req.validate_provider is not None else True),
+            replay_record=None,
+            promote_if_healthy=False,
         )
+        base_upgrade_run = bootstrap_pipeline
     replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
     replay_record = _find_shadow_replay_record(replay_source_run_id)
     self_upgrade = runtime.run_shadow_self_upgrade(
@@ -758,12 +765,12 @@ def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRun
     replay = final_pipeline.get("replay") if isinstance(final_pipeline.get("replay"), dict) else {}
     return _kernel_runtime_response(
         ok=bool(self_upgrade.get("ok")),
-        detail="shadow self-upgrade 已执行。",
+        detail="shadow self-upgrade 已执行（已自动创建 baseline upgrade run）。" if bootstrap_triggered else "shadow self-upgrade 已执行。",
         validation=validation,
         contracts=contracts,
         smoke=smoke,
         replay=replay,
-        pipeline={"self_upgrade": self_upgrade},
+        pipeline={"self_upgrade": self_upgrade, "bootstrap_pipeline": bootstrap_pipeline, "bootstrap_triggered": bootstrap_triggered},
         repair=self_upgrade.get("repair") if isinstance(self_upgrade.get("repair"), dict) else {},
         patch_worker=self_upgrade.get("patch_worker") if isinstance(self_upgrade.get("patch_worker"), dict) else {},
     )

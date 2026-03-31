@@ -37,6 +37,13 @@ from tests.router.support import run_pipeline
             "web_research_full_pipeline",
         ),
         (
+            "你现在就去升级模块，走 shadow self-upgrade。",
+            [],
+            True,
+            "code_lookup",
+            "code_lookup_with_tools",
+        ),
+        (
             "Look up the repo function that handles retries",
             [],
             True,
