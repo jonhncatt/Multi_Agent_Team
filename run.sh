@@ -11,11 +11,22 @@ if [ -f .env ]; then
   set +a
 fi
 
-AUTH_MODE="${OFFICETOOL_OPENAI_AUTH_MODE:-${OFFCIATOOL_OPENAI_AUTH_MODE:-auto}}"
+AUTH_MODE="${OFFICETOOL_LLM_AUTH_MODE:-${OFFCIATOOL_LLM_AUTH_MODE:-${OFFICETOOL_OPENAI_AUTH_MODE:-${OFFCIATOOL_OPENAI_AUTH_MODE:-auto}}}}"
 APP_MODULE="${OFFICETOOL_APP_MODULE:-app.multi_agent_robot_main:app}"
 APP_PORT="${OFFICETOOL_APP_PORT:-8080}"
 CODEX_HOME_DIR="${OFFICETOOL_CODEX_HOME:-${OFFCIATOOL_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}}"
 CODEX_AUTH_FILE="${OFFICETOOL_CODEX_AUTH_FILE:-${OFFCIATOOL_CODEX_AUTH_FILE:-$CODEX_HOME_DIR/auth.json}}"
+
+LLM_API_KEY="${OFFICETOOL_LLM_API_KEY:-${OFFCIATOOL_LLM_API_KEY:-}}"
+LLM_BASE_URL="${OFFICETOOL_LLM_BASE_URL:-${OFFCIATOOL_LLM_BASE_URL:-}}"
+
+if [ -n "$LLM_API_KEY" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="$LLM_API_KEY"
+fi
+
+if [ -n "$LLM_BASE_URL" ] && [ -z "${OPENAI_BASE_URL:-}" ]; then
+  export OPENAI_BASE_URL="$LLM_BASE_URL"
+fi
 
 has_api_key=false
 has_codex_auth=false
@@ -31,17 +42,17 @@ fi
 case "$AUTH_MODE" in
   api_key)
     if [ "$has_api_key" = false ]; then
-      echo "WARN: OFFICETOOL_OPENAI_AUTH_MODE=api_key but OPENAI_API_KEY is not set." >&2
+      echo "WARN: LLM auth mode=api_key but no API key was found. Set OFFICETOOL_LLM_API_KEY (preferred) or OPENAI_API_KEY." >&2
     fi
     ;;
   codex_auth)
     if [ "$has_codex_auth" = false ]; then
-      echo "WARN: OFFICETOOL_OPENAI_AUTH_MODE=codex_auth but Codex auth file was not found at $CODEX_AUTH_FILE." >&2
+      echo "WARN: LLM auth mode=codex_auth but Codex auth file was not found at $CODEX_AUTH_FILE." >&2
     fi
     ;;
   *)
     if [ "$has_api_key" = false ] && [ "$has_codex_auth" = false ]; then
-      echo "WARN: Neither OPENAI_API_KEY nor Codex auth.json is configured. /api/chat requests will fail until one auth mode is available." >&2
+      echo "WARN: Neither API key (OFFICETOOL_LLM_API_KEY / OPENAI_API_KEY) nor Codex auth.json is configured. /api/chat will fail until one auth mode is available." >&2
     fi
     ;;
 esac

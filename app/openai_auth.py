@@ -64,7 +64,7 @@ class OpenAIAuthManager:
                 mode="api_key",
                 source="config",
                 available=False,
-                reason="OPENAI_API_KEY is missing.",
+                reason="Missing API key. Set OFFICETOOL_LLM_API_KEY or OPENAI_API_KEY.",
             )
 
         if requested_mode == "codex_auth":
@@ -85,7 +85,7 @@ class OpenAIAuthManager:
             mode="unconfigured",
             source="auto",
             available=False,
-            reason="Neither OPENAI_API_KEY nor Codex auth credentials are available.",
+            reason="Neither API key (OFFICETOOL_LLM_API_KEY / OPENAI_API_KEY) nor Codex auth credentials are available.",
         )
 
     def require(self, *, allow_refresh: bool = True) -> ResolvedOpenAIAuth:
@@ -171,6 +171,19 @@ class OpenAIAuthManager:
         }
 
     def _resolve_api_key_auth(self) -> ResolvedOpenAIAuth:
+        llm_api_key = str(
+            os.environ.get("OFFICETOOL_LLM_API_KEY")
+            or os.environ.get("OFFCIATOOL_LLM_API_KEY")
+            or ""
+        ).strip()
+        if llm_api_key:
+            return ResolvedOpenAIAuth(
+                mode="api_key",
+                source="env:OFFICETOOL_LLM_API_KEY",
+                available=True,
+                api_key=llm_api_key,
+            )
+
         api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
         if api_key:
             return ResolvedOpenAIAuth(
@@ -195,7 +208,7 @@ class OpenAIAuthManager:
             mode="api_key",
             source="env",
             available=False,
-            reason="OPENAI_API_KEY is missing.",
+            reason="Missing API key. Set OFFICETOOL_LLM_API_KEY or OPENAI_API_KEY.",
         )
 
     def _resolve_codex_auth(self) -> ResolvedOpenAIAuth:

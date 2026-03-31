@@ -38,7 +38,17 @@ def _should_dotenv_override(key: str) -> bool:
     normalized = key.strip().upper()
     if normalized.startswith("OFFICETOOL_") or normalized.startswith("OFFCIATOOL_"):
         return True
-    return normalized in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}
+    return normalized in {
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MISTRAL_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+    }
 
 
 def _load_dotenv_if_present() -> None:
@@ -109,6 +119,7 @@ class AppConfig:
     web_fetch_max_chars: int
     web_skip_tls_verify: bool
     web_ca_cert_path: str | None
+    llm_provider: str
     openai_auth_mode: str
     openai_base_url: str | None
     openai_ca_cert_path: str | None
@@ -380,11 +391,32 @@ def load_config() -> AppConfig:
         default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
     ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
+    llm_provider = (
+        _env("OFFICETOOL_LLM_PROVIDER", "OFFCIATOOL_LLM_PROVIDER", default="openai") or "openai"
+    ).strip().lower()
+    if not llm_provider:
+        llm_provider = "openai"
+
     openai_base_url = (
-        _env("OFFICETOOL_OPENAI_BASE_URL", "OFFCIATOOL_OPENAI_BASE_URL", "OPENAI_BASE_URL", default="") or ""
+        _env(
+            "OFFICETOOL_LLM_BASE_URL",
+            "OFFCIATOOL_LLM_BASE_URL",
+            "OFFICETOOL_OPENAI_BASE_URL",
+            "OFFCIATOOL_OPENAI_BASE_URL",
+            "OPENAI_BASE_URL",
+            default="",
+        )
+        or ""
     ).strip() or None
     openai_auth_mode = (
-        _env("OFFICETOOL_OPENAI_AUTH_MODE", "OFFCIATOOL_OPENAI_AUTH_MODE", default="auto") or "auto"
+        _env(
+            "OFFICETOOL_LLM_AUTH_MODE",
+            "OFFCIATOOL_LLM_AUTH_MODE",
+            "OFFICETOOL_OPENAI_AUTH_MODE",
+            "OFFCIATOOL_OPENAI_AUTH_MODE",
+            default="auto",
+        )
+        or "auto"
     ).strip().lower()
     if openai_auth_mode not in {"auto", "api_key", "codex_auth"}:
         openai_auth_mode = "auto"
@@ -445,7 +477,14 @@ def load_config() -> AppConfig:
         _env("OFFICETOOL_CA_CERT_PATH", "OFFCIATOOL_CA_CERT_PATH", "SSL_CERT_FILE", default="") or ""
     ).strip() or None
     openai_temperature_raw = (
-        _env("OFFICETOOL_TEMPERATURE", "OFFCIATOOL_TEMPERATURE", default="") or ""
+        _env(
+            "OFFICETOOL_LLM_TEMPERATURE",
+            "OFFCIATOOL_LLM_TEMPERATURE",
+            "OFFICETOOL_TEMPERATURE",
+            "OFFCIATOOL_TEMPERATURE",
+            default="",
+        )
+        or ""
     ).strip()
     openai_temperature: float | None = None
     if openai_temperature_raw:
@@ -455,7 +494,14 @@ def load_config() -> AppConfig:
             openai_temperature = None
 
     use_responses_raw = (
-        _env("OFFICETOOL_USE_RESPONSES_API", "OFFCIATOOL_USE_RESPONSES_API", default="false") or "false"
+        _env(
+            "OFFICETOOL_LLM_USE_RESPONSES_API",
+            "OFFCIATOOL_LLM_USE_RESPONSES_API",
+            "OFFICETOOL_USE_RESPONSES_API",
+            "OFFCIATOOL_USE_RESPONSES_API",
+            default="false",
+        )
+        or "false"
     ).strip().lower()
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
@@ -681,6 +727,7 @@ def load_config() -> AppConfig:
         web_fetch_max_chars=max(2000, min(500000, web_fetch_max_chars)),
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
+        llm_provider=llm_provider,
         openai_auth_mode=openai_auth_mode,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
@@ -693,13 +740,22 @@ def load_config() -> AppConfig:
         codex_client_id=codex_client_id or "app_EMoamEEZ73f0CkXaXp7hrann",
         codex_refresh_interval_days=max(1, min(30, codex_refresh_interval_days)),
         default_model=(
-            _env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-5.1-chat") or "gpt-5.1-chat"
+            _env(
+                "OFFICETOOL_LLM_MODEL",
+                "OFFCIATOOL_LLM_MODEL",
+                "OFFICETOOL_DEFAULT_MODEL",
+                "OFFCIATOOL_DEFAULT_MODEL",
+                default="gpt-5.1-chat",
+            )
+            or "gpt-5.1-chat"
         ),
         model_fallbacks=model_fallbacks,
         model_cooldown_base_sec=max(10, min(3600, model_cooldown_base_sec)),
         model_cooldown_max_sec=max(60, min(86400, model_cooldown_max_sec)),
         summary_model=(
             _env(
+                "OFFICETOOL_LLM_SUMMARY_MODEL",
+                "OFFCIATOOL_LLM_SUMMARY_MODEL",
                 "OFFICETOOL_SUMMARY_MODEL",
                 "OFFICETOOL_SUMMARY_MODE",
                 "OFFCIATOOL_SUMMARY_MODEL",
