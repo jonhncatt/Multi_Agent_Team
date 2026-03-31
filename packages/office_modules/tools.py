@@ -23,6 +23,9 @@ class ScopedToolExecutor:
         self.group = str(group or "").strip()
         self.allowed_tool_names = tuple(str(item or "").strip() for item in allowed_tool_names if str(item or "").strip())
         self._allowed = set(self.allowed_tool_names)
+        self._allowed_casefold = {
+            key.lower(): key for key in self.allowed_tool_names
+        }
         self._executor = LocalToolExecutor(config)
         self._all_tool_names = {
             str(item.get("name") or "").strip()
@@ -50,8 +53,17 @@ class ScopedToolExecutor:
     def docker_status(self) -> tuple[bool, str]:
         return self._executor.docker_status()
 
-    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _resolve_tool_name(self, name: str) -> str:
         tool_name = str(name or "").strip()
+        if tool_name in self._allowed:
+            return tool_name
+        lowered = tool_name.lower()
+        if lowered in self._allowed_casefold:
+            return self._allowed_casefold[lowered]
+        return tool_name
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool_name = self._resolve_tool_name(name)
         if tool_name not in self._allowed:
             raise ValueError(f"Tool {tool_name!r} is not registered in module {self.module_id}")
         return self._executor.execute(tool_name, arguments)
@@ -89,6 +101,9 @@ _WORKSPACE_TOOL_NAMES = (
     "copy_file",
     "extract_zip",
     "extract_msg_attachments",
+    "kernel_runtime_status",
+    "kernel_shadow_pipeline",
+    "kernel_shadow_self_upgrade",
 )
 _FILE_TOOL_NAMES = (
     "read_text_file",

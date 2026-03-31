@@ -730,7 +730,14 @@ class OfficeAgent:
                 self._lc_tools = self._build_langchain_tools()
         else:
             self._lc_tools = self._build_langchain_tools()
-        self._lc_tool_map = {getattr(tool, "name", ""): tool for tool in self._lc_tools}
+        self._lc_tool_map = {
+            str(getattr(tool, "name", "") or "").strip(): tool
+            for tool in self._lc_tools
+            if str(getattr(tool, "name", "") or "").strip()
+        }
+        self._lc_tool_map_casefold = {
+            name.lower(): tool for name, tool in self._lc_tool_map.items()
+        }
         self._role_registry = self._capability_runtime.role_registry
         self._role_runtime_controller = self._capability_runtime.runtime_controller
         self._model_failover_lock = threading.Lock()
@@ -2831,7 +2838,7 @@ class OfficeAgent:
             branch_failures = 0
             branch_count = 0
             for call_index, call in enumerate(tool_calls, start=1):
-                name = call.get("name") or "unknown"
+                name = self._resolve_tool_name(call.get("name") or "unknown")
                 arguments = call.get("args") or {}
                 if not isinstance(arguments, dict):
                     arguments = {}
@@ -2879,7 +2886,7 @@ class OfficeAgent:
                             },
                             node_id=tool_branch_node_id,
                         )
-                    result = self.tools.execute(name, arguments)
+                    result = self._execute_tool_call(name, arguments)
                     should_retry_tool, retry_trace = self._should_retry_worker_tool_result(
                         tool_name=str(name),
                         result=result,
@@ -2966,7 +2973,7 @@ class OfficeAgent:
                             )
                             executed_tool_branch_ids.append(synthetic_node_id)
                         branch_count += 1
-                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        synthetic_result = self._execute_tool_call(synthetic_name, synthetic_args)
                         append_tool_result_message(
                             name=synthetic_name,
                             arguments=synthetic_args,
@@ -3394,7 +3401,7 @@ class OfficeAgent:
                         )
                         if not synthetic_name or not synthetic_args:
                             continue
-                        synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
+                        synthetic_result = self._execute_tool_call(synthetic_name, synthetic_args)
                         append_tool_result_message(
                             name=synthetic_name,
                             arguments=synthetic_args,
@@ -7523,13 +7530,76 @@ class OfficeAgent:
     def build_langchain_tools(self) -> list[Any]:
         return list(getattr(self, "_lc_tools", None) or self._build_langchain_tools())
 
+    def _resolve_tool_name(self, name: str) -> str:
+        key = str(name or "").strip()
+        if not key:
+            return key
+        if key in self._lc_tool_map:
+            return key
+        tool = self._lc_tool_map_casefold.get(key.lower())
+        if tool is None:
+            return key
+        resolved = str(getattr(tool, "name", "") or "").strip()
+        return resolved or key
+
+    def _invoke_langchain_tool_fallback(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        resolved_name = self._resolve_tool_name(name)
+        tool = self._lc_tool_map.get(resolved_name)
+        if tool is None:
+            return {"ok": False, "error": f"Unknown tool: {name}"}
+        try:
+            payload = tool.invoke(arguments if isinstance(arguments, dict) else {})
+        except Exception as exc:
+            return {"ok": False, "error": f"Tool execution failed ({resolved_name}): {exc}"}
+
+        if isinstance(payload, dict):
+            return payload if "ok" in payload else {"ok": True, "result": payload}
+
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    decoded = json.loads(stripped)
+                except Exception:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    return decoded
+            return {"ok": True, "output": payload}
+
+        if isinstance(payload, (int, float, bool)) or payload is None:
+            return {"ok": True, "output": payload}
+
+        return {"ok": True, "output": str(payload)}
+
+    def _execute_tool_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        resolved_name = self._resolve_tool_name(name)
+        args = arguments if isinstance(arguments, dict) else {}
+        try:
+            result = self.tools.execute(resolved_name, args)
+        except Exception as exc:
+            message = str(exc or "").strip()
+            lowered = message.lower()
+            if "not registered in module" in lowered or "unknown tool" in lowered:
+                return self._invoke_langchain_tool_fallback(resolved_name, args)
+            return {"ok": False, "error": message or f"Tool execution failed: {resolved_name}"}
+
+        if isinstance(result, dict):
+            error_text = str(result.get("error") or "").strip().lower()
+            if not bool(result.get("ok", True)) and error_text.startswith("unknown tool:"):
+                fallback = self._invoke_langchain_tool_fallback(resolved_name, args)
+                if bool(fallback.get("ok", False)):
+                    return fallback
+            return result
+
+        return {"ok": True, "output": result}
+
     def _select_langchain_tools(self, tool_names: list[str] | None = None) -> list[Any]:
         if not tool_names:
             return self._lc_tools
         selected: list[Any] = []
         seen: set[str] = set()
         for name in tool_names:
-            key = str(name or "").strip()
+            key = self._resolve_tool_name(str(name or "").strip())
             if not key or key in seen:
                 continue
             tool = self._lc_tool_map.get(key)
