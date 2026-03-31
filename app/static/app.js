@@ -803,15 +803,17 @@ function persistChatInfoOpen(open) {
 function setChatInfoOpen(open, { persist = true } = {}) {
   const next = Boolean(open);
   state.chatInfoOpen = next;
+  const panelVisible = next && state.workspaceView === "chat";
 
   if (chatWorkspaceView) {
     chatWorkspaceView.classList.toggle("is-info-open", next);
   }
   if (chatInfoPanel) {
-    chatInfoPanel.setAttribute("aria-hidden", next ? "false" : "true");
+    chatInfoPanel.hidden = !panelVisible;
+    chatInfoPanel.setAttribute("aria-hidden", panelVisible ? "false" : "true");
   }
   if (chatInfoBackdrop) {
-    chatInfoBackdrop.hidden = !next || state.workspaceView !== "chat";
+    chatInfoBackdrop.hidden = !panelVisible;
   }
   if (chatInfoToggleBtn) {
     chatInfoToggleBtn.hidden = state.workspaceView !== "chat";
@@ -871,8 +873,13 @@ function setWorkspaceView(view, { persist = true } = {}) {
   if (chatInfoBackdrop) {
     chatInfoBackdrop.hidden = next !== "chat" || !state.chatInfoOpen;
   }
+  if (chatInfoPanel) {
+    chatInfoPanel.hidden = next !== "chat" || !state.chatInfoOpen;
+  }
   if (next === "chat") {
     setChatInfoOpen(state.chatInfoOpen, { persist: false });
+  } else {
+    setChatInfoOpen(false, { persist: false });
   }
 
   if (persist) {

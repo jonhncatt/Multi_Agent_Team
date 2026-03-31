@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Multi_Agent_Robot</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260331f" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260331g" />
   </head>
   <body class="theme-openclaw" data-product-profile="multi_agent_robot">
     <div class="bg-shape bg1"></div>
@@ -147,7 +147,7 @@
 
             <button id="chatInfoBackdrop" class="chat-info-backdrop" type="button" hidden aria-label="关闭侧面信息"></button>
 
-            <aside id="chatInfoPanel" class="chat-info-panel" aria-label="侧面信息">
+            <aside id="chatInfoPanel" class="chat-info-panel" aria-label="侧面信息" hidden>
               <div class="chat-info-panel-head">
                 <div>
                   <div class="rail-kicker">Side Panel</div>
@@ -156,7 +156,7 @@
                 <button id="chatInfoCloseBtn" class="secondary small" type="button">收起</button>
               </div>
 
-              <div class="compact-summary-strip">
+              <div class="chat-info-panel-body">
                 <article class="compact-summary-card">
                   <div class="compact-summary-kicker">Platform</div>
                   <div id="platformStatusHeadline" class="compact-summary-value">等待健康数据</div>
@@ -633,6 +633,6 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-    <script src="/static/app.js?v=20260331f"></script>
+    <script src="/static/app.js?v=20260331g"></script>
   </body>
 </html>

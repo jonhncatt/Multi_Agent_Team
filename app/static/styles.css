@@ -3879,12 +3879,15 @@ body.theme-openclaw .topbar-command-button--ghost.is-active {
 }
 
 body.theme-openclaw .workspace-views {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: auto;
   padding: 12px 20px 24px;
 }
 
 body.theme-openclaw .workspace-view {
+  flex: 1 1 auto;
   min-height: 0;
   display: grid;
   gap: 16px;
@@ -4316,28 +4319,24 @@ body.theme-openclaw .command-item {
 /* ========== Sidebar Drawer Chat Layout ========== */
 
 body.theme-openclaw .workspace-view--chat {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+  position: relative;
+  display: flex;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
-}
-
-body.theme-openclaw .workspace-view--chat.is-info-open {
-  grid-template-columns: minmax(0, 1fr) 320px;
 }
 
 body.theme-openclaw .chat-main-shell {
   min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
   gap: 16px;
   width: min(100%, 960px);
   margin: 0 auto;
-}
-
-body.theme-openclaw .workspace-view--chat.is-info-open .chat-main-shell {
-  width: 100%;
-  margin: 0;
+  overflow: hidden;
+  background: transparent;
 }
 
 body.theme-openclaw .chat-main-shell .chat-list,
@@ -4346,36 +4345,55 @@ body.theme-openclaw .chat-main-shell .composer {
 }
 
 body.theme-openclaw .chat-main-shell .chat-list {
+  flex: 1 1 0;
   min-height: 0;
+  margin: 0 -4px;
+  overflow-y: auto;
 }
 
 body.theme-openclaw .chat-main-shell .composer {
   position: sticky;
   bottom: 0;
   z-index: 1;
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 body.theme-openclaw .chat-info-backdrop {
-  display: none;
-}
-
-body.theme-openclaw .workspace-view--chat:not(.is-info-open) .chat-info-panel {
-  display: none;
+  position: absolute;
+  inset: 0;
+  display: block;
+  border: 0;
+  background: rgba(23, 28, 35, 0.12);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 2;
 }
 
 body.theme-openclaw .chat-info-panel {
-  position: relative;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: min(340px, calc(100vw - 64px));
   min-width: 0;
-  width: auto;
-  padding: 0 0 0 16px;
+  padding: 18px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
-  border-left: 1px solid var(--line);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(16px);
+  z-index: 3;
+}
+
+body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-backdrop {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 body.theme-openclaw .chat-info-panel-head {
@@ -4390,7 +4408,7 @@ body.theme-openclaw .chat-info-panel-head {
   z-index: 1;
 }
 
-body.theme-openclaw .chat-info-panel .compact-summary-strip {
+body.theme-openclaw .chat-info-panel-body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
@@ -4414,45 +4432,18 @@ body.theme-openclaw .chat-info-panel .compact-summary-grid {
 }
 
 @media (max-width: 1200px) {
-  body.theme-openclaw .workspace-view--chat.is-info-open {
-    grid-template-columns: minmax(0, 1fr) 300px;
+  body.theme-openclaw .chat-info-panel {
+    width: min(320px, calc(100vw - 40px));
   }
 }
 
 @media (max-width: 860px) {
-  body.theme-openclaw .workspace-view--chat.is-info-open {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  body.theme-openclaw .chat-info-backdrop {
-    position: absolute;
-    inset: 0;
-    display: block;
-    border: 0;
-    background: rgba(23, 28, 35, 0.12);
-    backdrop-filter: blur(2px);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 180ms ease;
-    z-index: 2;
-  }
-
-  body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-backdrop {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
   body.theme-openclaw .chat-info-panel {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    bottom: 8px;
-    width: min(320px, calc(100vw - 32px));
-    padding: 18px;
-    border: 1px solid var(--line);
-    border-left-width: 1px;
-    border-radius: 20px;
-    background: rgba(255, 255, 255, 0.96);
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.14);
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(100%, 360px);
+    padding: 16px;
+    border-radius: 0;
   }
 }
