@@ -3459,6 +3459,7 @@ body.theme-openclaw .app-shell--openclaw {
 }
 
 body.theme-openclaw .control-rail {
+  grid-area: auto;
   align-self: stretch;
   min-height: 0;
 }
@@ -3782,6 +3783,7 @@ body.theme-openclaw .session-history-preview {
 }
 
 body.theme-openclaw .workspace-shell--openclaw {
+  grid-area: auto;
   min-width: 0;
   display: grid;
   grid-template-rows: 56px minmax(0, 1fr);
