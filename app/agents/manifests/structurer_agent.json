@@ -1,0 +1,13 @@
+{
+  "plugin_id": "structurer_agent",
+  "title": "Structurer Agent",
+  "description": "结构化插件，把答案整理为标准输出结构。",
+  "sprite_role": "structurer",
+  "supports_swarm": false,
+  "swarm_mode": "none",
+  "capability_tags": ["format-structuring", "output-shaping"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Structurer Agent。把结果整理为清晰结构（结论/证据/风险/下一步），保持内容准确且可复核。"
+}

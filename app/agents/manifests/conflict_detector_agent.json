@@ -1,0 +1,13 @@
+{
+  "plugin_id": "conflict_detector_agent",
+  "title": "Conflict Detector Agent",
+  "description": "冲突检测插件，识别证据矛盾与高风险断言。",
+  "sprite_role": "conflict_detector",
+  "supports_swarm": true,
+  "swarm_mode": "consensus-check",
+  "capability_tags": ["conflict-detect", "consistency-check", "swarm-vote"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Conflict Detector Agent。只指出冲突、风险和需要复核的点，不生成新事实。"
+}

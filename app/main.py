@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.agents.plugin_runtime import AgentPluginRuntime
 from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import load_config
 from app.contracts import TaskRequest
@@ -24,6 +25,9 @@ from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
 from app.models import (
+    AgentPluginListResponse,
+    AgentPluginRunRequest,
+    AgentPluginRunResponse,
     ChatRequest,
     ChatResponse,
     ClearStatsResponse,
@@ -124,6 +128,7 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
+_agent_plugin_runtime: AgentPluginRuntime | None = None
 
 
 _FALLBACK_AGENT_PLUGIN_KEYS: tuple[str, ...] = (
@@ -260,35 +265,70 @@ def _build_agent_plugin_descriptor(*, key: str, path: str, exists: bool) -> dict
         "swarm_mode": swarm_mode,
         "capability_tags": capability_tags,
         "summary": str(meta.get("summary") or ""),
+        "tool_profile": "none",
+        "allowed_tools": [],
+        "max_tool_rounds": 0,
+        "independent_runnable": bool(exists),
     }
 
 
-def _build_control_panel_topology(repo_root: Path) -> dict[str, object]:
+def _build_control_panel_topology(
+    repo_root: Path,
+    *,
+    plugin_runtime: AgentPluginRuntime | None = None,
+) -> dict[str, object]:
     kernel_path = repo_root / "app" / "kernel" / "host.py"
     router_path = repo_root / "app" / "kernel" / "llm_router.py"
     agents_dir = repo_root / "app" / "agents"
 
-    plugin_paths_by_key = {item.stem: item for item in agents_dir.glob("*_agent.py")}
-    ordered_keys = [key for key in _FALLBACK_AGENT_PLUGIN_KEYS if key in plugin_paths_by_key]
-    ordered_keys.extend(sorted(key for key in plugin_paths_by_key.keys() if key not in ordered_keys))
-    if ordered_keys:
-        plugin_defs = [
-            _build_agent_plugin_descriptor(
-                key=key,
-                path=str(plugin_paths_by_key[key].relative_to(repo_root)),
-                exists=plugin_paths_by_key[key].is_file(),
-            )
-            for key in ordered_keys[:12]
-        ]
+    plugin_defs: list[dict[str, object]]
+    if plugin_runtime is not None and plugin_runtime.list_manifests():
+        plugin_defs = plugin_runtime.control_panel_plugin_descriptors(slot_count=12)
     else:
-        plugin_defs = [
-            _build_agent_plugin_descriptor(
-                key=key,
-                path=str((agents_dir / f"{key}.py").relative_to(repo_root)),
-                exists=(agents_dir / f"{key}.py").is_file(),
-            )
-            for key in _FALLBACK_AGENT_PLUGIN_KEYS
-        ]
+        plugin_paths_by_key = {item.stem: item for item in agents_dir.glob("*_agent.py")}
+        ordered_keys = [key for key in _FALLBACK_AGENT_PLUGIN_KEYS if key in plugin_paths_by_key]
+        ordered_keys.extend(sorted(key for key in plugin_paths_by_key.keys() if key not in ordered_keys))
+        if ordered_keys:
+            plugin_defs = [
+                _build_agent_plugin_descriptor(
+                    key=key,
+                    path=str(plugin_paths_by_key[key].relative_to(repo_root)),
+                    exists=plugin_paths_by_key[key].is_file(),
+                )
+                for key in ordered_keys[:12]
+            ]
+        else:
+            plugin_defs = [
+                _build_agent_plugin_descriptor(
+                    key=key,
+                    path=str((agents_dir / f"{key}.py").relative_to(repo_root)),
+                    exists=(agents_dir / f"{key}.py").is_file(),
+                )
+                for key in _FALLBACK_AGENT_PLUGIN_KEYS
+            ]
+
+        if len(plugin_defs) < 12:
+            for idx in range(len(plugin_defs), 12):
+                slot = str(idx + 1).zfill(2)
+                plugin_defs.append(
+                    {
+                        "key": f"llm_module_{slot}",
+                        "title": f"LLM 模块 {slot}",
+                        "path": "",
+                        "exists": False,
+                        "sprite_role": "worker",
+                        "supports_swarm": False,
+                        "swarm_mode": "none",
+                        "capability_tags": [],
+                        "summary": "插件未配置",
+                        "tool_profile": "none",
+                        "allowed_tools": [],
+                        "max_tool_rounds": 0,
+                        "independent_runnable": False,
+                    }
+                )
+        elif len(plugin_defs) > 12:
+            plugin_defs = plugin_defs[:12]
 
     return {
         "kernel": {
@@ -306,6 +346,18 @@ def _build_control_panel_topology(repo_root: Path) -> dict[str, object]:
         "agent_plugins": plugin_defs,
         "slot_count": 12,
     }
+
+
+def get_agent_plugin_runtime() -> AgentPluginRuntime:
+    global _agent_plugin_runtime
+    if _agent_plugin_runtime is None:
+        manifest_dir = Path(__file__).resolve().parent / "agents" / "manifests"
+        _agent_plugin_runtime = AgentPluginRuntime(
+            config=config,
+            kernel_runtime=get_kernel_runtime(),
+            manifest_dir=manifest_dir,
+        )
+    return _agent_plugin_runtime
 
 
 class AgentRunQueue:
@@ -420,7 +472,10 @@ def health() -> HealthResponse:
     kernel_health = build_kernel_health_payload(get_kernel_runtime())
     host_runtime = runtime.debug_kernel_host_snapshot()
     host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
-    control_panel_topology = _build_control_panel_topology(Path(__file__).resolve().parent.parent)
+    control_panel_topology = _build_control_panel_topology(
+        Path(__file__).resolve().parent.parent,
+        plugin_runtime=get_agent_plugin_runtime(),
+    )
     role_lab_runtime = runtime.debug_role_lab_runtime_snapshot()
     evolution_payload = get_evolution_store().runtime_payload(limit=10)
     tool_registry = runtime.debug_tool_registry_snapshot()
@@ -480,6 +535,37 @@ def health() -> HealthResponse:
 def role_lab_runtime() -> RoleLabRuntimeResponse:
     snapshot = get_agent_os_runtime().debug_role_lab_runtime_snapshot()
     return RoleLabRuntimeResponse(ok=True, detail="role-agent runtime snapshot", role_lab_runtime=dict(snapshot or {}))
+
+
+@app.get("/api/agent-plugins", response_model=AgentPluginListResponse)
+def agent_plugin_list() -> AgentPluginListResponse:
+    runtime = get_agent_plugin_runtime()
+    return AgentPluginListResponse(
+        ok=True,
+        detail="agent plugins and tool model",
+        plugins=list(runtime.list_api_payload()),
+        tool_model=dict(runtime.tool_model_payload()),
+    )
+
+
+@app.post("/api/agent-plugins/run", response_model=AgentPluginRunResponse)
+def agent_plugin_run(req: AgentPluginRunRequest) -> AgentPluginRunResponse:
+    runtime = get_agent_plugin_runtime()
+    try:
+        payload = runtime.run_plugin(
+            plugin_id=req.plugin_id,
+            message=req.message,
+            settings=req.settings,
+            context=req.context,
+            max_tool_rounds=req.max_tool_rounds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"agent plugin run failed: {exc}") from exc
+    return AgentPluginRunResponse(**payload)
 
 
 def _kernel_runtime_response(
@@ -1436,7 +1522,7 @@ def _process_chat_request(
             raise HTTPException(status_code=500, detail=module_response.error or "business module dispatch failed")
         payload = dict(module_response.payload or {})
         text = str(module_response.text or "")
-        selected_module_id = str(payload.get("module_id") or "office_module")
+        selected_module_id = str(payload.get("module_id") or "worker_agent")
         kernel_routing = dict(payload.get("kernel_routing") or {})
         tool_events = list(payload.get("tool_events") or [])
         attachment_note = str(payload.get("attachment_note") or "")

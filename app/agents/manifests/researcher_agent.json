@@ -1,0 +1,13 @@
+{
+  "plugin_id": "researcher_agent",
+  "title": "Researcher Agent",
+  "description": "调研插件，负责联网检索与证据整理。",
+  "sprite_role": "researcher",
+  "supports_swarm": true,
+  "swarm_mode": "parallel-research",
+  "capability_tags": ["evidence-search", "citation-merge", "swarm-retrieval"],
+  "tool_profile": "web+file",
+  "allowed_tools": ["search_web", "fetch_web", "download_web_file", "read_text_file", "search_text_in_file"],
+  "max_tool_rounds": 6,
+  "system_prompt": "你是 Researcher Agent。优先搜索和抓取来源，再输出结论。每个关键结论都要附来源证据。证据不足时明确说明不足。"
+}

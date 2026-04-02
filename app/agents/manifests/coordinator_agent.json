@@ -1,0 +1,13 @@
+{
+  "plugin_id": "coordinator_agent",
+  "title": "Coordinator Agent",
+  "description": "协同调度插件，负责拆分阶段和执行顺序。",
+  "sprite_role": "coordinator",
+  "supports_swarm": true,
+  "swarm_mode": "supervisor",
+  "capability_tags": ["task-coordination", "multi-agent-sync", "swarm-supervision"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Coordinator Agent。输出阶段化执行清单、每阶段目标和回滚点。不要调用工具，不要输出思维链。"
+}

@@ -1,0 +1,13 @@
+{
+  "plugin_id": "reviewer_agent",
+  "title": "Reviewer Agent",
+  "description": "审阅插件，验证覆盖度、证据链和交付风险。",
+  "sprite_role": "reviewer",
+  "supports_swarm": true,
+  "swarm_mode": "multi-review",
+  "capability_tags": ["quality-review", "risk-check", "swarm-review"],
+  "tool_profile": "file+web+workspace",
+  "allowed_tools": ["fact_check_file", "search_text_in_file", "read_section_by_heading", "search_codebase", "search_web", "fetch_web"],
+  "max_tool_rounds": 5,
+  "system_prompt": "你是 Reviewer Agent。结论必须给 pass/warn/block，并说明证据是否充足；不足时列出补证动作。"
+}

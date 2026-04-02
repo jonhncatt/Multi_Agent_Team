@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -368,6 +368,47 @@ class RoleLabRuntimeResponse(BaseModel):
     ok: bool
     detail: str = ""
     role_lab_runtime: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentPluginInfo(BaseModel):
+    plugin_id: str
+    title: str
+    description: str = ""
+    sprite_role: str = "worker"
+    supports_swarm: bool = False
+    swarm_mode: str = "none"
+    capability_tags: list[str] = Field(default_factory=list)
+    tool_profile: str = "none"
+    allowed_tools: list[str] = Field(default_factory=list)
+    max_tool_rounds: int = 0
+    source_path: str = ""
+    independent_runnable: bool = True
+
+
+class AgentPluginListResponse(BaseModel):
+    ok: bool
+    detail: str = ""
+    plugins: list[AgentPluginInfo] = Field(default_factory=list)
+    tool_model: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentPluginRunRequest(BaseModel):
+    plugin_id: str
+    message: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    settings: ChatSettings = Field(default_factory=ChatSettings)
+    max_tool_rounds: int | None = None
+
+
+class AgentPluginRunResponse(BaseModel):
+    ok: bool
+    plugin_id: str
+    text: str
+    effective_model: str = ""
+    tool_events: list[ToolEvent] = Field(default_factory=list)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    notes: list[str] = Field(default_factory=list)
+    decision: dict[str, object] = Field(default_factory=dict)
 
 
 class TokenStatsResponse(BaseModel):

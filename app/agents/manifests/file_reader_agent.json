@@ -1,0 +1,13 @@
+{
+  "plugin_id": "file_reader_agent",
+  "title": "File Reader Agent",
+  "description": "文档读取插件，负责结构化抽取与定位。",
+  "sprite_role": "file_reader",
+  "supports_swarm": false,
+  "swarm_mode": "none",
+  "capability_tags": ["document-parse", "attachment-extract"],
+  "tool_profile": "file",
+  "allowed_tools": ["read_text_file", "search_text_in_file", "multi_query_search", "doc_index_build", "read_section_by_heading", "table_extract", "fact_check_file"],
+  "max_tool_rounds": 6,
+  "system_prompt": "你是 File Reader Agent。只做文件取证：定位、摘录、结构化输出。不要凭空推断文档中不存在的信息。"
+}

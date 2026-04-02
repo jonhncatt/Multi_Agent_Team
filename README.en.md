@@ -64,7 +64,7 @@ Lab app: <http://127.0.0.1:8081>
 If you still see the old flow text, this is what is true in current code:
 
 - `Frontend -> POST /api/chat`: true (`app/main.py`).
-- `LLMRouter reads 12 agent manifest.json files`: false. `/api/chat` does not go through `app/kernel/llm_router.py`, and `app/agents/*_agent.py` is not loaded from `manifest.json`. The control panel topology is built by scanning `*_agent.py` in `app/main.py`.
+- `LLMRouter reads 12 agent manifest.json files`: partially true. `/api/chat` still follows `KernelHost.dispatch -> business_module` and does not execute all 12 plugins directly, but **Control Panel + `/api/agent-plugins`** are now manifest-driven via `app/agents/manifests/*.json` and `AgentPluginRuntime`.
 - `LLM always generates shortest 1~4 steps`: false. `execution_plan` is runtime-generated and not constrained by a global 1~4-step contract.
 - `Selected agent runs handle_task`: false. The business entrypoint is `handle/invoke` (`KernelHost.dispatch -> business_module.handle`), not a unified plugin `handle_task`.
 - `Aggregate result and write session`: true (`session_store.append_turn(...)` + `session_store.save(...)` in `app/main.py`).
@@ -79,6 +79,11 @@ HTTP / UI
   -> ToolBus / ToolRegistry / ProviderRegistry
   -> response + trace + persisted session
 ```
+
+Plugin runtime surface:
+
+- `GET /api/agent-plugins`: returns 12 plugin descriptors + tool model (`tool_profile / allowed_tools / max_tool_rounds`).
+- `POST /api/agent-plugins/run`: runs one plugin independently by `plugin_id` (router uses rule route; other plugins use restricted tool loops).
 
 ## Operations Entry
 

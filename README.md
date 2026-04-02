@@ -400,7 +400,7 @@ HTTP / UI
 如果你在旧文档里看到下面这条描述，请按当前代码理解：
 
 - `前端请求进入 POST /api/chat`：是（入口在 `app/main.py`）。
-- `LLMRouter 读取 12 个 Agent 的 manifest.json`：否。`/api/chat` 主链路不经过 `app/kernel/llm_router.py`；`app/agents/*_agent.py` 也不是通过 `manifest.json` 装载。控制面板拓扑来自 `app/main.py::_build_control_panel_topology()` 对 `*_agent.py` 的扫描。
+- `LLMRouter 读取 12 个 Agent 的 manifest.json`：部分成立。`/api/chat` 主链路仍是 `KernelHost.dispatch -> business_module`，不会直接按 12 插件逐个执行；但 **Control Panel 与 `/api/agent-plugins`** 已由 `app/agents/manifests/*.json` + `AgentPluginRuntime` 驱动，插件-工具绑定关系在运行时可查询。
 - `LLM 生成最短执行步骤（1~4 步）`：否（不是固定协议）。`execution_plan` 来自业务模块运行时动态生成，没有全局 1~4 步硬约束。
 - `对应 Agent 执行 handle_task`：否。当前业务模块入口是 `handle/invoke`（`KernelHost.dispatch -> business_module.handle`），并非 12 个插件统一 `handle_task`。
 - `汇总返回，并写入会话`：是。结果会在 `app/main.py` 里通过 `session_store.append_turn(...)` 和 `session_store.save(...)` 持久化。
@@ -409,6 +409,8 @@ HTTP / UI
 
 - `Swarm` 当前是 `research_module` 内的正式能力：当 `request.context.swarm_inputs` 至少 2 条时，进入并行 branch + join 聚合；失败分支会触发 `serial_replay` 降级回放。
 - `office_module` 内部有 `Router/Planner/Worker/Reviewer/Revision` 多角色协作，但这是模块内编排，不是 Kernel 顶层“12 插件调度”主路径。
+- `Agent 插件 Tool 关系`：`app/agents/manifests/*.json` 为每个插件声明 `tool_profile / allowed_tools / max_tool_rounds`；运行时由 `app/agents/plugin_runtime.py` 解析，并暴露到 `GET /api/health`（control_panel_topology）与 `GET /api/agent-plugins`。
+- `插件独立运行`：`POST /api/agent-plugins/run` 可按 `plugin_id` 单独执行插件（含路由插件的 rule route 与其他插件的受限工具调用循环）。
 - Tool 执行主链路为：`KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`。
 - Provider 在 `app/bootstrap/assemble.py` 装配（`local_workspace/local_file/http_web/patch_write/session_store`），再由业务模块按策略选择调用。
 

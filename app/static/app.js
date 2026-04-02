@@ -96,19 +96,51 @@ function titleFromAgentKey(key) {
     .join(" ");
 }
 
-function normalizeAgentPluginModules(health) {
+function normalizeAgentPluginModules(health, pluginRegistry) {
   const topology = health && typeof health.control_panel_topology === "object" ? health.control_panel_topology : {};
-  const plugins = Array.isArray(topology.agent_plugins) ? topology.agent_plugins : [];
-  return plugins.map((item, index) => {
-    const moduleId = String(item?.key || "").trim() || `llm_agent_${String(index + 1).padStart(2, "0")}`;
-    const sourcePath = String(item?.path || "").trim();
-    const exists = Boolean(item?.exists);
-    const rawTags = Array.isArray(item?.capability_tags) ? item.capability_tags : [];
+  const topologyPlugins = Array.isArray(topology.agent_plugins) ? topology.agent_plugins : [];
+  const registryPlugins = Array.isArray(pluginRegistry?.plugins) ? pluginRegistry.plugins : [];
+  const registryById = new Map(
+    registryPlugins
+      .map((item) => [String(item?.plugin_id || "").trim(), item])
+      .filter(([pluginId]) => Boolean(pluginId)),
+  );
+  const sourcePlugins = topologyPlugins.length
+    ? topologyPlugins
+    : registryPlugins.map((item) => ({
+        key: item?.plugin_id,
+        title: item?.title,
+        path: item?.source_path,
+        exists: true,
+        sprite_role: item?.sprite_role,
+        supports_swarm: item?.supports_swarm,
+        swarm_mode: item?.swarm_mode,
+        capability_tags: item?.capability_tags,
+        summary: item?.description,
+        tool_profile: item?.tool_profile,
+        allowed_tools: item?.allowed_tools,
+        max_tool_rounds: item?.max_tool_rounds,
+        independent_runnable: item?.independent_runnable,
+      }));
+  return sourcePlugins.map((item, index) => {
+    const moduleId = String(item?.key || item?.plugin_id || "").trim() || `llm_agent_${String(index + 1).padStart(2, "0")}`;
+    const registryItem = registryById.get(moduleId) || null;
+    const sourcePath = String(item?.path || registryItem?.source_path || "").trim();
+    const exists = "exists" in (item || {}) ? Boolean(item?.exists) : true;
+    const rawTags = Array.isArray(item?.capability_tags) ? item.capability_tags : Array.isArray(registryItem?.capability_tags) ? registryItem.capability_tags : [];
     const capabilityTags = rawTags.map((tag) => String(tag || "").trim()).filter(Boolean);
-    const spriteRole = String(item?.sprite_role || "").trim() || moduleId.replace(/_agent$/i, "");
+    const spriteRole = String(item?.sprite_role || registryItem?.sprite_role || "").trim() || moduleId.replace(/_agent$/i, "");
+    const allowedToolsRaw = Array.isArray(item?.allowed_tools)
+      ? item.allowed_tools
+      : Array.isArray(registryItem?.allowed_tools)
+        ? registryItem.allowed_tools
+        : [];
+    const allowedTools = uniqueStrings(allowedToolsRaw.map((toolName) => String(toolName || "").trim()).filter(Boolean));
+    const toolProfile = String(item?.tool_profile || registryItem?.tool_profile || "none").trim() || "none";
+    const maxToolRounds = Number(item?.max_tool_rounds ?? registryItem?.max_tool_rounds ?? 0);
     return {
       key: moduleId,
-      title: String(item?.title || "").trim() || titleFromAgentKey(moduleId),
+      title: String(item?.title || registryItem?.title || "").trim() || titleFromAgentKey(moduleId),
       status: exists ? "active" : "unknown",
       selectedRef: sourcePath || moduleId,
       failureCount: exists ? 0 : 1,
@@ -116,11 +148,15 @@ function normalizeAgentPluginModules(health) {
       roles: [],
       profiles: [],
       sourcePath,
-      description: String(item?.summary || "").trim(),
-      supportsSwarm: Boolean(item?.supports_swarm),
-      swarmMode: String(item?.swarm_mode || "none").trim() || "none",
+      description: String(item?.summary || registryItem?.description || "").trim(),
+      supportsSwarm: Boolean(item?.supports_swarm ?? registryItem?.supports_swarm),
+      swarmMode: String(item?.swarm_mode || registryItem?.swarm_mode || "none").trim() || "none",
       capabilityTags,
       spriteRole,
+      toolProfile,
+      allowedTools,
+      maxToolRounds: Number.isFinite(maxToolRounds) ? Math.max(0, Math.floor(maxToolRounds)) : 0,
+      independentRunnable: Boolean(item?.independent_runnable ?? registryItem?.independent_runnable),
     };
   });
 }
@@ -134,11 +170,11 @@ function spriteRoleForModule(module) {
   return raw;
 }
 
-function buildModuleTopology(health) {
+function buildModuleTopology(health, pluginRegistry) {
   const topology = health && typeof health.control_panel_topology === "object" ? health.control_panel_topology : {};
   const kernelSource = topology && typeof topology.kernel === "object" ? topology.kernel : {};
   const routerSource = topology && typeof topology.central_router === "object" ? topology.central_router : {};
-  const sourceModules = normalizeAgentPluginModules(health);
+  const sourceModules = normalizeAgentPluginModules(health, pluginRegistry);
 
   const kernelCore = {
     key: "kernel_core",
@@ -150,6 +186,15 @@ function buildModuleTopology(health) {
     lastError: "",
     sourcePath: String(kernelSource?.path || "app/kernel/host.py"),
     roles: [],
+    toolProfile: "kernel-core",
+    allowedTools: [],
+    maxToolRounds: 0,
+    independentRunnable: false,
+    supportsSwarm: false,
+    swarmMode: "none",
+    capabilityTags: [],
+    description: "系统主核（启动、上下文与状态管理）",
+    spriteRole: "kernel",
   };
 
   const routerExists = Boolean(routerSource?.exists);
@@ -163,6 +208,15 @@ function buildModuleTopology(health) {
     lastError: routerExists ? "" : "未找到 app/kernel/llm_router.py",
     sourcePath: String(routerSource?.path || "app/kernel/llm_router.py"),
     roles: [],
+    toolProfile: "route-only",
+    allowedTools: [],
+    maxToolRounds: 0,
+    independentRunnable: false,
+    supportsSwarm: true,
+    swarmMode: "fanout-router",
+    capabilityTags: ["routing", "policy-gate"],
+    description: "LLM 中央调度器（意图路由、插件分发）",
+    spriteRole: "router",
   };
 
   const llmModules = Array.from({ length: LLM_MODULE_SLOT_COUNT }, (_, idx) => {
@@ -189,6 +243,10 @@ function buildModuleTopology(health) {
       capabilityTags: [],
       spriteRole: "worker",
       description: "",
+      toolProfile: "none",
+      allowedTools: [],
+      maxToolRounds: 0,
+      independentRunnable: false,
     };
   });
 
@@ -374,6 +432,7 @@ function buildRoleSprite(roleId = "worker") {
 
 function App() {
   const [health, setHealth] = useState(null);
+  const [pluginRegistry, setPluginRegistry] = useState({ ok: false, detail: "", plugins: [], tool_model: { profiles: {}, tools: [] } });
   const [logs, setLogs] = useState(() => [createLog("system", "UI 已启动，等待运行态数据。")]);
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState("");
@@ -387,6 +446,9 @@ function App() {
   const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
   const [selectedControlModuleKey, setSelectedControlModuleKey] = useState("");
   const [selectedAvatarModuleKey, setSelectedAvatarModuleKey] = useState("");
+  const [pluginRunInput, setPluginRunInput] = useState("");
+  const [pluginRunPending, setPluginRunPending] = useState(false);
+  const [pluginRunResult, setPluginRunResult] = useState(null);
   const [moduleMountOverrides, setModuleMountOverrides] = useState(() => {
     try {
       const raw = window.localStorage.getItem(MODULE_MOUNT_OVERRIDES_KEY);
@@ -404,7 +466,7 @@ function App() {
   });
   const chatListRef = useRef(null);
 
-  const moduleTopology = useMemo(() => buildModuleTopology(health), [health]);
+  const moduleTopology = useMemo(() => buildModuleTopology(health, pluginRegistry), [health, pluginRegistry]);
   const topologyModules = useMemo(
     () => [moduleTopology.kernelCore, moduleTopology.centralLlm, ...moduleTopology.llmModules],
     [moduleTopology],
@@ -430,6 +492,17 @@ function App() {
     () => agentModules.find((item) => item.key === selectedAvatarModuleKey) || null,
     [agentModules, selectedAvatarModuleKey],
   );
+  const toolDescriptionMap = useMemo(() => {
+    const map = new Map();
+    const toolModel = pluginRegistry && typeof pluginRegistry === "object" ? pluginRegistry.tool_model : null;
+    const tools = Array.isArray(toolModel?.tools) ? toolModel.tools : [];
+    tools.forEach((item) => {
+      const name = String(item?.name || "").trim();
+      if (!name) return;
+      map.set(name, String(item?.description || "").trim());
+    });
+    return map;
+  }, [pluginRegistry]);
   const providerName = useMemo(() => String((health && health.llm_provider) || "").trim().toLowerCase(), [health]);
   const modelOptions = useMemo(() => {
     const preferredQwen = providerName === "ollama" ? "qwen2.5:14b" : "qwen-plus";
@@ -451,6 +524,10 @@ function App() {
   }, [chatSettings.model, modelOptions]);
   const hasModuleIssue = useMemo(() => runtimeModules.some(moduleHasIssue), [runtimeModules]);
   const kernelStable = useMemo(() => Boolean(health && health.ok) && !hasModuleIssue, [health, hasModuleIssue]);
+  const toolBoundAgentCount = useMemo(
+    () => agentModules.filter((item) => Array.isArray(item.allowedTools) && item.allowedTools.length > 0).length,
+    [agentModules],
+  );
 
   const pushLog = (type, text) => {
     setLogs((prev) => [createLog(type, text), ...prev].slice(0, 18));
@@ -458,7 +535,7 @@ function App() {
 
   useEffect(() => {
     const boot = async () => {
-      await Promise.all([refreshHealth(), refreshSessions()]);
+      await Promise.all([refreshHealth(), refreshSessions(), refreshPluginRegistry(true)]);
       const cached = window.localStorage.getItem(SESSION_STORAGE_KEY) || "";
       if (cached) {
         await loadSession(cached, { silentNotFound: true });
@@ -517,6 +594,12 @@ function App() {
     }
   }, [agentModules, selectedAvatarModuleKey]);
 
+  useEffect(() => {
+    setPluginRunInput("");
+    setPluginRunResult(null);
+    setPluginRunPending(false);
+  }, [selectedAvatarModuleKey, avatarPanelOpen]);
+
   async function refreshHealth() {
     try {
       const res = await fetch("/api/health");
@@ -525,6 +608,21 @@ function App() {
       setHealth(data);
     } catch (err) {
       pushLog("error", `刷新 health 失败：${String(err.message || err)}`);
+    }
+  }
+
+  async function refreshPluginRegistry(silent = false) {
+    try {
+      const res = await fetch("/api/agent-plugins");
+      if (!res.ok) throw new Error(`agent-plugins ${res.status}`);
+      const data = await res.json();
+      setPluginRegistry(data);
+      return data;
+    } catch (err) {
+      if (!silent) {
+        pushLog("error", `刷新插件注册表失败：${String(err.message || err)}`);
+      }
+      return null;
     }
   }
 
@@ -682,6 +780,64 @@ function App() {
     pushLog("system", `${module.title} 已${mountedValue ? "装载" : "卸载"}。`);
   }
 
+  function handleOpenControlPanel() {
+    setPanelOpen(true);
+    refreshPluginRegistry(true);
+  }
+
+  function handleOpenAvatarPanel() {
+    setAvatarPanelOpen(true);
+    refreshPluginRegistry(true);
+  }
+
+  async function handleRunSelectedPlugin() {
+    if (!selectedAvatarModule || !selectedAvatarModule.independentRunnable || pluginRunPending) return;
+    const pluginId = String(selectedAvatarModule.key || "").trim();
+    if (!pluginId) return;
+    const prompt = String(pluginRunInput || "").trim() || "请输出该插件职责、可执行步骤和当前限制。";
+    setPluginRunPending(true);
+    setPluginRunResult(null);
+    try {
+      const res = await fetch("/api/agent-plugins/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plugin_id: pluginId,
+          message: prompt,
+          context: {
+            source: "avatar_panel",
+            session_id: sessionId || "",
+            selected_tools: selectedAvatarModule.allowedTools || [],
+          },
+          settings: {
+            ...DEFAULT_SETTINGS,
+            ...chatSettings,
+            model: String(chatSettings.model || (health && health.model_default) || FALLBACK_MODEL).trim(),
+          },
+        }),
+      });
+      if (!res.ok) {
+        let detail = `agent-plugin-run ${res.status}`;
+        try {
+          const payload = await res.json();
+          if (typeof payload.detail === "string" && payload.detail.trim()) detail = payload.detail;
+        } catch {
+          // ignore parse errors
+        }
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      setPluginRunResult(data);
+      pushLog("response", `${selectedAvatarModule.title} 独立运行完成，返回 ${String(data.text || "").length} 字。`);
+    } catch (err) {
+      const detail = String(err.message || err);
+      setPluginRunResult({ ok: false, text: "", error: detail });
+      pushLog("error", `插件独立运行失败：${detail}`);
+    } finally {
+      setPluginRunPending(false);
+    }
+  }
+
   function handleModelSelectChange(event) {
     const value = String(event.currentTarget.value || "").trim();
     if (!value || value === "__custom__") return;
@@ -725,7 +881,7 @@ function App() {
             <${TeamLogo} />
           </article>
 
-          <button className="card top-card control-preview" type="button" onClick=${() => setPanelOpen(true)}>
+          <button className="card top-card control-preview" type="button" onClick=${handleOpenControlPanel}>
             <div className="card-kicker">Control Panel</div>
             <div className="card-title">点击放大查看</div>
             <div className="dashboard-mini">
@@ -753,10 +909,10 @@ function App() {
                 </div>
               </div>
             </div>
-            <div className="control-preview-row muted">仪表盘视图：1 主核 + 1 中央调控 + 12 LLM</div>
+            <div className="control-preview-row muted">仪表盘视图：1 主核 + 1 中央调控 + 12 Agent 插件</div>
           </button>
 
-          <button className="card top-card pixel-card agent-preview-card" type="button" onClick=${() => setAvatarPanelOpen(true)}>
+          <button className="card top-card pixel-card agent-preview-card" type="button" onClick=${handleOpenAvatarPanel}>
             <div className="card-kicker">Avatar Modules</div>
             <div className="card-title">像素人缩略图</div>
             <div className="agent-wall-mini" aria-hidden="true">
@@ -773,7 +929,7 @@ function App() {
               )}
             </div>
             <div className="agent-preview-meta">
-              ${agentModules.length} modules · ${swarmEnabledCount} swarm-enabled · 点击放大查看详情
+              ${agentModules.length} modules · ${swarmEnabledCount} swarm-enabled · ${toolBoundAgentCount} tool-bound · 点击放大查看详情
             </div>
           </button>
         </section>
@@ -949,7 +1105,7 @@ function App() {
                   </section>
 
                   <section className="modal-section">
-                    <div className="section-title">模块列表（主核 + 中央 + 12 LLM）</div>
+                    <div className="section-title">模块列表（主核 + 中央 + 12 Agent 插件）</div>
                     <div className="module-list">
                       ${runtimeModules.map(
                         (mod) => html`
@@ -965,6 +1121,9 @@ function App() {
                               <div className="module-ref">${mod.sourcePath || mod.key}</div>
                               ${mod.kindLabel ? html`<div className="module-tags">${mod.kindLabel}</div>` : null}
                               ${mod.roles && mod.roles.length ? html`<div className="module-tags">roles: ${mod.roles.join(" / ")}</div>` : null}
+                              <div className="module-tags">
+                                tool profile: ${mod.toolProfile || "none"} · tools: ${(mod.allowedTools || []).length} · rounds: ${mod.maxToolRounds || 0}
+                              </div>
                             </div>
                             <div className="module-status-stack">
                               <div className=${`module-mount-chip ${mod.mounted ? "mounted" : "unmounted"}`}>
@@ -983,6 +1142,34 @@ function App() {
                               <div className="module-action-title">${selectedControlModule.title}</div>
                               <div className="module-action-sub">${selectedControlModule.key}</div>
                             </div>
+                            <div className="module-action-meta-grid">
+                              <div className="module-action-meta-row">
+                                <span>Tool Profile</span>
+                                <code>${selectedControlModule.toolProfile || "none"}</code>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>Round Limit</span>
+                                <strong>${selectedControlModule.maxToolRounds || 0}</strong>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>Allowed Tools</span>
+                                <strong>${(selectedControlModule.allowedTools || []).length}</strong>
+                              </div>
+                              <div className="module-action-meta-row">
+                                <span>独立运行</span>
+                                <strong>${selectedControlModule.independentRunnable ? "支持" : "不支持"}</strong>
+                              </div>
+                            </div>
+                            ${(selectedControlModule.allowedTools || []).length
+                              ? html`
+                                  <div className="module-tool-list">
+                                    ${(selectedControlModule.allowedTools || []).map((toolName) => {
+                                      const toolDescription = toolDescriptionMap.get(toolName) || "";
+                                      return html`<span key=${`${selectedControlModule.key}-${toolName}`} className="capability-chip" title=${toolDescription || toolName}>${toolName}</span>`;
+                                    })}
+                                  </div>
+                                `
+                              : html`<div className="module-empty">此模块未绑定工具。</div>`}
                             <div className="module-action-row">
                               <button
                                 className="ghost"
@@ -1079,8 +1266,30 @@ function App() {
                               <span>Swarm 模式</span>
                               <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMode || "generic" : "none"}</code>
                             </div>
+                            <div className="avatar-detail-row">
+                              <span>Tool Profile</span>
+                              <code>${selectedAvatarModule.toolProfile || "none"}</code>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>Tool Rounds</span>
+                              <strong>${selectedAvatarModule.maxToolRounds || 0}</strong>
+                            </div>
+                            <div className="avatar-detail-row">
+                              <span>Tools</span>
+                              <strong>${(selectedAvatarModule.allowedTools || []).length}</strong>
+                            </div>
                           </div>
                           <div className="avatar-detail-note">调度入口：app/kernel/llm_router.py</div>
+                          ${(selectedAvatarModule.allowedTools || []).length
+                            ? html`
+                                <div className="avatar-capability-list">
+                                  ${(selectedAvatarModule.allowedTools || []).map((toolName) => {
+                                    const toolDescription = toolDescriptionMap.get(toolName) || "";
+                                    return html`<span key=${`${selectedAvatarModule.key}-tool-${toolName}`} className="capability-chip" title=${toolDescription || toolName}>${toolName}</span>`;
+                                  })}
+                                </div>
+                              `
+                            : html`<div className="module-empty">此插件未绑定工具。</div>`}
                           <div className="avatar-capability-list">
                             ${(selectedAvatarModule.capabilityTags || []).length
                               ? selectedAvatarModule.capabilityTags.map(
@@ -1091,6 +1300,37 @@ function App() {
                           ${selectedAvatarModule.description
                             ? html`<div className="avatar-detail-desc">${selectedAvatarModule.description}</div>`
                             : null}
+                          <div className="plugin-run-box">
+                            <div className="plugin-run-title">独立运行插件</div>
+                            <textarea
+                              className="plugin-run-input"
+                              value=${pluginRunInput}
+                              onInput=${(event) => setPluginRunInput(event.currentTarget.value)}
+                              placeholder="输入一条测试指令，例如：请给出你的执行计划。"
+                              disabled=${pluginRunPending || !selectedAvatarModule.independentRunnable}
+                            ></textarea>
+                            <button
+                              className="ghost"
+                              type="button"
+                              onClick=${handleRunSelectedPlugin}
+                              disabled=${pluginRunPending || !selectedAvatarModule.independentRunnable}
+                            >
+                              ${pluginRunPending ? "运行中..." : "运行该插件"}
+                            </button>
+                            ${!selectedAvatarModule.independentRunnable
+                              ? html`<div className="module-empty">当前模块不支持独立运行。</div>`
+                              : null}
+                            ${pluginRunResult
+                              ? html`
+                                  <div className="plugin-run-result ${pluginRunResult.ok ? "ok" : "bad"}">
+                                    <div className="plugin-run-result-head">
+                                      model=${pluginRunResult.effective_model || "-"} · tools=${(pluginRunResult.tool_events || []).length}
+                                    </div>
+                                    <div className="plugin-run-result-text">${pluginRunResult.ok ? String(pluginRunResult.text || "") : String(pluginRunResult.error || "运行失败")}</div>
+                                  </div>
+                                `
+                              : null}
+                          </div>
                         `
                       : html`<div className="module-empty">暂无模块信息</div>`}
                   </section>

@@ -1,0 +1,13 @@
+{
+  "plugin_id": "planner_agent",
+  "title": "Planner Agent",
+  "description": "规划插件，生成目标、约束、步骤与验收标准。",
+  "sprite_role": "planner",
+  "supports_swarm": true,
+  "swarm_mode": "plan-then-swarm",
+  "capability_tags": ["plan-decomposition", "constraint-check", "swarm-plan"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Planner Agent。先给 objective，再给 constraints，再给可执行 plan（最多6步）和 success criteria。不要调用工具。"
+}

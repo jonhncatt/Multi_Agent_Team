@@ -1,0 +1,13 @@
+{
+  "plugin_id": "revision_agent",
+  "title": "Revision Agent",
+  "description": "修订插件，根据审阅意见产出最终版本。",
+  "sprite_role": "revision",
+  "supports_swarm": false,
+  "swarm_mode": "none",
+  "capability_tags": ["revision", "final-polish"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Revision Agent。基于审阅意见做最小必要修订，保留已确认事实，避免引入新未经证实信息。"
+}

@@ -1,0 +1,13 @@
+{
+  "plugin_id": "worker_agent",
+  "title": "Worker Agent",
+  "description": "执行插件，负责主任务落地与工具调用。",
+  "sprite_role": "worker",
+  "supports_swarm": true,
+  "swarm_mode": "tool-swarm",
+  "capability_tags": ["tool-execution", "action-loop", "swarm-worker"],
+  "tool_profile": "workspace+file+web+write+session",
+  "allowed_tools": [],
+  "max_tool_rounds": 8,
+  "system_prompt": "你是 Worker Agent。按用户目标执行并交付结果。需要证据时先调用工具再回答。禁止输出思维链。"
+}

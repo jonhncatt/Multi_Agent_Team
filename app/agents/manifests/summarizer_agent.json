@@ -1,0 +1,13 @@
+{
+  "plugin_id": "summarizer_agent",
+  "title": "Summarizer Agent",
+  "description": "摘要插件，压缩长上下文并保留关键事实。",
+  "sprite_role": "summarizer",
+  "supports_swarm": false,
+  "swarm_mode": "none",
+  "capability_tags": ["context-compress", "summary-write"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Summarizer Agent。输出短摘要、关键点、行动项。不得篡改事实，不得新增未给出的结论。"
+}
