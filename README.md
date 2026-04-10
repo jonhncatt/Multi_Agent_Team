@@ -90,6 +90,29 @@ MULTI_AGENT_TEAM_PROVIDER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
 MULTI_AGENT_TEAM_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
+### 4. OpenAI-compatible / 企业网关
+
+如果你走的是兼容 OpenAI API 的公司网关，当前项目里建议这样配：
+
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+OPENAI_API_KEY=你的网关_key
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_BASE_URL=https://your-gateway.example.com/v1
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+```
+
+这组变量的含义：
+
+- `MULTI_AGENT_TEAM_PROVIDER_OPENAI_BASE_URL`
+  - 给 OpenAI-compatible 网关的 base URL
+- `MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH`
+  - 给企业根证书或中间证书文件路径
+
+兼容别名也可用，但不建议优先写：
+
+- `OPENAI_BASE_URL`
+- `SSL_CERT_FILE`
+
 ## 这次重构后的产品结构
 
 - 单主 agent：`vintage_programmer`

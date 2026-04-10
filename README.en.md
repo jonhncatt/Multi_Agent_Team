@@ -84,6 +84,29 @@ MULTI_AGENT_TEAM_PROVIDER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
 MULTI_AGENT_TEAM_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
+### 4. OpenAI-compatible / enterprise gateway
+
+If you are using an OpenAI-compatible company gateway, the recommended setup is:
+
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+OPENAI_API_KEY=your_gateway_key
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_BASE_URL=https://your-gateway.example.com/v1
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+```
+
+Meaning:
+
+- `MULTI_AGENT_TEAM_PROVIDER_OPENAI_BASE_URL`
+  - base URL for the OpenAI-compatible gateway
+- `MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH`
+  - path to the corporate root or intermediate CA certificate
+
+Compatible aliases also work, but are not the preferred form:
+
+- `OPENAI_BASE_URL`
+- `SSL_CERT_FILE`
+
 ## Product Shape
 
 - one main agent: `vintage_programmer`

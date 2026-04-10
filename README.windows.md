@@ -75,6 +75,24 @@ MULTI_AGENT_TEAM_PROVIDER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
 MULTI_AGENT_TEAM_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
+如果你走的是 OpenAI-compatible 企业网关，建议写成：
+
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+OPENAI_API_KEY=你的网关_key
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_BASE_URL=https://your-gateway.example.com/v1
+MULTI_AGENT_TEAM_PROVIDER_OPENAI_CA_CERT_PATH=C:\certs\your-root-ca.pem
+```
+
+也可以用兼容别名：
+
+```env
+OPENAI_BASE_URL=https://your-gateway.example.com/v1
+SSL_CERT_FILE=C:\certs\your-root-ca.pem
+```
+
+但优先还是推荐 `MULTI_AGENT_TEAM_PROVIDER_OPENAI_*` 这组变量。
+
 ## 5. 启动服务
 
 ```powershell
@@ -127,6 +145,7 @@ python -m venv .venv
 - `OPENAI_API_KEY`
 - 或 `MULTI_AGENT_TEAM_LLM_AUTH_MODE=codex_auth`
 - 或本地 Ollama 地址 / 模型名不对
+- 或 OpenAI-compatible 网关的 `BASE_URL` / `CA_CERT_PATH` 没配对
 
 ### 想换端口
 
