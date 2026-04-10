@@ -45,6 +45,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 .venv\Scripts\Activate.ps1
 ```
 
+如果你不想碰 PowerShell 的脚本执行策略，推荐直接跳过激活步骤，改用下面这种方式：
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
 ## 4. 配置 `.env`
 
 复制环境模板：
@@ -105,6 +113,25 @@ SSL_CERT_FILE=C:\certs\your-root-ca.pem
 
 - <http://127.0.0.1:8080>
 
+## 5.1 推荐的无激活启动方式
+
+如果你想完全绕开 `Activate.ps1`，直接用这组命令：
+
+```powershell
+Copy-Item .env.example .env
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+这是目前最稳的一种 Windows 启动方式。
+
+如果以后要换端口，就把最后一行改成：
+
+```powershell
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --reload
+```
+
 ## 6. 快速检查
 
 先看健康检查：
@@ -129,6 +156,13 @@ Invoke-WebRequest http://127.0.0.1:8080/api/health
 Set-ExecutionPolicy -Scope Process Bypass
 ```
 
+或者直接不要执行激活脚本，改用：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
 ### `py` 命令不存在
 
 说明 Python Launcher 没装好。可以重装 Python，或者直接用：
@@ -137,6 +171,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 python --version
 python -m venv .venv
 ```
+
+### `cmd /k .venv\Scripts\activate.bat` 之后做什么
+
+这条命令会打开一个新的 `cmd` 窗口，并在那个窗口里激活虚拟环境。
+
+然后你在新开的 `cmd` 里继续执行：
+
+```bat
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+不过如果你已经接受“直接调用 `.venv\Scripts\python.exe`”的方式，就没必要再走 `cmd /k`。
 
 ### 服务能启动，但聊天报认证错误
 
