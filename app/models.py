@@ -123,32 +123,22 @@ class TokenTotals(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     run_id: str | None = None
+    agent_id: str = "vintage_programmer"
+    agent_title: str = "Vintage Programmer"
     effective_model: str | None = None
     queue_wait_ms: int = 0
     text: str
     tool_events: list[ToolEvent] = Field(default_factory=list)
-    execution_plan: list[str] = Field(default_factory=list)
-    execution_trace: list[str] = Field(default_factory=list)
-    pipeline_hooks: list[HookTelemetryItem] = Field(default_factory=list)
-    debug_flow: list[DebugFlowItem] = Field(default_factory=list)
-    agent_panels: list[AgentPanel] = Field(default_factory=list)
-    active_roles: list[str] = Field(default_factory=list)
-    current_role: str | None = None
-    role_states: list[RoleRuntimeState] = Field(default_factory=list)
-    answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     attachment_context_mode: Literal["none", "explicit", "auto_linked", "cleared"] = "none"
     effective_attachment_ids: list[str] = Field(default_factory=list)
     auto_linked_attachment_ids: list[str] = Field(default_factory=list)
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
-    route_state_scope: Literal["none", "session", "attachment", "attachment_miss"] = "none"
     attachment_context_key: str = ""
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
-    selected_business_module: str = ""
-    kernel_routing: dict[str, object] = Field(default_factory=dict)
-    business_result: dict[str, object] = Field(default_factory=dict)
+    inspector: dict[str, object] = Field(default_factory=dict)
     turn_count: int
     summarized: bool = False
 
@@ -211,53 +201,22 @@ class SessionListResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
-    product_profile: str = ""
-    product_title: str = ""
-    product_tagline: str = ""
-    product_kernel_title: str = ""
-    product_kernel_subtitle: str = ""
-    product_role_title: str = ""
-    product_role_legend: str = ""
-    show_kernel_console: bool = True
-    show_role_board: bool = True
+    app_title: str = ""
     app_version: str = ""
     build_version: str = ""
-    model_default: str
+    default_model: str = ""
     llm_provider: str = ""
-    llm_api_key_env: str = ""
     auth_mode: str = ""
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
     docker_message: str | None = None
     platform_name: str = ""
     workspace_root: str = ""
-    allow_any_path: bool = False
     allowed_roots: list[str] = Field(default_factory=list)
-    workspace_sibling_root: str = ""
-    allow_workspace_sibling_access: bool = False
-    default_extra_allowed_roots: list[str] = Field(default_factory=list)
-    extra_allowed_roots_source: Literal["platform_default", "env_override"] | str = "platform_default"
+    max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
-    kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_promote_check: dict[str, object] = Field(default_factory=dict)
-    kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
-    kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_package_run: dict[str, object] = Field(default_factory=dict)
-    kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
-    kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
-    kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
-    kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
-    kernel_host_runtime: dict[str, object] = Field(default_factory=dict)
-    control_panel_topology: dict[str, object] = Field(default_factory=dict)
-    role_lab_runtime: dict[str, object] = Field(default_factory=dict)
-    assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
-    assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
+    agent: dict[str, object] = Field(default_factory=dict)
 
 
 class KernelManifestUpdateRequest(BaseModel):

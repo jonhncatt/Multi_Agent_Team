@@ -1,140 +1,151 @@
-# Multi Agent Team (Agent OS)
+# Vintage Programmer
 
 [中文 README](README.md)
+[Windows Guide](README.windows.md)
 
-[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
-[![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+This repo now runs as a single-agent workstation built around `vintage_programmer`.
 
-Multi Agent Team is a local **Agent OS-style** system with a stable kernel, formal business modules, tool/provider contracts, quality gates, and operational runbooks.
+## How To Run
 
-## What It Is
-
-- `KernelHost` stays small and stable: load, dispatch, isolate, health, rollback.
-- `office_module` is a business module, not the platform core.
-- `research_module` is the second formal module and the current non-office reference module.
-- Swarm MVP is implemented as a bounded module-local orchestration flow, not a kernel rewrite.
-- Quality is guarded through pytest, gate evals, smoke layers, replay samples, platform metrics, and release runbooks.
-
-## Quick Start
+### macOS / Linux
 
 ```bash
-git clone https://github.com/jonhncatt/Multi_Agent_Team.git
-cd Multi_Agent_Team
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env and set one API key:
-#   MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY=... (recommended)
-#   or MULTI_AGENT_TEAM_LLM_API_KEY=...
-#   or OPENAI_API_KEY=... (legacy compatibility)
+```
+
+Edit `.env`. The minimum working setup is:
+
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+OPENAI_API_KEY=your_key
+```
+
+Then start the app:
+
+```bash
 ./run.sh
 ```
 
-Main app: <http://127.0.0.1:8080>
+Open:
 
-Role-agent lab: 
+- <http://127.0.0.1:8080>
+
+### Windows PowerShell
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+After editing `.env`, start:
+
+```powershell
+.\run.ps1
+```
+
+### Quick Check
 
 ```bash
-./run-role-agent-lab.sh
+curl http://127.0.0.1:8080/api/health
 ```
 
-Lab app: <http://127.0.0.1:8081>
+If the server starts but chat requests fail, the usual cause is missing model auth in `.env`.
 
-## Screenshots
+## Minimal Env Profiles
 
-### Main app (8080)
+The root [.env.example](.env.example) was simplified to three common profiles.
 
-![Kernel Robot home](docs/assets/screenshots/kernel_robot_home.png)
+### 1. OpenAI API key
 
-### Role-Agent Lab (8081)
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+OPENAI_API_KEY=your_key
+```
 
-![Role Agent Lab home](docs/assets/screenshots/role_agent_lab_home.png)
+### 2. OpenAI with Codex auth
 
-## Demo Paths
+Use this if `~/.codex/auth.json` already exists:
 
-- baseline smoke: `python scripts/demo_minimal_agent_os.py --check`
-- research module demo: `python scripts/demo_research_module.py --check`
-- research Swarm demo: `python scripts/demo_research_swarm.py --check`
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=openai
+MULTI_AGENT_TEAM_LLM_AUTH_MODE=codex_auth
+```
 
-## Execution Path Reality Check (April 3, 2026)
+### 3. Local Ollama
 
-If you still see the old flow text, this is what is true in current code:
+```env
+MULTI_AGENT_TEAM_LLM_PROVIDER=ollama
+MULTI_AGENT_TEAM_PROVIDER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+MULTI_AGENT_TEAM_DEFAULT_MODEL=qwen2.5-coder:7b
+```
 
-- `Frontend -> POST /api/chat`: true (`app/main.py`).
-- `LLMRouter reads 12 agent manifest.json files`: true. `/api/chat` now defaults to the **central scheduler + 12-plugin orchestration path** (`router_agent -> stage plan -> target plugin -> review/revision/structurer`). It falls back to `KernelHost.dispatch -> business_module` only when plugin orchestration fails.
-- `LLM always generates shortest 1~4 steps`: false. `execution_plan` is runtime-generated and not constrained by a global 1~4-step contract.
-- `Selected agent runs handle_task`: false. Plugin path uses `AgentPluginRuntime.run_plugin(...)`; fallback business path is still `KernelHost.dispatch -> business_module.handle`.
-- `Aggregate result and write session`: true (`session_store.append_turn(...)` + `session_store.save(...)` in `app/main.py`).
+## Product Shape
 
-Current runtime path:
+- one main agent: `vintage_programmer`
+- one default chat path: `POST /api/chat` and `POST /api/chat/stream`
+- one agent spec set: `agents/vintage_programmer/soul.md`, `agent.md`, `tools.md`
+- one Codex-style UI: threads, chat, collapsible inspector
+
+Reusable foundations kept in place:
+
+- session storage
+- uploads and attachments
+- SSE streaming
+- local tool execution
+- token accounting
+
+Removed from the default public surface:
+
+- `GET /api/agent-plugins`
+- `POST /api/agent-plugins/run`
+- the `role_agent_lab` product entry
+
+## Agent Specs
+
+The main agent is now defined by markdown specs instead of JSON plugin manifests:
+
+- [soul.md](agents/vintage_programmer/soul.md)
+- [agent.md](agents/vintage_programmer/agent.md)
+- [tools.md](agents/vintage_programmer/tools.md)
+
+`agent.md` frontmatter keeps the minimum runtime metadata:
+
+- `id`
+- `title`
+- `default_model`
+- `tool_policy`
+- `max_tool_rounds`
+
+## Main APIs
+
+- `GET /api/health`
+- `POST /api/chat`
+- `POST /api/chat/stream`
+- `POST /api/session/new`
+- `GET /api/session/{session_id}`
+- `GET /api/sessions`
+- `PATCH /api/session/{session_id}/title`
+- `DELETE /api/session/{session_id}`
+- `POST /api/upload`
+
+## Layout
 
 ```text
-HTTP / UI
-  -> app/main.py (/api/chat)
-  -> AgentPluginRuntime (router + staged plugin orchestration)
-  -> tool runtime / providers
-  -> response + trace + persisted session
-  -> fallback only if needed: KernelHost.dispatch(TaskRequest)
+agents/vintage_programmer/   # main agent specs
+app/main.py                  # FastAPI entrypoint
+app/vintage_programmer_runtime.py
+app/static/                  # zero-build React UI
+app/storage.py               # session and upload persistence
+app/tool_providers/          # local tool surface
+tests/                       # smoke and integration coverage
 ```
 
-Plugin runtime surface:
+## Notes
 
-- `GET /api/agent-plugins`: returns 12 plugin descriptors + tool model (`tool_profile / allowed_tools / max_tool_rounds`).
-- `POST /api/agent-plugins/run`: runs one plugin independently by `plugin_id` (router uses rule route; other plugins use restricted tool loops).
-- Legacy quality standards are applied per plugin at runtime (`quality_profile / scope / stop_rules / response_contract / tool_expectation`), including JSON contract coercion, tool-evidence nudges, and quality notes.
-
-## Operations Entry
-
-Start here if you want the current platform status, gate status, metrics summary, replay sample overview, and reporting template:
-
-- [Platform Operations Overview](docs/operations/platform_operations_overview.md)
-- [Platform Reporting Template](docs/operations/platform_reporting_template.md)
-- [Quality Gates](docs/operations/quality_gates.md)
-- [Smoke Matrix](docs/operations/smoke_matrix.md)
-
-## Key Docs
-
-- [Current Execution Path](docs/architecture/current_execution_path.md)
-- [Platform Boundaries](docs/architecture/platform_boundaries.md)
-- [Research Module](docs/modules/research_module.md)
-- [Swarm Roadmap](docs/swarm-roadmap.md)
-- [Swarm Demo Notes](docs/demo/research_swarm_demo.md)
-- [Packages Boundary Guide](packages/README.md)
-
-## Architecture Sketch
-
-```mermaid
-flowchart LR
-    UI["Web UI / API"] --> Assemble["assemble_runtime()"]
-    Assemble --> Kernel["KernelHost"]
-    Kernel --> Registry["ModuleRegistry"]
-    Kernel --> ToolBus["ToolBus"]
-
-    Registry --> Office["office_module"]
-    Registry --> Research["research_module"]
-    Registry --> System["system_modules"]
-
-    Office --> ToolRuntime["tool_runtime_module"]
-    Research --> ToolRuntime
-    ToolRuntime --> ProviderRegistry["ProviderRegistry"]
-
-    ProviderRegistry --> Workspace["LocalWorkspaceProvider"]
-    ProviderRegistry --> Web["HttpWebProvider"]
-
-    Research --> Swarm["Module-local Swarm MVP"]
-    Swarm --> Aggregator["merge / deduplicate / mark conflicts"]
-```
-
-## Swarm and Tool Status
-
-- Swarm now has two formal paths:
-  - `research_module` internal Swarm (parallel branch execution + join + serial replay degradation).
-  - `AgentPluginRuntime` plugin-level Swarm (manifest-driven parent-child branches, bounded recursive depth, join policy, and serial replay fallback).
-- `office_module` has internal role orchestration (`Router/Planner/Worker/Reviewer/Revision`), but this is module-internal, not kernel-level 12-plugin dispatch.
-- Tool execution path is `KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`.
-- Providers are assembled in `app/bootstrap/assemble.py` (`local_workspace`, `local_file`, `http_web`, `patch_write`, optional `session_store`).
-- `POST /api/agent-plugins/run` supports standalone plugin runs; for swarm-capable plugins, pass `context.swarm.enabled=true` and optional `max_depth/max_children/join_policy/failure_policy`.
-- `/api/chat` main path also uses plugin orchestration and can trigger swarm on the target plugin when conditions are met; swarm topology is traceable via `decision.swarm`.
+- `kernel/shadow` maintenance endpoints still exist in the backend, but are not part of the main UI
+- legacy multi-agent and swarm assets are now replacement-era code, not the default execution path

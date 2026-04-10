@@ -134,7 +134,7 @@ switch ($authMode) {
 $appModule = if ($env:MULTI_AGENT_TEAM_APP_MODULE) {
   $env:MULTI_AGENT_TEAM_APP_MODULE
 } else {
-  "app.kernel_robot_main:app"
+  "app.main:app"
 }
 $appPort = if ($env:MULTI_AGENT_TEAM_APP_PORT) {
   $env:MULTI_AGENT_TEAM_APP_PORT

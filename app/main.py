@@ -16,18 +16,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.agents.plugin_runtime import AgentPluginRuntime
 from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import load_config
-from app.contracts import TaskRequest
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
 from app.models import (
-    AgentPluginListResponse,
-    AgentPluginRunRequest,
-    AgentPluginRunResponse,
     ChatRequest,
     ChatResponse,
     ClearStatsResponse,
@@ -47,7 +42,6 @@ from app.models import (
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
-    RoleLabRuntimeResponse,
     SessionDetailResponse,
     SessionListItem,
     SessionListResponse,
@@ -59,17 +53,19 @@ from app.models import (
     SandboxDrillStep,
     TokenStatsResponse,
     TokenTotals,
+    ToolEvent,
     TokenUsage,
     UploadResponse,
 )
 from app.openai_auth import OpenAIAuthManager
 from app.operations_overview import build_platform_operations_overview
 from app.pricing import estimate_usage_cost
-from app.product_profiles import ensure_product_profile_env
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-PRODUCT_PROFILE = ensure_product_profile_env()
+from app.vintage_programmer_runtime import VintageProgrammerRuntime
+
+APP_TITLE = "Vintage Programmer"
 config = load_config()
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
@@ -80,6 +76,11 @@ kernel_runtime = build_kernel_runtime(config)
 agent_os_runtime: AgentOSRuntime = assemble_runtime(
     config,
     kernel_runtime=kernel_runtime,
+)
+vintage_programmer_runtime = VintageProgrammerRuntime(
+    config=config,
+    kernel_runtime=kernel_runtime,
+    agent_dir=Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer",
 )
 APP_VERSION = "0.3.5"
 
@@ -128,266 +129,6 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
-_agent_plugin_runtime: AgentPluginRuntime | None = None
-
-
-_FALLBACK_AGENT_PLUGIN_KEYS: tuple[str, ...] = (
-    "router_agent",
-    "coordinator_agent",
-    "planner_agent",
-    "researcher_agent",
-    "file_reader_agent",
-    "summarizer_agent",
-    "fixer_agent",
-    "worker_agent",
-    "conflict_detector_agent",
-    "reviewer_agent",
-    "revision_agent",
-    "structurer_agent",
-)
-
-_AGENT_PLUGIN_META: dict[str, dict[str, object]] = {
-    "router_agent": {
-        "sprite_role": "router",
-        "supports_swarm": True,
-        "swarm_mode": "fanout_router",
-        "capability_tags": ["intent-routing", "policy-gate", "swarm-dispatch"],
-        "summary": "入口分流与多插件调度分发。",
-    },
-    "coordinator_agent": {
-        "sprite_role": "coordinator",
-        "supports_swarm": True,
-        "swarm_mode": "supervisor",
-        "capability_tags": ["task-coordination", "multi-agent-sync", "swarm-supervision"],
-        "summary": "负责跨插件协作、合流与冲突仲裁。",
-    },
-    "planner_agent": {
-        "sprite_role": "planner",
-        "supports_swarm": True,
-        "swarm_mode": "plan-then-swarm",
-        "capability_tags": ["plan-decomposition", "constraint-check", "swarm-plan"],
-        "summary": "生成执行计划并分配到子插件。",
-    },
-    "researcher_agent": {
-        "sprite_role": "researcher",
-        "supports_swarm": True,
-        "swarm_mode": "parallel-research",
-        "capability_tags": ["evidence-search", "citation-merge", "swarm-retrieval"],
-        "summary": "并行检索信息并汇总证据。",
-    },
-    "file_reader_agent": {
-        "sprite_role": "file_reader",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["document-parse", "attachment-extract"],
-        "summary": "读取附件并提取结构化文本。",
-    },
-    "summarizer_agent": {
-        "sprite_role": "summarizer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["context-compress", "summary-write"],
-        "summary": "上下文压缩与结论摘要。",
-    },
-    "fixer_agent": {
-        "sprite_role": "fixer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["error-repair", "patch-hint"],
-        "summary": "定位故障并给出修复策略。",
-    },
-    "worker_agent": {
-        "sprite_role": "worker",
-        "supports_swarm": True,
-        "swarm_mode": "tool-swarm",
-        "capability_tags": ["tool-execution", "action-loop", "swarm-worker"],
-        "summary": "执行主任务与工具调用循环。",
-    },
-    "conflict_detector_agent": {
-        "sprite_role": "conflict_detector",
-        "supports_swarm": True,
-        "swarm_mode": "consensus-check",
-        "capability_tags": ["conflict-detect", "consistency-check", "swarm-vote"],
-        "summary": "检测结论冲突并给出一致性判断。",
-    },
-    "reviewer_agent": {
-        "sprite_role": "reviewer",
-        "supports_swarm": True,
-        "swarm_mode": "multi-review",
-        "capability_tags": ["quality-review", "risk-check", "swarm-review"],
-        "summary": "对结果做质量审阅与风险评估。",
-    },
-    "revision_agent": {
-        "sprite_role": "revision",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["revision", "final-polish"],
-        "summary": "根据审阅意见生成最终修订版。",
-    },
-    "structurer_agent": {
-        "sprite_role": "structurer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["format-structuring", "output-shaping"],
-        "summary": "将结果整理成目标结构与格式。",
-    },
-}
-
-
-def _agent_title_from_key(key: str) -> str:
-    normalized = str(key or "").strip().replace("-", "_")
-    if not normalized:
-        return "LLM Agent"
-    words = [item for item in normalized.split("_") if item]
-    return " ".join(word.capitalize() for word in words)
-
-
-def _agent_sprite_role_from_key(key: str) -> str:
-    raw = str(key or "").strip().replace("-", "_")
-    if raw.endswith("_agent"):
-        raw = raw[:-6]
-    return raw or "worker"
-
-
-def _build_agent_plugin_descriptor(*, key: str, path: str, exists: bool) -> dict[str, object]:
-    meta = _AGENT_PLUGIN_META.get(key, {})
-    sprite_role = str(meta.get("sprite_role") or _agent_sprite_role_from_key(key))
-    capability_tags = [str(item).strip() for item in (meta.get("capability_tags") or []) if str(item).strip()]
-    supports_swarm = bool(meta.get("supports_swarm"))
-    swarm_mode = str(meta.get("swarm_mode") or ("none" if not supports_swarm else "generic-swarm")).strip()
-    return {
-        "key": key,
-        "title": _agent_title_from_key(key),
-        "path": path,
-        "exists": bool(exists),
-        "sprite_role": sprite_role,
-        "supports_swarm": supports_swarm,
-        "swarm_mode": swarm_mode,
-        "swarm_role": "parent" if supports_swarm else "leaf",
-        "swarm_enabled_by_default": False,
-        "swarm_max_depth": 2 if supports_swarm else 1,
-        "swarm_max_children": 3 if supports_swarm else 1,
-        "swarm_join_policy": "merge" if supports_swarm else "none",
-        "swarm_failure_policy": "serial_replay" if supports_swarm else "none",
-        "swarm_children": [],
-        "capability_tags": capability_tags,
-        "summary": str(meta.get("summary") or ""),
-        "tool_profile": "none",
-        "allowed_tools": [],
-        "max_tool_rounds": 0,
-        "quality_profile": "fallback",
-        "scope": "",
-        "stop_rules": [],
-        "response_mode": "text",
-        "response_keys": [],
-        "response_max_items": 0,
-        "tool_expect_keywords": [],
-        "tool_expect_min_calls": 0,
-        "independent_runnable": bool(exists),
-    }
-
-
-def _build_control_panel_topology(
-    repo_root: Path,
-    *,
-    plugin_runtime: AgentPluginRuntime | None = None,
-) -> dict[str, object]:
-    kernel_path = repo_root / "app" / "kernel" / "host.py"
-    router_path = repo_root / "app" / "kernel" / "llm_router.py"
-    agents_dir = repo_root / "app" / "agents"
-
-    plugin_defs: list[dict[str, object]]
-    if plugin_runtime is not None and plugin_runtime.list_manifests():
-        plugin_defs = plugin_runtime.control_panel_plugin_descriptors(slot_count=12)
-    else:
-        plugin_paths_by_key = {item.stem: item for item in agents_dir.glob("*_agent.py")}
-        ordered_keys = [key for key in _FALLBACK_AGENT_PLUGIN_KEYS if key in plugin_paths_by_key]
-        ordered_keys.extend(sorted(key for key in plugin_paths_by_key.keys() if key not in ordered_keys))
-        if ordered_keys:
-            plugin_defs = [
-                _build_agent_plugin_descriptor(
-                    key=key,
-                    path=str(plugin_paths_by_key[key].relative_to(repo_root)),
-                    exists=plugin_paths_by_key[key].is_file(),
-                )
-                for key in ordered_keys[:12]
-            ]
-        else:
-            plugin_defs = [
-                _build_agent_plugin_descriptor(
-                    key=key,
-                    path=str((agents_dir / f"{key}.py").relative_to(repo_root)),
-                    exists=(agents_dir / f"{key}.py").is_file(),
-                )
-                for key in _FALLBACK_AGENT_PLUGIN_KEYS
-            ]
-
-        if len(plugin_defs) < 12:
-            for idx in range(len(plugin_defs), 12):
-                slot = str(idx + 1).zfill(2)
-                plugin_defs.append(
-                    {
-                        "key": f"llm_module_{slot}",
-                        "title": f"LLM 模块 {slot}",
-                        "path": "",
-                        "exists": False,
-                        "sprite_role": "worker",
-                        "supports_swarm": False,
-                        "swarm_mode": "none",
-                        "swarm_role": "leaf",
-                        "swarm_enabled_by_default": False,
-                        "swarm_max_depth": 1,
-                        "swarm_max_children": 1,
-                        "swarm_join_policy": "none",
-                        "swarm_failure_policy": "none",
-                        "swarm_children": [],
-                        "capability_tags": [],
-                        "summary": "插件未配置",
-                        "tool_profile": "none",
-                        "allowed_tools": [],
-                        "max_tool_rounds": 0,
-                        "quality_profile": "unconfigured",
-                        "scope": "",
-                        "stop_rules": [],
-                        "response_mode": "text",
-                        "response_keys": [],
-                        "response_max_items": 0,
-                        "tool_expect_keywords": [],
-                        "tool_expect_min_calls": 0,
-                        "independent_runnable": False,
-                    }
-                )
-        elif len(plugin_defs) > 12:
-            plugin_defs = plugin_defs[:12]
-
-    return {
-        "kernel": {
-            "key": "kernel_core",
-            "title": "稳定 Kernel",
-            "path": str(kernel_path.relative_to(repo_root)),
-            "exists": kernel_path.is_file(),
-        },
-        "central_router": {
-            "key": "llm_central_router",
-            "title": "LLM 中央调度器",
-            "path": str(router_path.relative_to(repo_root)),
-            "exists": router_path.is_file(),
-        },
-        "agent_plugins": plugin_defs,
-        "slot_count": 12,
-    }
-
-
-def get_agent_plugin_runtime() -> AgentPluginRuntime:
-    global _agent_plugin_runtime
-    if _agent_plugin_runtime is None:
-        manifest_dir = Path(__file__).resolve().parent / "agents" / "manifests"
-        _agent_plugin_runtime = AgentPluginRuntime(
-            config=config,
-            kernel_runtime=get_kernel_runtime(),
-            manifest_dir=manifest_dir,
-        )
-    return _agent_plugin_runtime
 
 
 class AgentRunQueue:
@@ -464,7 +205,12 @@ def get_evolution_store() -> EvolutionStore:
 def get_agent_os_runtime() -> AgentOSRuntime:
     return agent_os_runtime
 
-app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
+
+def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
+    return vintage_programmer_runtime
+
+
+app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -499,103 +245,26 @@ def health() -> HealthResponse:
     runtime = get_agent_os_runtime()
     docker_ok, docker_msg = runtime.legacy_tools().docker_status()
     auth_summary = OpenAIAuthManager(config).auth_summary()
-    kernel_health = build_kernel_health_payload(get_kernel_runtime())
-    host_runtime = runtime.debug_kernel_host_snapshot()
-    host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
-    control_panel_topology = _build_control_panel_topology(
-        Path(__file__).resolve().parent.parent,
-        plugin_runtime=get_agent_plugin_runtime(),
-    )
-    role_lab_runtime = runtime.debug_role_lab_runtime_snapshot()
-    evolution_payload = get_evolution_store().runtime_payload(limit=10)
-    tool_registry = runtime.debug_tool_registry_snapshot()
+    agent_descriptor = get_vintage_programmer_runtime().descriptor()
     return HealthResponse(
         ok=True,
-        product_profile=PRODUCT_PROFILE.key,
-        product_title=PRODUCT_PROFILE.sidebar_title,
-        product_tagline=PRODUCT_PROFILE.sidebar_hint,
-        product_kernel_title=PRODUCT_PROFILE.kernel_title,
-        product_kernel_subtitle=PRODUCT_PROFILE.kernel_subtitle,
-        product_role_title=PRODUCT_PROFILE.role_title,
-        product_role_legend=PRODUCT_PROFILE.role_legend,
-        show_kernel_console=PRODUCT_PROFILE.show_kernel_console,
-        show_role_board=PRODUCT_PROFILE.show_role_board,
+        app_title=APP_TITLE,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
-        model_default=config.default_model,
+        default_model=str(agent_descriptor.get("default_model") or config.default_model),
         llm_provider=str(auth_summary.get("provider") or config.llm_provider or ""),
-        llm_api_key_env=str(auth_summary.get("api_key_env") or config.llm_primary_api_key_env or ""),
         auth_mode=str(auth_summary.get("mode") or ""),
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
-        allow_any_path=config.allow_any_path,
         allowed_roots=[str(path) for path in config.allowed_roots],
-        workspace_sibling_root=str(config.workspace_sibling_root or ""),
-        allow_workspace_sibling_access=config.allow_workspace_sibling_access,
-        default_extra_allowed_roots=[str(path) for path in config.default_extra_allowed_roots],
-        extra_allowed_roots_source=config.extra_allowed_roots_source,
+        max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
-        kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
-        kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
-        kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
-        kernel_shadow_promote_check=dict(kernel_health.get("shadow_promote_check") or {}),
-        kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
-        kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
-        kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
-        kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
-        kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
-        kernel_last_package_run=dict(kernel_health.get("last_package_run") or {}),
-        kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
-        kernel_module_health=dict(kernel_health.get("module_health") or {}),
-        kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
-        kernel_tool_registry=dict(tool_registry or {}),
-        kernel_host_runtime=dict(host_runtime or {}),
-        control_panel_topology=dict(control_panel_topology or {}),
-        role_lab_runtime=dict(role_lab_runtime or {}),
-        assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
-        assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
+        agent=agent_descriptor,
     )
-
-
-@app.get("/api/role-lab/runtime", response_model=RoleLabRuntimeResponse)
-def role_lab_runtime() -> RoleLabRuntimeResponse:
-    snapshot = get_agent_os_runtime().debug_role_lab_runtime_snapshot()
-    return RoleLabRuntimeResponse(ok=True, detail="role-agent runtime snapshot", role_lab_runtime=dict(snapshot or {}))
-
-
-@app.get("/api/agent-plugins", response_model=AgentPluginListResponse)
-def agent_plugin_list() -> AgentPluginListResponse:
-    runtime = get_agent_plugin_runtime()
-    return AgentPluginListResponse(
-        ok=True,
-        detail="agent plugins and tool model",
-        plugins=list(runtime.list_api_payload()),
-        tool_model=dict(runtime.tool_model_payload()),
-    )
-
-
-@app.post("/api/agent-plugins/run", response_model=AgentPluginRunResponse)
-def agent_plugin_run(req: AgentPluginRunRequest) -> AgentPluginRunResponse:
-    runtime = get_agent_plugin_runtime()
-    try:
-        payload = runtime.run_plugin(
-            plugin_id=req.plugin_id,
-            message=req.message,
-            settings=req.settings,
-            context=req.context,
-            max_tool_rounds=req.max_tool_rounds,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"agent plugin run failed: {exc}") from exc
-    return AgentPluginRunResponse(**payload)
 
 
 def _kernel_runtime_response(
@@ -1387,516 +1056,6 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
-_MAIN_CHAT_SWARM_KEYWORDS: tuple[str, ...] = (
-    "swarm",
-    "并行",
-    "父子",
-    "分支",
-    "协作",
-    "multi-agent",
-    "multi agent",
-)
-
-_MAIN_PLUGIN_PREFLIGHT: tuple[str, ...] = (
-    "coordinator_agent",
-    "planner_agent",
-)
-
-_MAIN_PLUGIN_POSTFLIGHT: tuple[str, ...] = (
-    "conflict_detector_agent",
-    "reviewer_agent",
-    "revision_agent",
-    "structurer_agent",
-)
-
-
-def _main_contains_any(text: str, keywords: tuple[str, ...]) -> bool:
-    lowered = str(text or "").lower()
-    for item in keywords:
-        token = str(item or "").strip().lower()
-        if token and token in lowered:
-            return True
-    return False
-
-
-def _main_preview(text: Any, *, limit: int = 240) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    compact = " ".join(raw.split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: max(12, limit - 3)] + "..."
-
-
-def _main_extract_json_object(text: str) -> dict[str, Any] | None:
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        candidate = raw[start : end + 1]
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return None
-    return None
-
-
-def _merge_usage_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
-    merged: dict[str, Any] = dict(left or {})
-    other = dict(right or {})
-    for key in ("input_tokens", "output_tokens", "total_tokens", "llm_calls"):
-        merged[key] = int(merged.get(key, 0) or 0) + int(other.get(key, 0) or 0)
-    merged["estimated_cost_usd"] = float(merged.get("estimated_cost_usd", 0.0) or 0.0) + float(
-        other.get("estimated_cost_usd", 0.0) or 0.0
-    )
-    if "pricing_known" in merged or "pricing_known" in other:
-        merged["pricing_known"] = bool(merged.get("pricing_known")) or bool(other.get("pricing_known"))
-    for key in ("pricing_model", "input_price_per_1m", "output_price_per_1m"):
-        if merged.get(key) in {"", None} and other.get(key) not in {"", None}:
-            merged[key] = other.get(key)
-    return merged
-
-
-def _build_answer_bundle_from_plugin_text(text: str) -> dict[str, Any]:
-    raw_text = str(text or "").strip()
-    parsed = _main_extract_json_object(raw_text)
-    if not isinstance(parsed, dict):
-        return {"summary": raw_text, "claims": [], "citations": [], "warnings": []}
-
-    summary = str(parsed.get("summary") or parsed.get("final_answer") or raw_text).strip()
-    warnings_raw = parsed.get("warnings")
-    if not isinstance(warnings_raw, list):
-        warnings_raw = []
-    warnings = [str(item or "").strip() for item in warnings_raw if str(item or "").strip()]
-    claims_raw = parsed.get("claims")
-    claims: list[dict[str, Any]] = []
-    if isinstance(claims_raw, list):
-        for item in claims_raw[:12]:
-            if isinstance(item, dict):
-                statement = str(item.get("statement") or item.get("claim") or "").strip()
-                if not statement:
-                    continue
-                claims.append(
-                    {
-                        "statement": statement,
-                        "citation_ids": list(item.get("citation_ids") or []),
-                        "confidence": str(item.get("confidence") or "medium"),
-                        "status": str(item.get("status") or "supported"),
-                    }
-                )
-            else:
-                statement = str(item or "").strip()
-                if not statement:
-                    continue
-                claims.append(
-                    {
-                        "statement": statement,
-                        "citation_ids": [],
-                        "confidence": "medium",
-                        "status": "supported",
-                    }
-                )
-    return {
-        "summary": summary,
-        "claims": claims,
-        "citations": [],
-        "warnings": warnings,
-    }
-
-
-def _normalize_tool_events_from_plugin(
-    *,
-    plugin_id: str,
-    plugin_title: str,
-    tool_events: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for raw in list(tool_events or []):
-        if not isinstance(raw, dict):
-            continue
-        item = dict(raw)
-        item["module_id"] = str(item.get("module_id") or plugin_id)
-        item["module_title"] = str(item.get("module_title") or plugin_title)
-        item["module_group"] = str(item.get("module_group") or "agent_plugin")
-        normalized.append(item)
-    return normalized
-
-
-def _build_main_plugin_stage_plan(target_agent: str, available_ids: set[str]) -> list[str]:
-    plan: list[str] = []
-    for item in _MAIN_PLUGIN_PREFLIGHT:
-        if item in available_ids:
-            plan.append(item)
-    if target_agent in available_ids and target_agent != "router_agent":
-        plan.append(target_agent)
-    elif "worker_agent" in available_ids:
-        plan.append("worker_agent")
-    for item in _MAIN_PLUGIN_POSTFLIGHT:
-        if item in available_ids:
-            plan.append(item)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in plan:
-        key = str(item or "").strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(key)
-    return deduped
-
-
-def _run_main_chat_plugin_orchestration(
-    *,
-    req: ChatRequest,
-    session_id: str,
-    route_state_input: dict[str, Any],
-    attachments: list[dict[str, Any]],
-    progress_cb: Callable[[dict[str, Any]], None] | None,
-    run_id: str,
-) -> dict[str, Any]:
-    runtime = get_agent_plugin_runtime()
-    manifests = runtime.list_manifests()
-    manifest_by_id = {item.plugin_id: item for item in manifests}
-    available_ids = set(manifest_by_id.keys())
-    if not available_ids:
-        raise RuntimeError("agent plugin runtime has no manifests")
-
-    attachment_refs = [
-        {
-            "id": str(item.get("id") or ""),
-            "name": str(item.get("original_name") or item.get("name") or ""),
-            "mime": str(item.get("mime") or ""),
-        }
-        for item in attachments
-        if isinstance(item, dict)
-    ]
-    base_context: dict[str, Any] = {
-        "source": "chat_main",
-        "session_id": session_id,
-        "route_state": dict(route_state_input or {}),
-        "attachments": attachment_refs,
-    }
-
-    router_context = {
-        **base_context,
-        "swarm": {"enabled": False},
-        "orchestration": {
-            "stage": "router_agent",
-            "role": "central_router",
-            "run_id": run_id,
-        },
-    }
-    router_result = runtime.run_plugin(
-        plugin_id="router_agent",
-        message=req.message,
-        settings=req.settings,
-        context=router_context,
-    )
-    router_decision = dict(router_result.get("decision") or {})
-    target_agent = str(router_decision.get("target_agent") or "").strip()
-    if target_agent not in available_ids or target_agent == "router_agent":
-        target_agent = "worker_agent" if "worker_agent" in available_ids else sorted(available_ids)[0]
-    stage_plan = _build_main_plugin_stage_plan(target_agent, available_ids)
-    if not stage_plan:
-        raise RuntimeError("plugin stage plan is empty")
-
-    execution_plan: list[str] = [f"router_agent -> {target_agent}"] + [f"{idx + 1}. {pid}" for idx, pid in enumerate(stage_plan)]
-    execution_trace: list[str] = []
-    execution_trace.append(
-        f"中央调度路由: router_agent -> {target_agent} (reason={router_decision.get('reason') or 'default'})"
-    )
-    _emit_progress(
-        progress_cb,
-        "trace",
-        message=execution_trace[-1],
-        index=len(execution_trace),
-        run_id=run_id,
-    )
-
-    pipeline_hooks: list[dict[str, Any]] = []
-    debug_flow: list[dict[str, Any]] = []
-    agent_panels: list[dict[str, Any]] = []
-    active_roles: list[str] = []
-    role_states: list[dict[str, Any]] = []
-    current_role = ""
-    aggregated_tools: list[dict[str, Any]] = []
-    aggregated_notes: list[str] = []
-    usage_total = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0}
-    stage_results: dict[str, dict[str, Any]] = {}
-    reviewer_verdict = ""
-
-    for index, plugin_id in enumerate(stage_plan, start=1):
-        if plugin_id == "revision_agent" and reviewer_verdict == "pass":
-            role_states.append(
-                {
-                    "role": plugin_id,
-                    "status": "skipped",
-                    "phase": "gated",
-                    "detail": "reviewer verdict=pass",
-                }
-            )
-            execution_trace.append("revision_agent 已跳过（reviewer verdict=pass）")
-            continue
-
-        manifest = manifest_by_id.get(plugin_id)
-        if manifest is None:
-            role_states.append(
-                {
-                    "role": plugin_id,
-                    "status": "failed",
-                    "phase": "missing",
-                    "detail": "manifest missing",
-                }
-            )
-            execution_trace.append(f"{plugin_id} 失败：manifest 缺失")
-            continue
-
-        upstream_preview = {
-            key: _main_preview((stage_results.get(key) or {}).get("text"), limit=280)
-            for key in stage_results.keys()
-        }
-        stage_message = "\n".join(
-            [
-                f"orchestration_stage: {plugin_id}",
-                "user_message:",
-                str(req.message or "").strip(),
-                "",
-                "upstream_stage_previews_json:",
-                json.dumps(upstream_preview, ensure_ascii=False),
-            ]
-        )
-        enable_swarm = bool(
-            manifest.supports_swarm
-            and (
-                plugin_id == target_agent
-                or _main_contains_any(req.message, _MAIN_CHAT_SWARM_KEYWORDS)
-            )
-        )
-        stage_context: dict[str, Any] = {
-            **base_context,
-            "orchestration": {
-                "stage": plugin_id,
-                "stage_index": index,
-                "target_agent": target_agent,
-                "plan": stage_plan,
-                "upstream_preview": upstream_preview,
-                "run_id": run_id,
-            },
-            "swarm": {
-                "enabled": enable_swarm,
-                "max_depth": 2,
-                "max_children": 2,
-                "join_policy": "merge",
-                "failure_policy": "serial_replay",
-                "expand_children": True,
-            },
-        }
-
-        try:
-            stage_result = runtime.run_plugin(
-                plugin_id=plugin_id,
-                message=stage_message,
-                settings=req.settings,
-                context=stage_context,
-            )
-        except Exception as exc:
-            stage_result = {
-                "ok": False,
-                "plugin_id": plugin_id,
-                "text": "",
-                "effective_model": "",
-                "tool_events": [],
-                "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0},
-                "notes": [f"plugin_stage_failed:{exc}"],
-                "decision": {},
-            }
-
-        stage_results[plugin_id] = stage_result
-        active_roles.append(plugin_id)
-        current_role = plugin_id
-
-        usage_total = _merge_usage_dicts(usage_total, dict(stage_result.get("token_usage") or {}))
-        stage_notes = [str(item or "").strip() for item in list(stage_result.get("notes") or []) if str(item or "").strip()]
-        aggregated_notes.extend([f"{plugin_id}:{item}" for item in stage_notes])
-        aggregated_tools.extend(
-            _normalize_tool_events_from_plugin(
-                plugin_id=plugin_id,
-                plugin_title=manifest.title,
-                tool_events=list(stage_result.get("tool_events") or []),
-            )
-        )
-
-        status = "done" if bool(stage_result.get("ok")) else "failed"
-        role_states.append(
-            {
-                "role": plugin_id,
-                "status": status,
-                "phase": "completed" if status == "done" else "error",
-                "detail": _main_preview(stage_result.get("text"), limit=120) or ",".join(stage_notes[:2]),
-            }
-        )
-        stage_swarm = dict((stage_result.get("decision") or {}).get("swarm") or {})
-        swarm_note = (
-            f", swarm nodes={stage_swarm.get('node_count')}, degraded={stage_swarm.get('degraded_node_count')}"
-            if stage_swarm
-            else ""
-        )
-        stage_trace = (
-            f"{plugin_id}: ok={bool(stage_result.get('ok'))}, "
-            f"tools={len(stage_result.get('tool_events') or [])}{swarm_note}"
-        )
-        execution_trace.append(stage_trace)
-        _emit_progress(
-            progress_cb,
-            "trace",
-            message=stage_trace,
-            index=len(execution_trace),
-            run_id=run_id,
-        )
-        pipeline_hooks.append(
-            {
-                "phase": f"plugin_stage_{index}",
-                "handler": plugin_id,
-                "changed_fields": [],
-                "route_changed": False,
-                "task_type_before": "chat",
-                "task_type_after": "chat",
-                "primary_intent_before": "standard",
-                "primary_intent_after": "standard",
-                "execution_policy_before": "plugin_orchestrator",
-                "execution_policy_after": "plugin_orchestrator",
-                "prompt_injection_count": 0,
-                "trace_note_count": len(stage_notes),
-                "debug_entry_count": 0,
-            }
-        )
-        debug_flow.append(
-            {
-                "step": len(debug_flow) + 1,
-                "stage": "plugin_stage",
-                "title": plugin_id,
-                "detail": stage_trace,
-            }
-        )
-        agent_panels.append(
-            {
-                "role": plugin_id,
-                "title": manifest.title,
-                "kind": "agent",
-                "summary": _main_preview(stage_result.get("text"), limit=140),
-                "bullets": [
-                    f"ok={bool(stage_result.get('ok'))}",
-                    f"tools={len(stage_result.get('tool_events') or [])}",
-                    f"notes={len(stage_notes)}",
-                ],
-            }
-        )
-
-        if plugin_id == "reviewer_agent":
-            reviewer_payload = _main_extract_json_object(str(stage_result.get("text") or ""))
-            if isinstance(reviewer_payload, dict):
-                reviewer_verdict = str(reviewer_payload.get("verdict") or "").strip().lower()
-
-    final_candidate_order = [
-        "structurer_agent",
-        "revision_agent",
-        "reviewer_agent",
-        target_agent,
-        "worker_agent",
-        "summarizer_agent",
-        "planner_agent",
-        "coordinator_agent",
-    ]
-    final_result: dict[str, Any] | None = None
-    for plugin_id in final_candidate_order:
-        candidate = stage_results.get(plugin_id)
-        if not isinstance(candidate, dict):
-            continue
-        if not bool(candidate.get("ok")):
-            continue
-        if str(candidate.get("text") or "").strip():
-            final_result = candidate
-            break
-    if final_result is None:
-        final_result = stage_results.get(target_agent) or {"text": "(empty response)", "effective_model": "", "decision": {}}
-
-    final_text = str(final_result.get("text") or "").strip() or "(empty response)"
-    final_model = str(final_result.get("effective_model") or req.settings.model or config.default_model).strip()
-
-    kernel_routing = {
-        "mode": "plugin_orchestrator_v1",
-        "selection_summary": f"router_agent -> {target_agent}",
-        "router_decision": router_decision,
-        "target_agent": target_agent,
-        "stage_plan": stage_plan,
-    }
-
-    dedup_notes: list[str] = []
-    seen_notes: set[str] = set()
-    for item in aggregated_notes:
-        key = str(item or "").strip()
-        if not key or key in seen_notes:
-            continue
-        seen_notes.add(key)
-        dedup_notes.append(key)
-
-    execution_trace.append(f"主结果来源: {str(final_result.get('plugin_id') or target_agent)}")
-    if dedup_notes:
-        execution_trace.append(f"质量备注: {', '.join(dedup_notes[:6])}")
-
-    business_result = {
-        "mode": "plugin_orchestrator_v1",
-        "target_agent": target_agent,
-        "stage_count": len(stage_results),
-        "stages": [
-            {
-                "plugin_id": pid,
-                "ok": bool((stage_results.get(pid) or {}).get("ok")),
-                "notes": list((stage_results.get(pid) or {}).get("notes") or []),
-                "swarm": dict(((stage_results.get(pid) or {}).get("decision") or {}).get("swarm") or {}),
-            }
-            for pid in stage_results.keys()
-        ],
-        "notes": dedup_notes,
-        "router": router_decision,
-    }
-    target_swarm = dict(((stage_results.get(target_agent) or {}).get("decision") or {}).get("swarm") or {})
-    if target_swarm:
-        business_result["swarm"] = target_swarm
-
-    return {
-        "text": final_text,
-        "selected_module_id": target_agent,
-        "kernel_routing": kernel_routing,
-        "tool_events": aggregated_tools,
-        "attachment_note": "",
-        "execution_plan": execution_plan,
-        "execution_trace": execution_trace,
-        "pipeline_hooks": pipeline_hooks,
-        "debug_flow": debug_flow,
-        "agent_panels": agent_panels,
-        "active_roles": active_roles,
-        "current_role": current_role,
-        "role_states": role_states,
-        "answer_bundle": _build_answer_bundle_from_plugin_text(final_text),
-        "token_usage": usage_total,
-        "effective_model": final_model,
-        "route_state": dict(route_state_input or {}),
-        "business_result": business_result,
-    }
-
-
 def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
@@ -2046,124 +1205,50 @@ def _process_chat_request(
             progress_cb,
             "stage",
             code="agent_run_start",
-            detail="开始通过 LLM 中央调度 + 12 插件编排执行。",
+            detail="开始通过 vintage_programmer 执行。",
             run_id=run_id,
         )
-        plugin_result: dict[str, Any] | None = None
-        plugin_error = ""
-        try:
-            plugin_result = _run_main_chat_plugin_orchestration(
-                req=req,
-                session_id=session_id,
-                route_state_input=route_state_input,
-                attachments=attachments,
-                progress_cb=progress_cb,
-                run_id=run_id,
-            )
-        except Exception as exc:
-            plugin_error = str(exc)
-            _emit_progress(
-                progress_cb,
-                "trace",
-                message=f"插件编排主链路失败，回退 legacy business module：{plugin_error}",
-                run_id=run_id,
-            )
-
-        payload: dict[str, Any] = {}
-        if isinstance(plugin_result, dict):
-            text = str(plugin_result.get("text") or "")
-            selected_module_id = str(plugin_result.get("selected_module_id") or "worker_agent")
-            kernel_routing = dict(plugin_result.get("kernel_routing") or {})
-            tool_events = list(plugin_result.get("tool_events") or [])
-            attachment_note = str(plugin_result.get("attachment_note") or "")
-            execution_plan = list(plugin_result.get("execution_plan") or [])
-            execution_trace = list(plugin_result.get("execution_trace") or [])
-            pipeline_hooks = list(plugin_result.get("pipeline_hooks") or [])
-            debug_flow = list(plugin_result.get("debug_flow") or [])
-            agent_panels = list(plugin_result.get("agent_panels") or [])
-            active_roles = list(plugin_result.get("active_roles") or [])
-            current_role = str(plugin_result.get("current_role") or "")
-            role_states = list(plugin_result.get("role_states") or [])
-            answer_bundle = plugin_result.get("answer_bundle") or {}
-            token_usage = dict(plugin_result.get("token_usage") or {})
-            effective_model = str(plugin_result.get("effective_model") or "")
-            route_state = (
-                plugin_result.get("route_state")
-                if isinstance(plugin_result.get("route_state"), dict)
-                else dict(route_state_input or {})
-            )
-            business_result = dict(plugin_result.get("business_result") or {})
-            payload = {
-                "mode": "plugin_orchestrator_v1",
-                "swarm": dict(business_result.get("swarm") or {}),
-                "research": dict(business_result),
-            }
-        else:
-            task_request = TaskRequest(
-                task_id=run_id,
-                task_type="chat",
-                message=req.message,
-                attachments=attachments,
-                settings=req.settings.model_dump(),
-                context={
-                    "history_turns": session.get("turns", []),
-                    "summary": session.get("summary", ""),
-                    "session_id": session_id,
-                    "route_state": route_state_input,
-                    "progress_cb": progress_cb,
-                },
-            )
-            module_response = get_agent_os_runtime().dispatch(task_request)
-            if not module_response.ok:
-                raise HTTPException(status_code=500, detail=module_response.error or "business module dispatch failed")
-            payload = dict(module_response.payload or {})
-            text = str(module_response.text or "")
-            selected_module_id = str(payload.get("module_id") or "worker_agent")
-            kernel_routing = dict(payload.get("kernel_routing") or {})
-            tool_events = list(payload.get("tool_events") or [])
-            attachment_note = str(payload.get("attachment_note") or "")
-            execution_plan = list(payload.get("execution_plan") or [])
-            execution_trace = list(payload.get("execution_trace") or [])
-            pipeline_hooks = list(payload.get("pipeline_hooks") or [])
-            debug_flow = list(payload.get("debug_flow") or [])
-            agent_panels = list(payload.get("agent_panels") or [])
-            active_roles = list(payload.get("active_roles") or [])
-            current_role = str(payload.get("current_role") or "")
-            role_states = list(payload.get("role_states") or [])
-            answer_bundle = payload.get("answer_bundle") or {}
-            token_usage = dict(payload.get("usage_total") or {})
-            effective_model = str(payload.get("effective_model") or "")
-            route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
-            business_result = dict(payload.get("swarm") or payload.get("research") or {})
-            if kernel_routing:
-                routing_message = f"平台模块选择: {kernel_routing.get('selection_summary') or selected_module_id}"
-                execution_trace.insert(0, routing_message)
-                _emit_progress(progress_cb, "trace", message=routing_message, index=1, run_id=run_id)
-            if selected_module_id == "research_module":
-                research_payload = dict(payload.get("research") or {})
-                research_trace = (
-                    "Research 模块结果: "
-                    f"grade={research_payload.get('result_grade') or '-'} · "
-                    f"sources={research_payload.get('source_count') or 0} · "
-                    f"strategy={research_payload.get('return_strategy') or '-'}"
-                )
-                execution_trace.append(research_trace)
-                _emit_progress(progress_cb, "trace", message=research_trace, index=len(execution_trace), run_id=run_id)
+        runtime_result = get_vintage_programmer_runtime().run(
+            message=req.message,
+            settings=req.settings,
+            context={
+                "session_id": session_id,
+                "summary": session.get("summary", ""),
+                "history_turns": session.get("turns", []),
+                "route_state": route_state_input,
+                "attachments": [
+                    {
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("original_name") or item.get("name") or ""),
+                        "mime": str(item.get("mime") or ""),
+                        "kind": str(item.get("kind") or ""),
+                        "path": str(item.get("path") or ""),
+                    }
+                    for item in attachments
+                    if isinstance(item, dict)
+                ],
+            },
+            progress_cb=progress_cb,
+        )
+        text = str(runtime_result.get("text") or "")
+        tool_events = list(runtime_result.get("tool_events") or [])
+        answer_bundle = runtime_result.get("answer_bundle") or {}
+        token_usage = dict(runtime_result.get("token_usage") or {})
+        effective_model = str(runtime_result.get("effective_model") or "")
+        route_state = (
+            runtime_result.get("route_state")
+            if isinstance(runtime_result.get("route_state"), dict)
+            else dict(route_state_input or {})
+        )
+        inspector = dict(runtime_result.get("inspector") or {})
+        attachment_note = ""
 
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
+        inspector_notes = list(inspector.get("notes") or [])
         if missing_attachment_ids:
             warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
-            execution_trace.append(warning_msg)
-            _emit_progress(progress_cb, "trace", message=warning_msg, index=len(execution_trace), run_id=run_id)
-
-            debug_item = {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_warning",
-                "title": "附件检查",
-                "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
-            }
-            debug_flow.append(debug_item)
-            _emit_progress(progress_cb, "debug", item=debug_item, run_id=run_id)
+            inspector_notes.append(warning_msg)
+            _emit_progress(progress_cb, "trace", message=warning_msg, run_id=run_id)
 
         auto_linked_attachment_names = [
             str(item.get("original_name") or "")
@@ -2172,12 +1257,13 @@ def _process_chat_request(
         ]
         if auto_linked_attachment_names:
             auto_link_msg = f"已自动关联历史附件: {', '.join(auto_linked_attachment_names[:6])}"
-            execution_trace.append(auto_link_msg)
-            _emit_progress(progress_cb, "trace", message=auto_link_msg, index=len(execution_trace), run_id=run_id)
+            inspector_notes.append(auto_link_msg)
+            _emit_progress(progress_cb, "trace", message=auto_link_msg, run_id=run_id)
         elif attachment_context_mode == "cleared" and not requested_attachment_ids:
             cleared_msg = "已按用户指令清空历史附件关联。"
-            execution_trace.append(cleared_msg)
-            _emit_progress(progress_cb, "trace", message=cleared_msg, index=len(execution_trace), run_id=run_id)
+            inspector_notes.append(cleared_msg)
+            _emit_progress(progress_cb, "trace", message=cleared_msg, run_id=run_id)
+        inspector["notes"] = inspector_notes
 
         user_text = req.message.strip()
         if attachment_note:
@@ -2222,41 +1308,21 @@ def _process_chat_request(
             output_tokens=token_usage.get("output_tokens", 0),
         )
         token_usage = {**token_usage, **pricing_meta}
+        inspector_notes = list(inspector.get("notes") or [])
         if pricing_meta.get("pricing_known"):
-            pricing_trace = (
+            pricing_note = (
                 "费用估算: "
                 f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
                 f"output ${pricing_meta.get('output_price_per_1m')}/1M."
             )
-            execution_trace.append(pricing_trace)
-            _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace), run_id=run_id)
-
-            pricing_debug = {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_pricing",
-                "title": "费用估算",
-                "detail": (
-                    f"按 {pricing_meta.get('pricing_model')} 计价："
-                    f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
-                    f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
-                    f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
-                ),
-            }
-            debug_flow.append(pricing_debug)
-            _emit_progress(progress_cb, "debug", item=pricing_debug, run_id=run_id)
+            inspector_notes.append(pricing_note)
+            _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
         else:
-            pricing_trace = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
-            execution_trace.append(pricing_trace)
-            _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace), run_id=run_id)
-
-            pricing_debug = {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_pricing",
-                "title": "费用估算",
-                "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
-            }
-            debug_flow.append(pricing_debug)
-            _emit_progress(progress_cb, "debug", item=pricing_debug, run_id=run_id)
+            pricing_note = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
+            inspector_notes.append(pricing_note)
+            _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
+        inspector["notes"] = inspector_notes
+        inspector["token_usage"] = dict(token_usage)
 
         stats_snapshot = token_stats_store.add_usage(
             session_id=session["id"],
@@ -2278,22 +1344,24 @@ def _process_chat_request(
                 turn_count=len(session.get("turns", [])),
             )
             evolution_terms = list(evolution_event.get("domain_terms") or [])
-            evolution_msg = (
+            evolution_note = (
                 "个体覆层已更新: "
                 f"intent={evolution_event.get('primary_intent') or 'standard'}"
                 + (f"，terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
             )
-            execution_trace.append(evolution_msg)
-            _emit_progress(progress_cb, "trace", message=evolution_msg, index=len(execution_trace), run_id=run_id)
+            inspector_notes.append(evolution_note)
+            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
         except Exception as exc:
-            evolution_warn = f"个体覆层更新失败: {exc}"
-            execution_trace.append(evolution_warn)
-            _emit_progress(progress_cb, "trace", message=evolution_warn, index=len(execution_trace), run_id=run_id)
+            evolution_note = f"个体覆层更新失败: {exc}"
+            inspector_notes.append(evolution_note)
+            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
+        inspector["notes"] = inspector_notes
         if config.enable_shadow_logging:
             kernel_health = build_kernel_health_payload(get_kernel_runtime())
             shadow_path = shadow_log_store.append(
                 {
                     "run_id": run_id,
+                    "agent_id": "vintage_programmer",
                     "session_id": session["id"],
                     "effective_model": selected_model,
                     "attachment_context_mode": attachment_context_mode,
@@ -2304,11 +1372,10 @@ def _process_chat_request(
                     "route_state_scope": route_state_scope,
                     "route_state_input": route_state_input or {},
                     "route_state": route_state or {},
-                    "pipeline_hooks": pipeline_hooks,
                     "tool_events_count": len(tool_events),
-                    "active_roles": active_roles,
-                    "current_role": current_role,
+                    "tool_events": tool_events,
                     "token_usage": token_usage,
+                    "inspector": inspector,
                     "message": req.message,
                     "settings": req.settings.model_dump(),
                     "summary_before": summary_before,
@@ -2316,9 +1383,6 @@ def _process_chat_request(
                     "attachment_metas": attachments,
                     "kernel_selected_modules": kernel_health.get("selected_modules") or {},
                     "kernel_module_health": kernel_health.get("module_health") or {},
-                    "selected_business_module": selected_module_id,
-                    "kernel_routing": kernel_routing,
-                    "business_result": business_result,
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }
@@ -2331,35 +1395,29 @@ def _process_chat_request(
             )
         session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
         global_totals_raw = stats_snapshot.get("totals", {})
+        tool_event_models = [
+            item if isinstance(item, ToolEvent) else ToolEvent(**item)
+            for item in tool_events
+        ]
         response = ChatResponse(
             session_id=session["id"],
             run_id=run_id,
+            agent_id="vintage_programmer",
+            agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
             effective_model=selected_model,
             queue_wait_ms=queue_wait_ms,
             text=text,
-            tool_events=tool_events,
-            execution_plan=execution_plan,
-            execution_trace=execution_trace,
-            pipeline_hooks=pipeline_hooks,
-            debug_flow=debug_flow,
-            agent_panels=agent_panels,
-            active_roles=active_roles,
-            current_role=current_role,
-            role_states=role_states,
-            answer_bundle=answer_bundle,
+            tool_events=tool_event_models,
             attachment_context_mode=attachment_context_mode,
             effective_attachment_ids=resolved_attachment_ids,
             auto_linked_attachment_ids=[item for item in auto_linked_attachment_ids if item in found_attachment_ids],
             auto_linked_attachment_names=auto_linked_attachment_names,
             missing_attachment_ids=missing_attachment_ids,
-            route_state_scope=route_state_scope,
             attachment_context_key=resolved_attachment_context_key,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
-            selected_business_module=selected_module_id,
-            kernel_routing=kernel_routing,
-            business_result=dict(business_result or {}),
+            inspector=inspector,
             turn_count=len(session.get("turns", [])),
             summarized=summarized,
         )

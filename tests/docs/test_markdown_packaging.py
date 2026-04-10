@@ -14,8 +14,9 @@ def test_packaging_assets_exist() -> None:
     required = [
         REPO_ROOT / 'LICENSE',
         REPO_ROOT / 'README.en.md',
-        REPO_ROOT / 'docs' / 'assets' / 'screenshots' / 'kernel_robot_home.png',
-        REPO_ROOT / 'docs' / 'assets' / 'screenshots' / 'role_agent_lab_home.png',
+        REPO_ROOT / 'agents' / 'vintage_programmer' / 'soul.md',
+        REPO_ROOT / 'agents' / 'vintage_programmer' / 'agent.md',
+        REPO_ROOT / 'agents' / 'vintage_programmer' / 'tools.md',
     ]
     for path in required:
         assert path.exists(), str(path)
