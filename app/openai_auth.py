@@ -62,7 +62,7 @@ class OpenAIAuthManager:
             normalized = [str(item or "").strip() for item in keys if str(item or "").strip()]
             if normalized:
                 return normalized
-        return ["OPENAI_API_KEY"]
+        return ["VP_LLM_API_KEY"]
 
     def _api_key_file_keys(self) -> list[str]:
         keys = getattr(self.config, "llm_auth_file_api_key_keys", [])
@@ -70,21 +70,18 @@ class OpenAIAuthManager:
             normalized = [str(item or "").strip() for item in keys if str(item or "").strip()]
             if normalized:
                 return normalized
-        return ["OPENAI_API_KEY"]
+        return ["VP_LLM_API_KEY"]
 
     def _primary_api_key_env(self) -> str:
         configured = str(getattr(self.config, "llm_primary_api_key_env", "") or "").strip()
         if configured:
             return configured
         keys = self._api_key_env_keys()
-        return keys[0] if keys else "OPENAI_API_KEY"
+        return keys[0] if keys else "VP_LLM_API_KEY"
 
     def resolve(self) -> ResolvedOpenAIAuth:
         provider = self._llm_provider()
         supports_codex_auth = self._llm_supports_codex_auth()
-        requested_mode = str(self.config.openai_auth_mode or "auto").strip().lower()
-        if requested_mode not in {"auto", "api_key", "codex_auth"}:
-            requested_mode = "auto"
 
         api_key_auth = self._resolve_api_key_auth()
         codex_auth = self._resolve_codex_auth() if supports_codex_auth else ResolvedOpenAIAuth(
@@ -94,45 +91,18 @@ class OpenAIAuthManager:
             reason=f"Provider '{provider}' does not support codex_auth.",
         )
 
-        if requested_mode == "api_key":
-            if api_key_auth.available:
-                return api_key_auth
-            return ResolvedOpenAIAuth(
-                mode="api_key",
-                source="config",
-                available=False,
-                reason=api_key_auth.reason or f"{self._primary_api_key_env()} is missing.",
-            )
-
-        if requested_mode == "codex_auth":
-            if not supports_codex_auth:
-                return ResolvedOpenAIAuth(
-                    mode="codex_auth",
-                    source="config",
-                    available=False,
-                    reason=f"Provider '{provider}' does not support codex_auth.",
-                )
-            if codex_auth.available:
-                return codex_auth
-            return ResolvedOpenAIAuth(
-                mode="codex_auth",
-                source="config",
-                available=False,
-                reason=codex_auth.reason or "Codex auth.json is missing or invalid.",
-            )
-
         if api_key_auth.available:
             return api_key_auth
         if supports_codex_auth and codex_auth.available:
             return codex_auth
         unavailable_reason = (
-            f"API key is missing for provider '{provider}'. "
-            f"Set {self._primary_api_key_env()} in env or .env."
+                f"API key is missing for provider '{provider}'. "
+                f"Set {self._primary_api_key_env()} in env or .env."
         )
         if supports_codex_auth:
             unavailable_reason = (
                 f"{unavailable_reason} "
-                "You can also use codex_auth by configuring MULTI_AGENT_TEAM_LLM_AUTH_MODE=codex_auth."
+                "If VP_LLM_PROVIDER=openai and VP_CODEX_AUTH_FILE exists, the app will use Codex auth automatically."
             )
         return ResolvedOpenAIAuth(
             mode="unconfigured",
@@ -236,7 +206,7 @@ class OpenAIAuthManager:
                 mode="api_key",
                 source="implicit:ollama_no_key",
                 available=True,
-                api_key=str(os.environ.get("OLLAMA_API_KEY") or "ollama"),
+                api_key=str(os.environ.get("VP_OLLAMA_API_KEY") or "ollama"),
             )
 
         for env_key in self._api_key_env_keys():

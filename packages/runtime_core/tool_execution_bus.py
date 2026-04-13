@@ -91,11 +91,25 @@ class ToolExecutionBus:
             )
         return items
 
-    def set_runtime_context(self, *, execution_mode: str | None = None, session_id: str | None = None) -> None:
+    def set_runtime_context(
+        self,
+        *,
+        execution_mode: str | None = None,
+        session_id: str | None = None,
+        project_id: str | None = None,
+        project_root: str | None = None,
+        cwd: str | None = None,
+    ) -> None:
         for executor in self._unique_executors:
             setter = getattr(executor, "set_runtime_context", None)
             if callable(setter):
-                setter(execution_mode=execution_mode, session_id=session_id)
+                setter(
+                    execution_mode=execution_mode,
+                    session_id=session_id,
+                    project_id=project_id,
+                    project_root=project_root,
+                    cwd=cwd,
+                )
 
     def clear_runtime_context(self) -> None:
         for executor in self._unique_executors:

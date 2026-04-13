@@ -1,0 +1,51 @@
+{
+  "plugin_id": "worker_agent",
+  "title": "Worker Agent",
+  "description": "执行插件，负责主任务落地与工具调用。",
+  "sprite_role": "worker",
+  "supports_swarm": true,
+  "swarm_mode": "tool-swarm",
+  "swarm": {
+    "role": "executor-parent",
+    "enabled_by_default": false,
+    "max_depth": 2,
+    "max_children": 4,
+    "join_policy": "execution_merge",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "file_reader_agent",
+        "label": "Read Branch",
+        "objective": "补齐文件取证和上下文定位。",
+        "keywords": ["文件", "文档", "read", "附件"],
+        "propagate": false
+      },
+      {
+        "plugin_id": "fixer_agent",
+        "label": "Fix Branch",
+        "objective": "定位问题并给出最小修复路径。",
+        "keywords": ["修复", "fix", "bug", "错误", "异常"],
+        "propagate": false
+      },
+      {
+        "plugin_id": "reviewer_agent",
+        "label": "Review Branch",
+        "objective": "对执行结果进行质量复核。",
+        "keywords": ["review", "审核", "校验", "风险"],
+        "propagate": true
+      },
+      {
+        "plugin_id": "structurer_agent",
+        "label": "Structure Branch",
+        "objective": "把执行产物整理成结构化交付。",
+        "keywords": ["结构化", "格式", "输出"],
+        "propagate": false
+      }
+    ]
+  },
+  "capability_tags": ["tool-execution", "action-loop", "swarm-worker"],
+  "tool_profile": "workspace+file+web+write+session",
+  "allowed_tools": [],
+  "max_tool_rounds": 8,
+  "system_prompt": "你是 Worker Agent。按用户目标执行并交付结果。需要证据时先调用工具再回答。禁止输出思维链。"
+}

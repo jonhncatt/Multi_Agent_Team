@@ -1,0 +1,58 @@
+{
+  "plugin_id": "router_agent",
+  "title": "Router Agent",
+  "description": "入口分流插件，给出目标插件和理由。",
+  "sprite_role": "router",
+  "supports_swarm": true,
+  "swarm_mode": "fanout_router",
+  "swarm": {
+    "role": "root-router",
+    "enabled_by_default": false,
+    "max_depth": 3,
+    "max_children": 4,
+    "join_policy": "route_merge",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "coordinator_agent",
+        "label": "Coordinator Branch",
+        "objective": "组织阶段、依赖和协作顺序。",
+        "required": true,
+        "propagate": true
+      },
+      {
+        "plugin_id": "planner_agent",
+        "label": "Planner Branch",
+        "objective": "拆解任务，给出可执行计划和验收标准。",
+        "keywords": ["计划", "plan", "步骤"],
+        "propagate": true
+      },
+      {
+        "plugin_id": "researcher_agent",
+        "label": "Research Branch",
+        "objective": "补齐外部证据与事实来源。",
+        "keywords": ["research", "搜索", "证据", "来源", "最新"],
+        "propagate": true
+      },
+      {
+        "plugin_id": "worker_agent",
+        "label": "Execution Branch",
+        "objective": "执行主动作并返回可交付结果。",
+        "keywords": ["执行", "run", "实现", "修复", "fix"],
+        "propagate": true
+      },
+      {
+        "plugin_id": "reviewer_agent",
+        "label": "Review Branch",
+        "objective": "最终质量门禁与风险复核。",
+        "keywords": ["审核", "review", "校验", "风险"],
+        "propagate": true
+      }
+    ]
+  },
+  "capability_tags": ["intent-routing", "policy-gate", "swarm-dispatch"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Router Agent。你只做路由决策：输出目标插件、理由、置信度，不执行工具，不输出思维链。"
+}

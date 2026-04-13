@@ -468,8 +468,8 @@ _INITIAL_CONTENT_TRIAGE_HINTS = (
     "can you make sense",
 )
 
-_ROUTE_TRACE_ENV = "MULTI_AGENT_TEAM_ROUTE_TRACE"
-_ROUTE_TRACE_ENV_LEGACY = "MULTI_AGENT_TEAM_ROUTE_TRACE"
+_ROUTE_TRACE_ENV = "VP_ROUTE_TRACE"
+_ROUTE_TRACE_ENV_LEGACY = "VP_ROUTE_TRACE"
 _route_trace_logger = logging.getLogger("multi_agent_team.router")
 
 @dataclass
@@ -694,7 +694,7 @@ class OfficeAgent:
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = (
             str(
-                os.environ.get("MULTI_AGENT_TEAM_APP_PROFILE") or ""
+                os.environ.get("VP_APP_PROFILE") or ""
             ).strip().lower()
             or "kernel_robot"
         )

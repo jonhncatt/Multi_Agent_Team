@@ -380,7 +380,7 @@ def assemble_runtime(
         kernel.register_provider(provider)  # type: ignore[arg-type]
 
     kernel.init()
-    kernel.attach_llm_router(LLMRouter(kernel))
+    kernel.attach_llm_router(LLMRouter())
 
     runtime = AgentOSRuntime(
         kernel=kernel,

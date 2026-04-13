@@ -41,8 +41,22 @@ class ScopedToolExecutor:
             if str(item.get("name") or "").strip() in self._allowed
         ]
 
-    def set_runtime_context(self, *, execution_mode: str | None = None, session_id: str | None = None) -> None:
-        self._executor.set_runtime_context(execution_mode=execution_mode, session_id=session_id)
+    def set_runtime_context(
+        self,
+        *,
+        execution_mode: str | None = None,
+        session_id: str | None = None,
+        project_id: str | None = None,
+        project_root: str | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        self._executor.set_runtime_context(
+            execution_mode=execution_mode,
+            session_id=session_id,
+            project_id=project_id,
+            project_root=project_root,
+            cwd=cwd,
+        )
 
     def clear_runtime_context(self) -> None:
         self._executor.clear_runtime_context()
@@ -119,16 +133,47 @@ _WEB_TOOL_NAMES = (
     "download_web_file",
     "search_web",
 )
-_WRITE_TOOL_NAMES = (
+_PATCH_TOOL_NAMES = (
     "write_text_file",
     "append_text_file",
     "replace_in_file",
+    "apply_patch",
 )
+_BROWSER_TOOL_NAMES = (
+    "browser_open",
+    "browser_click",
+    "browser_type",
+    "browser_wait",
+    "browser_snapshot",
+    "browser_screenshot",
+)
+_IMAGE_TOOL_NAMES = ("view_image",)
 _SESSION_TOOL_NAMES = (
     "list_sessions",
     "read_session_history",
 )
-_ALL_TOOL_NAMES = _WORKSPACE_TOOL_NAMES + _FILE_TOOL_NAMES + _WEB_TOOL_NAMES + _WRITE_TOOL_NAMES + _SESSION_TOOL_NAMES
+_SKILL_TOOL_NAMES = (
+    "list_skills",
+    "read_skill",
+    "write_skill",
+    "toggle_skill",
+)
+_AGENT_SPEC_TOOL_NAMES = (
+    "list_agent_specs",
+    "read_agent_spec",
+    "write_agent_spec",
+)
+_ALL_TOOL_NAMES = (
+    _WORKSPACE_TOOL_NAMES
+    + _FILE_TOOL_NAMES
+    + _WEB_TOOL_NAMES
+    + _PATCH_TOOL_NAMES
+    + _BROWSER_TOOL_NAMES
+    + _IMAGE_TOOL_NAMES
+    + _SESSION_TOOL_NAMES
+    + _SKILL_TOOL_NAMES
+    + _AGENT_SPEC_TOOL_NAMES
+)
 
 
 def get_tool_executor(config: Any) -> ScopedToolExecutor:
@@ -193,11 +238,39 @@ def build_office_tool_modules() -> tuple[ToolModule, ...]:
                 module_id="write_tools",
                 title="Write Tool Module",
                 group="write",
-                tool_names=_WRITE_TOOL_NAMES,
+                tool_names=_PATCH_TOOL_NAMES,
             ),
             default=False,
-            tool_names=_WRITE_TOOL_NAMES,
+            tool_names=_PATCH_TOOL_NAMES,
             metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "write"},
+        ),
+        ToolModule(
+            module_id="browser_tools",
+            title="Browser Tool Module",
+            description="基于浏览器的页面打开、交互、快照与截图工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="browser_tools",
+                title="Browser Tool Module",
+                group="browser",
+                tool_names=_BROWSER_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_BROWSER_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "browser"},
+        ),
+        ToolModule(
+            module_id="image_tools",
+            title="Image Tool Module",
+            description="本地图像读取与元信息查看工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="image_tools",
+                title="Image Tool Module",
+                group="images",
+                tool_names=_IMAGE_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_IMAGE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "images"},
         ),
         ToolModule(
             module_id="session_tools",
@@ -212,6 +285,34 @@ def build_office_tool_modules() -> tuple[ToolModule, ...]:
             default=False,
             tool_names=_SESSION_TOOL_NAMES,
             metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "session"},
+        ),
+        ToolModule(
+            module_id="skill_tools",
+            title="Skill Tool Module",
+            description="本地 skills 列表、读取、编辑与启停工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="skill_tools",
+                title="Skill Tool Module",
+                group="skills",
+                tool_names=_SKILL_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_SKILL_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "skills"},
+        ),
+        ToolModule(
+            module_id="agent_spec_tools",
+            title="Agent Spec Tool Module",
+            description="主 agent 规范文件的读取与编辑工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="agent_spec_tools",
+                title="Agent Spec Tool Module",
+                group="agent_specs",
+                tool_names=_AGENT_SPEC_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_AGENT_SPEC_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "agent_specs"},
         ),
     )
 

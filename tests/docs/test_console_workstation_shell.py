@@ -1,39 +1,63 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INDEX_HTML = REPO_ROOT / 'app' / 'static' / 'index.html'
-APP_JS = REPO_ROOT / 'app' / 'static' / 'app.js'
+INDEX_HTML = REPO_ROOT / "app" / "static" / "index.html"
+APP_JS = REPO_ROOT / "app" / "static" / "app.js"
 
 
 def test_workstation_shell_mounts_exist() -> None:
     html = INDEX_HTML.read_text()
-    assert 'app-shell--two-column' in html
-    assert 'rightRailResizer' not in html
-    required_ids = [
-        'appShell',
-        'leftRailResizer',
-        'opsRail',
-        'commandPalette',
-        'commandPaletteInput',
-        'commandPaletteList',
-        'executionDagView',
-        'executionLogView',
-        'executionLogFilters',
-        'executionLogAutoBtn',
+    script = APP_JS.read_text()
+
+    assert 'data-app="vintage-programmer"' in html
+    required_tokens = [
+        'id="appShell"',
+        'id="threadSidebar"',
+        'id="projectSection"',
+        'id="chatPane"',
+        'id="messageList"',
+        'id="emptyPromptLine"',
+        'id="composerShell"',
+        'id="composerError"',
+        'id="providerSelect"',
+        'id="modelPresetSelect"',
+        'id="modelInput"',
+        'id="projectModal"',
+        'id="workbenchDrawer"',
+        'id="statusBar"',
+        'id="settingsPanel"',
     ]
-    for item in required_ids:
-        assert f'id="{item}"' in html, item
+    for token in required_tokens:
+        assert token in script, token
 
 
 def test_workstation_shell_behaviors_are_wired() -> None:
     script = APP_JS.read_text()
     required_tokens = [
-        'setupRailResizer(leftRailResizer, "left")',
-        'renderExecutionDag()',
-        'renderExecutionLog()',
-        'openCommandPalette()',
-        'pushExecutionLogEntry(',
+        "SESSION_STORAGE_KEY",
+        "PROJECT_STORAGE_KEY",
+        "PROVIDER_STORAGE_KEY",
+        "MODEL_STORAGE_KEY",
+        "CUSTOM_MODEL_VALUE",
+        "parseSseChunk(",
+        "normalizeUiError(",
+        "resolvePresetModelValue(",
+        "updateProviderSelection(",
+        'fetch("/api/chat/stream"',
+        '"/api/upload"',
+        'fetchJson("/api/projects")',
+        'fetchJson(`/api/sessions?limit=80${suffix}`)',
+        'fetchJson("/api/workbench/tools")',
+        'fetchJson("/api/workbench/skills")',
+        'fetchJson("/api/workbench/specs")',
+        "selectProject(",
+        "setDrawerView(",
+        "handleSelectFiles",
+        "status-alert",
+        "modelStorageKeyForProvider(",
+        "health && health.provider_options",
     ]
     for token in required_tokens:
         assert token in script, token
-    assert 'collapse-right' not in script
+    assert 'createMessage("system", `请求失败：${detail}`' not in script
+    assert "/api/agent-plugins" not in script

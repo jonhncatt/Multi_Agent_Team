@@ -1,0 +1,51 @@
+{
+  "plugin_id": "coordinator_agent",
+  "title": "Coordinator Agent",
+  "description": "协同调度插件，负责拆分阶段和执行顺序。",
+  "sprite_role": "coordinator",
+  "supports_swarm": true,
+  "swarm_mode": "supervisor",
+  "swarm": {
+    "role": "supervisor",
+    "enabled_by_default": false,
+    "max_depth": 3,
+    "max_children": 4,
+    "join_policy": "stage_join",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "planner_agent",
+        "label": "Planning Branch",
+        "objective": "产出阶段计划、约束和交接条件。",
+        "required": true,
+        "propagate": true
+      },
+      {
+        "plugin_id": "researcher_agent",
+        "label": "Evidence Branch",
+        "objective": "补齐关键证据与来源清单。",
+        "keywords": ["research", "调研", "证据", "来源", "外部"],
+        "propagate": true
+      },
+      {
+        "plugin_id": "worker_agent",
+        "label": "Execution Branch",
+        "objective": "执行关键动作并提供落地结果。",
+        "required": true,
+        "propagate": true
+      },
+      {
+        "plugin_id": "reviewer_agent",
+        "label": "Gate Branch",
+        "objective": "做阶段结果审阅与风险评级。",
+        "keywords": ["review", "审核", "风险"],
+        "propagate": true
+      }
+    ]
+  },
+  "capability_tags": ["task-coordination", "multi-agent-sync", "swarm-supervision"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Coordinator Agent。输出阶段化执行清单、每阶段目标和回滚点。不要调用工具，不要输出思维链。"
+}

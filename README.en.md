@@ -1,214 +1,148 @@
-# Multi Agent Team (Agent OS)
+# Vintage Programmer
 
-[中文 README](README.md)
+[中文 README](README.md)  
+[Windows Guide](README.windows.md)  
+[Release Flow](RELEASING.md)
 
-[![Regression CI](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml/badge.svg?branch=main)](https://github.com/jonhncatt/Multi_Agent_Team/actions/workflows/regression-ci.yml)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](requirements.txt)
-[![FastAPI](https://img.shields.io/badge/FastAPI-app-009688.svg)](https://fastapi.tiangolo.com/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+This is a local single-agent workstation. The default main agent is `vintage_programmer`.
+The current stable release is `v1.0.0`.
 
-Multi Agent Team is a local **Agent OS-style** system with a stable kernel, formal business modules, tool/provider contracts, quality gates, and operational runbooks.
+The current UI shape is the third-stage workstation:
+- left thread rail
+- full-width work plane
+- always-visible bottom composer
+- bottom status bar
+- Workbench drawer on the right
+- local skill and agent-spec editing
 
-- One stable Kernel (startup, context, health)
-- One central LLM router (`app/kernel/llm_router.py`)
-- 12 fully independent agent plugins (`app/agents/*_agent`)
+## Run
 
-Design goal: **least code, least layers, easiest maintenance, isolated failures**.
-
-## Core Logic in 5 Steps
-
-1. Request enters `POST /api/chat`
-2. `LLMRouter` reads all agent manifests
-3. LLM creates the shortest execution plan (1~4 steps)
-4. Target agents run `handle_task`
-5. System summarizes and returns, then stores the turn
-
-If cloud LLM is temporarily unavailable, the runtime switches to local stable fallback mode (no crash/no red screen).
-
-## Dispatch / Collect / Unify
-
-The core loop is fixed:
-
-`route() -> execute() -> summarize()`
-
-- Dispatch (`route`):
-  Build a short plan (1~4 steps) from user query + all agent manifests.
-- Collect (`execute`):
-  Execute step-by-step and pass `previous_results` into the next step.
-- Unify (`summarize`):
-  Return one final user-facing answer, without exposing worker/reviewer internal wording.
-
-This is the minimal closed loop: one brain, independent units, one final output.
-
-## Foundation Hardening (Still Minimal)
-
-- Plan validation: invalid agent names / empty tasks are auto-cleaned.
-- Step cap: at most 4 steps.
-- Step timeout: per-step timeout guard (`OFFICETOOL_AGENT_STEP_TIMEOUT_SEC`, default 25s).
-- Context control: only recent result chain is forwarded.
-- Offline fallback: no raw connection-error text shown to end users.
-
-## Independent Agents (12)
-
-1. worker_agent
-2. researcher_agent
-3. planner_agent
-4. critic_agent
-5. executor_agent
-6. summarizer_agent
-7. coder_agent
-8. reviewer_agent
-9. coordinator_agent
-10. tool_user_agent
-11. office_specialist_agent
-12. navigator_agent
-
-Each agent folder only has:
-
-- `agent.py` with `handle_task`
-- `manifest.json` with description/capabilities/version
-
-## Simplified Layout
-
-```text
-app/
-├── agents/
-├── kernel/
-│   ├── host.py
-│   └── llm_router.py
-├── api/
-└── main.py
-```
-
-## Quick Start
+### macOS / Linux
 
 ```bash
-git clone https://github.com/jonhncatt/Multi_Agent_Team.git
-cd Multi_Agent_Team
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python3 -m playwright install chromium
 cp .env.example .env
-# edit .env and set one API key:
-#   MULTI_AGENT_TEAM_PROVIDER_OPENAI_API_KEY=... (recommended)
-#   or MULTI_AGENT_TEAM_LLM_API_KEY=...
-#   or OPENAI_API_KEY=... (legacy compatibility)
 ./run.sh
 ```
 
-Open: <http://127.0.0.1:8080>
+Open:
 
-## Key APIs
+- <http://127.0.0.1:8080>
 
-- `POST /api/chat` (central LLM routing + independent agents)
-- `POST /api/chat/stream`
-- `GET /api/agents`
-- `POST /api/agents/{name}/reload`
-- `GET /api/health`
+### Windows
 
-## What Was Removed for Simplicity
+On Windows, the default recommendation is to skip script activation and call the venv Python directly:
 
-- Old heavy chat pipeline (`_process_chat_request`)
-- Duplicate route wrapper files (`app/api/routes/chat.py`, `app/api/routes/agents.py`)
-- Unused imports and legacy branches in `app/main.py`
+```powershell
+py -3.11 -m venv .venv
+Copy-Item .env.example .env
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m playwright install chromium
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+```
 
-## Generic LLM Env
+More detail: [README.windows.md](README.windows.md)
+
+## Minimal `.env`
+
+OpenAI official:
 
 ```env
-OFFICETOOL_LLM_PROVIDER=openai
-OFFICETOOL_LLM_AUTH_MODE=auto
-OFFICETOOL_LLM_API_KEY=<YOUR_API_KEY>
-OFFICETOOL_LLM_BASE_URL=https://api.openai.com/v1
-OFFICETOOL_LLM_MODEL=gpt-5.1-chat
-OFFICETOOL_ROUTER_MODEL=gpt-4o-mini
+VP_LLM_PROVIDER=openai
+VP_OPENAI_API_KEY=your_key
+VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
-## Evolution Workflow
+If `VP_OPENAI_API_KEY` is absent but `VP_CODEX_AUTH_FILE` exists locally, the app will use Codex auth automatically.
 
-- Update one agent under `app/agents/<name>_agent/`
-- Call `POST /api/agents/{name}/reload`
-- Validate immediately without restarting the full kernel
+OpenAI-compatible gateway:
 
-## Plan (Adjusted)
+```env
+VP_LLM_PROVIDER=openai_compatible
+VP_OPENAI_COMPAT_API_KEY=your_gateway_key
+VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
+VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
+```
 
-![Kernel Robot home](docs/assets/screenshots/kernel_robot_home.png)
+OpenRouter:
 
-### Role-Agent Lab (8081)
+```env
+VP_LLM_PROVIDER=openrouter
+VP_OPENROUTER_API_KEY=your_openrouter_key
+VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free
+VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
+```
 
-![Role Agent Lab home](docs/assets/screenshots/role_agent_lab_home.png)
-
-## Demo Paths
-
-- baseline smoke: `python scripts/demo_minimal_agent_os.py --check`
-- research module demo: `python scripts/demo_research_module.py --check`
-- research Swarm demo: `python scripts/demo_research_swarm.py --check`
-
-## Execution Path Reality Check (April 2, 2026)
-
-If you still see the old flow text, this is what is true in current code:
-
-- `Frontend -> POST /api/chat`: true (`app/main.py`).
-- `LLMRouter reads 12 agent manifest.json files`: false. `/api/chat` does not go through `app/kernel/llm_router.py`, and `app/agents/*_agent.py` is not loaded from `manifest.json`. The control panel topology is built by scanning `*_agent.py` in `app/main.py`.
-- `LLM always generates shortest 1~4 steps`: false. `execution_plan` is runtime-generated and not constrained by a global 1~4-step contract.
-- `Selected agent runs handle_task`: false. The business entrypoint is `handle/invoke` (`KernelHost.dispatch -> business_module.handle`), not a unified plugin `handle_task`.
-- `Aggregate result and write session`: true (`session_store.append_turn(...)` + `session_store.save(...)` in `app/main.py`).
-
-Current runtime path:
+If you are looking at a model page like:
 
 ```text
-HTTP / UI
-  -> app/bootstrap/assemble.py
-  -> KernelHost.dispatch(TaskRequest)
-  -> business module handle
-  -> ToolBus / ToolRegistry / ProviderRegistry
-  -> response + trace + persisted session
+https://openrouter.ai/google/gemma-4-31b-it:free/api
 ```
 
-## Operations Entry
+that is not the value for `VP_OPENROUTER_BASE_URL`. Use:
+- `VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
+- `VP_OPENROUTER_DEFAULT_MODEL=google/gemma-4-31b-it:free`
 
-Start here if you want the current platform status, gate status, metrics summary, replay sample overview, and reporting template:
+More examples: [.env.example](.env.example)
 
-- [Platform Operations Overview](docs/operations/platform_operations_overview.md)
-- [Platform Reporting Template](docs/operations/platform_reporting_template.md)
-- [Quality Gates](docs/operations/quality_gates.md)
-- [Smoke Matrix](docs/operations/smoke_matrix.md)
+## API Note
 
-## Key Docs
+These are this app's own local HTTP endpoints, not OpenAI official APIs:
 
-- [Current Execution Path](docs/architecture/current_execution_path.md)
-- [Platform Boundaries](docs/architecture/platform_boundaries.md)
-- [Research Module](docs/modules/research_module.md)
-- [Swarm Roadmap](docs/swarm-roadmap.md)
-- [Swarm Demo Notes](docs/demo/research_swarm_demo.md)
-- [Packages Boundary Guide](packages/README.md)
+- `GET /api/health`
+- `POST /api/chat`
+- `POST /api/chat/stream`
+- `POST /api/session/new`
+- `GET /api/session/{session_id}`
+- `GET /api/sessions`
+- `PATCH /api/session/{session_id}/title`
+- `DELETE /api/session/{session_id}`
+- `POST /api/upload`
+- `GET /api/workbench/tools`
+- `GET /api/workbench/skills`
+- `POST /api/workbench/skills`
+- `PUT /api/workbench/skills/{skill_id}`
+- `POST /api/workbench/skills/{skill_id}/toggle`
+- `GET /api/workbench/specs`
+- `GET /api/workbench/specs/{name}`
+- `PUT /api/workbench/specs/{name}`
 
-## Architecture Sketch
+The web UI talks to these local endpoints.
 
-```mermaid
-flowchart LR
-    UI["Web UI / API"] --> Assemble["assemble_runtime()"]
-    Assemble --> Kernel["KernelHost"]
-    Kernel --> Registry["ModuleRegistry"]
-    Kernel --> ToolBus["ToolBus"]
+## Agent Specs
 
-    Registry --> Office["office_module"]
-    Registry --> Research["research_module"]
-    Registry --> System["system_modules"]
+The main agent is defined by four markdown specs:
 
-    Office --> ToolRuntime["tool_runtime_module"]
-    Research --> ToolRuntime
-    ToolRuntime --> ProviderRegistry["ProviderRegistry"]
+- [agents/vintage_programmer/soul.md](agents/vintage_programmer/soul.md)
+- [agents/vintage_programmer/identity.md](agents/vintage_programmer/identity.md)
+- [agents/vintage_programmer/agent.md](agents/vintage_programmer/agent.md)
+- [agents/vintage_programmer/tools.md](agents/vintage_programmer/tools.md)
 
-    ProviderRegistry --> Workspace["LocalWorkspaceProvider"]
-    ProviderRegistry --> Web["HttpWebProvider"]
+## Local Skills
 
-    Research --> Swarm["Module-local Swarm MVP"]
-    Swarm --> Aggregator["merge / deduplicate / mark conflicts"]
-```
+Local skills live in:
 
-## Swarm and Tool Status
+- `workspace/skills/<skill_id>/SKILL.md`
 
-- Swarm is currently a formal capability inside `research_module` (parallel branch execution + join + serial replay degradation).
-- `office_module` has internal role orchestration (`Router/Planner/Worker/Reviewer/Revision`), but this is module-internal, not kernel-level 12-plugin dispatch.
-- Tool execution path is `KernelHost.dispatch -> business module -> tool_runtime_module -> ToolBus/ToolRegistry -> ProviderRegistry`.
-- Providers are assembled in `app/bootstrap/assemble.py` (`local_workspace`, `local_file`, `http_web`, `patch_write`, optional `session_store`).
+Only skills with `enabled: true` and `bind_to` including `vintage_programmer` are injected into the main agent.
+
+## Inline Code
+
+If you paste code, XML, HTML, JSON, YAML, or other long text directly into the composer, the agent should analyze that inline content first instead of forcing a workspace path lookup.
+
+## Release
+
+The release flow is fixed:
+
+- ship work on a `codex/*` candidate branch
+- merge to `main` after regression passes
+- create an annotated tag on the release commit, for example `v1.0.0`
+- start the next change from a fresh `codex/*` branch cut from the latest `main`
+
+See [RELEASING.md](RELEASING.md) for the full checklist.

@@ -8,6 +8,7 @@ import shlex
 import shutil
 import ssl
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -19,6 +20,9 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
+from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots
 from app.document_text import (
     build_pdf_document_index,
@@ -32,17 +36,34 @@ from app.document_text import (
     truncate_text,
 )
 from app.sandbox import DockerSandboxManager
+from app.storage import ProjectStore
+from app.workbench import WorkbenchStore
+
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+except Exception:
+    pass
 
 
 def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
+def _build_path_candidates(
+    config: AppConfig,
+    raw_path: str,
+    *,
+    workspace_root: Path | None = None,
+    access_roots: list[Path] | None = None,
+) -> list[Path]:
     raw = (raw_path or ".").strip() or "."
     path = Path(raw).expanduser()
     seen: set[str] = set()
     candidates: list[Path] = []
+    base_root = (workspace_root or config.workspace_root).resolve()
+    roots = [root.resolve() for root in (access_roots or get_access_roots(config))]
 
     def add(p: Path) -> None:
         resolved = p.resolve()
@@ -61,7 +82,7 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
     if normalized:
         # High-priority alias mapping, e.g. "workbench/a.txt" -> "<allowed_root_named_workbench>/a.txt"
         # Also support short aliases from allowed root tails, e.g. "master/source" -> "<...>/master/source".
-        for root in get_access_roots(config):
+        for root in roots:
             root_norm = str(root).replace("\\", "/").rstrip("/").lower()
             if normalized == root_norm or normalized == root.name.lower():
                 add(root)
@@ -94,56 +115,82 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
                     add(root / suffix)
 
     # Default mapping keeps backward compatibility.
-    add(config.workspace_root / path)
-    for root in get_access_roots(config):
-        if root == config.workspace_root:
+    add(base_root / path)
+    for root in roots:
+        if root == base_root:
             continue
         add(root / path)
 
     return candidates
 
 
-def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
-    if config.allow_any_path:
+def _resolve_workspace_path(
+    config: AppConfig,
+    raw_path: str,
+    *,
+    workspace_root: Path | None = None,
+    access_roots: list[Path] | None = None,
+    allow_any_path: bool | None = None,
+) -> Path:
+    base_root = (workspace_root or config.workspace_root).resolve()
+    roots = [root.resolve() for root in (access_roots or get_access_roots(config))]
+    if base_root not in roots:
+        roots = [base_root, *roots]
+    allow_absolute = config.allow_any_path if allow_any_path is None else bool(allow_any_path)
+    if allow_absolute:
         path = Path((raw_path or ".").strip() or ".").expanduser()
         if not path.is_absolute():
-            path = config.workspace_root / path
+            path = base_root / path
         path = path.resolve()
         return path
 
-    candidates = _build_path_candidates(config, raw_path)
+    candidates = _build_path_candidates(config, raw_path, workspace_root=base_root, access_roots=roots)
 
     # Prefer existing paths in allowed roots for better UX with relative inputs.
     for path in candidates:
-        for root in get_access_roots(config):
+        for root in roots:
             if _is_within(path, root) and path.exists():
                 return path
 
     # Fall back to first allowed candidate even if it does not exist,
     # prefer a candidate whose parent directory exists.
     for path in candidates:
-        for root in get_access_roots(config):
+        for root in roots:
             if _is_within(path, root) and path.parent.exists():
                 return path
 
     # Last resort: return first allowed candidate even if parent does not exist,
     # so upper layers can return a clear "not found" error.
-    for root in get_access_roots(config):
+    for root in roots:
         for path in candidates:
             if _is_within(path, root):
                 return path
 
-    allowed = ", ".join(str(p) for p in get_access_roots(config))
+    allowed = ", ".join(str(p) for p in roots)
     raise ValueError(f"Path out of allowed roots: {raw_path}. Allowed roots: {allowed}")
 
 
-def _resolve_source_path(config: AppConfig, raw_path: str) -> Path:
+def _resolve_source_path(
+    config: AppConfig,
+    raw_path: str,
+    *,
+    workspace_root: Path | None = None,
+    access_roots: list[Path] | None = None,
+    allow_any_path: bool | None = None,
+) -> Path:
     """
     Resolve existing source file path with upload-name fallback.
     If raw_path is only an original upload filename (e.g. a.zip),
     try matching uploads_dir entry like <uuid>__a.zip.
     """
-    resolved = _resolve_workspace_path(config, raw_path)
+    roots = [root.resolve() for root in (access_roots or get_access_roots(config))]
+    resolved = _resolve_workspace_path(
+        config,
+        raw_path,
+        workspace_root=workspace_root,
+        access_roots=roots,
+        allow_any_path=allow_any_path,
+    )
     if resolved.exists():
         return resolved
 
@@ -170,7 +217,7 @@ def _resolve_source_path(config: AppConfig, raw_path: str) -> Path:
 
     for match in matches:
         candidate = match.resolve()
-        for root in get_access_roots(config):
+        for root in roots:
             if _is_within(candidate, root):
                 return candidate
     return resolved
@@ -1026,8 +1073,18 @@ class LocalToolExecutor:
         self.config = config
         self._runtime_ctx = threading.local()
         self._web_cache_lock = threading.Lock()
+        self._docker_cache_lock = threading.Lock()
+        self._docker_sandbox_cache: dict[tuple[str, ...], DockerSandboxManager] = {}
         self._web_cache_dir = (config.workspace_root / "app" / "data" / "web_cache").resolve()
         self._web_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
+        self._browser_manager = BrowserToolManager(
+            artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve()
+        )
+        self._workbench = WorkbenchStore(
+            config=config,
+            agent_dir=config.workspace_root / "agents" / "vintage_programmer",
+        )
         self._docker_sandbox = DockerSandboxManager(
             workspace_root=config.workspace_root,
             allowed_roots=get_access_roots(config),
@@ -1040,16 +1097,27 @@ class LocalToolExecutor:
             container_prefix=config.docker_container_prefix,
         )
 
-    def set_runtime_context(self, *, execution_mode: str | None = None, session_id: str | None = None) -> None:
+    def set_runtime_context(
+        self,
+        *,
+        execution_mode: str | None = None,
+        session_id: str | None = None,
+        project_id: str | None = None,
+        project_root: str | None = None,
+        cwd: str | None = None,
+    ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
             mode = self.config.execution_mode
         self._runtime_ctx.execution_mode = mode
         sid = str(session_id or "").strip() or "__anon__"
         self._runtime_ctx.session_id = sid
+        self._runtime_ctx.project_id = str(project_id or "").strip()
+        self._runtime_ctx.project_root = str(project_root or "").strip()
+        self._runtime_ctx.cwd = str(cwd or "").strip()
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1063,6 +1131,90 @@ class LocalToolExecutor:
 
     def _current_session_id(self) -> str:
         return str(getattr(self._runtime_ctx, "session_id", "") or "__anon__")
+
+    def _current_project_id(self) -> str:
+        return str(getattr(self._runtime_ctx, "project_id", "") or "")
+
+    def _current_project_root(self) -> Path:
+        raw = str(getattr(self._runtime_ctx, "project_root", "") or "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve()
+        default_project = self._project_store.ensure_default_project()
+        return Path(str(default_project.get("root_path") or self.config.workspace_root)).resolve()
+
+    def _current_cwd_hint(self) -> str:
+        raw = str(getattr(self._runtime_ctx, "cwd", "") or "").strip()
+        if raw:
+            return raw
+        return str(self._current_project_root())
+
+    def _current_access_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[str] = set()
+
+        def add(path: Path | None) -> None:
+            if path is None:
+                return
+            resolved = path.resolve()
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        add(self._current_project_root())
+        for path in self._project_store.all_project_roots():
+            add(path)
+        for path in get_access_roots(self.config):
+            add(path)
+        return roots
+
+    def _resolve_path(self, raw_path: str) -> Path:
+        return _resolve_workspace_path(
+            self.config,
+            raw_path,
+            workspace_root=self._current_project_root(),
+            access_roots=self._current_access_roots(),
+        )
+
+    def _resolve_source_path(self, raw_path: str) -> Path:
+        return _resolve_source_path(
+            self.config,
+            raw_path,
+            workspace_root=self._current_project_root(),
+            access_roots=self._current_access_roots(),
+        )
+
+    def _docker_sandbox_for_context(self) -> DockerSandboxManager:
+        project_root = self._current_project_root()
+        access_roots = [path for path in self._current_access_roots() if path != project_root]
+        cache_key = tuple([str(project_root), *[str(path) for path in access_roots]])
+        with self._docker_cache_lock:
+            sandbox = self._docker_sandbox_cache.get(cache_key)
+            if sandbox is None:
+                sandbox = DockerSandboxManager(
+                    workspace_root=project_root,
+                    allowed_roots=access_roots,
+                    docker_bin=self.config.docker_bin,
+                    image=self.config.docker_image,
+                    network=self.config.docker_network,
+                    memory=self.config.docker_memory,
+                    cpus=self.config.docker_cpus,
+                    pids_limit=self.config.docker_pids_limit,
+                    container_prefix=self.config.docker_container_prefix,
+                )
+                self._docker_sandbox_cache[cache_key] = sandbox
+            return sandbox
+
+    def _decorate_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "Tool returned non-dict result"}
+        payload = dict(result)
+        project_root = str(self._current_project_root())
+        payload.setdefault("project_root", project_root)
+        payload.setdefault("cwd", str(payload.get("path") or self._current_cwd_hint() or project_root))
+        payload.setdefault("project_id", self._current_project_id())
+        return payload
 
     def _web_cache_path(self, prefix: str, payload: dict[str, Any]) -> Path:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -1097,11 +1249,12 @@ class LocalToolExecutor:
             return
 
     def docker_available(self) -> bool:
-        return self._docker_sandbox.docker_available()
+        return self._docker_sandbox_for_context().docker_available()
 
     def docker_status(self) -> tuple[bool, str]:
-        ok = self._docker_sandbox.docker_available()
-        return ok, self._docker_sandbox.docker_status_message()
+        sandbox = self._docker_sandbox_for_context()
+        ok = sandbox.docker_available()
+        return ok, sandbox.docker_status_message()
 
     @property
     def tool_specs(self) -> list[dict[str, Any]]:
@@ -1479,52 +1632,311 @@ class LocalToolExecutor:
                     "additionalProperties": False,
                 },
             },
+            {
+                "type": "function",
+                "name": "browser_open",
+                "description": "Open a webpage in a headless browser session and capture the current page state.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 60000, "default": 20000},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "browser_click",
+                "description": "Click one element in the current browser session by CSS selector.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {"type": "string"},
+                        "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 60000, "default": 12000},
+                    },
+                    "required": ["selector"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "browser_type",
+                "description": "Type or fill text into the current browser session by CSS selector.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {"type": "string"},
+                        "text": {"type": "string"},
+                        "submit": {"type": "boolean", "default": False},
+                        "clear": {"type": "boolean", "default": True},
+                        "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 60000, "default": 12000},
+                    },
+                    "required": ["selector", "text"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "browser_wait",
+                "description": "Wait for a selector or a timeout in the current browser session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "selector": {"type": "string", "default": ""},
+                        "timeout_ms": {"type": "integer", "minimum": 250, "maximum": 60000, "default": 5000},
+                        "state": {"type": "string", "default": "visible"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "browser_snapshot",
+                "description": "Capture the current browser page title, URL, text excerpt, and top links.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "max_chars": {"type": "integer", "minimum": 400, "maximum": 50000, "default": 12000},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "browser_screenshot",
+                "description": "Save a screenshot from the current browser session to local storage.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": ""},
+                        "full_page": {"type": "boolean", "default": True},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "view_image",
+                "description": "Inspect a local image and return basic metadata such as size, mode, and format.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "apply_patch",
+                "description": "Apply a unified diff patch inside the workspace using git apply.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patch": {"type": "string"},
+                        "cwd": {"type": "string", "default": "."},
+                        "check": {"type": "boolean", "default": False},
+                    },
+                    "required": ["patch"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "list_skills",
+                "description": "List local workspace skills from workspace/skills.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "read_skill",
+                "description": "Read one local skill file and its metadata by skill id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_id": {"type": "string"},
+                    },
+                    "required": ["skill_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "write_skill",
+                "description": "Create or overwrite one local skill file using full SKILL.md content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_id": {"type": "string", "default": ""},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["content"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "toggle_skill",
+                "description": "Toggle or explicitly set one local skill's enabled flag.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_id": {"type": "string"},
+                        "enabled": {"type": "boolean"},
+                    },
+                    "required": ["skill_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "list_agent_specs",
+                "description": "List editable agent spec files for the main vintage_programmer agent.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+            {
+                "type": "function",
+                "name": "read_agent_spec",
+                "description": "Read one editable agent spec file such as soul.md or agent.md.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "write_agent_spec",
+                "description": "Overwrite one editable agent spec file using full markdown content.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["name", "content"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result: dict[str, Any]
         if name == "run_shell":
-            return self.run_shell(**arguments)
+            result = self.run_shell(**arguments)
+            return self._decorate_result(result)
         if name == "list_directory":
-            return self.list_directory(**arguments)
+            result = self.list_directory(**arguments)
+            return self._decorate_result(result)
         if name == "read_text_file":
-            return self.read_text_file(**arguments)
+            result = self.read_text_file(**arguments)
+            return self._decorate_result(result)
         if name == "search_text_in_file":
-            return self.search_text_in_file(**arguments)
+            result = self.search_text_in_file(**arguments)
+            return self._decorate_result(result)
         if name == "multi_query_search":
-            return self.multi_query_search(**arguments)
+            result = self.multi_query_search(**arguments)
+            return self._decorate_result(result)
         if name == "doc_index_build":
-            return self.doc_index_build(**arguments)
+            result = self.doc_index_build(**arguments)
+            return self._decorate_result(result)
         if name == "read_section_by_heading":
-            return self.read_section_by_heading(**arguments)
+            result = self.read_section_by_heading(**arguments)
+            return self._decorate_result(result)
         if name == "table_extract":
-            return self.table_extract(**arguments)
+            result = self.table_extract(**arguments)
+            return self._decorate_result(result)
         if name == "fact_check_file":
-            return self.fact_check_file(**arguments)
+            result = self.fact_check_file(**arguments)
+            return self._decorate_result(result)
         if name == "search_codebase":
-            return self.search_codebase(**arguments)
+            result = self.search_codebase(**arguments)
+            return self._decorate_result(result)
         if name == "copy_file":
-            return self.copy_file(**arguments)
+            result = self.copy_file(**arguments)
+            return self._decorate_result(result)
         if name == "extract_zip":
-            return self.extract_zip(**arguments)
+            result = self.extract_zip(**arguments)
+            return self._decorate_result(result)
         if name == "extract_msg_attachments":
-            return self.extract_msg_attachments(**arguments)
+            result = self.extract_msg_attachments(**arguments)
+            return self._decorate_result(result)
         if name == "write_text_file":
-            return self.write_text_file(**arguments)
+            result = self.write_text_file(**arguments)
+            return self._decorate_result(result)
         if name == "append_text_file":
-            return self.append_text_file(**arguments)
+            result = self.append_text_file(**arguments)
+            return self._decorate_result(result)
         if name == "replace_in_file":
-            return self.replace_in_file(**arguments)
+            result = self.replace_in_file(**arguments)
+            return self._decorate_result(result)
         if name == "fetch_web":
-            return self.fetch_web(**arguments)
+            result = self.fetch_web(**arguments)
+            return self._decorate_result(result)
         if name == "download_web_file":
-            return self.download_web_file(**arguments)
+            result = self.download_web_file(**arguments)
+            return self._decorate_result(result)
         if name == "search_web":
-            return self.search_web(**arguments)
+            result = self.search_web(**arguments)
+            return self._decorate_result(result)
         if name == "list_sessions":
-            return self.list_sessions(**arguments)
+            result = self.list_sessions(**arguments)
+            return self._decorate_result(result)
         if name == "read_session_history":
-            return self.read_session_history(**arguments)
-        return {"ok": False, "error": f"Unknown tool: {name}"}
+            result = self.read_session_history(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_open":
+            result = self.browser_open(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_click":
+            result = self.browser_click(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_type":
+            result = self.browser_type(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_wait":
+            result = self.browser_wait(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_snapshot":
+            result = self.browser_snapshot(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_screenshot":
+            result = self.browser_screenshot(**arguments)
+            return self._decorate_result(result)
+        if name == "view_image":
+            result = self.view_image(**arguments)
+            return self._decorate_result(result)
+        if name == "apply_patch":
+            result = self.apply_patch(**arguments)
+            return self._decorate_result(result)
+        if name == "list_skills":
+            result = self.list_skills(**arguments)
+            return self._decorate_result(result)
+        if name == "read_skill":
+            result = self.read_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "write_skill":
+            result = self.write_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "toggle_skill":
+            result = self.toggle_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "list_agent_specs":
+            result = self.list_agent_specs(**arguments)
+            return self._decorate_result(result)
+        if name == "read_agent_spec":
+            result = self.read_agent_spec(**arguments)
+            return self._decorate_result(result)
+        if name == "write_agent_spec":
+            result = self.write_agent_spec(**arguments)
+            return self._decorate_result(result)
+        return self._decorate_result({"ok": False, "error": f"Unknown tool: {name}"})
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
         try:
@@ -1557,7 +1969,7 @@ class LocalToolExecutor:
             }
 
         try:
-            real_cwd = _resolve_workspace_path(self.config, cwd)
+            real_cwd = self._resolve_path(cwd)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -1570,11 +1982,12 @@ class LocalToolExecutor:
             mounts: list[dict[str, str]] = []
             if execution_mode == "docker":
                 try:
-                    sandbox_cwd = self._docker_sandbox.container_path_for_host(real_cwd)
+                    sandbox_cwd = self._docker_sandbox_for_context().container_path_for_host(real_cwd)
                 except Exception:
                     sandbox_cwd = None
-                mounts = self._docker_sandbox.mount_mappings()
-                proc = self._docker_sandbox.run_in_sandbox(
+                sandbox = self._docker_sandbox_for_context()
+                mounts = sandbox.mount_mappings()
+                proc = sandbox.run_in_sandbox(
                     session_id=session_id,
                     argv=argv,
                     cwd=real_cwd,
@@ -1615,7 +2028,7 @@ class LocalToolExecutor:
 
     def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config, path)
+            real_path = self._resolve_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_dir():
@@ -1639,6 +2052,7 @@ class LocalToolExecutor:
     def list_sessions(self, max_sessions: int = 20) -> dict[str, Any]:
         try:
             limit = max(1, min(200, int(max_sessions)))
+            current_project_id = self._current_project_id()
             rows: list[dict[str, Any]] = []
             files = sorted(
                 self.config.sessions_dir.glob("*.json"),
@@ -1649,6 +2063,8 @@ class LocalToolExecutor:
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                 except Exception:
+                    continue
+                if current_project_id and str(payload.get("project_id") or "").strip() != current_project_id:
                     continue
                 sid = str(payload.get("id") or path.stem)
                 turns = payload.get("turns", [])
@@ -1674,6 +2090,11 @@ class LocalToolExecutor:
                         "title": title,
                         "preview": preview,
                         "turn_count": len(turns),
+                        "project_id": str(payload.get("project_id") or ""),
+                        "project_title": str(payload.get("project_title") or ""),
+                        "project_root": str(payload.get("project_root") or ""),
+                        "git_branch": str(payload.get("git_branch") or ""),
+                        "cwd": str(payload.get("cwd") or ""),
                         "updated_at": str(payload.get("updated_at") or ""),
                         "created_at": str(payload.get("created_at") or ""),
                     }
@@ -1714,12 +2135,203 @@ class LocalToolExecutor:
             return {
                 "ok": True,
                 "session_id": sid,
+                "project_id": str(payload.get("project_id") or ""),
+                "project_title": str(payload.get("project_title") or ""),
+                "project_root": str(payload.get("project_root") or ""),
+                "cwd": str(payload.get("cwd") or ""),
                 "summary": str(payload.get("summary") or ""),
                 "turn_count": len(turns),
                 "turns": trimmed_turns,
             }
         except Exception as exc:
             return {"ok": False, "error": f"read_session_history failed: {exc}"}
+
+    def _browser_session_id(self) -> str:
+        return self._current_session_id()
+
+    def browser_open(self, url: str, timeout_ms: int = 20000) -> dict[str, Any]:
+        return self._browser_manager.open(
+            session_id=self._browser_session_id(),
+            url=str(url or "").strip(),
+            timeout_ms=timeout_ms,
+        )
+
+    def browser_click(self, selector: str, timeout_ms: int = 12000) -> dict[str, Any]:
+        return self._browser_manager.click(
+            session_id=self._browser_session_id(),
+            selector=str(selector or "").strip(),
+            timeout_ms=timeout_ms,
+        )
+
+    def browser_type(
+        self,
+        selector: str,
+        text: str,
+        submit: bool = False,
+        clear: bool = True,
+        timeout_ms: int = 12000,
+    ) -> dict[str, Any]:
+        return self._browser_manager.type(
+            session_id=self._browser_session_id(),
+            selector=str(selector or "").strip(),
+            text=str(text or ""),
+            submit=bool(submit),
+            clear=bool(clear),
+            timeout_ms=timeout_ms,
+        )
+
+    def browser_wait(self, selector: str = "", timeout_ms: int = 5000, state: str = "visible") -> dict[str, Any]:
+        return self._browser_manager.wait(
+            session_id=self._browser_session_id(),
+            selector=str(selector or "").strip(),
+            timeout_ms=timeout_ms,
+            state=str(state or "visible"),
+        )
+
+    def browser_snapshot(self, max_chars: int = 12000) -> dict[str, Any]:
+        return self._browser_manager.snapshot(
+            session_id=self._browser_session_id(),
+            max_chars=max_chars,
+        )
+
+    def browser_screenshot(self, path: str = "", full_page: bool = True) -> dict[str, Any]:
+        try:
+            target = (
+                self._resolve_path(path)
+                if str(path or "").strip()
+                else self._browser_manager.default_screenshot_path(session_id=self._browser_session_id())
+            )
+            return self._browser_manager.screenshot(
+                session_id=self._browser_session_id(),
+                target_path=target,
+                full_page=bool(full_page),
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"browser_screenshot failed: {exc}"}
+
+    def view_image(self, path: str) -> dict[str, Any]:
+        try:
+            real_path = self._resolve_source_path(path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+            with Image.open(real_path) as image:
+                width, height = image.size
+                return {
+                    "ok": True,
+                    "path": str(real_path),
+                    "format": str(image.format or ""),
+                    "mode": str(image.mode or ""),
+                    "width": int(width),
+                    "height": int(height),
+                    "summary": f"{real_path.name} · {width}x{height} · {image.format or 'unknown'}",
+                }
+        except Exception as exc:
+            return {"ok": False, "error": f"view_image failed: {exc}"}
+
+    def apply_patch(self, patch: str, cwd: str = ".", check: bool = False) -> dict[str, Any]:
+        patch_text = str(patch or "")
+        if not patch_text.strip():
+            return {"ok": False, "error": "patch cannot be empty"}
+        try:
+            real_cwd = self._resolve_path(cwd)
+            if not real_cwd.exists() or not real_cwd.is_dir():
+                return {"ok": False, "error": f"Invalid cwd: {cwd}"}
+            files = []
+            for line in patch_text.splitlines():
+                if line.startswith("+++ b/") or line.startswith("--- a/"):
+                    candidate = line[6:].strip()
+                    if candidate and candidate != "/dev/null" and candidate not in files:
+                        files.append(candidate)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".patch", delete=False) as fh:
+                fh.write(patch_text)
+                patch_path = Path(fh.name)
+            try:
+                check_proc = subprocess.run(
+                    ["git", "apply", "--check", "--recount", str(patch_path)],
+                    cwd=str(real_cwd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if check_proc.returncode != 0:
+                    detail = (check_proc.stderr or check_proc.stdout or "git apply --check failed").strip()
+                    return {"ok": False, "error": detail, "files": files}
+                if not check:
+                    apply_proc = subprocess.run(
+                        ["git", "apply", "--recount", str(patch_path)],
+                        cwd=str(real_cwd),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    if apply_proc.returncode != 0:
+                        detail = (apply_proc.stderr or apply_proc.stdout or "git apply failed").strip()
+                        return {"ok": False, "error": detail, "files": files}
+                return {
+                    "ok": True,
+                    "cwd": str(real_cwd),
+                    "files": files,
+                    "summary": "patch validated" if check else "patch applied",
+                }
+            finally:
+                patch_path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            return {"ok": False, "error": "git is required for apply_patch"}
+        except Exception as exc:
+            return {"ok": False, "error": f"apply_patch failed: {exc}"}
+
+    def list_skills(self) -> dict[str, Any]:
+        try:
+            skills = self._workbench.list_skills()
+            return {"ok": True, "count": len(skills), "skills": skills}
+        except Exception as exc:
+            return {"ok": False, "error": f"list_skills failed: {exc}"}
+
+    def read_skill(self, skill_id: str) -> dict[str, Any]:
+        try:
+            return {"ok": True, **self._workbench.get_skill(skill_id)}
+        except Exception as exc:
+            return {"ok": False, "error": f"read_skill failed: {exc}"}
+
+    def write_skill(self, content: str, skill_id: str = "") -> dict[str, Any]:
+        try:
+            payload = (
+                self._workbench.write_skill(skill_id, content)
+                if str(skill_id or "").strip()
+                else self._workbench.create_skill(content)
+            )
+            return {"ok": True, **payload, "summary": f"skill {payload.get('id')} saved"}
+        except Exception as exc:
+            return {"ok": False, "error": f"write_skill failed: {exc}"}
+
+    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
+        try:
+            payload = self._workbench.toggle_skill(skill_id, enabled=enabled)
+            return {"ok": True, **payload, "summary": f"skill {skill_id} {'enabled' if payload.get('enabled') else 'disabled'}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"toggle_skill failed: {exc}"}
+
+    def list_agent_specs(self) -> dict[str, Any]:
+        try:
+            specs = self._workbench.list_agent_specs()
+            return {"ok": True, "count": len(specs), "specs": specs}
+        except Exception as exc:
+            return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
+
+    def read_agent_spec(self, name: str) -> dict[str, Any]:
+        try:
+            return {"ok": True, **self._workbench.get_agent_spec(name)}
+        except Exception as exc:
+            return {"ok": False, "error": f"read_agent_spec failed: {exc}"}
+
+    def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
+        try:
+            payload = self._workbench.write_agent_spec(name, content)
+            return {"ok": True, **payload, "summary": f"{name} saved"}
+        except Exception as exc:
+            return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
 
     def read_text_file(
         self,
@@ -1730,7 +2342,7 @@ class LocalToolExecutor:
         max_lines: int = 0,
     ) -> dict[str, Any]:
         try:
-            real_path = _resolve_source_path(self.config, path)
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -1893,7 +2505,7 @@ class LocalToolExecutor:
             window = max(40, min(2000, int(context_chars)))
             matches: list[dict[str, Any]] = []
 
-            real_path = _resolve_source_path(self.config, path)
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -2039,7 +2651,7 @@ class LocalToolExecutor:
 
             return {
                 "ok": True,
-                "path": str(_resolve_source_path(self.config, path)),
+                "path": str(self._resolve_source_path(path)),
                 "queries": cleaned_queries[:20],
                 "match_count": len(merged),
                 "matches": merged,
@@ -2049,7 +2661,7 @@ class LocalToolExecutor:
 
     def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
         try:
-            real_path = _resolve_source_path(self.config, path)
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -2080,7 +2692,7 @@ class LocalToolExecutor:
 
     def read_section_by_heading(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
         try:
-            real_path = _resolve_source_path(self.config, path)
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -2134,7 +2746,7 @@ class LocalToolExecutor:
         max_rows: int = 25,
     ) -> dict[str, Any]:
         try:
-            real_path = _resolve_source_path(self.config, path)
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -2243,7 +2855,7 @@ class LocalToolExecutor:
                 verdict = "conflicted" if _is_negative_claim(cleaned_claim) else "supported"
             return {
                 "ok": True,
-                "path": str(_resolve_source_path(self.config, path)),
+                "path": str(self._resolve_source_path(path)),
                 "claim": cleaned_claim,
                 "queries_used": query_list,
                 "verdict": verdict,
@@ -2270,7 +2882,7 @@ class LocalToolExecutor:
             cleaned_query = str(query or "").strip()
             if not cleaned_query:
                 return {"ok": False, "error": "query is empty"}
-            real_root = _resolve_workspace_path(self.config, root)
+            real_root = self._resolve_path(root)
             if not real_root.exists():
                 return {"ok": False, "error": f"Path not found: {root}"}
             if not real_root.is_dir():
@@ -2480,8 +3092,8 @@ class LocalToolExecutor:
         self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
     ) -> dict[str, Any]:
         try:
-            src_real = _resolve_source_path(self.config, src_path)
-            dst_real = _resolve_workspace_path(self.config, dst_path)
+            src_real = self._resolve_source_path(src_path)
+            dst_real = self._resolve_path(dst_path)
 
             if not src_real.exists():
                 return {"ok": False, "error": f"Source path not found: {src_path}"}
@@ -2522,7 +3134,7 @@ class LocalToolExecutor:
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
         try:
-            zip_real = _resolve_source_path(self.config, zip_path)
+            zip_real = self._resolve_source_path(zip_path)
             if not zip_real.exists():
                 return {"ok": False, "error": f"Zip path not found: {zip_path}"}
             if not zip_real.is_file():
@@ -2532,7 +3144,7 @@ class LocalToolExecutor:
             if not dst_raw:
                 dst_raw = str(zip_real.with_suffix(""))
 
-            dst_real = _resolve_workspace_path(self.config, dst_raw)
+            dst_real = self._resolve_path(dst_raw)
             if dst_real.exists() and dst_real.is_file():
                 return {"ok": False, "error": f"Destination is a file, not directory: {dst_raw}"}
             if not dst_real.exists():
@@ -2616,7 +3228,7 @@ class LocalToolExecutor:
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
         try:
-            msg_real = _resolve_source_path(self.config, msg_path)
+            msg_real = self._resolve_source_path(msg_path)
             if not msg_real.exists():
                 return {"ok": False, "error": f"MSG path not found: {msg_path}"}
             if not msg_real.is_file():
@@ -2632,7 +3244,7 @@ class LocalToolExecutor:
             if not dst_raw:
                 dst_raw = str(msg_real.parent / f"{msg_real.stem}_attachments")
 
-            dst_real = _resolve_workspace_path(self.config, dst_raw)
+            dst_real = self._resolve_path(dst_raw)
             if dst_real.exists() and dst_real.is_file():
                 return {"ok": False, "error": f"Destination is a file, not directory: {dst_raw}"}
             if not dst_real.exists():
@@ -2823,7 +3435,7 @@ class LocalToolExecutor:
         self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
     ) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config, path)
+            real_path = self._resolve_path(path)
             if real_path.exists() and real_path.is_dir():
                 return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
 
@@ -2855,7 +3467,7 @@ class LocalToolExecutor:
         create_dirs: bool = True,
     ) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config, path)
+            real_path = self._resolve_path(path)
             if real_path.exists() and real_path.is_dir():
                 return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
             if not real_path.exists() and not create_if_missing:
@@ -2894,7 +3506,7 @@ class LocalToolExecutor:
             return {"ok": False, "error": "max_replacements must be >= 1"}
 
         try:
-            real_path = _resolve_workspace_path(self.config, path)
+            real_path = self._resolve_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -3313,7 +3925,7 @@ class LocalToolExecutor:
                 if not target_raw:
                     target_raw = str(Path("downloads") / filename)
 
-                target_path = _resolve_workspace_path(self.config, target_raw)
+                target_path = self._resolve_path(target_raw)
                 if target_path.exists() and target_path.is_dir():
                     return {"ok": False, "error": f"Destination is a directory: {target_raw}"}
                 if target_path.exists() and not overwrite:

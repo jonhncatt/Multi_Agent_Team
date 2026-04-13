@@ -1,27 +1,52 @@
-import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.3.1";
-import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
-import htm from "https://esm.sh/htm@3.1.1";
+const ReactRuntime = window.React;
+const ReactDomRuntime = window.ReactDOM;
+const htmRuntime = window.htm;
 
-const html = htm.bind(React.createElement);
+if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
+  const root = document.getElementById("root");
+  if (root) {
+    root.innerHTML = `
+      <div style="padding:24px;font:14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;color:#1f2328;">
+        前端资源加载失败。请刷新页面；如果问题持续，请检查 /static/vendor 下的本地脚本是否可访问。
+      </div>
+    `;
+  }
+  throw new Error("Local frontend vendor scripts are unavailable.");
+}
 
-const SESSION_STORAGE_KEY = "multi_agent_team.session_id";
-const MODULE_MOUNT_OVERRIDES_KEY = "multi_agent_team.module_mount_overrides";
-const LLM_MODULE_SLOT_COUNT = 12;
-const FALLBACK_MODEL = "gpt-5.1-chat";
+const { useEffect, useMemo, useRef, useState } = ReactRuntime;
+const { createRoot } = ReactDomRuntime;
+const html = htmRuntime.bind(ReactRuntime.createElement);
+
+const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
+const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
+const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
+const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
+const CUSTOM_MODEL_VALUE = "__custom__";
+const STARTER_PROMPTS = [
+  "帮我梳理这个仓库的主链路",
+  "把这个页面继续改得更像 Codex",
+  "给我一个针对当前工作区的重构计划",
+];
+const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const DEFAULT_SETTINGS = {
-  model: FALLBACK_MODEL,
+  provider: "",
+  model: "",
   max_output_tokens: 128000,
   max_context_turns: 2000,
   enable_tools: true,
   response_style: "normal",
 };
 
-function nowTime() {
-  return new Date().toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+function createMessage(role, text, options = {}) {
+  return {
+    id: options.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    text,
+    pending: Boolean(options.pending),
+    error: Boolean(options.error),
+    createdAt: options.createdAt || "",
+  };
 }
 
 function createLog(type, text) {
@@ -29,671 +54,1003 @@ function createLog(type, text) {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type,
     text,
-    time: nowTime(),
+    createdAt: new Date().toISOString(),
   };
 }
 
-function createMessage(role, text, options = {}) {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    role,
-    text,
-    pending: Boolean(options.pending),
-    error: Boolean(options.error),
-  };
+function sessionStorageKeyForProject(projectId) {
+  const normalized = String(projectId || "").trim() || "__default__";
+  return `${SESSION_STORAGE_KEY}:${normalized}`;
 }
 
-function statusText(status) {
-  const key = String(status || "unknown").toLowerCase();
-  if (key === "active" || key === "healthy") return "正常";
-  if (key === "fallback") return "回退";
-  if (key === "degraded") return "降级";
-  if (key === "unhealthy" || key === "error") return "异常";
-  return "未知";
+function modelStorageKeyForProvider(provider) {
+  const normalized = String(provider || "").trim() || "__default__";
+  return `${MODEL_STORAGE_KEY}:${normalized}`;
 }
 
-function statusTone(status) {
-  const key = String(status || "unknown").toLowerCase();
-  if (key === "active" || key === "healthy") return "ok";
-  if (key === "fallback" || key === "degraded") return "warn";
-  return "bad";
-}
-
-function moduleHasIssue(module) {
-  if (module && module.mounted === false) return true;
-  const s = String(module.status || "").toLowerCase();
-  if (s === "unknown") return true;
-  if (["degraded", "fallback", "unhealthy", "error"].includes(s)) return true;
-  if (Number(module.failureCount || 0) > 0) return true;
-  return Boolean(String(module.lastError || "").trim());
-}
-
-function defaultModuleMounted(module) {
-  return String(module?.status || "").toLowerCase() !== "unknown";
-}
-
-function uniqueStrings(values) {
-  const out = [];
+function dedupeStrings(values) {
+  const result = [];
   const seen = new Set();
-  values.forEach((raw) => {
-    const value = String(raw || "").trim();
-    if (!value) return;
-    const key = value.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(value);
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    result.push(normalized);
   });
-  return out;
+  return result;
 }
 
-function titleFromAgentKey(key) {
-  const normalized = String(key || "").trim().replace(/-/g, "_");
-  if (!normalized) return "LLM Agent";
-  return normalized
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+function resolvePresetModelValue(model, modelOptions, allowCustomModel) {
+  const normalizedModel = String(model || "").trim();
+  const options = dedupeStrings(modelOptions);
+  if (normalizedModel && options.includes(normalizedModel)) return normalizedModel;
+  if (normalizedModel && allowCustomModel) return CUSTOM_MODEL_VALUE;
+  return options[0] || (allowCustomModel ? CUSTOM_MODEL_VALUE : "");
 }
 
-function normalizeAgentPluginModules(health) {
-  const topology = health && typeof health.control_panel_topology === "object" ? health.control_panel_topology : {};
-  const plugins = Array.isArray(topology.agent_plugins) ? topology.agent_plugins : [];
-  return plugins.map((item, index) => {
-    const moduleId = String(item?.key || "").trim() || `llm_agent_${String(index + 1).padStart(2, "0")}`;
-    const sourcePath = String(item?.path || "").trim();
-    const exists = Boolean(item?.exists);
-    const rawTags = Array.isArray(item?.capability_tags) ? item.capability_tags : [];
-    const capabilityTags = rawTags.map((tag) => String(tag || "").trim()).filter(Boolean);
-    const spriteRole = String(item?.sprite_role || "").trim() || moduleId.replace(/_agent$/i, "");
-    return {
-      key: moduleId,
-      title: String(item?.title || "").trim() || titleFromAgentKey(moduleId),
-      status: exists ? "active" : "unknown",
-      selectedRef: sourcePath || moduleId,
-      failureCount: exists ? 0 : 1,
-      lastError: exists ? "" : "插件文件未发现",
-      roles: [],
-      profiles: [],
-      sourcePath,
-      description: String(item?.summary || "").trim(),
-      supportsSwarm: Boolean(item?.supports_swarm),
-      swarmMode: String(item?.swarm_mode || "none").trim() || "none",
-      capabilityTags,
-      spriteRole,
-    };
-  });
+function pushLogWithLimit(setter, type, text) {
+  setter((prev) => [createLog(type, text), ...prev].slice(0, 32));
 }
 
-function spriteRoleForModule(module) {
-  const raw = String(module?.spriteRole || module?.key || "")
-    .trim()
-    .replace(/-/g, "_")
-    .replace(/_agent$/i, "");
-  if (!raw || /^llm_module_\d+$/i.test(raw)) return "worker";
-  return raw;
-}
-
-function buildModuleTopology(health) {
-  const topology = health && typeof health.control_panel_topology === "object" ? health.control_panel_topology : {};
-  const kernelSource = topology && typeof topology.kernel === "object" ? topology.kernel : {};
-  const routerSource = topology && typeof topology.central_router === "object" ? topology.central_router : {};
-  const sourceModules = normalizeAgentPluginModules(health);
-
-  const kernelCore = {
-    key: "kernel_core",
-    title: "主核",
-    kindLabel: "Kernel Core",
-    status: health && health.ok ? "active" : "error",
-    selectedRef: String(kernelSource?.path || (health && health.product_title) || "app/kernel/host.py"),
-    failureCount: 0,
-    lastError: "",
-    sourcePath: String(kernelSource?.path || "app/kernel/host.py"),
-    roles: [],
-  };
-
-  const routerExists = Boolean(routerSource?.exists);
-  const centralLlm = {
-    key: "llm_central_router",
-    title: "LLM 中央调度",
-    kindLabel: "LLM Router",
-    status: routerExists ? "active" : "unknown",
-    selectedRef: String(routerSource?.path || "app/kernel/llm_router.py"),
-    failureCount: routerExists ? 0 : 1,
-    lastError: routerExists ? "" : "未找到 app/kernel/llm_router.py",
-    sourcePath: String(routerSource?.path || "app/kernel/llm_router.py"),
-    roles: [],
-  };
-
-  const llmModules = Array.from({ length: LLM_MODULE_SLOT_COUNT }, (_, idx) => {
-    const source = sourceModules[idx];
-    const slot = String(idx + 1).padStart(2, "0");
-    if (source) {
-      return {
-        ...source,
-        kindLabel: `LLM 模块 ${slot}`,
-      };
-    }
-    return {
-      key: `llm_module_${slot}`,
-      title: `LLM 模块 ${slot}`,
-      kindLabel: `LLM 模块 ${slot}`,
-      status: "unknown",
-      selectedRef: `llm_module_${slot}`,
-      failureCount: 0,
-      lastError: "",
-      sourcePath: "",
-      roles: [],
-      supportsSwarm: false,
-      swarmMode: "none",
-      capabilityTags: [],
-      spriteRole: "worker",
-      description: "",
-    };
-  });
-
-  return {
-    kernelCore,
-    centralLlm,
-    llmModules,
-    sourceAgentCount: sourceModules.length,
-  };
-}
-
-function formatSessionTime(raw) {
-  if (!raw) return "-";
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
+function formatTime(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return date.toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
 }
 
-function TeamLogo() {
-  return html`
-    <div className="team-logo">
-      <svg className="team-logo-mark" viewBox="0 0 260 110" aria-hidden="true" role="img">
-        <defs>
-          <linearGradient id="logoShieldGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#113347" />
-            <stop offset="100%" stopColor="#1f5f7f" />
-          </linearGradient>
-          <linearGradient id="logoOrbitGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#36c4e1" />
-            <stop offset="100%" stopColor="#1787ad" />
-          </linearGradient>
-        </defs>
-        <rect x="8" y="10" width="96" height="90" rx="20" fill="url(#logoShieldGrad)" stroke="#2c7ea3" strokeWidth="2.5" />
-        <circle cx="56" cy="55" r="26" fill="none" stroke="url(#logoOrbitGrad)" strokeWidth="5" />
-        <circle cx="56" cy="55" r="14" fill="#e8f7fc" />
-        <path d="M56 38L68 55L56 72L44 55Z" fill="#1f5f7f" />
-        <circle cx="34" cy="33" r="4.5" fill="#63d2e8" />
-        <circle cx="78" cy="77" r="4.5" fill="#63d2e8" />
-        <path d="M34 33L44 42" stroke="#63d2e8" strokeWidth="2" strokeLinecap="round" />
-        <path d="M68 68L78 77" stroke="#63d2e8" strokeWidth="2" strokeLinecap="round" />
-        <text x="120" y="42" fontSize="16" fontWeight="700" fill="#204d63">Multi Agent Team</text>
-        <text x="120" y="63" fontSize="13" fill="#4d7080">LLM Orchestration System</text>
-        <text x="120" y="82" fontSize="12" fill="#6a8795">Core + Central Control + 12 Modules</text>
-      </svg>
-      <div className="team-logo-copy">
-        <div className="team-logo-title">Logo Style B</div>
-        <div className="team-logo-sub">Shield + Orbit + Network Node</div>
-      </div>
-    </div>
-  `;
-}
-
-function svgRect(x, y, color, size = 4) {
-  return `<rect x="${x * size}" y="${y * size}" width="${size}" height="${size}" fill="${color}" />`;
-}
-
-function buildRoleSprite(roleId = "worker") {
-  const palette = {
-    router: { kindKey: "hybrid", accent: "#4f7eff", accent2: "#98b7ff" },
-    coordinator: { kindKey: "processor", accent: "#2e9f6b", accent2: "#9ddfbe" },
-    planner: { kindKey: "agent", accent: "#22a2ab", accent2: "#8edee5" },
-    researcher: { kindKey: "agent", accent: "#4f7eff", accent2: "#98b7ff" },
-    file_reader: { kindKey: "processor", accent: "#ff8f5e", accent2: "#ffd2b8" },
-    summarizer: { kindKey: "agent", accent: "#6d7de2", accent2: "#b7c2ff" },
-    fixer: { kindKey: "processor", accent: "#f58b37", accent2: "#fbd9ac" },
-    worker: { kindKey: "agent", accent: "#1f86a3", accent2: "#67b9ce" },
-    conflict_detector: { kindKey: "hybrid", accent: "#e46b5e", accent2: "#ffb4a8" },
-    reviewer: { kindKey: "agent", accent: "#8b74de", accent2: "#c7bcf2" },
-    revision: { kindKey: "agent", accent: "#308fb1", accent2: "#8fcae0" },
-    structurer: { kindKey: "processor", accent: "#4e9b6f", accent2: "#99d1af" },
-  };
-  const meta = palette[roleId] || palette.worker;
-  const outline = "#1f2f27";
-  const shell = "#dcefe2";
-  const shadow = "#a3c1b1";
-  const eye = meta.kindKey === "processor" ? "#fff1c9" : "#f6fff6";
-  const accent = meta.accent;
-  const accent2 = meta.accent2;
-  const px = [];
-  const add = (cells, color) => {
-    cells.forEach(([x, y]) => px.push(svgRect(x, y, color)));
-  };
-
-  add(
-    [
-      [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1],
-      [2, 2], [9, 2], [2, 3], [9, 3], [1, 3], [10, 3],
-      [2, 4], [9, 4], [1, 4], [10, 4],
-      [2, 5], [9, 5],
-      [2, 6], [9, 6],
-      [3, 7], [4, 7], [5, 7], [6, 7], [7, 7], [8, 7],
-      [3, 8], [8, 8], [3, 9], [8, 9],
-      [4, 10], [5, 10], [6, 10], [7, 10],
-      [4, 11], [7, 11],
-    ],
-    outline,
-  );
-  add(
-    [
-      [3, 2], [4, 2], [5, 2], [6, 2], [7, 2], [8, 2],
-      [3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3],
-      [3, 4], [4, 4], [5, 4], [6, 4], [7, 4], [8, 4],
-      [3, 5], [4, 5], [5, 5], [6, 5], [7, 5], [8, 5],
-      [3, 6], [4, 6], [5, 6], [6, 6], [7, 6], [8, 6],
-      [4, 8], [5, 8], [6, 8], [7, 8],
-      [4, 9], [5, 9], [6, 9], [7, 9],
-      [5, 11], [6, 11],
-    ],
-    shell,
-  );
-  add(
-    [
-      [4, 6], [5, 6], [6, 6], [7, 6],
-      [4, 9], [5, 9], [6, 9], [7, 9],
-    ],
-    shadow,
-  );
-  add(roleId === "conflict_detector" ? [[4, 4]] : [[4, 4], [7, 4]], roleId === "conflict_detector" ? "#ffef78" : eye);
-  if (roleId === "conflict_detector") add([[7, 4]], "#ff8872");
-
-  switch (roleId) {
-    case "router":
-      add([[2, 0], [3, 0], [8, 0], [9, 0], [5, 8], [6, 9]], accent);
-      add([[4, 0], [7, 0], [5, 9], [6, 8]], accent2);
-      break;
-    case "coordinator":
-      add([[4, 0], [5, 0], [6, 0], [7, 0], [5, 3], [6, 3], [5, 8], [6, 8]], accent);
-      add([[5, 1], [6, 1], [4, 8], [7, 8]], accent2);
-      break;
-    case "planner":
-      add([[2, 0], [3, 0], [4, 0], [5, 0], [6, 0], [7, 0], [8, 0], [9, 0]], accent);
-      add([[4, 8], [5, 8], [6, 8], [7, 8], [4, 9], [7, 9]], accent2);
-      break;
-    case "researcher":
-      add([[6, 0], [6, 1], [10, 2], [10, 3], [8, 8], [8, 9]], accent);
-      add([[7, 1], [9, 2], [9, 3], [5, 8], [6, 8]], accent2);
-      break;
-    case "file_reader":
-      add([[4, 8], [4, 9], [5, 8], [5, 9]], accent);
-      add([[6, 8], [6, 9], [7, 8], [7, 9]], accent2);
-      add([[5, 9], [6, 9]], outline);
-      break;
-    case "summarizer":
-      add([[4, 5], [5, 5], [6, 5], [7, 5], [3, 9], [5, 8], [7, 9]], accent);
-      add([[4, 8], [6, 8], [8, 9]], accent2);
-      break;
-    case "fixer":
-      add([[0, 8], [1, 8], [2, 8], [8, 9], [9, 8], [10, 7]], accent);
-      add([[1, 7], [2, 9], [9, 7], [10, 8]], accent2);
-      break;
-    case "worker":
-      add([[3, 3], [4, 3], [5, 3], [6, 3], [7, 3], [8, 3], [4, 9], [5, 9], [6, 9], [7, 9]], accent);
-      add([[3, 4], [8, 4], [4, 8], [7, 8]], accent2);
-      break;
-    case "conflict_detector":
-      add([[5, 0], [6, 0], [5, 8], [6, 8]], accent);
-      add([[4, 0], [7, 0], [4, 8], [7, 8]], accent2);
-      break;
-    case "reviewer":
-      add([[5, 8], [6, 8], [4, 9], [5, 9], [6, 9], [7, 9], [5, 10], [6, 10]], accent);
-      add([[5, 1], [6, 1], [5, 2], [6, 2]], accent2);
-      break;
-    case "revision":
-      add([[3, 0], [4, 1], [5, 2], [6, 3], [7, 4], [8, 5], [4, 9], [5, 8], [6, 9], [7, 8]], accent);
-      add([[4, 0], [5, 1], [6, 2], [7, 3], [8, 4]], accent2);
-      break;
-    case "structurer":
-      add([[4, 8], [5, 8], [6, 8], [7, 8], [4, 9], [7, 9], [4, 10], [5, 10], [6, 10], [7, 10]], accent);
-      add([[5, 9], [6, 9]], accent2);
-      break;
-    default:
-      add([[5, 8], [6, 8], [5, 9], [6, 9]], accent);
-      break;
+function parseSseChunk(chunk) {
+  const lines = String(chunk || "").split("\n");
+  let event = "message";
+  const dataLines = [];
+  lines.forEach((line) => {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim() || "message";
+      return;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  });
+  if (!dataLines.length) return null;
+  try {
+    return { event, payload: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return { event, payload: { raw: dataLines.join("\n") } };
   }
+}
 
-  return `<svg class="role-sprite" viewBox="0 0 48 48" aria-hidden="true">${px.join("")}</svg>`;
+function roleLabel(role) {
+  if (role === "user") return "You";
+  if (role === "assistant") return "Vintage Programmer";
+  return "System";
+}
+
+function fileNameFromHealth(health) {
+  const label = String(((health || {}).runtime_status || {}).workspace_label || "").trim();
+  if (label) return label;
+  const path = String((health && health.workspace_root) || "").trim();
+  if (!path) return "workspace";
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] || "workspace";
+}
+
+function compactPath(path) {
+  const text = String(path || "").trim();
+  if (!text) return "";
+  if (text.length <= 64) return text;
+  return `${text.slice(0, 24)} … ${text.slice(-32)}`;
+}
+
+function stringifyErrorDetail(detail) {
+  if (detail == null) return "";
+  if (typeof detail === "string") return detail;
+  try {
+    return JSON.stringify(detail, null, 2);
+  } catch {
+    return String(detail);
+  }
+}
+
+function normalizeUiError(source, fallbackSummary = "请求失败，请稍后重试。", fallback = {}) {
+  if (source && typeof source === "object" && source.uiError) {
+    return { ...source.uiError };
+  }
+  let payload = source;
+  if (payload && typeof payload === "object" && payload.detail && typeof payload.detail === "object" && !payload.kind && !payload.summary) {
+    payload = payload.detail;
+  }
+  const detail = stringifyErrorDetail(
+    payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "detail")
+      ? payload.detail
+      : payload,
+  );
+  const provider =
+    String(
+      (payload && typeof payload === "object" && (
+        payload.provider ||
+        payload.provider_name ||
+        ((payload.metadata || {}).provider_name) ||
+        (((payload.error || {}).metadata || {}).provider_name)
+      )) ||
+      fallback.provider ||
+      "",
+    ).trim();
+  const explicitStatus =
+    Number(
+      (payload && typeof payload === "object" && (
+        payload.status_code ||
+        payload.statusCode ||
+        payload.code ||
+        ((payload.error || {}).code)
+      )) ||
+      fallback.status_code ||
+      fallback.statusCode ||
+      0,
+    ) || 0;
+  const lowered = `${detail}\n${provider}`.toLowerCase();
+  let kind = String((payload && typeof payload === "object" && payload.kind) || fallback.kind || "").trim();
+  if (!kind) {
+    if (explicitStatus === 429 || lowered.includes("rate limit") || lowered.includes("rate-limit") || lowered.includes("temporarily rate-limited upstream") || lowered.includes("too many requests")) {
+      kind = "rate_limit";
+    } else if ([401, 403].includes(explicitStatus) || lowered.includes("unauthorized") || lowered.includes("forbidden") || lowered.includes("api key") || lowered.includes("credentials") || lowered.includes("authentication")) {
+      kind = "auth";
+    } else if ([502, 503, 504].includes(explicitStatus) || lowered.includes("temporarily unavailable") || lowered.includes("timeout") || lowered.includes("timed out") || lowered.includes("upstream")) {
+      kind = "upstream";
+    } else {
+      kind = "unknown";
+    }
+  }
+  const status_code =
+    explicitStatus ||
+    (kind === "rate_limit" ? 429 : kind === "auth" ? 401 : kind === "upstream" ? 503 : 500);
+  const summary =
+    String((payload && typeof payload === "object" && payload.summary) || "").trim() ||
+    (kind === "rate_limit"
+      ? "模型提供方限流，请稍后重试。"
+      : kind === "auth"
+        ? "认证失败，请检查 OpenRouter / OpenAI-compatible key。"
+        : kind === "upstream"
+          ? "模型提供方暂时不可用，请稍后重试。"
+          : fallbackSummary);
+  const retryable =
+    typeof (payload && typeof payload === "object" && payload.retryable) === "boolean"
+      ? Boolean(payload.retryable)
+      : ["rate_limit", "upstream"].includes(kind);
+  return {
+    kind,
+    status_code,
+    summary,
+    detail: detail || summary,
+    retryable,
+    provider,
+  };
+}
+
+function errorWithUiError(uiError) {
+  const error = new Error(String((uiError && uiError.summary) || "请求失败，请稍后重试。"));
+  error.uiError = uiError;
+  return error;
+}
+
+function projectLabel(project, fallbackHealth) {
+  if (project && project.title) return String(project.title);
+  return fileNameFromHealth(fallbackHealth);
+}
+
+function extractSessionMessages(data) {
+  const turns = Array.isArray(data.turns) ? data.turns : [];
+  return turns.map((turn) =>
+    createMessage(
+      String(turn.role || "").toLowerCase() === "user" ? "user" : "assistant",
+      String(turn.text || ""),
+      { createdAt: String(turn.created_at || "") },
+    ),
+  );
+}
+
+function defaultSkillTemplate() {
+  return [
+    "---",
+    "id: new_skill",
+    "title: New Skill",
+    "enabled: false",
+    "bind_to:",
+    "  - vintage_programmer",
+    "summary: One-line summary for this skill.",
+    "---",
+    "",
+    "# New Skill",
+    "",
+    "适用场景：",
+    "- 说明什么时候使用这个 skill。",
+    "",
+    "执行要求：",
+    "- 列出这个 skill 的步骤和边界。",
+    "",
+  ].join("\n");
+}
+
+function sessionTitleFromList(sessions, sessionId) {
+  const hit = sessions.find((item) => item.session_id === sessionId);
+  return hit ? hit.title || "新线程" : "开始构建";
+}
+
+function shallowSkillList(skills) {
+  return Array.isArray(skills) ? skills : [];
+}
+
+function groupTools(tools) {
+  const grouped = {};
+  (Array.isArray(tools) ? tools : []).forEach((item) => {
+    const group = String(item.group || "other");
+    if (!grouped[group]) grouped[group] = [];
+    grouped[group].push(item);
+  });
+  return grouped;
+}
+
+function starterPromptChips(setDraft, handleSend) {
+  return STARTER_PROMPTS.map((text) =>
+    html`
+      <button
+        key=${text}
+        className="starter-chip"
+        type="button"
+        onClick=${() => {
+          setDraft(text);
+          setTimeout(() => handleSend(text), 0);
+        }}
+      >
+        ${text}
+      </button>
+    `,
+  );
 }
 
 function App() {
   const [health, setHealth] = useState(null);
-  const [logs, setLogs] = useState(() => [createLog("system", "UI 已启动，等待运行态数据。")]);
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState("");
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState("");
+  const [sessionAgentState, setSessionAgentState] = useState({});
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingSession, setLoadingSession] = useState(false);
-  const [chatSettings, setChatSettings] = useState(() => ({ ...DEFAULT_SETTINGS }));
+  const [drawerView, setDrawerView] = useState("");
+  const [logs, setLogs] = useState([]);
+  const [lastResponse, setLastResponse] = useState(null);
+  const [pendingUploads, setPendingUploads] = useState([]);
+  const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
   const [modelTouched, setModelTouched] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [avatarPanelOpen, setAvatarPanelOpen] = useState(false);
-  const [selectedControlModuleKey, setSelectedControlModuleKey] = useState("");
-  const [selectedAvatarModuleKey, setSelectedAvatarModuleKey] = useState("");
-  const [moduleMountOverrides, setModuleMountOverrides] = useState(() => {
-    try {
-      const raw = window.localStorage.getItem(MODULE_MOUNT_OVERRIDES_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return {};
-      const safe = {};
-      Object.entries(parsed).forEach(([k, v]) => {
-        if (typeof k === "string" && typeof v === "boolean") safe[k] = v;
-      });
-      return safe;
-    } catch {
-      return {};
-    }
-  });
+  const [selectedPresetModel, setSelectedPresetModel] = useState("");
+  const [uiError, setUiError] = useState(null);
+  const [toolTimeline, setToolTimeline] = useState([]);
+  const [stageTimeline, setStageTimeline] = useState([]);
+  const [workbenchTools, setWorkbenchTools] = useState([]);
+  const [skills, setSkills] = useState([]);
+  const [selectedSkillId, setSelectedSkillId] = useState("");
+  const [skillEditor, setSkillEditor] = useState("");
+  const [specs, setSpecs] = useState([]);
+  const [selectedSpecName, setSelectedSpecName] = useState("soul.md");
+  const [specEditor, setSpecEditor] = useState("");
+  const [savingWorkbench, setSavingWorkbench] = useState(false);
+  const [mobileThreadsOpen, setMobileThreadsOpen] = useState(false);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [projectPathDraft, setProjectPathDraft] = useState("");
+  const [projectTitleDraft, setProjectTitleDraft] = useState("");
+  const [projectFormError, setProjectFormError] = useState("");
+  const [savingProject, setSavingProject] = useState(false);
+  const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
-
-  const moduleTopology = useMemo(() => buildModuleTopology(health), [health]);
-  const topologyModules = useMemo(
-    () => [moduleTopology.kernelCore, moduleTopology.centralLlm, ...moduleTopology.llmModules],
-    [moduleTopology],
+  const bootReadyRef = useRef(false);
+  const providerOptions = useMemo(
+    () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
+    [health],
   );
-  const runtimeModules = useMemo(
-    () =>
-      topologyModules.map((item) => {
-        const override = moduleMountOverrides[item.key];
-        const mounted = typeof override === "boolean" ? override : defaultModuleMounted(item);
-        return { ...item, mounted };
-      }),
-    [topologyModules, moduleMountOverrides],
+  const availableProviders = useMemo(
+    () => dedupeStrings([
+      ...providerOptions.map((item) => String(item.provider || "").trim()),
+      String((health && health.llm_provider) || "").trim(),
+    ]),
+    [health, providerOptions],
   );
-  const selectedControlModule = useMemo(
-    () => runtimeModules.find((item) => item.key === selectedControlModuleKey) || null,
-    [runtimeModules, selectedControlModuleKey],
+  const activeProvider = String(
+    chatSettings.provider ||
+    (availableProviders.includes(String((health && health.llm_provider) || "").trim()) ? String((health && health.llm_provider) || "").trim() : "") ||
+    availableProviders[0] ||
+    "default",
+  ).trim() || "default";
+  const activeProviderProfile =
+    providerOptions.find((item) => String(item.provider || "").trim() === activeProvider) ||
+    providerOptions[0] ||
+    null;
+  const modelOptions = useMemo(
+    () => dedupeStrings([
+      ...(Array.isArray(activeProviderProfile && activeProviderProfile.model_options) ? activeProviderProfile.model_options : []),
+      String((activeProviderProfile && activeProviderProfile.default_model) || (health && health.default_model) || "").trim(),
+    ]),
+    [activeProviderProfile, health],
   );
-  const agentModules = useMemo(
-    () => runtimeModules.filter((item) => String(item.kindLabel || "").startsWith("LLM 模块")),
-    [runtimeModules],
-  );
-  const selectedAvatarModule = useMemo(
-    () => agentModules.find((item) => item.key === selectedAvatarModuleKey) || null,
-    [agentModules, selectedAvatarModuleKey],
-  );
-  const providerName = useMemo(() => String((health && health.llm_provider) || "").trim().toLowerCase(), [health]);
-  const modelOptions = useMemo(() => {
-    const preferredQwen = providerName === "ollama" ? "qwen2.5:14b" : "qwen-plus";
-    return uniqueStrings([
-      health && health.model_default ? health.model_default : "",
-      preferredQwen,
-      "qwen2.5:7b",
-      "qwen2.5-coder:14b",
-      "qwen3:8b",
-      "qwen3:14b",
-      "llama3.2:3b",
-      chatSettings.model,
-    ]);
-  }, [health, providerName, chatSettings.model]);
-  const modelSelectValue = useMemo(() => {
-    const current = String(chatSettings.model || "").trim();
-    if (!current) return "";
-    return modelOptions.includes(current) ? current : "__custom__";
-  }, [chatSettings.model, modelOptions]);
-  const hasModuleIssue = useMemo(() => runtimeModules.some(moduleHasIssue), [runtimeModules]);
-  const kernelStable = useMemo(() => Boolean(health && health.ok) && !hasModuleIssue, [health, hasModuleIssue]);
-
-  const pushLog = (type, text) => {
-    setLogs((prev) => [createLog(type, text), ...prev].slice(0, 18));
-  };
+  const allowCustomModel = !health || health.allow_custom_model !== false;
 
   useEffect(() => {
-    const boot = async () => {
-      await Promise.all([refreshHealth(), refreshSessions()]);
-      const cached = window.localStorage.getItem(SESSION_STORAGE_KEY) || "";
-      if (cached) {
-        await loadSession(cached, { silentNotFound: true });
-      }
-    };
-    boot();
-  }, []);
+    if (!bootReadyRef.current) return;
+    if (!projectId) {
+      window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, projectId);
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!bootReadyRef.current) return;
+    if (!projectId) return;
+    const storageKey = sessionStorageKeyForProject(projectId);
+    if (!sessionId) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+    window.localStorage.setItem(storageKey, sessionId);
+  }, [projectId, sessionId]);
+
+  useEffect(() => {
+    if (!health) return;
+    const storedProvider = window.localStorage.getItem(PROVIDER_STORAGE_KEY) || "";
+    const currentProvider = String(chatSettings.provider || "").trim();
+    const preferredProvider =
+      (storedProvider && availableProviders.includes(storedProvider) ? storedProvider : "") ||
+      (currentProvider && availableProviders.includes(currentProvider) ? currentProvider : "") ||
+      String((health && health.llm_provider) || "").trim() ||
+      availableProviders[0] ||
+      "";
+    if (!preferredProvider) return;
+    setChatSettings((prev) => (
+      String(prev.provider || "").trim() === preferredProvider
+        ? prev
+        : { ...prev, provider: preferredProvider }
+    ));
+  }, [health, availableProviders, chatSettings.provider]);
+
+  useEffect(() => {
+    if (!bootReadyRef.current) return;
+    const resolvedProvider = String(chatSettings.provider || "").trim();
+    if (!resolvedProvider) {
+      window.localStorage.removeItem(PROVIDER_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(PROVIDER_STORAGE_KEY, resolvedProvider);
+  }, [chatSettings.provider]);
+
+  useEffect(() => {
+    if (!health || modelTouched) return;
+    const storedModel = window.localStorage.getItem(modelStorageKeyForProvider(activeProvider)) || "";
+    const preferredModel = String(
+      storedModel ||
+      chatSettings.model ||
+      (activeProviderProfile && activeProviderProfile.default_model) ||
+      (health && health.default_model) ||
+      modelOptions[0] ||
+      "",
+    ).trim();
+    if (!preferredModel) return;
+    setChatSettings((prev) => (
+      String(prev.model || "").trim() === preferredModel
+        ? prev
+        : { ...prev, model: preferredModel }
+    ));
+    setSelectedPresetModel(resolvePresetModelValue(preferredModel, modelOptions, allowCustomModel));
+  }, [health, modelTouched, activeProvider, activeProviderProfile, allowCustomModel, modelOptions, chatSettings.model]);
+
+  useEffect(() => {
+    const resolvedModel = String(chatSettings.model || "").trim();
+    const storageKey = modelStorageKeyForProvider(activeProvider);
+    if (!resolvedModel) {
+      window.localStorage.removeItem(storageKey);
+      setSelectedPresetModel(resolvePresetModelValue("", modelOptions, allowCustomModel));
+      return;
+    }
+    window.localStorage.setItem(storageKey, resolvedModel);
+    setSelectedPresetModel((prev) => {
+      const nextValue = resolvePresetModelValue(resolvedModel, modelOptions, allowCustomModel);
+      return prev === nextValue ? prev : nextValue;
+    });
+  }, [activeProvider, allowCustomModel, chatSettings.model, modelOptions]);
 
   useEffect(() => {
     if (!chatListRef.current) return;
     chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
-  }, [messages]);
+  }, [messages, drawerView]);
 
   useEffect(() => {
-    if (sessionId) {
-      window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-    } else {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    async function boot() {
+      const [healthData, projectsList] = await Promise.all([
+        refreshHealth(),
+        refreshProjects(),
+        refreshWorkbenchTools(),
+        refreshSkills(),
+        refreshSpecs(),
+      ]);
+      const storedProjectId = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
+      const storedProjectExists = (projectsList || []).some((item) => String(item.project_id || "") === storedProjectId);
+      const initialProjectId =
+        (storedProjectExists ? storedProjectId : "") ||
+        String((healthData && healthData.default_project_id) || "").trim() ||
+        String(((projectsList || [])[0] || {}).project_id || "").trim();
+      bootReadyRef.current = true;
+      if (initialProjectId) {
+        await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });
+      }
     }
-  }, [sessionId]);
+    boot();
+  }, []);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(MODULE_MOUNT_OVERRIDES_KEY, JSON.stringify(moduleMountOverrides));
-    } catch {
-      // ignore storage errors
-    }
-  }, [moduleMountOverrides]);
+    if (drawerView === "tools") refreshWorkbenchTools();
+    if (drawerView === "skills") refreshSkills();
+    if (drawerView === "agent") refreshSpecs();
+  }, [drawerView]);
 
-  useEffect(() => {
-    const runtimeDefaultModel = String((health && health.model_default) || "").trim();
-    if (!runtimeDefaultModel || modelTouched) return;
-    setChatSettings((prev) => {
-      if (String(prev.model || "").trim() === runtimeDefaultModel) return prev;
-      return { ...prev, model: runtimeDefaultModel };
-    });
-  }, [health, modelTouched]);
+  function clearUiError() {
+    setUiError(null);
+  }
 
-  useEffect(() => {
-    if (!runtimeModules.length) {
-      if (selectedControlModuleKey) setSelectedControlModuleKey("");
-      return;
-    }
-    if (!runtimeModules.some((item) => item.key === selectedControlModuleKey)) {
-      setSelectedControlModuleKey(runtimeModules[0].key);
-    }
-  }, [runtimeModules, selectedControlModuleKey]);
+  function applyUiError(errorLike, fallbackSummary = "请求失败，请稍后重试。", fallback = {}) {
+    const normalized = normalizeUiError(errorLike, fallbackSummary, fallback);
+    setUiError(normalized);
+    return normalized;
+  }
 
-  useEffect(() => {
-    if (!agentModules.length) {
-      if (selectedAvatarModuleKey) setSelectedAvatarModuleKey("");
-      return;
+  function updateModelSelection(nextModel, options = {}) {
+    const normalized = String(nextModel || "").trim();
+    if (options.markTouched !== false) setModelTouched(true);
+    setChatSettings((prev) => ({ ...prev, model: normalized }));
+    setSelectedPresetModel(resolvePresetModelValue(normalized, modelOptions, allowCustomModel));
+  }
+
+  function updateProviderSelection(nextProvider) {
+    const normalized = String(nextProvider || "").trim();
+    if (!normalized) return;
+    const nextProfile =
+      providerOptions.find((item) => String(item.provider || "").trim() === normalized) ||
+      null;
+    const nextModelOptions = dedupeStrings([
+      ...(Array.isArray(nextProfile && nextProfile.model_options) ? nextProfile.model_options : []),
+      String((nextProfile && nextProfile.default_model) || "").trim(),
+    ]);
+    const storedModel = window.localStorage.getItem(modelStorageKeyForProvider(normalized)) || "";
+    const nextModel = String(storedModel || (nextProfile && nextProfile.default_model) || nextModelOptions[0] || "").trim();
+    setModelTouched(false);
+    setChatSettings((prev) => ({ ...prev, provider: normalized, model: nextModel }));
+    setSelectedPresetModel(resolvePresetModelValue(nextModel, nextModelOptions, allowCustomModel));
+  }
+
+  async function fetchJson(url, options = {}) {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      let payload = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = { detail: `${res.status}` };
+      }
+      const uiError = normalizeUiError(
+        payload && Object.prototype.hasOwnProperty.call(payload, "detail") ? payload.detail : payload,
+        "请求失败，请稍后重试。",
+        { status_code: res.status },
+      );
+      throw errorWithUiError(uiError);
     }
-    if (!agentModules.some((item) => item.key === selectedAvatarModuleKey)) {
-      setSelectedAvatarModuleKey(agentModules[0].key);
-    }
-  }, [agentModules, selectedAvatarModuleKey]);
+    return res.json();
+  }
 
   async function refreshHealth() {
     try {
-      const res = await fetch("/api/health");
-      if (!res.ok) throw new Error(`health ${res.status}`);
-      const data = await res.json();
+      const data = await fetchJson("/api/health");
+      clearUiError();
       setHealth(data);
+      return data;
     } catch (err) {
-      pushLog("error", `刷新 health 失败：${String(err.message || err)}`);
+      const nextError = applyUiError(err, "刷新状态失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新状态失败：${nextError.summary}`);
+      return null;
     }
   }
 
-  async function refreshSessions() {
+  async function refreshProjects() {
     try {
-      const res = await fetch("/api/sessions?limit=80");
-      if (!res.ok) throw new Error(`sessions ${res.status}`);
-      const data = await res.json();
+      const data = await fetchJson("/api/projects");
+      const list = Array.isArray(data.projects) ? data.projects : [];
+      clearUiError();
+      setProjects(list);
+      return list;
+    } catch (err) {
+      const nextError = applyUiError(err, "刷新项目失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新项目失败：${nextError.summary}`);
+      return [];
+    }
+  }
+
+  async function refreshSessions(targetProjectId = projectId) {
+    try {
+      const suffix = targetProjectId ? `&project_id=${encodeURIComponent(targetProjectId)}` : "";
+      const data = await fetchJson(`/api/sessions?limit=80${suffix}`);
       const list = Array.isArray(data.sessions) ? data.sessions : [];
+      clearUiError();
       setSessions(list);
       return list;
     } catch (err) {
-      pushLog("error", `刷新会话列表失败：${String(err.message || err)}`);
+      const nextError = applyUiError(err, "刷新线程失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新线程失败：${nextError.summary}`);
       return [];
     }
+  }
+
+  async function selectProject(nextProjectId, options = {}) {
+    const targetProjectId = String(nextProjectId || "").trim();
+    if (!targetProjectId) return false;
+    setProjectId(targetProjectId);
+    setSessionId("");
+    setMessages([]);
+    setLastResponse(null);
+    setSessionAgentState({});
+    setToolTimeline([]);
+    setStageTimeline([]);
+    setMobileThreadsOpen(false);
+    clearUiError();
+    const list = await refreshSessions(targetProjectId);
+    const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
+    const preferredSessionId =
+      storedSessionId && list.some((item) => item.session_id === storedSessionId)
+        ? storedSessionId
+        : String(((list || [])[0] || {}).session_id || "").trim();
+    if (preferredSessionId) {
+      await loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
+      return true;
+    }
+    if (!options.fromBoot) {
+      pushLogWithLimit(setLogs, "system", `已切换项目 ${targetProjectId.slice(0, 8)}`);
+    }
+    return true;
+  }
+
+  async function refreshWorkbenchTools() {
+    try {
+      const data = await fetchJson("/api/workbench/tools");
+      clearUiError();
+      setWorkbenchTools(Array.isArray(data.tools) ? data.tools : []);
+      return data;
+    } catch (err) {
+      const nextError = applyUiError(err, "刷新工具库存失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新工具库存失败：${nextError.summary}`);
+      return null;
+    }
+  }
+
+  async function refreshSkills() {
+    try {
+      const data = await fetchJson("/api/workbench/skills");
+      const list = shallowSkillList(data.skills);
+      clearUiError();
+      setSkills(list);
+      if (!selectedSkillId && list.length) {
+        setSelectedSkillId(String(list[0].id || ""));
+        setSkillEditor(String(list[0].content || ""));
+      }
+      if (selectedSkillId) {
+        const hit = list.find((item) => item.id === selectedSkillId);
+        if (hit) setSkillEditor(String(hit.content || ""));
+      }
+      return list;
+    } catch (err) {
+      const nextError = applyUiError(err, "刷新技能失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新技能失败：${nextError.summary}`);
+      return [];
+    }
+  }
+
+  async function refreshSpecs() {
+    try {
+      const data = await fetchJson("/api/workbench/specs");
+      const list = Array.isArray(data.specs) ? data.specs : [];
+      clearUiError();
+      setSpecs(list);
+      const preferred = list.find((item) => item.name === selectedSpecName) || list[0];
+      if (preferred) {
+        await loadSpecDetail(String(preferred.name || ""));
+      }
+      return list;
+    } catch (err) {
+      const nextError = applyUiError(err, "刷新 agent 规范失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `刷新 agent 规范失败：${nextError.summary}`);
+      return [];
+    }
+  }
+
+  async function createProjectFromDraft() {
+    const rootPath = String(projectPathDraft || "").trim();
+    const title = String(projectTitleDraft || "").trim();
+    if (!rootPath) {
+      setProjectFormError("请输入本地绝对路径。");
+      return;
+    }
+    setSavingProject(true);
+    setProjectFormError("");
+    try {
+      const payload = await fetchJson("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root_path: rootPath, title }),
+      });
+      await refreshHealth();
+      await refreshProjects();
+      clearUiError();
+      setProjectDialogOpen(false);
+      setProjectPathDraft("");
+      setProjectTitleDraft("");
+      await selectProject(String(payload.project_id || ""));
+      pushLogWithLimit(setLogs, "system", `已添加项目：${payload.title || payload.project_id}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "添加项目失败，请检查项目路径。");
+      setProjectFormError(nextError.summary);
+      pushLogWithLimit(setLogs, "error", `添加项目失败：${nextError.summary}`);
+    } finally {
+      setSavingProject(false);
+    }
+  }
+
+  async function createSession(targetProjectId = projectId) {
+    const data = await fetchJson("/api/session/new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: targetProjectId || "" }),
+    });
+    const sid = String(data.session_id || "").trim();
+    const resolvedProjectId = String(data.project_id || targetProjectId || "").trim();
+    if (!sid) throw new Error("session id missing");
+    if (resolvedProjectId) setProjectId(resolvedProjectId);
+    setSessionId(sid);
+    setMessages([]);
+    setLastResponse(null);
+    setSessionAgentState({});
+    setToolTimeline([]);
+    setStageTimeline([]);
+    clearUiError();
+    await refreshSessions(resolvedProjectId || targetProjectId);
+    pushLogWithLimit(setLogs, "system", `已创建新线程 ${sid.slice(0, 8)}`);
+    return sid;
   }
 
   async function loadSession(targetSessionId, options = {}) {
     const sid = String(targetSessionId || "").trim();
     if (!sid) return false;
     setLoadingSession(true);
+    setMobileThreadsOpen(false);
     try {
-      const res = await fetch(`/api/session/${encodeURIComponent(sid)}?max_turns=120`);
-      if (!res.ok) {
-        if (res.status === 404 && options.silentNotFound) {
-          return false;
-        }
-        throw new Error(`session ${res.status}`);
-      }
-      const data = await res.json();
-      const turns = Array.isArray(data.turns) ? data.turns : [];
-      const normalized = turns.map((turn) => {
-        const roleRaw = String(turn.role || "assistant").toLowerCase();
-        const role = roleRaw === "user" ? "user" : roleRaw === "system" ? "system" : "assistant";
-        return createMessage(role, String(turn.text || ""));
-      });
-      setMessages(normalized);
+      const data = await fetchJson(`/api/session/${encodeURIComponent(sid)}?max_turns=120`);
+      setMessages(extractSessionMessages(data));
+      setSessionAgentState((data && data.agent_state) || {});
       setSessionId(sid);
-      pushLog("system", `已载入会话 ${sid.slice(0, 8)}。`);
-      await refreshSessions();
+      if (data && data.project_id) {
+        setProjectId(String(data.project_id || ""));
+      } else if (options.projectIdOverride) {
+        setProjectId(String(options.projectIdOverride || ""));
+      }
+      setLastResponse(null);
+      setToolTimeline([]);
+      setStageTimeline([]);
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
       return true;
     } catch (err) {
-      pushLog("error", `载入会话失败：${String(err.message || err)}`);
+      if (options.silentNotFound && String(err.message || "").includes("404")) return false;
+      const nextError = applyUiError(err, "载入线程失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `载入线程失败：${nextError.summary}`);
       return false;
     } finally {
       setLoadingSession(false);
     }
   }
 
-  async function createSession() {
-    const res = await fetch("/api/session/new", { method: "POST" });
-    if (!res.ok) throw new Error(`create session ${res.status}`);
-    const data = await res.json();
-    const sid = String(data.session_id || "").trim();
-    if (!sid) throw new Error("session_id empty");
-    setSessionId(sid);
-    setMessages([]);
-    await refreshSessions();
-    pushLog("system", `已创建新会话 ${sid.slice(0, 8)}。`);
-    return sid;
-  }
-
   async function handleNewSession() {
     try {
-      await createSession();
+      await createSession(projectId);
     } catch (err) {
-      pushLog("error", `新建会话失败：${String(err.message || err)}`);
+      const nextError = applyUiError(err, "新线程创建失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `新线程失败：${nextError.summary}`);
     }
   }
 
-  async function handleSend() {
-    const messageText = draft.trim();
+  async function uploadFiles(files) {
+    const uploaded = [];
+    for (const file of files) {
+      const form = new FormData();
+      form.append("file", file);
+      uploaded.push(await fetchJson("/api/upload", { method: "POST", body: form }));
+    }
+    return uploaded;
+  }
+
+  async function handleSelectFiles(event) {
+    const files = Array.from(event.currentTarget.files || []);
+    if (!files.length) return;
+    try {
+      const uploaded = await uploadFiles(files);
+      clearUiError();
+      setPendingUploads((prev) => [...prev, ...uploaded]);
+      pushLogWithLimit(setLogs, "system", `已添加 ${uploaded.length} 个附件`);
+    } catch (err) {
+      const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
+    } finally {
+      event.currentTarget.value = "";
+    }
+  }
+
+  function removeUpload(fileId) {
+    setPendingUploads((prev) => prev.filter((item) => item.id !== fileId));
+  }
+
+  async function handleSend(overrideText) {
+    const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
 
-    setDraft("");
     setSending(true);
+    clearUiError();
+    setToolTimeline([]);
+    setStageTimeline([]);
 
     let sid = sessionId;
+    let pendingMessage = null;
     try {
-      if (!sid) sid = await createSession();
-      const userMessage = createMessage("user", messageText);
-      const pendingMessage = createMessage("assistant", "正在思考中...", { pending: true });
-      setMessages((prev) => [...prev, userMessage, pendingMessage]);
-      pushLog("request", `发送消息（${messageText.length} 字）到会话 ${sid.slice(0, 8)}。`);
+      if (!sid) sid = await createSession(projectId);
 
-      const res = await fetch("/api/chat", {
+      const userMessage = createMessage("user", messageText);
+      pendingMessage = createMessage("assistant", "正在准备上下文...", { pending: true });
+      setMessages((prev) => [...prev, userMessage, pendingMessage]);
+      if (overrideText == null) setDraft("");
+
+      const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sid,
+          project_id: projectId,
           message: messageText,
+          attachment_ids: pendingUploads.map((item) => item.id),
           settings: {
-            ...DEFAULT_SETTINGS,
             ...chatSettings,
-            model: String(chatSettings.model || (health && health.model_default) || FALLBACK_MODEL).trim(),
+            provider: activeProvider,
+            model: String(
+              chatSettings.model ||
+              (activeProviderProfile && activeProviderProfile.default_model) ||
+              (health && health.default_model) ||
+              "",
+            ).trim(),
           },
         }),
       });
-
       if (!res.ok) {
-        let detail = `chat ${res.status}`;
+        let payload = null;
         try {
-          const errData = await res.json();
-          if (typeof errData.detail === "string" && errData.detail.trim()) {
-            detail = errData.detail;
-          }
+          payload = await res.json();
         } catch {
-          // ignore json parse errors
+          payload = { detail: `stream ${res.status}` };
         }
-        throw new Error(detail);
+        throw errorWithUiError(
+          normalizeUiError(
+            payload && Object.prototype.hasOwnProperty.call(payload, "detail") ? payload.detail : payload,
+            "请求失败，请稍后重试。",
+            { status_code: res.status },
+          ),
+        );
+      }
+      if (!res.body) {
+        throw errorWithUiError(normalizeUiError({ detail: "stream body unavailable" }, "请求失败，请稍后重试。"));
       }
 
-      const data = await res.json();
-      const answerText = String(data.text || "(空响应)");
-      setMessages((prev) => {
-        const copy = [...prev];
-        const index = copy.findIndex((item) => item.id === pendingMessage.id);
-        const finalMessage = createMessage("assistant", answerText);
-        if (index >= 0) {
-          copy[index] = finalMessage;
-        } else {
-          copy.push(finalMessage);
-        }
-        return copy;
-      });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalPayload = null;
 
-      pushLog("response", `收到回复（${answerText.length} 字）。`);
-      await Promise.all([refreshSessions(), refreshHealth()]);
-    } catch (err) {
-      const failText = `请求失败：${String(err.message || err)}`;
-      setMessages((prev) => {
-        const withoutPending = prev.filter((item) => !item.pending);
-        return [...withoutPending, createMessage("system", failText, { error: true })];
+      const replacePendingText = (text) => {
+        setMessages((prev) =>
+          prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
+        );
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        let splitIndex = buffer.indexOf("\n\n");
+        while (splitIndex >= 0) {
+          const chunk = buffer.slice(0, splitIndex);
+          buffer = buffer.slice(splitIndex + 2);
+          const parsed = parseSseChunk(chunk);
+          if (parsed) {
+            const { event, payload } = parsed;
+            if (event === "stage") {
+              const detail = String(payload.detail || payload.label || payload.code || "处理中...");
+              replacePendingText(detail);
+              setStageTimeline((prev) => [
+                {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  phase: String(payload.phase || payload.code || ""),
+                  label: String(payload.label || payload.phase || payload.code || "stage"),
+                  status: String(payload.status || "running"),
+                  detail,
+                },
+                ...prev,
+              ].slice(0, 20));
+              pushLogWithLimit(setLogs, "stage", detail);
+            } else if (event === "trace") {
+              const detail = String(payload.message || payload.raw || "");
+              if (detail) pushLogWithLimit(setLogs, "trace", detail);
+            } else if (event === "tool") {
+              const item = payload.item || {};
+              const name = String(item.name || "tool");
+              const summary = String(payload.summary || item.summary || item.output_preview || "工具调用");
+              setToolTimeline((prev) => [item, ...prev].slice(0, 24));
+              pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
+            } else if (event === "final") {
+              finalPayload = payload.response || null;
+            } else if (event === "error") {
+              throw errorWithUiError(normalizeUiError(payload, "请求失败，请稍后重试。"));
+            }
+          }
+          splitIndex = buffer.indexOf("\n\n");
+        }
+        if (done) break;
+      }
+
+      if (!finalPayload) throw new Error("missing final payload");
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === pendingMessage.id
+            ? createMessage("assistant", String(finalPayload.text || "(empty response)"))
+            : item,
+        ),
+      );
+      setLastResponse(finalPayload);
+      setPendingUploads([]);
+      clearUiError();
+      setSessionAgentState({
+        ...(finalPayload.inspector || {}).run_state,
+        ...(finalPayload.inspector || {}).evidence,
+        ...(finalPayload.inspector || {}).session,
+        ...{
+          agent_id: finalPayload.agent_id || "vintage_programmer",
+          goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
+          current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
+          phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
+          last_run_id: String(finalPayload.run_id || ""),
+          last_model: String(finalPayload.effective_model || ""),
+          tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
+          tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
+          evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+          enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
+            ? finalPayload.inspector.loaded_skills.map((item) => item.id)
+            : [],
+        },
       });
-      pushLog("error", failText);
-      await refreshHealth();
+      pushLogWithLimit(
+        setLogs,
+        "response",
+        `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
+      );
+      await Promise.all([refreshSessions(projectId), refreshHealth(), refreshWorkbenchTools(), refreshSkills(), refreshProjects()]);
+    } catch (err) {
+      const nextError = applyUiError(err, "请求失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `发送失败：${nextError.summary}`);
+      setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
     } finally {
       setSending(false);
     }
   }
 
-  function handleToggleModuleMounted(module, mounted) {
-    if (!module || !module.key) return;
-    const mountedValue = Boolean(mounted);
-    setModuleMountOverrides((prev) => {
-      const next = { ...prev };
-      const defaultMounted = defaultModuleMounted(module);
-      if (defaultMounted === mountedValue) {
-        delete next[module.key];
-      } else {
-        next[module.key] = mountedValue;
-      }
-      return next;
-    });
-    pushLog("system", `${module.title} 已${mountedValue ? "装载" : "卸载"}。`);
+  async function loadSkillDetail(skillId) {
+    const sid = String(skillId || "").trim();
+    if (!sid) return;
+    try {
+      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(sid)}`);
+      clearUiError();
+      setSelectedSkillId(sid);
+      setSkillEditor(String(payload.content || ""));
+    } catch (err) {
+      const nextError = applyUiError(err, "读取技能失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `读取技能失败：${nextError.summary}`);
+    }
   }
 
-  function handleModelSelectChange(event) {
-    const value = String(event.currentTarget.value || "").trim();
-    if (!value || value === "__custom__") return;
-    setModelTouched(true);
-    setChatSettings((prev) => ({ ...prev, model: value }));
-    pushLog("system", `模型已切换到 ${value}。`);
+  async function loadSpecDetail(name) {
+    const specName = String(name || "").trim();
+    if (!specName) return;
+    try {
+      const payload = await fetchJson(`/api/workbench/specs/${encodeURIComponent(specName)}`);
+      clearUiError();
+      setSelectedSpecName(specName);
+      setSpecEditor(String(payload.content || ""));
+    } catch (err) {
+      const nextError = applyUiError(err, "读取规范失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `读取规范失败：${nextError.summary}`);
+    }
   }
 
-  function handleModelInputChange(event) {
-    const value = String(event.currentTarget.value || "");
-    setModelTouched(true);
-    setChatSettings((prev) => ({ ...prev, model: value }));
+  async function saveSkill() {
+    if (!skillEditor.trim()) return;
+    setSavingWorkbench(true);
+    try {
+      const method = selectedSkillId ? "PUT" : "POST";
+      const url = selectedSkillId
+        ? `/api/workbench/skills/${encodeURIComponent(selectedSkillId)}`
+        : "/api/workbench/skills";
+      const payload = await fetchJson(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: skillEditor }),
+      });
+      setSelectedSkillId(String(payload.id || ""));
+      setSkillEditor(String(payload.content || ""));
+      await Promise.all([refreshSkills(), refreshHealth()]);
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `技能已保存：${payload.id || selectedSkillId || "new_skill"}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "保存技能失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `保存技能失败：${nextError.summary}`);
+    } finally {
+      setSavingWorkbench(false);
+    }
+  }
+
+  async function toggleSelectedSkill(nextEnabled) {
+    if (!selectedSkillId) return;
+    setSavingWorkbench(true);
+    try {
+      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(selectedSkillId)}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      setSkillEditor(String(payload.content || ""));
+      await Promise.all([refreshSkills(), refreshHealth()]);
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `技能已${payload.enabled ? "启用" : "停用"}：${selectedSkillId}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "切换技能失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `切换技能失败：${nextError.summary}`);
+    } finally {
+      setSavingWorkbench(false);
+    }
+  }
+
+  async function saveSpec() {
+    if (!selectedSpecName || !specEditor.trim()) return;
+    setSavingWorkbench(true);
+    try {
+      const payload = await fetchJson(`/api/workbench/specs/${encodeURIComponent(selectedSpecName)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: specEditor }),
+      });
+      setSpecEditor(String(payload.content || ""));
+      await Promise.all([refreshSpecs(), refreshHealth()]);
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `规范已保存：${selectedSpecName}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "保存规范失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `保存规范失败：${nextError.summary}`);
+    } finally {
+      setSavingWorkbench(false);
+    }
   }
 
   function handleComposerKeyDown(event) {
@@ -703,404 +1060,617 @@ function App() {
     }
   }
 
-  const recentLogs = logs.length
-    ? logs.slice(0, 6)
-    : [{ id: "empty-log", type: "system", time: nowTime(), text: "暂无日志。" }];
-  const totalSlots = runtimeModules.length;
-  const healthyCount = runtimeModules.filter((item) => item.mounted && !moduleHasIssue(item)).length;
-  const mountedCount = runtimeModules.filter((item) => item.mounted).length;
-  const issueCount = totalSlots - healthyCount;
-  const healthPercent = totalSlots ? Math.round((healthyCount / totalSlots) * 100) : 0;
-  const issuePercent = totalSlots ? Math.round((issueCount / totalSlots) * 100) : 0;
-  const centralRuntimeModule = runtimeModules.find((item) => item.key === moduleTopology.centralLlm.key) || null;
-  const swarmEnabledCount = agentModules.filter((item) => item.supportsSwarm).length;
+  const runtimeStatus = (health && health.runtime_status) || {};
+  const currentProject =
+    projects.find((item) => String(item.project_id || "") === String(projectId || "")) ||
+    projects[0] ||
+    null;
+  const workspaceLabel = projectLabel(currentProject, health);
+  const currentProjectRoot = String((currentProject && currentProject.root_path) || runtimeStatus.project_root || "").trim();
+  const currentProjectBranch = String((currentProject && currentProject.git_branch) || runtimeStatus.git_branch || "").trim();
+  const agentInfo = (lastResponse && lastResponse.inspector && lastResponse.inspector.agent) || (health && health.agent) || {};
+  const loadedSkills = Array.isArray((lastResponse && lastResponse.inspector && lastResponse.inspector.loaded_skills))
+    ? lastResponse.inspector.loaded_skills
+    : Array.isArray((health && health.agent && health.agent.loaded_skills))
+      ? health.agent.loaded_skills
+      : [];
+  const lastInspector = (lastResponse && lastResponse.inspector) || {};
+  const runState = lastInspector.run_state || {};
+  const evidence = lastInspector.evidence || {};
+  const activeToolTimeline = Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
+    ? lastInspector.tool_timeline
+    : toolTimeline;
+  const activeProviderAuthReady =
+    activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
+      ? Boolean(activeProviderProfile.auth_ready)
+      : Boolean(runtimeStatus.auth_ready);
+  const activeProviderAuthMode = String(
+    (activeProviderProfile && activeProviderProfile.auth_mode) ||
+    runtimeStatus.auth_mode ||
+    "",
+  ).trim();
+  const activeModel = String(
+    (lastResponse && lastResponse.effective_model) ||
+    chatSettings.model ||
+    (activeProviderProfile && activeProviderProfile.default_model) ||
+    (health && health.default_model) ||
+    "",
+  ).trim();
+  const activeProviderLabel = String((activeProviderProfile && activeProviderProfile.label) || activeProvider || "").trim();
+  const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
+  const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
+  const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId) : (workspaceLabel || "开始构建");
+  const headBreadcrumb = [
+    workspaceLabel || "",
+    currentProjectRoot ? compactPath(currentProjectRoot) : "",
+    currentProjectBranch || "",
+    loadedSkills.length ? `skills:${loadedSkills.length}` : "no skills",
+  ].filter(Boolean).join(" · ");
+  const statusSummary = [
+    workspaceLabel || "-",
+    activeProviderLabel || activeProvider || "-",
+    activeModel || "-",
+  ].filter(Boolean).join(" · ");
 
   return html`
-    <div className="app-bg">
-      <div className="app-shell">
-        <section className="top-grid">
-          <article className="card top-card logo-card">
-            <div className="card-kicker">Logo</div>
-            <div className="card-title">品牌标识</div>
-            <${TeamLogo} />
-          </article>
+    <div className="workspace-shell" id="appShell">
+      <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
+        <div className="rail-brand">
+          <div className="brand-mark">VP</div>
+          <div>
+            <div className="brand-title">Vintage Programmer</div>
+            <div className="brand-sub">${workspaceLabel || "选择一个项目开始工作"}</div>
+          </div>
+          <button className="rail-close mobile-only" type="button" onClick=${() => setMobileThreadsOpen(false)}>×</button>
+        </div>
 
-          <button className="card top-card control-preview" type="button" onClick=${() => setPanelOpen(true)}>
-            <div className="card-kicker">Control Panel</div>
-            <div className="card-title">点击放大查看</div>
-            <div className="dashboard-mini">
-              <div className="gauge-mini-shell">
-                <div
-                  className=${`gauge-mini-ring ${kernelStable ? "ok" : "warn"}`}
-                  style=${{ "--gauge-value": `${healthPercent}%` }}
-                >
-                  <span>${healthPercent}%</span>
-                </div>
-                <div className="gauge-mini-label">${kernelStable ? "主核稳定" : "需要检查"}</div>
-              </div>
-              <div className="dashboard-mini-metrics">
-                <div className="dashboard-metric-row">
-                  <span>主核</span>
-                  <span className=${`lamp ${kernelStable ? "ok" : "warn"}`}></span>
-                </div>
-                <div className="dashboard-metric-row">
-                  <span>中央调控</span>
-                  <span className=${`lamp ${moduleHasIssue(centralRuntimeModule) ? "warn" : "ok"}`}></span>
-                </div>
-                <div className="dashboard-metric-row">
-                  <span>LLM 模块</span>
-                  <span>${LLM_MODULE_SLOT_COUNT}</span>
-                </div>
-              </div>
-            </div>
-            <div className="control-preview-row muted">仪表盘视图：1 主核 + 1 中央调控 + 12 LLM</div>
-          </button>
+        <div className="rail-actions">
+          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>新线程</button>
+          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${loadingSession || sending}>刷新</button>
+        </div>
 
-          <button className="card top-card pixel-card agent-preview-card" type="button" onClick=${() => setAvatarPanelOpen(true)}>
-            <div className="card-kicker">Avatar Modules</div>
-            <div className="card-title">像素人缩略图</div>
-            <div className="agent-wall-mini" aria-hidden="true">
-              ${agentModules.slice(0, LLM_MODULE_SLOT_COUNT).map(
-                (mod) => html`
-                  <div key=${mod.key} className=${`agent-mini-tile ${mod.supportsSwarm ? "swarm" : ""}`}>
-                    <div
-                      className=${`legacy-sprite-wrap mini ${mod.mounted ? "active" : ""}`}
-                      dangerouslySetInnerHTML=${{ __html: buildRoleSprite(spriteRoleForModule(mod)) }}
-                    ></div>
-                    <span className=${`lamp tiny ${mod.mounted ? statusTone(mod.status) : "bad"}`}></span>
-                  </div>
-                `,
-              )}
-            </div>
-            <div className="agent-preview-meta">
-              ${agentModules.length} modules · ${swarmEnabledCount} swarm-enabled · 点击放大查看详情
-            </div>
-          </button>
+        <section className="rail-section" id="projectSection">
+          <div className="section-head">
+            <span>Projects</span>
+            <button className="ghost-btn compact-btn" type="button" onClick=${() => setProjectDialogOpen(true)}>添加</button>
+          </div>
+          <div className="project-list">
+            ${projects.length
+              ? projects.map(
+                  (item) => html`
+                    <button
+                      key=${item.project_id}
+                      className=${`project-row ${item.project_id === projectId ? "active" : ""}`}
+                      type="button"
+                      onClick=${() => selectProject(item.project_id)}
+                      disabled=${loadingSession || sending}
+                    >
+                      <div className="project-row-title">${item.title || item.project_id}</div>
+                      <div className="project-row-meta">
+                        ${compactPath(item.root_path)}
+                        ${item.git_branch ? ` · ${item.git_branch}` : ""}
+                        ${item.is_worktree ? " · worktree" : ""}
+                      </div>
+                    </button>
+                  `,
+                )
+              : html`<div className="thread-empty">还没有项目，先添加一个本地文件夹。</div>`}
+          </div>
         </section>
 
-        <section className="main-grid">
-          <aside className="left-rail">
-            <article className="card quick-card">
-              <div className="card-kicker">Session</div>
-              <div className="card-title">会话控制</div>
-              <button className="primary" type="button" onClick=${handleNewSession} disabled=${sending || loadingSession}>
-                新建会话
-              </button>
-              <button className="ghost" type="button" onClick=${refreshSessions} disabled=${sending || loadingSession}>
-                刷新列表
-              </button>
-              <div className="session-current">当前会话：${sessionId ? sessionId : "(未创建)"}</div>
-              <div className="mini-log-head">模型选择</div>
-              <div className="model-config">
-                <div className="model-config-row">
-                  <label htmlFor="modelPreset">预设</label>
-                  <select id="modelPreset" value=${modelSelectValue} onChange=${handleModelSelectChange} disabled=${sending}>
-                    ${modelOptions.map((name) => html`<option key=${name} value=${name}>${name}</option>`)}
-                    <option value="__custom__">自定义</option>
-                  </select>
-                </div>
-                <div className="model-config-row">
-                  <label htmlFor="modelInput">模型名</label>
-                  <input
-                    id="modelInput"
-                    type="text"
-                    value=${chatSettings.model}
-                    onInput=${handleModelInputChange}
-                    placeholder="例如 qwen2.5:14b / qwen-plus / gpt-5.1-chat"
-                    disabled=${sending}
-                  />
-                </div>
-                <div className="model-config-meta">
-                  provider=${providerName || "unknown"} · auth=${health && health.auth_mode ? health.auth_mode : "unknown"} ·
-                  default=${health && health.model_default ? health.model_default : FALLBACK_MODEL}
-                </div>
-              </div>
-              <div className="mini-log-head">Log</div>
-              <div className="mini-log-list">
-                ${recentLogs.map(
+        <section className="rail-section rail-section-fill">
+          <div className="section-head">
+            <span>Threads</span>
+            <span className="section-meta">${workspaceLabel || "-"}</span>
+          </div>
+          <div className="thread-list">
+            ${sessions.length
+              ? sessions.map(
                   (item) => html`
-                    <div key=${item.id} className=${`mini-log-row log-${item.type}`}>
-                      <span className="mini-log-time">${item.time}</span>
-                      <span className="mini-log-text">${item.text}</span>
-                    </div>
+                    <button
+                      key=${item.session_id}
+                      className=${`thread-row ${item.session_id === sessionId ? "active" : ""}`}
+                      type="button"
+                      onClick=${() => loadSession(item.session_id)}
+                      disabled=${loadingSession || sending}
+                    >
+                      <div className="thread-row-title">${item.title || "新线程"}</div>
+                      <div className="thread-row-meta">${formatTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
+                    </button>
                   `,
-                )}
-              </div>
-            </article>
+                )
+              : html`<div className="thread-empty">${workspaceLabel ? `项目 ${workspaceLabel} 还没有线程。` : "先选择一个项目。"}</div>`}
+          </div>
+        </section>
+      </aside>
 
-            <article className="card history-card">
-              <div className="card-kicker">History</div>
-              <div className="card-title">历史聊天记录</div>
-              <div className="history-list">
-                ${sessions.length
-                  ? sessions.map(
-                      (item) => html`
-                        <button
-                          key=${item.session_id}
-                          type="button"
-                          className=${`history-item ${item.session_id === sessionId ? "active" : ""}`}
-                          onClick=${() => loadSession(item.session_id)}
-                          disabled=${loadingSession || sending}
-                        >
-                          <div className="history-title">${item.title || "新会话"}</div>
-                          <div className="history-meta">${formatSessionTime(item.updated_at)} · ${item.turn_count || 0} turns</div>
-                          <div className="history-preview">${item.preview || "暂无预览"}</div>
-                        </button>
-                      `,
-                    )
-                  : html`<div className="history-empty">还没有历史会话</div>`}
+      <main className="workspace-main" id="chatPane">
+        <header className="workspace-head">
+          <div className="head-left">
+            <button className="ghost-btn mobile-only" type="button" onClick=${() => setMobileThreadsOpen(true)}>线程</button>
+            <div className="head-stack">
+              <div className="main-head-title">${headTitle}</div>
+              <div className="main-head-sub" title=${currentProjectRoot || workspaceLabel || ""}>
+                ${agentInfo.title || "Vintage Programmer"}
+                ${headBreadcrumb ? ` · ${headBreadcrumb}` : ""}
               </div>
-            </article>
-          </aside>
-
-          <section className="card chat-card">
-            <div className="chat-head">
-              <div>
-                <div className="card-kicker">Chat</div>
-                <div className="card-title">主聊天区</div>
-              </div>
-              <div className="chat-status ${sending ? "sending" : ""}">${sending ? "发送中..." : "在线"}</div>
             </div>
+          </div>
+          <div className="head-actions">
+            <button className=${`mini-btn ${drawerView === "run" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}>Run</button>
+            <button className=${`mini-btn ${drawerView === "tools" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tools" ? "" : "tools")}>Tools</button>
+            <button className=${`mini-btn ${drawerView === "skills" ? "active" : ""}`} type="button" onClick=${() => {
+              setDrawerView(drawerView === "skills" ? "" : "skills");
+              if (!skills.length) refreshSkills();
+            }}>Skills</button>
+            <button className=${`mini-btn ${drawerView === "agent" ? "active" : ""}`} type="button" onClick=${() => {
+              setDrawerView(drawerView === "agent" ? "" : "agent");
+              if (!specs.length) refreshSpecs();
+            }}>Agent</button>
+            <button className=${`mini-btn ${drawerView === "settings" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "settings" ? "" : "settings")}>Settings</button>
+          </div>
+        </header>
 
-            <div className="chat-list" ref=${chatListRef}>
-              ${messages.length
-                ? messages.map(
-                    (msg) => html`
-                      <div
-                        key=${msg.id}
-                        className=${`bubble-row role-${msg.role} ${msg.pending ? "pending" : ""} ${msg.error ? "error" : ""}`}
-                      >
-                        <div className="bubble">${msg.text}</div>
+        <section className="conversation-plane" id="messageList" ref=${chatListRef}>
+          ${messages.length
+            ? messages.map(
+                (item) => html`
+                  <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
+                    <div className="message-meta">
+                      <span className="message-role">${roleLabel(item.role)}</span>
+                      ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt)}</span>` : null}
+                    </div>
+                    <div className="message-card">${item.text}</div>
+                  </article>
+                `,
+              )
+            : html`
+                <section className="empty-panel">
+                  <div className="empty-kicker">OpenClaw-first Tools · Codex-style Workspace</div>
+                  <div className="empty-title" id="emptyPromptLine">已选择项目后可直接开线程，输入框始终在底部。</div>
+                  <p className="empty-copy">
+                    当前项目：
+                    <strong>${workspaceLabel || "未选择"}</strong>
+                    ${currentProjectRoot ? ` · ${compactPath(currentProjectRoot)}` : ""}
+                    。主 agent 为 <strong>vintage_programmer</strong>，Workbench 负责 Run、Tools、Skills、Agent 和 Settings。
+                  </p>
+                  <div className="starter-list">${starterPromptChips(setDraft, handleSend)}</div>
+                </section>
+              `}
+        </section>
+
+        <section className="composer-shell" id="composerShell">
+          ${pendingUploads.length
+            ? html`
+                <div className="attachment-strip">
+                  ${pendingUploads.map(
+                    (item) => html`
+                      <div key=${item.id} className="attachment-chip">
+                        <span>${item.name}</span>
+                        <button type="button" onClick=${() => removeUpload(item.id)}>×</button>
                       </div>
                     `,
-                  )
-                : html`<div className="chat-empty">发一条消息开始聊天。</div>`}
-            </div>
-
-            <div className="composer">
-              <textarea
-                value=${draft}
-                onInput=${(e) => setDraft(e.currentTarget.value)}
-                onKeyDown=${handleComposerKeyDown}
-                placeholder="输入消息。Enter 发送，Shift+Enter 换行。"
-                disabled=${sending}
-              ></textarea>
-              <button className="primary send-btn" type="button" onClick=${handleSend} disabled=${sending || !draft.trim()}>
-                发送
-              </button>
-            </div>
-          </section>
-        </section>
-      </div>
-
-      ${panelOpen
-        ? html`
-            <div className="modal-overlay" onClick=${() => setPanelOpen(false)}>
-              <div className="modal-card" onClick=${(e) => e.stopPropagation()}>
-                <div className="modal-head">
-                  <div>
-                    <div className="card-kicker">Control Panel</div>
-                    <div className="card-title">系统总览</div>
-                  </div>
-                  <button className="ghost close-btn" type="button" onClick=${() => setPanelOpen(false)}>关闭</button>
+                  )}
                 </div>
+              `
+            : null}
 
-                <div className="modal-grid">
-                  <section className="modal-section">
-                    <div className="section-title">主核稳定</div>
-                    <div className="dashboard-panel-grid">
-                      <article className="dashboard-panel">
-                        <div
-                          className=${`gauge-ring ${kernelStable ? "ok" : "warn"}`}
-                          style=${{ "--gauge-value": `${healthPercent}%` }}
-                        >
-                          <span>${healthPercent}%</span>
-                        </div>
-                        <div className="dashboard-panel-title">总体健康度</div>
-                      </article>
-                      <article className="dashboard-panel">
-                        <div
-                          className=${`gauge-ring ${issueCount ? "warn" : "ok"}`}
-                          style=${{ "--gauge-value": `${issuePercent}%` }}
-                        >
-                          <span>${issueCount}</span>
-                        </div>
-                        <div className="dashboard-panel-title">异常模块数</div>
-                      </article>
+          ${uiError
+            ? html`
+                <div className=${`composer-error tone-error kind-${uiError.kind || "unknown"}`} id="composerError">
+                  <div className="composer-error-main">
+                    <div className="composer-error-summary">${uiError.summary}</div>
+                    <div className="composer-error-meta">
+                      ${uiError.status_code ? `HTTP ${uiError.status_code}` : ""}
+                      ${uiError.provider ? ` · ${uiError.provider}` : ""}
+                      ${uiError.retryable ? " · 可重试" : ""}
                     </div>
-                    <div className="kernel-status-row dashboard-inline">
-                      <span className=${`lamp xl ${kernelStable ? "ok" : "warn"}`}></span>
-                      <div>
-                        <div className="kernel-title">${kernelStable ? "主核稳定" : "主核存在风险"}</div>
-                        <div className="kernel-meta">
-                          auth=${health && health.auth_mode ? health.auth_mode : "unknown"} · exec=${
-                            health && health.execution_mode_default ? health.execution_mode_default : "unknown"
-                          }
-                        </div>
-                      </div>
-                    </div>
-                    <ul className="kernel-facts">
-                      <li>健康接口：${health && health.ok ? "正常" : "异常"}</li>
-                      <li>固定拓扑：1 + 1 + ${LLM_MODULE_SLOT_COUNT}</li>
-                      <li>已识别 Agent 插件：${moduleTopology.sourceAgentCount}</li>
-                      <li>已装载模块：${mountedCount}</li>
-                      <li>异常模块：${issueCount}</li>
-                    </ul>
-                  </section>
-
-                  <section className="modal-section">
-                    <div className="section-title">模块列表（主核 + 中央 + 12 LLM）</div>
-                    <div className="module-list">
-                      ${runtimeModules.map(
-                        (mod) => html`
-                          <button
-                            key=${mod.key}
-                            type="button"
-                            className=${`module-item module-item-button ${selectedControlModuleKey === mod.key ? "is-selected" : ""}`}
-                            onClick=${() => setSelectedControlModuleKey(mod.key)}
-                          >
-                            <span className=${`lamp ${mod.mounted ? statusTone(mod.status) : "bad"}`}></span>
-                            <div className="module-main">
-                              <div className="module-key">${mod.title}</div>
-                              <div className="module-ref">${mod.sourcePath || mod.key}</div>
-                              ${mod.kindLabel ? html`<div className="module-tags">${mod.kindLabel}</div>` : null}
-                              ${mod.roles && mod.roles.length ? html`<div className="module-tags">roles: ${mod.roles.join(" / ")}</div>` : null}
-                            </div>
-                            <div className="module-status-stack">
-                              <div className=${`module-mount-chip ${mod.mounted ? "mounted" : "unmounted"}`}>
-                                ${mod.mounted ? "已装载" : "未装载"}
-                              </div>
-                              <div className="module-status">${mod.mounted ? statusText(mod.status) : "离线"}</div>
-                            </div>
-                          </button>
-                        `,
-                      )}
-                    </div>
-                    ${selectedControlModule
+                  </div>
+                  <div className="composer-error-actions">
+                    ${uiError.detail
                       ? html`
-                          <div className="module-action-panel">
-                            <div className="module-action-head">
-                              <div className="module-action-title">${selectedControlModule.title}</div>
-                              <div className="module-action-sub">${selectedControlModule.key}</div>
-                            </div>
-                            <div className="module-action-row">
-                              <button
-                                className="ghost"
-                                type="button"
-                                disabled=${selectedControlModule.mounted}
-                                onClick=${() => handleToggleModuleMounted(selectedControlModule, true)}
-                              >
-                                装载
-                              </button>
-                              <button
-                                className="danger"
-                                type="button"
-                                disabled=${!selectedControlModule.mounted}
-                                onClick=${() => handleToggleModuleMounted(selectedControlModule, false)}
-                              >
-                                卸载
-                              </button>
-                            </div>
-                          </div>
+                          <button
+                            className="ghost-btn compact-btn"
+                            type="button"
+                            onClick=${() => {
+                              if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(uiError.detail).catch(() => {});
+                              }
+                            }}
+                          >
+                            复制详情
+                          </button>
                         `
                       : null}
-                  </section>
+                    ${uiError.detail
+                      ? html`
+                          <details className="composer-error-details">
+                            <summary>详情</summary>
+                            <pre>${uiError.detail}</pre>
+                          </details>
+                        `
+                      : null}
+                  </div>
+                </div>
+              `
+            : null}
+
+          <div className="composer-toolbar">
+            <div className="composer-toolbar-left">
+              <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
+              <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
+            </div>
+            <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+          </div>
+
+          <div className="composer-frame">
+            <textarea
+              value=${draft}
+              onInput=${(event) => setDraft(event.currentTarget.value)}
+              onKeyDown=${handleComposerKeyDown}
+              placeholder="给 Vintage Programmer 一个清晰任务。也可以直接贴代码、配置或长文本。Enter 发送，Shift+Enter 换行。"
+              disabled=${sending}
+            ></textarea>
+            <button className="send-btn" type="button" onClick=${() => handleSend()} disabled=${sending || !draft.trim()}>
+              ${sending ? "运行中" : "发送"}
+            </button>
+          </div>
+          <div className="status-bar status-inline" id="statusBar">
+            <div className="status-summary">${statusSummary}</div>
+            <div className="status-right">
+              ${currentProjectBranch ? html`<span>${currentProjectBranch}</span>` : null}
+              ${!activeProviderAuthReady ? html`<span className="status-inline-note">auth missing</span>` : null}
+            </div>
+            ${uiError ? html`<span className="status-alert" title=${uiError.summary}>error</span>` : null}
+          </div>
+        </section>
+      </main>
+
+      ${projectDialogOpen
+        ? html`
+            <div className="project-modal-backdrop" id="projectModal">
+              <div className="project-modal">
+                <div className="panel-title">添加项目</div>
+                <label className="form-field">
+                  <span>本地绝对路径</span>
+                  <input
+                    className="drawer-input"
+                    type="text"
+                    value=${projectPathDraft}
+                    placeholder="/Users/name/Desktop/my-repo"
+                    onInput=${(event) => setProjectPathDraft(event.currentTarget.value)}
+                    disabled=${savingProject}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>显示名称（可选）</span>
+                  <input
+                    className="drawer-input"
+                    type="text"
+                    value=${projectTitleDraft}
+                    placeholder="目录名将作为默认标题"
+                    onInput=${(event) => setProjectTitleDraft(event.currentTarget.value)}
+                    disabled=${savingProject}
+                  />
+                </label>
+                <div className="path-hint">v1 采用路径输入 + 最近项目，不依赖系统文件夹选择器。</div>
+                ${projectFormError ? html`<div className="status-error">${projectFormError}</div>` : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>取消</button>
+                  <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? "添加中" : "添加项目"}</button>
                 </div>
               </div>
             </div>
           `
         : null}
-      ${avatarPanelOpen
-        ? html`
-            <div className="modal-overlay" onClick=${() => setAvatarPanelOpen(false)}>
-              <div className="modal-card avatar-modal" onClick=${(e) => e.stopPropagation()}>
-                <div className="modal-head">
-                  <div>
-                    <div className="card-kicker">Agent Modules</div>
-                    <div className="card-title">像素人模块详情</div>
-                  </div>
-                  <button className="ghost close-btn" type="button" onClick=${() => setAvatarPanelOpen(false)}>关闭</button>
-                </div>
 
-                <div className="avatar-modal-grid">
-                  <section className="modal-section">
-                    <div className="section-title">模块缩略图</div>
-                    <div className="avatar-module-list">
-                      ${agentModules.map(
-                        (mod, idx) => html`
-                          <button
-                            key=${mod.key}
-                            type="button"
-                            className=${`avatar-module-item ${selectedAvatarModule && selectedAvatarModule.key === mod.key ? "is-selected" : ""}`}
-                            onClick=${() => setSelectedAvatarModuleKey(mod.key)}
-                          >
-                            <div
-                              className=${`legacy-sprite-wrap avatar-sprite ${mod.mounted ? "active" : ""}`}
-                              dangerouslySetInnerHTML=${{ __html: buildRoleSprite(spriteRoleForModule(mod)) }}
-                            ></div>
-                            <div className="avatar-module-main">
-                              <div className="avatar-module-title">${`#${String(idx + 1).padStart(2, "0")} ${mod.title}`}</div>
-                              <div className="avatar-module-sub">${mod.sourcePath || mod.key}</div>
-                              <div className="avatar-module-tags">
-                                <span className=${`capability-chip ${mod.supportsSwarm ? "swarm" : "plain"}`}>
-                                  ${mod.supportsSwarm ? `Swarm · ${mod.swarmMode || "enabled"}` : "Single Agent"}
-                                </span>
-                                <span className=${`lamp tiny ${mod.mounted ? statusTone(mod.status) : "bad"}`}></span>
+      ${drawerView
+        ? html`<aside className="workbench-drawer open" id="workbenchDrawer">
+        <div className="workbench-head">
+          <div className="workbench-title">Workbench</div>
+          <div className="workbench-tabs">
+            ${WORKBENCH_TABS.map(
+              (tab) => html`
+                <button
+                  key=${tab}
+                  className=${`tab-btn ${drawerView === tab ? "active" : ""}`}
+                  type="button"
+                  onClick=${() => setDrawerView(tab)}
+                >
+                  ${tab}
+                </button>
+              `,
+            )}
+          </div>
+          <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>关闭</button>
+        </div>
+
+        ${drawerView === "run"
+          ? html`
+              <div className="workbench-scroll">
+                <section className="panel-card">
+                  <div className="panel-title">Run State</div>
+                  <div className="meta-line">goal: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
+                  <div className="meta-line">phase: ${runState.phase || sessionAgentState.phase || "idle"}</div>
+                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
+                  <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-title">Stage Timeline</div>
+                  <div className="timeline-list">
+                    ${stageTimeline.length
+                      ? stageTimeline.map(
+                          (item) => html`
+                            <div key=${item.id} className="timeline-row">
+                              <div className="timeline-head">
+                                <span>${item.label}</span>
+                                <span>${item.status}</span>
+                              </div>
+                              <div className="timeline-detail">${item.detail}</div>
+                            </div>
+                          `,
+                        )
+                      : html`<div className="empty-inline">本轮还没有阶段记录。</div>`}
+                  </div>
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-title">Recent Tools</div>
+                  <div className="timeline-list">
+                    ${activeToolTimeline.length
+                      ? activeToolTimeline.map(
+                          (item, index) => html`
+                            <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
+                              <div className="timeline-head">
+                                <span>${item.name || "tool"}</span>
+                                <span>${item.group || item.module_group || "tool"}</span>
+                              </div>
+                              <div className="timeline-detail">${item.summary || item.output_preview || "无摘要"}</div>
+                            </div>
+                          `,
+                        )
+                      : html`<div className="empty-inline">这一轮没有工具调用。</div>`}
+                  </div>
+                </section>
+
+                <section className="panel-card">
+                  <div className="panel-title">Logs</div>
+                  <div className="timeline-list">
+                    ${logs.length
+                      ? logs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
+                      : html`<div className="empty-inline">暂无额外日志。</div>`}
+                  </div>
+                </section>
+              </div>
+            `
+          : null}
+
+        ${drawerView === "tools"
+          ? html`
+              <div className="workbench-scroll">
+                ${Object.entries(groupedTools).map(
+                  ([group, items]) => html`
+                    <section key=${group} className="panel-card">
+                      <div className="panel-title">${group}</div>
+                      <div className="tool-catalog">
+                        ${items.map(
+                          (item) => html`
+                            <div key=${item.name} className="tool-item">
+                              <div className="tool-item-head">
+                                <span className="tool-name">${item.name}</span>
+                                <span className="tool-source">${item.source}</span>
+                              </div>
+                              <div className="tool-summary">${item.summary || "无摘要"}</div>
+                              <div className="tool-flags">
+                                <span>${item.read_only ? "read-only" : "write"}</span>
+                                <span>${item.requires_evidence ? "evidence" : "no-evidence"}</span>
                               </div>
                             </div>
-                          </button>
-                        `,
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="modal-section">
-                    <div className="section-title">模块信息</div>
-                    ${selectedAvatarModule
-                      ? html`
-                          <div className="avatar-detail-head">
-                            <div className="avatar-detail-title">${selectedAvatarModule.title}</div>
-                            <div className="avatar-detail-sub">${selectedAvatarModule.key}</div>
-                          </div>
-                          <div className="avatar-detail-grid">
-                            <div className="avatar-detail-row">
-                              <span>文件</span>
-                              <code>${selectedAvatarModule.sourcePath || "-"}</code>
-                            </div>
-                            <div className="avatar-detail-row">
-                              <span>状态</span>
-                              <strong>${selectedAvatarModule.mounted ? statusText(selectedAvatarModule.status) : "离线"}</strong>
-                            </div>
-                            <div className="avatar-detail-row">
-                              <span>Swarm</span>
-                              <strong>${selectedAvatarModule.supportsSwarm ? "支持" : "不支持"}</strong>
-                            </div>
-                            <div className="avatar-detail-row">
-                              <span>Swarm 模式</span>
-                              <code>${selectedAvatarModule.supportsSwarm ? selectedAvatarModule.swarmMode || "generic" : "none"}</code>
-                            </div>
-                          </div>
-                          <div className="avatar-detail-note">调度入口：app/kernel/llm_router.py</div>
-                          <div className="avatar-capability-list">
-                            ${(selectedAvatarModule.capabilityTags || []).length
-                              ? selectedAvatarModule.capabilityTags.map(
-                                  (tag) => html`<span key=${`${selectedAvatarModule.key}-${tag}`} className="capability-chip">${tag}</span>`,
-                                )
-                              : html`<span className="capability-chip plain">暂无标签</span>`}
-                          </div>
-                          ${selectedAvatarModule.description
-                            ? html`<div className="avatar-detail-desc">${selectedAvatarModule.description}</div>`
-                            : null}
-                        `
-                      : html`<div className="module-empty">暂无模块信息</div>`}
-                  </section>
-                </div>
+                          `,
+                        )}
+                      </div>
+                    </section>
+                  `,
+                )}
               </div>
-            </div>
-          `
+            `
+          : null}
+
+        ${drawerView === "skills"
+          ? html`
+              <div className="workbench-scroll">
+                <section className="panel-card">
+                  <div className="editor-toolbar">
+                    <div className="panel-title">Skills</div>
+                    <div className="editor-actions">
+                      <button className="ghost-btn" type="button" onClick=${() => {
+                        setSelectedSkillId("");
+                        setSkillEditor(defaultSkillTemplate());
+                      }}>新建</button>
+                      <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || !skillEditor.trim()}>保存</button>
+                      ${selectedSkill
+                        ? html`
+                            <button
+                              className="ghost-btn"
+                              type="button"
+                              onClick=${() => toggleSelectedSkill(!selectedSkill.enabled)}
+                              disabled=${savingWorkbench}
+                            >
+                              ${selectedSkill.enabled ? "停用" : "启用"}
+                            </button>
+                          `
+                        : null}
+                    </div>
+                  </div>
+
+                  <div className="resource-list">
+                    ${skills.length
+                      ? skills.map(
+                          (item) => html`
+                            <button
+                              key=${item.id}
+                              className=${`resource-row ${selectedSkillId === item.id ? "active" : ""}`}
+                              type="button"
+                              onClick=${() => loadSkillDetail(item.id)}
+                            >
+                              <div className="resource-row-title">${item.title || item.id}</div>
+                              <div className="resource-row-meta">${item.enabled ? "enabled" : "disabled"} · ${item.validation_status}</div>
+                            </button>
+                          `,
+                        )
+                      : html`<div className="empty-inline">还没有本地 skill，点“新建”开始。</div>`}
+                  </div>
+
+                  <textarea
+                    className="editor-textarea"
+                    value=${skillEditor}
+                    onInput=${(event) => setSkillEditor(event.currentTarget.value)}
+                    placeholder="完整编辑 SKILL.md 内容"
+                  ></textarea>
+                </section>
+              </div>
+            `
+          : null}
+
+        ${drawerView === "agent"
+          ? html`
+              <div className="workbench-scroll">
+                <section className="panel-card">
+                  <div className="editor-toolbar">
+                    <div className="panel-title">Agent Specs</div>
+                    <div className="editor-actions">
+                      <button className="solid-btn" type="button" onClick=${saveSpec} disabled=${savingWorkbench || !specEditor.trim()}>保存</button>
+                    </div>
+                  </div>
+
+                  <div className="resource-list">
+                    ${specs.map(
+                      (item) => html`
+                        <button
+                          key=${item.name}
+                          className=${`resource-row ${selectedSpecName === item.name ? "active" : ""}`}
+                          type="button"
+                          onClick=${() => loadSpecDetail(item.name)}
+                        >
+                          <div className="resource-row-title">${item.name}</div>
+                          <div className="resource-row-meta">${item.validation_status}</div>
+                        </button>
+                      `,
+                    )}
+                  </div>
+
+                  <textarea
+                    className="editor-textarea"
+                    value=${specEditor}
+                    onInput=${(event) => setSpecEditor(event.currentTarget.value)}
+                    placeholder="完整编辑 agent 规范 markdown"
+                  ></textarea>
+                </section>
+              </div>
+            `
+          : null}
+
+        ${drawerView === "settings"
+          ? html`
+              <div className="workbench-scroll" id="settingsPanel">
+                <section className="panel-card">
+                  <div className="panel-title">Chat Settings</div>
+                  ${availableProviders.length
+                    ? html`
+                        <label className="form-field">
+                          <span>Provider</span>
+                          <select
+                            className="drawer-input"
+                            id="providerSelect"
+                            value=${activeProvider}
+                            onChange=${(event) => updateProviderSelection(event.currentTarget.value)}
+                          >
+                            ${providerOptions.map((item) => html`
+                              <option key=${item.provider} value=${item.provider}>
+                                ${item.label || item.provider}
+                              </option>
+                            `)}
+                          </select>
+                        </label>
+                      `
+                    : null}
+                  <label className="form-field">
+                    <span>模型预设</span>
+                    <select
+                      className="drawer-input"
+                      id="modelPresetSelect"
+                      value=${selectedPresetModel || resolvePresetModelValue(chatSettings.model, modelOptions, allowCustomModel)}
+                      onChange=${(event) => {
+                        const nextValue = String(event.currentTarget.value || "");
+                        setModelTouched(true);
+                        setSelectedPresetModel(nextValue);
+                        if (nextValue === CUSTOM_MODEL_VALUE) return;
+                        updateModelSelection(nextValue);
+                      }}
+                    >
+                      ${modelOptions.map((item) => html`<option key=${item} value=${item}>${item}</option>`)}
+                      ${allowCustomModel ? html`<option value=${CUSTOM_MODEL_VALUE}>Custom</option>` : null}
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span>模型名称</span>
+                    <input
+                      className="drawer-input"
+                      id="modelInput"
+                      type="text"
+                      value=${chatSettings.model}
+                      onInput=${(event) => updateModelSelection(event.currentTarget.value)}
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>响应风格</span>
+                    <select
+                      className="drawer-input"
+                      value=${chatSettings.response_style}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
+                    >
+                      <option value="short">简短</option>
+                      <option value="normal">正常</option>
+                      <option value="long">详细</option>
+                    </select>
+                  </label>
+                  <label className="tool-toggle drawer-toggle">
+                    <input
+                      type="checkbox"
+                      checked=${chatSettings.enable_tools}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, enable_tools: event.currentTarget.checked }))}
+                    />
+                    Tools
+                  </label>
+                  <label className="form-field">
+                    <span>输出上限</span>
+                    <input
+                      className="drawer-input"
+                      type="number"
+                      value=${chatSettings.max_output_tokens}
+                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_output_tokens: Number(event.currentTarget.value || 0) || 1024 }))}
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>上下文轮数</span>
+                    <input
+                      className="drawer-input"
+                      type="number"
+                      value=${chatSettings.max_context_turns}
+                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_context_turns: Number(event.currentTarget.value || 0) || 20 }))}
+                    />
+                  </label>
+                </section>
+              </div>
+            `
+          : null}
+      </aside>`
         : null}
     </div>
   `;
 }
 
-createRoot(document.getElementById("root")).render(html`<${App} />`);
+const root = document.getElementById("root");
+if (!root) throw new Error("Missing #root");
+createRoot(root).render(html`<${App} />`);

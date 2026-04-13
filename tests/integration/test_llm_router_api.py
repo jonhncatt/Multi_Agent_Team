@@ -5,6 +5,46 @@ from fastapi.testclient import TestClient
 import app.main as main_app
 
 
+class _CompatRuntime:
+    def descriptor(self) -> dict[str, object]:
+        return {
+            "agent_id": "vintage_programmer",
+            "title": "Vintage Programmer",
+            "default_model": "gpt-test",
+            "tool_policy": "all",
+            "allowed_tools": [],
+            "spec_files": ["soul.md", "identity.md", "agent.md", "tools.md"],
+            "identity": {"document": "identity", "sections": {}},
+            "workflow": {"phases": ["explore", "plan", "execute", "verify", "report"]},
+            "policies": {"tool_policy": "all"},
+            "network": {"mode": "explicit_tools"},
+            "capabilities": {"allowed_tools": [], "tool_count": 0, "tools": []},
+            "tools": [],
+            "loaded_skills": [],
+        }
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings, context, progress_cb)
+        return {
+            "text": "compat router response",
+            "effective_model": "gpt-test",
+            "tool_events": [],
+            "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0},
+            "answer_bundle": {"summary": "compat router response", "claims": [], "citations": [], "warnings": []},
+            "route_state": {"agent_id": "vintage_programmer", "phase": "report", "evidence_status": "not_needed"},
+            "inspector": {
+                "agent": self.descriptor(),
+                "notes": [],
+                "run_state": {"goal": "compat", "phase": "report"},
+                "tool_timeline": [],
+                "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
+                "session": {"session_id": "compat-session", "project_id": "", "project_title": "", "project_root": "", "cwd": ""},
+                "token_usage": {"total_tokens": 0},
+                "loaded_skills": [],
+            },
+        }
+
+
 def test_agents_list_and_reload_api() -> None:
     client = TestClient(main_app.app)
     listed = client.get("/api/agents")
@@ -22,6 +62,11 @@ def test_chat_api_runs_via_llm_router(monkeypatch) -> None:
         main_app.OpenAIAuthManager,
         "auth_summary",
         lambda self: {"available": True, "mode": "test", "reason": ""},
+    )
+    monkeypatch.setattr(
+        main_app,
+        "_provider_runtime",
+        lambda requested_provider: (main_app.config, _CompatRuntime()),
     )
     client = TestClient(main_app.app)
     response = client.post(

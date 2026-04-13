@@ -1,0 +1,42 @@
+{
+  "plugin_id": "reviewer_agent",
+  "title": "Reviewer Agent",
+  "description": "审阅插件，验证覆盖度、证据链和交付风险。",
+  "sprite_role": "reviewer",
+  "supports_swarm": true,
+  "swarm_mode": "multi-review",
+  "swarm": {
+    "role": "review-parent",
+    "enabled_by_default": false,
+    "max_depth": 2,
+    "max_children": 3,
+    "join_policy": "review_gate",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "conflict_detector_agent",
+        "label": "Consistency Branch",
+        "objective": "检查事实一致性与潜在冲突。",
+        "required": true,
+        "propagate": false
+      },
+      {
+        "plugin_id": "revision_agent",
+        "label": "Revision Branch",
+        "objective": "根据审阅意见生成最小修订。",
+        "propagate": false
+      },
+      {
+        "plugin_id": "structurer_agent",
+        "label": "Packaging Branch",
+        "objective": "整理最终交付结构并标注风险。",
+        "propagate": false
+      }
+    ]
+  },
+  "capability_tags": ["quality-review", "risk-check", "swarm-review"],
+  "tool_profile": "file+web+workspace",
+  "allowed_tools": ["fact_check_file", "search_text_in_file", "read_section_by_heading", "search_codebase", "search_web", "fetch_web"],
+  "max_tool_rounds": 5,
+  "system_prompt": "你是 Reviewer Agent。结论必须给 pass/warn/block，并说明证据是否充足；不足时列出补证动作。"
+}

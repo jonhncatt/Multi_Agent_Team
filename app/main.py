@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import asyncio
+import ast
+import copy
 import json
 import os
 import queue
@@ -17,12 +18,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import AgentOSRuntime, assemble_runtime
-from app.config import load_config
+from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
-from app.kernel.llm_router import LLMRouter
 from app.models import (
     ChatRequest,
     ChatResponse,
@@ -43,11 +43,20 @@ from app.models import (
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
-    RoleLabRuntimeResponse,
+    NewSessionRequest,
+    ProjectCreateRequest,
+    ProjectDescriptor,
+    ProjectDeleteResponse,
+    ProjectListResponse,
+    ProjectUpdateRequest,
     SessionDetailResponse,
     SessionListItem,
     SessionListResponse,
     SessionTurn,
+    SkillDescriptor,
+    SkillUpsertRequest,
+    SpecDescriptor,
+    SpecUpsertRequest,
     UpdateSessionTitleRequest,
     UpdateSessionTitleResponse,
     SandboxDrillRequest,
@@ -55,15 +64,28 @@ from app.models import (
     SandboxDrillStep,
     TokenStatsResponse,
     TokenTotals,
+    ToggleSkillRequest,
+    ToolDescriptor,
+    ToolEvent,
     TokenUsage,
     UploadResponse,
+    WorkbenchSkillsResponse,
+    WorkbenchSpecsResponse,
+    WorkbenchToolsResponse,
 )
 from app.openai_auth import OpenAIAuthManager
 from app.operations_overview import build_platform_operations_overview
-from app.product_profiles import ensure_product_profile_env
-from app.storage import SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-PRODUCT_PROFILE = ensure_product_profile_env()
+from app.pricing import estimate_usage_cost
+from app import session_context as session_context_impl
+from app.session_context import normalize_attachment_ids
+from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.workbench import WorkbenchStore
+
+APP_TITLE = "Vintage Programmer"
 config = load_config()
+AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
+project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
@@ -74,43 +96,48 @@ agent_os_runtime: AgentOSRuntime = assemble_runtime(
     config,
     kernel_runtime=kernel_runtime,
 )
-APP_VERSION = "0.3.5"
+vintage_programmer_runtime = VintageProgrammerRuntime(
+    config=config,
+    kernel_runtime=kernel_runtime,
+    agent_dir=AGENT_DIR,
+)
+workbench_store = WorkbenchStore(
+    config=config,
+    agent_dir=AGENT_DIR,
+)
+APP_VERSION = "1.0.0"
+default_project = project_store.ensure_default_project()
+session_store.migrate_missing_project(default_project)
+_provider_runtime_lock = threading.Lock()
+_provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
+
+
+def _git_value(*args: str) -> str:
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        return (
+            subprocess.run(
+                ["git", *args],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            ).stdout.strip()
+        )
+    except Exception:
+        return ""
 
 
 def _resolve_build_version() -> str:
     override = str(
-        os.environ.get("MULTI_AGENT_TEAM_BUILD_VERSION") or ""
+        os.environ.get("VP_BUILD_VERSION") or ""
     ).strip()
     if override:
         return override
 
-    repo_root = Path(__file__).resolve().parent.parent
-    try:
-        commit = (
-            subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=2,
-            ).stdout.strip()
-        )
-    except Exception:
-        commit = ""
-    try:
-        branch = (
-            subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=str(repo_root),
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=2,
-            ).stdout.strip()
-        )
-    except Exception:
-        branch = ""
+    commit = _git_value("rev-parse", "--short", "HEAD")
+    branch = _git_value("rev-parse", "--abbrev-ref", "HEAD")
 
     parts = [f"v{APP_VERSION}"]
     if branch and commit:
@@ -121,193 +148,13 @@ def _resolve_build_version() -> str:
 
 
 BUILD_VERSION = _resolve_build_version()
-
-
-_FALLBACK_AGENT_PLUGIN_KEYS: tuple[str, ...] = (
-    "router_agent",
-    "coordinator_agent",
-    "planner_agent",
-    "researcher_agent",
-    "file_reader_agent",
-    "summarizer_agent",
-    "fixer_agent",
-    "worker_agent",
-    "conflict_detector_agent",
-    "reviewer_agent",
-    "revision_agent",
-    "structurer_agent",
-)
-
-_AGENT_PLUGIN_META: dict[str, dict[str, object]] = {
-    "router_agent": {
-        "sprite_role": "router",
-        "supports_swarm": True,
-        "swarm_mode": "fanout_router",
-        "capability_tags": ["intent-routing", "policy-gate", "swarm-dispatch"],
-        "summary": "入口分流与多插件调度分发。",
-    },
-    "coordinator_agent": {
-        "sprite_role": "coordinator",
-        "supports_swarm": True,
-        "swarm_mode": "supervisor",
-        "capability_tags": ["task-coordination", "multi-agent-sync", "swarm-supervision"],
-        "summary": "负责跨插件协作、合流与冲突仲裁。",
-    },
-    "planner_agent": {
-        "sprite_role": "planner",
-        "supports_swarm": True,
-        "swarm_mode": "plan-then-swarm",
-        "capability_tags": ["plan-decomposition", "constraint-check", "swarm-plan"],
-        "summary": "生成执行计划并分配到子插件。",
-    },
-    "researcher_agent": {
-        "sprite_role": "researcher",
-        "supports_swarm": True,
-        "swarm_mode": "parallel-research",
-        "capability_tags": ["evidence-search", "citation-merge", "swarm-retrieval"],
-        "summary": "并行检索信息并汇总证据。",
-    },
-    "file_reader_agent": {
-        "sprite_role": "file_reader",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["document-parse", "attachment-extract"],
-        "summary": "读取附件并提取结构化文本。",
-    },
-    "summarizer_agent": {
-        "sprite_role": "summarizer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["context-compress", "summary-write"],
-        "summary": "上下文压缩与结论摘要。",
-    },
-    "fixer_agent": {
-        "sprite_role": "fixer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["error-repair", "patch-hint"],
-        "summary": "定位故障并给出修复策略。",
-    },
-    "worker_agent": {
-        "sprite_role": "worker",
-        "supports_swarm": True,
-        "swarm_mode": "tool-swarm",
-        "capability_tags": ["tool-execution", "action-loop", "swarm-worker"],
-        "summary": "执行主任务与工具调用循环。",
-    },
-    "conflict_detector_agent": {
-        "sprite_role": "conflict_detector",
-        "supports_swarm": True,
-        "swarm_mode": "consensus-check",
-        "capability_tags": ["conflict-detect", "consistency-check", "swarm-vote"],
-        "summary": "检测结论冲突并给出一致性判断。",
-    },
-    "reviewer_agent": {
-        "sprite_role": "reviewer",
-        "supports_swarm": True,
-        "swarm_mode": "multi-review",
-        "capability_tags": ["quality-review", "risk-check", "swarm-review"],
-        "summary": "对结果做质量审阅与风险评估。",
-    },
-    "revision_agent": {
-        "sprite_role": "revision",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["revision", "final-polish"],
-        "summary": "根据审阅意见生成最终修订版。",
-    },
-    "structurer_agent": {
-        "sprite_role": "structurer",
-        "supports_swarm": False,
-        "swarm_mode": "none",
-        "capability_tags": ["format-structuring", "output-shaping"],
-        "summary": "将结果整理成目标结构与格式。",
-    },
-}
-
-
-def _agent_title_from_key(key: str) -> str:
-    normalized = str(key or "").strip().replace("-", "_")
-    if not normalized:
-        return "LLM Agent"
-    words = [item for item in normalized.split("_") if item]
-    return " ".join(word.capitalize() for word in words)
-
-
-def _agent_sprite_role_from_key(key: str) -> str:
-    raw = str(key or "").strip().replace("-", "_")
-    if raw.endswith("_agent"):
-        raw = raw[:-6]
-    return raw or "worker"
-
-
-def _build_agent_plugin_descriptor(*, key: str, path: str, exists: bool) -> dict[str, object]:
-    meta = _AGENT_PLUGIN_META.get(key, {})
-    sprite_role = str(meta.get("sprite_role") or _agent_sprite_role_from_key(key))
-    capability_tags = [str(item).strip() for item in (meta.get("capability_tags") or []) if str(item).strip()]
-    supports_swarm = bool(meta.get("supports_swarm"))
-    swarm_mode = str(meta.get("swarm_mode") or ("none" if not supports_swarm else "generic-swarm")).strip()
-    return {
-        "key": key,
-        "title": _agent_title_from_key(key),
-        "path": path,
-        "exists": bool(exists),
-        "sprite_role": sprite_role,
-        "supports_swarm": supports_swarm,
-        "swarm_mode": swarm_mode,
-        "capability_tags": capability_tags,
-        "summary": str(meta.get("summary") or ""),
-    }
-
-
-def _build_control_panel_topology(repo_root: Path) -> dict[str, object]:
-    kernel_path = repo_root / "app" / "kernel" / "host.py"
-    router_path = repo_root / "app" / "kernel" / "llm_router.py"
-    agents_dir = repo_root / "app" / "agents"
-
-    plugin_paths_by_key = {item.stem: item for item in agents_dir.glob("*_agent.py")}
-    ordered_keys = [key for key in _FALLBACK_AGENT_PLUGIN_KEYS if key in plugin_paths_by_key]
-    ordered_keys.extend(sorted(key for key in plugin_paths_by_key.keys() if key not in ordered_keys))
-    if ordered_keys:
-        plugin_defs = [
-            _build_agent_plugin_descriptor(
-                key=key,
-                path=str(plugin_paths_by_key[key].relative_to(repo_root)),
-                exists=plugin_paths_by_key[key].is_file(),
-            )
-            for key in ordered_keys[:12]
-        ]
-    else:
-        plugin_defs = [
-            _build_agent_plugin_descriptor(
-                key=key,
-                path=str((agents_dir / f"{key}.py").relative_to(repo_root)),
-                exists=(agents_dir / f"{key}.py").is_file(),
-            )
-            for key in _FALLBACK_AGENT_PLUGIN_KEYS
-        ]
-
-    return {
-        "kernel": {
-            "key": "kernel_core",
-            "title": "稳定 Kernel",
-            "path": str(kernel_path.relative_to(repo_root)),
-            "exists": kernel_path.is_file(),
-        },
-        "central_router": {
-            "key": "llm_central_router",
-            "title": "LLM 中央调度器",
-            "path": str(router_path.relative_to(repo_root)),
-            "exists": router_path.is_file(),
-        },
-        "agent_plugins": plugin_defs,
-        "slot_count": 12,
-    }
+GIT_BRANCH = _git_value("rev-parse", "--abbrev-ref", "HEAD")
+LEGACY_AGENT_DIR = Path(__file__).resolve().parent / "agents"
 
 
 class AgentRunQueue:
     """
-    Single-workspace lane queue:
+    OpenClaw-style lane queue:
     - one active run per session
     - bounded global concurrency across sessions
     """
@@ -372,6 +219,38 @@ def get_kernel_runtime():
     return kernel_runtime
 
 
+def _list_legacy_agent_manifests() -> list[dict[str, Any]]:
+    manifests: list[dict[str, Any]] = []
+    if not LEGACY_AGENT_DIR.is_dir():
+        return manifests
+    for manifest_path in sorted(LEGACY_AGENT_DIR.glob("*/manifest.json")):
+        agent_id = manifest_path.parent.name
+        payload: dict[str, Any] = {
+            "id": agent_id,
+            "name": agent_id,
+            "title": agent_id,
+            "path": str(manifest_path.parent),
+        }
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload.update(
+                    {
+                        "id": str(raw.get("id") or agent_id),
+                        "name": str(raw.get("name") or raw.get("id") or agent_id),
+                        "title": str(raw.get("title") or raw.get("name") or raw.get("id") or agent_id),
+                    }
+                )
+        except Exception:
+            pass
+        manifests.append(payload)
+    return manifests
+
+
+def get_project_store() -> ProjectStore:
+    return project_store
+
+
 def get_evolution_store() -> EvolutionStore:
     return evolution_store
 
@@ -380,15 +259,67 @@ def get_agent_os_runtime() -> AgentOSRuntime:
     return agent_os_runtime
 
 
-def get_llm_router() -> LLMRouter:
-    router = getattr(agent_os_runtime.kernel, "llm_router", None)
-    if router is None:
-        router = LLMRouter(agent_os_runtime.kernel)
-        agent_os_runtime.kernel.attach_llm_router(router)
-    return router
+def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
+    return vintage_programmer_runtime
 
 
-app = FastAPI(title=PRODUCT_PROFILE.app_title, version=APP_VERSION)
+def _provider_options_payload() -> list[dict[str, object]]:
+    options: list[dict[str, object]] = []
+    for item in list_provider_profiles(config):
+        provider = str(item.get("provider") or "").strip()
+        if not provider:
+            continue
+        provider_config = build_provider_config(config, provider)
+        auth_summary = OpenAIAuthManager(provider_config).auth_summary()
+        options.append(
+            {
+                "provider": provider,
+                "label": str(item.get("label") or provider),
+                "default_model": str(item.get("default_model") or provider_config.default_model or ""),
+                "model_options": list(item.get("model_options") or provider_config.model_options or []),
+                "auth_ready": bool(auth_summary.get("available")),
+                "auth_mode": str(auth_summary.get("mode") or ""),
+            }
+        )
+    return options
+
+
+def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntime]:
+    normalized = normalize_llm_provider_name(provider or config.llm_provider)
+    if normalized == config.llm_provider:
+        return config, vintage_programmer_runtime
+    with _provider_runtime_lock:
+        cached = _provider_runtime_cache.get(normalized)
+        if cached is None:
+            provider_config = build_provider_config(config, normalized)
+            cached = VintageProgrammerRuntime(
+                config=provider_config,
+                kernel_runtime=kernel_runtime,
+                agent_dir=AGENT_DIR,
+            )
+            _provider_runtime_cache[normalized] = cached
+        return build_provider_config(config, normalized), cached
+
+
+def _resolve_requested_provider(req: ChatRequest) -> str:
+    requested = normalize_llm_provider_name((req.settings.provider or "").strip() or config.llm_provider)
+    available = {
+        str(item.get("provider") or "").strip()
+        for item in _provider_options_payload()
+        if str(item.get("provider") or "").strip()
+    }
+    if not available:
+        return config.llm_provider
+    if requested not in available:
+        raise HTTPException(status_code=400, detail=f"Provider not configured in env: {requested}")
+    return requested
+
+
+def get_workbench_store() -> WorkbenchStore:
+    return workbench_store
+
+
+app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -418,82 +349,213 @@ def index() -> FileResponse:
     return FileResponse(str(static_dir / "index.html"))
 
 
-@app.on_event("startup")
-async def startup_discover_agents() -> None:
-    try:
-        await get_llm_router().discover_agents(force=False)
-    except Exception as exc:
-        print(f"[startup] discover_agents skipped: {exc}")
-
-
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     runtime = get_agent_os_runtime()
     docker_ok, docker_msg = runtime.legacy_tools().docker_status()
-    auth_summary = OpenAIAuthManager(config).auth_summary()
-    kernel_health = build_kernel_health_payload(get_kernel_runtime())
-    host_runtime = runtime.debug_kernel_host_snapshot()
-    host_runtime["agent_os_runtime"] = get_agent_os_runtime().snapshot()
-    control_panel_topology = _build_control_panel_topology(Path(__file__).resolve().parent.parent)
-    role_lab_runtime = runtime.debug_role_lab_runtime_snapshot()
-    evolution_payload = get_evolution_store().runtime_payload(limit=10)
-    tool_registry = runtime.debug_tool_registry_snapshot()
+    provider_options = _provider_options_payload()
+    active_provider = next(
+        (
+            item
+            for item in provider_options
+            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
+        ),
+        provider_options[0] if provider_options else None,
+    )
+    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
+    active_provider_config = build_provider_config(config, active_provider_name)
+    auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
+    agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    projects = get_project_store().list_projects()
+    default_project = get_project_store().ensure_default_project()
+    effective_roots: list[str] = []
+    for raw_root in [*(str(path) for path in config.allowed_roots), *(str(item.get("root_path") or "") for item in projects)]:
+        if raw_root and raw_root not in effective_roots:
+            effective_roots.append(raw_root)
+    if config.allow_any_path:
+        permission_summary = "full filesystem access enabled"
+    else:
+        root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
+        permission_summary = f"{len(effective_roots)} allowed roots: {', '.join(root_names)}"
     return HealthResponse(
         ok=True,
-        product_profile=PRODUCT_PROFILE.key,
-        product_title=PRODUCT_PROFILE.sidebar_title,
-        product_tagline=PRODUCT_PROFILE.sidebar_hint,
-        product_kernel_title=PRODUCT_PROFILE.kernel_title,
-        product_kernel_subtitle=PRODUCT_PROFILE.kernel_subtitle,
-        product_role_title=PRODUCT_PROFILE.role_title,
-        product_role_legend=PRODUCT_PROFILE.role_legend,
-        show_kernel_console=PRODUCT_PROFILE.show_kernel_console,
-        show_role_board=PRODUCT_PROFILE.show_role_board,
+        app_title=APP_TITLE,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
-        model_default=config.default_model,
-        llm_provider=str(auth_summary.get("provider") or config.llm_provider or ""),
-        llm_api_key_env=str(auth_summary.get("api_key_env") or config.llm_primary_api_key_env or ""),
+        default_model=str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or ""),
+        model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
+        allow_custom_model=True,
+        llm_provider=active_provider_name,
+        provider_options=provider_options,
         auth_mode=str(auth_summary.get("mode") or ""),
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
-        allow_any_path=config.allow_any_path,
-        allowed_roots=[str(path) for path in config.allowed_roots],
-        workspace_sibling_root=str(config.workspace_sibling_root or ""),
-        allow_workspace_sibling_access=config.allow_workspace_sibling_access,
-        default_extra_allowed_roots=[str(path) for path in config.default_extra_allowed_roots],
-        extra_allowed_roots_source=config.extra_allowed_roots_source,
+        allowed_roots=effective_roots,
+        max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
-        kernel_active_manifest=dict(kernel_health.get("active_manifest") or {}),
-        kernel_shadow_manifest=dict(kernel_health.get("shadow_manifest") or {}),
-        kernel_shadow_validation=dict(kernel_health.get("shadow_validation") or {}),
-        kernel_shadow_promote_check=dict(kernel_health.get("shadow_promote_check") or {}),
-        kernel_rollback_pointer=dict(kernel_health.get("rollback_pointer") or {}),
-        kernel_last_shadow_run=dict(kernel_health.get("last_shadow_run") or {}),
-        kernel_last_upgrade_run=dict(kernel_health.get("last_upgrade_run") or {}),
-        kernel_last_repair_run=dict(kernel_health.get("last_repair_run") or {}),
-        kernel_last_patch_worker_run=dict(kernel_health.get("last_patch_worker_run") or {}),
-        kernel_last_package_run=dict(kernel_health.get("last_package_run") or {}),
-        kernel_selected_modules=dict(kernel_health.get("selected_modules") or {}),
-        kernel_module_health=dict(kernel_health.get("module_health") or {}),
-        kernel_runtime_files=dict(kernel_health.get("runtime_files") or {}),
-        kernel_tool_registry=dict(tool_registry or {}),
-        kernel_host_runtime=dict(host_runtime or {}),
-        control_panel_topology=dict(control_panel_topology or {}),
-        role_lab_runtime=dict(role_lab_runtime or {}),
-        assistant_overlay_profile=dict(evolution_payload.get("overlay_profile") or {}),
-        assistant_evolution_recent=list(evolution_payload.get("recent_events") or []),
+        default_project_id=str(default_project.get("project_id") or ""),
+        projects=[ProjectDescriptor(**item) for item in projects if isinstance(item, dict)],
+        runtime_status={
+            "execution_mode": config.execution_mode,
+            "auth_ready": bool(auth_summary.get("available")),
+            "auth_mode": str(auth_summary.get("mode") or ""),
+            "provider": active_provider_name,
+            "permission_summary": permission_summary,
+            "workspace_label": str(default_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
+            "project_root": str(default_project.get("root_path") or config.workspace_root),
+            "default_project_id": str(default_project.get("project_id") or ""),
+            "git_branch": GIT_BRANCH,
+            "build_version": BUILD_VERSION,
+        },
+        agent=agent_descriptor,
     )
 
 
-@app.get("/api/role-lab/runtime", response_model=RoleLabRuntimeResponse)
-def role_lab_runtime() -> RoleLabRuntimeResponse:
-    snapshot = get_agent_os_runtime().debug_role_lab_runtime_snapshot()
-    return RoleLabRuntimeResponse(ok=True, detail="role-agent runtime snapshot", role_lab_runtime=dict(snapshot or {}))
+@app.get("/api/agents")
+def list_legacy_agents() -> dict[str, Any]:
+    agents = _list_legacy_agent_manifests()
+    return {
+        "ok": True,
+        "count": len(agents),
+        "agents": agents,
+    }
+
+
+@app.post("/api/agents/{agent_id}/reload")
+def reload_legacy_agent(agent_id: str) -> dict[str, Any]:
+    normalized = str(agent_id or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    known = {str(item.get("id") or "") for item in _list_legacy_agent_manifests()}
+    if normalized not in known:
+        raise HTTPException(status_code=404, detail=f"Unknown agent: {normalized}")
+    return {
+        "ok": True,
+        "agent_id": normalized,
+        "reloaded": True,
+    }
+
+
+@app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
+def workbench_tools() -> WorkbenchToolsResponse:
+    payload = get_vintage_programmer_runtime().descriptor()
+    tools = list((payload.get("tools") or []))
+    return WorkbenchToolsResponse(tools=[ToolDescriptor(**item) for item in tools if isinstance(item, dict)])
+
+
+@app.get("/api/projects", response_model=ProjectListResponse)
+def list_projects() -> ProjectListResponse:
+    rows = get_project_store().list_projects()
+    return ProjectListResponse(projects=[ProjectDescriptor(**item) for item in rows if isinstance(item, dict)])
+
+
+@app.post("/api/projects", response_model=ProjectDescriptor)
+def create_project(req: ProjectCreateRequest) -> ProjectDescriptor:
+    try:
+        project = get_project_store().create(root_path=req.root_path, title=req.title)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDescriptor(**project)
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectDescriptor)
+def update_project(project_id: str, req: ProjectUpdateRequest) -> ProjectDescriptor:
+    try:
+        project = get_project_store().update(project_id, title=req.title, pinned=req.pinned)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDescriptor(**project)
+
+
+@app.delete("/api/projects/{project_id}", response_model=ProjectDeleteResponse)
+def delete_project(project_id: str) -> ProjectDeleteResponse:
+    try:
+        get_project_store().delete(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ProjectDeleteResponse(ok=True, project_id=project_id)
+
+
+@app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
+def workbench_skills() -> WorkbenchSkillsResponse:
+    skills = get_workbench_store().list_skills()
+    return WorkbenchSkillsResponse(skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)])
+
+
+@app.get("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
+def workbench_skill_detail(skill_id: str) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().get_skill(skill_id))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/workbench/skills", response_model=SkillDescriptor)
+def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().create_skill(req.content))
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
+def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/workbench/skills/{skill_id}/toggle", response_model=SkillDescriptor)
+def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
+    try:
+        return SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
+def workbench_specs() -> WorkbenchSpecsResponse:
+    specs = get_workbench_store().list_agent_specs()
+    return WorkbenchSpecsResponse(specs=[SpecDescriptor(**item) for item in specs if isinstance(item, dict)])
+
+
+@app.get("/api/workbench/specs/{name}", response_model=SpecDescriptor)
+def workbench_spec_detail(name: str) -> SpecDescriptor:
+    try:
+        return SpecDescriptor(**get_workbench_store().get_agent_spec(name))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/workbench/specs/{name}", response_model=SpecDescriptor)
+def workbench_write_spec(name: str, req: SpecUpsertRequest) -> SpecDescriptor:
+    try:
+        return SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _kernel_runtime_response(
@@ -575,6 +637,20 @@ def _find_repair_run(run_id: str | None = None) -> dict[str, Any] | None:
     runtime = get_kernel_runtime()
     payload = runtime.find_repair_run(run_id)
     return payload if isinstance(payload, dict) and payload else None
+
+
+def _default_project() -> dict[str, Any]:
+    return get_project_store().ensure_default_project()
+
+
+def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
+    wanted = str(project_id or "").strip()
+    if not wanted:
+        return _default_project()
+    project = get_project_store().get(wanted)
+    if not project:
+        raise HTTPException(status_code=404, detail=f"Project not found: {wanted}")
+    return project
 
 
 @app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
@@ -936,18 +1012,11 @@ def kernel_shadow_package(req: KernelShadowPackageRequest) -> KernelRuntimeRespo
 def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRuntimeResponse:
     runtime = get_kernel_runtime()
     base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
-    bootstrap_pipeline: dict[str, Any] = {}
-    bootstrap_triggered = False
-    if not isinstance(base_upgrade_run, dict) or not base_upgrade_run:
-        bootstrap_triggered = True
-        bootstrap_pipeline = runtime.run_shadow_pipeline(
-            overrides={},
-            smoke_message=str(req.smoke_message or "给我今天的新闻"),
-            validate_provider=bool(req.validate_provider if req.validate_provider is not None else True),
-            replay_record=None,
-            promote_if_healthy=False,
+    if not isinstance(base_upgrade_run, dict):
+        return _kernel_runtime_response(
+            ok=False,
+            detail="未找到可执行 self-upgrade 的 upgrade run。",
         )
-        base_upgrade_run = bootstrap_pipeline
     replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
     replay_record = _find_shadow_replay_record(replay_source_run_id)
     self_upgrade = runtime.run_shadow_self_upgrade(
@@ -967,21 +1036,23 @@ def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRun
     replay = final_pipeline.get("replay") if isinstance(final_pipeline.get("replay"), dict) else {}
     return _kernel_runtime_response(
         ok=bool(self_upgrade.get("ok")),
-        detail="shadow self-upgrade 已执行（已自动创建 baseline upgrade run）。" if bootstrap_triggered else "shadow self-upgrade 已执行。",
+        detail="shadow self-upgrade 已执行。",
         validation=validation,
         contracts=contracts,
         smoke=smoke,
         replay=replay,
-        pipeline={"self_upgrade": self_upgrade, "bootstrap_pipeline": bootstrap_pipeline, "bootstrap_triggered": bootstrap_triggered},
+        pipeline={"self_upgrade": self_upgrade},
         repair=self_upgrade.get("repair") if isinstance(self_upgrade.get("repair"), dict) else {},
         patch_worker=self_upgrade.get("patch_worker") if isinstance(self_upgrade.get("patch_worker"), dict) else {},
     )
 
 
 @app.post("/api/session/new", response_model=NewSessionResponse)
-def create_session() -> NewSessionResponse:
-    session = session_store.create()
-    return NewSessionResponse(session_id=session["id"])
+def create_session(req: NewSessionRequest | None = None) -> NewSessionResponse:
+    project = _resolve_project_or_default((req.project_id if req else None))
+    get_project_store().touch(str(project.get("project_id") or ""))
+    session = session_store.create(project)
+    return NewSessionResponse(session_id=session["id"], project_id=str(project.get("project_id") or ""))
 
 
 @app.delete("/api/session/{session_id}", response_model=DeleteSessionResponse)
@@ -994,7 +1065,7 @@ def delete_session(session_id: str) -> DeleteSessionResponse:
 
 @app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
 def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> UpdateSessionTitleResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1006,7 +1077,7 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
 def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1032,30 +1103,20 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         title=str(loaded.get("title") or ""),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
+        project_id=str(loaded.get("project_id") or ""),
+        project_title=str(loaded.get("project_title") or ""),
+        project_root=str(loaded.get("project_root") or ""),
+        git_branch=str(loaded.get("git_branch") or ""),
+        cwd=str(loaded.get("cwd") or ""),
+        agent_state=dict(loaded.get("agent_state") or {}),
         turns=turns,
     )
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)
-def list_sessions(limit: int = 50) -> SessionListResponse:
-    rows = session_store.list_sessions(limit=limit)
+def list_sessions(limit: int = 50, project_id: str | None = None) -> SessionListResponse:
+    rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
     return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
-
-
-@app.get("/api/agents")
-def list_independent_agents() -> dict[str, Any]:
-    router = get_llm_router()
-    _run_coro_sync(router.discover_agents(force=False))
-    return {"ok": True, "count": len(router.list_agents()), "agents": router.list_agents()}
-
-
-@app.post("/api/agents/{name}/reload")
-def reload_independent_agent(name: str) -> dict[str, Any]:
-    router = get_llm_router()
-    result = _run_coro_sync(router.reload_single_agent(name))
-    if not bool(result.get("ok")):
-        raise HTTPException(status_code=404, detail=str(result.get("error") or "reload failed"))
-    return result
 
 
 @app.post("/api/upload", response_model=UploadResponse)
@@ -1099,7 +1160,14 @@ def clear_stats() -> ClearStatsResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    return _process_chat_request_minimal(req)
+    try:
+        return _process_chat_request(req)
+    except HTTPException as exc:
+        payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
+        raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
+    except Exception as exc:
+        payload = _normalize_chat_error_payload(exc)
+        raise HTTPException(status_code=int(payload["status_code"]), detail=payload) from exc
 
 
 def _resolve_execution_mode(requested_mode: str | None) -> str:
@@ -1221,7 +1289,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
                 steps,
                 name="run_shell_python3_version",
                 ok=True,
-                detail="skipped: python3 is not in MULTI_AGENT_TEAM_ALLOWED_COMMANDS",
+                detail="skipped: python3 is not in VP_ALLOWED_COMMANDS",
                 started_at=started,
             )
 
@@ -1308,39 +1376,227 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
-def _run_coro_sync(coro):
+def _stringify_error_detail(detail: Any) -> str:
+    if detail is None:
+        return ""
+    if isinstance(detail, str):
+        return detail
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    raise RuntimeError("Cannot run sync coroutine bridge inside an active event loop")
+        return json.dumps(detail, ensure_ascii=False)
+    except Exception:
+        return str(detail)
 
 
-def _process_chat_request_minimal(
+def _parse_error_detail(detail: Any) -> dict[str, Any] | None:
+    if isinstance(detail, dict):
+        return detail
+    raw_text = str(detail or "").strip()
+    if not raw_text or raw_text[:1] not in {"{", "["}:
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(raw_text)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        normalized = int(str(value).strip())
+    except Exception:
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _extract_provider_name(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("provider"),
+        payload.get("provider_name"),
+        ((payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}).get("provider_name"),
+    ]
+    nested_error = payload.get("error")
+    if isinstance(nested_error, dict):
+        candidates.extend(
+            [
+                nested_error.get("provider"),
+                nested_error.get("provider_name"),
+                ((nested_error.get("metadata") or {}) if isinstance(nested_error.get("metadata"), dict) else {}).get("provider_name"),
+            ]
+        )
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_chat_error_payload(detail: Any, *, status_code: int | None = None) -> dict[str, Any]:
+    if isinstance(detail, dict) and {"kind", "summary", "detail"}.issubset(detail.keys()):
+        normalized = dict(detail)
+        normalized["status_code"] = _coerce_int(normalized.get("status_code")) or _coerce_int(status_code) or 500
+        normalized["detail"] = _stringify_error_detail(normalized.get("detail"))
+        normalized["summary"] = str(normalized.get("summary") or "请求失败，请稍后重试。")
+        normalized["kind"] = str(normalized.get("kind") or "unknown")
+        normalized["retryable"] = bool(normalized.get("retryable"))
+        normalized["provider"] = str(normalized.get("provider") or "")
+        return normalized
+
+    parsed = _parse_error_detail(detail)
+    nested_error = (parsed or {}).get("error") if isinstance((parsed or {}).get("error"), dict) else {}
+    raw_detail = _stringify_error_detail(detail)
+    message_text = str(
+        nested_error.get("message")
+        or (parsed or {}).get("message")
+        or (parsed or {}).get("detail")
+        or raw_detail
+    ).strip()
+    lowered = f"{raw_detail}\n{message_text}".lower()
+    extracted_status = (
+        _coerce_int(status_code)
+        or _coerce_int((parsed or {}).get("status_code"))
+        or _coerce_int(nested_error.get("status_code"))
+        or _coerce_int((parsed or {}).get("code"))
+        or _coerce_int(nested_error.get("code"))
+    )
+    provider = _extract_provider_name(parsed) or _extract_provider_name(nested_error)
+
+    if extracted_status == 429 or "rate limit" in lowered or "rate-limit" in lowered or "temporarily rate-limited upstream" in lowered or "too many requests" in lowered:
+        kind = "rate_limit"
+        summary = "模型提供方限流，请稍后重试。"
+        retryable = True
+        resolved_status = 429
+    elif extracted_status in {401, 403} or "unauthorized" in lowered or "forbidden" in lowered or "api key" in lowered or "credentials" in lowered or "authentication" in lowered:
+        kind = "auth"
+        summary = "认证失败，请检查 OpenRouter / OpenAI-compatible key。"
+        retryable = False
+        resolved_status = extracted_status or 401
+    elif extracted_status in {502, 503, 504} or "temporarily unavailable" in lowered or "timeout" in lowered or "timed out" in lowered or "upstream" in lowered:
+        kind = "upstream"
+        summary = "模型提供方暂时不可用，请稍后重试。"
+        retryable = True
+        resolved_status = extracted_status or 503
+    else:
+        kind = "unknown"
+        summary = "请求失败，请稍后重试或查看错误详情。"
+        retryable = False
+        resolved_status = extracted_status or 500
+
+    return {
+        "status_code": resolved_status,
+        "kind": kind,
+        "summary": summary,
+        "detail": raw_detail or message_text or "unknown error",
+        "retryable": retryable,
+        "provider": provider,
+    }
+
+
+def _process_chat_request(
     req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
 ) -> ChatResponse:
-    auth_summary = OpenAIAuthManager(config).auth_summary()
+    requested_provider = _resolve_requested_provider(req)
+    provider_config, provider_runtime = _provider_runtime(requested_provider)
+    req.settings.provider = requested_provider
+    auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
-        raise HTTPException(status_code=500, detail=str(auth_summary.get("reason") or "LLM credentials are required"))
+        fallback_goal = str(req.message or "").strip()[:160]
+        requested_project = _resolve_project_or_default(req.project_id)
+        seed_session = session_store.load_or_create(
+            req.session_id,
+            project=requested_project,
+            default_project=_default_project(),
+        )
+        fallback_text = (
+            "当前还没有可用的模型认证。请在 Settings 里补充当前 provider 的 API key，"
+            "或切换到一个已经配置好的 provider 后再继续。"
+        )
+        user_turn = {"role": "user", "text": req.message}
+        assistant_turn = {
+            "role": "assistant",
+            "text": fallback_text,
+            "answer_bundle": {
+                "summary": fallback_text,
+                "claims": [],
+                "citations": [],
+                "warnings": ["missing_model_auth"],
+            },
+        }
+        seed_session.setdefault("turns", [])
+        seed_session["turns"].append(user_turn)
+        seed_session["turns"].append(assistant_turn)
+        seed_session["summary"] = fallback_text
+        seed_session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        seed_session["agent_state"] = {
+            "goal": fallback_goal,
+            "phase": "report",
+            "last_run_id": "",
+            "last_model": "",
+            "cwd": str(seed_session.get("project_root") or ""),
+            "tool_hits": [],
+            "tool_count": 0,
+            "tool_names": [],
+            "evidence_status": "not_needed",
+            "enabled_skill_ids": [],
+            "updated_at": seed_session["updated_at"],
+        }
+        session_store.save(seed_session)
+        return ChatResponse(
+            session_id=seed_session["id"],
+            run_id=None,
+            agent_id="vintage_programmer",
+            agent_title="Vintage Programmer",
+            selected_business_module="llm_router_core",
+            effective_model="",
+            queue_wait_ms=0,
+            text=fallback_text,
+            tool_events=[],
+            token_usage=TokenUsage(),
+            session_token_totals=TokenTotals(),
+            global_token_totals=TokenTotals(),
+            inspector={
+                "agent": get_vintage_programmer_runtime().descriptor(),
+                "notes": ["missing_model_auth"],
+                "run_state": {"phase": "report", "goal": fallback_goal},
+                "tool_timeline": [],
+                "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
+                "session": {
+                    "session_id": seed_session["id"],
+                    "project_id": str(seed_session.get("project_id") or ""),
+                    "project_title": str(seed_session.get("project_title") or ""),
+                    "project_root": str(seed_session.get("project_root") or ""),
+                    "cwd": str(seed_session.get("project_root") or ""),
+                    "history_turn_count": len(seed_session.get("turns") or []),
+                    "attachment_count": 0,
+                },
+                "token_usage": {"total_tokens": 0},
+                "loaded_skills": [],
+            },
+            turn_count=len(seed_session.get("turns") or []),
+            summarized=False,
+        )
     run_id = str(uuid.uuid4())
     _emit_progress(
         progress_cb,
         "stage",
         code="backend_start",
+        phase="bootstrap",
+        label="Bootstrap",
+        status="running",
         detail=f"后端已接收请求，开始处理。run_id={run_id}, auth_mode={auth_summary.get('mode')}",
         run_id=run_id,
     )
 
-    run_id = str(uuid.uuid4())
-    _emit_progress(progress_cb, "stage", code="backend_start", detail=f"llm_router 已接收请求。run_id={run_id}", run_id=run_id)
-    if not bool(auth_summary.get("available")):
-        _emit_progress(
-            progress_cb,
-            "trace",
-            message="当前未检测到可用云端凭据，已切换本地稳态回复模式。",
-            run_id=run_id,
-        )
-    seed_session = session_store.load_or_create(req.session_id)
+    requested_project = _resolve_project_or_default(req.project_id)
+    seed_session = session_store.load_or_create(
+        req.session_id,
+        project=requested_project,
+        default_project=_default_project(),
+    )
     session_id = str(seed_session.get("id") or "")
     if not session_id:
         raise HTTPException(status_code=500, detail="Session create failed")
@@ -1348,101 +1604,453 @@ def _process_chat_request_minimal(
     queue_wait_ms = 0
     with run_queue.run_slot(session_id) as ticket:
         queue_wait_ms = int(ticket.wait_ms)
-        session = session_store.load_or_create(session_id)
-        history_turns = list(session.get("turns", []))
-        router = get_llm_router()
-        _emit_progress(progress_cb, "stage", code="routing", detail="中央调度器正在规划执行步骤。", run_id=run_id)
-        plan = _run_coro_sync(router.route(req.message, history_turns))
-        _emit_progress(progress_cb, "stage", code="executing", detail="独立 Agent 正在执行任务。", run_id=run_id)
-        execution = _run_coro_sync(router.execute(plan))
-        text = _run_coro_sync(router.summarize(user_query=req.message, plan=plan, execution=execution, history=history_turns))
-        text = str(text or "").strip() or "任务执行完成。"
-
-        execution_plan = [
-            f"{index}. {str(step.get('agent') or '')}: {str(step.get('task') or '')}"
-            for index, step in enumerate(list(plan.get("steps") or []), start=1)
-            if isinstance(step, dict)
-        ]
-        execution_trace = [f"调度方案: {str(plan.get('plan') or 'llm_router_plan')}"]
-        for item in list(execution.get("results") or []):
-            if not isinstance(item, dict):
-                continue
-            agent_name = str(item.get("agent") or "unknown")
-            status = str(item.get("status") or "unknown")
-            if status == "success":
-                execution_trace.append(f"[{agent_name}] success")
-            else:
-                execution_trace.append(f"[{agent_name}] failed: {str(item.get('error') or '')}")
-
-        agent_panels = []
-        for item in list(execution.get("results") or []):
-            if not isinstance(item, dict):
-                continue
-            agent_panels.append(
-                {
-                    "role": str(item.get("agent") or "agent"),
-                    "title": str(item.get("agent") or "Agent"),
-                    "kind": "agent",
-                    "summary": str(item.get("status") or ""),
-                    "bullets": [str(item.get("result") or item.get("error") or "")[:240]],
-                }
+        if queue_wait_ms >= config.run_queue_wait_notice_ms:
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=f"当前会话存在并发请求，已排队等待 {queue_wait_ms} ms。",
+                run_id=run_id,
             )
 
-        session_store.append_turn(session, role="user", text=req.message.strip())
-        session_store.append_turn(session, role="assistant", text=text)
-        session_store.save(session)
+        session = session_store.load_or_create(
+            session_id,
+            project=requested_project,
+            default_project=_default_project(),
+        )
+        session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
+        get_project_store().touch(str(session_project.get("project_id") or ""))
+        session["project_id"] = str(session_project.get("project_id") or "")
+        session["project_title"] = str(session_project.get("title") or "")
+        session["project_root"] = str(session_project.get("root_path") or "")
+        session["git_branch"] = str(session_project.get("git_branch") or "")
+        if not str(session.get("cwd") or "").strip():
+            session["cwd"] = str(session_project.get("root_path") or "")
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="session_ready",
+            phase="bootstrap",
+            label="Session",
+            status="completed",
+            detail=f"会话已就绪: {session.get('id')}",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+        )
+        history_turns_before = copy.deepcopy(session.get("turns", []))
+        summary_before = str(session.get("summary", "") or "")
+        agent_os = get_agent_os_runtime()
+        summarized = agent_os.maybe_compact_session(session, req.settings.max_context_turns)
+        if summarized:
+            _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 
-        selected_model = req.settings.model or str(get_llm_router().model)
-        token_usage = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "llm_calls": 0,
-            "estimated_cost_usd": 0.0,
-            "pricing_known": False,
-            "pricing_model": selected_model,
-            "input_price_per_1m": None,
-            "output_price_per_1m": None,
+        runtime = get_kernel_runtime()
+        attachment_registry = runtime.registry
+        attachment_module = attachment_registry.attachment_context
+        attachment_selected_ref = str((attachment_registry.selected_refs or {}).get("attachment_context") or "")
+        attachment_fallback_ref = "attachment_context@1.0.0"
+        try:
+            attachment_context = attachment_module.resolve_attachment_context(
+                session=session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            attachment_context = session_context_impl.resolve_attachment_context(
+                session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
+        requested_attachment_ids = attachment_context["requested_attachment_ids"]
+        clear_attachment_context = bool(attachment_context["clear_attachment_context"])
+        attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
+        auto_linked_attachment_ids = list(attachment_context["auto_linked_attachment_ids"] or [])
+        effective_attachment_ids = list(attachment_context["effective_attachment_ids"] or [])
+        attachment_context_key = str(attachment_context["attachment_context_key"] or "")
+
+        attachments = upload_store.get_many(effective_attachment_ids)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="attachments_ready",
+            phase="explore",
+            label="Attachments",
+            status="completed",
+            detail=(
+                f"附件检查完成: mode={attachment_context_mode}, "
+                f"请求 {len(effective_attachment_ids)} 个，命中 {len(attachments)} 个。"
+            ),
+            run_id=run_id,
+        )
+        found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
+        missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
+        resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
+        try:
+            attachment_module.apply_attachment_context_result(
+                session=session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.apply_attachment_context_result(
+                session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
+        resolved_attachment_context_key = attachment_context_key or ""
+        if resolved_attachment_ids:
+            resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
+        try:
+            route_state_input, route_state_scope = attachment_module.resolve_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+            )
+
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="agent_run_start",
+            phase="execute",
+            label="Agent Run",
+            status="running",
+            detail="开始通过 vintage_programmer 执行。",
+            run_id=run_id,
+        )
+        runtime_result = provider_runtime.run(
+            message=req.message,
+            settings=req.settings,
+            context={
+                "session_id": session_id,
+                "project": {
+                    "project_id": str(session_project.get("project_id") or ""),
+                    "project_title": str(session_project.get("title") or ""),
+                    "project_root": str(session_project.get("root_path") or ""),
+                    "git_branch": str(session_project.get("git_branch") or ""),
+                    "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
+                    "is_worktree": bool(session_project.get("is_worktree")),
+                },
+                "summary": session.get("summary", ""),
+                "history_turns": session.get("turns", []),
+                "route_state": route_state_input,
+                "attachments": [
+                    {
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("original_name") or item.get("name") or ""),
+                        "mime": str(item.get("mime") or ""),
+                        "kind": str(item.get("kind") or ""),
+                        "path": str(item.get("path") or ""),
+                    }
+                    for item in attachments
+                    if isinstance(item, dict)
+                ],
+            },
+            progress_cb=progress_cb,
+        )
+        text = str(runtime_result.get("text") or "")
+        tool_events = list(runtime_result.get("tool_events") or [])
+        answer_bundle = runtime_result.get("answer_bundle") or {}
+        token_usage = dict(runtime_result.get("token_usage") or {})
+        effective_model = str(runtime_result.get("effective_model") or "")
+        route_state = (
+            runtime_result.get("route_state")
+            if isinstance(runtime_result.get("route_state"), dict)
+            else dict(route_state_input or {})
+        )
+        inspector = dict(runtime_result.get("inspector") or {})
+        attachment_note = ""
+
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="agent_run_done",
+            phase="report",
+            label="Agent Run",
+            status="completed",
+            detail="模型推理结束，开始写入会话与统计。",
+            run_id=run_id,
+        )
+        inspector_notes = list(inspector.get("notes") or [])
+        if missing_attachment_ids:
+            warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+            inspector_notes.append(warning_msg)
+            _emit_progress(progress_cb, "trace", message=warning_msg, run_id=run_id)
+
+        auto_linked_attachment_names = [
+            str(item.get("original_name") or "")
+            for item in attachments
+            if str(item.get("id") or "") in set(auto_linked_attachment_ids)
+        ]
+        if auto_linked_attachment_names:
+            auto_link_msg = f"已自动关联历史附件: {', '.join(auto_linked_attachment_names[:6])}"
+            inspector_notes.append(auto_link_msg)
+            _emit_progress(progress_cb, "trace", message=auto_link_msg, run_id=run_id)
+        elif attachment_context_mode == "cleared" and not requested_attachment_ids:
+            cleared_msg = "已按用户指令清空历史附件关联。"
+            inspector_notes.append(cleared_msg)
+            _emit_progress(progress_cb, "trace", message=cleared_msg, run_id=run_id)
+        inspector["notes"] = inspector_notes
+
+        user_text = req.message.strip()
+        if attachment_note:
+            user_text = f"{user_text}\n\n[附件] {attachment_note}"
+
+        session_store.append_turn(
+            session,
+            role="user",
+            text=user_text,
+            attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+        )
+        session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
+        inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
+        inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
+        inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
+        tool_hits = [
+            {
+                "name": str(item.get("name") or ""),
+                "group": str(item.get("group") or item.get("module_group") or ""),
+                "status": str(item.get("status") or ""),
+            }
+            for item in tool_events
+            if isinstance(item, dict)
+        ]
+        session["agent_state"] = {
+            "agent_id": "vintage_programmer",
+            "goal": str(inspector_run_state.get("goal") or req.message[:140]),
+            "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
+            "phase": str(inspector_run_state.get("phase") or "report"),
+            "last_run_id": run_id,
+            "last_provider": requested_provider,
+            "last_model": effective_model or req.settings.model or provider_config.default_model,
+            "project_id": str(session.get("project_id") or ""),
+            "project_root": str(session.get("project_root") or ""),
+            "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
+            "tool_hits": tool_hits,
+            "tool_count": len(tool_hits),
+            "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
+            "evidence_status": str(inspector_evidence.get("status") or "not_needed"),
+            "enabled_skill_ids": [
+                str(item.get("id") or "")
+                for item in inspector_loaded_skills
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        session["cwd"] = str(session["agent_state"].get("cwd") or session.get("project_root") or "")
+        try:
+            attachment_module.store_scoped_route_state(
+                session=session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
+            runtime.record_module_success(
+                kind="attachment_context",
+                selected_ref=attachment_selected_ref or attachment_fallback_ref,
+            )
+        except Exception as exc:
+            runtime.record_module_failure(
+                kind="attachment_context",
+                requested_ref=attachment_selected_ref or attachment_fallback_ref,
+                fallback_ref=attachment_fallback_ref,
+                error=str(exc),
+            )
+            session_context_impl.store_scoped_route_state(
+                session,
+                attachment_ids=resolved_attachment_ids,
+                route_state=route_state,
+            )
+        session_store.save(session)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="session_saved",
+            phase="report",
+            label="Session",
+            status="completed",
+            detail="会话已写入本地存储。",
+            run_id=run_id,
+        )
+
+        selected_model = effective_model or req.settings.model or provider_config.default_model
+        pricing_meta = estimate_usage_cost(
+            model=selected_model,
+            input_tokens=token_usage.get("input_tokens", 0),
+            output_tokens=token_usage.get("output_tokens", 0),
+        )
+        token_usage = {**token_usage, **pricing_meta}
+        inspector_notes = list(inspector.get("notes") or [])
+        if pricing_meta.get("pricing_known"):
+            pricing_note = (
+                "费用估算: "
+                f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
+                f"output ${pricing_meta.get('output_price_per_1m')}/1M."
+            )
+            inspector_notes.append(pricing_note)
+            _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
+        else:
+            pricing_note = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
+            inspector_notes.append(pricing_note)
+            _emit_progress(progress_cb, "trace", message=pricing_note, run_id=run_id)
+        inspector["notes"] = inspector_notes
+        inspector["token_usage"] = dict(token_usage)
+
         stats_snapshot = token_stats_store.add_usage(
             session_id=session["id"],
             usage=token_usage,
             model=selected_model,
         )
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="stats_saved",
+            phase="report",
+            label="Usage",
+            status="completed",
+            detail="Token 统计已更新。",
+            run_id=run_id,
+        )
+        try:
+            evolution_event = get_evolution_store().record_turn(
+                session_id=session["id"],
+                user_message=req.message,
+                assistant_text=text,
+                route_state=route_state,
+                answer_bundle=answer_bundle,
+                attachment_context_mode=attachment_context_mode,
+                attachment_count=len(resolved_attachment_ids),
+                settings=req.settings.model_dump(),
+                effective_model=selected_model,
+                turn_count=len(session.get("turns", [])),
+            )
+            evolution_terms = list(evolution_event.get("domain_terms") or [])
+            evolution_note = (
+                "个体覆层已更新: "
+                f"intent={evolution_event.get('primary_intent') or 'standard'}"
+                + (f"，terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
+            )
+            inspector_notes.append(evolution_note)
+            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
+        except Exception as exc:
+            evolution_note = f"个体覆层更新失败: {exc}"
+            inspector_notes.append(evolution_note)
+            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
+        inspector["notes"] = inspector_notes
+        if config.enable_shadow_logging:
+            kernel_health = build_kernel_health_payload(get_kernel_runtime())
+            shadow_path = shadow_log_store.append(
+                {
+                    "run_id": run_id,
+                    "agent_id": "vintage_programmer",
+                    "session_id": session["id"],
+                    "effective_model": selected_model,
+                    "project_id": str(session.get("project_id") or ""),
+                    "project_root": str(session.get("project_root") or ""),
+                    "cwd": str(session.get("cwd") or ""),
+                    "attachment_context_mode": attachment_context_mode,
+                    "attachment_context_key": resolved_attachment_context_key,
+                    "effective_attachment_ids": resolved_attachment_ids,
+                    "auto_linked_attachment_ids": [item for item in auto_linked_attachment_ids if item in found_attachment_ids],
+                    "missing_attachment_ids": missing_attachment_ids,
+                    "route_state_scope": route_state_scope,
+                    "route_state_input": route_state_input or {},
+                    "route_state": route_state or {},
+                    "tool_events_count": len(tool_events),
+                    "tool_events": tool_events,
+                    "token_usage": token_usage,
+                    "inspector": inspector,
+                    "message": req.message,
+                    "settings": req.settings.model_dump(),
+                    "summary_before": summary_before,
+                    "history_turns_before": history_turns_before,
+                    "attachment_metas": attachments,
+                    "kernel_selected_modules": kernel_health.get("selected_modules") or {},
+                    "kernel_module_health": kernel_health.get("module_health") or {},
+                    "message_preview": req.message[:500],
+                    "response_preview": text[:500],
+                }
+            )
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=f"shadow log 已写入: {shadow_path.name}",
+                run_id=run_id,
+            )
         session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
         global_totals_raw = stats_snapshot.get("totals", {})
+        tool_event_models = [
+            item if isinstance(item, ToolEvent) else ToolEvent(**item)
+            for item in tool_events
+        ]
         response = ChatResponse(
             session_id=session["id"],
             run_id=run_id,
+            agent_id="vintage_programmer",
+            agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
+            selected_business_module="llm_router_core",
             effective_model=selected_model,
             queue_wait_ms=queue_wait_ms,
             text=text,
-            tool_events=[],
-            execution_plan=execution_plan,
-            execution_trace=execution_trace,
-            debug_flow=[],
-            agent_panels=agent_panels,
-            active_roles=[str(step.get("agent") or "") for step in list(plan.get("steps") or []) if isinstance(step, dict)],
-            current_role=str(list(plan.get("steps") or [{}])[0].get("agent") or "") if list(plan.get("steps") or []) else None,
-            role_states=[],
-            answer_bundle={},
-            attachment_context_mode="none",
-            effective_attachment_ids=[],
-            auto_linked_attachment_ids=[],
-            auto_linked_attachment_names=[],
-            missing_attachment_ids=[],
-            route_state_scope="none",
-            attachment_context_key="",
+            tool_events=tool_event_models,
+            attachment_context_mode=attachment_context_mode,
+            effective_attachment_ids=resolved_attachment_ids,
+            auto_linked_attachment_ids=[item for item in auto_linked_attachment_ids if item in found_attachment_ids],
+            auto_linked_attachment_names=auto_linked_attachment_names,
+            missing_attachment_ids=missing_attachment_ids,
+            attachment_context_key=resolved_attachment_context_key,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
-            selected_business_module="llm_router_core",
-            kernel_routing={"mode": "llm_router", "plan": plan},
-            business_result={"plan": plan, "execution": execution},
+            inspector=inspector,
             turn_count=len(session.get("turns", [])),
-            summarized=False,
+            summarized=summarized,
         )
-        _emit_progress(progress_cb, "stage", code="ready", detail="llm_router 返回完成。", run_id=run_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="ready",
+            phase="report",
+            label="Ready",
+            status="completed",
+            detail="本轮结果已准备完成。",
+            run_id=run_id,
+        )
         return response
 
 
@@ -1464,17 +2072,18 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
 
         def worker() -> None:
             try:
-                response = _process_chat_request_minimal(req, progress_cb=emit)
+                response = _process_chat_request(req, progress_cb=emit)
                 events.put({"event": "final", "payload": {"response": response.model_dump()}})
             except HTTPException as exc:
+                payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code)
                 events.put(
                     {
                         "event": "error",
-                        "payload": {"status_code": exc.status_code, "detail": str(exc.detail or "HTTP error")},
+                        "payload": payload,
                     }
                 )
             except Exception as exc:
-                events.put({"event": "error", "payload": {"status_code": 500, "detail": str(exc)}})
+                events.put({"event": "error", "payload": _normalize_chat_error_payload(exc)})
             finally:
                 done_event.set()
                 events.put({"event": "done", "payload": {"ok": True}})

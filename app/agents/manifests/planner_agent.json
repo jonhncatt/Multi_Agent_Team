@@ -1,0 +1,44 @@
+{
+  "plugin_id": "planner_agent",
+  "title": "Planner Agent",
+  "description": "规划插件，生成目标、约束、步骤与验收标准。",
+  "sprite_role": "planner",
+  "supports_swarm": true,
+  "swarm_mode": "plan-then-swarm",
+  "swarm": {
+    "role": "planner-parent",
+    "enabled_by_default": false,
+    "max_depth": 2,
+    "max_children": 3,
+    "join_policy": "plan_merge",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "researcher_agent",
+        "label": "Research Sub-Plan",
+        "objective": "为计划中的关键假设补齐证据。",
+        "required": true,
+        "propagate": true
+      },
+      {
+        "plugin_id": "file_reader_agent",
+        "label": "Document Sub-Plan",
+        "objective": "提取文档/附件里的约束和输入信息。",
+        "keywords": ["文件", "文档", "附件", "pdf", "doc"],
+        "propagate": false
+      },
+      {
+        "plugin_id": "worker_agent",
+        "label": "Execution Sub-Plan",
+        "objective": "验证计划步骤是否具备可执行性。",
+        "keywords": ["实现", "执行", "run", "fix"],
+        "propagate": false
+      }
+    ]
+  },
+  "capability_tags": ["plan-decomposition", "constraint-check", "swarm-plan"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Planner Agent。先给 objective，再给 constraints，再给可执行 plan（最多6步）和 success criteria。不要调用工具。"
+}

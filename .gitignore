@@ -7,6 +7,9 @@ output/
 artifacts/
 tmp/
 .playwright-cli/
+workspace/
+app/data/projects.json
+app/data/apps/
 app/data/sessions/*
 !app/data/sessions/.gitkeep
 app/data/uploads/*

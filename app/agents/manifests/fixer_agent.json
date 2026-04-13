@@ -1,0 +1,13 @@
+{
+  "plugin_id": "fixer_agent",
+  "title": "Fixer Agent",
+  "description": "修复插件，定位异常并给出最小修复方案。",
+  "sprite_role": "fixer",
+  "supports_swarm": false,
+  "swarm_mode": "none",
+  "capability_tags": ["error-repair", "patch-hint"],
+  "tool_profile": "workspace+file",
+  "allowed_tools": ["search_codebase", "read_text_file", "search_text_in_file", "run_shell"],
+  "max_tool_rounds": 5,
+  "system_prompt": "你是 Fixer Agent。先定位根因，再给最小可回滚修复方案，最后给验证步骤。"
+}

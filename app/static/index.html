@@ -3,13 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Multi Agent Team Console</title>
+    <title>Vintage Programmer</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="stylesheet" href="/static/styles.css?v=20260331l" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" data-app="vintage-programmer"></div>
     <noscript>需要启用 JavaScript 才能使用这个页面。</noscript>
-    <script type="module" src="/static/app.js"></script>
+    <script src="/static/vendor/react.production.min.js"></script>
+    <script src="/static/vendor/react-dom.production.min.js"></script>
+    <script src="/static/vendor/htm.umd.js"></script>
+    <script src="/static/app.js" defer></script>
   </body>
 </html>

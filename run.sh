@@ -11,100 +11,70 @@ if [ -f .env ]; then
   set +a
 fi
 
-AUTH_MODE="${MULTI_AGENT_TEAM_LLM_AUTH_MODE:-${MULTI_AGENT_TEAM_OPENAI_AUTH_MODE:-auto}}"
-LLM_PROVIDER_RAW="${MULTI_AGENT_TEAM_LLM_PROVIDER:-${MULTI_AGENT_TEAM_MODEL_PROVIDER:-openai}}"
+env_first() {
+  local key value
+  for key in "$@"; do
+    value="${!key:-}"
+    if [ -n "$value" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+LLM_PROVIDER_RAW="$(env_first VP_LLM_PROVIDER VP_MODEL_PROVIDER || printf 'openai')"
 LLM_PROVIDER="$(printf '%s' "$LLM_PROVIDER_RAW" | tr '[:upper:]' '[:lower:]')"
 case "$LLM_PROVIDER" in
-  ""|default|openai_compatible|openai-compatible) LLM_PROVIDER="openai" ;;
+  ""|default) LLM_PROVIDER="openai" ;;
+  "openai-compatible") LLM_PROVIDER="openai_compatible" ;;
 esac
-LLM_PROVIDER_TOKEN="$(printf '%s' "$LLM_PROVIDER" | sed 's/[^a-z0-9]/_/g' | tr '[:lower:]' '[:upper:]')"
-if [ -z "$LLM_PROVIDER_TOKEN" ]; then
-  LLM_PROVIDER_TOKEN="OPENAI"
-fi
-APP_MODULE="${MULTI_AGENT_TEAM_APP_MODULE:-app.kernel_robot_main:app}"
-APP_PORT="${MULTI_AGENT_TEAM_APP_PORT:-8080}"
-CODEX_HOME_DIR="${MULTI_AGENT_TEAM_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
-CODEX_AUTH_FILE="${MULTI_AGENT_TEAM_CODEX_AUTH_FILE:-$CODEX_HOME_DIR/auth.json}"
-PROVIDER_API_KEY_VAR="MULTI_AGENT_TEAM_PROVIDER_${LLM_PROVIDER_TOKEN}_API_KEY"
-EXPECTED_API_KEY_ENV="$PROVIDER_API_KEY_VAR"
-NATIVE_PROVIDER_API_KEY_VAR=""
 
+APP_MODULE="$(env_first VP_APP_MODULE || printf 'app.main:app')"
+APP_PORT="$(env_first VP_APP_PORT || printf '8080')"
+CODEX_HOME_DIR="$(env_first VP_CODEX_HOME || printf '%s/.codex' "$HOME")"
+CODEX_AUTH_FILE="$(env_first VP_CODEX_AUTH_FILE || printf '%s/auth.json' "$CODEX_HOME_DIR")"
+
+EXPECTED_API_KEY_ENV=""
 case "$LLM_PROVIDER" in
-  openai) NATIVE_PROVIDER_API_KEY_VAR="OPENAI_API_KEY" ;;
-  deepseek) NATIVE_PROVIDER_API_KEY_VAR="DEEPSEEK_API_KEY" ;;
-  qwen) NATIVE_PROVIDER_API_KEY_VAR="DASHSCOPE_API_KEY" ;;
-  moonshot) NATIVE_PROVIDER_API_KEY_VAR="MOONSHOT_API_KEY" ;;
-  openrouter) NATIVE_PROVIDER_API_KEY_VAR="OPENROUTER_API_KEY" ;;
-  groq) NATIVE_PROVIDER_API_KEY_VAR="GROQ_API_KEY" ;;
-  ollama) NATIVE_PROVIDER_API_KEY_VAR="OLLAMA_API_KEY" ;;
+  openai) EXPECTED_API_KEY_ENV="VP_OPENAI_API_KEY" ;;
+  openai_compatible) EXPECTED_API_KEY_ENV="VP_OPENAI_COMPAT_API_KEY" ;;
+  openrouter) EXPECTED_API_KEY_ENV="VP_OPENROUTER_API_KEY" ;;
+  deepseek) EXPECTED_API_KEY_ENV="VP_DEEPSEEK_API_KEY" ;;
+  qwen) EXPECTED_API_KEY_ENV="VP_DASHSCOPE_API_KEY" ;;
+  moonshot) EXPECTED_API_KEY_ENV="VP_MOONSHOT_API_KEY" ;;
+  groq) EXPECTED_API_KEY_ENV="VP_GROQ_API_KEY" ;;
+  ollama) EXPECTED_API_KEY_ENV="VP_OLLAMA_API_KEY" ;;
+  *) EXPECTED_API_KEY_ENV="VP_LLM_API_KEY" ;;
 esac
-API_KEY_HINT="$EXPECTED_API_KEY_ENV (or MULTI_AGENT_TEAM_LLM_API_KEY / OPENAI_API_KEY)"
-if [ -n "$NATIVE_PROVIDER_API_KEY_VAR" ] && [ "$NATIVE_PROVIDER_API_KEY_VAR" != "OPENAI_API_KEY" ]; then
-  API_KEY_HINT="$EXPECTED_API_KEY_ENV (or MULTI_AGENT_TEAM_LLM_API_KEY / $NATIVE_PROVIDER_API_KEY_VAR / OPENAI_API_KEY)"
-fi
 
-LLM_API_KEY="${OFFICETOOL_LLM_API_KEY:-${OFFCIATOOL_LLM_API_KEY:-}}"
-LLM_BASE_URL="${OFFICETOOL_LLM_BASE_URL:-${OFFCIATOOL_LLM_BASE_URL:-}}"
-
-if [ -n "$LLM_API_KEY" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-  export OPENAI_API_KEY="$LLM_API_KEY"
-fi
-
-if [ -n "$LLM_BASE_URL" ] && [ -z "${OPENAI_BASE_URL:-}" ]; then
-  export OPENAI_BASE_URL="$LLM_BASE_URL"
-fi
-
+API_KEY_VALUE="$(env_first "$EXPECTED_API_KEY_ENV" VP_LLM_API_KEY || true)"
 has_api_key=false
 has_codex_auth=false
 supports_codex_auth=false
 
-provider_api_key="${!PROVIDER_API_KEY_VAR:-}"
-native_provider_api_key=""
-if [ -n "$NATIVE_PROVIDER_API_KEY_VAR" ]; then
-  native_provider_api_key="${!NATIVE_PROVIDER_API_KEY_VAR:-}"
-fi
-
-if [ -n "$provider_api_key" ] || [ -n "${MULTI_AGENT_TEAM_LLM_API_KEY:-}" ] || [ -n "$native_provider_api_key" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+if [ -n "${API_KEY_VALUE:-}" ]; then
   has_api_key=true
 fi
 if [ "$LLM_PROVIDER" = "ollama" ]; then
   has_api_key=true
 fi
-
+if [ "$LLM_PROVIDER" = "openai" ]; then
+  supports_codex_auth=true
+fi
 if [ -f "$CODEX_AUTH_FILE" ]; then
   has_codex_auth=true
 fi
 
-if [ "$LLM_PROVIDER" = "openai" ]; then
-  supports_codex_auth=true
+if [ "$has_api_key" = false ]; then
+  if [ "$supports_codex_auth" = true ] && [ "$has_codex_auth" = true ]; then
+    :
+  elif [ "$supports_codex_auth" = true ]; then
+    echo "WARN: No API key found and Codex auth.json was not found. /api/chat requests will fail until one auth source is available." >&2
+  else
+    echo "WARN: No API key found for provider=$LLM_PROVIDER. Expected env: $EXPECTED_API_KEY_ENV (or VP_LLM_API_KEY)." >&2
+  fi
 fi
-
-case "$AUTH_MODE" in
-  api_key)
-    if [ "$has_api_key" = false ]; then
-      echo "WARN: AUTH_MODE=api_key but no API key found. Expected env: $API_KEY_HINT." >&2
-    fi
-    ;;
-  codex_auth)
-    if [ "$supports_codex_auth" = false ]; then
-      echo "WARN: AUTH_MODE=codex_auth is only supported when MULTI_AGENT_TEAM_LLM_PROVIDER=openai. Current provider=$LLM_PROVIDER." >&2
-    fi
-    if [ "$has_codex_auth" = false ]; then
-      echo "WARN: AUTH_MODE=codex_auth but Codex auth file was not found at $CODEX_AUTH_FILE." >&2
-    fi
-    ;;
-  *)
-    if [ "$has_api_key" = false ]; then
-      if [ "$supports_codex_auth" = true ] && [ "$has_codex_auth" = true ]; then
-        :
-      elif [ "$supports_codex_auth" = true ]; then
-        echo "WARN: No API key found and Codex auth.json was not found. /api/chat requests will fail until one auth mode is available." >&2
-      else
-        echo "WARN: No API key found for provider=$LLM_PROVIDER. Expected env: $API_KEY_HINT." >&2
-      fi
-    fi
-    ;;
-esac
 
 if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
   exec "$ROOT_DIR/.venv/bin/python" -m uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$APP_PORT" --reload

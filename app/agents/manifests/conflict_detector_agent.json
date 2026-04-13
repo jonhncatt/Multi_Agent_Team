@@ -1,0 +1,36 @@
+{
+  "plugin_id": "conflict_detector_agent",
+  "title": "Conflict Detector Agent",
+  "description": "冲突检测插件，识别证据矛盾与高风险断言。",
+  "sprite_role": "conflict_detector",
+  "supports_swarm": true,
+  "swarm_mode": "consensus-check",
+  "swarm": {
+    "role": "consensus-parent",
+    "enabled_by_default": false,
+    "max_depth": 2,
+    "max_children": 2,
+    "join_policy": "consensus_vote",
+    "failure_policy": "serial_replay",
+    "children": [
+      {
+        "plugin_id": "researcher_agent",
+        "label": "Re-Check Branch",
+        "objective": "复查争议点的来源证据。",
+        "propagate": false
+      },
+      {
+        "plugin_id": "reviewer_agent",
+        "label": "Risk Gate Branch",
+        "objective": "对冲突结论做风险门禁评级。",
+        "required": true,
+        "propagate": false
+      }
+    ]
+  },
+  "capability_tags": ["conflict-detect", "consistency-check", "swarm-vote"],
+  "tool_profile": "none",
+  "allowed_tools": [],
+  "max_tool_rounds": 0,
+  "system_prompt": "你是 Conflict Detector Agent。只指出冲突、风险和需要复核的点，不生成新事实。"
+}

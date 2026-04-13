@@ -1,122 +1,59 @@
 from __future__ import annotations
 
-import asyncio
-
-from app.kernel.host import KernelHost
-from app.kernel.llm_router import LLMRouter
+from app.kernel.llm_router import LLMRouter, LLMRouterDecision
 
 
-def test_llm_router_discovers_independent_agents() -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-    result = asyncio.run(router.discover_agents(force=True))
+def test_llm_router_uses_default_agent_without_candidates() -> None:
+    router = LLMRouter()
+    decision = router.route("你好")
 
-    assert bool(result.get("ok")) is True
-    assert int(result.get("count") or 0) >= 12
-    assert "worker_agent" in router.agents
-    assert "planner_agent" in router.agents
-
-
-def test_llm_router_reload_not_found_agent() -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-    asyncio.run(router.discover_agents(force=True))
-    result = asyncio.run(router.reload_single_agent("missing_agent"))
-    assert bool(result.get("ok")) is False
+    assert isinstance(decision, LLMRouterDecision)
+    assert decision.target_agent == "worker_agent"
+    assert decision.reason == "default route"
+    assert decision.confidence == 0.6
 
 
-def test_llm_router_route_fallback_when_llm_unavailable(monkeypatch) -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-    asyncio.run(router.discover_agents(force=True))
-
-    async def _fake_json_completion(**kwargs):
-        return {"ok": False, "error": "forced"}
-
-    monkeypatch.setattr(router, "_json_completion", _fake_json_completion)
-    plan = asyncio.run(router.route("请帮我规划下周研发任务"))
-
-    assert isinstance(plan.get("steps"), list)
-    assert len(plan.get("steps") or []) >= 1
-
-
-def test_llm_router_execute_runs_agent_step() -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-    host.attach_llm_router(router)
-    asyncio.run(router.discover_agents(force=True))
-    plan = {
-        "plan": "unit_test",
-        "parallel": False,
-        "steps": [{"agent": "worker_agent", "task": "生成一段简短总结"}],
-    }
-    result = asyncio.run(router.execute(plan))
-
-    rows = list(result.get("results") or [])
-    assert len(rows) == 1
-    assert str(rows[0].get("status")) == "success"
-
-
-def test_llm_router_execute_passes_previous_results_to_next_agent() -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-
-    class _FirstAgent:
-        async def handle_task(self, task):
-            return {"status": "success", "result": "alpha done"}
-
-    class _SecondAgent:
-        async def handle_task(self, task):
-            previous = list((task or {}).get("context", {}).get("previous_results") or [])
-            prev_text = str((previous[-1] or {}).get("result") or "") if previous else ""
-            return {"status": "success", "result": f"reviewed: {prev_text}"}
-
-    router.agents = {"worker_agent": _FirstAgent(), "reviewer_agent": _SecondAgent()}
-    router.manifests = {
-        "worker_agent": {"name": "worker_agent"},
-        "reviewer_agent": {"name": "reviewer_agent"},
-    }
-    plan = {
-        "plan": "seq_context",
-        "parallel": False,
-        "steps": [
-            {"agent": "worker_agent", "task": "do A"},
-            {"agent": "reviewer_agent", "task": "review previous"},
-        ],
-    }
-    result = asyncio.run(router.execute(plan))
-
-    rows = list(result.get("results") or [])
-    assert len(rows) == 2
-    assert str(rows[1].get("result") or "") == "reviewed: alpha done"
-
-
-def test_llm_router_fallback_greeting_uses_single_step() -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-    plan = router._fallback_plan("你好")
-    steps = list(plan.get("steps") or [])
-    assert len(steps) == 1
-    assert str(steps[0].get("agent")) == "worker_agent"
-
-
-def test_llm_router_agent_reason_hides_connection_error(monkeypatch) -> None:
-    host = KernelHost()
-    router = LLMRouter(host)
-
-    async def _fake_complete_text(**kwargs):
-        return None
-
-    monkeypatch.setattr(router, "_complete_text", _fake_complete_text)
-    text = asyncio.run(
-        router.agent_reason(
-            agent_name="worker_agent",
-            agent_description="worker",
-            capabilities=["execution"],
-            task="你好",
-            context={},
-        )
+def test_llm_router_prefers_summarizer_for_summary_intent() -> None:
+    router = LLMRouter()
+    decision = router.route(
+        "请帮我总结这段内容",
+        candidate_agents=["worker_agent", "summarizer_agent"],
     )
-    lowered = text.lower()
-    assert "unavailable" not in lowered
-    assert "connection" not in lowered
+
+    assert decision.target_agent == "summarizer_agent"
+    assert decision.reason == "summary-intent"
+
+
+def test_llm_router_prefers_researcher_for_search_intent() -> None:
+    router = LLMRouter()
+    decision = router.route(
+        "请帮我搜索最新资料",
+        candidate_agents=["worker_agent", "researcher_agent"],
+    )
+
+    assert decision.target_agent == "researcher_agent"
+    assert decision.reason == "research-intent"
+
+
+def test_llm_router_falls_back_to_first_candidate_when_preferred_missing() -> None:
+    router = LLMRouter(default_agent="worker_agent")
+    decision = router.route(
+        "请帮我修复这个 bug",
+        candidate_agents=["reviewer_agent", "critic_agent"],
+    )
+
+    assert decision.target_agent == "reviewer_agent"
+    assert decision.reason == "fallback-first-candidate"
+
+
+def test_llm_router_metadata_reports_context_keys() -> None:
+    router = LLMRouter()
+    decision = router.route(
+        "继续",
+        candidate_agents=["worker_agent"],
+        context={"project_id": "demo", "cwd": "/tmp/demo"},
+    )
+
+    assert decision.metadata["candidate_count"] == 1
+    assert decision.metadata["context_keys"] == ["cwd", "project_id"]
+    assert str(decision.metadata["message_preview"]) == "继续"

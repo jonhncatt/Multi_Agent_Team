@@ -67,12 +67,12 @@ PRODUCT_PROFILE_ALIASES = {
 
 
 def get_product_profile(profile_key: str | None = None) -> ProductProfile:
-    raw = str(profile_key or os.environ.get("MULTI_AGENT_TEAM_APP_PROFILE") or "").strip().lower()
+    raw = str(profile_key or os.environ.get("VP_APP_PROFILE") or "").strip().lower()
     return PRODUCT_PROFILES.get(raw, KERNEL_ROBOT_PROFILE)
 
 
 def _workspace_root_from_env() -> Path:
-    raw = os.environ.get("MULTI_AGENT_TEAM_WORKSPACE_ROOT") or os.getcwd()
+    raw = os.environ.get("VP_WORKSPACE_ROOT") or os.getcwd()
     return Path(raw).expanduser().resolve()
 
 
@@ -98,10 +98,10 @@ def apply_product_profile_env(profile_key: str, *, force: bool = False) -> Produ
         "TOKEN_STATS_PATH": str(data_root / "token_stats.json"),
     }
     for suffix, value in canonical.items():
-        _set_default_env(f"MULTI_AGENT_TEAM_{suffix}", value, force=force)
+        _set_default_env(f"VP_{suffix}", value, force=force)
     return profile
 
 
 def ensure_product_profile_env(default_profile: str = KERNEL_ROBOT_PROFILE.key) -> ProductProfile:
-    existing = str(os.environ.get("MULTI_AGENT_TEAM_APP_PROFILE") or "").strip().lower()
+    existing = str(os.environ.get("VP_APP_PROFILE") or "").strip().lower()
     return apply_product_profile_env(existing or default_profile, force=False)

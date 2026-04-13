@@ -36,7 +36,7 @@ class LLMRouter:
         if any(token in text for token in ("总结", "summary", "summar")) and "summarizer_agent" in candidates:
             preferred = "summarizer_agent"
             reason = "summary-intent"
-        elif any(token in text for token in ("查", "search", "research", "检索")) and "researcher_agent" in candidates:
+        elif any(token in text for token in ("查", "搜索", "search", "research", "检索")) and "researcher_agent" in candidates:
             preferred = "researcher_agent"
             reason = "research-intent"
         elif any(token in text for token in ("修复", "fix", "bug")) and "fixer_agent" in candidates:

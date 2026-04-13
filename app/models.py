@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 class ChatSettings(BaseModel):
+    provider: str | None = None
     model: str | None = None
     max_output_tokens: int = Field(default=128000, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
@@ -17,6 +18,7 @@ class ChatSettings(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: str | None = None
+    project_id: str | None = None
     message: str = Field(min_length=1)
     attachment_ids: list[str] = Field(default_factory=list)
     settings: ChatSettings = Field(default_factory=ChatSettings)
@@ -26,6 +28,13 @@ class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
     output_preview: str
+    status: str = "ok"
+    group: str = ""
+    source: str = ""
+    summary: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    project_root: str = ""
+    cwd: str = ""
     module_id: str = ""
     module_title: str = ""
     module_group: str = ""
@@ -123,32 +132,23 @@ class TokenTotals(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     run_id: str | None = None
+    agent_id: str = "vintage_programmer"
+    agent_title: str = "Vintage Programmer"
+    selected_business_module: str = ""
     effective_model: str | None = None
     queue_wait_ms: int = 0
     text: str
     tool_events: list[ToolEvent] = Field(default_factory=list)
-    execution_plan: list[str] = Field(default_factory=list)
-    execution_trace: list[str] = Field(default_factory=list)
-    pipeline_hooks: list[HookTelemetryItem] = Field(default_factory=list)
-    debug_flow: list[DebugFlowItem] = Field(default_factory=list)
-    agent_panels: list[AgentPanel] = Field(default_factory=list)
-    active_roles: list[str] = Field(default_factory=list)
-    current_role: str | None = None
-    role_states: list[RoleRuntimeState] = Field(default_factory=list)
-    answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     attachment_context_mode: Literal["none", "explicit", "auto_linked", "cleared"] = "none"
     effective_attachment_ids: list[str] = Field(default_factory=list)
     auto_linked_attachment_ids: list[str] = Field(default_factory=list)
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
-    route_state_scope: Literal["none", "session", "attachment", "attachment_miss"] = "none"
     attachment_context_key: str = ""
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
-    selected_business_module: str = ""
-    kernel_routing: dict[str, object] = Field(default_factory=dict)
-    business_result: dict[str, object] = Field(default_factory=dict)
+    inspector: dict[str, object] = Field(default_factory=dict)
     turn_count: int
     summarized: bool = False
 
@@ -163,6 +163,11 @@ class UploadResponse(BaseModel):
 
 class NewSessionResponse(BaseModel):
     session_id: str
+    project_id: str = ""
+
+
+class NewSessionRequest(BaseModel):
+    project_id: str | None = None
 
 
 class UpdateSessionTitleRequest(BaseModel):
@@ -192,6 +197,12 @@ class SessionDetailResponse(BaseModel):
     title: str = ""
     summary: str = ""
     turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
+    agent_state: dict[str, object] = Field(default_factory=dict)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
@@ -201,6 +212,11 @@ class SessionListItem(BaseModel):
     has_custom_title: bool = False
     preview: str = ""
     turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
     updated_at: str = ""
     created_at: str = ""
 
@@ -209,55 +225,116 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionListItem] = Field(default_factory=list)
 
 
+class ProjectDescriptor(BaseModel):
+    project_id: str
+    title: str
+    root_path: str
+    created_at: str = ""
+    updated_at: str = ""
+    last_opened_at: str = ""
+    pinned: bool = False
+    is_default: bool = False
+    git_root: str = ""
+    git_branch: str = ""
+    is_worktree: bool = False
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectDescriptor] = Field(default_factory=list)
+
+
+class ProjectCreateRequest(BaseModel):
+    root_path: str = Field(min_length=1)
+    title: str = Field(default="", max_length=120)
+
+
+class ProjectUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    pinned: bool | None = None
+
+
+class ProjectDeleteResponse(BaseModel):
+    ok: bool
+    project_id: str
+
+
+class ToolDescriptor(BaseModel):
+    name: str
+    group: str
+    source: str
+    enabled: bool = True
+    read_only: bool = False
+    requires_evidence: bool = False
+    summary: str = ""
+
+
+class SkillDescriptor(BaseModel):
+    id: str
+    title: str
+    path: str
+    enabled: bool = False
+    bind_to: list[str] = Field(default_factory=list)
+    summary: str = ""
+    validation_status: str = "valid"
+    content: str = ""
+
+
+class SpecDescriptor(BaseModel):
+    name: str
+    path: str
+    editable: bool = True
+    validation_status: str = "valid"
+    content: str = ""
+
+
+class WorkbenchToolsResponse(BaseModel):
+    tools: list[ToolDescriptor] = Field(default_factory=list)
+
+
+class WorkbenchSkillsResponse(BaseModel):
+    skills: list[SkillDescriptor] = Field(default_factory=list)
+
+
+class WorkbenchSpecsResponse(BaseModel):
+    specs: list[SpecDescriptor] = Field(default_factory=list)
+
+
+class SkillUpsertRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class ToggleSkillRequest(BaseModel):
+    enabled: bool | None = None
+
+
+class SpecUpsertRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
 class HealthResponse(BaseModel):
     ok: bool
-    product_profile: str = ""
-    product_title: str = ""
-    product_tagline: str = ""
-    product_kernel_title: str = ""
-    product_kernel_subtitle: str = ""
-    product_role_title: str = ""
-    product_role_legend: str = ""
-    show_kernel_console: bool = True
-    show_role_board: bool = True
+    app_title: str = ""
     app_version: str = ""
     build_version: str = ""
-    model_default: str
+    default_model: str = ""
+    model_options: list[str] = Field(default_factory=list)
+    allow_custom_model: bool = True
     llm_provider: str = ""
-    llm_api_key_env: str = ""
+    provider_options: list[dict[str, object]] = Field(default_factory=list)
     auth_mode: str = ""
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
     docker_message: str | None = None
     platform_name: str = ""
     workspace_root: str = ""
-    allow_any_path: bool = False
     allowed_roots: list[str] = Field(default_factory=list)
-    workspace_sibling_root: str = ""
-    allow_workspace_sibling_access: bool = False
-    default_extra_allowed_roots: list[str] = Field(default_factory=list)
-    extra_allowed_roots_source: Literal["platform_default", "env_override"] | str = "platform_default"
+    max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
-    kernel_active_manifest: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_manifest: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_validation: dict[str, object] = Field(default_factory=dict)
-    kernel_shadow_promote_check: dict[str, object] = Field(default_factory=dict)
-    kernel_rollback_pointer: dict[str, object] = Field(default_factory=dict)
-    kernel_last_shadow_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_upgrade_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_repair_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_patch_worker_run: dict[str, object] = Field(default_factory=dict)
-    kernel_last_package_run: dict[str, object] = Field(default_factory=dict)
-    kernel_selected_modules: dict[str, str] = Field(default_factory=dict)
-    kernel_module_health: dict[str, dict[str, object]] = Field(default_factory=dict)
-    kernel_runtime_files: dict[str, str] = Field(default_factory=dict)
-    kernel_tool_registry: dict[str, object] = Field(default_factory=dict)
-    kernel_host_runtime: dict[str, object] = Field(default_factory=dict)
-    control_panel_topology: dict[str, object] = Field(default_factory=dict)
-    role_lab_runtime: dict[str, object] = Field(default_factory=dict)
-    assistant_overlay_profile: dict[str, object] = Field(default_factory=dict)
-    assistant_evolution_recent: list[dict[str, object]] = Field(default_factory=list)
+    default_project_id: str = ""
+    projects: list[ProjectDescriptor] = Field(default_factory=list)
+    runtime_status: dict[str, object] = Field(default_factory=dict)
+    agent: dict[str, object] = Field(default_factory=dict)
 
 
 class KernelManifestUpdateRequest(BaseModel):
@@ -368,6 +445,62 @@ class RoleLabRuntimeResponse(BaseModel):
     ok: bool
     detail: str = ""
     role_lab_runtime: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentPluginInfo(BaseModel):
+    plugin_id: str
+    title: str
+    description: str = ""
+    sprite_role: str = "worker"
+    supports_swarm: bool = False
+    swarm_mode: str = "none"
+    swarm_role: str = "leaf"
+    swarm_enabled_by_default: bool = False
+    swarm_max_depth: int = 1
+    swarm_max_children: int = 1
+    swarm_join_policy: str = "none"
+    swarm_failure_policy: str = "none"
+    swarm_children: list[dict[str, Any]] = Field(default_factory=list)
+    capability_tags: list[str] = Field(default_factory=list)
+    tool_profile: str = "none"
+    allowed_tools: list[str] = Field(default_factory=list)
+    max_tool_rounds: int = 0
+    quality_profile: str = ""
+    scope: str = ""
+    stop_rules: list[str] = Field(default_factory=list)
+    response_mode: str = "text"
+    response_keys: list[str] = Field(default_factory=list)
+    response_max_items: int = 0
+    tool_expect_keywords: list[str] = Field(default_factory=list)
+    tool_expect_min_calls: int = 0
+    source_path: str = ""
+    independent_runnable: bool = True
+
+
+class AgentPluginListResponse(BaseModel):
+    ok: bool
+    detail: str = ""
+    plugins: list[AgentPluginInfo] = Field(default_factory=list)
+    tool_model: dict[str, object] = Field(default_factory=dict)
+
+
+class AgentPluginRunRequest(BaseModel):
+    plugin_id: str
+    message: str = Field(min_length=1)
+    context: dict[str, Any] = Field(default_factory=dict)
+    settings: ChatSettings = Field(default_factory=ChatSettings)
+    max_tool_rounds: int | None = None
+
+
+class AgentPluginRunResponse(BaseModel):
+    ok: bool
+    plugin_id: str
+    text: str
+    effective_model: str = ""
+    tool_events: list[ToolEvent] = Field(default_factory=list)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    notes: list[str] = Field(default_factory=list)
+    decision: dict[str, object] = Field(default_factory=dict)
 
 
 class TokenStatsResponse(BaseModel):
