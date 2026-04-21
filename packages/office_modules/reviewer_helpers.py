@@ -3,19 +3,43 @@ from __future__ import annotations
 from typing import Any
 
 
+_TOOL_ALIASES = {
+    "read": {"read", "read_text_file", "list_directory"},
+    "search_file": {"search_file", "search_text_in_file"},
+    "search_file_multi": {"search_file_multi", "multi_query_search"},
+    "read_section": {"read_section", "read_section_by_heading"},
+    "web_search": {"web_search", "search_web"},
+    "web_fetch": {"web_fetch", "fetch_web"},
+    "web_download": {"web_download", "download_web_file"},
+}
+
+
+def _tool_name_is(name: str, canonical: str) -> bool:
+    lowered = str(name or "").strip().lower()
+    return lowered in {item.lower() for item in _TOOL_ALIASES.get(canonical, {canonical})}
+
+
 def reviewer_readonly_tool_names() -> list[str]:
     return [
-        "list_directory",
+        "read",
         "read_text_file",
+        "search_file",
         "search_text_in_file",
+        "search_file_multi",
         "multi_query_search",
-        "doc_index_build",
+        "read_section",
         "read_section_by_heading",
         "table_extract",
         "fact_check_file",
         "search_codebase",
+        "web_search",
         "search_web",
+        "web_fetch",
         "fetch_web",
+        "image_inspect",
+        "image_read",
+        "sessions_list",
+        "sessions_history",
     ]
 
 
@@ -36,9 +60,11 @@ def normalize_reviewer_verdict(
 ) -> str:
     verdict = str(raw_verdict or "pass").strip().lower()
     partial_evidence_available = bool(attachment_context_available or worker_evidence_available)
+    readonly_set = set(readonly_checks)
+    has_spec_search = bool(readonly_set & {"search_file", "search_text_in_file"})
     if verdict == "needs_attention":
         if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
-            spec_lookup_request and "search_text_in_file" not in set(readonly_checks) and not partial_evidence_available
+            spec_lookup_request and not has_spec_search and not partial_evidence_available
         ):
             return "block"
         if partial_evidence_available and not readonly_checks:
@@ -53,10 +79,9 @@ def normalize_reviewer_verdict(
 
     has_risks = bool(agent._normalize_string_list(risks or [], limit=4, item_limit=180))
     has_followups = bool(agent._normalize_string_list(followups or [], limit=4, item_limit=180))
-    readonly_set = set(readonly_checks)
     if conflict_has_conflict and not (conflict_realtime_only and web_tools_success):
         return "block"
-    if spec_lookup_request and "search_text_in_file" not in readonly_set:
+    if spec_lookup_request and not has_spec_search:
         if partial_evidence_available:
             return "warn"
         return "block"
@@ -83,7 +108,7 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         query_text = ", ".join(queries) if queries else "(none)"
         return f"fact_check_file verdict={verdict}, evidence={evidence_count}, queries={query_text}"
 
-    if name == "search_text_in_file":
+    if _tool_name_is(name, "search_file"):
         query = str(result.get("query") or "").strip() or "(empty)"
         matches = list(result.get("matches") or [])
         match_count = int(result.get("match_count") or len(matches))
@@ -91,16 +116,16 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         page_hint = int(first.get("page_hint") or 0)
         matched_text = agent._shorten(first.get("matched_text") or "", 60) if first else ""
         if page_hint > 0:
-            return f"search_text_in_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
-        return f"search_text_in_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
+            return f"search_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
+        return f"search_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
 
-    if name == "multi_query_search":
+    if _tool_name_is(name, "search_file_multi"):
         queries = agent._normalize_string_list(result.get("queries") or [], limit=4, item_limit=40)
         matches = list(result.get("matches") or [])
         match_count = int(result.get("match_count") or len(matches))
         first = matches[0] if matches else {}
         page_hint = int(first.get("page_hint") or 0)
-        return f"multi_query_search queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
+        return f"search_file_multi queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
 
     if name == "doc_index_build":
         page_count = int(result.get("page_count") or 0)
@@ -108,13 +133,13 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         cached = bool(result.get("cached"))
         return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
 
-    if name == "read_section_by_heading":
+    if _tool_name_is(name, "read_section"):
         heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip() or "(not found)"
         page_start = int(result.get("page_start") or 0)
         page_end = int(result.get("page_end") or 0)
         if page_start > 0:
-            return f"read_section_by_heading matched={heading}, pages={page_start}-{page_end or page_start}"
-        return f"read_section_by_heading matched={heading}"
+            return f"read_section matched={heading}, pages={page_start}-{page_end or page_start}"
+        return f"read_section matched={heading}"
 
     if name == "table_extract":
         tables = list(result.get("tables") or [])
@@ -136,28 +161,28 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
             return f"search_codebase matches={match_count}, first={path}:{line or '?'}"
         return f"search_codebase matches={match_count}"
 
-    if name == "search_web":
+    if _tool_name_is(name, "web_search"):
         query = str(result.get("query") or "").strip() or "(empty)"
         count = int(result.get("count") or 0)
         engine = str(result.get("engine") or "unknown").strip() or "unknown"
         rows = list(result.get("results") or [])
         first = rows[0] if rows else {}
         first_title = agent._shorten(first.get("title") or "", 60) if isinstance(first, dict) else ""
-        return f"search_web query={query}, count={count}, engine={engine}, first={first_title or '(none)'}"
+        return f"web_search query={query}, count={count}, engine={engine}, first={first_title or '(none)'}"
 
-    if name == "fetch_web":
+    if _tool_name_is(name, "web_fetch"):
         url = str(result.get("url") or "").strip() or "(empty)"
         source_format = str(result.get("source_format") or result.get("content_type") or "unknown").strip()
         length = int(result.get("length") or 0)
         warning = agent._shorten(result.get("warning") or "", 80)
         if warning:
             return (
-                f"fetch_web url={agent._shorten(url, 80)}, format={source_format or 'unknown'}, "
+                f"web_fetch url={agent._shorten(url, 80)}, format={source_format or 'unknown'}, "
                 f"length={length}, warning={warning}"
             )
-        return f"fetch_web url={agent._shorten(url, 80)}, format={source_format or 'unknown'}, length={length}"
+        return f"web_fetch url={agent._shorten(url, 80)}, format={source_format or 'unknown'}, length={length}"
 
-    if name == "read_text_file":
+    if _tool_name_is(name, "read"):
         path = str(result.get("path") or "").strip()
         length = int(result.get("length") or 0)
         start_char = int(result.get("start_char") or 0)
@@ -168,18 +193,12 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
             end_line = int(result.get("end_line") or 0)
             total_lines = int(result.get("total_lines") or 0)
             return (
-                f"read_text_file path={agent._shorten(path, 60)}, chars={length}, "
+                f"read path={agent._shorten(path, 60)}, chars={length}, "
                 f"lines={start_line}-{end_line}/{total_lines}, truncated={str(truncated).lower()}"
             )
         return (
-            f"read_text_file path={agent._shorten(path, 60)}, chars={length}, "
+            f"read path={agent._shorten(path, 60)}, chars={length}, "
             f"range={start_char}-{end_char}, truncated={str(truncated).lower()}"
         )
-
-    if name == "list_directory":
-        path = str(result.get("path") or "").strip() or "."
-        entries = result.get("entries") or []
-        count = len(entries) if isinstance(entries, list) else 0
-        return f"list_directory path={agent._shorten(path, 60)}, entries={count}"
 
     return f"{name} 已完成复核。"

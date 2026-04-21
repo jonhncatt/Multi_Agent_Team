@@ -5,11 +5,13 @@
     "local_tool_executor"
   ],
   "tool_modules": [
-    "workspace_tools",
-    "file_tools",
-    "web_tools",
-    "write_tools",
-    "session_tools"
+    "codex_core_tools",
+    "fs_content_tools",
+    "web_context_tools",
+    "session_context_tools",
+    "media_context_tools",
+    "content_unpack_tools",
+    "browser_tools"
   ],
   "agent_modules": [
     "office_agent"

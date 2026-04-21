@@ -497,6 +497,30 @@ class RunShellArgs(BaseModel):
     timeout_sec: int = Field(default=15, ge=1, le=120)
 
 
+class ExecCommandArgs(BaseModel):
+    cmd: str = Field(description="Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`")
+    cwd: str = Field(default=".", description="Working directory relative to workspace")
+    yield_time_ms: int = Field(default=1000, ge=0, le=10000)
+    max_output_chars: int = Field(default=12000, ge=256, le=60000)
+    tty: bool = False
+
+
+class WriteStdinArgs(BaseModel):
+    session_id: int
+    chars: str = ""
+    yield_time_ms: int = Field(default=1000, ge=0, le=10000)
+    max_output_chars: int = Field(default=12000, ge=256, le=60000)
+
+
+class ReadArgs(BaseModel):
+    path: str = "."
+    start_char: int = Field(default=0, ge=0)
+    max_chars: int = Field(default=200000, ge=128, le=1000000)
+    start_line: int = Field(default=0, ge=0)
+    max_lines: int = Field(default=0, ge=0, le=200000)
+    max_entries: int = Field(default=200, ge=1, le=500)
+
+
 class ListDirectoryArgs(BaseModel):
     path: str = Field(default=".")
     max_entries: int = Field(default=200, ge=1, le=500)
@@ -517,6 +541,20 @@ class SearchTextInFileArgs(BaseModel):
     context_chars: int = Field(default=280, ge=40, le=2000)
 
 
+class SearchFileArgs(BaseModel):
+    path: str
+    query: str
+    max_matches: int = Field(default=8, ge=1, le=20)
+    context_chars: int = Field(default=280, ge=40, le=2000)
+
+
+class SearchFileMultiArgs(BaseModel):
+    path: str
+    queries: list[str]
+    per_query_max_matches: int = Field(default=3, ge=1, le=10)
+    context_chars: int = Field(default=280, ge=40, le=2000)
+
+
 class MultiQuerySearchArgs(BaseModel):
     path: str
     queries: list[str]
@@ -531,6 +569,12 @@ class DocIndexBuildArgs(BaseModel):
 
 
 class ReadSectionByHeadingArgs(BaseModel):
+    path: str
+    heading: str
+    max_chars: int = Field(default=12000, ge=512, le=50000)
+
+
+class ReadSectionArgs(BaseModel):
     path: str
     heading: str
     max_chars: int = Field(default=12000, ge=512, le=50000)
@@ -585,6 +629,24 @@ class ExtractMsgAttachmentsArgs(BaseModel):
     max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
 
 
+class ArchiveExtractArgs(BaseModel):
+    zip_path: str
+    dst_dir: str = Field(default="", description="Destination directory. Empty means sibling folder next to zip file.")
+    overwrite: bool = True
+    create_dirs: bool = True
+    max_entries: int = Field(default=20000, ge=1, le=100000)
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+
+
+class MailExtractAttachmentsArgs(BaseModel):
+    msg_path: str
+    dst_dir: str = Field(default="", description="Destination directory. Empty means <msg_stem>_attachments.")
+    overwrite: bool = True
+    create_dirs: bool = True
+    max_attachments: int = Field(default=500, ge=1, le=5000)
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+
+
 class WriteTextFileArgs(BaseModel):
     path: str
     content: str
@@ -626,6 +688,92 @@ class SearchWebArgs(BaseModel):
     query: str
     max_results: int = Field(default=5, ge=1, le=20)
     timeout_sec: int = Field(default=12, ge=3, le=30)
+
+
+class WebFetchArgs(BaseModel):
+    url: str
+    max_chars: int = Field(default=120000, ge=512, le=500000)
+    timeout_sec: int = Field(default=12, ge=3, le=30)
+
+
+class WebDownloadArgs(BaseModel):
+    url: str
+    dst_path: str = ""
+    overwrite: bool = True
+    create_dirs: bool = True
+    timeout_sec: int = Field(default=20, ge=3, le=120)
+    max_bytes: int = Field(default=52428800, ge=1024, le=209715200)
+
+
+class ApplyPatchArgs(BaseModel):
+    patch: str
+    cwd: str = "."
+    check: bool = False
+
+
+class ViewImageArgs(BaseModel):
+    path: str
+
+
+class ImageInspectArgs(BaseModel):
+    path: str
+
+
+class ImageReadArgs(BaseModel):
+    path: str
+    prompt: str = ""
+    max_output_chars: int = Field(default=12000, ge=256, le=24000)
+
+
+class BrowserOpenArgs(BaseModel):
+    url: str
+    timeout_ms: int = Field(default=20000, ge=1000, le=60000)
+
+
+class BrowserClickArgs(BaseModel):
+    selector: str
+    timeout_ms: int = Field(default=12000, ge=1000, le=60000)
+
+
+class BrowserTypeArgs(BaseModel):
+    selector: str
+    text: str
+    submit: bool = False
+    clear: bool = True
+    timeout_ms: int = Field(default=12000, ge=1000, le=60000)
+
+
+class BrowserWaitArgs(BaseModel):
+    selector: str = ""
+    timeout_ms: int = Field(default=5000, ge=250, le=60000)
+    state: str = "visible"
+
+
+class BrowserSnapshotArgs(BaseModel):
+    max_chars: int = Field(default=12000, ge=400, le=50000)
+
+
+class BrowserScreenshotArgs(BaseModel):
+    path: str = ""
+    full_page: bool = True
+
+
+class UpdatePlanArgs(BaseModel):
+    explanation: str = ""
+    plan: list[dict[str, str]]
+
+
+class RequestUserInputArgs(BaseModel):
+    questions: list[dict[str, Any]]
+
+
+class SessionsListArgs(BaseModel):
+    limit: int = Field(default=20, ge=1, le=200)
+
+
+class SessionsHistoryArgs(BaseModel):
+    session_id: str
+    max_turns: int = Field(default=80, ge=1, le=800)
 
 
 class ListSessionsArgs(BaseModel):
@@ -690,6 +838,11 @@ class OfficeAgent:
             self._capability_runtime.metadata.get("primary_memory_module") or ""
         ).strip()
         self.tools = tool_executor or self._capability_runtime.tools
+        if hasattr(self.tools, "set_image_read_handler"):
+            try:
+                self.tools.set_image_read_handler(self._image_read_tool_payload)
+            except Exception:
+                pass
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
         self._product_profile_key = (
@@ -920,9 +1073,13 @@ class OfficeAgent:
         )
         retryable_tools = {
             "fetch_web",
+            "web_fetch",
             "search_web",
+            "web_search",
             "download_web_file",
+            "web_download",
             "run_shell",
+            "read",
             "read_text_file",
             "search_codebase",
         }
@@ -1145,7 +1302,11 @@ class OfficeAgent:
         requested_execution_mode = str(getattr(settings, "execution_mode", "") or self.config.execution_mode).strip().lower()
         if requested_execution_mode not in {"host", "docker"}:
             requested_execution_mode = self.config.execution_mode
-        self.tools.set_runtime_context(execution_mode=requested_execution_mode, session_id=session_id)
+        self.tools.set_runtime_context(
+            execution_mode=requested_execution_mode,
+            session_id=session_id,
+            model=requested_model,
+        )
 
         def emit_progress(event: str, **payload: Any) -> None:
             if not progress_cb:
@@ -1437,35 +1598,34 @@ class OfficeAgent:
                     f"输出风格: {style_hint}\n"
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
-                    "读取文件优先使用 list_directory/read_text_file；"
-                    "read_text_file 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
-                    "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_text_in_file；"
-                    "search_text_in_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
-                    "当用户说“看某一章/某一节/某个 heading”时，优先用 read_section_by_heading；"
+                    "读取文件或目录优先使用 read；"
+                    "read 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
+                    "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_file；"
+                    "search_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
+                    "当用户说“看某一章/某一节/某个 heading”时，优先用 read_section；"
                     "当用户说“看表格/参数表/opcode 表”时，优先用 table_extract；"
                     "当用户要求核事实或复核结论时，可用 fact_check_file；"
                     "当用户要求搜代码、定位实现、找调用点时，优先用 search_codebase；"
                     "如果用户要求找函数/找文件/搜代码但没有明确给路径，"
-                    "默认先在当前工作区根目录 '.' 调用 search_codebase 或 list_directory，不要先索取具体路径；"
+                    "默认先在当前工作区根目录 '.' 调用 search_codebase 或 read(path='.')，不要先索取具体路径；"
                     "只有在你至少完成一次默认搜索后仍无法缩小范围时，才向用户追问路径。\n"
                     "如果用户给的是相对目录名或允许根目录的别名（例如 workbench），"
-                    "可以直接把该名字作为 list_directory(path=...) 或 search_codebase(root=...) 的参数尝试；"
+                    "可以直接把该名字作为 read(path=...) 或 search_codebase(root=...) 的参数尝试；"
                     "不要先要求绝对路径。\n"
                     "如果用户只给了文件关键词（例如 tcg_accl0030）且未带扩展名，"
                     "默认先按 basename 进行模糊搜索（文件名/内容都可），不要先追问完整文件名或扩展名。\n"
                     "当默认 root='.' 没有命中时，继续在其他可访问根目录自动重试，不要立即向用户追问地址。\n"
-                    "当需要对同一文件同时尝试多个关键词时，优先用 multi_query_search；"
+                    "当需要对同一文件同时尝试多个关键词时，优先用 search_file_multi；"
                     "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
-                    "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
+                    "大文件优先用 read(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
-                    "应先调用 read_text_file(path=..., start_char=0, max_chars=1000000)，"
+                    "应先调用 read(path=..., start_char=0, max_chars=1000000)，"
                     "若 has_more=true 再自动续读后续分块，不要把“是否继续读取”抛回给用户；"
                     "对于规范/规格书问答，必须先给出命中证据（页码/章节/片段）再下结论；"
                     "若当前提取文本未命中，只能说“在当前提取文本中未定位到”，不得直接断言规范不存在该命令或条目；"
-                    "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
-                    "解压 zip 文件优先使用 extract_zip；"
-                    "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 extract_msg_attachments(msg_path=...)；"
-                    "拿到附件落盘路径后继续调用 read_text_file 或处理图片，不要要求用户手工找目录。\n"
+                    "解压 zip 文件优先使用 archive_extract；"
+                    "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 mail_extract_attachments(msg_path=...)；"
+                    "拿到附件落盘路径后继续调用 read 或 image_read，不要要求用户手工找目录。\n"
                     "当用户要求“解释邮件全部内容/完整解释邮件”时，默认范围=邮件正文+可解析附件内容；"
                     "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
@@ -1473,11 +1633,11 @@ class OfficeAgent:
                     "如果上一轮你已经给出“预览代码/草稿”，而本轮用户只说“写入/应用/替换”，"
                     "默认按上一轮预览内容原样写入（包含注释、空行和缩进）；"
                     "除非用户明确要求改动，否则不要私自删改注释。\n"
-                    "当 execution_mode=docker 且调用 run_shell 时，/workspace 与 /allowed/* 是主机目录挂载；"
+                    "当 execution_mode=docker 且调用 exec_command 时，/workspace 与 /allowed/* 是主机目录挂载；"
                     "必须基于工具返回的 host_cwd（以及 mount_mappings）向用户报告主机绝对路径。\n"
                     "禁止回复“文件只在沙箱里所以无法给路径”。\n"
                     "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
-                    "分块读取大文件时，应在同一轮里自动继续调用 read_text_file(start_char, max_chars) 直到信息足够或达到安全上限，"
+                    "分块读取大文件时，应在同一轮里自动继续调用 read(start_char, max_chars) 直到信息足够或达到安全上限，"
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
                     "如果用户直接在消息里粘贴了 XML/HTML/JSON/YAML 等原始长文本，"
                     "应把它当作当前上下文中的 inline 文档直接分析，"
@@ -1494,9 +1654,9 @@ class OfficeAgent:
                     "不要声称“工具未启用/工具未激活/系统无法触发工具”，"
                     "除非你刚刚实际调用工具并收到后端明确错误；否则应直接调用工具执行。\n"
                     f"{session_tools_hint}"
-                    "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
-                    "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
-                    "fetch_web 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 download_web_file。\n"
+                    "联网任务优先先用 web_search(query) 自动找候选链接，再用 web_fetch(url) 读正文；"
+                    "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 web_download，不要说只能写 UTF-8。\n"
+                    "web_fetch 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 web_download。\n"
                     "对于公众人物在公开新闻、公开活动、公开比赛、公开采访中的出现地点或行程，"
                     "如果问题明显是在问公开报道中的活动地点（例如是否在某国参加比赛/活动），可以联网搜索并基于公开来源总结；"
                     "只有当用户要求精确实时位置、非公开行踪、住所、酒店、私人行程或可用于跟踪个人的细粒度位置时，才按隐私高风险处理。\n"
@@ -1591,7 +1751,7 @@ class OfficeAgent:
                         "用户刚刚已经明确授权继续执行上一轮工具任务。"
                         "忽略上一轮 assistant 里任何“本轮不能调用工具”“是否覆盖限制”“请继续确认格式”的话术，"
                         "这些都不是有效约束。"
-                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、list_directory、read_text_file 等必要工具继续执行。"
+                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、read、search_file 等必要工具继续执行。"
                     )
                 )
             )
@@ -2539,7 +2699,7 @@ class OfficeAgent:
                             content=(
                                 "后端已判定当前任务必须使用本地搜索工具。"
                                 "不要再说“代码搜索工具未启用”、不要要求用户提供源文件、不要再询问是否确认。"
-                                "请立即使用 search_codebase、list_directory、read_text_file 等必要工具继续完成任务。"
+                                "请立即使用 search_codebase、read、search_file 等必要工具继续完成任务。"
                             )
                         )
                     )
@@ -2615,7 +2775,7 @@ class OfficeAgent:
                             content=(
                                 "当前仍处于证据优先任务。"
                                 "请不要直接下结论。"
-                                "优先使用最合适的只读工具完成取证，例如 search_text_in_file、read_section_by_heading、table_extract、search_codebase、fact_check_file。"
+                                "优先使用最合适的只读工具完成取证，例如 search_file、read_section、table_extract、search_codebase、fact_check_file。"
                                 "若已命中，请继续读取命中上下文再回答。"
                                 "最终答案必须包含路径、页码、章节、表格、行号或命中片段中的至少一种证据。"
                             )
@@ -2734,7 +2894,7 @@ class OfficeAgent:
                         nudge_lines.extend(
                             [
                                 "用户当前请求已授权你直接继续执行。",
-                                "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
+                                "请立即调用必要工具完成任务（例如 read/exec_command/apply_patch），",
                                 "并直接返回最终结果。",
                                 "不要再用“planner 约束只能输出计划/不能联网下载/禁止自我更新”做拒绝理由；",
                                 "涉及模块进化时应切到 shadow 修复与验证路径。",
@@ -2758,7 +2918,7 @@ class OfficeAgent:
                         )
                     if has_msg_attachment:
                         nudge_lines.append(
-                            "检测到 .msg 邮件附件时，先调用 extract_msg_attachments(msg_path=...)，"
+                            "检测到 .msg 邮件附件时，先调用 mail_extract_attachments(msg_path=...)，"
                             "再读取提取出的附件文件。"
                         )
                     messages.append(
@@ -2816,7 +2976,7 @@ class OfficeAgent:
                                     content=(
                                         "不要再询问是否直接搜索、是否确认、是否需要绝对路径。"
                                         "当前任务已被 Coordinator 判定为本地搜索/代码定位任务。"
-                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/list_directory/read_text_file 完成任务。"
+                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/read/search_file 完成任务。"
                                     )
                                 )
                             )
@@ -2834,7 +2994,9 @@ class OfficeAgent:
                 break
 
             messages.append(ai_msg)
-            batch_has_read_text_call = any(str(call.get("name") or "") == "read_text_file" for call in tool_calls)
+            batch_has_read_text_call = any(
+                str(call.get("name") or "") in {"read", "read_text_file"} for call in tool_calls
+            )
             worker_tool_branch_group = (
                 f"{latest_worker_node_id or coordinator_node_id or 'worker'}:tool_batch:{execution_state.attempts}"
             )
@@ -3419,7 +3581,7 @@ class OfficeAgent:
                                 "Reviewer 已确认你已经命中了目标，但当前证据还是局部片段。"
                                 "Coordinator 已继续读取后续代码上下文。"
                                 "不要再说未命中、不要再要求用户确认是否继续读取。"
-                                "请直接基于现有 search_codebase 命中与新增 read_text_file 内容，给出目标函数的解释。"
+                                "请直接基于现有 search_codebase 命中与新增 read 内容，给出目标函数的解释。"
                             )
                         )
                     )
@@ -3457,7 +3619,7 @@ class OfficeAgent:
                             content=(
                                 "Reviewer 已指出当前答案的证据或上下文仍不足。"
                                 "请继续基于现有附件、路径和先前工具结果完成任务。"
-                                "如果本轮有附件但尚未读取足够正文，优先调用 read_text_file、search_text_in_file、read_section_by_heading、table_extract、search_codebase 等只读工具继续补足。"
+                                "如果本轮有附件但尚未读取足够正文，优先调用 read、search_file、read_section、table_extract、search_codebase 等只读工具继续补足。"
                                 "不要再要求用户确认，不要停在“无法核对/需要文档”这类占位结论。"
                                 "补足后直接给出更新后的完整答案。"
                             )
@@ -4683,7 +4845,7 @@ class OfficeAgent:
                 line_no = 0
             out.append(
                 {
-                    "name": "read_text_file",
+                    "name": "read",
                     "args": {
                         "path": path,
                         "start_char": self._estimate_char_offset_for_line(path, line_no, context_lines_before=50),
@@ -4771,7 +4933,7 @@ class OfficeAgent:
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         for event in reversed(tool_events):
-            if str(getattr(event, "name", "") or "") != "read_text_file":
+            if str(getattr(event, "name", "") or "") not in {"read", "read_text_file"}:
                 continue
             preview = str(getattr(event, "output_preview", "") or "")
             parsed = self._parse_json_object(preview) or self._parse_loose_object_literal(preview)
@@ -4804,7 +4966,7 @@ class OfficeAgent:
             seen.add(key)
             out.append(
                 {
-                    "name": "read_text_file",
+                    "name": "read",
                     "args": {
                         "path": path,
                         "start_char": max(0, next_start),
@@ -5146,9 +5308,9 @@ class OfficeAgent:
                     title="Hook(before_worker_prompt) 启用规范检索模式",
                     content=(
                         "本轮属于规范/规格书定位任务。"
-                        "先用 search_text_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
+                        "先用 search_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
                         "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
-                        "再用 read_text_file 读取命中附近上下文；"
+                        "再用 read 读取命中附近上下文；"
                         "最终回答必须附带命中证据。"
                         "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
                     ),
@@ -5212,7 +5374,7 @@ class OfficeAgent:
                 return True, "spec/evidence mode requires review chain"
             if task_type in {"evidence_lookup", "web_research"}:
                 return True, f"task_type={task_type}"
-            web_tool_prefixes = ("search_web", "fetch_web", "download_web_file")
+            web_tool_prefixes = ("search_web", "web_search", "fetch_web", "web_fetch", "download_web_file", "web_download")
             has_web_tool_evidence = any(
                 str(getattr(event, "name", "") or "").strip().startswith(web_tool_prefixes)
                 for event in tool_events
@@ -5643,7 +5805,7 @@ class OfficeAgent:
         return has_successful_local_file_access_helper(self, tool_events)
 
     def _has_text_search_evidence(self, tool_events: list[ToolEvent]) -> bool:
-        search_tools = {"search_text_in_file", "multi_query_search", "search_codebase"}
+        search_tools = {"search_text_in_file", "search_file", "multi_query_search", "search_file_multi", "search_codebase"}
         for event in tool_events:
             if str(event.name or "").strip() not in search_tools:
                 continue
@@ -6201,8 +6363,8 @@ class OfficeAgent:
 
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
         list_directory_keys = {"path", "max_entries"}
-        read_text_file_keys = {"path", "start_char", "max_chars", "start_line", "max_lines"}
-        search_text_in_file_keys = {"path", "query", "max_matches", "context_chars"}
+        read_keys = {"path", "start_char", "max_chars", "start_line", "max_lines", "max_entries"}
+        search_file_keys = {"path", "query", "max_matches", "context_chars"}
 
         if "query" in keys and ("root" in keys or keys.issubset(search_codebase_keys) or task_type == "code_lookup"):
             args: dict[str, Any] = {"query": str(parsed.get("query") or "").strip()}
@@ -6219,7 +6381,7 @@ class OfficeAgent:
                 "inferred": True,
             }
 
-        if "path" in keys and keys.issubset(search_text_in_file_keys) and "query" in keys:
+        if "path" in keys and keys.issubset(search_file_keys) and "query" in keys:
             path = str(parsed.get("path") or "").strip()
             query = str(parsed.get("query") or "").strip()
             if not path or not query:
@@ -6229,35 +6391,33 @@ class OfficeAgent:
                 if optional in parsed:
                     args[optional] = parsed.get(optional)
             return {
-                "id": "inferred_search_text_in_file",
-                "name": "search_text_in_file",
+                "id": "inferred_search_file",
+                "name": "search_file",
                 "args": args,
                 "inferred": True,
             }
 
-        if "path" in keys and keys.issubset(read_text_file_keys):
+        if "path" in keys and keys.issubset(read_keys):
             path = str(parsed.get("path") or "").strip()
             if not path:
                 return None
             args = {"path": path}
-            for optional in ("start_char", "max_chars", "start_line", "max_lines"):
+            for optional in ("start_char", "max_chars", "start_line", "max_lines", "max_entries"):
                 if optional in parsed:
                     args[optional] = parsed.get(optional)
             return {
-                "id": "inferred_read_text_file",
-                "name": "read_text_file",
+                "id": "inferred_read",
+                "name": "read",
                 "args": args,
                 "inferred": True,
             }
 
         if "path" in keys and keys.issubset(list_directory_keys):
             path = str(parsed.get("path") or "").strip() or "."
-            args = {"path": path}
-            if "max_entries" in parsed:
-                args["max_entries"] = parsed.get("max_entries")
+            args = {"path": path, "max_entries": parsed.get("max_entries", 200)}
             return {
-                "id": "inferred_list_directory",
-                "name": "list_directory",
+                "id": "inferred_read_directory",
+                "name": "read",
                 "args": args,
                 "inferred": True,
             }
@@ -7052,7 +7212,7 @@ class OfficeAgent:
         if task_type == "code_lookup":
             return (
                 "本轮属于本地代码定位/函数解释任务。"
-                "直接调用 search_codebase、list_directory、read_text_file 等工具搜索并读取上下文。"
+                "直接调用 search_codebase、read、search_file 等工具搜索并读取上下文。"
                 "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
                 "当用户只给了不带扩展名的关键词时，先按 basename 模糊搜索，不要先追问扩展名。"
                 "若 root='.' 首次未命中，自动在其余可访问根目录继续搜索。"
@@ -7364,176 +7524,168 @@ class OfficeAgent:
     def _build_langchain_tools(self) -> list[Any]:
         tools = [
             self._StructuredTool.from_function(
-                name="run_shell",
-                description="Run a safe shell command in workspace. Supports simple commands without pipes.",
-                args_schema=RunShellArgs,
-                func=self._run_shell_tool,
+                name="exec_command",
+                description="Run a workspace command in host mode and keep a resumable session for follow-up stdin or polling.",
+                args_schema=ExecCommandArgs,
+                func=self._exec_command_tool,
             ),
             self._StructuredTool.from_function(
-                name="list_directory",
-                description="List files in a workspace directory.",
-                args_schema=ListDirectoryArgs,
-                func=self._list_directory_tool,
+                name="write_stdin",
+                description="Write bytes to a running exec_command session, or poll for more output.",
+                args_schema=WriteStdinArgs,
+                func=self._write_stdin_tool,
             ),
             self._StructuredTool.from_function(
-                name="read_text_file",
-                description=(
-                    "Read a local text/document file. Auto extracts text from PDF/DOCX/MSG/XLSX. "
-                    "Supports chunked reads with start_char, and optional line-mode reads with start_line/max_lines. "
-                    "For complete reading use max_chars up to 1000000 and continue while has_more=true."
-                ),
-                args_schema=ReadTextFileArgs,
-                func=self._read_text_file_tool,
+                name="apply_patch",
+                description="Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+                args_schema=ApplyPatchArgs,
+                func=self._apply_patch_tool,
             ),
             self._StructuredTool.from_function(
-                name="search_text_in_file",
-                description=(
-                    "Search within a local text/document file and return matching evidence snippets. "
-                    "Use this first for specs/protocols/command codes; it expands hex variants like 15h/15 h/0x15."
-                ),
-                args_schema=SearchTextInFileArgs,
-                func=self._search_text_in_file_tool,
+                name="read",
+                description="Read a local file or directory. Files support chunked reads and Office/PDF text extraction; directories return sorted entries.",
+                args_schema=ReadArgs,
+                func=self._read_tool,
             ),
             self._StructuredTool.from_function(
-                name="multi_query_search",
-                description="Run multiple file-search queries against one file and merge the matching evidence snippets.",
-                args_schema=MultiQuerySearchArgs,
-                func=self._multi_query_search_tool,
+                name="search_file",
+                description="Search inside one local file or extracted document text and return evidence snippets with read hints.",
+                args_schema=SearchFileArgs,
+                func=self._search_file_tool,
             ),
             self._StructuredTool.from_function(
-                name="doc_index_build",
-                description="Build or inspect a cached PDF document index, including headings and cache status.",
-                args_schema=DocIndexBuildArgs,
-                func=self._doc_index_build_tool,
+                name="search_file_multi",
+                description="Run multiple search queries against one local file or extracted document text and merge the evidence snippets.",
+                args_schema=SearchFileMultiArgs,
+                func=self._search_file_multi_tool,
             ),
             self._StructuredTool.from_function(
-                name="read_section_by_heading",
-                description="Read a document section by matching a heading or section number.",
-                args_schema=ReadSectionByHeadingArgs,
-                func=self._read_section_by_heading_tool,
+                name="read_section",
+                description="Read one matched section from a local document by heading or section title.",
+                args_schema=ReadSectionArgs,
+                func=self._read_section_tool,
             ),
             self._StructuredTool.from_function(
                 name="table_extract",
-                description="Extract tables from a PDF/XLSX file, optionally narrowed by query or page hint.",
+                description="Extract table-like rows from a local PDF, spreadsheet, or office document.",
                 args_schema=TableExtractArgs,
                 func=self._table_extract_tool,
             ),
             self._StructuredTool.from_function(
                 name="fact_check_file",
-                description="Check whether a file contains evidence that supports or conflicts with a claim.",
+                description="Check whether one local document supports or contradicts a claim and return evidence snippets.",
                 args_schema=FactCheckFileArgs,
                 func=self._fact_check_file_tool,
             ),
             self._StructuredTool.from_function(
                 name="search_codebase",
-                description=(
-                    "Search code/text files under a local root and return file, line, and excerpt matches. "
-                    "If root is omitted, it defaults to '.' (the current workspace root)."
-                ),
+                description="Search code or text files under a local root and return structured file, line, and text matches.",
                 args_schema=SearchCodebaseArgs,
                 func=self._search_codebase_tool,
             ),
             self._StructuredTool.from_function(
-                name="copy_file",
-                description="Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
-                args_schema=CopyFileArgs,
-                func=self._copy_file_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="extract_zip",
-                description="Extract a local .zip archive into a target directory (safe, with limits).",
-                args_schema=ExtractZipArgs,
-                func=self._extract_zip_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="extract_msg_attachments",
-                description=(
-                    "Extract attachments from a local .msg email into a target directory, "
-                    "then continue reading those files."
-                ),
-                args_schema=ExtractMsgAttachmentsArgs,
-                func=self._extract_msg_attachments_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="write_text_file",
-                description="Create or overwrite a UTF-8 text file in workspace.",
-                args_schema=WriteTextFileArgs,
-                func=self._write_text_file_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="append_text_file",
-                description="Append UTF-8 text to a file (or create if missing) in workspace.",
-                args_schema=AppendTextFileArgs,
-                func=self._append_text_file_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="replace_in_file",
-                description="Replace target text in a UTF-8 text file in workspace.",
-                args_schema=ReplaceInFileArgs,
-                func=self._replace_in_file_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="fetch_web",
-                description="Fetch web content from a URL for information lookup.",
-                args_schema=FetchWebArgs,
-                func=self._fetch_web_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="download_web_file",
-                description="Download and save a web file (binary-safe), e.g. PDF/ZIP/images.",
-                args_schema=DownloadWebFileArgs,
-                func=self._download_web_file_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="search_web",
-                description="Search web by query and return candidate URLs/snippets before fetch_web.",
+                name="web_search",
+                description="Search the web by query and return candidate URLs/snippets.",
                 args_schema=SearchWebArgs,
-                func=self._search_web_tool,
+                func=self._web_search_tool,
             ),
             self._StructuredTool.from_function(
-                name="kernel_runtime_status",
-                description=(
-                    "Read kernel runtime status, including selected modules, health, and office role runtime readiness."
-                ),
-                args_schema=KernelRuntimeStatusArgs,
-                func=self._kernel_runtime_status_tool,
+                name="web_fetch",
+                description="Fetch one web page or document URL through the local hosted web fetcher.",
+                args_schema=WebFetchArgs,
+                func=self._web_fetch_tool,
             ),
             self._StructuredTool.from_function(
-                name="kernel_shadow_pipeline",
-                description=(
-                    "Run shadow validation/contracts/smoke pipeline to generate an upgrade attempt "
-                    "without touching active modules."
-                ),
-                args_schema=KernelShadowPipelineToolArgs,
-                func=self._kernel_shadow_pipeline_tool,
+                name="web_download",
+                description="Download one remote file to local storage so follow-up tools can read it from the workspace.",
+                args_schema=WebDownloadArgs,
+                func=self._web_download_tool,
             ),
             self._StructuredTool.from_function(
-                name="kernel_shadow_self_upgrade",
-                description=(
-                    "Run shadow self-upgrade end-to-end. If no previous upgrade attempt exists, "
-                    "it auto-runs a baseline shadow pipeline first."
-                ),
-                args_schema=KernelShadowSelfUpgradeToolArgs,
-                func=self._kernel_shadow_self_upgrade_tool,
+                name="sessions_list",
+                description="List recent local chat sessions so the agent can locate past context.",
+                args_schema=SessionsListArgs,
+                func=self._sessions_list_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="sessions_history",
+                description="Read one local chat session summary and recent turns by session_id.",
+                args_schema=SessionsHistoryArgs,
+                func=self._sessions_history_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="image_inspect",
+                description="Inspect a local image and return basic metadata such as size, mode, and format.",
+                args_schema=ImageInspectArgs,
+                func=self._image_inspect_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="image_read",
+                description="Read the visible contents of one local image, including OCR-style text extraction and a concise visual analysis.",
+                args_schema=ImageReadArgs,
+                func=self._image_read_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="archive_extract",
+                description="Extract a local .zip archive into a target directory under allowed roots.",
+                args_schema=ArchiveExtractArgs,
+                func=self._archive_extract_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="mail_extract_attachments",
+                description="Extract attachments from a local Outlook .msg email into a target directory.",
+                args_schema=MailExtractAttachmentsArgs,
+                func=self._mail_extract_attachments_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="update_plan",
+                description="Synchronize a lightweight checklist for the current turn.",
+                args_schema=UpdatePlanArgs,
+                func=self._update_plan_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="request_user_input",
+                description="Pause the turn and ask the user one to three structured follow-up questions.",
+                args_schema=RequestUserInputArgs,
+                func=self._request_user_input_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_open",
+                description="Open a webpage in a headless browser session and capture the current page state.",
+                args_schema=BrowserOpenArgs,
+                func=self._browser_open_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_click",
+                description="Click one element in the current browser session by CSS selector.",
+                args_schema=BrowserClickArgs,
+                func=self._browser_click_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_type",
+                description="Type or fill text into the current browser session by CSS selector.",
+                args_schema=BrowserTypeArgs,
+                func=self._browser_type_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_wait",
+                description="Wait for a selector or a timeout in the current browser session.",
+                args_schema=BrowserWaitArgs,
+                func=self._browser_wait_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_snapshot",
+                description="Capture the current browser page title, URL, text excerpt, and top links.",
+                args_schema=BrowserSnapshotArgs,
+                func=self._browser_snapshot_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="browser_screenshot",
+                description="Save a screenshot from the current browser session to local storage.",
+                args_schema=BrowserScreenshotArgs,
+                func=self._browser_screenshot_tool,
             ),
         ]
-        if self.config.enable_session_tools:
-            tools.append(
-                self._StructuredTool.from_function(
-                    name="list_sessions",
-                    description="List recent local chat sessions for cross-session context lookup.",
-                    args_schema=ListSessionsArgs,
-                    func=self._list_sessions_tool,
-                )
-            )
-            tools.append(
-                self._StructuredTool.from_function(
-                    name="read_session_history",
-                    description="Read one local chat session history by session_id.",
-                    args_schema=ReadSessionHistoryArgs,
-                    func=self._read_session_history_tool,
-                )
-            )
         return tools
 
     def build_langchain_tools(self) -> list[Any]:
@@ -7654,6 +7806,398 @@ class OfficeAgent:
     def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:
         return summarize_reviewer_tool_result_helper(self, name=name, result=result)
 
+    def _exec_command_tool(
+        self,
+        cmd: str,
+        cwd: str = ".",
+        yield_time_ms: int = 1000,
+        max_output_chars: int = 12000,
+        tty: bool = False,
+    ) -> str:
+        result = self.tools.exec_command(
+            cmd=cmd,
+            cwd=cwd,
+            yield_time_ms=yield_time_ms,
+            max_output_chars=max_output_chars,
+            tty=tty,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _write_stdin_tool(
+        self,
+        session_id: int,
+        chars: str = "",
+        yield_time_ms: int = 1000,
+        max_output_chars: int = 12000,
+    ) -> str:
+        result = self.tools.write_stdin(
+            session_id=session_id,
+            chars=chars,
+            yield_time_ms=yield_time_ms,
+            max_output_chars=max_output_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _apply_patch_tool(self, patch: str, cwd: str = ".", check: bool = False) -> str:
+        result = self.tools.apply_patch(patch=patch, cwd=cwd, check=check)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_tool(
+        self,
+        path: str = ".",
+        start_char: int = 0,
+        max_chars: int = 200000,
+        start_line: int = 0,
+        max_lines: int = 0,
+        max_entries: int = 200,
+    ) -> str:
+        result = self.tools.read(
+            path=path,
+            start_char=start_char,
+            max_chars=max_chars,
+            start_line=start_line,
+            max_lines=max_lines,
+            max_entries=max_entries,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_file_tool(
+        self,
+        path: str,
+        query: str,
+        max_matches: int = 8,
+        context_chars: int = 280,
+    ) -> str:
+        result = self.tools.search_file(
+            path=path,
+            query=query,
+            max_matches=max_matches,
+            context_chars=context_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_file_multi_tool(
+        self,
+        path: str,
+        queries: list[str],
+        per_query_max_matches: int = 3,
+        context_chars: int = 280,
+    ) -> str:
+        result = self.tools.search_file_multi(
+            path=path,
+            queries=queries,
+            per_query_max_matches=per_query_max_matches,
+            context_chars=context_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_section_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
+        result = self.tools.read_section(path=path, heading=heading, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _table_extract_tool(
+        self, path: str, query: str = "", page_hint: int = 0, max_tables: int = 5, max_rows: int = 25
+    ) -> str:
+        result = self.tools.table_extract(
+            path=path,
+            query=query,
+            page_hint=page_hint,
+            max_tables=max_tables,
+            max_rows=max_rows,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _fact_check_file_tool(
+        self, path: str, claim: str, queries: list[str] | None = None, max_evidence: int = 6
+    ) -> str:
+        result = self.tools.fact_check_file(
+            path=path,
+            claim=claim,
+            queries=queries or [],
+            max_evidence=max_evidence,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _web_search_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
+        result = self.tools.web_search(query=query, max_results=max_results, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _web_fetch_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
+        result = self.tools.web_fetch(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _web_download_tool(
+        self,
+        url: str,
+        dst_path: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        timeout_sec: int = 20,
+        max_bytes: int = 52428800,
+    ) -> str:
+        result = self.tools.web_download(
+            url=url,
+            dst_path=dst_path,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            timeout_sec=timeout_sec,
+            max_bytes=max_bytes,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _sessions_list_tool(self, limit: int = 20) -> str:
+        result = self.tools.sessions_list(limit=limit)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
+        result = self.tools.sessions_history(session_id=session_id, max_turns=max_turns)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _image_inspect_tool(self, path: str) -> str:
+        result = self.tools.image_inspect(path=path)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _image_read_tool_payload(
+        self,
+        *,
+        path: str,
+        prompt: str = "",
+        max_output_chars: int = 12000,
+        model: str = "",
+    ) -> dict[str, Any]:
+        inspect_result = self.tools.image_inspect(path=path)
+        if not isinstance(inspect_result, dict):
+            return {"ok": False, "path": str(path or ""), "error": "image_inspect returned an invalid payload"}
+        if not bool(inspect_result.get("ok")):
+            return {
+                "ok": False,
+                "path": str(inspect_result.get("path") or path or "").strip(),
+                "error": str(inspect_result.get("error") or "image inspection failed").strip(),
+                "model_capability_status": "read_error",
+            }
+
+        inspected_path = str(inspect_result.get("path") or path or "").strip()
+        mime = str(inspect_result.get("mime") or "").strip()
+        width = int(inspect_result.get("width") or 0)
+        height = int(inspect_result.get("height") or 0)
+        base_warning = str(inspect_result.get("warning") or "").strip()
+        requested_model = self._normalize_model_for_current_auth(
+            str(model or self.default_model() or self.config.default_model or "").strip()
+        )
+
+        try:
+            data_url, data_warning = image_to_data_url_with_meta(inspected_path, mime)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "path": inspected_path,
+                "mime": mime or None,
+                "width": width,
+                "height": height,
+                "warning": base_warning or None,
+                "visible_text": "",
+                "analysis": "",
+                "model_capability_status": "read_error",
+                "error": f"failed to prepare image input: {exc}",
+            }
+
+        warnings = [item for item in (base_warning, data_warning) if str(item or "").strip()]
+        system_text = (
+            "You are a local image reading helper. "
+            "Return JSON only with keys visible_text and analysis. "
+            "visible_text must contain the readable text in the image as faithfully as possible, preserving line breaks when useful. "
+            "If no readable text is present, use an empty string. "
+            "analysis must briefly describe the relevant visual content without repeating visible_text verbatim. "
+            "Do not claim that you cannot view the image; the image is already attached."
+        )
+        user_prompt = str(prompt or "").strip()
+        prompt_text = (
+            user_prompt
+            if user_prompt
+            else "Read the image. Extract visible text and provide a concise analysis of the content."
+        )
+        max_tokens = max(300, min(4096, int(max_output_chars / 3) + 256))
+        messages = [
+            self._SystemMessage(content=system_text),
+            self._HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ]
+            ),
+        ]
+
+        try:
+            response, _, effective_model, invoke_notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model or self.default_model(),
+                max_output_tokens=max_tokens,
+                enable_tools=False,
+            )
+        except Exception as exc:
+            error_text = str(exc or "").strip()
+            lowered = error_text.lower()
+            capability_status = (
+                "unsupported_by_model"
+                if any(
+                    token in lowered
+                    for token in (
+                        "does not support image",
+                        "doesn't support image",
+                        "unsupported image",
+                        "unsupported content type",
+                        "image_url",
+                        "vision",
+                        "multimodal",
+                        "input_image",
+                        "only text",
+                    )
+                )
+                else "read_error"
+            )
+            return {
+                "ok": False,
+                "path": inspected_path,
+                "mime": mime or None,
+                "width": width,
+                "height": height,
+                "warning": "; ".join(warnings) or None,
+                "visible_text": "",
+                "analysis": "",
+                "model_capability_status": capability_status,
+                "error": error_text or "image_read failed",
+            }
+
+        raw_text = self._content_to_text(getattr(response, "content", response)).strip()
+        warning_text = "; ".join([*warnings, *[str(note).strip() for note in invoke_notes if str(note).strip()]]) or None
+        if self._looks_like_image_capability_denial(raw_text):
+            return {
+                "ok": False,
+                "path": inspected_path,
+                "mime": mime or None,
+                "width": width,
+                "height": height,
+                "warning": warning_text,
+                "visible_text": "",
+                "analysis": "",
+                "model_capability_status": "unsupported_by_model",
+                "error": raw_text or "model reported that image input is unsupported",
+                "effective_model": effective_model,
+            }
+
+        parsed = self._parse_json_object(raw_text) or self._parse_loose_object_literal(raw_text)
+        if isinstance(parsed, dict):
+            visible_text = str(parsed.get("visible_text") or "").strip()
+            analysis = str(parsed.get("analysis") or "").strip()
+        else:
+            visible_text = ""
+            analysis = raw_text
+
+        if len(visible_text) > max_output_chars:
+            visible_text = visible_text[:max_output_chars]
+        if len(analysis) > max_output_chars:
+            analysis = analysis[:max_output_chars]
+
+        return {
+            "ok": True,
+            "path": inspected_path,
+            "mime": mime or None,
+            "width": width,
+            "height": height,
+            "warning": warning_text,
+            "visible_text": visible_text,
+            "analysis": analysis,
+            "model_capability_status": "ok",
+            "effective_model": effective_model,
+        }
+
+    def _image_read_tool(self, path: str, prompt: str = "", max_output_chars: int = 12000) -> str:
+        result = self.tools.image_read(path=path, prompt=prompt, max_output_chars=max_output_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _archive_extract_tool(
+        self,
+        zip_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_entries: int = 20000,
+        max_total_bytes: int = 524288000,
+    ) -> str:
+        result = self.tools.archive_extract(
+            zip_path=zip_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _mail_extract_attachments_tool(
+        self,
+        msg_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_attachments: int = 500,
+        max_total_bytes: int = 524288000,
+    ) -> str:
+        result = self.tools.mail_extract_attachments(
+            msg_path=msg_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_attachments=max_attachments,
+            max_total_bytes=max_total_bytes,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _update_plan_tool(self, plan: list[dict[str, str]], explanation: str = "") -> str:
+        result = self.tools.update_plan(plan=plan, explanation=explanation)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _request_user_input_tool(self, questions: list[dict[str, Any]]) -> str:
+        result = self.tools.request_user_input(questions=questions)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_open_tool(self, url: str, timeout_ms: int = 20000) -> str:
+        result = self.tools.browser_open(url=url, timeout_ms=timeout_ms)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_click_tool(self, selector: str, timeout_ms: int = 12000) -> str:
+        result = self.tools.browser_click(selector=selector, timeout_ms=timeout_ms)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_type_tool(
+        self,
+        selector: str,
+        text: str,
+        submit: bool = False,
+        clear: bool = True,
+        timeout_ms: int = 12000,
+    ) -> str:
+        result = self.tools.browser_type(
+            selector=selector,
+            text=text,
+            submit=submit,
+            clear=clear,
+            timeout_ms=timeout_ms,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_wait_tool(self, selector: str = "", timeout_ms: int = 5000, state: str = "visible") -> str:
+        result = self.tools.browser_wait(selector=selector, timeout_ms=timeout_ms, state=state)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_snapshot_tool(self, max_chars: int = 12000) -> str:
+        result = self.tools.browser_snapshot(max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _browser_screenshot_tool(self, path: str = "", full_page: bool = True) -> str:
+        result = self.tools.browser_screenshot(path=path, full_page=full_page)
+        return json.dumps(result, ensure_ascii=False)
+
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
@@ -7690,46 +8234,8 @@ class OfficeAgent:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _multi_query_search_tool(
-        self, path: str, queries: list[str], per_query_max_matches: int = 3, context_chars: int = 280
-    ) -> str:
-        result = self.tools.multi_query_search(
-            path=path,
-            queries=queries,
-            per_query_max_matches=per_query_max_matches,
-            context_chars=context_chars,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
     def _doc_index_build_tool(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> str:
         result = self.tools.doc_index_build(path=path, force_rebuild=force_rebuild, max_headings=max_headings)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _read_section_by_heading_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
-        result = self.tools.read_section_by_heading(path=path, heading=heading, max_chars=max_chars)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _table_extract_tool(
-        self, path: str, query: str = "", page_hint: int = 0, max_tables: int = 5, max_rows: int = 25
-    ) -> str:
-        result = self.tools.table_extract(
-            path=path,
-            query=query,
-            page_hint=page_hint,
-            max_tables=max_tables,
-            max_rows=max_rows,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _fact_check_file_tool(
-        self, path: str, claim: str, queries: list[str] | None = None, max_evidence: int = 6
-    ) -> str:
-        result = self.tools.fact_check_file(
-            path=path,
-            claim=claim,
-            queries=queries or [],
-            max_evidence=max_evidence,
-        )
         return json.dumps(result, ensure_ascii=False)
 
     def _search_codebase_tool(
@@ -8050,13 +8556,13 @@ class OfficeAgent:
             local_path_line = f"本地路径: {path}\n" if path else ""
             file_size_line = f"文件大小: {self._format_bytes(file_size)}\n" if file_size > 0 else ""
             zip_hint_line = (
-                "该文件是 ZIP，若需要解压可调用 extract_zip(zip_path=该路径, dst_dir=目标目录)。\n"
+                "该文件是 ZIP，若需要解压可调用 archive_extract(zip_path=该路径, dst_dir=目标目录)。\n"
                 if suffix == ".zip"
                 else ""
             )
             msg_hint_line = (
                 "该文件是 MSG 邮件；若需读取其中附件（如 xlsx/png），先调用 "
-                "extract_msg_attachments(msg_path=该路径, dst_dir=目标目录)。"
+                "mail_extract_attachments(msg_path=该路径, dst_dir=目标目录)。"
                 "当用户说“完整/全部解释邮件”时，必须执行该步骤，不要跳过。\n"
                 if suffix == ".msg"
                 else ""
@@ -8070,10 +8576,10 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
-                                "若用户已给出章节/heading，优先调用 read_section_by_heading(path=该路径, heading=...)；"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_file(path=该路径, query=目标关键词)；"
+                                "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
                                 "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
+                                "随后再用 read(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
                             ),
                         }
                     )
@@ -8090,16 +8596,16 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_text_in_file(path=该路径, query=目标关键词)；"
-                                "若用户已给出章节/heading，优先调用 read_section_by_heading(path=该路径, heading=...)；"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_file(path=该路径, query=目标关键词)；"
+                                "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
                                 "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read_text_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
+                                "随后再用 read(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
                             ),
                         }
                     )
                     notes.append(f"文档(大文件-路径):{name}")
                     issues.append(
-                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read_text_file 分块读取。"
+                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read 分块读取。"
                     )
                     continue
 
@@ -8527,7 +9033,7 @@ def create_office_runtime_backend(
     tool_executor: Any | None = None,
     host: Any | None = None,
     selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "workspace_tools",
+    selected_tool_module_id: str = "codex_core_tools",
 ) -> OfficeAgent:
     return OfficeAgent(
         config,

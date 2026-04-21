@@ -55,7 +55,7 @@ def _short_url(agent: Any, raw_url: str, limit: int = 80) -> str:
 
 
 def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> dict[str, Any]:
-    web_tool_prefixes = ("search_web", "fetch_web", "download_web_file")
+    web_tool_prefixes = ("search_web", "web_search", "fetch_web", "web_fetch", "download_web_file", "web_download")
     notes: list[str] = []
     warnings: list[str] = []
     used = False
@@ -72,7 +72,7 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
             success = True
 
         detail = base_name
-        if base_name.startswith("search_web"):
+        if base_name.startswith(("search_web", "web_search")):
             query = str((event.input or {}).get("query") or parsed.get("query") or "").strip()
             count = int(parsed.get("count") or 0)
             engine = str(parsed.get("engine") or "").strip()
@@ -84,7 +84,7 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
             if engine:
                 parts.append(f"engine={engine}")
             detail = ", ".join(parts)
-        elif base_name == "fetch_web":
+        elif base_name in {"fetch_web", "web_fetch"}:
             url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
             source_format = str(parsed.get("source_format") or parsed.get("content_type") or "").strip()
             parts = [detail]
@@ -93,7 +93,7 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
             if source_format:
                 parts.append(f"format={source_format}")
             detail = ", ".join(parts)
-        elif base_name == "download_web_file":
+        elif base_name in {"download_web_file", "web_download"}:
             url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
             path = str(parsed.get("path") or "").strip()
             parts = [detail]
@@ -123,17 +123,23 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
 
 def has_successful_local_file_access(agent: Any, tool_events: list[ToolEvent]) -> bool:
     local_file_tools = {
-        "list_directory",
+        "read",
         "read_text_file",
+        "search_file",
         "search_text_in_file",
+        "search_file_multi",
         "multi_query_search",
-        "doc_index_build",
+        "read_section",
         "read_section_by_heading",
         "table_extract",
         "fact_check_file",
         "search_codebase",
+        "archive_extract",
         "extract_zip",
+        "mail_extract_attachments",
         "extract_msg_attachments",
+        "image_inspect",
+        "image_read",
     }
     for event in tool_events:
         name = str(event.name or "").strip()

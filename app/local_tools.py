@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import fnmatch
 import hashlib
+import itertools
+import importlib
 import re
 import shlex
 import shutil
@@ -18,9 +20,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from html import unescape
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots
@@ -197,6 +199,39 @@ def _resolve_source_path(
     raw = (raw_path or "").strip()
     if not raw:
         return resolved
+
+    try:
+        uploads_index_path = config.uploads_dir / "index.json"
+        if uploads_index_path.exists():
+            upload_index = json.loads(uploads_index_path.read_text(encoding="utf-8"))
+            if isinstance(upload_index, dict):
+                direct_hit = upload_index.get(raw)
+                if isinstance(direct_hit, dict):
+                    direct_path = Path(str(direct_hit.get("path") or "")).expanduser().resolve()
+                    for root in roots:
+                        if direct_path.exists() and _is_within(direct_path, root):
+                            return direct_path
+                raw_basename = Path(raw.replace("\\", "/")).name
+                for meta in upload_index.values():
+                    if not isinstance(meta, dict):
+                        continue
+                    candidate_path = Path(str(meta.get("path") or "")).expanduser().resolve()
+                    candidate_id = str(meta.get("id") or "").strip()
+                    candidate_name = str(meta.get("original_name") or meta.get("name") or "").strip()
+                    candidate_safe_name = str(meta.get("safe_name") or "").strip()
+                    candidate_stored_name = candidate_path.name if str(candidate_path) else ""
+                    keys = {
+                        candidate_id,
+                        candidate_name,
+                        candidate_safe_name,
+                        candidate_stored_name,
+                    }
+                    if raw in keys or (raw_basename and raw_basename in keys):
+                        for root in roots:
+                            if candidate_path.exists() and _is_within(candidate_path, root):
+                                return candidate_path
+    except Exception:
+        pass
 
     p = Path(raw.replace("\\", "/"))
     if p.is_absolute():
@@ -1068,12 +1103,114 @@ def _guess_filename_from_response(url: str, content_type: str, content_dispositi
     return "download.bin"
 
 
+def _find_subsequence(lines: list[str], chunk: list[str], start: int = 0) -> int:
+    if not chunk:
+        return max(0, min(len(lines), start))
+    upper = len(lines) - len(chunk) + 1
+    for index in range(max(0, start), max(0, upper)):
+        if lines[index : index + len(chunk)] == chunk:
+            return index
+    return -1
+
+
+def _parse_codex_patch(patch_text: str) -> list[dict[str, Any]]:
+    lines = str(patch_text or "").splitlines()
+    if not lines or lines[0] != "*** Begin Patch":
+        raise ValueError("patch must start with '*** Begin Patch'")
+    if "*** End Patch" not in lines:
+        raise ValueError("patch must end with '*** End Patch'")
+
+    operations: list[dict[str, Any]] = []
+    index = 1
+    while index < len(lines):
+        line = lines[index]
+        if line == "*** End Patch":
+            return operations
+        if not line.strip():
+            index += 1
+            continue
+        if line.startswith("*** Add File: "):
+            raw_path = line[len("*** Add File: ") :].strip()
+            if not raw_path:
+                raise ValueError("Add File requires a target path")
+            index += 1
+            content_lines: list[str] = []
+            while index < len(lines) and not lines[index].startswith("*** "):
+                current = lines[index]
+                if not current.startswith("+"):
+                    raise ValueError(f"Add File expects '+' lines only: {current}")
+                content_lines.append(current[1:])
+                index += 1
+            operations.append(
+                {
+                    "op": "add",
+                    "path": raw_path,
+                    "content": "\n".join(content_lines) + ("\n" if content_lines else ""),
+                }
+            )
+            continue
+        if line.startswith("*** Delete File: "):
+            raw_path = line[len("*** Delete File: ") :].strip()
+            if not raw_path:
+                raise ValueError("Delete File requires a target path")
+            operations.append({"op": "delete", "path": raw_path})
+            index += 1
+            continue
+        if line.startswith("*** Update File: "):
+            raw_path = line[len("*** Update File: ") :].strip()
+            if not raw_path:
+                raise ValueError("Update File requires a target path")
+            index += 1
+            move_to = raw_path
+            if index < len(lines) and lines[index].startswith("*** Move to: "):
+                move_to = lines[index][len("*** Move to: ") :].strip() or move_to
+                index += 1
+            hunks: list[list[str]] = []
+            while index < len(lines) and not lines[index].startswith("*** "):
+                header = lines[index]
+                if not header.startswith("@@"):
+                    raise ValueError(f"Unsupported patch section: {header}")
+                index += 1
+                hunk_lines: list[str] = []
+                while index < len(lines) and not lines[index].startswith("@@") and not lines[index].startswith("*** "):
+                    current = lines[index]
+                    if current == "*** End of File":
+                        index += 1
+                        continue
+                    if not current:
+                        raise ValueError("Patch hunk lines must start with ' ', '+', or '-'")
+                    prefix = current[:1]
+                    if prefix not in {" ", "+", "-"}:
+                        raise ValueError(f"Unsupported patch line: {current}")
+                    hunk_lines.append(current)
+                    index += 1
+                if not hunk_lines:
+                    raise ValueError(f"Empty patch hunk for {raw_path}")
+                hunks.append(hunk_lines)
+            if not hunks:
+                raise ValueError(f"Update File requires at least one hunk: {raw_path}")
+            operations.append(
+                {
+                    "op": "update",
+                    "path": raw_path,
+                    "move_to": move_to,
+                    "hunks": hunks,
+                }
+            )
+            continue
+        raise ValueError(f"Unsupported patch operation: {line}")
+    raise ValueError("patch ended unexpectedly before '*** End Patch'")
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self._runtime_ctx = threading.local()
         self._web_cache_lock = threading.Lock()
         self._docker_cache_lock = threading.Lock()
+        self._command_sessions_lock = threading.Lock()
+        self._command_sessions: dict[int, dict[str, Any]] = {}
+        self._command_session_ids = itertools.count(1)
         self._docker_sandbox_cache: dict[tuple[str, ...], DockerSandboxManager] = {}
         self._web_cache_dir = (config.workspace_root / "app" / "data" / "web_cache").resolve()
         self._web_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1085,6 +1222,7 @@ class LocalToolExecutor:
             config=config,
             agent_dir=config.workspace_root / "agents" / "vintage_programmer",
         )
+        self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(
             workspace_root=config.workspace_root,
             allowed_roots=get_access_roots(config),
@@ -1105,6 +1243,7 @@ class LocalToolExecutor:
         project_id: str | None = None,
         project_root: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1115,9 +1254,10 @@ class LocalToolExecutor:
         self._runtime_ctx.project_id = str(project_id or "").strip()
         self._runtime_ctx.project_root = str(project_root or "").strip()
         self._runtime_ctx.cwd = str(cwd or "").strip()
+        self._runtime_ctx.model = str(model or "").strip()
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1147,6 +1287,273 @@ class LocalToolExecutor:
         if raw:
             return raw
         return str(self._current_project_root())
+
+    def _current_model_hint(self) -> str:
+        return str(getattr(self._runtime_ctx, "model", "") or "").strip()
+
+    def set_image_read_handler(self, handler: Callable[..., dict[str, Any]] | None) -> None:
+        self._image_read_handler = handler
+
+    @staticmethod
+    def _normalize_ocr_text(text: str, *, max_output_chars: int) -> str:
+        raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in raw.split("\n")]
+        cleaned = "\n".join(line for line in lines if line.strip())
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        if len(cleaned) > max_output_chars:
+            cleaned = cleaned[:max_output_chars]
+        return cleaned
+
+    @staticmethod
+    def _short_preview(value: Any, *, limit: int = 240) -> str:
+        return _truncate_output(str(value or ""), max_chars=max(1, int(limit))).strip()
+
+    @staticmethod
+    def _extract_rapidocr_text(payload: Any) -> str:
+        items = payload[0] if isinstance(payload, tuple) and payload else payload
+        if not isinstance(items, list):
+            return ""
+        parts: list[str] = []
+        for item in items:
+            text = ""
+            if isinstance(item, dict):
+                text = str(item.get("text") or item.get("value") or "").strip()
+            elif isinstance(item, (list, tuple)):
+                if len(item) >= 2:
+                    candidate = item[1]
+                    if isinstance(candidate, dict):
+                        text = str(candidate.get("text") or candidate.get("value") or "").strip()
+                    elif isinstance(candidate, (list, tuple)):
+                        text = str(candidate[0] or "").strip() if candidate else ""
+                    else:
+                        text = str(candidate or "").strip()
+                elif len(item) == 1 and isinstance(item[0], str):
+                    text = str(item[0] or "").strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _probe_rapidocr_status() -> tuple[bool, str]:
+        rapidocr_spec = importlib.util.find_spec("rapidocr_onnxruntime")
+        if rapidocr_spec is None:
+            return False, "rapidocr unavailable: No module named 'rapidocr_onnxruntime'"
+        onnx_spec = importlib.util.find_spec("onnxruntime")
+        if onnx_spec is None:
+            return False, "rapidocr unavailable: No module named 'onnxruntime'"
+        return True, ""
+
+    @staticmethod
+    def _probe_tesseract_status() -> tuple[bool, str]:
+        binary = shutil.which("tesseract")
+        if binary:
+            return True, binary
+        return False, "tesseract is not installed"
+
+    def ocr_status(self) -> dict[str, Any]:
+        rapidocr_available, rapidocr_detail = self._probe_rapidocr_status()
+        tesseract_available, tesseract_detail = self._probe_tesseract_status()
+        warning = ""
+        if rapidocr_available:
+            warning = ""
+        elif not tesseract_available:
+            warning = f"{rapidocr_detail}; {tesseract_detail}"
+        elif not rapidocr_available:
+            warning = rapidocr_detail
+        return {
+            "rapidocr_available": rapidocr_available,
+            "rapidocr_detail": rapidocr_detail,
+            "tesseract_available": tesseract_available,
+            "tesseract_detail": tesseract_detail,
+            "default_engine": "rapidocr" if rapidocr_available else ("tesseract" if tesseract_available else ""),
+            "warning": warning,
+        }
+
+    @staticmethod
+    def _image_has_alpha(image: Image.Image) -> bool:
+        if image.mode in {"RGBA", "LA"}:
+            return True
+        return bool(image.info.get("transparency"))
+
+    def _prepare_image_for_ocr(self, path: str) -> tuple[str, Callable[[], None], list[str]]:
+        notes: list[str] = []
+        try:
+            with Image.open(path) as raw_image:
+                image = ImageOps.exif_transpose(raw_image)
+                if self._image_has_alpha(image):
+                    base = Image.new("RGBA", image.size, (255, 255, 255, 255))
+                    base.alpha_composite(image.convert("RGBA"))
+                    image = base.convert("RGB")
+                    notes.append("flattened_alpha")
+                elif image.mode not in {"RGB", "L"}:
+                    image = image.convert("RGB")
+                    notes.append(f"converted_mode:{raw_image.mode}->{image.mode}")
+
+                long_edge = max(image.size)
+                if long_edge:
+                    target_long_edge = long_edge
+                    if long_edge < 1600:
+                        target_long_edge = min(2400, max(1600, long_edge * 3))
+                    elif long_edge > 2400:
+                        target_long_edge = 2400
+                    if target_long_edge != long_edge:
+                        scale = float(target_long_edge) / float(long_edge)
+                        target_size = (
+                            max(1, int(round(image.width * scale))),
+                            max(1, int(round(image.height * scale))),
+                        )
+                        image = image.resize(target_size, Image.Resampling.LANCZOS)
+                        notes.append(f"resized_for_ocr:{target_size[0]}x{target_size[1]}")
+
+                if image.mode != "L":
+                    image = ImageOps.grayscale(image)
+                    notes.append("grayscale")
+                image = ImageOps.autocontrast(image)
+                image = ImageEnhance.Contrast(image).enhance(1.35)
+                notes.append("contrast_enhanced")
+
+                with tempfile.NamedTemporaryFile(prefix="vp_ocr_", suffix=".png", delete=False) as handle:
+                    temp_path = Path(handle.name)
+                image.save(temp_path, format="PNG", optimize=True)
+
+            def _cleanup() -> None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            return str(temp_path), _cleanup, notes
+        except Exception as exc:
+            return path, (lambda: None), [f"ocr_preprocess_failed:{exc}"]
+
+    def _run_rapidocr_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
+        rapidocr_available, rapidocr_detail = self._probe_rapidocr_status()
+        if not rapidocr_available:
+            return {
+                "ok": False,
+                "engine": "rapidocr",
+                "available": False,
+                "error": rapidocr_detail or "rapidocr unavailable",
+            }
+        rapidocr_module = importlib.import_module("rapidocr_onnxruntime")
+
+        try:
+            engine = rapidocr_module.RapidOCR()
+            raw_result = engine(str(path))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "engine": "rapidocr",
+                "available": True,
+                "error": f"rapidocr failed: {exc}",
+            }
+
+        text = self._normalize_ocr_text(
+            self._extract_rapidocr_text(raw_result),
+            max_output_chars=max_output_chars,
+        )
+        if not text:
+            return {
+                "ok": False,
+                "engine": "rapidocr",
+                "available": True,
+                "error": "rapidocr returned no readable text",
+            }
+        return {
+            "ok": True,
+            "engine": "rapidocr",
+            "available": True,
+            "visible_text": text,
+        }
+
+    def _run_tesseract_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
+        available, binary_or_error = self._probe_tesseract_status()
+        if not available:
+            return {
+                "ok": False,
+                "engine": "tesseract",
+                "available": False,
+                "error": binary_or_error or "tesseract is not installed",
+            }
+        binary = binary_or_error
+        try:
+            proc = subprocess.run(
+                [binary, str(path), "stdout", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "engine": "tesseract",
+                "available": True,
+                "error": f"tesseract failed: {exc}",
+            }
+
+        text = self._normalize_ocr_text(proc.stdout or "", max_output_chars=max_output_chars)
+        if not text:
+            stderr_text = str(proc.stderr or "").strip()
+            error = stderr_text or "tesseract returned no readable text"
+            return {
+                "ok": False,
+                "engine": "tesseract",
+                "available": True,
+                "error": error,
+            }
+        warning = str(proc.stderr or "").strip()
+        return {
+            "ok": True,
+            "engine": "tesseract",
+            "available": True,
+            "visible_text": text,
+            "warning": warning or "",
+        }
+
+    def _perform_local_image_ocr(self, path: str, max_output_chars: int) -> dict[str, Any]:
+        engines_tried: list[str] = []
+        warnings: list[str] = []
+        preprocess_notes: list[str] = []
+        available = False
+        last_error = ""
+        prepared_path, cleanup_prepared_path, prep_notes = self._prepare_image_for_ocr(path)
+        preprocess_notes.extend(note for note in prep_notes if note)
+        try:
+            for runner in (self._run_rapidocr_ocr, self._run_tesseract_ocr):
+                result = runner(prepared_path, max_output_chars)
+                engine = str(result.get("engine") or "").strip()
+                if engine:
+                    engines_tried.append(engine)
+                available = available or bool(result.get("available"))
+                warning = str(result.get("warning") or "").strip()
+                if warning:
+                    warnings.append(warning)
+                if bool(result.get("ok")):
+                    return {
+                        "ok": True,
+                        "visible_text": str(result.get("visible_text") or ""),
+                        "ocr_available": available,
+                        "engines_tried": engines_tried,
+                        "warning": "; ".join(item for item in warnings if item) or "",
+                        "ocr_engine": engine,
+                        "preprocess_notes": preprocess_notes,
+                    }
+                error = str(result.get("error") or "").strip()
+                if error:
+                    warnings.append(error)
+                    last_error = error
+        finally:
+            cleanup_prepared_path()
+        return {
+            "ok": False,
+            "visible_text": "",
+            "ocr_available": available,
+            "engines_tried": engines_tried,
+            "warning": "; ".join(item for item in warnings if item) or "",
+            "error": last_error or ("ocr_unavailable" if not available else "ocr returned no readable text"),
+            "preprocess_notes": preprocess_notes,
+        }
 
     def _current_access_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -1216,6 +1623,105 @@ class LocalToolExecutor:
         payload.setdefault("project_id", self._current_project_id())
         return payload
 
+    def _safe_split_command(self, command: str, *, for_session: bool = False) -> tuple[list[str], str | None]:
+        raw = str(command or "").strip()
+        if not raw:
+            return [], "Empty command"
+        if any(token in raw for token in ["|", "&&", "||", ";", "$(", "`"]):
+            return [], "Complex shell operators are blocked for safety. Use a single command only."
+        try:
+            argv = shlex.split(raw)
+        except Exception as exc:
+            return [], f"Command parse failed: {exc}"
+        if not argv:
+            return [], "Empty command"
+        execution_mode = self._current_execution_mode()
+        if execution_mode == "docker" and argv[0] == "python":
+            argv[0] = "python3"
+        base_cmd = argv[0]
+        if base_cmd not in self.config.allowed_commands:
+            return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
+        if for_session and execution_mode == "docker":
+            return [], "Interactive exec_command sessions are only supported in host mode."
+        return argv, None
+
+    def _spawn_command_reader(self, session_id: int, proc: subprocess.Popen[bytes]) -> None:
+        def reader() -> None:
+            stream = proc.stdout
+            if stream is None:
+                return
+            try:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    text = chunk.decode("utf-8", errors="replace")
+                    with self._command_sessions_lock:
+                        session = self._command_sessions.get(session_id)
+                        if session is None:
+                            return
+                        session["buffer"] = str(session.get("buffer") or "") + text
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=reader, daemon=True).start()
+
+    def _command_session_snapshot(self, session_id: int, *, max_output_chars: int) -> dict[str, Any]:
+        with self._command_sessions_lock:
+            session = self._command_sessions.get(session_id)
+            if session is None:
+                return {"ok": False, "error": f"Unknown session_id: {session_id}"}
+            proc = session.get("proc")
+            buffer_text = str(session.get("buffer") or "")
+            cursor = int(session.get("cursor") or 0)
+            if cursor > len(buffer_text):
+                cursor = len(buffer_text)
+            new_output = buffer_text[cursor:]
+            session["cursor"] = len(buffer_text)
+            cwd = str(session.get("cwd") or "")
+            command = str(session.get("command") or "")
+            execution_mode = str(session.get("execution_mode") or self._current_execution_mode())
+            tty = bool(session.get("tty"))
+        returncode = proc.poll() if isinstance(proc, subprocess.Popen) else 0
+        status = "running" if returncode is None else "completed"
+        payload: dict[str, Any] = {
+            "ok": True,
+            "session_id": int(session_id),
+            "status": status,
+            "running": returncode is None,
+            "returncode": None if returncode is None else int(returncode),
+            "output": _truncate_output(new_output, max_output_chars),
+            "cwd": cwd,
+            "command": command,
+            "execution_mode": execution_mode,
+            "tty": tty,
+        }
+        if returncode is not None:
+            payload["summary"] = f"command exited with {returncode}"
+        return payload
+
+    def _apply_update_hunks(self, path: Path, current_text: str, hunks: list[list[str]]) -> str:
+        lines = current_text.splitlines()
+        cursor = 0
+        for hunk in hunks:
+            old_chunk = [entry[1:] for entry in hunk if entry[:1] in {" ", "-"}]
+            new_chunk = [entry[1:] for entry in hunk if entry[:1] in {" ", "+"}]
+            start = _find_subsequence(lines, old_chunk, cursor)
+            if start < 0:
+                start = _find_subsequence(lines, old_chunk, 0)
+            if start < 0:
+                raise ValueError(f"Patch context not found for {path}")
+            end = start + len(old_chunk)
+            lines = lines[:start] + new_chunk + lines[end:]
+            cursor = start + len(new_chunk)
+        updated = "\n".join(lines)
+        if current_text.endswith("\n") or updated:
+            updated += "\n"
+        return updated
+
     def _web_cache_path(self, prefix: str, payload: dict[str, Any]) -> Path:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         digest = hashlib.sha256(raw).hexdigest()
@@ -1261,27 +1767,64 @@ class LocalToolExecutor:
         return [
             {
                 "type": "function",
-                "name": "run_shell",
-                "description": "Run a safe shell command in workspace. Supports simple commands without pipes.",
+                "name": "exec_command",
+                "description": "Run a workspace command and keep a resumable command session for follow-up polling or stdin.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "Shell command, e.g. `ls -la` or `rg TODO .`"},
+                        "cmd": {"type": "string", "description": "Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`"},
                         "cwd": {"type": "string", "description": "Working directory relative to workspace", "default": "."},
-                        "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 120, "default": 15},
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
+                        "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
+                        "tty": {"type": "boolean", "default": False},
                     },
-                    "required": ["command"],
+                    "required": ["cmd"],
                     "additionalProperties": False,
                 },
             },
             {
                 "type": "function",
-                "name": "list_directory",
-                "description": "List files in a workspace directory.",
+                "name": "write_stdin",
+                "description": "Write characters to a running exec_command session, or poll for fresh output.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "integer"},
+                        "chars": {"type": "string", "default": ""},
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
+                        "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
+                    },
+                    "required": ["session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "apply_patch",
+                "description": "Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patch": {"type": "string"},
+                        "cwd": {"type": "string", "default": "."},
+                        "check": {"type": "boolean", "default": False},
+                    },
+                    "required": ["patch"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "read",
+                "description": "Read a local file or directory. Files support chunked reads and Office/PDF text extraction; directories return sorted entries.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "default": "."},
+                        "start_char": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
+                        "start_line": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_lines": {"type": "integer", "minimum": 0, "maximum": 200000, "default": 0},
                         "max_entries": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
                     },
                     "additionalProperties": False,
@@ -1289,32 +1832,8 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "read_text_file",
-                "description": (
-                    "Read a local text/document file in allowed roots. "
-                    "For PDF/DOCX/MSG/XLSX it auto-extracts text; supports chunked reads with start_char "
-                    "and optional line-mode reads with start_line/max_lines."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "start_char": {"type": "integer", "minimum": 0, "default": 0},
-                        "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
-                        "start_line": {"type": "integer", "minimum": 0, "default": 0},
-                        "max_lines": {"type": "integer", "minimum": 0, "maximum": 200000, "default": 0},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "search_text_in_file",
-                "description": (
-                    "Search within a local text/document file and return matching evidence snippets. "
-                    "For PDF/DOCX/MSG/XLSX it searches extracted text and automatically expands hex variants like 15h/15 h/0x15."
-                ),
+                "name": "search_file",
+                "description": "Search inside one local file or extracted document text and return evidence snippets with read hints.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1329,13 +1848,16 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "multi_query_search",
-                "description": "Run multiple file-search queries against one local file and merge the evidence snippets.",
+                "name": "search_file_multi",
+                "description": "Run multiple searches against one local file or extracted document text and merge the evidence snippets.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
-                        "queries": {"type": "array", "items": {"type": "string"}},
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
                         "per_query_max_matches": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
                         "context_chars": {"type": "integer", "minimum": 40, "maximum": 2000, "default": 280},
                     },
@@ -1345,22 +1867,7 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "doc_index_build",
-                "description": "Build or inspect a cached document index for a local PDF, including headings and cache status.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "force_rebuild": {"type": "boolean", "default": False},
-                        "max_headings": {"type": "integer", "minimum": 20, "maximum": 2000, "default": 400},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "read_section_by_heading",
+                "name": "read_section",
                 "description": "Read a document section by matching a heading or section number and returning that section's content.",
                 "parameters": {
                     "type": "object",
@@ -1382,7 +1889,7 @@ class LocalToolExecutor:
                     "properties": {
                         "path": {"type": "string"},
                         "query": {"type": "string", "default": ""},
-                        "page_hint": {"type": "integer", "minimum": 1, "default": 0},
+                        "page_hint": {"type": "integer", "minimum": 0, "default": 0},
                         "max_tables": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
                         "max_rows": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
                     },
@@ -1399,7 +1906,11 @@ class LocalToolExecutor:
                     "properties": {
                         "path": {"type": "string"},
                         "claim": {"type": "string"},
-                        "queries": {"type": "array", "items": {"type": "string"}, "default": []},
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
                         "max_evidence": {"type": "integer", "minimum": 1, "maximum": 12, "default": 6},
                     },
                     "required": ["path", "claim"],
@@ -1409,7 +1920,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "search_codebase",
-                "description": "Search code or text files under a local root and return file, line, and context matches.",
+                "description": "Search code or text files under a local root and return structured file, line, and text matches.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1426,137 +1937,27 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "copy_file",
-                "description": "Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
+                "name": "web_search",
+                "description": "Search the web using the local hosted provider and return candidate URLs and snippets.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "src_path": {"type": "string"},
-                        "dst_path": {"type": "string"},
-                        "overwrite": {"type": "boolean", "default": True},
-                        "create_dirs": {"type": "boolean", "default": True},
+                        "query": {"type": "string"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                        "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
                     },
-                    "required": ["src_path", "dst_path"],
+                    "required": ["query"],
                     "additionalProperties": False,
                 },
             },
             {
                 "type": "function",
-                "name": "extract_zip",
-                "description": (
-                    "Extract a local .zip archive into a target directory in allowed roots. "
-                    "Supports overwrite controls and safety limits."
-                ),
+                "name": "web_fetch",
+                "description": "Fetch one web page or document URL through the local hosted web fetcher.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "zip_path": {"type": "string", "description": "Path to local .zip file"},
-                        "dst_dir": {
-                            "type": "string",
-                            "description": "Destination directory. Empty means same name next to zip file.",
-                            "default": "",
-                        },
-                        "overwrite": {"type": "boolean", "default": True},
-                        "create_dirs": {"type": "boolean", "default": True},
-                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 20000},
-                        "max_total_bytes": {
-                            "type": "integer",
-                            "minimum": 1024,
-                            "maximum": 2147483648,
-                            "default": 524288000,
-                        },
-                    },
-                    "required": ["zip_path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "extract_msg_attachments",
-                "description": (
-                    "Extract attachments from a local Outlook .msg email into a target directory in allowed roots. "
-                    "Use this to open/read Excel/image attachments referenced inside .msg."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "msg_path": {"type": "string", "description": "Path to local .msg file"},
-                        "dst_dir": {
-                            "type": "string",
-                            "description": "Destination directory. Empty means <msg_stem>_attachments next to msg file.",
-                            "default": "",
-                        },
-                        "overwrite": {"type": "boolean", "default": True},
-                        "create_dirs": {"type": "boolean", "default": True},
-                        "max_attachments": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
-                        "max_total_bytes": {
-                            "type": "integer",
-                            "minimum": 1024,
-                            "maximum": 2147483648,
-                            "default": 524288000,
-                        },
-                    },
-                    "required": ["msg_path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "write_text_file",
-                "description": "Create or overwrite a UTF-8 text file in workspace.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "overwrite": {"type": "boolean", "default": True},
-                        "create_dirs": {"type": "boolean", "default": True},
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "append_text_file",
-                "description": "Append UTF-8 text to an existing file (or create new file) in workspace.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "create_if_missing": {"type": "boolean", "default": True},
-                        "create_dirs": {"type": "boolean", "default": True},
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "replace_in_file",
-                "description": "Replace target text in a UTF-8 text file in workspace.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_text": {"type": "string"},
-                        "new_text": {"type": "string"},
-                        "replace_all": {"type": "boolean", "default": False},
-                        "max_replacements": {"type": "integer", "minimum": 1, "maximum": 200, "default": 1},
-                    },
-                    "required": ["path", "old_text", "new_text"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "fetch_web",
-                "description": "Fetch web content from a URL for information lookup.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "http/https URL"},
+                        "url": {"type": "string"},
                         "max_chars": {"type": "integer", "minimum": 512, "maximum": 500000, "default": 120000},
                         "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
                     },
@@ -1566,22 +1967,13 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "download_web_file",
-                "description": (
-                    "Download a web file (binary-safe) and save it to local path under allowed roots. "
-                    "Use this when user asks to download/save PDF/ZIP/images/binaries."
-                ),
+                "name": "web_download",
+                "description": "Download a web file (binary-safe) to a local path under allowed roots for later reading or extraction.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "http/https URL"},
-                        "dst_path": {
-                            "type": "string",
-                            "description": (
-                                "Destination file path. If empty, auto-saves to downloads/<filename> under workspace."
-                            ),
-                            "default": "",
-                        },
+                        "url": {"type": "string"},
+                        "dst_path": {"type": "string", "default": ""},
                         "overwrite": {"type": "boolean", "default": True},
                         "create_dirs": {"type": "boolean", "default": True},
                         "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 120, "default": 20},
@@ -1593,35 +1985,20 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "search_web",
-                "description": "Search the web by query and return candidate URLs/snippets.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query keywords"},
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-                        "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
-                    },
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "list_sessions",
+                "name": "sessions_list",
                 "description": "List recent local chat sessions so the agent can locate past context.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "max_sessions": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
                     },
                     "additionalProperties": False,
                 },
             },
             {
                 "type": "function",
-                "name": "read_session_history",
-                "description": "Read one local chat session's summary and recent turns by session_id.",
+                "name": "sessions_history",
+                "description": "Read one local chat session summary and recent turns by session_id.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1629,6 +2006,132 @@ class LocalToolExecutor:
                         "max_turns": {"type": "integer", "minimum": 1, "maximum": 800, "default": 80},
                     },
                     "required": ["session_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "image_inspect",
+                "description": "Inspect a local image and return basic metadata such as size, mode, and format.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "image_read",
+                "description": "Read a local image with zero-config OCR first, then optional multimodal analysis, and return visible text plus a concise analysis.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "prompt": {"type": "string", "default": ""},
+                        "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 24000, "default": 12000},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "archive_extract",
+                "description": "Extract a local .zip archive into a target directory under allowed roots.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "zip_path": {"type": "string"},
+                        "dst_dir": {"type": "string", "default": ""},
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 20000},
+                        "max_total_bytes": {"type": "integer", "minimum": 1024, "maximum": 2147483648, "default": 524288000},
+                    },
+                    "required": ["zip_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "mail_extract_attachments",
+                "description": "Extract attachments from a local Outlook .msg email into a target directory.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "msg_path": {"type": "string"},
+                        "dst_dir": {"type": "string", "default": ""},
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                        "max_attachments": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
+                        "max_total_bytes": {"type": "integer", "minimum": 1024, "maximum": 2147483648, "default": 524288000},
+                    },
+                    "required": ["msg_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "update_plan",
+                "description": "Synchronize a lightweight checklist for the current turn.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "explanation": {"type": "string", "default": ""},
+                        "plan": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "step": {"type": "string"},
+                                    "status": {"type": "string"},
+                                },
+                                "required": ["step", "status"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["plan"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "request_user_input",
+                "description": "Pause the turn and ask the user one to three structured follow-up questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "header": {"type": "string"},
+                                    "id": {"type": "string"},
+                                    "question": {"type": "string"},
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": {"type": "string"},
+                                                "description": {"type": "string"},
+                                            },
+                                            "required": ["label", "description"],
+                                            "additionalProperties": False,
+                                        },
+                                    },
+                                },
+                                "required": ["header", "id", "question", "options"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["questions"],
                     "additionalProperties": False,
                 },
             },
@@ -1710,124 +2213,77 @@ class LocalToolExecutor:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "default": ""},
+                        "path": {"type": "string"},
                         "full_page": {"type": "boolean", "default": True},
                     },
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "view_image",
-                "description": "Inspect a local image and return basic metadata such as size, mode, and format.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                    },
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "apply_patch",
-                "description": "Apply a unified diff patch inside the workspace using git apply.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "patch": {"type": "string"},
-                        "cwd": {"type": "string", "default": "."},
-                        "check": {"type": "boolean", "default": False},
-                    },
-                    "required": ["patch"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "list_skills",
-                "description": "List local workspace skills from workspace/skills.",
-                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-            },
-            {
-                "type": "function",
-                "name": "read_skill",
-                "description": "Read one local skill file and its metadata by skill id.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_id": {"type": "string"},
-                    },
-                    "required": ["skill_id"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "write_skill",
-                "description": "Create or overwrite one local skill file using full SKILL.md content.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_id": {"type": "string", "default": ""},
-                        "content": {"type": "string"},
-                    },
-                    "required": ["content"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "toggle_skill",
-                "description": "Toggle or explicitly set one local skill's enabled flag.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill_id": {"type": "string"},
-                        "enabled": {"type": "boolean"},
-                    },
-                    "required": ["skill_id"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "list_agent_specs",
-                "description": "List editable agent spec files for the main vintage_programmer agent.",
-                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-            },
-            {
-                "type": "function",
-                "name": "read_agent_spec",
-                "description": "Read one editable agent spec file such as soul.md or agent.md.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                    },
-                    "required": ["name"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "type": "function",
-                "name": "write_agent_spec",
-                "description": "Overwrite one editable agent spec file using full markdown content.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "content": {"type": "string"},
-                    },
-                    "required": ["name", "content"],
                     "additionalProperties": False,
                 },
             },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments = self._normalize_public_tool_arguments(name, arguments)
         result: dict[str, Any]
+        if name == "exec_command":
+            result = self.exec_command(**arguments)
+            return self._decorate_result(result)
+        if name == "write_stdin":
+            result = self.write_stdin(**arguments)
+            return self._decorate_result(result)
+        if name == "read":
+            result = self.read(**arguments)
+            return self._decorate_result(result)
+        if name == "search_file":
+            result = self.search_file(**arguments)
+            return self._decorate_result(result)
+        if name == "search_file_multi":
+            result = self.search_file_multi(**arguments)
+            return self._decorate_result(result)
+        if name == "read_section":
+            result = self.read_section(**arguments)
+            return self._decorate_result(result)
+        if name == "table_extract":
+            result = self.table_extract(**arguments)
+            return self._decorate_result(result)
+        if name == "fact_check_file":
+            result = self.fact_check_file(**arguments)
+            return self._decorate_result(result)
+        if name == "search_codebase":
+            result = self.search_codebase(**arguments)
+            return self._decorate_result(result)
+        if name == "web_search":
+            result = self.web_search(**arguments)
+            return self._decorate_result(result)
+        if name == "web_fetch":
+            result = self.web_fetch(**arguments)
+            return self._decorate_result(result)
+        if name == "web_download":
+            result = self.web_download(**arguments)
+            return self._decorate_result(result)
+        if name == "sessions_list":
+            result = self.sessions_list(**arguments)
+            return self._decorate_result(result)
+        if name == "sessions_history":
+            result = self.sessions_history(**arguments)
+            return self._decorate_result(result)
+        if name == "image_inspect":
+            result = self.image_inspect(**arguments)
+            return self._decorate_result(result)
+        if name == "image_read":
+            result = self.image_read(**arguments)
+            return self._decorate_result(result)
+        if name == "archive_extract":
+            result = self.archive_extract(**arguments)
+            return self._decorate_result(result)
+        if name == "mail_extract_attachments":
+            result = self.mail_extract_attachments(**arguments)
+            return self._decorate_result(result)
+        if name == "update_plan":
+            result = self.update_plan(**arguments)
+            return self._decorate_result(result)
+        if name == "request_user_input":
+            result = self.request_user_input(**arguments)
+            return self._decorate_result(result)
         if name == "run_shell":
             result = self.run_shell(**arguments)
             return self._decorate_result(result)
@@ -1937,6 +2393,581 @@ class LocalToolExecutor:
             result = self.write_agent_spec(**arguments)
             return self._decorate_result(result)
         return self._decorate_result({"ok": False, "error": f"Unknown tool: {name}"})
+
+    @staticmethod
+    def _normalize_public_tool_arguments(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+        normalized = dict(arguments or {})
+        tool_name = str(name or "").strip()
+        if tool_name in {"image_read", "image_inspect"} and "path" not in normalized and "image_path" in normalized:
+            normalized["path"] = normalized.pop("image_path")
+        return normalized
+
+    def exec_command(
+        self,
+        cmd: str,
+        cwd: str = ".",
+        yield_time_ms: int = 1000,
+        max_output_chars: int = 12000,
+        tty: bool = False,
+    ) -> dict[str, Any]:
+        argv, error = self._safe_split_command(cmd, for_session=True)
+        if error:
+            return {"ok": False, "error": error}
+        try:
+            real_cwd = self._resolve_path(cwd)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if not real_cwd.exists() or not real_cwd.is_dir():
+            return {"ok": False, "error": f"Invalid cwd: {cwd}"}
+
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(real_cwd),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=False,
+                bufsize=0,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"exec_command failed: {exc}"}
+
+        session_id = next(self._command_session_ids)
+        with self._command_sessions_lock:
+            self._command_sessions[session_id] = {
+                "proc": proc,
+                "buffer": "",
+                "cursor": 0,
+                "cwd": str(real_cwd),
+                "command": " ".join(shlex.quote(token) for token in argv),
+                "execution_mode": self._current_execution_mode(),
+                "tty": bool(tty),
+            }
+        self._spawn_command_reader(session_id, proc)
+        time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+        payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)
+        payload.setdefault("summary", "command started")
+        return payload
+
+    def write_stdin(
+        self,
+        session_id: int,
+        chars: str = "",
+        yield_time_ms: int = 1000,
+        max_output_chars: int = 12000,
+    ) -> dict[str, Any]:
+        try:
+            normalized_session_id = int(session_id)
+        except Exception:
+            return {"ok": False, "error": "session_id must be an integer"}
+        with self._command_sessions_lock:
+            session = self._command_sessions.get(normalized_session_id)
+            if session is None:
+                return {"ok": False, "error": f"Unknown session_id: {normalized_session_id}"}
+            proc = session.get("proc")
+            stdin = getattr(proc, "stdin", None)
+            if chars and proc.poll() is not None:
+                return {"ok": False, "error": f"Session {normalized_session_id} is already completed"}
+            if chars and stdin is not None:
+                try:
+                    stdin.write(str(chars).encode("utf-8"))
+                    stdin.flush()
+                except Exception as exc:
+                    return {"ok": False, "error": f"write_stdin failed: {exc}"}
+        time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+        return self._command_session_snapshot(normalized_session_id, max_output_chars=max_output_chars)
+
+    def update_plan(self, plan: list[dict[str, Any]], explanation: str = "") -> dict[str, Any]:
+        normalized_plan: list[dict[str, str]] = []
+        in_progress_seen = 0
+        for item in list(plan or []):
+            if not isinstance(item, dict):
+                continue
+            step = str(item.get("step") or "").strip()
+            status = str(item.get("status") or "").strip().lower()
+            if not step:
+                continue
+            if status not in {"pending", "in_progress", "completed"}:
+                return {"ok": False, "error": f"Invalid plan status: {status or '(empty)'}"}
+            if status == "in_progress":
+                in_progress_seen += 1
+            normalized_plan.append({"step": step, "status": status})
+        if not normalized_plan:
+            return {"ok": False, "error": "plan cannot be empty"}
+        if in_progress_seen > 1:
+            return {"ok": False, "error": "At most one plan item can be in_progress"}
+        return {
+            "ok": True,
+            "plan": normalized_plan,
+            "explanation": str(explanation or "").strip(),
+            "summary": str(explanation or "").strip() or f"plan updated ({len(normalized_plan)} steps)",
+        }
+
+    def request_user_input(self, questions: list[dict[str, Any]]) -> dict[str, Any]:
+        normalized_questions: list[dict[str, Any]] = []
+        for item in list(questions or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            header = str(item.get("header") or "").strip()
+            question_id = str(item.get("id") or "").strip()
+            question = str(item.get("question") or "").strip()
+            raw_options = list(item.get("options") or [])
+            options: list[dict[str, str]] = []
+            for raw_option in raw_options[:3]:
+                if not isinstance(raw_option, dict):
+                    continue
+                label = str(raw_option.get("label") or "").strip()
+                description = str(raw_option.get("description") or "").strip()
+                if not label or not description:
+                    continue
+                options.append({"label": label, "description": description})
+            if not header or not question_id or not question or len(options) < 2:
+                continue
+            normalized_questions.append(
+                {
+                    "header": header[:12],
+                    "id": question_id,
+                    "question": question,
+                    "options": options,
+                }
+            )
+        if not normalized_questions:
+            return {"ok": False, "error": "request_user_input requires at least one well-formed question"}
+        return {
+            "ok": True,
+            "pending": True,
+            "questions": normalized_questions,
+            "summary": "user input required",
+        }
+
+    def web_search(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
+        result = self.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "web_search failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "web_search")
+        return payload
+
+    def read(
+        self,
+        path: str = ".",
+        start_char: int = 0,
+        max_chars: int = 200000,
+        start_line: int = 0,
+        max_lines: int = 0,
+        max_entries: int = 200,
+    ) -> dict[str, Any]:
+        try:
+            real_path = self._resolve_source_path(path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if real_path.is_dir():
+                limit = max(1, min(500, int(max_entries)))
+                ordered = sorted(real_path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+                entries = [
+                    {
+                        "name": child.name,
+                        "is_dir": child.is_dir(),
+                        "size": child.stat().st_size if child.is_file() else None,
+                    }
+                    for child in ordered[:limit]
+                ]
+                has_more = len(ordered) > limit
+                return {
+                    "ok": True,
+                    "tool_name": "read",
+                    "kind": "directory",
+                    "path": str(real_path),
+                    "entries": entries,
+                    "entry_count": len(entries),
+                    "total_entries": len(ordered),
+                    "max_entries": limit,
+                    "truncated": has_more,
+                    "has_more": has_more,
+                    "source_format": "directory_listing",
+                }
+
+            result = self.read_text_file(
+                path=path,
+                start_char=start_char,
+                max_chars=max_chars,
+                start_line=start_line,
+                max_lines=max_lines,
+            )
+            if isinstance(result, dict) and bool(result.get("ok")):
+                payload = dict(result)
+                payload.setdefault("kind", "file")
+                payload.setdefault("tool_name", "read")
+                return payload
+            return result
+        except Exception as exc:
+            return {"ok": False, "error": f"read failed: {exc}"}
+
+    def search_file(
+        self,
+        path: str,
+        query: str,
+        max_matches: int = 8,
+        context_chars: int = 280,
+    ) -> dict[str, Any]:
+        result = self.search_text_in_file(
+            path=path,
+            query=query,
+            max_matches=max_matches,
+            context_chars=context_chars,
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "search_file failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "search_file")
+        return payload
+
+    def search_file_multi(
+        self,
+        path: str,
+        queries: list[str],
+        per_query_max_matches: int = 3,
+        context_chars: int = 280,
+    ) -> dict[str, Any]:
+        result = self.multi_query_search(
+            path=path,
+            queries=queries,
+            per_query_max_matches=per_query_max_matches,
+            context_chars=context_chars,
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "search_file_multi failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "search_file_multi")
+        return payload
+
+    def read_section(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
+        result = self.read_section_by_heading(path=path, heading=heading, max_chars=max_chars)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "read_section failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "read_section")
+        return payload
+
+    def web_fetch(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
+        result = self.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "web_fetch failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "web_fetch")
+        return payload
+
+    def web_download(
+        self,
+        url: str,
+        dst_path: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        timeout_sec: int = 20,
+        max_bytes: int = 52428800,
+    ) -> dict[str, Any]:
+        result = self.download_web_file(
+            url=url,
+            dst_path=dst_path,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            timeout_sec=timeout_sec,
+            max_bytes=max_bytes,
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "web_download failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "web_download")
+        return payload
+
+    def sessions_list(self, limit: int = 20) -> dict[str, Any]:
+        result = self.list_sessions(max_sessions=limit)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "sessions_list failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "sessions_list")
+        return payload
+
+    def sessions_history(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
+        result = self.read_session_history(session_id=session_id, max_turns=max_turns)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "sessions_history failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "sessions_history")
+        return payload
+
+    def image_inspect(self, path: str = "", image_path: str = "") -> dict[str, Any]:
+        resolved_path = str(path or image_path or "").strip()
+        result = self.view_image(path=resolved_path)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "image_inspect failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "image_inspect")
+        return payload
+
+    def image_read(
+        self,
+        path: str = "",
+        prompt: str = "",
+        max_output_chars: int = 12000,
+        image_path: str = "",
+    ) -> dict[str, Any]:
+        resolved_path = str(path or image_path or "").strip()
+        inspect_payload = self.image_inspect(path=resolved_path)
+        if not bool(inspect_payload.get("ok")):
+            error = str(inspect_payload.get("error") or "image inspect failed")
+            return {
+                "ok": False,
+                "tool_name": "image_read",
+                "path": resolved_path,
+                "error": error,
+                "model_capability_status": "read_error",
+            }
+
+        inspected_path = str(inspect_payload.get("path") or resolved_path)
+        ocr_payload = self._perform_local_image_ocr(inspected_path, max_output_chars=max_output_chars)
+
+        multimodal_payload: dict[str, Any] = {}
+        if callable(self._image_read_handler):
+            try:
+                handler_result = self._image_read_handler(
+                    path=inspected_path,
+                    prompt=str(prompt or ""),
+                    max_output_chars=max_output_chars,
+                    model=self._current_model_hint(),
+                )
+            except Exception as exc:
+                multimodal_payload = {
+                    "ok": False,
+                    "error": f"image_read failed: {exc}",
+                    "model_capability_status": "read_error",
+                    "visible_text": "",
+                    "analysis": "",
+                }
+            else:
+                if not isinstance(handler_result, dict):
+                    multimodal_payload = {
+                        "ok": False,
+                        "error": "image_read failed: invalid result",
+                        "model_capability_status": "read_error",
+                        "visible_text": "",
+                        "analysis": "",
+                    }
+                else:
+                    multimodal_payload = dict(handler_result)
+
+        ocr_text = str(ocr_payload.get("visible_text") or "").strip()
+        multimodal_ok = bool(multimodal_payload.get("ok"))
+        multimodal_text = str(multimodal_payload.get("visible_text") or "").strip()
+        multimodal_analysis = str(multimodal_payload.get("analysis") or "").strip()
+
+        warning_parts = [
+            str(inspect_payload.get("warning") or "").strip(),
+            str(ocr_payload.get("warning") or "").strip(),
+            str(multimodal_payload.get("warning") or "").strip(),
+        ]
+        warning_text = "; ".join(item for item in warning_parts if item)
+
+        payload = dict(inspect_payload)
+        payload.setdefault("tool_name", "image_read")
+        payload["engines_tried"] = list(ocr_payload.get("engines_tried") or [])
+        payload["ocr_available"] = bool(ocr_payload.get("ocr_available"))
+        payload["warning"] = warning_text or None
+        payload["ocr_engine"] = str(ocr_payload.get("ocr_engine") or "").strip()
+        payload["preprocess_notes"] = list(ocr_payload.get("preprocess_notes") or [])
+        payload["effective_model"] = str(multimodal_payload.get("effective_model") or "").strip() or None
+
+        if ocr_text and multimodal_ok:
+            payload.update(
+                {
+                    "ok": True,
+                    "visible_text": ocr_text,
+                    "analysis": multimodal_analysis or "Extracted visible text via local OCR and supplemented the image analysis with the model.",
+                    "model_capability_status": str(multimodal_payload.get("model_capability_status") or "ok"),
+                    "read_strategy": "hybrid",
+                    "fallback_reason": "",
+                }
+            )
+            payload["summary"] = f"image_read · hybrid · {payload.get('ocr_engine') or 'ocr'}"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": "",
+                "read_strategy": "hybrid",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
+            return payload
+
+        if ocr_text:
+            fallback_reason = ""
+            if not callable(self._image_read_handler):
+                fallback_reason = "no_runtime_image_reader"
+            elif multimodal_payload:
+                fallback_reason = str(multimodal_payload.get("model_capability_status") or "").strip() or "multimodal_unavailable"
+            payload.update(
+                {
+                    "ok": True,
+                    "visible_text": ocr_text,
+                    "analysis": multimodal_analysis or "Extracted visible text from the image using local OCR.",
+                    "model_capability_status": str(multimodal_payload.get("model_capability_status") or ("not_invoked" if not callable(self._image_read_handler) else "read_error")),
+                    "read_strategy": "ocr_only",
+                    "fallback_reason": fallback_reason,
+                }
+            )
+            engine_label = str(payload.get("ocr_engine") or "ocr").strip()
+            payload["summary"] = f"image_read · ocr_only · {engine_label}"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": engine_label,
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": fallback_reason,
+                "read_strategy": "ocr_only",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
+            return payload
+
+        if multimodal_ok:
+            payload.update(
+                {
+                    "ok": True,
+                    "visible_text": multimodal_text,
+                    "analysis": multimodal_analysis,
+                    "model_capability_status": str(multimodal_payload.get("model_capability_status") or "ok"),
+                    "read_strategy": "multimodal_only",
+                    "fallback_reason": str(ocr_payload.get("error") or "").strip(),
+                }
+            )
+            payload["summary"] = "image_read · multimodal_only"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": str(payload.get("fallback_reason") or ""),
+                "read_strategy": "multimodal_only",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": self._short_preview(payload.get("visible_text"), limit=240),
+                "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
+                "warning": payload.get("warning"),
+            }
+            return payload
+
+        if not bool(ocr_payload.get("ocr_available")):
+            ocr_reason = str(ocr_payload.get("warning") or ocr_payload.get("error") or "").strip()
+            error_text = ocr_reason or "local OCR is unavailable"
+            if not callable(self._image_read_handler) and not error_text:
+                error_text = "local OCR is unavailable and no runtime image reader is configured"
+            elif str(multimodal_payload.get("error") or "").strip():
+                error_text = str(multimodal_payload.get("error") or "").strip()
+            payload.update(
+                {
+                    "ok": False,
+                    "visible_text": "",
+                    "analysis": "",
+                    "error": error_text,
+                    "model_capability_status": str(multimodal_payload.get("model_capability_status") or ("not_invoked" if not callable(self._image_read_handler) else "read_error")),
+                    "read_strategy": "",
+                    "fallback_reason": "ocr_unavailable",
+                }
+            )
+            payload["summary"] = "image_read · ocr_unavailable"
+            payload["diagnostics"] = {
+                "engines_tried": list(payload.get("engines_tried") or []),
+                "ocr_available": bool(payload.get("ocr_available")),
+                "ocr_engine": str(payload.get("ocr_engine") or ""),
+                "preprocess_notes": list(payload.get("preprocess_notes") or []),
+                "fallback_reason": "ocr_unavailable",
+                "read_strategy": "",
+                "model_capability_status": str(payload.get("model_capability_status") or ""),
+                "visible_text_preview": "",
+                "analysis_preview": "",
+                "warning": payload.get("warning"),
+                "error": payload.get("error"),
+            }
+            return payload
+
+        payload.update(
+            {
+                "ok": False,
+                "visible_text": "",
+                "analysis": "",
+                "error": str(multimodal_payload.get("error") or ocr_payload.get("error") or "image_read failed").strip(),
+                "model_capability_status": str(multimodal_payload.get("model_capability_status") or ("not_invoked" if not callable(self._image_read_handler) else "read_error")),
+                "read_strategy": "",
+                "fallback_reason": str(ocr_payload.get("error") or "").strip() or "no_readable_text_detected",
+            }
+        )
+        payload["summary"] = "image_read · no_readable_text_detected"
+        payload["diagnostics"] = {
+            "engines_tried": list(payload.get("engines_tried") or []),
+            "ocr_available": bool(payload.get("ocr_available")),
+            "ocr_engine": str(payload.get("ocr_engine") or ""),
+            "preprocess_notes": list(payload.get("preprocess_notes") or []),
+            "fallback_reason": str(payload.get("fallback_reason") or ""),
+            "read_strategy": "",
+            "model_capability_status": str(payload.get("model_capability_status") or ""),
+            "visible_text_preview": "",
+            "analysis_preview": "",
+            "warning": payload.get("warning"),
+            "error": payload.get("error"),
+        }
+        return payload
+
+    def archive_extract(
+        self,
+        zip_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_entries: int = 20000,
+        max_total_bytes: int = 524288000,
+    ) -> dict[str, Any]:
+        result = self.extract_zip(
+            zip_path=zip_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "archive_extract failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "archive_extract")
+        return payload
+
+    def mail_extract_attachments(
+        self,
+        msg_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_attachments: int = 500,
+        max_total_bytes: int = 524288000,
+    ) -> dict[str, Any]:
+        result = self.extract_msg_attachments(
+            msg_path=msg_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_attachments=max_attachments,
+            max_total_bytes=max_total_bytes,
+        )
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "mail_extract_attachments failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "mail_extract_attachments")
+        return payload
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
         try:
@@ -2218,14 +3249,16 @@ class LocalToolExecutor:
                 return {"ok": False, "error": f"Not a file: {path}"}
             with Image.open(real_path) as image:
                 width, height = image.size
+                image_format = str(image.format or "")
                 return {
                     "ok": True,
                     "path": str(real_path),
-                    "format": str(image.format or ""),
+                    "format": image_format,
+                    "mime": str(Image.MIME.get(image_format, "") or ""),
                     "mode": str(image.mode or ""),
                     "width": int(width),
                     "height": int(height),
-                    "summary": f"{real_path.name} · {width}x{height} · {image.format or 'unknown'}",
+                    "summary": f"{real_path.name} · {width}x{height} · {image_format or 'unknown'}",
                 }
         except Exception as exc:
             return {"ok": False, "error": f"view_image failed: {exc}"}
@@ -2235,50 +3268,85 @@ class LocalToolExecutor:
         if not patch_text.strip():
             return {"ok": False, "error": "patch cannot be empty"}
         try:
+            operations = _parse_codex_patch(patch_text)
             real_cwd = self._resolve_path(cwd)
             if not real_cwd.exists() or not real_cwd.is_dir():
                 return {"ok": False, "error": f"Invalid cwd: {cwd}"}
-            files = []
-            for line in patch_text.splitlines():
-                if line.startswith("+++ b/") or line.startswith("--- a/"):
-                    candidate = line[6:].strip()
-                    if candidate and candidate != "/dev/null" and candidate not in files:
-                        files.append(candidate)
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".patch", delete=False) as fh:
-                fh.write(patch_text)
-                patch_path = Path(fh.name)
-            try:
-                check_proc = subprocess.run(
-                    ["git", "apply", "--check", "--recount", str(patch_path)],
-                    cwd=str(real_cwd),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if check_proc.returncode != 0:
-                    detail = (check_proc.stderr or check_proc.stdout or "git apply --check failed").strip()
-                    return {"ok": False, "error": detail, "files": files}
-                if not check:
-                    apply_proc = subprocess.run(
-                        ["git", "apply", "--recount", str(patch_path)],
-                        cwd=str(real_cwd),
-                        capture_output=True,
-                        text=True,
-                        check=False,
+            files: list[str] = []
+            pending_writes: list[tuple[Path, str]] = []
+            pending_deletes: list[Path] = []
+            for op in operations:
+                op_type = str(op.get("op") or "")
+                raw_path = str(op.get("path") or "").strip()
+                if op_type == "add":
+                    target = _resolve_workspace_path(
+                        self.config,
+                        raw_path,
+                        workspace_root=real_cwd,
+                        access_roots=self._current_access_roots(),
                     )
-                    if apply_proc.returncode != 0:
-                        detail = (apply_proc.stderr or apply_proc.stdout or "git apply failed").strip()
-                        return {"ok": False, "error": detail, "files": files}
+                    if target.exists():
+                        return {"ok": False, "error": f"File already exists: {raw_path}", "files": files}
+                    pending_writes.append((target, str(op.get("content") or "")))
+                    files.append(str(target))
+                    continue
+                if op_type == "delete":
+                    target = _resolve_workspace_path(
+                        self.config,
+                        raw_path,
+                        workspace_root=real_cwd,
+                        access_roots=self._current_access_roots(),
+                    )
+                    if not target.exists():
+                        return {"ok": False, "error": f"File not found: {raw_path}", "files": files}
+                    pending_deletes.append(target)
+                    files.append(str(target))
+                    continue
+                if op_type == "update":
+                    source = _resolve_workspace_path(
+                        self.config,
+                        raw_path,
+                        workspace_root=real_cwd,
+                        access_roots=self._current_access_roots(),
+                    )
+                    if not source.exists():
+                        return {"ok": False, "error": f"File not found: {raw_path}", "files": files}
+                    original_text = source.read_text(encoding="utf-8")
+                    updated_text = self._apply_update_hunks(source, original_text, list(op.get("hunks") or []))
+                    target_raw = str(op.get("move_to") or raw_path).strip() or raw_path
+                    target = _resolve_workspace_path(
+                        self.config,
+                        target_raw,
+                        workspace_root=real_cwd,
+                        access_roots=self._current_access_roots(),
+                    )
+                    pending_writes.append((target, updated_text))
+                    files.append(str(target))
+                    if target != source:
+                        pending_deletes.append(source)
+                    continue
+                return {"ok": False, "error": f"Unsupported patch op: {op_type}", "files": files}
+
+            if check:
                 return {
                     "ok": True,
                     "cwd": str(real_cwd),
                     "files": files,
-                    "summary": "patch validated" if check else "patch applied",
+                    "summary": "patch validated",
                 }
-            finally:
-                patch_path.unlink(missing_ok=True)
-        except FileNotFoundError:
-            return {"ok": False, "error": "git is required for apply_patch"}
+
+            for target, content in pending_writes:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            for target in pending_deletes:
+                if target.exists():
+                    target.unlink()
+            return {
+                "ok": True,
+                "cwd": str(real_cwd),
+                "files": files,
+                "summary": "patch applied",
+            }
         except Exception as exc:
             return {"ok": False, "error": f"apply_patch failed: {exc}"}
 
@@ -2350,6 +3418,7 @@ class LocalToolExecutor:
             suffix = real_path.suffix.lower()
             source_format = "text_utf8"
             full_text = ""
+            msg_payload: dict[str, Any] | None = None
 
             # For office/binary documents, try structured extraction first
             # so users can "download then read" in one flow.
@@ -2374,10 +3443,16 @@ class LocalToolExecutor:
                 ".rss",
                 ".xml",
             }:
-                from app.attachments import extract_document_text  # lazy import
+                if suffix == ".msg":
+                    from app.attachments import extract_outlook_msg_payload  # lazy import
 
-                extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
-                full_text = extracted
+                    msg_payload = extract_outlook_msg_payload(str(real_path), max_chars=1_000_000) or {}
+                    full_text = str(msg_payload.get("content") or "")
+                else:
+                    from app.attachments import extract_document_text  # lazy import
+
+                    extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                    full_text = extracted
                 if suffix == ".docx":
                     source_format = "docx_text_extracted"
                 elif suffix == ".msg":
@@ -2404,11 +3479,12 @@ class LocalToolExecutor:
                     except Exception as exc:
                         full_text = f"[文档解析失败: {exc}]"
                 elif head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
-                    from app.attachments import extract_document_text, looks_like_outlook_msg_bytes  # lazy import
+                    from app.attachments import extract_document_text, extract_outlook_msg_payload, looks_like_outlook_msg_bytes  # lazy import
 
                     if looks_like_outlook_msg_bytes(sniff):
                         source_format = "msg_text_extracted"
-                        full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                        msg_payload = extract_outlook_msg_payload(str(real_path), max_chars=1_000_000) or {}
+                        full_text = str(msg_payload.get("content") or "")
                     else:
                         full_text = real_path.read_text(encoding="utf-8", errors="ignore")
                 elif head.startswith(b"PK\x03\x04"):
@@ -2450,7 +3526,7 @@ class LocalToolExecutor:
 
                 start_char_calc = sum(len(line) + 1 for line in lines[:start_idx])
                 end_char_calc = start_char_calc + len(text)
-                return {
+                payload = {
                     "ok": True,
                     "path": str(real_path),
                     "content": text,
@@ -2466,6 +3542,10 @@ class LocalToolExecutor:
                     "total_lines": total_lines,
                     "source_format": source_format,
                 }
+                if source_format == "msg_text_extracted" and isinstance(msg_payload, dict):
+                    payload["email_meta"] = dict(msg_payload.get("email_meta") or {})
+                    payload["attachment_list"] = list(msg_payload.get("attachment_list") or [])
+                return payload
 
             start = max(0, int(start_char))
             if start > total_length:
@@ -2473,7 +3553,7 @@ class LocalToolExecutor:
             end = min(total_length, start + limit)
             text = full_text[start:end]
             truncated = end < total_length
-            return {
+            payload = {
                 "ok": True,
                 "path": str(real_path),
                 "content": text,
@@ -2485,6 +3565,10 @@ class LocalToolExecutor:
                 "has_more": truncated,
                 "source_format": source_format,
             }
+            if source_format == "msg_text_extracted" and isinstance(msg_payload, dict):
+                payload["email_meta"] = dict(msg_payload.get("email_meta") or {})
+                payload["attachment_list"] = list(msg_payload.get("attachment_list") or [])
+            return payload
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
 

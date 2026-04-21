@@ -49,6 +49,7 @@ class ScopedToolExecutor:
         project_id: str | None = None,
         project_root: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._executor.set_runtime_context(
             execution_mode=execution_mode,
@@ -56,7 +57,11 @@ class ScopedToolExecutor:
             project_id=project_id,
             project_root=project_root,
             cwd=cwd,
+            model=model,
         )
+
+    def set_image_read_handler(self, handler: Callable[..., dict[str, Any]] | None) -> None:
+        self._executor.set_image_read_handler(handler)
 
     def clear_runtime_context(self) -> None:
         self._executor.clear_runtime_context()
@@ -108,36 +113,35 @@ def _build_scoped_executor_factory(
     return factory
 
 
-_WORKSPACE_TOOL_NAMES = (
-    "run_shell",
-    "list_directory",
-    "search_codebase",
-    "copy_file",
-    "extract_zip",
-    "extract_msg_attachments",
-    "kernel_runtime_status",
-    "kernel_shadow_pipeline",
-    "kernel_shadow_self_upgrade",
+_CODEX_CORE_TOOL_NAMES = (
+    "exec_command",
+    "write_stdin",
+    "apply_patch",
+    "update_plan",
+    "request_user_input",
 )
-_FILE_TOOL_NAMES = (
-    "read_text_file",
-    "search_text_in_file",
-    "multi_query_search",
-    "doc_index_build",
-    "read_section_by_heading",
+_FS_CONTENT_TOOL_NAMES = (
+    "read",
+    "search_file",
+    "search_file_multi",
+    "read_section",
     "table_extract",
     "fact_check_file",
+    "search_codebase",
 )
-_WEB_TOOL_NAMES = (
-    "fetch_web",
-    "download_web_file",
-    "search_web",
+_WEB_CONTEXT_TOOL_NAMES = (
+    "web_search",
+    "web_fetch",
+    "web_download",
 )
-_PATCH_TOOL_NAMES = (
-    "write_text_file",
-    "append_text_file",
-    "replace_in_file",
-    "apply_patch",
+_SESSION_CONTEXT_TOOL_NAMES = (
+    "sessions_list",
+    "sessions_history",
+)
+_MEDIA_CONTEXT_TOOL_NAMES = ("image_inspect", "image_read")
+_CONTENT_UNPACK_TOOL_NAMES = (
+    "archive_extract",
+    "mail_extract_attachments",
 )
 _BROWSER_TOOL_NAMES = (
     "browser_open",
@@ -147,32 +151,14 @@ _BROWSER_TOOL_NAMES = (
     "browser_snapshot",
     "browser_screenshot",
 )
-_IMAGE_TOOL_NAMES = ("view_image",)
-_SESSION_TOOL_NAMES = (
-    "list_sessions",
-    "read_session_history",
-)
-_SKILL_TOOL_NAMES = (
-    "list_skills",
-    "read_skill",
-    "write_skill",
-    "toggle_skill",
-)
-_AGENT_SPEC_TOOL_NAMES = (
-    "list_agent_specs",
-    "read_agent_spec",
-    "write_agent_spec",
-)
 _ALL_TOOL_NAMES = (
-    _WORKSPACE_TOOL_NAMES
-    + _FILE_TOOL_NAMES
-    + _WEB_TOOL_NAMES
-    + _PATCH_TOOL_NAMES
+    _CODEX_CORE_TOOL_NAMES
+    + _FS_CONTENT_TOOL_NAMES
+    + _WEB_CONTEXT_TOOL_NAMES
+    + _SESSION_CONTEXT_TOOL_NAMES
+    + _MEDIA_CONTEXT_TOOL_NAMES
+    + _CONTENT_UNPACK_TOOL_NAMES
     + _BROWSER_TOOL_NAMES
-    + _IMAGE_TOOL_NAMES
-    + _SESSION_TOOL_NAMES
-    + _SKILL_TOOL_NAMES
-    + _AGENT_SPEC_TOOL_NAMES
 )
 
 
@@ -189,60 +175,88 @@ def get_tool_executor(config: Any) -> ScopedToolExecutor:
 def build_office_tool_modules() -> tuple[ToolModule, ...]:
     return (
         ToolModule(
-            module_id="workspace_tools",
-            title="Workspace Tool Module",
-            description="工作区与代码库操作工具模块。",
+            module_id="codex_core_tools",
+            title="Codex Core Tool Module",
+            description="Codex 风格的主工具集合。",
             build_executor=_build_scoped_executor_factory(
-                module_id="workspace_tools",
-                title="Workspace Tool Module",
-                group="workspace",
-                tool_names=_WORKSPACE_TOOL_NAMES,
+                module_id="codex_core_tools",
+                title="Codex Core Tool Module",
+                group="codex_core",
+                tool_names=_CODEX_CORE_TOOL_NAMES,
             ),
             default=True,
-            tool_names=_WORKSPACE_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "workspace"},
+            tool_names=_CODEX_CORE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "codex_core"},
         ),
         ToolModule(
-            module_id="file_tools",
-            title="File Tool Module",
-            description="文档读取、检索、结构提取与事实核验。",
+            module_id="fs_content_tools",
+            title="FS Content Tool Module",
+            description="统一的文件、目录、长文读取与结构化代码搜索工具。",
             build_executor=_build_scoped_executor_factory(
-                module_id="file_tools",
-                title="File Tool Module",
-                group="file",
-                tool_names=_FILE_TOOL_NAMES,
+                module_id="fs_content_tools",
+                title="FS Content Tool Module",
+                group="fs_content",
+                tool_names=_FS_CONTENT_TOOL_NAMES,
             ),
             default=False,
-            tool_names=_FILE_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "file"},
+            tool_names=_FS_CONTENT_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "fs_content"},
         ),
         ToolModule(
-            module_id="web_tools",
-            title="Web Tool Module",
-            description="联网抓取、搜索与网页下载工具。",
+            module_id="web_context_tools",
+            title="Web Context Tool Module",
+            description="网页搜索、抓取与远程文件下载工具。",
             build_executor=_build_scoped_executor_factory(
-                module_id="web_tools",
-                title="Web Tool Module",
-                group="web",
-                tool_names=_WEB_TOOL_NAMES,
+                module_id="web_context_tools",
+                title="Web Context Tool Module",
+                group="web_context",
+                tool_names=_WEB_CONTEXT_TOOL_NAMES,
             ),
             default=False,
-            tool_names=_WEB_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "web"},
+            tool_names=_WEB_CONTEXT_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "web_context"},
         ),
         ToolModule(
-            module_id="write_tools",
-            title="Write Tool Module",
-            description="文本写入、追加和精确替换工具。",
+            module_id="session_context_tools",
+            title="Session Context Tool Module",
+            description="列出和回看本地历史会话。",
             build_executor=_build_scoped_executor_factory(
-                module_id="write_tools",
-                title="Write Tool Module",
-                group="write",
-                tool_names=_PATCH_TOOL_NAMES,
+                module_id="session_context_tools",
+                title="Session Context Tool Module",
+                group="session_context",
+                tool_names=_SESSION_CONTEXT_TOOL_NAMES,
             ),
             default=False,
-            tool_names=_PATCH_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "write"},
+            tool_names=_SESSION_CONTEXT_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "session_context"},
+        ),
+        ToolModule(
+            module_id="media_context_tools",
+            title="Media Context Tool Module",
+            description="本地图片基础检查与图片内容读取工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="media_context_tools",
+                title="Media Context Tool Module",
+                group="media_context",
+                tool_names=_MEDIA_CONTEXT_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_MEDIA_CONTEXT_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "media_context"},
+        ),
+        ToolModule(
+            module_id="content_unpack_tools",
+            title="Content Unpack Tool Module",
+            description="ZIP 与 Outlook MSG 附件提取工具。",
+            build_executor=_build_scoped_executor_factory(
+                module_id="content_unpack_tools",
+                title="Content Unpack Tool Module",
+                group="content_unpack",
+                tool_names=_CONTENT_UNPACK_TOOL_NAMES,
+            ),
+            default=False,
+            tool_names=_CONTENT_UNPACK_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "content_unpack"},
         ),
         ToolModule(
             module_id="browser_tools",
@@ -257,62 +271,6 @@ def build_office_tool_modules() -> tuple[ToolModule, ...]:
             default=False,
             tool_names=_BROWSER_TOOL_NAMES,
             metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "browser"},
-        ),
-        ToolModule(
-            module_id="image_tools",
-            title="Image Tool Module",
-            description="本地图像读取与元信息查看工具。",
-            build_executor=_build_scoped_executor_factory(
-                module_id="image_tools",
-                title="Image Tool Module",
-                group="images",
-                tool_names=_IMAGE_TOOL_NAMES,
-            ),
-            default=False,
-            tool_names=_IMAGE_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "images"},
-        ),
-        ToolModule(
-            module_id="session_tools",
-            title="Session Tool Module",
-            description="跨会话浏览与历史检索工具。",
-            build_executor=_build_scoped_executor_factory(
-                module_id="session_tools",
-                title="Session Tool Module",
-                group="session",
-                tool_names=_SESSION_TOOL_NAMES,
-            ),
-            default=False,
-            tool_names=_SESSION_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "session"},
-        ),
-        ToolModule(
-            module_id="skill_tools",
-            title="Skill Tool Module",
-            description="本地 skills 列表、读取、编辑与启停工具。",
-            build_executor=_build_scoped_executor_factory(
-                module_id="skill_tools",
-                title="Skill Tool Module",
-                group="skills",
-                tool_names=_SKILL_TOOL_NAMES,
-            ),
-            default=False,
-            tool_names=_SKILL_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "skills"},
-        ),
-        ToolModule(
-            module_id="agent_spec_tools",
-            title="Agent Spec Tool Module",
-            description="主 agent 规范文件的读取与编辑工具。",
-            build_executor=_build_scoped_executor_factory(
-                module_id="agent_spec_tools",
-                title="Agent Spec Tool Module",
-                group="agent_specs",
-                tool_names=_AGENT_SPEC_TOOL_NAMES,
-            ),
-            default=False,
-            tool_names=_AGENT_SPEC_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "agent_specs"},
         ),
     )
 

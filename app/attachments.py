@@ -481,7 +481,68 @@ def _format_msg_attachment_line(att: object, idx: int) -> str:
     return f"- {name}"
 
 
-def _extract_outlook_msg(path: Path, max_chars: int) -> str:
+def _extract_msg_attachment_payload(att: object, idx: int) -> dict[str, object]:
+    name = (
+        (getattr(att, "longFilename", None) or "").strip()
+        or (getattr(att, "filename", None) or "").strip()
+        or f"attachment_{idx}"
+    )
+    mime_hint = str(getattr(att, "mimetype", None) or "").strip()
+
+    size: int | None = None
+    try:
+        data = getattr(att, "data", None)
+    except Exception:
+        data = None
+    if isinstance(data, (bytes, bytearray)):
+        size = len(data)
+
+    return {
+        "name": name,
+        "size": size,
+        "mime_hint": mime_hint,
+    }
+
+
+def _render_outlook_msg_content(
+    *,
+    class_type: str,
+    subject: str,
+    sender: str,
+    to: str,
+    cc: str,
+    date: str,
+    body: str,
+    attachment_lines: list[str],
+    max_chars: int,
+) -> str:
+    sections: list[str] = ["[Outlook MSG 邮件解析]"]
+    if class_type:
+        sections.append(f"消息类型: {class_type}")
+    if subject:
+        sections.append(f"主题: {subject}")
+    if sender:
+        sections.append(f"发件人: {sender}")
+    if to:
+        sections.append(f"收件人: {to}")
+    if cc:
+        sections.append(f"抄送: {cc}")
+    if date:
+        sections.append(f"时间: {date}")
+    if attachment_lines:
+        sections.append("附件列表:")
+        sections.extend(attachment_lines)
+    if body:
+        sections.append("\n--- 正文 ---\n")
+        sections.append(body)
+    else:
+        sections.append("\n--- 正文 ---\n")
+        sections.append("[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]")
+
+    return truncate_text("\n".join(sections).strip(), max_chars)
+
+
+def _extract_outlook_msg_payload(path: Path, max_chars: int) -> dict[str, object]:
     try:
         import extract_msg  # lazy import
     except Exception as exc:
@@ -499,34 +560,36 @@ def _extract_outlook_msg(path: Path, max_chars: int) -> str:
         class_type = str(getattr(msg, "classType", "") or "").strip()
         body = _extract_msg_body(msg)
 
+        attachment_list: list[dict[str, object]] = []
         attachment_lines: list[str] = []
         for idx, att in enumerate(getattr(msg, "attachments", []) or [], start=1):
+            attachment_list.append(_extract_msg_attachment_payload(att, idx))
             attachment_lines.append(_format_msg_attachment_line(att, idx))
 
-        sections: list[str] = ["[Outlook MSG 邮件解析]"]
-        if class_type:
-            sections.append(f"消息类型: {class_type}")
-        if subject:
-            sections.append(f"主题: {subject}")
-        if sender:
-            sections.append(f"发件人: {sender}")
-        if to:
-            sections.append(f"收件人: {to}")
-        if cc:
-            sections.append(f"抄送: {cc}")
-        if date:
-            sections.append(f"时间: {date}")
-        if attachment_lines:
-            sections.append("附件列表:")
-            sections.extend(attachment_lines)
-        if body:
-            sections.append("\n--- 正文 ---\n")
-            sections.append(body)
-        else:
-            sections.append("\n--- 正文 ---\n")
-            sections.append("[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]")
-
-        return truncate_text("\n".join(sections).strip(), max_chars)
+        email_meta = {
+            "subject": subject,
+            "sender": sender,
+            "to": to,
+            "cc": cc,
+            "date": date,
+            "class_type": class_type,
+        }
+        content = _render_outlook_msg_content(
+            class_type=class_type,
+            subject=subject,
+            sender=sender,
+            to=to,
+            cc=cc,
+            date=date,
+            body=body,
+            attachment_lines=attachment_lines,
+            max_chars=max_chars,
+        )
+        return {
+            "content": content,
+            "email_meta": email_meta,
+            "attachment_list": attachment_list,
+        }
     finally:
         close = getattr(msg, "close", None)
         if callable(close):
@@ -534,6 +597,18 @@ def _extract_outlook_msg(path: Path, max_chars: int) -> str:
                 close()
             except Exception:
                 pass
+
+
+def extract_outlook_msg_payload(path: str, max_chars: int) -> dict[str, object] | None:
+    try:
+        return _extract_outlook_msg_payload(Path(path), max_chars)
+    except Exception:
+        return None
+
+
+def _extract_outlook_msg(path: Path, max_chars: int) -> str:
+    payload = _extract_outlook_msg_payload(path, max_chars)
+    return str(payload.get("content") or "")
 
 
 def extract_document_text(path: str, max_chars: int) -> str | None:
@@ -581,7 +656,8 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
         if suffix in {".zip", ".bin"} and looks_like_pptx_file(file_path):
             return _extract_pptx(file_path, max_chars)
         if suffix == ".msg" or looks_like_outlook_msg_file(file_path):
-            return _extract_outlook_msg(file_path, max_chars)
+            payload = extract_outlook_msg_payload(str(file_path), max_chars)
+            return str((payload or {}).get("content") or "")
     except Exception as exc:
         return f"[文档解析失败: {exc}]"
 

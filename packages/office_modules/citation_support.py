@@ -17,6 +17,18 @@ _TRACKING_QUERY_KEYS = {
     "source",
 }
 
+_TOOL_ALIASES = {
+    "web_search": {"web_search", "search_web"},
+    "web_fetch": {"web_fetch", "fetch_web"},
+    "search_file": {"search_file", "search_text_in_file"},
+    "read_section": {"read_section", "read_section_by_heading"},
+}
+
+
+def _tool_name_is(name: str, canonical: str) -> bool:
+    lowered = str(name or "").strip().lower()
+    return lowered in {item.lower() for item in _TOOL_ALIASES.get(canonical, {canonical})}
+
 
 def domain_from_url(raw_url: str) -> str | None:
     try:
@@ -68,7 +80,7 @@ def extract_citations_from_tool_result(
     path = str(result.get("path") or arguments.get("path") or "").strip() or None
     out: list[dict[str, Any]] = []
 
-    if str(name).startswith("search_web"):
+    if _tool_name_is(name, "web_search"):
         query = str(result.get("query") or arguments.get("query") or "").strip()
         for row in list(result.get("results") or [])[:4]:
             if not isinstance(row, dict):
@@ -84,7 +96,7 @@ def extract_citations_from_tool_result(
                 {
                     "source_type": "web",
                     "kind": "candidate",
-                    "tool": "search_web",
+                    "tool": "web_search",
                     "label": title or domain or url or "web result",
                     "url": url or None,
                     "title": title or None,
@@ -98,7 +110,7 @@ def extract_citations_from_tool_result(
             )
         return out
 
-    if name == "fetch_web":
+    if _tool_name_is(name, "web_fetch"):
         canonical_url = normalize_source_url(str(result.get("canonical_url") or "").strip())
         url = str(
             normalize_source_url(str(canonical_url or result.get("url") or arguments.get("url") or "").strip())
@@ -109,7 +121,7 @@ def extract_citations_from_tool_result(
             {
                 "source_type": "web",
                 "kind": "evidence",
-                "tool": "fetch_web",
+                "tool": "web_fetch",
                 "label": str(result.get("title") or domain_from_url(url) or url or "web page").strip(),
                 "url": url or None,
                 "title": str(result.get("title") or "").strip() or None,
@@ -123,7 +135,7 @@ def extract_citations_from_tool_result(
         )
         return out
 
-    if name == "search_text_in_file":
+    if _tool_name_is(name, "search_file"):
         query = str(result.get("query") or arguments.get("query") or "").strip()
         for match in list(result.get("matches") or [])[:4]:
             if not isinstance(match, dict):
@@ -134,7 +146,7 @@ def extract_citations_from_tool_result(
                 {
                     "source_type": "document",
                     "kind": "evidence",
-                    "tool": "search_text_in_file",
+                    "tool": "search_file",
                     "label": Path(path or "document").name,
                     "path": path,
                     "locator": f"{locator}, query={query}" if locator and query else (locator or f"query={query}" if query else None),
@@ -145,7 +157,7 @@ def extract_citations_from_tool_result(
             )
         return out
 
-    if name == "read_section_by_heading":
+    if _tool_name_is(name, "read_section"):
         matched_heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip()
         page_start = int(result.get("page_start") or 0)
         page_end = int(result.get("page_end") or 0)
@@ -156,7 +168,7 @@ def extract_citations_from_tool_result(
             {
                 "source_type": "document",
                 "kind": "evidence",
-                "tool": "read_section_by_heading",
+                "tool": "read_section",
                 "label": Path(path or "document").name,
                 "path": path,
                 "locator": locator,
@@ -275,12 +287,16 @@ def finalize_citation_candidates(agent: Any, citations: list[dict[str, Any]]) ->
         confidence = str(item.get("confidence") or "medium").strip().lower()
 
         tool_priority = {
+            "web_fetch": 6,
             "fetch_web": 6,
             "fact_check_file": 5,
+            "search_file": 5,
             "search_text_in_file": 5,
+            "read_section": 5,
             "read_section_by_heading": 5,
             "table_extract": 5,
             "search_codebase": 4,
+            "web_search": 1,
             "search_web": 1,
         }.get(tool, 3)
         if source_type in {"document", "table", "codebase"} and tool_priority < 5:

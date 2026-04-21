@@ -12,6 +12,7 @@ class ChatSettings(BaseModel):
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
     enable_tools: bool = True
     execution_mode: Literal["host", "docker"] | None = None
+    collaboration_mode: Literal["default", "plan", "execute"] = "default"
     debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
 
@@ -21,6 +22,8 @@ class ChatRequest(BaseModel):
     project_id: str | None = None
     message: str = Field(min_length=1)
     attachment_ids: list[str] = Field(default_factory=list)
+    mode_override: Literal["default", "plan", "execute"] | None = None
+    user_input_response: dict[str, Any] = Field(default_factory=dict)
     settings: ChatSettings = Field(default_factory=ChatSettings)
 
 
@@ -32,6 +35,7 @@ class ToolEvent(BaseModel):
     group: str = ""
     source: str = ""
     summary: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list)
     project_root: str = ""
     cwd: str = ""
@@ -131,6 +135,7 @@ class TokenTotals(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
+    thread_id: str | None = None
     run_id: str | None = None
     agent_id: str = "vintage_programmer"
     agent_title: str = "Vintage Programmer"
@@ -145,6 +150,12 @@ class ChatResponse(BaseModel):
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     attachment_context_key: str = ""
+    collaboration_mode: Literal["default", "plan", "execute"] = "default"
+    turn_status: str = "completed"
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    pending_user_input: dict[str, Any] = Field(default_factory=dict)
+    current_task_focus: dict[str, Any] = Field(default_factory=dict)
+    recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
@@ -334,6 +345,7 @@ class HealthResponse(BaseModel):
     default_project_id: str = ""
     projects: list[ProjectDescriptor] = Field(default_factory=list)
     runtime_status: dict[str, object] = Field(default_factory=dict)
+    ocr_status: dict[str, object] = Field(default_factory=dict)
     agent: dict[str, object] = Field(default_factory=dict)
 
 

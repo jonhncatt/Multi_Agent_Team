@@ -10,6 +10,8 @@ def test_workstation_shell_mounts_exist() -> None:
     script = APP_JS.read_text()
 
     assert 'data-app="vintage-programmer"' in html
+    assert "/static/vendor/marked.umd.js" in html
+    assert "/static/vendor/purify.min.js" in html
     required_tokens = [
         'id="appShell"',
         'id="threadSidebar"',
@@ -41,6 +43,7 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         "CUSTOM_MODEL_VALUE",
         "parseSseChunk(",
         "normalizeUiError(",
+        "renderMessageHtml(",
         "resolvePresetModelValue(",
         "updateProviderSelection(",
         'fetch("/api/chat/stream"',
@@ -53,7 +56,18 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         "selectProject(",
         "setDrawerView(",
         "handleSelectFiles",
+        "processSelectedFiles(",
+        "handleComposerDrop",
+        "handleComposerPaste",
+        "dragEventHasFiles(",
+        "clipboardEventFiles(",
+        "ensureNamedUploadFile(",
+        "composerDragActive",
+        '"copy"',
+        "onPaste=${handleComposerPaste}",
         "status-alert",
+        "dangerouslySetInnerHTML",
+        "DOMPurifyRuntime.sanitize",
         "modelStorageKeyForProvider(",
         "health && health.provider_options",
     ]

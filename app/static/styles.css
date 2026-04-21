@@ -429,11 +429,126 @@ button {
 .message-card {
   border-radius: 16px;
   padding: 14px 16px;
-  white-space: pre-wrap;
   line-height: 1.62;
   border: 1px solid rgba(188, 198, 212, 0.82);
   background: rgba(255, 255, 255, 0.88);
   box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+}
+
+.message-card-body {
+  min-width: 0;
+}
+
+.message-card .message-markdown > :first-child {
+  margin-top: 0;
+}
+
+.message-card .message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-card .message-markdown p,
+.message-card .message-markdown ul,
+.message-card .message-markdown ol,
+.message-card .message-markdown blockquote,
+.message-card .message-markdown pre,
+.message-card .message-markdown table,
+.message-card .message-markdown h1,
+.message-card .message-markdown h2,
+.message-card .message-markdown h3,
+.message-card .message-markdown h4,
+.message-card .message-markdown h5,
+.message-card .message-markdown h6 {
+  margin: 0 0 12px;
+}
+
+.message-card .message-markdown h1,
+.message-card .message-markdown h2,
+.message-card .message-markdown h3,
+.message-card .message-markdown h4,
+.message-card .message-markdown h5,
+.message-card .message-markdown h6 {
+  line-height: 1.32;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.message-card .message-markdown h1 {
+  font-size: 1.42rem;
+}
+
+.message-card .message-markdown h2 {
+  font-size: 1.24rem;
+}
+
+.message-card .message-markdown h3 {
+  font-size: 1.1rem;
+}
+
+.message-card .message-markdown ul,
+.message-card .message-markdown ol {
+  padding-left: 1.25rem;
+}
+
+.message-card .message-markdown li + li {
+  margin-top: 4px;
+}
+
+.message-card .message-markdown blockquote {
+  padding-left: 12px;
+  border-left: 3px solid rgba(17, 24, 39, 0.18);
+  color: var(--ink-soft);
+}
+
+.message-card .message-markdown a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.message-card .message-markdown code,
+.message-card .message-markdown pre {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.message-card .message-markdown :not(pre) > code {
+  padding: 0.12rem 0.35rem;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.06);
+  font-size: 0.94em;
+}
+
+.message-card .message-markdown pre {
+  overflow-x: auto;
+  padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid rgba(188, 198, 212, 0.78);
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.message-card .message-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.message-card .message-markdown table {
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.message-card .message-markdown th,
+.message-card .message-markdown td {
+  padding: 8px 10px;
+  border: 1px solid rgba(188, 198, 212, 0.78);
+  text-align: left;
+  vertical-align: top;
+}
+
+.message-card .message-markdown th {
+  background: rgba(15, 23, 42, 0.04);
+  font-weight: 600;
 }
 
 .role-assistant .message-card {
@@ -469,6 +584,11 @@ button {
   padding: 8px 16px 10px;
   position: relative;
   z-index: 2;
+}
+
+.composer-shell.drag-active {
+  background:
+    linear-gradient(180deg, rgba(247, 248, 250, 0.96) 0%, rgba(237, 242, 248, 0.98) 100%);
 }
 
 .composer-error {
@@ -569,6 +689,13 @@ button {
   flex-wrap: wrap;
 }
 
+.composer-toolbar-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .toolbar-model-preset,
 .toolbar-model,
 .composer-toolbar select,
@@ -610,6 +737,18 @@ button {
   border: 1px solid rgba(188, 198, 212, 0.86);
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+}
+
+.composer-shell.drag-active .composer-frame {
+  border-color: rgba(17, 24, 39, 0.38);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 12px 30px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+}
+
+.composer-shell.drag-active .composer-frame textarea::placeholder {
+  color: var(--ink-soft);
 }
 
 .composer-frame textarea {
@@ -828,6 +967,29 @@ button {
   font-size: 13px;
   line-height: 1.55;
   color: var(--ink-soft);
+}
+
+.timeline-details {
+  margin-top: 8px;
+}
+
+.timeline-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.timeline-details pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(246, 248, 251, 0.92);
+  border: 1px solid rgba(188, 198, 212, 0.6);
+  font: 12px/1.55 "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+  color: var(--ink);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .editor-textarea {

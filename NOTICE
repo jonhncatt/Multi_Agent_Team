@@ -1,0 +1,11 @@
+This project includes design and interface adaptations inspired by:
+
+- openai/codex (Apache-2.0): tool naming, collaboration-mode concepts, and patch-tool grammar alignment.
+- openclaw/openclaw (MIT): browser-tool fallback grouping and agentic runtime fallback ideas.
+
+These upstream projects remain the property of their respective authors and are governed by their own licenses:
+
+- https://github.com/openai/codex
+- https://github.com/openclaw/openclaw
+
+Where repository code is derived from or closely adapted to upstream implementations, the corresponding upstream license terms apply in addition to this repository's top-level license obligations.

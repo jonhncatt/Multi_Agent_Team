@@ -37,6 +37,11 @@ class SessionStore:
             "phase": "idle",
             "last_run_id": "",
             "last_model": "",
+            "current_task_focus": {},
+            "task_checkpoint": {},
+            "thread_memory": {},
+            "recent_tasks": [],
+            "artifact_memory_preview": [],
             "tool_hits": [],
             "tool_count": 0,
             "tool_names": [],
@@ -78,6 +83,15 @@ class SessionStore:
         if not isinstance(payload.get("attachment_route_states"), dict):
             payload["attachment_route_states"] = {}
             changed = True
+        if not isinstance(payload.get("current_task_focus"), dict):
+            payload["current_task_focus"] = {}
+            changed = True
+        if not isinstance(payload.get("thread_memory"), dict):
+            payload["thread_memory"] = {}
+            changed = True
+        if not isinstance(payload.get("artifact_memory"), list):
+            payload["artifact_memory"] = []
+            changed = True
         agent_state = payload.get("agent_state")
         if not isinstance(agent_state, dict):
             payload["agent_state"] = self._default_agent_state()
@@ -109,6 +123,11 @@ class SessionStore:
             payload["cwd"] = str(payload.get("project_root") or "")
             changed = True
 
+        from app import session_context as session_context_impl
+
+        if session_context_impl.sync_session_memory_state(payload):
+            changed = True
+
         return payload, changed
 
     def create(self, project: dict[str, Any]) -> dict[str, Any]:
@@ -133,6 +152,9 @@ class SessionStore:
             "agent_state": self._default_agent_state(),
             "route_state": {},
             "attachment_route_states": {},
+            "current_task_focus": {},
+            "thread_memory": {},
+            "artifact_memory": [],
         }
         self.save(session)
         return session
@@ -183,6 +205,7 @@ class SessionStore:
     ) -> None:
         session.setdefault("turns", []).append(
             {
+                "id": str(uuid.uuid4()),
                 "role": role,
                 "text": text,
                 "attachments": attachments or [],

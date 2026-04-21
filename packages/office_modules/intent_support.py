@@ -68,6 +68,7 @@ def looks_like_image_capability_denial(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
+    compact = re.sub(r"\s+", "", lowered)
     patterns = (
         "无法直接对图像执行ocr",
         "无法对图像执行ocr",
@@ -88,7 +89,7 @@ def looks_like_image_capability_denial(text: str) -> bool:
         "can't view images",
         "unable to process image",
     )
-    return any(pattern in lowered for pattern in patterns)
+    return any(pattern in lowered or pattern in compact for pattern in patterns)
 
 
 def looks_like_stub_image_transcription(text: str) -> bool:
@@ -301,7 +302,7 @@ def looks_like_table_reformat_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    if "table_extract" in lowered or "read_text_file" in lowered:
+    if "table_extract" in lowered or "read_text_file" in lowered or "read(" in lowered or "search_file" in lowered:
         return False
     has_table_ref = text_has_any(lowered, TABLE_REFERENCE_HINTS)
     if not has_table_ref:
@@ -357,8 +358,9 @@ def looks_like_understanding_request(
     if agent._requires_evidence_mode(user_message, []):
         return False
     tool_markers = (
-        "read_text_file", "search_text_in_file", "table_extract", "fact_check_file", "search_codebase",
-        "search_web", "fetch_web", "download_web_file",
+        "read", "read_text_file", "search_file", "search_text_in_file", "search_file_multi",
+        "read_section", "read_section_by_heading", "table_extract", "fact_check_file", "search_codebase",
+        "web_search", "search_web", "web_fetch", "fetch_web", "web_download", "download_web_file",
     )
     if any(marker in text for marker in tool_markers):
         return False
@@ -427,14 +429,17 @@ def evidence_mode_needs_more_support(agent: Any, ai_msg: Any, tool_events: list[
 
     tool_names = {tool.name for tool in tool_events}
     evidence_tool_hits = tool_names & {
-        "search_text_in_file", "multi_query_search", "read_text_file", "read_section_by_heading",
+        "search_file", "search_text_in_file", "search_file_multi", "multi_query_search",
+        "read", "read_text_file", "read_section", "read_section_by_heading",
         "table_extract", "fact_check_file", "search_codebase",
     }
-    if spec_lookup_request and "search_text_in_file" not in tool_names:
+    if spec_lookup_request and not ({"search_file", "search_text_in_file"} & tool_names):
         return True
     if not evidence_tool_hits:
         return True
-    if spec_lookup_request and not ({"read_text_file", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names):
+    if spec_lookup_request and not (
+        {"read", "read_text_file", "read_section", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names
+    ):
         return True
 
     evidence_markers = (
@@ -463,10 +468,11 @@ def request_likely_requires_tools(agent: Any, user_message: str, attachment_meta
     direct_hints = (
         "路径", "目录", "文件夹", "测试", "用例", "测试文件", "文件名", "扩展名", "函数", "方法", "代码", "源码",
         "代码库", "仓库", "repo", "项目", "实现", "调用点", "定义", "声明", "master", "source", "src", "test",
-        "tests", "case", "在哪", "搜索", "上网", "网上", "查一下", "搜一下", "read_text_file", "search_text_in_file",
-        "multi_query_search", "read_section_by_heading", "table_extract", "fact_check_file", "search_codebase", "write_text_file",
-        "append_text_file", "replace_in_file", "写入", "替换", "更新", "改成", "改为", "保存", "落盘", "apply", "patch",
-        "write back", "overwrite", "replace", "update", "run_shell", "search_web", "fetch_web", "download_web_file", ".pdf",
+        "tests", "case", "在哪", "搜索", "上网", "网上", "查一下", "搜一下", "read", "read_text_file", "search_file",
+        "search_text_in_file", "search_file_multi", "multi_query_search", "read_section", "read_section_by_heading",
+        "table_extract", "fact_check_file", "search_codebase", "apply_patch", "写入", "替换", "更新", "改成", "改为",
+        "保存", "落盘", "apply", "patch", "write back", "overwrite", "replace", "update", "exec_command",
+        "run_shell", "web_search", "search_web", "web_fetch", "fetch_web", "web_download", "download_web_file", ".pdf",
         ".doc", ".docx", ".ppt", ".pptx", ".xlsx", ".csv", ".zip", ".msg", "页码", "定位", "命中", "查证", "核对",
         "according to", "citation", "github", "git clone", "clone repo", "读取仓库", "仓库内容",
         "进化", "模块进化", "自我更新", "自我升级", "自我修复", "热插拔", "升级", "upgrade",

@@ -1,8 +1,10 @@
 const ReactRuntime = window.React;
 const ReactDomRuntime = window.ReactDOM;
 const htmRuntime = window.htm;
+const markedRuntime = window.marked;
+const DOMPurifyRuntime = window.DOMPurify;
 
-if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
+if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPurifyRuntime) {
   const root = document.getElementById("root");
   if (root) {
     root.innerHTML = `
@@ -17,6 +19,13 @@ if (!ReactRuntime || !ReactDomRuntime || !htmRuntime) {
 const { useEffect, useMemo, useRef, useState } = ReactRuntime;
 const { createRoot } = ReactDomRuntime;
 const html = htmRuntime.bind(ReactRuntime.createElement);
+
+if (typeof markedRuntime.setOptions === "function") {
+  markedRuntime.setOptions({
+    gfm: true,
+    breaks: true,
+  });
+}
 
 const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
 const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
@@ -35,6 +44,7 @@ const DEFAULT_SETTINGS = {
   max_output_tokens: 128000,
   max_context_turns: 2000,
   enable_tools: true,
+  collaboration_mode: "default",
   response_style: "normal",
 };
 
@@ -92,6 +102,56 @@ function pushLogWithLimit(setter, type, text) {
   setter((prev) => [createLog(type, text), ...prev].slice(0, 32));
 }
 
+function dragEventHasFiles(event) {
+  const transfer = event && event.dataTransfer;
+  if (!transfer) return false;
+  if (transfer.files && transfer.files.length) return true;
+  const types = Array.from(transfer.types || []);
+  return types.includes("Files");
+}
+
+function clipboardEventFiles(event) {
+  const transfer = event && event.clipboardData;
+  if (!transfer) return [];
+  const directFiles = Array.from(transfer.files || []).filter(Boolean);
+  if (directFiles.length) return directFiles;
+  return Array.from(transfer.items || [])
+    .filter((item) => item && item.kind === "file")
+    .map((item) => (typeof item.getAsFile === "function" ? item.getAsFile() : null))
+    .filter(Boolean);
+}
+
+function extensionFromMime(mime) {
+  const normalized = String(mime || "").trim().toLowerCase();
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/heic") return "heic";
+  if (normalized === "image/heif") return "heif";
+  if (normalized === "application/pdf") return "pdf";
+  return "bin";
+}
+
+function ensureNamedUploadFile(file, index = 0) {
+  if (!file) return file;
+  const normalizedName = String(file.name || "").trim();
+  if (normalizedName) return file;
+  const mime = String(file.type || "application/octet-stream").trim() || "application/octet-stream";
+  const ext = extensionFromMime(mime);
+  const stamp = new Date().toISOString().replaceAll(":", "").replaceAll(".", "").replace("T", "_").replace("Z", "");
+  const generatedName = `pasted-${stamp}-${index + 1}.${ext}`;
+  try {
+    return new File([file], generatedName, {
+      type: mime,
+      lastModified: Date.now(),
+    });
+  } catch {
+    file.name = generatedName;
+    return file;
+  }
+}
+
 function formatTime(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
@@ -146,6 +206,33 @@ function compactPath(path) {
   if (!text) return "";
   if (text.length <= 64) return text;
   return `${text.slice(0, 24)} … ${text.slice(-32)}`;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderMessageHtml(text) {
+  const raw = String(text || "");
+  if (!raw) return "";
+  if (!markedRuntime || typeof markedRuntime.parse !== "function" || !DOMPurifyRuntime || typeof DOMPurifyRuntime.sanitize !== "function") {
+    return escapeHtml(raw).replaceAll("\n", "<br />");
+  }
+  try {
+    const rendered = markedRuntime.parse(raw);
+    return DOMPurifyRuntime.sanitize(rendered, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select"],
+      FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
+    });
+  } catch {
+    return escapeHtml(raw).replaceAll("\n", "<br />");
+  }
 }
 
 function stringifyErrorDetail(detail) {
@@ -296,6 +383,41 @@ function groupTools(tools) {
   return grouped;
 }
 
+function stringifyCompactJson(value) {
+  if (!value || typeof value !== "object") return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function mergeRunSnapshot(prev, snapshot) {
+  const next = snapshot && typeof snapshot === "object" ? snapshot : {};
+  return {
+    ...prev,
+    ...next,
+    current_task_focus:
+      next.current_task_focus && typeof next.current_task_focus === "object"
+        ? next.current_task_focus
+        : (prev.current_task_focus || {}),
+    plan: Array.isArray(next.plan) ? next.plan : (Array.isArray(prev.plan) ? prev.plan : []),
+    pending_user_input:
+      next.pending_user_input && typeof next.pending_user_input === "object"
+        ? next.pending_user_input
+        : (prev.pending_user_input || {}),
+  };
+}
+
+function toolTimelineSummary(item) {
+  if (!item || typeof item !== "object") return "无摘要";
+  const base = String(item.summary || item.output_preview || "无摘要").trim();
+  const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
+  const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
+  if (visibleText) return `${base} · ${visibleText}`;
+  return base || "无摘要";
+}
+
 function starterPromptChips(setDraft, handleSend) {
   return STARTER_PROMPTS.map((text) =>
     html`
@@ -327,6 +449,7 @@ function App() {
   const [loadingSession, setLoadingSession] = useState(false);
   const [drawerView, setDrawerView] = useState("");
   const [logs, setLogs] = useState([]);
+  const [liveRunLogs, setLiveRunLogs] = useState([]);
   const [lastResponse, setLastResponse] = useState(null);
   const [pendingUploads, setPendingUploads] = useState([]);
   const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
@@ -334,7 +457,12 @@ function App() {
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
   const [toolTimeline, setToolTimeline] = useState([]);
+  const [liveTurnState, setLiveTurnState] = useState({});
+  const [liveEvidence, setLiveEvidence] = useState({});
+  const [liveToolTimeline, setLiveToolTimeline] = useState([]);
   const [stageTimeline, setStageTimeline] = useState([]);
+  const [activeRunId, setActiveRunId] = useState("");
+  const [stoppingRun, setStoppingRun] = useState(false);
   const [workbenchTools, setWorkbenchTools] = useState([]);
   const [skills, setSkills] = useState([]);
   const [selectedSkillId, setSelectedSkillId] = useState("");
@@ -349,9 +477,11 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [composerDragActive, setComposerDragActive] = useState(false);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const bootReadyRef = useRef(false);
+  const composerDragDepthRef = useRef(0);
   const providerOptions = useMemo(
     () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
     [health],
@@ -722,6 +852,10 @@ function App() {
     setLastResponse(null);
     setSessionAgentState({});
     setToolTimeline([]);
+    setLiveToolTimeline([]);
+    setLiveTurnState({});
+    setLiveEvidence({});
+    setLiveRunLogs([]);
     setStageTimeline([]);
     clearUiError();
     await refreshSessions(resolvedProjectId || targetProjectId);
@@ -746,6 +880,10 @@ function App() {
       }
       setLastResponse(null);
       setToolTimeline([]);
+      setLiveToolTimeline([]);
+      setLiveTurnState({});
+      setLiveEvidence({});
+      setLiveRunLogs([]);
       setStageTimeline([]);
       clearUiError();
       pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
@@ -771,32 +909,103 @@ function App() {
 
   async function uploadFiles(files) {
     const uploaded = [];
-    for (const file of files) {
+    for (const [index, rawFile] of Array.from(files || []).entries()) {
+      const file = ensureNamedUploadFile(rawFile, index);
       const form = new FormData();
-      form.append("file", file);
+      const fileName = String((file && file.name) || "").trim() || `upload-${Date.now()}-${index + 1}.bin`;
+      form.append("file", file, fileName);
       uploaded.push(await fetchJson("/api/upload", { method: "POST", body: form }));
     }
     return uploaded;
+  }
+
+  async function processSelectedFiles(files, options = {}) {
+    const nextFiles = Array.from(files || []);
+    if (!nextFiles.length) return;
+    try {
+      const uploaded = await uploadFiles(nextFiles);
+      clearUiError();
+      setPendingUploads((prev) => [...prev, ...uploaded]);
+      const sourceLabel = String(options.source || "").trim();
+      const actionLabel = sourceLabel === "paste" ? "已粘贴" : "已添加";
+      pushLogWithLimit(setLogs, "system", `${actionLabel} ${uploaded.length} 个附件`);
+    } catch (err) {
+      const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
+    }
   }
 
   async function handleSelectFiles(event) {
     const files = Array.from(event.currentTarget.files || []);
     if (!files.length) return;
     try {
-      const uploaded = await uploadFiles(files);
-      clearUiError();
-      setPendingUploads((prev) => [...prev, ...uploaded]);
-      pushLogWithLimit(setLogs, "system", `已添加 ${uploaded.length} 个附件`);
-    } catch (err) {
-      const nextError = applyUiError(err, "附件上传失败，请稍后重试。");
-      pushLogWithLimit(setLogs, "error", `附件上传失败：${nextError.summary}`);
+      await processSelectedFiles(files);
     } finally {
       event.currentTarget.value = "";
     }
   }
 
+  function handleComposerDragEnter(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current += 1;
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragOver(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    if (!composerDragActive) setComposerDragActive(true);
+  }
+
+  function handleComposerDragLeave(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current = Math.max(0, composerDragDepthRef.current - 1);
+    if (composerDragDepthRef.current === 0) {
+      setComposerDragActive(false);
+    }
+  }
+
+  async function handleComposerDrop(event) {
+    if (!dragEventHasFiles(event)) return;
+    event.preventDefault();
+    composerDragDepthRef.current = 0;
+    setComposerDragActive(false);
+    const files = Array.from((event.dataTransfer && event.dataTransfer.files) || []);
+    if (!files.length) return;
+    await processSelectedFiles(files);
+  }
+
+  async function handleComposerPaste(event) {
+    const files = clipboardEventFiles(event);
+    if (!files.length) return;
+    event.preventDefault();
+    await processSelectedFiles(files, { source: "paste" });
+  }
+
   function removeUpload(fileId) {
     setPendingUploads((prev) => prev.filter((item) => item.id !== fileId));
+  }
+
+  async function handleStopRun() {
+    const runId = String(activeRunId || "").trim();
+    if (!runId || !sending || stoppingRun) return;
+    setStoppingRun(true);
+    try {
+      const payload = await fetchJson(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+      });
+      const detail = Boolean(payload.cancelled)
+        ? "已请求停止当前运行。"
+        : "当前没有可停止的运行。";
+      pushLogWithLimit(setLogs, "system", detail);
+    } catch (err) {
+      const nextError = applyUiError(err, "停止运行失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `停止运行失败：${nextError.summary}`);
+      setStoppingRun(false);
+    }
   }
 
   async function handleSend(overrideText) {
@@ -804,8 +1013,14 @@ function App() {
     if (!messageText || sending) return;
 
     setSending(true);
+    setStoppingRun(false);
+    setActiveRunId("");
     clearUiError();
     setToolTimeline([]);
+    setLiveToolTimeline([]);
+    setLiveTurnState({});
+    setLiveEvidence({});
+    setLiveRunLogs([]);
     setStageTimeline([]);
 
     let sid = sessionId;
@@ -816,6 +1031,15 @@ function App() {
       const userMessage = createMessage("user", messageText);
       pendingMessage = createMessage("assistant", "正在准备上下文...", { pending: true });
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
+      setLiveTurnState({
+        goal: messageText,
+        collaboration_mode: chatSettings.collaboration_mode || "default",
+        turn_status: "running",
+        current_task_focus: {},
+        plan: [],
+        pending_user_input: {},
+      });
+      setLiveEvidence({ status: "not_needed" });
       if (overrideText == null) setDraft("");
 
       const res = await fetch("/api/chat/stream", {
@@ -825,6 +1049,7 @@ function App() {
           session_id: sid,
           project_id: projectId,
           message: messageText,
+          mode_override: chatSettings.collaboration_mode,
           attachment_ids: pendingUploads.map((item) => item.id),
           settings: {
             ...chatSettings,
@@ -867,6 +1092,19 @@ function App() {
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
         );
       };
+      const pushLiveLog = (type, text) => {
+        setLiveRunLogs((prev) => [createLog(type, text), ...prev].slice(0, 32));
+      };
+      const applySnapshot = (snapshot) => {
+        if (!snapshot || typeof snapshot !== "object") return;
+        setLiveTurnState((prev) => mergeRunSnapshot(prev, snapshot));
+        if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
+          setLiveEvidence((prev) => ({
+            ...prev,
+            status: String(snapshot.evidence_status || prev.status || "not_needed"),
+          }));
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -878,29 +1116,61 @@ function App() {
           const parsed = parseSseChunk(chunk);
           if (parsed) {
             const { event, payload } = parsed;
+            if (payload && payload.run_id) {
+              setActiveRunId(String(payload.run_id || ""));
+            }
+            if (payload && payload.run_snapshot) {
+              applySnapshot(payload.run_snapshot);
+            }
             if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || "处理中...");
               replacePendingText(detail);
-              setStageTimeline((prev) => [
-                {
-                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                  phase: String(payload.phase || payload.code || ""),
-                  label: String(payload.label || payload.phase || payload.code || "stage"),
-                  status: String(payload.status || "running"),
-                  detail,
-                },
-                ...prev,
-              ].slice(0, 20));
               pushLogWithLimit(setLogs, "stage", detail);
+              pushLiveLog("stage", detail);
             } else if (event === "trace") {
               const detail = String(payload.message || payload.raw || "");
-              if (detail) pushLogWithLimit(setLogs, "trace", detail);
+              if (detail) {
+                pushLogWithLimit(setLogs, "trace", detail);
+                pushLiveLog("trace", detail);
+              }
             } else if (event === "tool") {
               const item = payload.item || {};
               const name = String(item.name || "tool");
-              const summary = String(payload.summary || item.summary || item.output_preview || "工具调用");
+              const summary = toolTimelineSummary({ ...item, summary: payload.summary || item.summary || item.output_preview || "工具调用" });
               setToolTimeline((prev) => [item, ...prev].slice(0, 24));
+              setLiveToolTimeline((prev) => [item, ...prev].slice(0, 24));
               pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
+              pushLiveLog("tool", `${name}: ${summary}`);
+            } else if (event === "plan_update") {
+              setSessionAgentState((prev) => ({
+                ...prev,
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || prev.turn_status || "running"),
+                plan: Array.isArray(payload.plan) ? payload.plan : [],
+              }));
+              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || prev.turn_status || "running"),
+                plan: Array.isArray(payload.plan) ? payload.plan : [],
+              }));
+              pushLogWithLimit(setLogs, "system", String(payload.explanation || "checklist updated"));
+              pushLiveLog("system", String(payload.explanation || "checklist updated"));
+            } else if (event === "request_user_input") {
+              const nextPending = payload.pending_user_input || {};
+              setSessionAgentState((prev) => ({
+                ...prev,
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+              }));
+              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+              }));
+              replacePendingText(String(nextPending.summary || "需要你的输入后我再继续。"));
+              pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
+              pushLiveLog("system", String(nextPending.summary || "user input required"));
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
@@ -923,6 +1193,20 @@ function App() {
       setLastResponse(finalPayload);
       setPendingUploads([]);
       clearUiError();
+      setActiveRunId(String(finalPayload.run_id || ""));
+      setLiveTurnState((prev) => mergeRunSnapshot(prev, {
+        ...(((finalPayload.inspector || {}).run_state) || {}),
+        collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+        turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+        current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
+        plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
+        pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+      }));
+      setLiveEvidence((prev) => ({
+        ...prev,
+        ...(((finalPayload.inspector || {}).evidence) || {}),
+      }));
+      setLiveToolTimeline(Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : []);
       setSessionAgentState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
@@ -931,12 +1215,23 @@ function App() {
           agent_id: finalPayload.agent_id || "vintage_programmer",
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
+          collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+          turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+          plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
+          pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
+          current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
+          thread_memory: (((finalPayload.inspector || {}).run_state || {}).thread_memory) || (((finalPayload.inspector || {}).session || {}).thread_memory) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+          recent_tasks: Array.isArray(finalPayload.recent_tasks)
+            ? finalPayload.recent_tasks
+            : (((finalPayload.inspector || {}).session || {}).recent_tasks || []),
+          artifact_memory_preview: (((finalPayload.inspector || {}).session || {}).artifact_memory_preview) || [],
+          task_checkpoint: (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
             ? finalPayload.inspector.loaded_skills.map((item) => item.id)
             : [],
@@ -947,6 +1242,10 @@ function App() {
         "response",
         `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
       );
+      pushLiveLog(
+        "response",
+        `收到回复，工具 ${Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0} 次`,
+      );
       await Promise.all([refreshSessions(projectId), refreshHealth(), refreshWorkbenchTools(), refreshSkills(), refreshProjects()]);
     } catch (err) {
       const nextError = applyUiError(err, "请求失败，请稍后重试。");
@@ -954,6 +1253,8 @@ function App() {
       setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
     } finally {
       setSending(false);
+      setStoppingRun(false);
+      setActiveRunId("");
     }
   }
 
@@ -1075,11 +1376,35 @@ function App() {
       ? health.agent.loaded_skills
       : [];
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
-  const runState = lastInspector.run_state || {};
-  const evidence = lastInspector.evidence || {};
-  const activeToolTimeline = Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
-    ? lastInspector.tool_timeline
-    : toolTimeline;
+  const completedRunState = lastInspector.run_state || {};
+  const completedEvidence = lastInspector.evidence || {};
+  const hasLiveRunState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
+  const runState = hasLiveRunState ? liveTurnState : completedRunState;
+  const evidence = hasLiveRunState ? liveEvidence : completedEvidence;
+  const activeTaskCheckpoint =
+    (runState.current_task_focus && typeof runState.current_task_focus === "object")
+      ? runState.current_task_focus
+      : ((runState.task_checkpoint && typeof runState.task_checkpoint === "object")
+        ? runState.task_checkpoint
+        : ((sessionAgentState.current_task_focus && typeof sessionAgentState.current_task_focus === "object")
+          ? sessionAgentState.current_task_focus
+          : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
+  const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
+  const activeCollaborationMode = String(runState.collaboration_mode || sessionAgentState.collaboration_mode || chatSettings.collaboration_mode || "default");
+  const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
+  const activePlan = Array.isArray(runState.plan) && runState.plan.length
+    ? runState.plan
+    : (Array.isArray(sessionAgentState.plan) ? sessionAgentState.plan : []);
+  const activePendingInput =
+    (runState.pending_user_input && typeof runState.pending_user_input === "object")
+      ? runState.pending_user_input
+      : ((sessionAgentState.pending_user_input && typeof sessionAgentState.pending_user_input === "object") ? sessionAgentState.pending_user_input : {});
+  const activeToolTimeline = hasLiveRunState
+    ? liveToolTimeline
+    : (Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
+      ? lastInspector.tool_timeline
+      : toolTimeline);
+  const activeRunLogs = hasLiveRunState ? liveRunLogs : logs;
   const activeProviderAuthReady =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
       ? Boolean(activeProviderProfile.auth_ready)
@@ -1220,7 +1545,12 @@ function App() {
                       <span className="message-role">${roleLabel(item.role)}</span>
                       ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt)}</span>` : null}
                     </div>
-                    <div className="message-card">${item.text}</div>
+                    <div className="message-card">
+                      <div
+                        className="message-card-body message-markdown"
+                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text) }}
+                      ></div>
+                    </div>
                   </article>
                 `,
               )
@@ -1239,7 +1569,14 @@ function App() {
               `}
         </section>
 
-        <section className="composer-shell" id="composerShell">
+        <section
+          className=${`composer-shell ${composerDragActive ? "drag-active" : ""}`}
+          id="composerShell"
+          onDragEnter=${handleComposerDragEnter}
+          onDragOver=${handleComposerDragOver}
+          onDragLeave=${handleComposerDragLeave}
+          onDrop=${handleComposerDrop}
+        >
           ${pendingUploads.length
             ? html`
                 <div className="attachment-strip">
@@ -1300,7 +1637,16 @@ function App() {
               <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
               <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
             </div>
-            <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+            <div className="composer-toolbar-right">
+              ${sending && activeRunId
+                ? html`
+                    <button className="ghost-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
+                      ${stoppingRun ? "停止中" : "停止"}
+                    </button>
+                  `
+                : null}
+              <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+            </div>
           </div>
 
           <div className="composer-frame">
@@ -1308,6 +1654,7 @@ function App() {
               value=${draft}
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
+              onPaste=${handleComposerPaste}
               placeholder="给 Vintage Programmer 一个清晰任务。也可以直接贴代码、配置或长文本。Enter 发送，Shift+Enter 换行。"
               disabled=${sending}
             ></textarea>
@@ -1391,29 +1738,82 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">Run State</div>
                   <div className="meta-line">goal: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
-                  <div className="meta-line">phase: ${runState.phase || sessionAgentState.phase || "idle"}</div>
-                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
+                  <div className="meta-line">mode: ${activeCollaborationMode}</div>
+                  <div className="meta-line">turn_status: ${activeTurnStatus}</div>
                   <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
+                  <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
+                  <div className="meta-line">ocr: ${ocrStatus.default_engine || "unavailable"}</div>
+                  ${ocrStatus.warning ? html`<div className="timeline-detail">${ocrStatus.warning}</div>` : null}
                 </section>
 
                 <section className="panel-card">
-                  <div className="panel-title">Stage Timeline</div>
-                  <div className="timeline-list">
-                    ${stageTimeline.length
-                      ? stageTimeline.map(
-                          (item) => html`
-                            <div key=${item.id} className="timeline-row">
-                              <div className="timeline-head">
-                                <span>${item.label}</span>
-                                <span>${item.status}</span>
-                              </div>
-                              <div className="timeline-detail">${item.detail}</div>
-                            </div>
-                          `,
-                        )
-                      : html`<div className="empty-inline">本轮还没有阶段记录。</div>`}
-                  </div>
+                  <div className="panel-title">Current Focus</div>
+                  <div className="meta-line">task_id: ${activeTaskCheckpoint.task_id || "-"}</div>
+                  <div className="meta-line">goal: ${activeTaskCheckpoint.goal || runState.goal || sessionAgentState.goal || "-"}</div>
+                  <div className="meta-line">cwd: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
+                  <div className="meta-line">next_action: ${activeTaskCheckpoint.next_action || "-"}</div>
+                  ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
+                    ? html`
+                        <div className="timeline-detail">
+                          files: ${activeTaskCheckpoint.active_files.slice(0, 6).map((item) => compactPath(item)).join(" · ")}
+                        </div>
+                      `
+                    : null}
+                  ${Array.isArray(activeTaskCheckpoint.active_attachments) && activeTaskCheckpoint.active_attachments.length
+                    ? html`
+                        <div className="timeline-detail">
+                          attachments: ${activeTaskCheckpoint.active_attachments
+                            .slice(0, 6)
+                            .map((item) => item.name || compactPath(item.path || item.id || "attachment"))
+                            .join(" · ")}
+                        </div>
+                      `
+                    : null}
                 </section>
+
+                ${activePlan.length
+                  ? html`
+                      <section className="panel-card">
+                        <div className="panel-title">Checklist</div>
+                        <div className="timeline-list">
+                          ${activePlan.map(
+                            (item) => html`
+                              <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
+                                <div className="timeline-head">
+                                  <span>${item.step || "step"}</span>
+                                  <span>${item.status || "pending"}</span>
+                                </div>
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      </section>
+                    `
+                  : null}
+
+                ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
+                  ? html`
+                      <section className="panel-card">
+                        <div className="panel-title">Pending Input</div>
+                        <div className="timeline-list">
+                          ${activePendingInput.questions.map(
+                            (item) => html`
+                              <div key=${item.id || item.header || item.question} className="timeline-row">
+                                <div className="timeline-head">
+                                  <span>${item.header || item.id || "question"}</span>
+                                  <span>${(item.options || []).length} options</span>
+                                </div>
+                                <div className="timeline-detail">${item.question || ""}</div>
+                                <div className="timeline-detail">
+                                  ${(Array.isArray(item.options) ? item.options : []).map((option) => option.label).join(" / ")}
+                                </div>
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      </section>
+                    `
+                  : null}
 
                 <section className="panel-card">
                   <div className="panel-title">Recent Tools</div>
@@ -1426,7 +1826,15 @@ function App() {
                                 <span>${item.name || "tool"}</span>
                                 <span>${item.group || item.module_group || "tool"}</span>
                               </div>
-                              <div className="timeline-detail">${item.summary || item.output_preview || "无摘要"}</div>
+                              <div className="timeline-detail">${toolTimelineSummary(item)}</div>
+                              ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
+                                ? html`
+                                    <details className="timeline-details">
+                                      <summary>诊断</summary>
+                                      <pre>${stringifyCompactJson(item.diagnostics)}</pre>
+                                    </details>
+                                  `
+                                : null}
                             </div>
                           `,
                         )
@@ -1437,8 +1845,8 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">Logs</div>
                   <div className="timeline-list">
-                    ${logs.length
-                      ? logs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
+                    ${activeRunLogs.length
+                      ? activeRunLogs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
                       : html`<div className="empty-inline">暂无额外日志。</div>`}
                   </div>
                 </section>
@@ -1622,6 +2030,18 @@ function App() {
                       value=${chatSettings.model}
                       onInput=${(event) => updateModelSelection(event.currentTarget.value)}
                     />
+                  </label>
+                  <label className="form-field">
+                    <span>Collaboration Mode</span>
+                    <select
+                      className="drawer-input"
+                      value=${chatSettings.collaboration_mode}
+                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, collaboration_mode: event.currentTarget.value }))}
+                    >
+                      <option value="default">default</option>
+                      <option value="plan">plan</option>
+                      <option value="execute">execute</option>
+                    </select>
                   </label>
                   <label className="form-field">
                     <span>响应风格</span>

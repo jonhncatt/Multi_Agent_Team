@@ -15,42 +15,33 @@ SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 _TOOL_METADATA: dict[str, dict[str, Any]] = {
-    "run_shell": {"group": "workspace", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "list_directory": {"group": "workspace", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "search_codebase": {"group": "workspace", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "copy_file": {"group": "workspace", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "extract_zip": {"group": "workspace", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "extract_msg_attachments": {"group": "workspace", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "read_text_file": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "search_text_in_file": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "multi_query_search": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "doc_index_build": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "read_section_by_heading": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "table_extract": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "fact_check_file": {"group": "files", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "view_image": {"group": "images", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "write_text_file": {"group": "patch", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "append_text_file": {"group": "patch", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "replace_in_file": {"group": "patch", "source": "legacy_retained", "read_only": False, "requires_evidence": False},
-    "apply_patch": {"group": "patch", "source": "openclaw_adapted", "read_only": False, "requires_evidence": False},
-    "fetch_web": {"group": "web", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "download_web_file": {"group": "web", "source": "legacy_retained", "read_only": False, "requires_evidence": True},
-    "search_web": {"group": "web", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "browser_open": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "browser_click": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "browser_type": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "browser_wait": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "browser_snapshot": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "browser_screenshot": {"group": "browser", "source": "openclaw_adapted", "read_only": True, "requires_evidence": True},
-    "list_sessions": {"group": "session", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "read_session_history": {"group": "session", "source": "legacy_retained", "read_only": True, "requires_evidence": True},
-    "list_skills": {"group": "skills", "source": "openclaw_adapted", "read_only": True, "requires_evidence": False},
-    "read_skill": {"group": "skills", "source": "openclaw_adapted", "read_only": True, "requires_evidence": False},
-    "write_skill": {"group": "skills", "source": "openclaw_adapted", "read_only": False, "requires_evidence": False},
-    "toggle_skill": {"group": "skills", "source": "openclaw_adapted", "read_only": False, "requires_evidence": False},
-    "list_agent_specs": {"group": "agent_specs", "source": "openclaw_adapted", "read_only": True, "requires_evidence": False},
-    "read_agent_spec": {"group": "agent_specs", "source": "openclaw_adapted", "read_only": True, "requires_evidence": False},
-    "write_agent_spec": {"group": "agent_specs", "source": "openclaw_adapted", "read_only": False, "requires_evidence": False},
+    "exec_command": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+    "write_stdin": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+    "apply_patch": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+    "update_plan": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
+    "request_user_input": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
+    "read": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "search_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "search_file_multi": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "read_section": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "table_extract": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "fact_check_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "search_codebase": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "web_search": {"group": "web_context", "source": "local_hosted", "read_only": True, "requires_evidence": True},
+    "web_fetch": {"group": "web_context", "source": "local_hosted", "read_only": True, "requires_evidence": True},
+    "web_download": {"group": "web_context", "source": "local_specialized", "read_only": False, "requires_evidence": True},
+    "sessions_list": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "sessions_history": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "image_inspect": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "image_read": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+    "archive_extract": {"group": "content_unpack", "source": "local_specialized", "read_only": False, "requires_evidence": False},
+    "mail_extract_attachments": {"group": "content_unpack", "source": "local_specialized", "read_only": False, "requires_evidence": False},
+    "browser_open": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+    "browser_click": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+    "browser_type": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+    "browser_wait": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+    "browser_snapshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+    "browser_screenshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
 }
 
 
@@ -76,6 +67,16 @@ def dump_frontmatter(meta: dict[str, Any], body: str) -> str:
 
 
 def build_tool_descriptors(tool_specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    group_order = {
+        "codex_core": 0,
+        "fs_content": 1,
+        "web_context": 2,
+        "session_context": 3,
+        "media_context": 4,
+        "content_unpack": 5,
+        "browser_fallback": 6,
+        "other": 9,
+    }
     out: list[dict[str, Any]] = []
     for item in tool_specs:
         if not isinstance(item, dict):
@@ -95,7 +96,7 @@ def build_tool_descriptors(tool_specs: list[dict[str, Any]]) -> list[dict[str, A
                 "summary": str(item.get("description") or "").strip(),
             }
         )
-    out.sort(key=lambda row: (str(row.get("group") or ""), str(row.get("name") or "")))
+    out.sort(key=lambda row: (group_order.get(str(row.get("group") or ""), 5), str(row.get("group") or ""), str(row.get("name") or "")))
     return out
 
 

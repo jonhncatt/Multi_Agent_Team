@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable
 
 from packages.runtime_core.capability_loader import ToolModule
@@ -99,17 +100,37 @@ class ToolExecutionBus:
         project_id: str | None = None,
         project_root: str | None = None,
         cwd: str | None = None,
+        model: str | None = None,
     ) -> None:
         for executor in self._unique_executors:
             setter = getattr(executor, "set_runtime_context", None)
             if callable(setter):
-                setter(
-                    execution_mode=execution_mode,
-                    session_id=session_id,
-                    project_id=project_id,
-                    project_root=project_root,
-                    cwd=cwd,
-                )
+                kwargs = {
+                    "execution_mode": execution_mode,
+                    "session_id": session_id,
+                    "project_id": project_id,
+                    "project_root": project_root,
+                    "cwd": cwd,
+                }
+                if self._callable_accepts_kwarg(setter, "model"):
+                    kwargs["model"] = model
+                setter(**kwargs)
+
+    @staticmethod
+    def _callable_accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
+        try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return False
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+            if parameter.name == name and parameter.kind in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }:
+                return True
+        return False
 
     def clear_runtime_context(self) -> None:
         for executor in self._unique_executors:

@@ -20,7 +20,7 @@ def create_office_legacy_surface(
     tool_executor: Any | None = None,
     host: Any | None = None,
     selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "workspace_tools",
+    selected_tool_module_id: str = "codex_core_tools",
 ) -> OfficeLegacyHelperSurface:
     return LegacyOfficeHelperAdapter(
         create_office_runtime_backend(
@@ -43,7 +43,7 @@ def create_office_runtime(
     tool_executor: Any | None = None,
     host: Any | None = None,
     selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "workspace_tools",
+    selected_tool_module_id: str = "codex_core_tools",
 ) -> OfficeExecutionRuntime:
     legacy_surface = create_office_legacy_surface(
         config,
@@ -65,7 +65,7 @@ def create_office_agent(
     tool_executor: Any | None = None,
     host: Any | None = None,
     selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "workspace_tools",
+    selected_tool_module_id: str = "codex_core_tools",
 ) -> OfficeLegacyHelperSurface:
     return create_office_legacy_surface(
         config,
@@ -93,7 +93,7 @@ def _build_office_agent_runtime(
         tool_executor=tool_executor,
         host=host,
         selected_agent_module_id="office_agent",
-        selected_tool_module_id="workspace_tools",
+        selected_tool_module_id="codex_core_tools",
     )
 
 
