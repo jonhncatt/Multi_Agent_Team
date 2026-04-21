@@ -150,6 +150,28 @@ class ContextMeter(BaseModel):
     warning: str = ""
 
 
+class CompactionStatus(BaseModel):
+    enabled: bool = False
+    mode: str = ""
+    replacement_history_mode: bool = False
+    generation: int = 0
+    compacted_history_present: bool = False
+    compacted_history_chars: int = 0
+    compacted_until_turn_id: str = ""
+    retained_turn_ids: list[str] = Field(default_factory=list)
+    retained_turn_count: int = 0
+    estimated_context_tokens: int = 0
+    estimated_payload_tokens: int = 0
+    effective_context_window: int = 0
+    auto_compact_token_limit: int = 0
+    threshold_source: str = ""
+    context_window_known: bool = False
+    last_compacted_at: str = ""
+    last_compaction_reason: str = ""
+    last_compaction_phase: str = ""
+    warning: str = ""
+
+
 class ChatResponse(BaseModel):
     session_id: str
     thread_id: str | None = None
@@ -174,6 +196,7 @@ class ChatResponse(BaseModel):
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
     recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
@@ -233,6 +256,7 @@ class SessionDetailResponse(BaseModel):
     cwd: str = ""
     agent_state: dict[str, object] = Field(default_factory=dict)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
@@ -366,6 +390,7 @@ class HealthResponse(BaseModel):
     runtime_status: dict[str, object] = Field(default_factory=dict)
     ocr_status: dict[str, object] = Field(default_factory=dict)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     agent: dict[str, object] = Field(default_factory=dict)
 
 

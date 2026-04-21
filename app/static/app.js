@@ -205,6 +205,31 @@ function normalizeContextMeter(raw) {
   };
 }
 
+function normalizeCompactionStatus(raw) {
+  const status = raw && typeof raw === "object" ? raw : {};
+  return {
+    enabled: Boolean(status.enabled),
+    mode: String(status.mode || "").trim(),
+    replacement_history_mode: Boolean(status.replacement_history_mode),
+    generation: Math.max(0, Number(status.generation || 0) || 0),
+    compacted_history_present: Boolean(status.compacted_history_present),
+    compacted_history_chars: Math.max(0, Number(status.compacted_history_chars || 0) || 0),
+    compacted_until_turn_id: String(status.compacted_until_turn_id || "").trim(),
+    retained_turn_ids: Array.isArray(status.retained_turn_ids) ? status.retained_turn_ids : [],
+    retained_turn_count: Math.max(0, Number(status.retained_turn_count || 0) || 0),
+    estimated_context_tokens: Math.max(0, Number(status.estimated_context_tokens || 0) || 0),
+    estimated_payload_tokens: Math.max(0, Number(status.estimated_payload_tokens || 0) || 0),
+    effective_context_window: Math.max(0, Number(status.effective_context_window || 0) || 0),
+    auto_compact_token_limit: Math.max(0, Number(status.auto_compact_token_limit || 0) || 0),
+    threshold_source: String(status.threshold_source || "").trim(),
+    context_window_known: Boolean(status.context_window_known),
+    last_compacted_at: String(status.last_compacted_at || "").trim(),
+    last_compaction_reason: String(status.last_compaction_reason || "").trim(),
+    last_compaction_phase: String(status.last_compaction_phase || "").trim(),
+    warning: String(status.warning || "").trim(),
+  };
+}
+
 function resolveContextMeterColor(meter) {
   const usedRatio = Number((meter && meter.used_ratio) || 0);
   if (usedRatio >= 0.92) return "var(--danger)";
@@ -526,11 +551,14 @@ function App() {
   const [savingProject, setSavingProject] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
+  const [threadMenu, setThreadMenu] = useState(null);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const contextMeterRef = useRef(null);
   const bootReadyRef = useRef(false);
   const composerDragDepthRef = useRef(0);
+  const threadMenuRef = useRef(null);
+  const threadLongPressRef = useRef({ timer: null, consumed: false });
   const providerOptions = useMemo(
     () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
     [health],
@@ -580,6 +608,25 @@ function App() {
     }
     window.localStorage.setItem(storageKey, sessionId);
   }, [projectId, sessionId]);
+
+  useEffect(() => {
+    if (!threadMenu) return undefined;
+    const closeMenu = () => setThreadMenu(null);
+    const handlePointerDown = (event) => {
+      const node = threadMenuRef.current;
+      if (node && node.contains(event.target)) return;
+      closeMenu();
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [threadMenu]);
 
   useEffect(() => {
     if (!health) return;
@@ -753,6 +800,74 @@ function App() {
     }
   }
 
+  function clearLiveRunUi() {
+    setLastResponse(null);
+    setToolTimeline([]);
+    setLiveToolTimeline([]);
+    setLiveTurnState({});
+    setLiveEvidence({});
+    setLiveRunLogs([]);
+    setStageTimeline([]);
+    setActiveRunId("");
+    setStoppingRun(false);
+    setContextMeterOpen(false);
+  }
+
+  function closeThreadMenu() {
+    setThreadMenu(null);
+  }
+
+  function cancelThreadLongPress() {
+    const current = threadLongPressRef.current;
+    if (current && current.timer) {
+      window.clearTimeout(current.timer);
+    }
+    threadLongPressRef.current = { timer: null, consumed: Boolean(current && current.consumed) };
+  }
+
+  function openThreadMenuAt(position, item) {
+    if (!item || loadingSession || sending) return;
+    setThreadMenu({
+      sessionId: String(item.session_id || ""),
+      title: String(item.title || "新线程"),
+      x: Math.max(12, Number((position && position.x) || 0) || 0),
+      y: Math.max(12, Number((position && position.y) || 0) || 0),
+    });
+  }
+
+  function handleThreadContextMenu(event, item) {
+    event.preventDefault();
+    openThreadMenuAt({ x: event.clientX, y: event.clientY }, item);
+  }
+
+  function handleThreadTouchStart(event, item) {
+    if (loadingSession || sending) return;
+    cancelThreadLongPress();
+    const touch = (event.touches && event.touches[0]) || null;
+    threadLongPressRef.current = {
+      consumed: false,
+      timer: window.setTimeout(() => {
+        threadLongPressRef.current = { timer: null, consumed: true };
+        openThreadMenuAt(
+          {
+            x: touch ? touch.clientX : 24,
+            y: touch ? touch.clientY : 24,
+          },
+          item,
+        );
+      }, 480),
+    };
+  }
+
+  function handleThreadClick(event, targetSessionId) {
+    if (threadLongPressRef.current && threadLongPressRef.current.consumed) {
+      threadLongPressRef.current = { timer: null, consumed: false };
+      event.preventDefault();
+      return;
+    }
+    loadSession(targetSessionId);
+  }
+
   async function refreshProjects() {
     try {
       const data = await fetchJson("/api/projects");
@@ -788,11 +903,11 @@ function App() {
     setProjectId(targetProjectId);
     setSessionId("");
     setMessages([]);
-    setLastResponse(null);
     setSessionAgentState({});
-    setToolTimeline([]);
+    clearLiveRunUi();
     setStageTimeline([]);
     setMobileThreadsOpen(false);
+    closeThreadMenu();
     clearUiError();
     const list = await refreshSessions(targetProjectId);
     const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
@@ -907,16 +1022,10 @@ function App() {
     if (resolvedProjectId) setProjectId(resolvedProjectId);
     setSessionId(sid);
     setMessages([]);
-    setLastResponse(null);
     setSessionAgentState({});
-    setToolTimeline([]);
-    setLiveToolTimeline([]);
-    setLiveTurnState({});
-    setLiveEvidence({});
-    setLiveRunLogs([]);
-    setStageTimeline([]);
-    setContextMeterOpen(false);
+    clearLiveRunUi();
     clearUiError();
+    closeThreadMenu();
     await refreshSessions(resolvedProjectId || targetProjectId);
     pushLogWithLimit(setLogs, "system", `已创建新线程 ${sid.slice(0, 8)}`);
     return sid;
@@ -937,14 +1046,8 @@ function App() {
       } else if (options.projectIdOverride) {
         setProjectId(String(options.projectIdOverride || ""));
       }
-      setLastResponse(null);
-      setToolTimeline([]);
-      setLiveToolTimeline([]);
-      setLiveTurnState({});
-      setLiveEvidence({});
-      setLiveRunLogs([]);
-      setStageTimeline([]);
-      setContextMeterOpen(false);
+      clearLiveRunUi();
+      closeThreadMenu();
       clearUiError();
       pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
       return true;
@@ -964,6 +1067,53 @@ function App() {
     } catch (err) {
       const nextError = applyUiError(err, "新线程创建失败，请稍后重试。");
       pushLogWithLimit(setLogs, "error", `新线程失败：${nextError.summary}`);
+    }
+  }
+
+  async function handleDeleteSession(targetSessionId) {
+    const sid = String(targetSessionId || "").trim();
+    if (!sid || loadingSession || sending) return;
+    const item = sessions.find((entry) => String(entry.session_id || "") === sid) || null;
+    const title = String((item && item.title) || "新线程").trim() || "新线程";
+    if (!window.confirm(`删除线程“${title}”？此操作不可恢复。`)) {
+      closeThreadMenu();
+      return;
+    }
+    try {
+      await fetchJson(`/api/session/${encodeURIComponent(sid)}`, { method: "DELETE" });
+      closeThreadMenu();
+      const list = await refreshSessions(projectId);
+      const storageKey = sessionStorageKeyForProject(projectId);
+      const remaining = list.filter((entry) => String(entry.session_id || "") !== sid);
+      if (sid === sessionId) {
+        if (remaining.length) {
+          const nextId = String(remaining[0].session_id || "").trim();
+          if (nextId) {
+            window.localStorage.setItem(storageKey, nextId);
+            await loadSession(nextId, { projectIdOverride: projectId });
+          }
+        } else {
+          window.localStorage.removeItem(storageKey);
+          setSessionId("");
+          setMessages([]);
+          setSessionAgentState({});
+          clearLiveRunUi();
+        }
+      } else {
+        const stored = window.localStorage.getItem(storageKey) || "";
+        if (stored === sid) {
+          if (remaining.length) {
+            window.localStorage.setItem(storageKey, String(remaining[0].session_id || ""));
+          } else {
+            window.localStorage.removeItem(storageKey);
+          }
+        }
+      }
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", `已删除线程 ${sid.slice(0, 8)}`);
+    } catch (err) {
+      const nextError = applyUiError(err, "删除线程失败，请稍后重试。");
+      pushLogWithLimit(setLogs, "error", `删除线程失败：${nextError.summary}`);
     }
   }
 
@@ -1492,6 +1642,13 @@ function App() {
     (health && health.context_meter) ||
     {},
   );
+  const activeCompactionStatus = normalizeCompactionStatus(
+    (runState && runState.compaction_status) ||
+    (lastResponse && lastResponse.compaction_status) ||
+    (sessionAgentState && sessionAgentState.compaction_status) ||
+    (health && health.compaction_status) ||
+    {},
+  );
   const contextMeterColor = resolveContextMeterColor(activeContextMeter);
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
@@ -1559,24 +1716,42 @@ function App() {
             <span className="section-meta">${workspaceLabel || "-"}</span>
           </div>
           <div className="thread-list">
-            ${sessions.length
-              ? sessions.map(
-                  (item) => html`
-                    <button
-                      key=${item.session_id}
-                      className=${`thread-row ${item.session_id === sessionId ? "active" : ""}`}
-                      type="button"
-                      onClick=${() => loadSession(item.session_id)}
-                      disabled=${loadingSession || sending}
-                    >
-                      <div className="thread-row-title">${item.title || "新线程"}</div>
-                      <div className="thread-row-meta">${formatTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
-                    </button>
+                ${sessions.length
+                  ? sessions.map(
+                      (item) => html`
+                        <button
+                          key=${item.session_id}
+                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""}`}
+                          type="button"
+                          onClick=${(event) => handleThreadClick(event, item.session_id)}
+                          onContextMenu=${(event) => handleThreadContextMenu(event, item)}
+                          onTouchStart=${(event) => handleThreadTouchStart(event, item)}
+                          onTouchEnd=${cancelThreadLongPress}
+                          onTouchMove=${cancelThreadLongPress}
+                          onTouchCancel=${cancelThreadLongPress}
+                          disabled=${loadingSession || sending}
+                        >
+                          <div className="thread-row-title">${item.title || "新线程"}</div>
+                          <div className="thread-row-meta">${formatTime(item.updated_at)} · ${item.turn_count || 0} 轮</div>
+                        </button>
                   `,
                 )
               : html`<div className="thread-empty">${workspaceLabel ? `项目 ${workspaceLabel} 还没有线程。` : "先选择一个项目。"}</div>`}
           </div>
         </section>
+        ${threadMenu
+          ? html`
+              <div
+                className="thread-context-menu"
+                ref=${threadMenuRef}
+                style=${{ left: `${threadMenu.x}px`, top: `${threadMenu.y}px` }}
+              >
+                <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteSession(threadMenu.sessionId)}>
+                  删除线程
+                </button>
+              </div>
+            `
+          : null}
       </aside>
 
       <main className="workspace-main" id="chatPane">
@@ -1788,6 +1963,14 @@ function App() {
                               </div>
                             `
                           : null}
+                        ${activeCompactionStatus.generation
+                          ? html`
+                              <div className="context-meter-line subtle">
+                                replacement history · generation ${activeCompactionStatus.generation}
+                                ${activeCompactionStatus.last_compaction_phase ? ` · ${activeCompactionStatus.last_compaction_phase}` : ""}
+                              </div>
+                            `
+                          : null}
                         <div className="context-meter-line strong">达到阈值后自动压缩旧背景信息</div>
                         ${activeContextMeter.warning
                           ? html`<div className="context-meter-line subtle">${activeContextMeter.warning}</div>`
@@ -1872,7 +2055,26 @@ function App() {
                   <div className="meta-line">evidence: ${evidence.status || sessionAgentState.evidence_status || "not_needed"}</div>
                   <div className="meta-line">inline_document: ${String(Boolean(runState.inline_document))}</div>
                   <div className="meta-line">ocr: ${ocrStatus.default_engine || "unavailable"}</div>
+                  <div className="meta-line">
+                    compaction: ${activeCompactionStatus.mode || "token_budget"}
+                    ${activeCompactionStatus.last_compaction_phase ? ` · ${activeCompactionStatus.last_compaction_phase}` : ""}
+                  </div>
+                  <div className="meta-line">
+                    context: ${formatTokenCount(activeCompactionStatus.estimated_context_tokens || activeContextMeter.estimated_tokens)}
+                    /
+                    ${formatTokenCount(activeCompactionStatus.auto_compact_token_limit || activeContextMeter.auto_compact_token_limit)}
+                  </div>
+                  <div className="meta-line">
+                    generation: ${activeCompactionStatus.generation || 0}
+                    · retained_turns: ${activeCompactionStatus.retained_turn_count || 0}
+                  </div>
                   ${ocrStatus.warning ? html`<div className="timeline-detail">${ocrStatus.warning}</div>` : null}
+                  ${activeCompactionStatus.last_compaction_reason
+                    ? html`<div className="timeline-detail">${activeCompactionStatus.last_compaction_reason}</div>`
+                    : null}
+                  ${activeCompactionStatus.warning
+                    ? html`<div className="timeline-detail">${activeCompactionStatus.warning}</div>`
+                    : null}
                 </section>
 
                 <section className="panel-card">

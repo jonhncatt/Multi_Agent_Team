@@ -19,7 +19,13 @@ from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
-from app.context_meter import build_context_meter
+from app.context_meter import (
+    build_compaction_status,
+    build_context_meter,
+    build_runtime_context_payload,
+    ensure_compaction_state,
+    maybe_auto_compact_session,
+)
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
@@ -361,10 +367,31 @@ def _resolve_requested_provider(req: ChatRequest) -> str:
 
 
 def _session_last_compacted_at(session: dict[str, Any] | None) -> str:
+    compaction_state = ensure_compaction_state(session or {})
+    compacted_at = str(compaction_state.get("last_compacted_at") or "").strip()
+    if compacted_at:
+        return compacted_at
     agent_state = (session or {}).get("agent_state")
     if not isinstance(agent_state, dict):
         return ""
     return str(agent_state.get("last_compacted_at") or "").strip()
+
+
+def _build_compaction_status_for_session(
+    *,
+    session: dict[str, Any] | None = None,
+    model: str | None,
+    max_output_tokens: int | None = None,
+    pending_message: str = "",
+    last_compacted_at: str | None = None,
+) -> dict[str, Any]:
+    return build_compaction_status(
+        session=session,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        pending_message=pending_message,
+        last_compacted_at=last_compacted_at or _session_last_compacted_at(session),
+    )
 
 
 def _build_context_meter_for_session(
@@ -438,6 +465,10 @@ def health() -> HealthResponse:
     auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
     active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
+    compaction_status = _build_compaction_status_for_session(
+        model=active_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+    )
     context_meter = _build_context_meter_for_session(
         model=active_model,
         max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
@@ -489,6 +520,7 @@ def health() -> HealthResponse:
         },
         ocr_status=ocr_status,
         context_meter=context_meter,
+        compaction_status=compaction_status,
         agent=agent_descriptor,
     )
 
@@ -1166,7 +1198,14 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
         last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
     )
+    compaction_status = _build_compaction_status_for_session(
+        session=loaded,
+        model=selected_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
+    )
     agent_state["context_meter"] = dict(context_meter)
+    agent_state["compaction_status"] = dict(compaction_status)
 
     turns_raw = loaded.get("turns", [])
     if not isinstance(turns_raw, list):
@@ -1197,6 +1236,7 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         cwd=str(loaded.get("cwd") or ""),
         agent_state=agent_state,
         context_meter=context_meter,
+        compaction_status=compaction_status,
         turns=turns,
     )
 
@@ -1476,6 +1516,7 @@ def _build_run_snapshot(
     tool_count: int = 0,
     evidence_status: str = "not_needed",
     context_meter: dict[str, Any] | None = None,
+    compaction_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
     return {
@@ -1489,6 +1530,7 @@ def _build_run_snapshot(
         "tool_count": int(tool_count or 0),
         "evidence_status": str(evidence_status or "not_needed"),
         "context_meter": dict(context_meter or {}),
+        "compaction_status": dict(compaction_status or {}),
     }
 
 
@@ -1813,14 +1855,55 @@ def _process_chat_request(
                         max_output_tokens=req.settings.max_output_tokens,
                         pending_message=req.message,
                     ),
+                    compaction_status=_build_compaction_status_for_session(
+                        session=session,
+                        model=requested_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message=req.message,
+                    ),
                 ),
             )
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
-        agent_os = get_agent_os_runtime()
-        summarized = agent_os.maybe_compact_session(session, req.settings.max_context_turns)
+        compaction_result = maybe_auto_compact_session(
+            session=session,
+            model=requested_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            pending_message=req.message,
+            phase="pre_turn",
+        )
+        summarized = bool(compaction_result.get("compacted"))
         if summarized:
-            _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
+            compaction_after = dict(compaction_result.get("status_after") or {})
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=(
+                    "历史上下文已自动压缩为 replacement history。"
+                    f" generation={compaction_after.get('generation') or 0},"
+                    f" retained={compaction_after.get('retained_turn_count') or 0}"
+                ),
+                run_id=run_id,
+                run_snapshot=_build_run_snapshot(
+                    goal=req.message,
+                    current_task_focus=session_context_impl.get_current_task_focus(session),
+                    collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                    turn_status="running",
+                    cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                    context_meter=_build_context_meter_for_session(
+                        session=session,
+                        model=requested_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message=req.message,
+                    ),
+                    compaction_status=_build_compaction_status_for_session(
+                        session=session,
+                        model=requested_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message=req.message,
+                    ),
+                ),
+            )
         session_context_impl.sync_session_memory_state(session)
 
         runtime = get_kernel_runtime()
@@ -1889,6 +1972,12 @@ def _process_chat_request(
                     max_output_tokens=req.settings.max_output_tokens,
                     pending_message=req.message,
                 ),
+                compaction_status=_build_compaction_status_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                ),
             ),
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
@@ -1948,12 +2037,19 @@ def _process_chat_request(
             reset_focus=focus_shift_requested,
         )
         route_state_scope = "focus_reset" if focus_shift_requested and route_state_scope == "session" else route_state_scope
-        history_turns_for_runtime = copy.deepcopy(session.get("turns", []))
-        summary_for_runtime = session.get("summary", "")
+        runtime_history_view = build_runtime_context_payload(session=session)
+        history_turns_for_runtime = copy.deepcopy(runtime_history_view.get("history_turns") or [])
+        summary_for_runtime = str(runtime_history_view.get("summary") or "")
         thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
         current_task_focus_for_runtime = copy.deepcopy(session_context_impl.get_current_task_focus(session))
         recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
         artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
+        compaction_status_for_runtime = _build_compaction_status_for_session(
+            session=session,
+            model=requested_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            pending_message=req.message,
+        )
         recalled_context = copy.deepcopy({
             "recalled_task": attachment_context.get("recalled_task") or {},
             "recalled_artifacts": attachment_context.get("recalled_artifacts") or [],
@@ -1981,6 +2077,7 @@ def _process_chat_request(
                     max_output_tokens=req.settings.max_output_tokens,
                     pending_message=req.message,
                 ),
+                compaction_status=compaction_status_for_runtime,
             ),
         )
         runtime_result = provider_runtime.run(
@@ -2005,6 +2102,7 @@ def _process_chat_request(
                 "current_task_focus": current_task_focus_for_runtime,
                 "recent_tasks": recent_tasks_for_runtime,
                 "artifact_memory_preview": artifact_memory_preview,
+                "compaction_status": compaction_status_for_runtime,
                 "recalled_context": recalled_context,
                 "history_turns": history_turns_for_runtime,
                 "route_state": route_state_input,
@@ -2073,6 +2171,13 @@ def _process_chat_request(
                     pending_message=req.message,
                     last_compacted_at=_session_last_compacted_at(session),
                 ),
+                compaction_status=_build_compaction_status_for_session(
+                    session=session,
+                    model=selected_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                    last_compacted_at=_session_last_compacted_at(session),
+                ),
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
@@ -2118,7 +2223,7 @@ def _process_chat_request(
             or {}
         )
         previous_agent_state = dict(session.get("agent_state") or {})
-        last_compacted_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if summarized else str(previous_agent_state.get("last_compacted_at") or "")
+        last_compacted_at = _session_last_compacted_at(session) or str(previous_agent_state.get("last_compacted_at") or "")
         tool_hits = [
             {
                 "name": str(item.get("name") or ""),
@@ -2147,6 +2252,7 @@ def _process_chat_request(
             "current_task_focus": dict(current_task_focus),
             "task_checkpoint": session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             "context_meter": {},
+            "compaction_status": {},
             "tool_hits": tool_hits,
             "tool_count": len(tool_hits),
             "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
@@ -2178,13 +2284,31 @@ def _process_chat_request(
             max_output_tokens=req.settings.max_output_tokens,
             last_compacted_at=last_compacted_at,
         )
+        compaction_status = _build_compaction_status_for_session(
+            session=session,
+            model=selected_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            last_compacted_at=last_compacted_at,
+        )
+        runtime_compaction_status = (
+            dict(inspector_run_state.get("compaction_status") or {})
+            if isinstance(inspector_run_state.get("compaction_status"), dict)
+            else {}
+        )
+        for key, value in runtime_compaction_status.items():
+            if value in (None, "", [], {}):
+                continue
+            compaction_status[key] = value
         session["agent_state"]["context_meter"] = dict(context_meter)
+        session["agent_state"]["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or last_compacted_at or "")
+        session["agent_state"]["compaction_status"] = dict(compaction_status)
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["context_meter"] = dict(context_meter)
+        inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
@@ -2193,6 +2317,7 @@ def _process_chat_request(
         inspector_session["recent_tasks"] = recent_tasks
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
         inspector_session["context_meter"] = dict(context_meter)
+        inspector_session["compaction_status"] = dict(compaction_status)
         inspector["session"] = inspector_session
         try:
             attachment_module.store_scoped_route_state(
@@ -2237,6 +2362,7 @@ def _process_chat_request(
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
+                compaction_status=compaction_status,
             ),
         )
 
@@ -2373,6 +2499,7 @@ def _process_chat_request(
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             recent_tasks=recent_tasks,
             context_meter=context_meter,
+            compaction_status=compaction_status,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
@@ -2400,6 +2527,7 @@ def _process_chat_request(
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
+                compaction_status=compaction_status,
             ),
         )
         return response

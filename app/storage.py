@@ -45,6 +45,7 @@ class SessionStore:
             "recent_tasks": [],
             "artifact_memory_preview": [],
             "context_meter": {},
+            "compaction_status": {},
             "tool_hits": [],
             "tool_count": 0,
             "tool_names": [],
@@ -94,6 +95,9 @@ class SessionStore:
             changed = True
         if not isinstance(payload.get("artifact_memory"), list):
             payload["artifact_memory"] = []
+            changed = True
+        if not isinstance(payload.get("compaction_state"), dict):
+            payload["compaction_state"] = {}
             changed = True
         agent_state = payload.get("agent_state")
         if not isinstance(agent_state, dict):
@@ -158,6 +162,7 @@ class SessionStore:
             "current_task_focus": {},
             "thread_memory": {},
             "artifact_memory": [],
+            "compaction_state": {},
         }
         self.save(session)
         return session

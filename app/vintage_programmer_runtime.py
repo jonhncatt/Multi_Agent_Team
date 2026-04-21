@@ -10,6 +10,7 @@ from typing import Any, Callable
 import uuid
 
 from app.config import AppConfig
+from app.context_meter import count_tokens
 from app.models import ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
@@ -564,7 +565,7 @@ class VintageProgrammerRuntime:
                 "role": str(item.get("role") or ""),
                 "text": str(item.get("text") or "")[:1200],
             }
-            for item in history_turns[-8:]
+            for item in history_turns[:16]
             if isinstance(item, dict)
         ]
         attachments = [
@@ -586,6 +587,7 @@ class VintageProgrammerRuntime:
         thread_memory = dict(context.get("thread_memory") or {})
         recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
+        compaction_status = dict(context.get("compaction_status") or {})
         payload = {
             "session_id": str(context.get("session_id") or ""),
             "project": dict(context.get("project") or {}),
@@ -600,6 +602,13 @@ class VintageProgrammerRuntime:
             "current_task_focus": current_task_focus,
             "recent_tasks": recent_tasks[:8],
             "artifact_memory_preview": artifact_memory_preview[:8],
+            "compaction_status": {
+                "generation": int(compaction_status.get("generation") or 0),
+                "retained_turn_count": int(compaction_status.get("retained_turn_count") or 0),
+                "last_compacted_at": str(compaction_status.get("last_compacted_at") or ""),
+                "last_compaction_phase": str(compaction_status.get("last_compaction_phase") or ""),
+                "replacement_history_mode": bool(compaction_status.get("replacement_history_mode")),
+            },
             "recalled_context": dict(context.get("recalled_context") or {}),
             "user_input_response": dict(context.get("user_input_response") or {}),
             "attachments": attachments,
@@ -1295,15 +1304,37 @@ class VintageProgrammerRuntime:
         tool_events: list[ToolEvent],
         compacted_until: int,
         plan_state: list[dict[str, Any]],
-    ) -> tuple[list[Any], int, bool]:
-        if len(tool_events) - compacted_until < _DEFAULT_COMPACT_AFTER_TOOL_CALLS:
-            return messages, compacted_until, False
+        model: str | None,
+        auto_compact_token_limit: int,
+        context_window_known: bool,
+    ) -> tuple[list[Any], int, bool, int]:
+        estimated_tokens = 0
+        try:
+            estimated_tokens = count_tokens(
+                "\n".join(
+                    self._backend._shorten(str(getattr(item, "content", getattr(item, "text", item))), 3000)
+                    for item in list(messages)
+                ),
+                model,
+            )
+        except Exception:
+            estimated_tokens = 0
+        if auto_compact_token_limit > 0 and estimated_tokens < auto_compact_token_limit:
+            return messages, compacted_until, False, estimated_tokens
+        if auto_compact_token_limit <= 0 and len(tool_events) - compacted_until < _DEFAULT_COMPACT_AFTER_TOOL_CALLS:
+            return messages, compacted_until, False, estimated_tokens
+        if (
+            auto_compact_token_limit > 0
+            and not context_window_known
+            and len(tool_events) - compacted_until < _DEFAULT_COMPACT_AFTER_TOOL_CALLS
+        ):
+            return messages, compacted_until, False, estimated_tokens
         if len(messages) <= base_message_count + _DEFAULT_COMPACT_KEEP_LAST_MESSAGES:
-            return messages, compacted_until, False
+            return messages, compacted_until, False, estimated_tokens
 
         end_index = max(compacted_until, len(tool_events) - 4)
         if end_index <= compacted_until:
-            return messages, compacted_until, False
+            return messages, compacted_until, False, estimated_tokens
 
         summary = self._build_live_compaction_summary(
             tool_events=tool_events,
@@ -1312,7 +1343,7 @@ class VintageProgrammerRuntime:
             plan_state=plan_state,
         )
         if not summary:
-            return messages, compacted_until, False
+            return messages, compacted_until, False, estimated_tokens
 
         base_messages = list(messages[:base_message_count])
         tail_messages = list(messages[-_DEFAULT_COMPACT_KEEP_LAST_MESSAGES:])
@@ -1321,7 +1352,7 @@ class VintageProgrammerRuntime:
             self._backend._SystemMessage(content=summary),
             *tail_messages,
         ]
-        return compacted_messages, end_index, True
+        return compacted_messages, end_index, True, estimated_tokens
 
     def run(
         self,
@@ -1384,6 +1415,10 @@ class VintageProgrammerRuntime:
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
+        compaction_status = dict(context_payload.get("compaction_status") or {})
+        auto_compact_token_limit = max(0, int(compaction_status.get("auto_compact_token_limit") or 0))
+        context_window_known = bool(compaction_status.get("context_window_known"))
+        live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
@@ -1785,20 +1820,33 @@ class VintageProgrammerRuntime:
                     notes.append("turn_budget_no_progress_exceeded")
                     break
 
-                messages, compacted_tool_events, compacted = self._maybe_compact_live_messages(
+                messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
                     messages=messages,
                     base_message_count=base_message_count,
                     tool_events=tool_events,
                     compacted_until=compacted_tool_events,
                     plan_state=plan_state,
+                    model=effective_model,
+                    auto_compact_token_limit=auto_compact_token_limit,
+                    context_window_known=context_window_known,
                 )
+                if live_estimated_tokens and auto_compact_token_limit > 0:
+                    live_compaction_status["estimated_context_tokens"] = int(live_estimated_tokens)
                 if compacted:
                     notes.append("turn_context_compacted")
+                    live_compaction_status["last_compaction_phase"] = "mid_turn"
+                    live_compaction_status["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    live_compaction_status["last_compaction_reason"] = (
+                        f"mid_turn_context_budget_exceeded:{int(live_estimated_tokens or 0)}/{int(auto_compact_token_limit or 0)}"
+                    )
                     if progress_cb is not None:
                         progress_cb(
                             {
                                 "event": "trace",
                                 "message": "本轮中间上下文已压缩，以支持更长的连续执行。",
+                                "run_snapshot": {
+                                    "compaction_status": dict(live_compaction_status),
+                                },
                             }
                         )
 
@@ -1899,6 +1947,7 @@ class VintageProgrammerRuntime:
                 "thread_memory": dict(context_payload.get("thread_memory") or {}),
                 "recent_tasks": list(context_payload.get("recent_tasks") or []),
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
+                "compaction_status": dict(live_compaction_status),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
                 "project_root": project_root,
@@ -1924,6 +1973,7 @@ class VintageProgrammerRuntime:
                 "thread_memory": dict(context_payload.get("thread_memory") or {}),
                 "recent_tasks": list(context_payload.get("recent_tasks") or []),
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
+                "compaction_status": dict(live_compaction_status),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
             },
@@ -1952,6 +2002,7 @@ class VintageProgrammerRuntime:
             "pending_user_input": pending_user_input,
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
+            "compaction_status": dict(live_compaction_status),
             "tool_events": [item.model_dump() for item in tool_events],
             "token_usage": usage_total,
             "inspector": inspector,
