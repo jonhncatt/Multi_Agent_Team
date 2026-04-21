@@ -133,6 +133,23 @@ class TokenTotals(BaseModel):
     estimated_cost_usd: float = 0.0
 
 
+class ContextMeter(BaseModel):
+    estimated_tokens: int = 0
+    estimated_payload_tokens: int = 0
+    overhead_tokens: int = 0
+    context_window: int = 0
+    auto_compact_token_limit: int = 0
+    used_ratio: float = 0.0
+    remaining_ratio: float = 0.0
+    used_percent: int = 0
+    remaining_percent: int = 100
+    threshold_source: str = ""
+    context_window_known: bool = False
+    compaction_enabled: bool = False
+    last_compacted_at: str = ""
+    warning: str = ""
+
+
 class ChatResponse(BaseModel):
     session_id: str
     thread_id: str | None = None
@@ -156,6 +173,7 @@ class ChatResponse(BaseModel):
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
     recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
@@ -214,6 +232,7 @@ class SessionDetailResponse(BaseModel):
     git_branch: str = ""
     cwd: str = ""
     agent_state: dict[str, object] = Field(default_factory=dict)
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
@@ -346,6 +365,7 @@ class HealthResponse(BaseModel):
     projects: list[ProjectDescriptor] = Field(default_factory=list)
     runtime_status: dict[str, object] = Field(default_factory=dict)
     ocr_status: dict[str, object] = Field(default_factory=dict)
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
     agent: dict[str, object] = Field(default_factory=dict)
 
 

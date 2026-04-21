@@ -306,6 +306,8 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert payload["provider_options"]
     assert payload["llm_provider"] in [item["provider"] for item in payload["provider_options"]]
     assert payload["default_model"] in payload["model_options"]
+    assert payload["context_meter"]["auto_compact_token_limit"] > 0
+    assert "used_percent" in payload["context_meter"]
     assert "control_panel_topology" not in payload
 
 
@@ -338,9 +340,11 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["collaboration_mode"] == "default"
     assert payload["turn_status"] == "completed"
     assert payload["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
+    assert payload["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["inspector"]["agent"]["title"] == "Vintage Programmer"
     assert payload["inspector"]["run_state"]["collaboration_mode"] == "default"
     assert payload["inspector"]["run_state"]["turn_status"] == "completed"
+    assert payload["inspector"]["run_state"]["context_meter"]["auto_compact_token_limit"] > 0
     assert "execution_trace" not in payload
 
     session_id = payload["session_id"]
@@ -355,6 +359,8 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["agent_state"]["evidence_status"] == "collected"
     assert session_payload["agent_state"]["enabled_skill_ids"] == ["example_refactor_helper"]
     assert session_payload["agent_state"]["task_checkpoint"]["task_id"] == "task-fake-1"
+    assert session_payload["agent_state"]["context_meter"]["auto_compact_token_limit"] > 0
+    assert session_payload["context_meter"]["auto_compact_token_limit"] > 0
 
 
 def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> None:

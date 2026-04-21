@@ -165,6 +165,53 @@ function formatTime(raw) {
   });
 }
 
+function formatTokenCount(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return "0";
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 0 : 1)}M`;
+  if (amount >= 1_000) return `${(amount / 1_000).toFixed(amount >= 100_000 ? 0 : 1)}k`;
+  return String(Math.round(amount));
+}
+
+function normalizeContextMeter(raw) {
+  const meter = raw && typeof raw === "object" ? raw : {};
+  const estimated = Math.max(0, Number(meter.estimated_tokens || 0) || 0);
+  const payload = Math.max(0, Number(meter.estimated_payload_tokens || 0) || 0);
+  const overhead = Math.max(0, Number(meter.overhead_tokens || 0) || 0);
+  const limit = Math.max(0, Number(meter.auto_compact_token_limit || 0) || 0);
+  const contextWindow = Math.max(0, Number(meter.context_window || 0) || 0);
+  const rawRatio = Number(meter.used_ratio || 0);
+  const usedRatio = limit > 0
+    ? Math.min(1, Math.max(0, Number.isFinite(rawRatio) ? rawRatio : (estimated / limit)))
+    : 0;
+  const remainingRatio = Math.max(0, 1 - usedRatio);
+  const usedPercent = Math.max(0, Math.min(100, Math.round(Number(meter.used_percent || (usedRatio * 100)) || 0)));
+  const remainingPercent = Math.max(0, Math.min(100, Math.round(Number(meter.remaining_percent || (remainingRatio * 100)) || 0)));
+  return {
+    estimated_tokens: estimated,
+    estimated_payload_tokens: payload,
+    overhead_tokens: overhead,
+    auto_compact_token_limit: limit,
+    context_window: contextWindow,
+    used_ratio: usedRatio,
+    remaining_ratio: remainingRatio,
+    used_percent: usedPercent,
+    remaining_percent: remainingPercent,
+    threshold_source: String(meter.threshold_source || "").trim(),
+    context_window_known: Boolean(meter.context_window_known),
+    compaction_enabled: Boolean(meter.compaction_enabled),
+    last_compacted_at: String(meter.last_compacted_at || "").trim(),
+    warning: String(meter.warning || "").trim(),
+  };
+}
+
+function resolveContextMeterColor(meter) {
+  const usedRatio = Number((meter && meter.used_ratio) || 0);
+  if (usedRatio >= 0.92) return "var(--danger)";
+  if (usedRatio >= 0.78) return "var(--warning)";
+  return "var(--ink-faint)";
+}
+
 function parseSseChunk(chunk) {
   const lines = String(chunk || "").split("\n");
   let event = "message";
@@ -478,8 +525,10 @@ function App() {
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
+  const [contextMeterOpen, setContextMeterOpen] = useState(false);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
+  const contextMeterRef = useRef(null);
   const bootReadyRef = useRef(false);
   const composerDragDepthRef = useRef(0);
   const providerOptions = useMemo(
@@ -599,6 +648,15 @@ function App() {
     if (!chatListRef.current) return;
     chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
   }, [messages, drawerView]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!contextMeterRef.current || contextMeterRef.current.contains(event.target)) return;
+      setContextMeterOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
 
   useEffect(() => {
     async function boot() {
@@ -857,6 +915,7 @@ function App() {
     setLiveEvidence({});
     setLiveRunLogs([]);
     setStageTimeline([]);
+    setContextMeterOpen(false);
     clearUiError();
     await refreshSessions(resolvedProjectId || targetProjectId);
     pushLogWithLimit(setLogs, "system", `已创建新线程 ${sid.slice(0, 8)}`);
@@ -885,6 +944,7 @@ function App() {
       setLiveEvidence({});
       setLiveRunLogs([]);
       setStageTimeline([]);
+      setContextMeterOpen(false);
       clearUiError();
       pushLogWithLimit(setLogs, "system", `已载入线程 ${sid.slice(0, 8)}`);
       return true;
@@ -1013,6 +1073,7 @@ function App() {
     if (!messageText || sending) return;
 
     setSending(true);
+    setContextMeterOpen(false);
     setStoppingRun(false);
     setActiveRunId("");
     clearUiError();
@@ -1198,6 +1259,7 @@ function App() {
         ...(((finalPayload.inspector || {}).run_state) || {}),
         collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
         turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+        context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
         current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
         pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
@@ -1222,6 +1284,7 @@ function App() {
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
+          context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
           current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
           thread_memory: (((finalPayload.inspector || {}).run_state || {}).thread_memory) || (((finalPayload.inspector || {}).session || {}).thread_memory) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
@@ -1422,6 +1485,14 @@ function App() {
     "",
   ).trim();
   const activeProviderLabel = String((activeProviderProfile && activeProviderProfile.label) || activeProvider || "").trim();
+  const activeContextMeter = normalizeContextMeter(
+    (runState && runState.context_meter) ||
+    (lastResponse && lastResponse.context_meter) ||
+    (sessionAgentState && sessionAgentState.context_meter) ||
+    (health && health.context_meter) ||
+    {},
+  );
+  const contextMeterColor = resolveContextMeterColor(activeContextMeter);
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId) : (workspaceLabel || "开始构建");
@@ -1434,7 +1505,6 @@ function App() {
   const statusSummary = [
     workspaceLabel || "-",
     activeProviderLabel || activeProvider || "-",
-    activeModel || "-",
   ].filter(Boolean).join(" · ");
 
   return html`
@@ -1665,8 +1735,67 @@ function App() {
           <div className="status-bar status-inline" id="statusBar">
             <div className="status-summary">${statusSummary}</div>
             <div className="status-right">
-              ${currentProjectBranch ? html`<span>${currentProjectBranch}</span>` : null}
-              ${!activeProviderAuthReady ? html`<span className="status-inline-note">auth missing</span>` : null}
+              <div className="status-meta-group">
+                ${currentProjectBranch ? html`<span>${currentProjectBranch}</span>` : null}
+                ${!activeProviderAuthReady ? html`<span className="status-inline-note">auth missing</span>` : null}
+              </div>
+              <div
+                className="context-meter-wrap"
+                ref=${contextMeterRef}
+                onMouseEnter=${() => setContextMeterOpen(true)}
+                onMouseLeave=${() => setContextMeterOpen(false)}
+              >
+                <button
+                  className="context-meter-trigger"
+                  type="button"
+                  aria-label="查看背景信息窗口占用"
+                  aria-expanded=${contextMeterOpen ? "true" : "false"}
+                  onClick=${(event) => {
+                    event.stopPropagation();
+                    setContextMeterOpen((prev) => !prev);
+                  }}
+                >
+                  <span
+                    className="context-meter-ring"
+                    style=${{
+                      "--meter-pct": `${activeContextMeter.used_percent}%`,
+                      "--meter-color": contextMeterColor,
+                    }}
+                  ></span>
+                  <span className="status-model-label">${activeModel || "-"}</span>
+                </button>
+                ${contextMeterOpen
+                  ? html`
+                      <div className="context-meter-popover" role="dialog" aria-label="背景信息窗口">
+                        <div className="context-meter-title">背景信息窗口：</div>
+                        <div className="context-meter-line">
+                          ${activeContextMeter.used_percent}% 已用（剩余 ${activeContextMeter.remaining_percent}%）
+                        </div>
+                        <div className="context-meter-line">
+                          已估算 ${formatTokenCount(activeContextMeter.estimated_tokens)} 标记，阈值 ${formatTokenCount(activeContextMeter.auto_compact_token_limit)}
+                        </div>
+                        ${activeContextMeter.context_window
+                          ? html`
+                              <div className="context-meter-line subtle">
+                                模型窗口 ${formatTokenCount(activeContextMeter.context_window)} · 来源 ${activeContextMeter.threshold_source || "estimate"}
+                              </div>
+                            `
+                          : null}
+                        ${activeContextMeter.last_compacted_at
+                          ? html`
+                              <div className="context-meter-line subtle">
+                                最近压缩：${formatTime(activeContextMeter.last_compacted_at)}
+                              </div>
+                            `
+                          : null}
+                        <div className="context-meter-line strong">达到阈值后自动压缩旧背景信息</div>
+                        ${activeContextMeter.warning
+                          ? html`<div className="context-meter-line subtle">${activeContextMeter.warning}</div>`
+                          : null}
+                      </div>
+                    `
+                  : null}
+              </div>
             </div>
             ${uiError ? html`<span className="status-alert" title=${uiError.summary}>error</span>` : null}
           </div>

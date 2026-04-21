@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.bootstrap import AgentOSRuntime, assemble_runtime
 from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
+from app.context_meter import build_context_meter
 from app.core.bootstrap import build_kernel_runtime
 from app.core.healthcheck import build_kernel_health_payload
 from app.evals import run_regression_evals
@@ -83,6 +84,7 @@ from app.vintage_programmer_runtime import VintageProgrammerRuntime
 from app.workbench import WorkbenchStore
 
 APP_TITLE = "Vintage Programmer"
+DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = 128_000
 config = load_config()
 AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
 project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
@@ -358,6 +360,30 @@ def _resolve_requested_provider(req: ChatRequest) -> str:
     return requested
 
 
+def _session_last_compacted_at(session: dict[str, Any] | None) -> str:
+    agent_state = (session or {}).get("agent_state")
+    if not isinstance(agent_state, dict):
+        return ""
+    return str(agent_state.get("last_compacted_at") or "").strip()
+
+
+def _build_context_meter_for_session(
+    *,
+    session: dict[str, Any] | None = None,
+    model: str | None,
+    max_output_tokens: int | None = None,
+    pending_message: str = "",
+    last_compacted_at: str | None = None,
+) -> dict[str, Any]:
+    return build_context_meter(
+        session=session,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        pending_message=pending_message,
+        last_compacted_at=last_compacted_at or _session_last_compacted_at(session),
+    )
+
+
 def get_workbench_store() -> WorkbenchStore:
     return workbench_store
 
@@ -411,6 +437,11 @@ def health() -> HealthResponse:
     active_provider_config = build_provider_config(config, active_provider_name)
     auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
+    context_meter = _build_context_meter_for_session(
+        model=active_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+    )
     projects = get_project_store().list_projects()
     default_project = get_project_store().ensure_default_project()
     effective_roots: list[str] = []
@@ -427,7 +458,7 @@ def health() -> HealthResponse:
         app_title=APP_TITLE,
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
-        default_model=str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or ""),
+        default_model=active_model,
         model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
         allow_custom_model=True,
         llm_provider=active_provider_name,
@@ -457,6 +488,7 @@ def health() -> HealthResponse:
             "build_version": BUILD_VERSION,
         },
         ocr_status=ocr_status,
+        context_meter=context_meter,
         agent=agent_descriptor,
     )
 
@@ -1126,6 +1158,15 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
     loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
+    agent_state = dict(loaded.get("agent_state") or {})
+    selected_model = str(agent_state.get("last_model") or config.default_model or "").strip()
+    context_meter = _build_context_meter_for_session(
+        session=loaded,
+        model=selected_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
+    )
+    agent_state["context_meter"] = dict(context_meter)
 
     turns_raw = loaded.get("turns", [])
     if not isinstance(turns_raw, list):
@@ -1154,7 +1195,8 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         project_root=str(loaded.get("project_root") or ""),
         git_branch=str(loaded.get("git_branch") or ""),
         cwd=str(loaded.get("cwd") or ""),
-        agent_state=dict(loaded.get("agent_state") or {}),
+        agent_state=agent_state,
+        context_meter=context_meter,
         turns=turns,
     )
 
@@ -1433,6 +1475,7 @@ def _build_run_snapshot(
     pending_user_input: dict[str, Any] | None = None,
     tool_count: int = 0,
     evidence_status: str = "not_needed",
+    context_meter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
     return {
@@ -1445,6 +1488,7 @@ def _build_run_snapshot(
         "pending_user_input": dict(pending_user_input or {}),
         "tool_count": int(tool_count or 0),
         "evidence_status": str(evidence_status or "not_needed"),
+        "context_meter": dict(context_meter or {}),
     }
 
 
@@ -1576,6 +1620,7 @@ def _process_chat_request(
     req.settings.provider = requested_provider
     if req.mode_override:
         req.settings.collaboration_mode = req.mode_override
+    requested_model = str(req.settings.model or provider_config.default_model or "").strip() or provider_config.default_model
     auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
         fallback_goal = str(req.message or "").strip()[:160]
@@ -1605,6 +1650,12 @@ def _process_chat_request(
         seed_session["turns"].append(assistant_turn)
         seed_session["summary"] = fallback_text
         seed_session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        fallback_context_meter = _build_context_meter_for_session(
+            session=seed_session,
+            model=requested_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            pending_message=req.message,
+        )
         seed_session["agent_state"] = {
             "goal": fallback_goal,
             "collaboration_mode": str(req.settings.collaboration_mode or "default"),
@@ -1613,9 +1664,12 @@ def _process_chat_request(
             "pending_user_input": {},
             "phase": "report",
             "last_run_id": "",
-            "last_model": "",
+            "last_provider": requested_provider,
+            "last_model": requested_model,
+            "last_compacted_at": "",
             "cwd": str(seed_session.get("project_root") or ""),
             "task_checkpoint": {},
+            "context_meter": dict(fallback_context_meter),
             "tool_hits": [],
             "tool_count": 0,
             "tool_names": [],
@@ -1651,6 +1705,7 @@ def _process_chat_request(
                     "turn_status": "blocked",
                     "plan": [],
                     "pending_user_input": {},
+                    "context_meter": dict(fallback_context_meter),
                 },
                 "tool_timeline": [],
                 "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
@@ -1662,10 +1717,12 @@ def _process_chat_request(
                     "cwd": str(seed_session.get("project_root") or ""),
                     "history_turn_count": len(seed_session.get("turns") or []),
                     "attachment_count": 0,
+                    "context_meter": dict(fallback_context_meter),
                 },
                 "token_usage": {"total_tokens": 0},
                 "loaded_skills": [],
             },
+            context_meter=fallback_context_meter,
             turn_count=len(seed_session.get("turns") or []),
             summarized=False,
         )
@@ -1750,6 +1807,12 @@ def _process_chat_request(
                     collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                    context_meter=_build_context_meter_for_session(
+                        session=session,
+                        model=requested_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message=req.message,
+                    ),
                 ),
             )
         history_turns_before = copy.deepcopy(session.get("turns", []))
@@ -1820,6 +1883,12 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                context_meter=_build_context_meter_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                ),
             ),
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
@@ -1906,6 +1975,12 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
+                context_meter=_build_context_meter_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                ),
             ),
         )
         runtime_result = provider_runtime.run(
@@ -1952,6 +2027,7 @@ def _process_chat_request(
         answer_bundle = runtime_result.get("answer_bundle") or {}
         token_usage = dict(runtime_result.get("token_usage") or {})
         effective_model = str(runtime_result.get("effective_model") or "")
+        selected_model = effective_model or req.settings.model or provider_config.default_model
         collaboration_mode = str(runtime_result.get("collaboration_mode") or req.settings.collaboration_mode or "default")
         turn_status = str(runtime_result.get("turn_status") or "completed")
         plan = list(runtime_result.get("plan") or [])
@@ -1990,6 +2066,13 @@ def _process_chat_request(
                 pending_user_input=pending_user_input,
                 tool_count=len(tool_events),
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
+                context_meter=_build_context_meter_for_session(
+                    session=session,
+                    model=selected_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                    last_compacted_at=_session_last_compacted_at(session),
+                ),
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
@@ -2034,6 +2117,8 @@ def _process_chat_request(
             or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else {})
             or {}
         )
+        previous_agent_state = dict(session.get("agent_state") or {})
+        last_compacted_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if summarized else str(previous_agent_state.get("last_compacted_at") or "")
         tool_hits = [
             {
                 "name": str(item.get("name") or ""),
@@ -2054,12 +2139,14 @@ def _process_chat_request(
             "phase": str(inspector_run_state.get("phase") or "report"),
             "last_run_id": run_id,
             "last_provider": requested_provider,
-            "last_model": effective_model or req.settings.model or provider_config.default_model,
+            "last_model": selected_model,
+            "last_compacted_at": last_compacted_at,
             "project_id": str(session.get("project_id") or ""),
             "project_root": str(session.get("project_root") or ""),
             "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
             "current_task_focus": dict(current_task_focus),
             "task_checkpoint": session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
+            "context_meter": {},
             "tool_hits": tool_hits,
             "tool_count": len(tool_hits),
             "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
@@ -2085,11 +2172,19 @@ def _process_chat_request(
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = session_context_impl.get_artifact_memory_preview(session)
         current_task_focus = session_context_impl.get_current_task_focus(session)
+        context_meter = _build_context_meter_for_session(
+            session=session,
+            model=selected_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            last_compacted_at=last_compacted_at,
+        )
+        session["agent_state"]["context_meter"] = dict(context_meter)
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_run_state["context_meter"] = dict(context_meter)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
@@ -2097,6 +2192,7 @@ def _process_chat_request(
         inspector_session["thread_memory"] = dict(thread_memory)
         inspector_session["recent_tasks"] = recent_tasks
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
+        inspector_session["context_meter"] = dict(context_meter)
         inspector["session"] = inspector_session
         try:
             attachment_module.store_scoped_route_state(
@@ -2140,10 +2236,10 @@ def _process_chat_request(
                 pending_user_input=pending_user_input,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+                context_meter=context_meter,
             ),
         )
 
-        selected_model = effective_model or req.settings.model or provider_config.default_model
         pricing_meta = estimate_usage_cost(
             model=selected_model,
             input_tokens=token_usage.get("input_tokens", 0),
@@ -2276,6 +2372,7 @@ def _process_chat_request(
             pending_user_input=pending_user_input,
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             recent_tasks=recent_tasks,
+            context_meter=context_meter,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),
             global_token_totals=TokenTotals(**global_totals_raw),
@@ -2302,6 +2399,7 @@ def _process_chat_request(
                 pending_user_input=pending_user_input,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+                context_meter=context_meter,
             ),
         )
         return response
