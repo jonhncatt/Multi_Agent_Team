@@ -17,7 +17,7 @@ if (!ReactRuntime || !ReactDomRuntime || !htmRuntime || !markedRuntime || !DOMPu
   throw new Error("Local frontend runtime scripts are unavailable.");
 }
 
-const { useEffect, useMemo, useRef, useState } = ReactRuntime;
+const { useEffect, useMemo, useReducer, useRef, useState } = ReactRuntime;
 const { createRoot } = ReactDomRuntime;
 const html = htmRuntime.bind(ReactRuntime.createElement);
 
@@ -609,6 +609,172 @@ function toolTimelineSummary(item, locale) {
   return base || translateUi(locale, "labels.no_summary");
 }
 
+function resolveStateValue(current, nextValue) {
+  return typeof nextValue === "function" ? nextValue(current) : nextValue;
+}
+
+function updateStateAtPath(state, path, nextValue) {
+  if (!Array.isArray(path) || !path.length) return state;
+  const [head, ...rest] = path;
+  if (!rest.length) {
+    return {
+      ...state,
+      [head]: resolveStateValue(state ? state[head] : undefined, nextValue),
+    };
+  }
+  return {
+    ...state,
+    [head]: updateStateAtPath(
+      (state && typeof state[head] === "object" && state[head] !== null) ? state[head] : {},
+      rest,
+      nextValue,
+    ),
+  };
+}
+
+function createInitialAppState() {
+  return {
+    bootstrap: {
+      health: null,
+      runtimeStatus: {},
+    },
+    projectIndex: {
+      projects: [],
+      currentProjectId: "",
+    },
+    threadIndex: {
+      threads: [],
+      currentThreadId: "",
+      agentState: {},
+      loading: false,
+    },
+    items: {
+      messages: [],
+      byId: {},
+      order: [],
+      activeAgentMessageId: "",
+    },
+    activeTurn: {
+      sending: false,
+      liveRunLogs: [],
+      lastResponse: null,
+      toolTimeline: [],
+      liveTurnState: {},
+      liveEvidence: {},
+      liveToolTimeline: [],
+      stageTimeline: [],
+      activeRunId: "",
+      stoppingRun: false,
+    },
+    panelCache: {
+      tools: { status: "idle", data: [] },
+      skills: { status: "idle", data: [] },
+      specs: { status: "idle", data: [] },
+    },
+  };
+}
+
+function appStateReducer(state, action) {
+  if (!action || typeof action !== "object") return state;
+  if (action.type === "update") {
+    return updateStateAtPath(state, action.path, action.value);
+  }
+  if (action.type === "items/reset") {
+    return {
+      ...state,
+      items: {
+        messages: [],
+        byId: {},
+        order: [],
+        activeAgentMessageId: "",
+      },
+    };
+  }
+  if (action.type === "items/register") {
+    const item = action.item && typeof action.item === "object" ? action.item : {};
+    const itemId = String(item.id || "").trim();
+    if (!itemId) return state;
+    const previous = state.items.byId[itemId] && typeof state.items.byId[itemId] === "object" ? state.items.byId[itemId] : {};
+    const nextOrder = state.items.order.includes(itemId) ? state.items.order : [...state.items.order, itemId];
+    return {
+      ...state,
+      items: {
+        ...state.items,
+        byId: {
+          ...state.items.byId,
+          [itemId]: { ...previous, ...item },
+        },
+        order: nextOrder,
+        activeAgentMessageId:
+          item.type === "agentMessage"
+            ? itemId
+            : state.items.activeAgentMessageId,
+      },
+    };
+  }
+  if (action.type === "items/agentDelta") {
+    const itemId = String(action.itemId || state.items.activeAgentMessageId || "").trim();
+    if (!itemId) return state;
+    const previous = state.items.byId[itemId] && typeof state.items.byId[itemId] === "object" ? state.items.byId[itemId] : {};
+    return {
+      ...state,
+      items: {
+        ...state.items,
+        byId: {
+          ...state.items.byId,
+          [itemId]: {
+            ...previous,
+            id: itemId,
+            type: "agentMessage",
+            text: `${String(previous.text || "")}${String(action.delta || "")}`,
+            status: String(action.status || previous.status || "inProgress"),
+          },
+        },
+        order: state.items.order.includes(itemId) ? state.items.order : [...state.items.order, itemId],
+        activeAgentMessageId: itemId,
+      },
+    };
+  }
+  return state;
+}
+
+function mergeHealthSlices(previousHealth, bootstrapData, runtimeData) {
+  const prev = previousHealth && typeof previousHealth === "object" ? previousHealth : {};
+  const bootstrap = bootstrapData && typeof bootstrapData === "object" ? bootstrapData : {};
+  const runtime = runtimeData && typeof runtimeData === "object" ? runtimeData : {};
+  return {
+    ...prev,
+    ...bootstrap,
+    runtime_status: runtime.runtime_status || prev.runtime_status || {},
+    ocr_status: runtime.ocr_status || prev.ocr_status || {},
+    context_meter: runtime.context_meter || prev.context_meter || {},
+    compaction_status: runtime.compaction_status || prev.compaction_status || {},
+    default_project_id: bootstrap.default_project_id || prev.default_project_id || runtime.project_id || "",
+  };
+}
+
+function normalizeThreadListPayload(data) {
+  if (Array.isArray(data && data.threads)) return data.threads;
+  if (!Array.isArray(data && data.sessions)) return [];
+  return data.sessions.map((item) => ({
+    ...item,
+    thread_id: String(item.thread_id || item.session_id || ""),
+    session_id: String(item.session_id || item.thread_id || ""),
+    status: String(item.status || "idle"),
+  }));
+}
+
+function normalizeThreadDetailPayload(data) {
+  const payload = data && typeof data === "object" ? data : {};
+  return {
+    ...payload,
+    thread_id: String(payload.thread_id || payload.session_id || ""),
+    session_id: String(payload.session_id || payload.thread_id || ""),
+    status: String(payload.status || "idle"),
+    turns: Array.isArray(payload.turns) ? payload.turns : [],
+  };
+}
+
 function starterPromptChips(locale, setDraft, handleSend) {
   return translateUiList(locale, "starter.prompts").map((text) =>
     html`
@@ -628,37 +794,38 @@ function starterPromptChips(locale, setDraft, handleSend) {
 }
 
 function App() {
-  const [health, setHealth] = useState(null);
-  const [projects, setProjects] = useState([]);
-  const [projectId, setProjectId] = useState("");
-  const [sessions, setSessions] = useState([]);
-  const [sessionId, setSessionId] = useState("");
-  const [sessionAgentState, setSessionAgentState] = useState({});
-  const [messages, setMessages] = useState([]);
+  const [appState, dispatch] = useReducer(appStateReducer, undefined, createInitialAppState);
+  const health = appState.bootstrap.health;
+  const projects = appState.projectIndex.projects;
+  const projectId = appState.projectIndex.currentProjectId;
+  const sessions = appState.threadIndex.threads;
+  const sessionId = appState.threadIndex.currentThreadId;
+  const sessionAgentState = appState.threadIndex.agentState;
+  const messages = appState.items.messages;
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [loadingSession, setLoadingSession] = useState(false);
+  const sending = Boolean(appState.activeTurn.sending);
+  const loadingSession = Boolean(appState.threadIndex.loading);
   const [drawerView, setDrawerView] = useState("");
   const [logs, setLogs] = useState([]);
-  const [liveRunLogs, setLiveRunLogs] = useState([]);
-  const [lastResponse, setLastResponse] = useState(null);
+  const liveRunLogs = appState.activeTurn.liveRunLogs;
+  const lastResponse = appState.activeTurn.lastResponse;
   const [pendingUploads, setPendingUploads] = useState([]);
   const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
   const [modelTouched, setModelTouched] = useState(false);
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
-  const [toolTimeline, setToolTimeline] = useState([]);
-  const [liveTurnState, setLiveTurnState] = useState({});
-  const [liveEvidence, setLiveEvidence] = useState({});
-  const [liveToolTimeline, setLiveToolTimeline] = useState([]);
-  const [stageTimeline, setStageTimeline] = useState([]);
-  const [activeRunId, setActiveRunId] = useState("");
-  const [stoppingRun, setStoppingRun] = useState(false);
-  const [workbenchTools, setWorkbenchTools] = useState([]);
-  const [skills, setSkills] = useState([]);
+  const toolTimeline = appState.activeTurn.toolTimeline;
+  const liveTurnState = appState.activeTurn.liveTurnState;
+  const liveEvidence = appState.activeTurn.liveEvidence;
+  const liveToolTimeline = appState.activeTurn.liveToolTimeline;
+  const stageTimeline = appState.activeTurn.stageTimeline;
+  const activeRunId = appState.activeTurn.activeRunId;
+  const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
+  const workbenchTools = appState.panelCache.tools.data;
+  const skills = appState.panelCache.skills.data;
   const [selectedSkillId, setSelectedSkillId] = useState("");
   const [skillEditor, setSkillEditor] = useState("");
-  const [specs, setSpecs] = useState([]);
+  const specs = appState.panelCache.specs.data;
   const [selectedSpecName, setSelectedSpecName] = useState("soul.md");
   const [specEditor, setSpecEditor] = useState("");
   const [savingWorkbench, setSavingWorkbench] = useState(false);
@@ -684,8 +851,31 @@ function App() {
   const projectsRequestSeqRef = useRef(0);
   const sessionsRequestSeqRef = useRef(0);
   const skillsRequestSeqRef = useRef(0);
+  const runtimeStatusRequestSeqRef = useRef(0);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
+  const setHealth = (value) => dispatch({ type: "update", path: ["bootstrap", "health"], value });
+  const setProjects = (value) => dispatch({ type: "update", path: ["projectIndex", "projects"], value });
+  const setProjectId = (value) => dispatch({ type: "update", path: ["projectIndex", "currentProjectId"], value });
+  const setSessions = (value) => dispatch({ type: "update", path: ["threadIndex", "threads"], value });
+  const setSessionId = (value) => dispatch({ type: "update", path: ["threadIndex", "currentThreadId"], value });
+  const setSessionAgentState = (value) => dispatch({ type: "update", path: ["threadIndex", "agentState"], value });
+  const setMessages = (value) => dispatch({ type: "update", path: ["items", "messages"], value });
+  const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
+  const setLoadingSession = (value) => dispatch({ type: "update", path: ["threadIndex", "loading"], value });
+  const setLiveRunLogs = (value) => dispatch({ type: "update", path: ["activeTurn", "liveRunLogs"], value });
+  const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
+  const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
+  const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
+  const setLiveEvidence = (value) => dispatch({ type: "update", path: ["activeTurn", "liveEvidence"], value });
+  const setLiveToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "liveToolTimeline"], value });
+  const setStageTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "stageTimeline"], value });
+  const setActiveRunId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunId"], value });
+  const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
+  const setWorkbenchTools = (value) => dispatch({ type: "update", path: ["panelCache", "tools", "data"], value });
+  const setPanelStatus = (panel, value) => dispatch({ type: "update", path: ["panelCache", panel, "status"], value });
+  const setSkills = (value) => dispatch({ type: "update", path: ["panelCache", "skills", "data"], value });
+  const setSpecs = (value) => dispatch({ type: "update", path: ["panelCache", "specs", "data"], value });
   const providerOptions = useMemo(
     () => (Array.isArray((health && health.provider_options)) ? health.provider_options : []).filter((item) => item && item.provider),
     [health],
@@ -883,22 +1073,18 @@ function App() {
 
   useEffect(() => {
     async function boot() {
-      const [healthData, projectsList] = await Promise.all([
-        refreshHealth(),
-        refreshProjects(),
-        refreshWorkbenchTools(),
-        refreshSkills(),
-        refreshSpecs(),
-      ]);
+      const [bootstrapData, projectsList] = await Promise.all([refreshBootstrap(), refreshProjects()]);
       const storedProjectId = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
       const storedProjectExists = (projectsList || []).some((item) => String(item.project_id || "") === storedProjectId);
       const initialProjectId =
         (storedProjectExists ? storedProjectId : "") ||
-        String((healthData && healthData.default_project_id) || "").trim() ||
+        String((bootstrapData && bootstrapData.default_project_id) || "").trim() ||
         String(((projectsList || [])[0] || {}).project_id || "").trim();
       bootReadyRef.current = true;
       if (initialProjectId) {
         await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });
+      } else {
+        await refreshRuntimeStatus("", { background: true });
       }
     }
     boot();
@@ -916,7 +1102,7 @@ function App() {
 
     const refreshBranches = async () => {
       if (disposed || document.visibilityState === "hidden") return;
-      await Promise.all([refreshProjects(), refreshHealth()]);
+      await Promise.all([refreshProjects(), refreshRuntimeStatus(projectId, { background: true })]);
     };
 
     const handleWindowFocus = () => {
@@ -997,17 +1183,60 @@ function App() {
     return res.json();
   }
 
-  async function refreshHealth() {
+  function applyHealthSlices(bootstrapData, runtimeData) {
+    let merged = null;
+    setHealth((prev) => {
+      merged = mergeHealthSlices(prev, bootstrapData, runtimeData);
+      return merged;
+    });
+    return merged;
+  }
+
+  async function refreshBootstrap() {
     try {
-      const data = await fetchJson("/api/health");
+      const data = await fetchJson("/api/bootstrap");
       clearUiError();
-      setHealth(data);
+      applyHealthSlices(data, null);
       return data;
     } catch (err) {
       const nextError = applyUiError(err, t("errors.refresh_state_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
       return null;
     }
+  }
+
+  async function refreshRuntimeStatus(targetProjectId = projectId, options = {}) {
+    const requestSeq = ++runtimeStatusRequestSeqRef.current;
+    const background = Boolean(options.background);
+    const params = new URLSearchParams();
+    const normalizedProjectId = String(targetProjectId || "").trim();
+    const normalizedModel = String(chatSettings.model || "").trim();
+    if (normalizedProjectId) params.set("project_id", normalizedProjectId);
+    if (normalizedModel) params.set("model", normalizedModel);
+    params.set("max_output_tokens", String(chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens));
+    try {
+      const data = await fetchJson(`/api/runtime-status?${params.toString()}`);
+      if (requestSeq !== runtimeStatusRequestSeqRef.current) return data;
+      if (!background) clearUiError();
+      applyHealthSlices(null, data);
+      dispatch({ type: "update", path: ["bootstrap", "runtimeStatus"], value: data });
+      return data;
+    } catch (err) {
+      if (requestSeq !== runtimeStatusRequestSeqRef.current) return null;
+      const nextError = background
+        ? normalizeUiError(uiLocale, err, t("errors.refresh_state_failed"))
+        : applyUiError(err, t("errors.refresh_state_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
+      return null;
+    }
+  }
+
+  async function refreshHealth() {
+    const [bootstrapData, runtimeData] = await Promise.all([
+      refreshBootstrap(),
+      refreshRuntimeStatus(projectId, { background: true }),
+    ]);
+    return mergeHealthSlices(null, bootstrapData, runtimeData);
   }
 
   function setSkillSelectionState(skillId, content, options = {}) {
@@ -1064,6 +1293,77 @@ function App() {
     setActiveRunId("");
     setStoppingRun(false);
     setContextMeterOpen(false);
+  }
+
+  function resetItemDomain() {
+    dispatch({ type: "items/reset" });
+  }
+
+  function normalizeSingleThread(item) {
+    return normalizeThreadListPayload({ threads: [item] })[0] || null;
+  }
+
+  function upsertThreadRow(rawItem, options = {}) {
+    const normalized = normalizeSingleThread(rawItem);
+    if (!normalized) return;
+    const threadKey = String(normalized.thread_id || normalized.session_id || "").trim();
+    if (!threadKey) return;
+    const activeProjectId = String(projectId || "").trim();
+    if (activeProjectId && normalized.project_id && String(normalized.project_id || "").trim() !== activeProjectId) {
+      return;
+    }
+    const promote = options.promote !== false;
+    setSessions((prev) => {
+      const previousList = Array.isArray(prev) ? prev : [];
+      const existing = previousList.find((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey) || {};
+      const merged = { ...existing, ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) };
+      const remainder = previousList.filter((entry) => String(entry.thread_id || entry.session_id || "").trim() !== threadKey);
+      return promote ? [merged, ...remainder] : [...remainder, merged];
+    });
+  }
+
+  function removeThreadRow(targetThreadId) {
+    const normalizedThreadId = String(targetThreadId || "").trim();
+    if (!normalizedThreadId) return;
+    setSessions((prev) => (Array.isArray(prev) ? prev : []).filter(
+      (entry) => String(entry.thread_id || entry.session_id || "").trim() !== normalizedThreadId,
+    ));
+  }
+
+  function updateThreadStatus(targetThreadId, status) {
+    const normalizedThreadId = String(targetThreadId || "").trim();
+    if (!normalizedThreadId) return;
+    const nextStatus = String(status || "idle").trim() || "idle";
+    setSessions((prev) => {
+      const previousList = Array.isArray(prev) ? prev : [];
+      let found = false;
+      const nextList = previousList.map((entry) => {
+        if (String(entry.thread_id || entry.session_id || "").trim() !== normalizedThreadId) return entry;
+        found = true;
+        return { ...entry, status: nextStatus };
+      });
+      if (found) return nextList;
+      const nowIso = new Date().toISOString();
+      return [
+        {
+          thread_id: normalizedThreadId,
+          session_id: normalizedThreadId,
+          title: "",
+          has_custom_title: false,
+          preview: "",
+          turn_count: 0,
+          project_id: String(projectId || "").trim(),
+          project_title: String((currentProject && currentProject.title) || ""),
+          project_root: String((currentProject && currentProject.root_path) || runtimeStatus.project_root || ""),
+          git_branch: String((currentProject && currentProject.git_branch) || runtimeStatus.git_branch || ""),
+          cwd: String(runtimeStatus.project_root || ""),
+          updated_at: nowIso,
+          created_at: nowIso,
+          status: nextStatus,
+        },
+        ...nextList,
+      ];
+    });
   }
 
   function closeThreadMenu() {
@@ -1200,8 +1500,8 @@ function App() {
     const background = Boolean(options.background);
     try {
       const suffix = targetProjectId ? `&project_id=${encodeURIComponent(targetProjectId)}` : "";
-      const data = await fetchJson(`/api/sessions?limit=80${suffix}`);
-      const list = Array.isArray(data.sessions) ? data.sessions : [];
+      const data = await fetchJson(`/api/threads?limit=80${suffix}`);
+      const list = normalizeThreadListPayload(data);
       if (requestSeq !== sessionsRequestSeqRef.current) return list;
       if (!background) clearUiError();
       setSessions(list);
@@ -1216,20 +1516,12 @@ function App() {
     }
   }
 
-  function scheduleSessionRefresh(targetProjectId) {
-    const resolvedProjectId = String(targetProjectId || "").trim();
-    if (!resolvedProjectId) return;
-    window.setTimeout(() => {
-      void refreshSessions(resolvedProjectId, { background: true });
-    }, 0);
-  }
-
   async function selectProject(nextProjectId, options = {}) {
     const targetProjectId = String(nextProjectId || "").trim();
     if (!targetProjectId) return false;
     setProjectId(targetProjectId);
     setSessionId("");
-    setMessages([]);
+    resetItemDomain();
     setSessionAgentState({});
     clearLiveRunUi();
     setStageTimeline([]);
@@ -1237,12 +1529,15 @@ function App() {
     closeProjectMenu();
     closeThreadMenu();
     clearUiError();
-    const list = await refreshSessions(targetProjectId);
+    const [list] = await Promise.all([
+      refreshSessions(targetProjectId),
+      refreshRuntimeStatus(targetProjectId, { background: true }),
+    ]);
     const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
     const preferredSessionId =
-      storedSessionId && list.some((item) => item.session_id === storedSessionId)
+      storedSessionId && list.some((item) => String(item.session_id || item.thread_id || "") === storedSessionId)
         ? storedSessionId
-        : String(((list || [])[0] || {}).session_id || "").trim();
+        : String((((list || [])[0] || {}).session_id) || (((list || [])[0] || {}).thread_id) || "").trim();
     if (preferredSessionId) {
       await loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
       return true;
@@ -1254,12 +1549,15 @@ function App() {
   }
 
   async function refreshWorkbenchTools() {
+    setPanelStatus("tools", "loading");
     try {
       const data = await fetchJson("/api/workbench/tools");
       clearUiError();
       setWorkbenchTools(Array.isArray(data.tools) ? data.tools : []);
+      setPanelStatus("tools", "fresh");
       return data;
     } catch (err) {
+      setPanelStatus("tools", "error");
       const nextError = applyUiError(err, t("errors.refresh_tools_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_tools_failed", { summary: nextError.summary }));
       return null;
@@ -1268,6 +1566,7 @@ function App() {
 
   async function refreshSkills(preferredSkillId) {
     const requestSeq = ++skillsRequestSeqRef.current;
+    setPanelStatus("skills", "loading");
     try {
       const data = await fetchJson("/api/workbench/skills");
       const list = shallowSkillList(data.skills);
@@ -1275,9 +1574,11 @@ function App() {
       clearUiError();
       setSkills(list);
       syncSkillSelection(list, preferredSkillId);
+      setPanelStatus("skills", "fresh");
       return list;
     } catch (err) {
       if (requestSeq !== skillsRequestSeqRef.current) return [];
+      setPanelStatus("skills", "error");
       const nextError = applyUiError(err, t("errors.refresh_skills_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_skills_failed", { summary: nextError.summary }));
       return [];
@@ -1285,6 +1586,7 @@ function App() {
   }
 
   async function refreshSpecs() {
+    setPanelStatus("specs", "loading");
     try {
       const data = await fetchJson(workbenchSpecUrl("", uiLocale));
       const list = Array.isArray(data.specs) ? data.specs : [];
@@ -1294,8 +1596,10 @@ function App() {
       if (preferred) {
         await loadSpecDetail(String(preferred.name || ""));
       }
+      setPanelStatus("specs", "fresh");
       return list;
     } catch (err) {
+      setPanelStatus("specs", "error");
       const nextError = applyUiError(err, t("errors.refresh_specs_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_specs_failed", { summary: nextError.summary }));
       return [];
@@ -1317,7 +1621,6 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ root_path: rootPath, title }),
       });
-      await refreshHealth();
       await refreshProjects();
       clearUiError();
       setProjectDialogOpen(false);
@@ -1336,23 +1639,42 @@ function App() {
   }
 
   async function createSession(targetProjectId = projectId) {
-    const data = await fetchJson("/api/session/new", {
+    const data = await fetchJson("/api/thread/new", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project_id: targetProjectId || "" }),
     });
-    const sid = String(data.session_id || "").trim();
+    const sid = String(data.thread_id || data.session_id || "").trim();
     const resolvedProjectId = String(data.project_id || targetProjectId || "").trim();
     if (!sid) throw new Error("session id missing");
     if (resolvedProjectId) setProjectId(resolvedProjectId);
     setSessionId(sid);
-    setMessages([]);
+    resetItemDomain();
     setSessionAgentState({});
     clearLiveRunUi();
     clearUiError();
     closeProjectMenu();
     closeThreadMenu();
-    await refreshSessions(resolvedProjectId || targetProjectId);
+    const projectRecord = projects.find((item) => String(item.project_id || "") === resolvedProjectId) || currentProject || null;
+    const nowIso = new Date().toISOString();
+    upsertThreadRow(
+      {
+        thread_id: sid,
+        session_id: sid,
+        title: "",
+        preview: "",
+        turn_count: 0,
+        project_id: resolvedProjectId || String(targetProjectId || ""),
+        project_title: String((projectRecord && projectRecord.title) || ""),
+        project_root: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
+        git_branch: String((projectRecord && projectRecord.git_branch) || runtimeStatus.git_branch || ""),
+        cwd: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
+        updated_at: nowIso,
+        created_at: nowIso,
+        status: "idle",
+      },
+      { promote: true },
+    );
     pushLogWithLimit(setLogs, "system", t("log.thread_created", { session_id: sid.slice(0, 8) }));
     return sid;
   }
@@ -1363,18 +1685,18 @@ function App() {
     setLoadingSession(true);
     setMobileThreadsOpen(false);
     try {
-      const data = await fetchJson(`/api/session/${encodeURIComponent(sid)}?max_turns=120`);
+      const data = normalizeThreadDetailPayload(await fetchJson(`/api/thread/${encodeURIComponent(sid)}?max_turns=120`));
+      resetItemDomain();
       setMessages(extractSessionMessages(data));
       setSessionAgentState((data && data.agent_state) || {});
-      setSessionId(sid);
-      if (data && data.project_id) {
-        setProjectId(String(data.project_id || ""));
-      } else if (options.projectIdOverride) {
-        setProjectId(String(options.projectIdOverride || ""));
-      }
+      setSessionId(String(data.thread_id || data.session_id || sid));
+      const resolvedProjectId = String((data && data.project_id) || options.projectIdOverride || "").trim();
+      if (resolvedProjectId) setProjectId(resolvedProjectId);
+      updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
       clearLiveRunUi();
       closeThreadMenu();
       clearUiError();
+      await refreshRuntimeStatus(resolvedProjectId || projectId, { background: true });
       pushLogWithLimit(setLogs, "system", t("log.thread_loaded", { session_id: sid.slice(0, 8) }));
       return true;
     } catch (err) {
@@ -1399,21 +1721,21 @@ function App() {
   async function handleDeleteSession(targetSessionId) {
     const sid = String(targetSessionId || "").trim();
     if (!sid || loadingSession || sending) return;
-    const item = sessions.find((entry) => String(entry.session_id || "") === sid) || null;
+    const item = sessions.find((entry) => String(entry.session_id || entry.thread_id || "") === sid) || null;
     const title = String((item && item.title) || t("labels.new_thread")).trim() || t("labels.new_thread");
     if (!window.confirm(t("confirm.delete_thread", { title }))) {
       closeThreadMenu();
       return;
     }
     try {
-      await fetchJson(`/api/session/${encodeURIComponent(sid)}`, { method: "DELETE" });
+      await fetchJson(`/api/thread/${encodeURIComponent(sid)}`, { method: "DELETE" });
       closeThreadMenu();
-      const list = await refreshSessions(projectId);
       const storageKey = sessionStorageKeyForProject(projectId);
-      const remaining = list.filter((entry) => String(entry.session_id || "") !== sid);
+      const remaining = sessions.filter((entry) => String(entry.session_id || entry.thread_id || "") !== sid);
+      removeThreadRow(sid);
       if (sid === sessionId) {
         if (remaining.length) {
-          const nextId = String(remaining[0].session_id || "").trim();
+          const nextId = String(remaining[0].session_id || remaining[0].thread_id || "").trim();
           if (nextId) {
             window.localStorage.setItem(storageKey, nextId);
             await loadSession(nextId, { projectIdOverride: projectId });
@@ -1421,7 +1743,7 @@ function App() {
         } else {
           window.localStorage.removeItem(storageKey);
           setSessionId("");
-          setMessages([]);
+          resetItemDomain();
           setSessionAgentState({});
           clearLiveRunUi();
         }
@@ -1429,7 +1751,7 @@ function App() {
         const stored = window.localStorage.getItem(storageKey) || "";
         if (stored === sid) {
           if (remaining.length) {
-            window.localStorage.setItem(storageKey, String(remaining[0].session_id || ""));
+            window.localStorage.setItem(storageKey, String(remaining[0].session_id || remaining[0].thread_id || ""));
           } else {
             window.localStorage.removeItem(storageKey);
           }
@@ -1461,23 +1783,23 @@ function App() {
       closeProjectMenu();
       window.localStorage.removeItem(sessionStorageKeyForProject(pid));
       const deletingCurrentProject = pid === String(projectId || "").trim();
-      const [healthData, list] = await Promise.all([refreshHealth(), refreshProjects()]);
+      const list = await refreshProjects();
       if (deletingCurrentProject) {
         window.localStorage.removeItem(PROJECT_STORAGE_KEY);
         setSessionId("");
-        setMessages([]);
+        resetItemDomain();
         setSessionAgentState({});
         setLogs([]);
         clearLiveRunUi();
         const nextProjectId =
           String(((list || []).find((entry) => String(entry.project_id || "").trim() !== pid) || {}).project_id || "").trim() ||
-          String((healthData && healthData.default_project_id) || "").trim() ||
           String((((list || [])[0] || {}).project_id) || "").trim();
         if (nextProjectId) {
           await selectProject(nextProjectId, { silentNotFound: true });
         } else {
           setProjectId("");
           setSessions([]);
+          await refreshRuntimeStatus("", { background: true });
         }
       }
       clearUiError();
@@ -1681,10 +2003,30 @@ function App() {
       const decoder = new TextDecoder();
       let buffer = "";
       let finalPayload = null;
+      let assistantMessageStarted = false;
+      let assistantText = "";
+      let latestThreadId = String(sid || "");
+      let latestRunSnapshot = {};
+      let latestEvidenceState = { status: "not_needed" };
+      let latestToolEvents = [];
+      let latestTokenUsage = {};
+      let latestSessionTokenTotals = {};
+      let latestGlobalTokenTotals = {};
+      let completedTurnPayload = null;
 
-      const replacePendingText = (text) => {
+      const replacePendingText = (text, options = {}) => {
+        if (options.onlyWhileWaiting && assistantMessageStarted) return;
         setMessages((prev) =>
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
+        );
+      };
+      const completePendingText = (text) => {
+        setMessages((prev) =>
+          prev.map((item) => (
+            item.id === pendingMessage.id
+              ? createMessage("assistant", text, { id: item.id })
+              : item
+          )),
         );
       };
       const pushLiveLog = (type, text) => {
@@ -1692,14 +2034,83 @@ function App() {
       };
       const applySnapshot = (snapshot) => {
         if (!snapshot || typeof snapshot !== "object") return;
+        latestRunSnapshot = mergeRunSnapshot(latestRunSnapshot, snapshot);
         setLiveTurnState((prev) => mergeRunSnapshot(prev, snapshot));
         if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
+          latestEvidenceState = {
+            ...latestEvidenceState,
+            status: String(snapshot.evidence_status || latestEvidenceState.status || "not_needed"),
+          };
           setLiveEvidence((prev) => ({
             ...prev,
             status: String(snapshot.evidence_status || prev.status || "not_needed"),
           }));
         }
+        if (snapshot.context_meter && typeof snapshot.context_meter === "object") {
+          setHealth((prev) => (
+            prev
+              ? { ...prev, context_meter: snapshot.context_meter }
+              : prev
+          ));
+          setSessionAgentState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
+        }
+        if (snapshot.compaction_status && typeof snapshot.compaction_status === "object") {
+          setHealth((prev) => (
+            prev
+              ? { ...prev, compaction_status: snapshot.compaction_status }
+              : prev
+          ));
+          setSessionAgentState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
+        }
       };
+      const recordToolItem = (item) => {
+        if (!item || typeof item !== "object") return;
+        latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24);
+        setToolTimeline((prev) => [item, ...prev.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24));
+        setLiveToolTimeline((prev) => [item, ...prev.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24));
+        const toolName = String(item.tool || item.name || item.type || "tool");
+        const summary = toolTimelineSummary(
+          { ...item, name: toolName, summary: item.summary || item.output_preview || toolName },
+          uiLocale,
+        );
+        pushLogWithLimit(setLogs, "tool", `${toolName}: ${summary}`);
+        pushLiveLog("tool", `${toolName}: ${summary}`);
+      };
+      const buildFallbackFinalPayload = () => ({
+        session_id: latestThreadId || sid,
+        thread_id: latestThreadId || sid,
+        run_id: String(((completedTurnPayload || {}).id) || activeRunId || ""),
+        agent_id: "vintage_programmer",
+        effective_model: String(
+          chatSettings.model ||
+          (activeProviderProfile && activeProviderProfile.default_model) ||
+          (health && health.default_model) ||
+          "",
+        ).trim(),
+        text: assistantText || "",
+        tool_events: latestToolEvents,
+        collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+        turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
+        plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
+        pending_user_input: latestRunSnapshot.pending_user_input || {},
+        current_task_focus: latestRunSnapshot.current_task_focus || {},
+        context_meter: latestRunSnapshot.context_meter || {},
+        compaction_status: latestRunSnapshot.compaction_status || {},
+        token_usage: latestTokenUsage,
+        session_token_totals: latestSessionTokenTotals,
+        global_token_totals: latestGlobalTokenTotals,
+        inspector: {
+          run_state: latestRunSnapshot,
+          evidence: latestEvidenceState,
+          tool_timeline: latestToolEvents,
+          session: {
+            session_id: latestThreadId || sid,
+            context_meter: latestRunSnapshot.context_meter || {},
+            compaction_status: latestRunSnapshot.compaction_status || {},
+          },
+          loaded_skills: [],
+        },
+      });
 
       while (true) {
         const { done, value } = await reader.read();
@@ -1714,12 +2125,129 @@ function App() {
             if (payload && payload.run_id) {
               setActiveRunId(String(payload.run_id || ""));
             }
+            if (payload && payload.thread_id) {
+              latestThreadId = String(payload.thread_id || latestThreadId || "");
+            }
+            if (payload && payload.session_id && !payload.thread_id) {
+              latestThreadId = String(payload.session_id || latestThreadId || "");
+            }
             if (payload && payload.run_snapshot) {
               applySnapshot(payload.run_snapshot);
             }
-            if (event === "stage") {
+            if (event === "thread/started") {
+              if (payload.thread) upsertThreadRow(payload.thread, { promote: true });
+            } else if (event === "thread/status/changed") {
+              updateThreadStatus(payload.thread_id, ((payload.status || {}).type) || "idle");
+            } else if (event === "thread/updated") {
+              if (payload.thread) upsertThreadRow(payload.thread, { promote: true });
+            } else if (event === "thread/tokenUsage/updated") {
+              latestTokenUsage = payload.token_usage && typeof payload.token_usage === "object" ? payload.token_usage : latestTokenUsage;
+              latestSessionTokenTotals = payload.session_token_totals && typeof payload.session_token_totals === "object"
+                ? payload.session_token_totals
+                : latestSessionTokenTotals;
+              latestGlobalTokenTotals = payload.global_token_totals && typeof payload.global_token_totals === "object"
+                ? payload.global_token_totals
+                : latestGlobalTokenTotals;
+              if (payload.context_meter && typeof payload.context_meter === "object") {
+                applySnapshot({ context_meter: payload.context_meter });
+              }
+            } else if (event === "turn/started") {
+              const turn = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
+              const turnId = String(turn.id || "");
+              if (turnId) setActiveRunId(turnId);
+              if (String(turn.threadId || "").trim()) {
+                latestThreadId = String(turn.threadId || "").trim();
+                updateThreadStatus(latestThreadId, "active");
+              }
+              applySnapshot({
+                collaboration_mode: String(payload.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                turn_status: "running",
+              });
+            } else if (event === "turn/plan/updated") {
+              const nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
+              applySnapshot({ plan: nextPlan });
+              setSessionAgentState((prev) => ({
+                ...(prev || {}),
+                collaboration_mode: String((latestRunSnapshot.collaboration_mode) || chatSettings.collaboration_mode || "default"),
+                turn_status: String((latestRunSnapshot.turn_status) || "running"),
+                plan: nextPlan,
+              }));
+              const explanation = String(payload.explanation || "checklist updated");
+              pushLogWithLimit(setLogs, "system", explanation);
+              pushLiveLog("system", explanation);
+            } else if (event === "turn/completed") {
+              completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
+              const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
+              applySnapshot({ turn_status: completionStatus });
+              if (assistantText) completePendingText(assistantText);
+              setSending(false);
+              setStoppingRun(false);
+              setActiveRunId("");
+            } else if (event === "item/started") {
+              const item = payload.item && typeof payload.item === "object" ? payload.item : {};
+              if (item.id) {
+                dispatch({
+                  type: "items/register",
+                  item: {
+                    ...item,
+                    threadId: String(payload.thread_id || latestThreadId || ""),
+                    turnId: String(payload.turn_id || activeRunId || ""),
+                  },
+                });
+              }
+              if (String(item.type || "") === "agentMessage") {
+                assistantMessageStarted = true;
+              }
+            } else if (event === "item/agentMessage/delta") {
+              assistantMessageStarted = true;
+              const delta = String(payload.delta || "");
+              if (delta) {
+                assistantText += delta;
+                dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
+                replacePendingText(assistantText);
+              }
+            } else if (event === "item/completed") {
+              const item = payload.item && typeof payload.item === "object" ? payload.item : {};
+              if (item.id) {
+                dispatch({
+                  type: "items/register",
+                  item: {
+                    ...item,
+                    threadId: String(payload.thread_id || latestThreadId || ""),
+                    turnId: String(payload.turn_id || activeRunId || ""),
+                  },
+                });
+              }
+              const itemType = String(item.type || "");
+              if (itemType === "agentMessage") {
+                assistantMessageStarted = true;
+                assistantText = String(item.text || assistantText || "");
+                if (assistantText) completePendingText(assistantText);
+              } else if (itemType === "userInputRequest") {
+                const nextPending = {
+                  summary: String(item.summary || ""),
+                  questions: Array.isArray(item.questions) ? item.questions : [],
+                };
+                applySnapshot({
+                  collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                  turn_status: "needs_user_input",
+                  pending_user_input: nextPending,
+                });
+                setSessionAgentState((prev) => ({
+                  ...(prev || {}),
+                  collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                  turn_status: "needs_user_input",
+                  pending_user_input: nextPending,
+                }));
+                replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+                pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
+                pushLiveLog("system", String(nextPending.summary || "user input required"));
+              } else if (["toolCall", "commandExecution", "fileChange", "imageView"].includes(itemType)) {
+                recordToolItem(item);
+              }
+            } else if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || t("labels.processing"));
-              replacePendingText(detail);
+              replacePendingText(detail, { onlyWhileWaiting: true });
               pushLogWithLimit(setLogs, "stage", detail);
               pushLiveLog("stage", detail);
             } else if (event === "trace") {
@@ -1728,47 +2256,6 @@ function App() {
                 pushLogWithLimit(setLogs, "trace", detail);
                 pushLiveLog("trace", detail);
               }
-            } else if (event === "tool") {
-              const item = payload.item || {};
-              const name = String(item.name || "tool");
-              const summary = toolTimelineSummary(
-                { ...item, summary: payload.summary || item.summary || item.output_preview || "tool" },
-                uiLocale,
-              );
-              setToolTimeline((prev) => [item, ...prev].slice(0, 24));
-              setLiveToolTimeline((prev) => [item, ...prev].slice(0, 24));
-              pushLogWithLimit(setLogs, "tool", `${name}: ${summary}`);
-              pushLiveLog("tool", `${name}: ${summary}`);
-            } else if (event === "plan_update") {
-              setSessionAgentState((prev) => ({
-                ...prev,
-                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
-                turn_status: String(payload.turn_status || prev.turn_status || "running"),
-                plan: Array.isArray(payload.plan) ? payload.plan : [],
-              }));
-              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
-                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
-                turn_status: String(payload.turn_status || prev.turn_status || "running"),
-                plan: Array.isArray(payload.plan) ? payload.plan : [],
-              }));
-              pushLogWithLimit(setLogs, "system", String(payload.explanation || "checklist updated"));
-              pushLiveLog("system", String(payload.explanation || "checklist updated"));
-            } else if (event === "request_user_input") {
-              const nextPending = payload.pending_user_input || {};
-              setSessionAgentState((prev) => ({
-                ...prev,
-                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
-                turn_status: String(payload.turn_status || "needs_user_input"),
-                pending_user_input: nextPending,
-              }));
-              setLiveTurnState((prev) => mergeRunSnapshot(prev, {
-                collaboration_mode: String(payload.collaboration_mode || prev.collaboration_mode || chatSettings.collaboration_mode || "default"),
-                turn_status: String(payload.turn_status || "needs_user_input"),
-                pending_user_input: nextPending,
-              }));
-              replacePendingText(String(nextPending.summary || t("labels.pending_input")));
-              pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
-              pushLiveLog("system", String(nextPending.summary || "user input required"));
             } else if (event === "final") {
               finalPayload = payload.response || null;
             } else if (event === "error") {
@@ -1780,17 +2267,24 @@ function App() {
         if (done) break;
       }
 
+      if (!finalPayload && (completedTurnPayload || assistantText || Object.keys(latestRunSnapshot).length)) {
+        finalPayload = buildFallbackFinalPayload();
+      }
       if (!finalPayload) throw new Error("missing final payload");
       setMessages((prev) =>
         prev.map((item) =>
           item.id === pendingMessage.id
-            ? createMessage("assistant", String(finalPayload.text || "(empty response)"))
+            ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), { id: item.id })
             : item,
         ),
       );
       setLastResponse(finalPayload);
       setPendingUploads([]);
       clearUiError();
+      if (finalPayload.thread_id || finalPayload.session_id) {
+        latestThreadId = String(finalPayload.thread_id || finalPayload.session_id || latestThreadId || "");
+        if (latestThreadId) setSessionId(latestThreadId);
+      }
       setActiveRunId(String(finalPayload.run_id || ""));
       setLiveTurnState((prev) => mergeRunSnapshot(prev, {
         ...(((finalPayload.inspector || {}).run_state) || {}),
@@ -1803,9 +2297,20 @@ function App() {
       }));
       setLiveEvidence((prev) => ({
         ...prev,
+        ...latestEvidenceState,
         ...(((finalPayload.inspector || {}).evidence) || {}),
       }));
-      setLiveToolTimeline(Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : []);
+      setLiveToolTimeline(Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : latestToolEvents);
+      if (latestThreadId) updateThreadStatus(latestThreadId, "idle");
+      setHealth((prev) => (
+        prev
+          ? {
+              ...prev,
+              context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || prev.context_meter,
+              compaction_status: finalPayload.compaction_status || (((finalPayload.inspector || {}).run_state || {}).compaction_status) || prev.compaction_status,
+            }
+          : prev
+      ));
       setSessionAgentState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
@@ -1849,7 +2354,6 @@ function App() {
       setSending(false);
       setStoppingRun(false);
       setActiveRunId("");
-      scheduleSessionRefresh(projectId);
     } catch (err) {
       const nextError = applyUiError(err, t("errors.request_failed"));
       pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
@@ -1891,7 +2395,7 @@ function App() {
       });
       const nextSkillId = String(payload.id || targetSkillId || "").trim();
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
-      await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
+      await refreshSkills(nextSkillId);
       clearUiError();
       pushLogWithLimit(setLogs, "system", t("log.skill_saved", { skill_id: nextSkillId || "new_skill" }));
     } catch (err) {
@@ -1914,7 +2418,7 @@ function App() {
       });
       const nextSkillId = String(payload.id || targetSkillId || "").trim();
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
-      await Promise.all([refreshSkills(nextSkillId), refreshHealth()]);
+      await refreshSkills(nextSkillId);
       clearUiError();
       pushLogWithLimit(
         setLogs,
@@ -1948,7 +2452,7 @@ function App() {
       if (fallbackSkillId) {
         skillDraftModeRef.current = false;
       }
-      await Promise.all([refreshSkills(fallbackSkillId), refreshHealth()]);
+      await refreshSkills(fallbackSkillId);
       clearUiError();
       pushLogWithLimit(setLogs, "system", t("log.skill_deleted", { skill_id: targetSkillId }));
     } catch (err) {
@@ -1969,7 +2473,7 @@ function App() {
         body: JSON.stringify({ content: specEditor }),
       });
       setSpecEditor(String(payload.content || ""));
-      await Promise.all([refreshSpecs(), refreshHealth()]);
+      await refreshSpecs();
       clearUiError();
       pushLogWithLimit(setLogs, "system", t("log.spec_saved", { spec_name: selectedSpecName }));
     } catch (err) {

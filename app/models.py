@@ -280,6 +280,45 @@ class SessionListResponse(BaseModel):
     sessions: list[SessionListItem] = Field(default_factory=list)
 
 
+class ThreadDetailResponse(BaseModel):
+    thread_id: str
+    session_id: str = ""
+    title: str = ""
+    summary: str = ""
+    turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
+    status: Literal["not_loaded", "idle", "active", "system_error"] = "idle"
+    agent_state: dict[str, object] = Field(default_factory=dict)
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
+    turns: list[SessionTurn] = Field(default_factory=list)
+
+
+class ThreadListItem(BaseModel):
+    thread_id: str
+    session_id: str = ""
+    title: str = ""
+    has_custom_title: bool = False
+    preview: str = ""
+    turn_count: int = 0
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
+    updated_at: str = ""
+    created_at: str = ""
+    status: Literal["not_loaded", "idle", "active", "system_error"] = "idle"
+
+
+class ThreadListResponse(BaseModel):
+    threads: list[ThreadListItem] = Field(default_factory=list)
+
+
 class ProjectDescriptor(BaseModel):
     project_id: str
     title: str
@@ -312,6 +351,18 @@ class ProjectDeleteResponse(BaseModel):
     ok: bool
     project_id: str
     deleted_session_count: int = 0
+
+
+class NewThreadResponse(BaseModel):
+    thread_id: str
+    session_id: str = ""
+    project_id: str = ""
+
+
+class DeleteThreadResponse(BaseModel):
+    ok: bool
+    thread_id: str
+    session_id: str = ""
 
 
 class SkillDeleteResponse(BaseModel):
@@ -404,6 +455,45 @@ class HealthResponse(BaseModel):
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     agent: dict[str, object] = Field(default_factory=dict)
+
+
+class BootstrapResponse(BaseModel):
+    ok: bool
+    app_title: str = ""
+    app_version: str = ""
+    build_version: str = ""
+    default_locale: str = "ja-JP"
+    supported_locales: list[str] = Field(default_factory=list)
+    default_model: str = ""
+    model_options: list[str] = Field(default_factory=list)
+    allow_custom_model: bool = True
+    llm_provider: str = ""
+    provider_options: list[dict[str, object]] = Field(default_factory=list)
+    auth_mode: str = ""
+    execution_mode_default: Literal["host", "docker"] = "host"
+    docker_available: bool = False
+    docker_message: str | None = None
+    platform_name: str = ""
+    workspace_root: str = ""
+    allowed_roots: list[str] = Field(default_factory=list)
+    max_upload_mb: int = 0
+    web_allow_all_domains: bool = True
+    web_allowed_domains: list[str] = Field(default_factory=list)
+    default_project_id: str = ""
+    agent: dict[str, object] = Field(default_factory=dict)
+
+
+class RuntimeStatusResponse(BaseModel):
+    ok: bool
+    project_id: str = ""
+    project_title: str = ""
+    project_root: str = ""
+    git_branch: str = ""
+    cwd: str = ""
+    runtime_status: dict[str, object] = Field(default_factory=dict)
+    ocr_status: dict[str, object] = Field(default_factory=dict)
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
 
 
 class KernelManifestUpdateRequest(BaseModel):

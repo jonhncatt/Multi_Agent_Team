@@ -299,7 +299,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.1.0"
+    assert payload["app_version"] == "2.2.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -342,6 +342,54 @@ def test_health_endpoint_uses_live_project_branch_instead_of_startup_constant(mo
     payload = response.json()
     assert payload["runtime_status"]["git_branch"] == "feature/live-branch"
     assert payload["runtime_status"]["git_branch"] != "stale-startup-branch"
+
+
+def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    bootstrap_response = client.get("/api/bootstrap")
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.json()
+    assert bootstrap_payload["ok"] is True
+    assert bootstrap_payload["app_version"] == "2.2.0"
+    assert bootstrap_payload["default_project_id"]
+    assert bootstrap_payload["supported_locales"]
+
+    runtime_response = client.get("/api/runtime-status")
+    assert runtime_response.status_code == 200
+    runtime_payload = runtime_response.json()
+    assert runtime_payload["ok"] is True
+    assert runtime_payload["project_id"] == bootstrap_payload["default_project_id"]
+    assert runtime_payload["runtime_status"]["workspace_label"]
+    assert runtime_payload["context_meter"]["auto_compact_token_limit"] > 0
+    assert runtime_payload["compaction_status"]["mode"] == "token_budget"
+
+    create_response = client.post("/api/thread/new", json={"project_id": bootstrap_payload["default_project_id"]})
+    assert create_response.status_code == 200
+    create_payload = create_response.json()
+    thread_id = create_payload["thread_id"]
+    assert thread_id
+    assert create_payload["session_id"] == thread_id
+
+    detail_response = client.get(f"/api/thread/{thread_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["thread_id"] == thread_id
+    assert detail_payload["session_id"] == thread_id
+    assert detail_payload["status"] == "idle"
+
+    list_response = client.get(f"/api/threads?project_id={bootstrap_payload['default_project_id']}")
+    assert list_response.status_code == 200
+    thread_ids = {item["thread_id"] for item in list_response.json()["threads"]}
+    assert thread_id in thread_ids
+
+    delete_response = client.delete(f"/api/thread/{thread_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"ok": True, "thread_id": thread_id, "session_id": thread_id}
+
+    detail_after_delete = client.get(f"/api/thread/{thread_id}")
+    assert detail_after_delete.status_code == 404
 
 
 def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:
@@ -454,10 +502,28 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     event_names = [name for name, _ in events]
     assert "stage" in event_names
     assert "plan_update" in event_names
+    assert "thread/started" in event_names
+    assert "thread/status/changed" in event_names
+    assert "thread/updated" in event_names
+    assert "thread/tokenUsage/updated" in event_names
+    assert "turn/started" in event_names
+    assert "turn/plan/updated" in event_names
+    assert "turn/completed" in event_names
+    assert "item/started" in event_names
+    assert "item/agentMessage/delta" in event_names
+    assert "item/completed" in event_names
     assert "final" in event_names
     assert event_names[-1] == "done"
     stage_payloads = [payload for name, payload in events if name == "stage"]
     assert any(payload.get("phase") == "execute" for payload in stage_payloads)
+    thread_status_payloads = [payload for name, payload in events if name == "thread/status/changed"]
+    assert {payload["status"]["type"] for payload in thread_status_payloads} >= {"active", "idle"}
+    typed_turn = next(payload for name, payload in events if name == "turn/started")
+    assert typed_turn["turn"]["status"] == "inProgress"
+    typed_plan = next(payload for name, payload in events if name == "turn/plan/updated")
+    assert typed_plan["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
+    typed_delta = next(payload for name, payload in events if name == "item/agentMessage/delta")
+    assert typed_delta["delta"] == "single-agent response"
     final_payload = next(payload for name, payload in events if name == "final")
     response_payload = dict(final_payload.get("response") or {})
     assert response_payload["agent_id"] == "vintage_programmer"

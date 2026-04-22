@@ -32,9 +32,11 @@ from app.evals import run_regression_evals
 from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
+    BootstrapResponse,
     ChatRequest,
     ChatResponse,
     ClearStatsResponse,
+    DeleteThreadResponse,
     DeleteSessionResponse,
     EvalCaseResult,
     EvalRunRequest,
@@ -52,11 +54,13 @@ from app.models import (
     KernelShadowSmokeRequest,
     NewSessionResponse,
     NewSessionRequest,
+    NewThreadResponse,
     ProjectCreateRequest,
     ProjectDescriptor,
     ProjectDeleteResponse,
     ProjectListResponse,
     ProjectUpdateRequest,
+    RuntimeStatusResponse,
     SessionDetailResponse,
     SessionListItem,
     SessionListResponse,
@@ -77,6 +81,9 @@ from app.models import (
     ToolDescriptor,
     ToolEvent,
     TokenUsage,
+    ThreadDetailResponse,
+    ThreadListItem,
+    ThreadListResponse,
     UploadResponse,
     WorkbenchSkillsResponse,
     WorkbenchSpecsResponse,
@@ -115,7 +122,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -448,88 +455,52 @@ def index() -> FileResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    runtime = get_agent_os_runtime()
-    legacy_tools = runtime.legacy_tools()
-    docker_ok, docker_msg = legacy_tools.docker_status()
-    ocr_status = legacy_tools.ocr_status() if hasattr(legacy_tools, "ocr_status") else {}
-    provider_options = _provider_options_payload()
-    active_provider = next(
-        (
-            item
-            for item in provider_options
-            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
-        ),
-        provider_options[0] if provider_options else None,
-    )
-    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
-    active_provider_config = build_provider_config(config, active_provider_name)
-    auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
-    agent_descriptor = get_vintage_programmer_runtime().descriptor()
-    active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
-    compaction_status = _build_compaction_status_for_session(
-        model=active_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-    )
-    context_meter = _build_context_meter_for_session(
-        model=active_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-    )
+    bootstrap = _bootstrap_response_payload()
+    runtime_status = _runtime_status_response_payload()
     projects = get_project_store().list_projects()
-    default_project = get_project_store().ensure_default_project()
-    effective_roots: list[str] = []
-    for raw_root in [*(str(path) for path in config.allowed_roots), *(str(item.get("root_path") or "") for item in projects)]:
-        if raw_root and raw_root not in effective_roots:
-            effective_roots.append(raw_root)
-    if config.allow_any_path:
-        permission_summary = translate(config.default_locale, "health.permission_summary.full_filesystem")
-    else:
-        root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
-        permission_summary = translate(
-            config.default_locale,
-            "health.permission_summary.allowed_roots",
-            count=len(effective_roots),
-            root_names=", ".join(root_names),
-        )
     return HealthResponse(
         ok=True,
-        app_title=APP_TITLE,
-        app_version=APP_VERSION,
-        build_version=BUILD_VERSION,
-        default_locale=config.default_locale,
-        supported_locales=supported_locales(),
-        default_model=active_model,
-        model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
-        allow_custom_model=True,
-        llm_provider=active_provider_name,
-        provider_options=provider_options,
-        auth_mode=str(auth_summary.get("mode") or ""),
-        execution_mode_default=config.execution_mode,
-        docker_available=docker_ok,
-        docker_message=docker_msg,
-        platform_name=config.platform_name,
-        workspace_root=str(config.workspace_root),
-        allowed_roots=effective_roots,
-        max_upload_mb=config.max_upload_mb,
-        web_allow_all_domains=config.web_allow_all_domains,
-        web_allowed_domains=config.web_allowed_domains,
-        default_project_id=str(default_project.get("project_id") or ""),
+        app_title=bootstrap.app_title,
+        app_version=bootstrap.app_version,
+        build_version=bootstrap.build_version,
+        default_locale=bootstrap.default_locale,
+        supported_locales=bootstrap.supported_locales,
+        default_model=bootstrap.default_model,
+        model_options=bootstrap.model_options,
+        allow_custom_model=bootstrap.allow_custom_model,
+        llm_provider=bootstrap.llm_provider,
+        provider_options=bootstrap.provider_options,
+        auth_mode=bootstrap.auth_mode,
+        execution_mode_default=bootstrap.execution_mode_default,
+        docker_available=bootstrap.docker_available,
+        docker_message=bootstrap.docker_message,
+        platform_name=bootstrap.platform_name,
+        workspace_root=bootstrap.workspace_root,
+        allowed_roots=bootstrap.allowed_roots,
+        max_upload_mb=bootstrap.max_upload_mb,
+        web_allow_all_domains=bootstrap.web_allow_all_domains,
+        web_allowed_domains=bootstrap.web_allowed_domains,
+        default_project_id=bootstrap.default_project_id,
         projects=[ProjectDescriptor(**item) for item in projects if isinstance(item, dict)],
-        runtime_status={
-            "execution_mode": config.execution_mode,
-            "auth_ready": bool(auth_summary.get("available")),
-            "auth_mode": str(auth_summary.get("mode") or ""),
-            "provider": active_provider_name,
-            "permission_summary": permission_summary,
-            "workspace_label": str(default_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
-            "project_root": str(default_project.get("root_path") or config.workspace_root),
-            "default_project_id": str(default_project.get("project_id") or ""),
-            "git_branch": str(default_project.get("git_branch") or ""),
-            "build_version": BUILD_VERSION,
-        },
-        ocr_status=ocr_status,
-        context_meter=context_meter,
-        compaction_status=compaction_status,
-        agent=agent_descriptor,
+        runtime_status=runtime_status.runtime_status,
+        ocr_status=runtime_status.ocr_status,
+        context_meter=runtime_status.context_meter,
+        compaction_status=runtime_status.compaction_status,
+        agent=bootstrap.agent,
+    )
+
+
+@app.get("/api/bootstrap", response_model=BootstrapResponse)
+def bootstrap() -> BootstrapResponse:
+    return _bootstrap_response_payload()
+
+
+@app.get("/api/runtime-status", response_model=RuntimeStatusResponse)
+def runtime_status(project_id: str | None = None, model: str | None = None, max_output_tokens: int = DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS) -> RuntimeStatusResponse:
+    return _runtime_status_response_payload(
+        project_id=project_id,
+        model=model,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -790,6 +761,261 @@ def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {wanted}")
     return project
+
+
+def _runtime_provider_payload() -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
+    runtime = get_agent_os_runtime()
+    legacy_tools = runtime.legacy_tools()
+    docker_ok, docker_msg = legacy_tools.docker_status()
+    ocr_status = legacy_tools.ocr_status() if hasattr(legacy_tools, "ocr_status") else {}
+    provider_options = _provider_options_payload()
+    active_provider = next(
+        (
+            item
+            for item in provider_options
+            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
+        ),
+        provider_options[0] if provider_options else None,
+    )
+    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
+    active_provider_config = build_provider_config(config, active_provider_name)
+    auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
+    return (
+        provider_options,
+        active_provider or {},
+        active_provider_name,
+        active_provider_config,
+        auth_summary,
+        {
+            "docker_available": docker_ok,
+            "docker_message": docker_msg,
+            "ocr_status": ocr_status,
+        },
+    )
+
+
+def _effective_allowed_roots(projects: list[dict[str, Any]]) -> list[str]:
+    effective_roots: list[str] = []
+    for raw_root in [*(str(path) for path in config.allowed_roots), *(str(item.get("root_path") or "") for item in projects)]:
+        if raw_root and raw_root not in effective_roots:
+            effective_roots.append(raw_root)
+    return effective_roots
+
+
+def _permission_summary_for_roots(effective_roots: list[str], locale: str | None = None) -> str:
+    effective_locale = normalize_locale(locale, config.default_locale)
+    if config.allow_any_path:
+        return translate(effective_locale, "health.permission_summary.full_filesystem")
+    root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
+    return translate(
+        effective_locale,
+        "health.permission_summary.allowed_roots",
+        count=len(effective_roots),
+        root_names=", ".join(root_names),
+    )
+
+
+def _active_thread_ids() -> set[str]:
+    with _active_chat_runs_lock:
+        return {
+            str(item.get("session_id") or "").strip()
+            for item in _active_chat_runs.values()
+            if isinstance(item, dict) and str(item.get("session_id") or "").strip()
+        }
+
+
+def _thread_status_value(session_id: str) -> str:
+    normalized = str(session_id or "").strip()
+    if normalized and normalized in _active_thread_ids():
+        return "active"
+    return "idle"
+
+
+def _thread_list_item_from_session_row(row: dict[str, Any]) -> ThreadListItem:
+    session_id = str(row.get("session_id") or "").strip()
+    return ThreadListItem(
+        thread_id=session_id,
+        session_id=session_id,
+        title=str(row.get("title") or ""),
+        has_custom_title=bool(row.get("has_custom_title")),
+        preview=str(row.get("preview") or ""),
+        turn_count=int(row.get("turn_count") or 0),
+        project_id=str(row.get("project_id") or ""),
+        project_title=str(row.get("project_title") or ""),
+        project_root=str(row.get("project_root") or ""),
+        git_branch=str(row.get("git_branch") or ""),
+        cwd=str(row.get("cwd") or ""),
+        updated_at=str(row.get("updated_at") or ""),
+        created_at=str(row.get("created_at") or ""),
+        status=_thread_status_value(session_id),
+    )
+
+
+def _thread_list_item_for_session_id(session_id: str) -> ThreadListItem | None:
+    loaded = session_store.load(session_id, default_project=_default_project())
+    if not loaded:
+        return None
+    rows = session_store.list_sessions(limit=500, project_id=str(loaded.get("project_id") or ""), default_project=_default_project())
+    hit = next((row for row in rows if str(row.get("session_id") or "") == str(session_id or "")), None)
+    if hit is None:
+        return None
+    return _thread_list_item_from_session_row(hit)
+
+
+def _bootstrap_response_payload() -> BootstrapResponse:
+    (
+        provider_options,
+        active_provider,
+        active_provider_name,
+        active_provider_config,
+        auth_summary,
+        runtime_meta,
+    ) = _runtime_provider_payload()
+    projects = get_project_store().list_projects()
+    default_project = get_project_store().ensure_default_project()
+    agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
+    effective_roots = _effective_allowed_roots(projects)
+    return BootstrapResponse(
+        ok=True,
+        app_title=APP_TITLE,
+        app_version=APP_VERSION,
+        build_version=BUILD_VERSION,
+        default_locale=config.default_locale,
+        supported_locales=supported_locales(),
+        default_model=active_model,
+        model_options=list((active_provider or {}).get("model_options") or active_provider_config.model_options or []),
+        allow_custom_model=True,
+        llm_provider=active_provider_name,
+        provider_options=provider_options,
+        auth_mode=str(auth_summary.get("mode") or ""),
+        execution_mode_default=config.execution_mode,
+        docker_available=bool(runtime_meta.get("docker_available")),
+        docker_message=str(runtime_meta.get("docker_message") or "") or None,
+        platform_name=config.platform_name,
+        workspace_root=str(config.workspace_root),
+        allowed_roots=effective_roots,
+        max_upload_mb=config.max_upload_mb,
+        web_allow_all_domains=config.web_allow_all_domains,
+        web_allowed_domains=config.web_allowed_domains,
+        default_project_id=str(default_project.get("project_id") or ""),
+        agent=agent_descriptor,
+    )
+
+
+def _runtime_status_response_payload(
+    *,
+    project_id: str | None = None,
+    model: str | None = None,
+    max_output_tokens: int = DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+) -> RuntimeStatusResponse:
+    (
+        provider_options,
+        active_provider,
+        active_provider_name,
+        active_provider_config,
+        auth_summary,
+        runtime_meta,
+    ) = _runtime_provider_payload()
+    _ = provider_options
+    agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    selected_project = _resolve_project_or_default(project_id)
+    active_model = str(
+        model
+        or (active_provider or {}).get("default_model")
+        or active_provider_config.default_model
+        or agent_descriptor.get("default_model")
+        or ""
+    ).strip()
+    projects = get_project_store().list_projects()
+    effective_roots = _effective_allowed_roots(projects)
+    runtime_status = {
+        "execution_mode": config.execution_mode,
+        "auth_ready": bool(auth_summary.get("available")),
+        "auth_mode": str(auth_summary.get("mode") or ""),
+        "provider": active_provider_name,
+        "permission_summary": _permission_summary_for_roots(effective_roots),
+        "workspace_label": str(selected_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
+        "project_root": str(selected_project.get("root_path") or config.workspace_root),
+        "default_project_id": str(_default_project().get("project_id") or ""),
+        "git_branch": str(selected_project.get("git_branch") or ""),
+        "build_version": BUILD_VERSION,
+    }
+    context_meter = _build_context_meter_for_session(
+        model=active_model,
+        max_output_tokens=max_output_tokens,
+    )
+    compaction_status = _build_compaction_status_for_session(
+        model=active_model,
+        max_output_tokens=max_output_tokens,
+    )
+    return RuntimeStatusResponse(
+        ok=True,
+        project_id=str(selected_project.get("project_id") or ""),
+        project_title=str(selected_project.get("title") or ""),
+        project_root=str(selected_project.get("root_path") or ""),
+        git_branch=str(selected_project.get("git_branch") or ""),
+        cwd=str(selected_project.get("root_path") or ""),
+        runtime_status=runtime_status,
+        ocr_status=dict(runtime_meta.get("ocr_status") or {}),
+        context_meter=context_meter,
+        compaction_status=compaction_status,
+    )
+
+
+def _thread_detail_response_payload(session_id: str, max_turns: int = 200) -> ThreadDetailResponse:
+    loaded = session_store.load(session_id, default_project=_default_project())
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+    agent_state = dict(loaded.get("agent_state") or {})
+    selected_model = str(agent_state.get("last_model") or config.default_model or "").strip()
+    context_meter = _build_context_meter_for_session(
+        session=loaded,
+        model=selected_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
+    )
+    compaction_status = _build_compaction_status_for_session(
+        session=loaded,
+        model=selected_model,
+        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
+        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
+    )
+    agent_state["context_meter"] = dict(context_meter)
+    agent_state["compaction_status"] = dict(compaction_status)
+    turns_raw = loaded.get("turns", [])
+    if not isinstance(turns_raw, list):
+        turns_raw = []
+    limited_turns = turns_raw[-max(1, min(2000, max_turns)) :]
+    turns: list[SessionTurn] = []
+    for item in limited_turns:
+        if not isinstance(item, dict):
+            continue
+        turns.append(
+            SessionTurn(
+                role=str(item.get("role") or "user"),
+                text=str(item.get("text") or ""),
+                answer_bundle=item.get("answer_bundle") or {},
+                created_at=str(item.get("created_at")) if item.get("created_at") else None,
+            )
+        )
+    return ThreadDetailResponse(
+        thread_id=session_id,
+        session_id=session_id,
+        title=str(loaded.get("title") or ""),
+        summary=str(loaded.get("summary") or ""),
+        turn_count=len(turns_raw),
+        project_id=str(loaded.get("project_id") or ""),
+        project_title=str(loaded.get("project_title") or ""),
+        project_root=str(loaded.get("project_root") or ""),
+        git_branch=str(loaded.get("git_branch") or ""),
+        cwd=str(loaded.get("cwd") or ""),
+        status=_thread_status_value(session_id),
+        agent_state=agent_state,
+        context_meter=context_meter,
+        compaction_status=compaction_status,
+        turns=turns,
+    )
 
 
 @app.get("/api/kernel/runtime", response_model=KernelRuntimeResponse)
@@ -1194,12 +1420,32 @@ def create_session(req: NewSessionRequest | None = None) -> NewSessionResponse:
     return NewSessionResponse(session_id=session["id"], project_id=str(project.get("project_id") or ""))
 
 
+@app.post("/api/thread/new", response_model=NewThreadResponse)
+def create_thread(req: NewSessionRequest | None = None) -> NewThreadResponse:
+    payload = create_session(req)
+    return NewThreadResponse(
+        thread_id=str(payload.session_id or ""),
+        session_id=str(payload.session_id or ""),
+        project_id=str(payload.project_id or ""),
+    )
+
+
 @app.delete("/api/session/{session_id}", response_model=DeleteSessionResponse)
 def delete_session(session_id: str) -> DeleteSessionResponse:
     deleted = session_store.delete(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return DeleteSessionResponse(ok=True, session_id=session_id)
+
+
+@app.delete("/api/thread/{thread_id}", response_model=DeleteThreadResponse)
+def delete_thread(thread_id: str) -> DeleteThreadResponse:
+    payload = delete_session(thread_id)
+    return DeleteThreadResponse(
+        ok=bool(payload.ok),
+        thread_id=str(thread_id or ""),
+        session_id=str(payload.session_id or ""),
+    )
 
 
 @app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
@@ -1216,64 +1462,39 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
 def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
-    loaded = session_store.load(session_id, default_project=_default_project())
-    if not loaded:
-        raise HTTPException(status_code=404, detail="Session not found")
-    agent_state = dict(loaded.get("agent_state") or {})
-    selected_model = str(agent_state.get("last_model") or config.default_model or "").strip()
-    context_meter = _build_context_meter_for_session(
-        session=loaded,
-        model=selected_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
-    )
-    compaction_status = _build_compaction_status_for_session(
-        session=loaded,
-        model=selected_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
-    )
-    agent_state["context_meter"] = dict(context_meter)
-    agent_state["compaction_status"] = dict(compaction_status)
-
-    turns_raw = loaded.get("turns", [])
-    if not isinstance(turns_raw, list):
-        turns_raw = []
-    limited_turns = turns_raw[-max(1, min(2000, max_turns)) :]
-    turns: list[SessionTurn] = []
-    for item in limited_turns:
-        if not isinstance(item, dict):
-            continue
-        turns.append(
-            SessionTurn(
-                role=str(item.get("role") or "user"),
-                text=str(item.get("text") or ""),
-                answer_bundle=item.get("answer_bundle") or {},
-                created_at=str(item.get("created_at")) if item.get("created_at") else None,
-            )
-        )
-
+    thread_payload = _thread_detail_response_payload(session_id, max_turns=max_turns)
     return SessionDetailResponse(
-        session_id=session_id,
-        title=str(loaded.get("title") or ""),
-        summary=str(loaded.get("summary") or ""),
-        turn_count=len(turns_raw),
-        project_id=str(loaded.get("project_id") or ""),
-        project_title=str(loaded.get("project_title") or ""),
-        project_root=str(loaded.get("project_root") or ""),
-        git_branch=str(loaded.get("git_branch") or ""),
-        cwd=str(loaded.get("cwd") or ""),
-        agent_state=agent_state,
-        context_meter=context_meter,
-        compaction_status=compaction_status,
-        turns=turns,
+        session_id=str(thread_payload.thread_id or ""),
+        title=thread_payload.title,
+        summary=thread_payload.summary,
+        turn_count=thread_payload.turn_count,
+        project_id=thread_payload.project_id,
+        project_title=thread_payload.project_title,
+        project_root=thread_payload.project_root,
+        git_branch=thread_payload.git_branch,
+        cwd=thread_payload.cwd,
+        agent_state=thread_payload.agent_state,
+        context_meter=thread_payload.context_meter,
+        compaction_status=thread_payload.compaction_status,
+        turns=thread_payload.turns,
     )
+
+
+@app.get("/api/thread/{thread_id}", response_model=ThreadDetailResponse)
+def get_thread(thread_id: str, max_turns: int = 200) -> ThreadDetailResponse:
+    return _thread_detail_response_payload(thread_id, max_turns=max_turns)
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)
 def list_sessions(limit: int = 50, project_id: str | None = None) -> SessionListResponse:
     rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
     return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
+
+
+@app.get("/api/threads", response_model=ThreadListResponse)
+def list_threads(limit: int = 50, project_id: str | None = None) -> ThreadListResponse:
+    rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
+    return ThreadListResponse(threads=[_thread_list_item_from_session_row(row) for row in rows if isinstance(row, dict)])
 
 
 @app.post("/api/upload", response_model=UploadResponse)
@@ -1532,6 +1753,90 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         progress_cb({"event": event, **payload})
     except Exception:
         pass
+
+
+def _emit_thread_started(progress_cb: Callable[[dict[str, Any]], None] | None, thread_id: str) -> None:
+    item = _thread_list_item_for_session_id(thread_id)
+    if item is None:
+        return
+    _emit_progress(progress_cb, "thread/started", thread=item.model_dump())
+
+
+def _emit_thread_status_changed(
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    *,
+    thread_id: str,
+    status: str,
+) -> None:
+    _emit_progress(
+        progress_cb,
+        "thread/status/changed",
+        thread_id=str(thread_id or ""),
+        status={"type": str(status or "idle")},
+    )
+
+
+def _emit_turn_started(
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    run_snapshot: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "turn": {
+            "id": str(turn_id or ""),
+            "threadId": str(thread_id or ""),
+            "status": "inProgress",
+            "items": [],
+        }
+    }
+    if run_snapshot:
+        payload["run_snapshot"] = dict(run_snapshot)
+    _emit_progress(progress_cb, "turn/started", **payload)
+
+
+def _emit_agent_message_events(
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    text: str,
+) -> None:
+    item_id = f"{str(turn_id or 'turn')}:agent_message"
+    _emit_progress(
+        progress_cb,
+        "item/started",
+        thread_id=str(thread_id or ""),
+        turn_id=str(turn_id or ""),
+        item={
+            "id": item_id,
+            "type": "agentMessage",
+            "text": "",
+            "status": "inProgress",
+        },
+    )
+    if str(text or ""):
+        _emit_progress(
+            progress_cb,
+            "item/agentMessage/delta",
+            thread_id=str(thread_id or ""),
+            turn_id=str(turn_id or ""),
+            item_id=item_id,
+            delta=str(text or ""),
+        )
+    _emit_progress(
+        progress_cb,
+        "item/completed",
+        thread_id=str(thread_id or ""),
+        turn_id=str(turn_id or ""),
+        item={
+            "id": item_id,
+            "type": "agentMessage",
+            "text": str(text or ""),
+            "status": "completed",
+        },
+    )
 
 
 def _build_run_snapshot(
@@ -1882,6 +2187,8 @@ def _process_chat_request(
                 status="completed",
                 detail=translate(locale, "chat.session_ready", session_id=session.get("id")),
                 run_id=run_id,
+                session_id=session_id,
+                thread_id=session_id,
                 queue_wait_ms=queue_wait_ms,
                 run_snapshot=_build_run_snapshot(
                     goal=req.message,
@@ -1903,6 +2210,7 @@ def _process_chat_request(
                     ),
                 ),
             )
+            _emit_thread_started(progress_cb, session_id)
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
         compaction_result = maybe_auto_compact_session(
@@ -2109,6 +2417,28 @@ def _process_chat_request(
             status="running",
             detail=translate(locale, "chat.agent_run_start"),
             run_id=run_id,
+            session_id=session_id,
+            thread_id=session_id,
+            run_snapshot=_build_run_snapshot(
+                goal=req.message,
+                current_task_focus=current_task_focus_for_runtime,
+                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                turn_status="running",
+                cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
+                context_meter=_build_context_meter_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                ),
+                compaction_status=compaction_status_for_runtime,
+            ),
+        )
+        _emit_thread_status_changed(progress_cb, thread_id=session_id, status="active")
+        _emit_turn_started(
+            progress_cb,
+            thread_id=session_id,
+            turn_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=req.message,
                 current_task_focus=current_task_focus_for_runtime,
@@ -2253,6 +2583,13 @@ def _process_chat_request(
         if attachment_note:
             attachment_label = "Attachments" if locale == "en" else ("添付" if locale == "ja-JP" else "附件")
             user_text = f"{user_text}\n\n[{attachment_label}] {attachment_note}"
+
+        _emit_agent_message_events(
+            progress_cb,
+            thread_id=session_id,
+            turn_id=run_id,
+            text=text,
+        )
 
         session_store.append_turn(
             session,
@@ -2400,6 +2737,8 @@ def _process_chat_request(
             status="completed",
             detail=translate(locale, "chat.session_saved"),
             run_id=run_id,
+            session_id=session_id,
+            thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
@@ -2414,6 +2753,9 @@ def _process_chat_request(
                 compaction_status=compaction_status,
             ),
         )
+        updated_thread = _thread_list_item_for_session_id(session["id"])
+        if updated_thread is not None:
+            _emit_progress(progress_cb, "thread/updated", thread=updated_thread.model_dump())
 
         pricing_meta = estimate_usage_cost(
             model=selected_model,
@@ -2443,6 +2785,17 @@ def _process_chat_request(
             session_id=session["id"],
             usage=token_usage,
             model=selected_model,
+        )
+        session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
+        global_totals_raw = stats_snapshot.get("totals", {})
+        _emit_progress(
+            progress_cb,
+            "thread/tokenUsage/updated",
+            thread_id=str(session["id"]),
+            token_usage=dict(token_usage),
+            session_token_totals=dict(session_totals_raw),
+            global_token_totals=dict(global_totals_raw),
+            context_meter=dict(context_meter),
         )
         _emit_progress(
             progress_cb,
@@ -2523,8 +2876,6 @@ def _process_chat_request(
                 message=translate(locale, "chat.shadow_log_written", name=shadow_path.name),
                 run_id=run_id,
             )
-        session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
-        global_totals_raw = stats_snapshot.get("totals", {})
         tool_event_models = [
             item if isinstance(item, ToolEvent) else ToolEvent(**item)
             for item in tool_events
@@ -2570,6 +2921,8 @@ def _process_chat_request(
             status="completed",
             detail=translate(locale, "chat.result_ready"),
             run_id=run_id,
+            session_id=session_id,
+            thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
@@ -2584,6 +2937,31 @@ def _process_chat_request(
                 compaction_status=compaction_status,
             ),
         )
+        _emit_progress(
+            progress_cb,
+            "turn/completed",
+            turn={
+                "id": str(run_id or ""),
+                "threadId": str(session_id or ""),
+                "status": str(turn_status or "completed"),
+                "items": [],
+                "tokenUsage": dict(token_usage),
+            },
+            run_snapshot=_build_run_snapshot(
+                goal=str(inspector_run_state.get("goal") or req.message),
+                current_task_focus=current_task_focus,
+                collaboration_mode=collaboration_mode,
+                turn_status=turn_status,
+                cwd=str(session.get("cwd") or ""),
+                plan=plan,
+                pending_user_input=pending_user_input,
+                tool_count=len(tool_events),
+                evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+                context_meter=context_meter,
+                compaction_status=compaction_status,
+            ),
+        )
+        _emit_thread_status_changed(progress_cb, thread_id=session_id, status="idle")
         return response
     finally:
         _unregister_active_chat_run(run_id)
@@ -2620,29 +2998,139 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     def event_stream():
         events: queue.Queue[dict[str, Any]] = queue.Queue()
         done_event = threading.Event()
+        stream_state: dict[str, Any] = {
+            "thread_id": "",
+            "turn_id": "",
+            "tool_counter": 0,
+            "last_compaction_marker": "",
+        }
+
+        def put_event(event_name: str, payload: dict[str, Any]) -> None:
+            events.put({"event": event_name, "payload": payload})
+
+        def build_tool_item_payload(data: dict[str, Any]) -> dict[str, Any]:
+            item = dict(data.get("item") or {})
+            run_snapshot = dict(data.get("run_snapshot") or {})
+            stream_state["tool_counter"] = int(stream_state.get("tool_counter") or 0) + 1
+            item_id = str(item.get("id") or "") or (
+                f"{str(stream_state.get('turn_id') or 'turn')}:{stream_state['tool_counter']}:{str(item.get('name') or 'tool')}"
+            )
+            item_type = "toolCall"
+            name = str(item.get("name") or "").strip()
+            if name == "exec_command":
+                item_type = "commandExecution"
+            elif name == "apply_patch":
+                item_type = "fileChange"
+            elif name == "request_user_input":
+                item_type = "userInputRequest"
+            elif name == "image_read":
+                item_type = "imageView"
+            return {
+                "id": item_id,
+                "type": item_type,
+                "tool": name,
+                "group": str(item.get("group") or ""),
+                "status": "completed" if str(item.get("status") or "") == "ok" else "failed",
+                "summary": str(item.get("summary") or data.get("summary") or ""),
+                "sourceRefs": list(item.get("source_refs") or data.get("source_refs") or []),
+                "cwd": str(item.get("cwd") or ""),
+                "projectRoot": str(item.get("project_root") or ""),
+                "runSnapshot": run_snapshot,
+            }
 
         def emit(payload: dict[str, Any]) -> None:
             event_name = str(payload.get("event") or "message")
             data = {k: v for k, v in payload.items() if k != "event"}
-            events.put({"event": event_name, "payload": data})
+            if str(data.get("thread_id") or "").strip():
+                stream_state["thread_id"] = str(data.get("thread_id") or "").strip()
+            elif str(data.get("session_id") or "").strip():
+                stream_state["thread_id"] = str(data.get("session_id") or "").strip()
+            if str(data.get("run_id") or "").strip():
+                stream_state["turn_id"] = str(data.get("run_id") or "").strip()
+            if event_name.startswith(("thread/", "turn/", "item/")) or event_name in {"warning", "error"}:
+                put_event(event_name, data)
+                return
+
+            put_event(event_name, data)
+            if event_name == "tool":
+                item_payload = build_tool_item_payload(data)
+                typed_common = {
+                    "thread_id": str(stream_state.get("thread_id") or ""),
+                    "turn_id": str(stream_state.get("turn_id") or ""),
+                }
+                put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
+                put_event("item/completed", {**typed_common, "item": item_payload})
+            elif event_name == "plan_update":
+                put_event(
+                    "turn/plan/updated",
+                    {
+                        "thread_id": str(stream_state.get("thread_id") or ""),
+                        "turn_id": str(stream_state.get("turn_id") or ""),
+                        "plan": list(data.get("plan") or []),
+                        "explanation": str(data.get("explanation") or ""),
+                        "run_snapshot": dict(data.get("run_snapshot") or {}),
+                    },
+                )
+            elif event_name == "request_user_input":
+                pending = dict(data.get("pending_user_input") or {})
+                item_id = f"{str(stream_state.get('turn_id') or 'turn')}:request_user_input"
+                typed_common = {
+                    "thread_id": str(stream_state.get("thread_id") or ""),
+                    "turn_id": str(stream_state.get("turn_id") or ""),
+                }
+                item_payload = {
+                    "id": item_id,
+                    "type": "userInputRequest",
+                    "status": "completed",
+                    "summary": str(pending.get("summary") or ""),
+                    "questions": list(pending.get("questions") or []),
+                }
+                put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
+                put_event("item/completed", {**typed_common, "item": item_payload})
+            elif event_name == "trace":
+                run_snapshot = dict(data.get("run_snapshot") or {})
+                compaction_status = dict(run_snapshot.get("compaction_status") or {})
+                marker = "|".join(
+                    [
+                        str(compaction_status.get("generation") or ""),
+                        str(compaction_status.get("last_compacted_at") or ""),
+                        str(compaction_status.get("last_compaction_phase") or ""),
+                    ]
+                ).strip("|")
+                if marker and marker != str(stream_state.get("last_compaction_marker") or ""):
+                    stream_state["last_compaction_marker"] = marker
+                    item_id = f"{str(stream_state.get('turn_id') or 'turn')}:context_compaction:{marker}"
+                    typed_common = {
+                        "thread_id": str(stream_state.get("thread_id") or ""),
+                        "turn_id": str(stream_state.get("turn_id") or ""),
+                    }
+                    item_payload = {
+                        "id": item_id,
+                        "type": "contextCompaction",
+                        "status": "completed",
+                        "phase": str(compaction_status.get("last_compaction_phase") or ""),
+                        "generation": int(compaction_status.get("generation") or 0),
+                    }
+                    put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
+                    put_event("item/completed", {**typed_common, "item": item_payload})
 
         def worker() -> None:
             try:
                 response = _process_chat_request(req, progress_cb=emit)
-                events.put({"event": "final", "payload": {"response": response.model_dump()}})
+                put_event("final", {"response": response.model_dump()})
             except HTTPException as exc:
                 payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code, locale=locale)
-                events.put(
+                put_event(
+                    "error",
                     {
-                        "event": "error",
-                        "payload": payload,
+                        **payload,
                     }
                 )
             except Exception as exc:
-                events.put({"event": "error", "payload": _normalize_chat_error_payload(exc, locale=locale)})
+                put_event("error", _normalize_chat_error_payload(exc, locale=locale))
             finally:
                 done_event.set()
-                events.put({"event": "done", "payload": {"ok": True}})
+                put_event("done", {"ok": True})
 
         threading.Thread(target=worker, daemon=True).start()
 
