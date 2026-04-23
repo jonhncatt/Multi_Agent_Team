@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ class ChatProductRuntime:
         self._config = config
         self._lock = threading.Lock()
         self._executor_cache: dict[str, LocalToolExecutor] = {}
+        self._runtime_meta_cache: tuple[float, dict[str, Any]] = (0.0, {})
 
     @property
     def config(self) -> AppConfig:
@@ -53,9 +55,15 @@ class ChatProductRuntime:
         return dict(self.tool_executor.ocr_status() or {})
 
     def runtime_meta(self) -> dict[str, Any]:
+        now = time.monotonic()
+        cached_at, cached = self._runtime_meta_cache
+        if cached and now - cached_at < 10.0:
+            return dict(cached)
         docker_ok, docker_msg = self.docker_status()
-        return {
+        payload = {
             "docker_available": bool(docker_ok),
             "docker_message": str(docker_msg or ""),
             "ocr_status": self.ocr_status(),
         }
+        self._runtime_meta_cache = (now, dict(payload))
+        return payload

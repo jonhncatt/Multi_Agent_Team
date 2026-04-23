@@ -8,7 +8,7 @@ Single repository. Multiple user languages.
 - [Windows Guide](README.windows.md)
 - [Release Flow](RELEASING.md)
 
-Current stable release: `v2.3.2`
+Current stable release: `v2.4.0`
 
 This repository keeps one code mainline and localizes user-facing text through a locale layer instead of splitting into separate language-specific repos.
 

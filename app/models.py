@@ -212,6 +212,10 @@ class UploadResponse(BaseModel):
     mime: str
     size: int
     kind: Literal["image", "document", "other"]
+    upload_status: str = "stored"
+    bytes_written: int = 0
+    duration_ms: int = 0
+    metadata_index_mode: str = ""
 
 
 class NewSessionResponse(BaseModel):
@@ -534,4 +538,3 @@ class SandboxDrillResponse(BaseModel):
     docker_message: str | None = None
     summary: str = ""
     steps: list[SandboxDrillStep] = Field(default_factory=list)
-

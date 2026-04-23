@@ -36,6 +36,7 @@ const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const BRANCH_REFRESH_INTERVAL_MS = 15_000;
+const UPLOAD_CONCURRENCY = 3;
 const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
@@ -1817,25 +1818,83 @@ function App() {
     }
   }
 
-  async function uploadFiles(files) {
-    const uploaded = [];
-    for (const [index, rawFile] of Array.from(files || []).entries()) {
+  function createPendingUploadItem(rawFile, index) {
+    const file = ensureNamedUploadFile(rawFile, index);
+    const fileName = String((file && file.name) || "").trim() || `upload-${Date.now()}-${index + 1}.bin`;
+    return {
+      id: `pending-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: fileName,
+      mime: String((file && file.type) || ""),
+      size: Number((file && file.size) || 0),
+      kind: "other",
+      uploading: true,
+      uploadFailed: false,
+      error: "",
+    };
+  }
+
+  async function uploadFiles(files, pendingItems = []) {
+    const prepared = Array.from(files || []).map((rawFile, index) => {
       const file = ensureNamedUploadFile(rawFile, index);
+      const pending = pendingItems[index] || createPendingUploadItem(file, index);
+      return { file, pending, index };
+    });
+    const uploaded = [];
+    const failed = [];
+    let cursor = 0;
+
+    async function uploadOne(entry) {
       const form = new FormData();
-      const fileName = String((file && file.name) || "").trim() || `upload-${Date.now()}-${index + 1}.bin`;
-      form.append("file", file, fileName);
-      uploaded.push(await fetchJson("/api/upload", { method: "POST", body: form }));
+      const fileName = String((entry.file && entry.file.name) || entry.pending.name || "").trim() || `upload-${Date.now()}-${entry.index + 1}.bin`;
+      form.append("file", entry.file, fileName);
+      try {
+        const payload = await fetchJson("/api/upload", { method: "POST", body: form });
+        uploaded.push(payload);
+        setPendingUploads((prev) =>
+          prev.map((item) => (item.id === entry.pending.id ? payload : item)),
+        );
+      } catch (err) {
+        const normalized = normalizeUiError(uiLocale, err, t("errors.upload_failed"));
+        failed.push({ fileName, error: normalized });
+        setPendingUploads((prev) =>
+          prev.map((item) => (
+            item.id === entry.pending.id
+              ? { ...item, uploading: false, uploadFailed: true, error: normalized.summary || t("errors.upload_failed") }
+              : item
+          )),
+        );
+      }
     }
-    return uploaded;
+
+    async function worker() {
+      while (cursor < prepared.length) {
+        const entry = prepared[cursor];
+        cursor += 1;
+        await uploadOne(entry);
+      }
+    }
+
+    const workerCount = Math.min(UPLOAD_CONCURRENCY, prepared.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return { uploaded, failed };
   }
 
   async function processSelectedFiles(files, options = {}) {
     const nextFiles = Array.from(files || []);
     if (!nextFiles.length) return;
-    try {
-      const uploaded = await uploadFiles(nextFiles);
+    const pendingItems = nextFiles.map((file, index) => createPendingUploadItem(file, index));
+    setPendingUploads((prev) => [...prev, ...pendingItems]);
+    const { uploaded, failed } = await uploadFiles(nextFiles, pendingItems);
+    if (failed.length) {
+      const summary = failed.length === nextFiles.length
+        ? t("errors.upload_failed")
+        : t("errors.upload_partial_failed", { failed: failed.length, total: nextFiles.length });
+      setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+      pushLogWithLimit(setLogs, "error", summary);
+    } else {
       clearUiError();
-      setPendingUploads((prev) => [...prev, ...uploaded]);
+    }
+    if (uploaded.length) {
       const sourceLabel = String(options.source || "").trim();
       pushLogWithLimit(
         setLogs,
@@ -1844,9 +1903,6 @@ function App() {
           ? t("log.attachments_pasted", { count: uploaded.length })
           : t("log.attachments_added", { count: uploaded.length }),
       );
-    } catch (err) {
-      const nextError = applyUiError(err, t("errors.upload_failed"));
-      pushLogWithLimit(setLogs, "error", t("errors.upload_failed"));
     }
   }
 
@@ -1926,6 +1982,16 @@ function App() {
   async function handleSend(overrideText) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
+    const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
+    if (uploadsInFlight) {
+      const summary = t("errors.upload_in_progress");
+      setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+      pushLogWithLimit(setLogs, "error", summary);
+      return;
+    }
+    const readyAttachmentIds = pendingUploads
+      .filter((item) => item && !item.uploadFailed && !item.uploading && !String(item.id || "").startsWith("pending-"))
+      .map((item) => item.id);
 
     setSending(true);
     setContextMeterOpen(false);
@@ -1966,7 +2032,7 @@ function App() {
           project_id: projectId,
           message: messageText,
           mode_override: chatSettings.collaboration_mode,
-          attachment_ids: pendingUploads.map((item) => item.id),
+          attachment_ids: readyAttachmentIds,
           settings: {
             ...chatSettings,
             provider: activeProvider,
@@ -2765,18 +2831,24 @@ function App() {
           onDrop=${handleComposerDrop}
         >
           ${pendingUploads.length
-            ? html`
-                <div className="attachment-strip">
-                  ${pendingUploads.map(
-                    (item) => html`
-                      <div key=${item.id} className="attachment-chip">
-                        <span>${item.name}</span>
-                        <button type="button" onClick=${() => removeUpload(item.id)}>×</button>
-                      </div>
-                    `,
-                  )}
-                </div>
-              `
+	            ? html`
+	                <div className="attachment-strip">
+	                  ${pendingUploads.map(
+	                    (item) => html`
+	                      <div
+                          key=${item.id}
+                          className=${`attachment-chip ${item.uploading ? "is-uploading" : ""} ${item.uploadFailed ? "is-failed" : ""}`}
+                          title=${item.error || ""}
+                        >
+	                        <span>${item.name}</span>
+                          ${item.uploading ? html`<small>${t("labels.uploading")}</small>` : null}
+                          ${item.uploadFailed ? html`<small>${t("labels.failed")}</small>` : null}
+	                        <button type="button" onClick=${() => removeUpload(item.id)}>×</button>
+	                      </div>
+	                    `,
+	                  )}
+	                </div>
+	              `
             : null}
 
           ${uiError
@@ -2845,9 +2917,14 @@ function App() {
               placeholder=${t("composer.placeholder")}
               disabled=${sending}
             ></textarea>
-            <button className="send-btn" type="button" onClick=${() => handleSend()} disabled=${sending || !draft.trim()}>
-              ${sending ? t("buttons.running") : t("buttons.send")}
-            </button>
+	            <button
+                className="send-btn"
+                type="button"
+                onClick=${() => handleSend()}
+                disabled=${sending || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
+              >
+	              ${sending ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send"))}
+	            </button>
           </div>
           <div className="status-bar status-inline" id="statusBar">
             <div className="status-summary">${statusSummary}</div>

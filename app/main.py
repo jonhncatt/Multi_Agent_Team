@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.attachment_evidence import build_attachment_evidence_pack
 from app.chat_product_runtime import ChatProductRuntime
 from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
 from app.context_meter import (
@@ -100,7 +101,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.3.2"
+APP_VERSION = "2.4.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -600,8 +601,16 @@ def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
     return project
 
 
-def _runtime_provider_payload() -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
-    runtime_meta = get_chat_product_runtime().runtime_meta()
+def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
+    runtime_meta = (
+        get_chat_product_runtime().runtime_meta()
+        if include_runtime
+        else {
+            "docker_available": False,
+            "docker_message": "runtime status is loaded asynchronously",
+            "ocr_status": {},
+        }
+    )
     provider_options = _provider_options_payload()
     active_provider = next(
         (
@@ -700,12 +709,11 @@ def _bootstrap_response_payload() -> BootstrapResponse:
         active_provider_config,
         auth_summary,
         runtime_meta,
-    ) = _runtime_provider_payload()
-    projects = get_project_store().list_projects()
+    ) = _runtime_provider_payload(include_runtime=False)
     default_project = get_project_store().ensure_default_project()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
     active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
-    effective_roots = _effective_allowed_roots(projects)
+    effective_roots = _effective_allowed_roots([default_project])
     return BootstrapResponse(
         ok=True,
         app_title=APP_TITLE,
@@ -938,11 +946,13 @@ async def upload(file: UploadFile = File(...)) -> UploadResponse:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
-    meta = await upload_store.save_upload(file)
     max_bytes = config.max_upload_mb * 1024 * 1024
-    if meta["size"] > max_bytes:
-        upload_store.delete(meta["id"])
-        raise HTTPException(status_code=413, detail=f"File too large (>{config.max_upload_mb}MB)")
+    try:
+        meta = await upload_store.save_upload(file, max_bytes=max_bytes)
+    except ValueError as exc:
+        if "large" in str(exc).lower():
+            raise HTTPException(status_code=413, detail=f"File too large (>{config.max_upload_mb}MB)") from exc
+        raise
 
     return UploadResponse(
         id=meta["id"],
@@ -950,6 +960,10 @@ async def upload(file: UploadFile = File(...)) -> UploadResponse:
         mime=meta["mime"],
         size=meta["size"],
         kind=meta["kind"],
+        upload_status=str(meta.get("upload_status") or "stored"),
+        bytes_written=int(meta.get("bytes_written") or meta.get("size") or 0),
+        duration_ms=int(meta.get("duration_ms") or 0),
+        metadata_index_mode=str(meta.get("metadata_index_mode") or ""),
     )
 
 
@@ -1678,6 +1692,7 @@ def _process_chat_request(
             attachment_context_key = ""
 
         attachments = upload_store.get_many(effective_attachment_ids)
+        attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
         _emit_progress(
             progress_cb,
             "stage",
@@ -1823,6 +1838,7 @@ def _process_chat_request(
                 "recent_tasks": recent_tasks_for_runtime,
                 "artifact_memory_preview": artifact_memory_preview,
                 "compaction_status": compaction_status_for_runtime,
+                "attachment_evidence_pack": attachment_evidence_pack,
                 "recalled_context": recalled_context,
                 "history_turns": history_turns_for_runtime,
                 "route_state": route_state_input,
@@ -1901,6 +1917,8 @@ def _process_chat_request(
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
+        if attachment_evidence_pack:
+            inspector_notes.append(f"attachment_evidence_pack:{len(attachment_evidence_pack)}")
         if missing_attachment_ids:
             warning_msg = translate(locale, "chat.missing_attachments_warning", missing_count=len(missing_attachment_ids))
             inspector_notes.append(warning_msg)
@@ -2192,6 +2210,7 @@ def _process_chat_request(
                     "summary_before": summary_before,
                     "history_turns_before": history_turns_before,
                     "attachment_metas": attachments,
+                    "attachment_evidence_pack": attachment_evidence_pack,
                     "message_preview": req.message[:500],
                     "response_preview": text[:500],
                 }

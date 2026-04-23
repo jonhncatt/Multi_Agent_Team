@@ -95,7 +95,7 @@ class DockerSandboxManager:
                     check_argv,
                     capture_output=True,
                     text=True,
-                    timeout=10,
+                    timeout=2,
                     check=False,
                 )
                 if proc.returncode == 0:
@@ -108,7 +108,7 @@ class DockerSandboxManager:
             except FileNotFoundError:
                 diagnostics.append(f"Docker CLI not found: {self.docker_bin}")
             except subprocess.TimeoutExpired:
-                diagnostics.append("Docker check timed out (>10s)")
+                diagnostics.append("Docker check timed out (>2s)")
             except Exception as exc:
                 diagnostics.append(str(exc))
         if not self._last_docker_ok:

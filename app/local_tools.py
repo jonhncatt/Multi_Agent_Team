@@ -54,6 +54,28 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+_UPLOAD_META_SAFE_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def _safe_upload_meta_name(name: str) -> str:
+    return _UPLOAD_META_SAFE_PATTERN.sub("_", str(name or "")).strip("._") or "file"
+
+
+def _meta_matches_upload_key(meta: dict[str, Any], raw: str, raw_basename: str) -> bool:
+    candidate_path = Path(str(meta.get("path") or ""))
+    keys = {
+        str(meta.get("id") or "").strip(),
+        str(meta.get("original_name") or meta.get("name") or "").strip(),
+        str(meta.get("safe_name") or "").strip(),
+        candidate_path.name if str(candidate_path) else "",
+    }
+    return raw in keys or (raw_basename and raw_basename in keys)
+
+
+def _upload_meta_path_for(config: AppConfig, raw: str) -> Path:
+    return config.uploads_dir / ".meta" / f"{_safe_upload_meta_name(raw)}.json"
+
+
 def _build_path_candidates(
     config: AppConfig,
     raw_path: str,
@@ -202,6 +224,15 @@ def _resolve_source_path(
         return resolved
 
     try:
+        raw_basename = Path(raw.replace("\\", "/")).name
+        direct_meta_path = _upload_meta_path_for(config, raw)
+        if direct_meta_path.exists():
+            direct_meta = json.loads(direct_meta_path.read_text(encoding="utf-8"))
+            if isinstance(direct_meta, dict):
+                direct_path = Path(str(direct_meta.get("path") or "")).expanduser().resolve()
+                for root in roots:
+                    if direct_path.exists() and _is_within(direct_path, root):
+                        return direct_path
         uploads_index_path = config.uploads_dir / "index.json"
         if uploads_index_path.exists():
             upload_index = json.loads(uploads_index_path.read_text(encoding="utf-8"))
@@ -212,25 +243,25 @@ def _resolve_source_path(
                     for root in roots:
                         if direct_path.exists() and _is_within(direct_path, root):
                             return direct_path
-                raw_basename = Path(raw.replace("\\", "/")).name
                 for meta in upload_index.values():
                     if not isinstance(meta, dict):
                         continue
                     candidate_path = Path(str(meta.get("path") or "")).expanduser().resolve()
-                    candidate_id = str(meta.get("id") or "").strip()
-                    candidate_name = str(meta.get("original_name") or meta.get("name") or "").strip()
-                    candidate_safe_name = str(meta.get("safe_name") or "").strip()
-                    candidate_stored_name = candidate_path.name if str(candidate_path) else ""
-                    keys = {
-                        candidate_id,
-                        candidate_name,
-                        candidate_safe_name,
-                        candidate_stored_name,
-                    }
-                    if raw in keys or (raw_basename and raw_basename in keys):
+                    if _meta_matches_upload_key(meta, raw, raw_basename):
                         for root in roots:
                             if candidate_path.exists() and _is_within(candidate_path, root):
                                 return candidate_path
+        meta_dir = config.uploads_dir / ".meta"
+        if meta_dir.exists():
+            meta_files = sorted(meta_dir.glob("*.json"), key=lambda m: m.stat().st_mtime, reverse=True)[:500]
+            for meta_file in meta_files:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                if not isinstance(meta, dict) or not _meta_matches_upload_key(meta, raw, raw_basename):
+                    continue
+                candidate_path = Path(str(meta.get("path") or "")).expanduser().resolve()
+                for root in roots:
+                    if candidate_path.exists() and _is_within(candidate_path, root):
+                        return candidate_path
     except Exception:
         pass
 

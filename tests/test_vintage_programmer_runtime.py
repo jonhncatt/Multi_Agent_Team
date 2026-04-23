@@ -108,6 +108,7 @@ class _FakeBackend:
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         self.tools = _FakeTools()
         self._scripted_messages = list(scripted_messages)
+        self.invocations: list[dict[str, Any]] = []
         self._SystemMessage = _FakeMessage
         self._HumanMessage = _FakeMessage
         self._ToolMessage = _FakeMessage
@@ -144,7 +145,8 @@ class _FakeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
-        _ = (messages, max_output_tokens, enable_tools, tool_names)
+        _ = (max_output_tokens, enable_tools, tool_names)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
         return self._next(), object(), model, []
 
     def _invoke_with_runner_recovery(
@@ -157,7 +159,8 @@ class _FakeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
-        _ = (runner, messages, max_output_tokens, enable_tools, tool_names)
+        _ = (runner, max_output_tokens, enable_tools, tool_names)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "followup"})
         return self._next(), object(), model, []
 
 
@@ -351,6 +354,130 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
+
+
+def test_invalid_final_guard_steers_authorized_write_into_tool_call(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="如果你确认要我修改，我可以给你补丁。请回一句补。"),
+            _FakeMessage(content="", tool_calls=[{"id": "tc-patch", "name": "apply_patch", "args": {"patch": "*** Begin Patch\n*** End Patch\n"}}]),
+            _FakeMessage(content="已经补齐。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="我有版本控制，你大胆修改，缺少的直接补全。",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-guard",
+            "project": {
+                "project_id": "project_demo",
+                "project_title": "Demo",
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+            },
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert backend.tools.calls and backend.tools.calls[0][0] == "apply_patch"
+    assert result["invalid_final_guard"]["triggered"] is True
+    assert "invalid_final_guard_steer" in result["inspector"]["notes"]
+    assert result["turn_status"] == "completed"
+
+
+def test_invalid_final_guard_blocks_repeated_confirmation_after_authorization(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="请确认，我再 apply_patch。"),
+            _FakeMessage(content="需要你再回一句补，我才能修改。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="直接补全缺少功能，大胆修改。",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-guard-block",
+            "project": {
+                "project_id": "project_demo",
+                "project_title": "Demo",
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+            },
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert backend.tools.calls == []
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "model_refused_to_act_after_authorization"
+    assert result["invalid_final_guard"]["attempts"] == 2
+
+
+def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="根据资料补齐完成")])
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查看资料，缺的直接补全。",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-evidence",
+            "project": {
+                "project_id": "project_demo",
+                "project_title": "Demo",
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+            },
+            "history_turns": [],
+            "attachments": [],
+            "attachment_evidence_pack": [
+                {
+                    "id": "a1",
+                    "name": "requirements.pdf",
+                    "kind": "document",
+                    "summary": "missing export button",
+                    "read_hint": {"tool": "read", "path": "/tmp/requirements.pdf"},
+                }
+            ],
+        },
+    )
+
+    first_messages = backend.invocations[0]["messages"]
+    human_payload = str(first_messages[-1].content)
+    assert "attachment_evidence_pack" in human_payload
+    assert "missing export button" in human_payload
+    assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
 
 def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(tmp_path: Path) -> None:

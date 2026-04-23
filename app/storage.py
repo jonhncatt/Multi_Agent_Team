@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -569,10 +570,15 @@ class ProjectStore:
 
 
 class UploadStore:
+    _CHUNK_SIZE = 1024 * 1024
+    _INDEX_REWRITE_LIMIT_BYTES = 1024 * 1024
+
     def __init__(self, uploads_dir: Path) -> None:
         self.uploads_dir = uploads_dir
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.uploads_dir / "index.json"
+        self.meta_dir = self.uploads_dir / ".meta"
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
         if not self.index_path.exists():
@@ -580,21 +586,90 @@ class UploadStore:
 
     def _load_index(self) -> dict[str, Any]:
         with self._lock:
-            return json.loads(self.index_path.read_text(encoding="utf-8"))
+            try:
+                return json.loads(self.index_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
 
     def _save_index(self, index: dict[str, Any]) -> None:
         with self._lock:
-            self.index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path = self.index_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(index, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            tmp_path.replace(self.index_path)
 
-    async def save_upload(self, upload: UploadFile) -> dict[str, Any]:
+    def _meta_path(self, file_id: str) -> Path:
+        safe_id = _safe_name(str(file_id or ""))
+        return self.meta_dir / f"{safe_id}.json"
+
+    def _save_meta(self, meta: dict[str, Any]) -> None:
+        file_id = str(meta.get("id") or "").strip()
+        if not file_id:
+            return
+        target = self._meta_path(file_id)
+        tmp_path = target.with_suffix(".json.tmp")
+        with self._lock:
+            tmp_path.write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            tmp_path.replace(target)
+
+    def _load_meta(self, file_id: str) -> dict[str, Any] | None:
+        normalized = str(file_id or "").strip()
+        if not normalized:
+            return None
+        path = self._meta_path(normalized)
+        if path.exists():
+            try:
+                with self._lock:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                pass
+        index = self._load_index()
+        meta = index.get(normalized)
+        return dict(meta) if isinstance(meta, dict) else None
+
+    def _index_is_small_enough(self) -> bool:
+        try:
+            return not self.index_path.exists() or self.index_path.stat().st_size <= self._INDEX_REWRITE_LIMIT_BYTES
+        except Exception:
+            return False
+
+    def _maybe_update_index_entry(self, file_id: str, meta: dict[str, Any] | None) -> str:
+        if not self._index_is_small_enough():
+            return "per_upload_metadata"
+        index = self._load_index()
+        if meta is None:
+            index.pop(file_id, None)
+        else:
+            index[file_id] = meta
+        self._save_index(index)
+        return "index_json"
+
+    async def save_upload(self, upload: UploadFile, *, max_bytes: int | None = None) -> dict[str, Any]:
+        started = time.monotonic()
         file_id = str(uuid.uuid4())
         original_name = upload.filename or "upload.bin"
         safe_name = _safe_name(original_name)
         stored_name = f"{file_id}__{safe_name}"
         target_path = (self.uploads_dir / stored_name).resolve()
 
-        content = await upload.read()
-        target_path.write_bytes(content)
+        size = 0
+        try:
+            with target_path.open("wb") as fh:
+                while True:
+                    chunk = await upload.read(self._CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if max_bytes is not None and size > max(0, int(max_bytes)):
+                        raise ValueError("File too large")
+                    fh.write(chunk)
+        except Exception:
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
         mime = upload.content_type or "application/octet-stream"
         suffix = Path(original_name).suffix.lower()
@@ -641,34 +716,41 @@ class UploadStore:
             "mime": mime,
             "suffix": suffix,
             "kind": kind,
-            "size": len(content),
+            "size": size,
             "path": str(target_path),
             "created_at": now_iso(),
+            "upload_status": "stored",
+            "bytes_written": size,
+            "duration_ms": int((time.monotonic() - started) * 1000),
         }
 
-        index = self._load_index()
-        index[file_id] = meta
-        self._save_index(index)
+        metadata_index_mode = self._maybe_update_index_entry(file_id, meta)
+        meta["metadata_index_mode"] = metadata_index_mode
+        self._save_meta(meta)
         return meta
 
     def get_many(self, file_ids: list[str]) -> list[dict[str, Any]]:
-        index = self._load_index()
         out: list[dict[str, Any]] = []
         for file_id in file_ids:
-            meta = index.get(file_id)
+            meta = self._load_meta(str(file_id or ""))
             if meta:
                 out.append(meta)
         return out
 
     def delete(self, file_id: str) -> None:
-        index = self._load_index()
-        meta = index.pop(file_id, None)
+        normalized = str(file_id or "").strip()
+        meta = self._load_meta(normalized)
         if meta and meta.get("path"):
             try:
                 Path(meta["path"]).unlink(missing_ok=True)
             except Exception:
                 pass
-        self._save_index(index)
+        try:
+            self._meta_path(normalized).unlink(missing_ok=True)
+        except Exception:
+            pass
+        if normalized:
+            self._maybe_update_index_entry(normalized, None)
 
 
 class ShadowLogStore:

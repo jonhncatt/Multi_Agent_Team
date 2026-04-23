@@ -739,6 +739,20 @@ button {
   border: 1px solid var(--line);
 }
 
+.attachment-chip small {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.attachment-chip.is-uploading {
+  opacity: 0.72;
+}
+
+.attachment-chip.is-failed {
+  border-color: rgba(198, 72, 72, 0.45);
+  background: rgba(198, 72, 72, 0.08);
+}
+
 .attachment-chip button {
   border: 0;
   background: transparent;

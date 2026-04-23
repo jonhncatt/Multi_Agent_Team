@@ -21,6 +21,7 @@ from packages.office_modules.intent_support import (
     looks_like_image_capability_denial as looks_like_image_capability_denial_helper,
 )
 from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+from packages.office_modules.request_analysis import looks_like_permission_gate_text
 
 
 _READ_ONLY_TOOL_NAMES = {
@@ -198,6 +199,70 @@ _GENERIC_IMAGE_READ_REQUEST_HINTS = (
     "analyze image",
     "ocr this image",
 )
+
+_WRITE_INTENT_HINTS = (
+    "直接补",
+    "直接改",
+    "大胆修改",
+    "大胆改",
+    "补齐",
+    "补全",
+    "补上",
+    "补一下",
+    "修改",
+    "修复",
+    "实现",
+    "完善",
+    "加上",
+    "添加",
+    "替换",
+    "更新",
+    "改成",
+    "改为",
+    "apply_patch",
+    "patch",
+    "fix",
+    "implement",
+    "modify",
+    "update",
+    "change",
+    "補完",
+    "修正",
+    "変更",
+    "実装",
+    "追加",
+    "直して",
+)
+
+_EXPLICIT_WRITE_AUTH_HINTS = (
+    "直接",
+    "大胆",
+    "不用确认",
+    "不需要确认",
+    "不用问我",
+    "不要问我",
+    "有版本控制",
+    "我有版本控制",
+    "直接做",
+    "直接补",
+    "直接改",
+    "go ahead",
+    "no need to ask",
+    "without asking",
+    "just do it",
+    "直接",
+    "確認不要",
+    "そのまま",
+)
+
+_WRITE_TOOL_NAMES = {
+    "apply_patch",
+    "exec_command",
+    "write_stdin",
+    "web_download",
+    "archive_extract",
+    "mail_extract_attachments",
+}
 
 
 def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
@@ -566,7 +631,24 @@ class VintageProgrammerRuntime:
         parts.append(translate(locale, "runtime.system.thread_memory"))
         parts.append(translate(locale, "runtime.system.image_read"))
         parts.append(translate(locale, "runtime.system.document_read"))
+        parts.append(self._build_codex_agentic_harness_prompt(locale=locale, model=str(settings.model or spec.default_model or "")))
         return "\n\n".join(item for item in parts if str(item).strip())
+
+    @staticmethod
+    def _build_codex_agentic_harness_prompt(*, locale: str, model: str = "") -> str:
+        model_label = str(model or "").strip().lower()
+        coding_agent_like = any(token in model_label for token in ("codex", "claude", "coder", "devstral", "qwen3-coder"))
+        strength = "standard" if coding_agent_like else "strict"
+        return (
+            "[codex_agentic_harness]\n"
+            f"enforcement_level: {strength}\n"
+            "- In default/execute mode, when the user asks to modify, fix, implement, update, complete, or patch workspace content, do the work now.\n"
+            "- Do not end with natural-language permission gates such as 'shall I patch?', 'please confirm', 'reply yes', or equivalent Chinese/Japanese phrasing.\n"
+            "- Execution must happen through tool calls. File edits use apply_patch. Workspace inspection uses read/search_codebase/exec_command. Attachment understanding uses read/image_read/search_file/read_section/table_extract as appropriate.\n"
+            "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
+            "- After each tool result, continue the turn until the task is complete, needs structured user input, is blocked by a concrete policy, is cancelled, or a runtime budget is exhausted.\n"
+            f"- Keep the final response in the active locale ({locale}), but keep tool decisions concrete and agentic."
+        )
 
     def _build_human_payload(self, *, message: str, context: dict[str, Any]) -> str:
         history_turns = list(context.get("history_turns") or [])
@@ -622,6 +704,7 @@ class VintageProgrammerRuntime:
             "recalled_context": dict(context.get("recalled_context") or {}),
             "user_input_response": dict(context.get("user_input_response") or {}),
             "attachments": attachments,
+            "attachment_evidence_pack": list(context.get("attachment_evidence_pack") or [])[:8],
             "history_turns": recent_history,
         }
         return "\n".join(
@@ -959,6 +1042,97 @@ class VintageProgrammerRuntime:
             "已更新",
         )
         return any(marker in normalized for marker in markers) and not any(marker in normalized for marker in action_markers)
+
+    @staticmethod
+    def _write_authorization_state(message: str, *, collaboration_mode: str, project_root: str) -> dict[str, Any]:
+        normalized = " ".join(str(message or "").split()).lower()
+        has_write_intent = any(hint.lower() in normalized for hint in _WRITE_INTENT_HINTS)
+        explicit_authorization = any(hint.lower() in normalized for hint in _EXPLICIT_WRITE_AUTH_HINTS)
+        authorized = collaboration_mode in {"default", "execute"} and has_write_intent
+        reasons: list[str] = []
+        if has_write_intent:
+            reasons.append("write_intent_detected")
+        if explicit_authorization:
+            reasons.append("explicit_user_authorization")
+        return {
+            "authorized": bool(authorized),
+            "scope": "workspace" if authorized else "",
+            "project_root": str(project_root or ""),
+            "requires_structured_approval_for": [
+                "project_outside_write",
+                "large_delete_or_move",
+                "dangerous_shell",
+                "network_or_system_level_side_effect",
+            ],
+            "reason": ",".join(reasons),
+        }
+
+    @staticmethod
+    def _has_write_tool_event(tool_events: list[ToolEvent]) -> bool:
+        for item in tool_events:
+            if str(getattr(item, "name", "") or "").strip() in _WRITE_TOOL_NAMES and str(getattr(item, "status", "") or "") == "ok":
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_invalid_permission_gate(text: str, *, request_requires_tools: bool) -> bool:
+        normalized = " ".join(str(text or "").split()).strip()
+        if not normalized:
+            return False
+        if looks_like_permission_gate_text(normalized, request_requires_tools=request_requires_tools):
+            return True
+        lowered = normalized.lower()
+        extra_markers = (
+            "要不要我",
+            "是否需要我",
+            "请确认",
+            "你确认",
+            "回一句",
+            "回复“补”",
+            "回复\"补\"",
+            "我再 patch",
+            "我再修改",
+            "shall i",
+            "should i apply",
+            "confirm before",
+            "reply yes",
+            "please confirm",
+            "確認してください",
+            "確認して",
+            "実行してよいですか",
+        )
+        return any(marker.lower() in lowered for marker in extra_markers)
+
+    def _build_invalid_final_steer(
+        self,
+        *,
+        locale: str,
+        write_authorization_state: dict[str, Any],
+        attachment_evidence_pack: list[dict[str, Any]],
+    ) -> str:
+        lines = [
+            translate(locale, "runtime.invalid_final_guard.steer"),
+            f"write_authorization_state: {json.dumps(write_authorization_state, ensure_ascii=False)}",
+            "Required behavior: call apply_patch/exec_command/read/search_codebase or another appropriate tool now; do not ask for confirmation in prose.",
+        ]
+        if attachment_evidence_pack:
+            lines.append(
+                "attachment_evidence_pack_available: "
+                + json.dumps(
+                    [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "name": str(item.get("name") or ""),
+                            "kind": str(item.get("kind") or ""),
+                            "summary": str(item.get("summary") or "")[:240],
+                        }
+                        for item in attachment_evidence_pack[:4]
+                        if isinstance(item, dict)
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _attachment_paths(attachments: list[dict[str, Any]], *, kind: str | None = None) -> list[str]:
@@ -1423,11 +1597,15 @@ class VintageProgrammerRuntime:
         max_no_progress_cycles = _DEFAULT_MAX_NO_PROGRESS_CYCLES
         inline_document = _looks_like_inline_document_payload(prompt_message)
         attachment_requires_tools = self._attachments_require_tools(attachment_metas)
+        attachment_evidence_pack = [
+            item for item in list(context_payload.get("attachment_evidence_pack") or [])
+            if isinstance(item, dict)
+        ]
         expects_tools = (
             collaboration_mode in {"default", "execute"}
             and bool(runnable_tools)
             and not inline_document
-            and (_looks_like_explicit_tool_request(prompt_message) or attachment_requires_tools)
+            and (_looks_like_explicit_tool_request(prompt_message) or attachment_requires_tools or bool(attachment_evidence_pack))
         )
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
@@ -1449,6 +1627,19 @@ class VintageProgrammerRuntime:
         current_task_focus["goal"] = current_goal
         if current_task_focus.get("cwd"):
             effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
+        write_authorization_state = self._write_authorization_state(
+            prompt_message,
+            collaboration_mode=collaboration_mode,
+            project_root=project_root,
+        )
+        write_authorized = bool(write_authorization_state.get("authorized"))
+        invalid_final_guard = {
+            "enabled": bool(write_authorized and collaboration_mode in {"default", "execute"} and bool(runnable_tools)),
+            "triggered": False,
+            "attempts": 0,
+            "reason": "",
+        }
+        blocked_reason = ""
 
         messages: list[Any] = [
             self._backend._SystemMessage(content=self._render_system_prompt(settings, spec=spec, loaded_skills=loaded_skills)),
@@ -1467,6 +1658,10 @@ class VintageProgrammerRuntime:
             notes.append("inline_document_context")
         if attachment_requires_tools:
             notes.append("attachment_tooling_expected")
+        if attachment_evidence_pack:
+            notes.append("attachment_evidence_pack_ready")
+        if write_authorized:
+            notes.append("write_authorized_workspace")
         if has_image_attachments:
             notes.append("image_attachment_context")
         if route_state_input.get("current_task_focus") or route_state_input.get("task_checkpoint"):
@@ -1512,6 +1707,7 @@ class VintageProgrammerRuntime:
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
 
             act_now_budget = 1 if collaboration_mode in {"default", "execute"} and max_tool_calls_per_turn > 0 else 0
+            invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
             auto_image_rescue_budget = 1 if has_image_attachments and "image_read" in runnable_tools else 0
             halt_for_user_input = False
             turn_started_at = time.monotonic()
@@ -1557,6 +1753,56 @@ class VintageProgrammerRuntime:
                 tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
                 if not tool_calls:
                     ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
+                    invalid_permission_gate = (
+                        bool(invalid_final_guard.get("enabled"))
+                        and not self._has_write_tool_event(tool_events)
+                        and self._looks_like_invalid_permission_gate(
+                            ai_text,
+                            request_requires_tools=bool(expects_tools or write_authorized or tool_events),
+                        )
+                    )
+                    if invalid_permission_gate:
+                        invalid_final_guard["triggered"] = True
+                        invalid_final_guard["attempts"] = int(invalid_final_guard.get("attempts") or 0) + 1
+                        invalid_final_guard["reason"] = "natural_language_confirmation_after_write_authorization"
+                        if invalid_final_guard_budget > 0:
+                            invalid_final_guard_budget -= 1
+                            messages.append(ai_msg)
+                            messages.append(
+                                self._backend._SystemMessage(
+                                    content=self._build_invalid_final_steer(
+                                        locale=locale,
+                                        write_authorization_state=write_authorization_state,
+                                        attachment_evidence_pack=attachment_evidence_pack,
+                                    )
+                                )
+                            )
+                            notes.append("invalid_final_guard_steer")
+                            ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+                                runner=runner,
+                                messages=messages,
+                                model=effective_model,
+                                max_output_tokens=int(settings.max_output_tokens),
+                                enable_tools=True,
+                                tool_names=runnable_tools,
+                            )
+                            self._set_tools_runtime_context(
+                                execution_mode=settings.execution_mode,
+                                session_id=str(context_payload.get("session_id") or ""),
+                                project_id=project_id,
+                                project_root=project_root,
+                                cwd=effective_cwd,
+                                model=effective_model,
+                                locale=locale,
+                            )
+                            notes.extend(invoke_notes)
+                            usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                            continue
+                        turn_status = "blocked"
+                        blocked_reason = "model_refused_to_act_after_authorization"
+                        forced_text = translate(locale, "runtime.invalid_final_guard.blocked")
+                        notes.append(blocked_reason)
+                        break
                     should_steer = (
                         act_now_budget > 0
                         and not tool_events
@@ -1926,12 +2172,14 @@ class VintageProgrammerRuntime:
             turn_status = "needs_user_input"
         elif collaboration_mode in {"default", "execute"} and expects_tools and not tool_events:
             turn_status = "blocked"
+            blocked_reason = blocked_reason or "required_tooling_not_used"
             if has_image_attachments and looks_like_image_capability_denial_helper(raw_text):
                 notes.append("image_attachment_tooling_not_used")
             else:
                 notes.append("strict_agentic_blocked_without_required_tools")
         elif collaboration_mode in {"default", "execute"} and not tool_events and self._looks_like_plan_only_response(raw_text):
             turn_status = "blocked"
+            blocked_reason = blocked_reason or "plan_only_response_after_steer"
             notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
@@ -1968,6 +2216,20 @@ class VintageProgrammerRuntime:
                 "turn_status": turn_status,
                 "plan": plan_state,
                 "pending_user_input": pending_user_input,
+                "pending_approval": {},
+                "write_authorization_state": dict(write_authorization_state),
+                "invalid_final_guard": dict(invalid_final_guard),
+                "blocked_reason": blocked_reason,
+                "attachment_evidence_pack_preview": [
+                    {
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "kind": str(item.get("kind") or ""),
+                        "summary": str(item.get("summary") or "")[:240],
+                    }
+                    for item in attachment_evidence_pack[:6]
+                    if isinstance(item, dict)
+                ],
                 "requires_tools": expects_tools,
                 "tool_round_limit": tool_round_limit,
                 "network_mode": spec.network_mode,
@@ -2028,6 +2290,20 @@ class VintageProgrammerRuntime:
             "turn_status": turn_status,
             "plan": plan_state,
             "pending_user_input": pending_user_input,
+            "pending_approval": {},
+            "write_authorization_state": dict(write_authorization_state),
+            "invalid_final_guard": dict(invalid_final_guard),
+            "blocked_reason": blocked_reason,
+            "attachment_evidence_pack_preview": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "name": str(item.get("name") or ""),
+                    "kind": str(item.get("kind") or ""),
+                    "summary": str(item.get("summary") or "")[:240],
+                }
+                for item in attachment_evidence_pack[:6]
+                if isinstance(item, dict)
+            ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "compaction_status": dict(live_compaction_status),

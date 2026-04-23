@@ -1,6 +1,6 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.3.1`。
+当前稳定版本：`v2.4.0`。
 
 默认建议：不要激活 `Activate.ps1`，直接使用 `.venv\Scripts\python.exe`。
 
