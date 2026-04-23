@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import json
 import os
 import queue
@@ -101,7 +102,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -601,6 +602,16 @@ def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
     return project
 
 
+def _resolve_project_for_thread_create(project_id: str | None) -> dict[str, Any]:
+    wanted = str(project_id or "").strip()
+    project = get_project_store().get_cached(wanted) if hasattr(get_project_store(), "get_cached") else None
+    if not project:
+        if wanted:
+            raise HTTPException(status_code=404, detail=f"Project not found: {wanted}")
+        return _default_project()
+    return project
+
+
 def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
     runtime_meta = (
         get_chat_product_runtime().runtime_meta()
@@ -801,7 +812,27 @@ def _runtime_status_response_payload(
     )
 
 
-def _thread_detail_response_payload(session_id: str, max_turns: int = 200) -> ThreadDetailResponse:
+def _turn_public_id(item: dict[str, Any], index: int) -> str:
+    explicit_id = str(item.get("id") or "").strip()
+    if explicit_id:
+        return explicit_id
+    stable_source = "|".join(
+        [
+            str(index),
+            str(item.get("role") or ""),
+            str(item.get("created_at") or ""),
+            str(item.get("text") or "")[:160],
+        ]
+    )
+    digest = hashlib.sha1(stable_source.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"legacy-{index}-{digest}"
+
+
+def _thread_detail_response_payload(
+    session_id: str,
+    max_turns: int = 40,
+    before_turn_id: str | None = None,
+) -> ThreadDetailResponse:
     loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -824,13 +855,25 @@ def _thread_detail_response_payload(session_id: str, max_turns: int = 200) -> Th
     turns_raw = loaded.get("turns", [])
     if not isinstance(turns_raw, list):
         turns_raw = []
-    limited_turns = turns_raw[-max(1, min(2000, max_turns)) :]
+    turn_limit = max(1, min(2000, int(max_turns)))
+    before_id = str(before_turn_id or "").strip()
+    indexed_turns = [
+        (index, item)
+        for index, item in enumerate(turns_raw)
+        if isinstance(item, dict)
+    ]
+    end_index = len(indexed_turns)
+    if before_id:
+        for position, (index, item) in enumerate(indexed_turns):
+            if _turn_public_id(item, index) == before_id:
+                end_index = position
+                break
+    limited_turns = indexed_turns[max(0, end_index - turn_limit) : end_index]
     turns: list[SessionTurn] = []
-    for item in limited_turns:
-        if not isinstance(item, dict):
-            continue
+    for index, item in limited_turns:
         turns.append(
             SessionTurn(
+                id=_turn_public_id(item, index),
                 role=str(item.get("role") or "user"),
                 text=str(item.get("text") or ""),
                 answer_bundle=item.get("answer_bundle") or {},
@@ -858,8 +901,7 @@ def _thread_detail_response_payload(session_id: str, max_turns: int = 200) -> Th
 
 @app.post("/api/session/new", response_model=NewSessionResponse)
 def create_session(req: NewSessionRequest | None = None) -> NewSessionResponse:
-    project = _resolve_project_or_default((req.project_id if req else None))
-    get_project_store().touch(str(project.get("project_id") or ""))
+    project = _resolve_project_for_thread_create((req.project_id if req else None))
     session = session_store.create(project)
     return NewSessionResponse(session_id=session["id"], project_id=str(project.get("project_id") or ""))
 
@@ -905,8 +947,8 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
 
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
-def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
-    thread_payload = _thread_detail_response_payload(session_id, max_turns=max_turns)
+def get_session(session_id: str, max_turns: int = 40, before_turn_id: str | None = None) -> SessionDetailResponse:
+    thread_payload = _thread_detail_response_payload(session_id, max_turns=max_turns, before_turn_id=before_turn_id)
     return SessionDetailResponse(
         session_id=str(thread_payload.thread_id or ""),
         title=thread_payload.title,
@@ -925,8 +967,8 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
 
 
 @app.get("/api/thread/{thread_id}", response_model=ThreadDetailResponse)
-def get_thread(thread_id: str, max_turns: int = 200) -> ThreadDetailResponse:
-    return _thread_detail_response_payload(thread_id, max_turns=max_turns)
+def get_thread(thread_id: str, max_turns: int = 40, before_turn_id: str | None = None) -> ThreadDetailResponse:
+    return _thread_detail_response_payload(thread_id, max_turns=max_turns, before_turn_id=before_turn_id)
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)

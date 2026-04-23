@@ -299,7 +299,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.4.0"
+    assert payload["app_version"] == "2.5.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -352,7 +352,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.4.0"
+    assert bootstrap_payload["app_version"] == "2.5.0"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -390,6 +390,48 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
 
     detail_after_delete = client.get(f"/api/thread/{thread_id}")
     assert detail_after_delete.status_code == 404
+
+
+def test_thread_detail_uses_lightweight_pagination_and_stable_turn_ids(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    for index in range(6):
+        main_app.session_store.append_turn(session, "user" if index % 2 == 0 else "assistant", f"turn-{index}")
+    main_app.session_store.save(session)
+
+    first_page = client.get(f"/api/thread/{session['id']}?max_turns=2")
+    assert first_page.status_code == 200
+    first_payload = first_page.json()
+    assert [item["text"] for item in first_payload["turns"]] == ["turn-4", "turn-5"]
+    assert all(item["id"] for item in first_payload["turns"])
+
+    before_id = first_payload["turns"][0]["id"]
+    previous_page = client.get(f"/api/thread/{session['id']}?max_turns=2&before_turn_id={before_id}")
+    assert previous_page.status_code == 200
+    assert [item["text"] for item in previous_page.json()["turns"]] == ["turn-2", "turn-3"]
+
+
+def test_thread_new_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    project = {
+        "project_id": "project_cached",
+        "title": "Cached Project",
+        "root_path": str(tmp_path),
+        "git_branch": "cached-branch",
+    }
+    monkeypatch.setattr(main_app.project_store, "get_cached", lambda project_id: dict(project) if project_id == "project_cached" else None)
+    monkeypatch.setattr(main_app.project_store, "list_projects", lambda: (_ for _ in ()).throw(AssertionError("list_projects should not run")))
+    monkeypatch.setattr(main_app.project_store, "touch", lambda project_id: (_ for _ in ()).throw(AssertionError("touch should not run")))
+
+    response = client.post("/api/thread/new", json={"project_id": "project_cached"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["thread_id"]
+    loaded = main_app.session_store.load(payload["thread_id"])
+    assert loaded and loaded["project_id"] == "project_cached"
 
 
 def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:

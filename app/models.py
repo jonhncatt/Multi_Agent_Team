@@ -243,6 +243,7 @@ class DeleteSessionResponse(BaseModel):
 
 
 class SessionTurn(BaseModel):
+    id: str = ""
     role: str
     text: str
     answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)

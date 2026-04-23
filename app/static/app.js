@@ -37,6 +37,11 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const BRANCH_REFRESH_INTERVAL_MS = 15_000;
 const UPLOAD_CONCURRENCY = 3;
+const THREAD_DETAIL_PAGE_SIZE = 40;
+const THREAD_DETAIL_CACHE_LIMIT = 60;
+const MESSAGE_HTML_CACHE_LIMIT = 300;
+const TEMP_THREAD_PREFIX = "temp-thread-";
+const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
@@ -318,22 +323,48 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
-function renderMessageHtml(text) {
+function isTempThreadId(value) {
+  return String(value || "").startsWith(TEMP_THREAD_PREFIX);
+}
+
+function rememberMessageHtml(cacheKey, htmlValue) {
+  if (!cacheKey) return;
+  if (messageHtmlCache.has(cacheKey)) messageHtmlCache.delete(cacheKey);
+  messageHtmlCache.set(cacheKey, htmlValue);
+  while (messageHtmlCache.size > MESSAGE_HTML_CACHE_LIMIT) {
+    const oldestKey = messageHtmlCache.keys().next().value;
+    messageHtmlCache.delete(oldestKey);
+  }
+}
+
+function renderMessageHtml(text, messageId = "") {
   const raw = String(text || "");
   if (!raw) return "";
+  const cacheKey = `${String(messageId || "")}\n${raw}`;
+  if (messageHtmlCache.has(cacheKey)) {
+    const cached = messageHtmlCache.get(cacheKey);
+    messageHtmlCache.delete(cacheKey);
+    messageHtmlCache.set(cacheKey, cached);
+    return cached;
+  }
+  let htmlValue = "";
   if (!markedRuntime || typeof markedRuntime.parse !== "function" || !DOMPurifyRuntime || typeof DOMPurifyRuntime.sanitize !== "function") {
-    return escapeHtml(raw).replaceAll("\n", "<br />");
+    htmlValue = escapeHtml(raw).replaceAll("\n", "<br />");
+    rememberMessageHtml(cacheKey, htmlValue);
+    return htmlValue;
   }
   try {
     const rendered = markedRuntime.parse(raw);
-    return DOMPurifyRuntime.sanitize(rendered, {
+    htmlValue = DOMPurifyRuntime.sanitize(rendered, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select"],
       FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
     });
   } catch {
-    return escapeHtml(raw).replaceAll("\n", "<br />");
+    htmlValue = escapeHtml(raw).replaceAll("\n", "<br />");
   }
+  rememberMessageHtml(cacheKey, htmlValue);
+  return htmlValue;
 }
 
 function stringifyErrorDetail(detail) {
@@ -435,11 +466,14 @@ function projectLabel(project, fallbackHealth) {
 
 function extractSessionMessages(data) {
   const turns = Array.isArray(data.turns) ? data.turns : [];
-  return turns.map((turn) =>
+  return turns.map((turn, index) =>
     createMessage(
       String(turn.role || "").toLowerCase() === "user" ? "user" : "assistant",
       String(turn.text || ""),
-      { createdAt: String(turn.created_at || "") },
+      {
+        id: String(turn.id || `${index}-${turn.role || "turn"}-${turn.created_at || ""}`),
+        createdAt: String(turn.created_at || ""),
+      },
     ),
   );
 }
@@ -836,6 +870,8 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [creatingThread, setCreatingThread] = useState(false);
+  const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState(null);
@@ -851,6 +887,12 @@ function App() {
   const threadLongPressRef = useRef({ timer: null, consumed: false });
   const projectsRequestSeqRef = useRef(0);
   const sessionsRequestSeqRef = useRef(0);
+  const activeThreadRequestSeqRef = useRef(0);
+  const activeThreadAbortRef = useRef(null);
+  const threadDetailCacheRef = useRef(new Map());
+  const activeSessionIdRef = useRef("");
+  const pendingThreadCreationPromiseRef = useRef(null);
+  const pendingTempThreadIdRef = useRef("");
   const skillsRequestSeqRef = useRef(0);
   const runtimeStatusRequestSeqRef = useRef(0);
   const selectedSkillIdRef = useRef("");
@@ -859,7 +901,10 @@ function App() {
   const setProjects = (value) => dispatch({ type: "update", path: ["projectIndex", "projects"], value });
   const setProjectId = (value) => dispatch({ type: "update", path: ["projectIndex", "currentProjectId"], value });
   const setSessions = (value) => dispatch({ type: "update", path: ["threadIndex", "threads"], value });
-  const setSessionId = (value) => dispatch({ type: "update", path: ["threadIndex", "currentThreadId"], value });
+  const setSessionId = (value) => {
+    if (typeof value !== "function") activeSessionIdRef.current = String(value || "");
+    dispatch({ type: "update", path: ["threadIndex", "currentThreadId"], value });
+  };
   const setSessionAgentState = (value) => dispatch({ type: "update", path: ["threadIndex", "agentState"], value });
   const setMessages = (value) => dispatch({ type: "update", path: ["items", "messages"], value });
   const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
@@ -947,10 +992,14 @@ function App() {
   }, [projectId]);
 
   useEffect(() => {
+    activeSessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!bootReadyRef.current) return;
     if (!projectId) return;
     const storageKey = sessionStorageKeyForProject(projectId);
-    if (!sessionId) {
+    if (!sessionId || isTempThreadId(sessionId)) {
       window.localStorage.removeItem(storageKey);
       return;
     }
@@ -1300,6 +1349,62 @@ function App() {
     dispatch({ type: "items/reset" });
   }
 
+  function threadCacheKey(threadId) {
+    return String(threadId || "").trim();
+  }
+
+  function snapshotFromThreadDetail(data) {
+    const detail = normalizeThreadDetailPayload(data);
+    return {
+      detail,
+      messages: extractSessionMessages(detail),
+      agentState: (detail && detail.agent_state) || {},
+      cachedAt: Date.now(),
+    };
+  }
+
+  function rememberThreadDetail(threadId, data) {
+    const key = threadCacheKey(threadId);
+    if (!key || isTempThreadId(key)) return null;
+    const snapshot = snapshotFromThreadDetail(data);
+    if (threadDetailCacheRef.current.has(key)) threadDetailCacheRef.current.delete(key);
+    threadDetailCacheRef.current.set(key, snapshot);
+    while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
+      const oldestKey = threadDetailCacheRef.current.keys().next().value;
+      threadDetailCacheRef.current.delete(oldestKey);
+    }
+    return snapshot;
+  }
+
+  function applyThreadSnapshot(threadId, snapshot) {
+    if (!snapshot) return;
+    const key = threadCacheKey(threadId);
+    resetItemDomain();
+    setMessages(snapshot.messages || []);
+    setSessionAgentState(snapshot.agentState || {});
+    if (snapshot.detail) {
+      updateThreadStatus(key, String(snapshot.detail.status || "idle"));
+    }
+  }
+
+  function replaceThreadRow(tempThreadId, rawItem) {
+    const tempKey = String(tempThreadId || "").trim();
+    const normalized = normalizeSingleThread(rawItem);
+    if (!tempKey || !normalized) return;
+    const threadKey = String(normalized.thread_id || normalized.session_id || "").trim();
+    if (!threadKey) return;
+    setSessions((prev) => {
+      const previousList = Array.isArray(prev) ? prev : [];
+      const withoutTemp = previousList.filter(
+        (entry) => String(entry.thread_id || entry.session_id || "").trim() !== tempKey,
+      );
+      const withoutReal = withoutTemp.filter(
+        (entry) => String(entry.thread_id || entry.session_id || "").trim() !== threadKey,
+      );
+      return [{ ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) }, ...withoutReal];
+    });
+  }
+
   function normalizeSingleThread(item) {
     return normalizeThreadListPayload({ threads: [item] })[0] || null;
   }
@@ -1384,7 +1489,7 @@ function App() {
   }
 
   function openProjectMenuAt(position, item) {
-    if (!item || loadingSession || sending || item.is_default) return;
+    if (!item || sending || item.is_default) return;
     closeThreadMenu();
     setProjectMenu({
       projectId: String(item.project_id || ""),
@@ -1400,7 +1505,7 @@ function App() {
   }
 
   function handleProjectTouchStart(event, item) {
-    if (loadingSession || sending || (item && item.is_default)) return;
+    if (sending || (item && item.is_default)) return;
     cancelProjectLongPress();
     const touch = (event.touches && event.touches[0]) || null;
     projectLongPressRef.current = {
@@ -1436,7 +1541,7 @@ function App() {
   }
 
   function openThreadMenuAt(position, item) {
-    if (!item || loadingSession || sending) return;
+    if (!item || sending || isTempThreadId(item.session_id || item.thread_id)) return;
     closeProjectMenu();
     setThreadMenu({
       sessionId: String(item.session_id || ""),
@@ -1452,7 +1557,7 @@ function App() {
   }
 
   function handleThreadTouchStart(event, item) {
-    if (loadingSession || sending) return;
+    if (sending || isTempThreadId(item && (item.session_id || item.thread_id))) return;
     cancelThreadLongPress();
     const touch = (event.touches && event.touches[0]) || null;
     threadLongPressRef.current = {
@@ -1639,33 +1744,44 @@ function App() {
     }
   }
 
-  async function createSession(targetProjectId = projectId) {
-    const data = await fetchJson("/api/thread/new", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: targetProjectId || "" }),
-    });
-    const sid = String(data.thread_id || data.session_id || "").trim();
-    const resolvedProjectId = String(data.project_id || targetProjectId || "").trim();
-    if (!sid) throw new Error("session id missing");
-    if (resolvedProjectId) setProjectId(resolvedProjectId);
-    setSessionId(sid);
+  async function createSession(targetProjectId = projectId, options = {}) {
+    if (pendingThreadCreationPromiseRef.current) {
+      return pendingThreadCreationPromiseRef.current;
+    }
+    const resolvedTargetProjectId = String(targetProjectId || "").trim();
+    const previousSnapshot = {
+      sessionId,
+      messages,
+      agentState: sessionAgentState,
+    };
+    const projectRecord = projects.find((item) => String(item.project_id || "") === resolvedTargetProjectId) || currentProject || null;
+    const nowIso = new Date().toISOString();
+    const tempId = `${TEMP_THREAD_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    pendingTempThreadIdRef.current = tempId;
+    setCreatingThread(true);
+    activeThreadRequestSeqRef.current += 1;
+    if (activeThreadAbortRef.current) {
+      activeThreadAbortRef.current.abort();
+      activeThreadAbortRef.current = null;
+    }
+    setLoadingSession(false);
+    if (resolvedTargetProjectId) setProjectId(resolvedTargetProjectId);
+    setSessionId(tempId);
     resetItemDomain();
+    setMessages([]);
     setSessionAgentState({});
     clearLiveRunUi();
     clearUiError();
     closeProjectMenu();
     closeThreadMenu();
-    const projectRecord = projects.find((item) => String(item.project_id || "") === resolvedProjectId) || currentProject || null;
-    const nowIso = new Date().toISOString();
     upsertThreadRow(
       {
-        thread_id: sid,
-        session_id: sid,
-        title: "",
+        thread_id: tempId,
+        session_id: tempId,
+        title: t("labels.new_thread"),
         preview: "",
         turn_count: 0,
-        project_id: resolvedProjectId || String(targetProjectId || ""),
+        project_id: resolvedTargetProjectId,
         project_title: String((projectRecord && projectRecord.title) || ""),
         project_root: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
         git_branch: String((projectRecord && projectRecord.git_branch) || runtimeStatus.git_branch || ""),
@@ -1676,41 +1792,153 @@ function App() {
       },
       { promote: true },
     );
-    pushLogWithLimit(setLogs, "system", t("log.thread_created", { session_id: sid.slice(0, 8) }));
-    return sid;
+
+    const creationPromise = (async () => {
+      try {
+        const data = await fetchJson("/api/thread/new", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project_id: resolvedTargetProjectId || "" }),
+        });
+        const sid = String(data.thread_id || data.session_id || "").trim();
+        const resolvedProjectId = String(data.project_id || resolvedTargetProjectId || "").trim();
+        if (!sid) throw new Error("session id missing");
+        replaceThreadRow(tempId, {
+          thread_id: sid,
+          session_id: sid,
+          title: "",
+          preview: "",
+          turn_count: 0,
+          project_id: resolvedProjectId,
+          project_title: String((projectRecord && projectRecord.title) || ""),
+          project_root: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
+          git_branch: String((projectRecord && projectRecord.git_branch) || runtimeStatus.git_branch || ""),
+          cwd: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
+          updated_at: nowIso,
+          created_at: nowIso,
+          status: "idle",
+        });
+        if (activeSessionIdRef.current === tempId) activeSessionIdRef.current = sid;
+        setSessionId((current) => (current === tempId ? sid : current));
+        if (resolvedProjectId) setProjectId(resolvedProjectId);
+        pushLogWithLimit(setLogs, "system", t("log.thread_created", { session_id: sid.slice(0, 8) }));
+        return sid;
+      } catch (err) {
+        removeThreadRow(tempId);
+        if (activeSessionIdRef.current === tempId && options.restoreOnFailure !== false) {
+          setSessionId(previousSnapshot.sessionId || "");
+          setMessages(previousSnapshot.messages || []);
+          setSessionAgentState(previousSnapshot.agentState || {});
+        }
+        throw err;
+      } finally {
+        if (pendingTempThreadIdRef.current === tempId) pendingTempThreadIdRef.current = "";
+        pendingThreadCreationPromiseRef.current = null;
+        setCreatingThread(false);
+      }
+    })();
+    pendingThreadCreationPromiseRef.current = creationPromise;
+    return creationPromise;
   }
 
   async function loadSession(targetSessionId, options = {}) {
     const sid = String(targetSessionId || "").trim();
     if (!sid) return false;
+    if (isTempThreadId(sid)) return true;
+    const requestSeq = ++activeThreadRequestSeqRef.current;
+    if (activeThreadAbortRef.current) {
+      activeThreadAbortRef.current.abort();
+      activeThreadAbortRef.current = null;
+    }
+    const controller = new AbortController();
+    activeThreadAbortRef.current = controller;
     setLoadingSession(true);
+    setSessionId(sid);
     setMobileThreadsOpen(false);
-    try {
-      const data = normalizeThreadDetailPayload(await fetchJson(`/api/thread/${encodeURIComponent(sid)}?max_turns=120`));
+    closeThreadMenu();
+    clearLiveRunUi();
+    const cached = threadDetailCacheRef.current.get(sid);
+    if (cached) {
+      applyThreadSnapshot(sid, cached);
+    } else {
       resetItemDomain();
-      setMessages(extractSessionMessages(data));
-      setSessionAgentState((data && data.agent_state) || {});
+      setMessages([]);
+      setSessionAgentState({});
+    }
+    try {
+      const data = normalizeThreadDetailPayload(await fetchJson(
+        `/api/thread/${encodeURIComponent(sid)}?max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
+        { signal: controller.signal },
+      ));
+      if (requestSeq !== activeThreadRequestSeqRef.current) return false;
+      const snapshot = rememberThreadDetail(sid, data);
+      applyThreadSnapshot(sid, snapshot);
       setSessionId(String(data.thread_id || data.session_id || sid));
       const resolvedProjectId = String((data && data.project_id) || options.projectIdOverride || "").trim();
       if (resolvedProjectId) setProjectId(resolvedProjectId);
       updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
-      clearLiveRunUi();
-      closeThreadMenu();
       clearUiError();
-      await refreshRuntimeStatus(resolvedProjectId || projectId, { background: true });
-      pushLogWithLimit(setLogs, "system", t("log.thread_loaded", { session_id: sid.slice(0, 8) }));
+      if (!options.silentLog) {
+        pushLogWithLimit(setLogs, "system", t("log.thread_loaded", { session_id: sid.slice(0, 8) }));
+      }
       return true;
     } catch (err) {
+      if (err && err.name === "AbortError") return false;
+      if (requestSeq !== activeThreadRequestSeqRef.current) return false;
       if (options.silentNotFound && String(err.message || "").includes("404")) return false;
       const nextError = applyUiError(err, t("errors.load_thread_failed"));
       pushLogWithLimit(setLogs, "error", t("errors.load_thread_failed"));
       return false;
     } finally {
-      setLoadingSession(false);
+      if (requestSeq === activeThreadRequestSeqRef.current) {
+        setLoadingSession(false);
+        if (activeThreadAbortRef.current === controller) activeThreadAbortRef.current = null;
+      }
+    }
+  }
+
+  async function loadEarlierTurns() {
+    const sid = String(sessionId || "").trim();
+    if (!sid || isTempThreadId(sid) || loadingEarlierTurns || !messages.length) return;
+    const beforeTurnId = String(messages[0].id || "").trim();
+    if (!beforeTurnId) return;
+    setLoadingEarlierTurns(true);
+    try {
+      const data = normalizeThreadDetailPayload(await fetchJson(
+        `/api/thread/${encodeURIComponent(sid)}?max_turns=${THREAD_DETAIL_PAGE_SIZE}&before_turn_id=${encodeURIComponent(beforeTurnId)}`,
+      ));
+      if (activeSessionIdRef.current !== sid) return;
+      const olderMessages = extractSessionMessages(data);
+      setMessages((prev) => {
+        const existingIds = new Set((Array.isArray(prev) ? prev : []).map((item) => String(item.id || "")));
+        const merged = [
+          ...olderMessages.filter((item) => !existingIds.has(String(item.id || ""))),
+          ...(Array.isArray(prev) ? prev : []),
+        ];
+        threadDetailCacheRef.current.set(sid, {
+          detail: data,
+          messages: merged,
+          agentState: (data && data.agent_state) || sessionAgentState || {},
+          cachedAt: Date.now(),
+        });
+        while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
+          const oldestKey = threadDetailCacheRef.current.keys().next().value;
+          threadDetailCacheRef.current.delete(oldestKey);
+        }
+        return merged;
+      });
+      setSessionAgentState((data && data.agent_state) || sessionAgentState || {});
+      updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.load_thread_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.load_thread_failed"));
+    } finally {
+      setLoadingEarlierTurns(false);
     }
   }
 
   async function handleNewSession() {
+    if (creatingThread) return;
     try {
       await createSession(projectId);
     } catch (err) {
@@ -1721,7 +1949,7 @@ function App() {
 
   async function handleDeleteSession(targetSessionId) {
     const sid = String(targetSessionId || "").trim();
-    if (!sid || loadingSession || sending) return;
+    if (!sid || sending || isTempThreadId(sid)) return;
     const item = sessions.find((entry) => String(entry.session_id || entry.thread_id || "") === sid) || null;
     const title = String((item && item.title) || t("labels.new_thread")).trim() || t("labels.new_thread");
     if (!window.confirm(t("confirm.delete_thread", { title }))) {
@@ -1768,7 +1996,7 @@ function App() {
 
   async function handleDeleteProject(targetProjectId) {
     const pid = String(targetProjectId || "").trim();
-    if (!pid || loadingSession || sending) return;
+    if (!pid || sending) return;
     const item = projects.find((entry) => String(entry.project_id || "") === pid) || null;
     if (!item || item.is_default) {
       closeProjectMenu();
@@ -2008,6 +2236,9 @@ function App() {
     let sid = sessionId;
     let pendingMessage = null;
     try {
+      if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
+        sid = await pendingThreadCreationPromiseRef.current;
+      }
       if (!sid) sid = await createSession(projectId);
 
       const userMessage = createMessage("user", messageText);
@@ -2639,6 +2870,14 @@ function App() {
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
   const displayVersion = normalizeReleaseVersion((health && health.app_version) || "");
+  const currentThread = sessions.find((item) => String(item.session_id || item.thread_id || "") === String(sessionId || "")) || null;
+  const totalTurnsForCurrentThread = Math.max(0, Number((currentThread && currentThread.turn_count) || 0) || 0);
+  const canLoadEarlierTurns = Boolean(
+    sessionId &&
+    !isTempThreadId(sessionId) &&
+    messages.length > 0 &&
+    totalTurnsForCurrentThread > messages.length,
+  );
   const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId, uiLocale) : (workspaceLabel || t("labels.start_building"));
   const headBreadcrumb = [
     workspaceLabel || "",
@@ -2667,8 +2906,8 @@ function App() {
         </div>
 
         <div className="rail-actions">
-          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${loadingSession || sending}>${t("buttons.new_thread")}</button>
-          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${loadingSession || sending}>${t("buttons.refresh")}</button>
+          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${creatingThread || sending}>${t("buttons.new_thread")}</button>
+          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${sending}>${t("buttons.refresh")}</button>
         </div>
 
         <section className="rail-section" id="projectSection">
@@ -2690,7 +2929,7 @@ function App() {
                           onTouchEnd=${cancelProjectLongPress}
                           onTouchMove=${cancelProjectLongPress}
                           onTouchCancel=${cancelProjectLongPress}
-                          disabled=${loadingSession || sending}
+                          disabled=${sending}
                         >
                           <div className="project-row-title">${item.title || item.project_id}</div>
                           <div className="project-row-meta">
@@ -2737,7 +2976,7 @@ function App() {
                           onTouchEnd=${cancelThreadLongPress}
                           onTouchMove=${cancelThreadLongPress}
                           onTouchCancel=${cancelThreadLongPress}
-                          disabled=${loadingSession || sending}
+                          disabled=${sending}
                         >
                           <div className="thread-row-title">${item.title || t("labels.new_thread")}</div>
                           <div className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</div>
@@ -2790,6 +3029,15 @@ function App() {
         </header>
 
         <section className="conversation-plane" id="messageList" ref=${chatListRef}>
+          ${canLoadEarlierTurns
+            ? html`
+                <div className="load-earlier-row">
+                  <button className="ghost-btn compact-btn" type="button" onClick=${loadEarlierTurns} disabled=${loadingEarlierTurns}>
+                    ${loadingEarlierTurns ? t("buttons.running") : t("buttons.load_earlier")}
+                  </button>
+                </div>
+              `
+            : null}
           ${messages.length
             ? messages.map(
                 (item) => html`
@@ -2801,7 +3049,7 @@ function App() {
                     <div className="message-card">
                       <div
                         className="message-card-body message-markdown"
-                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text) }}
+                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text, item.id) }}
                       ></div>
                     </div>
                   </article>

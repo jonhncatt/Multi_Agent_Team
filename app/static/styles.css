@@ -433,6 +433,12 @@ button {
   padding: 10px 18px 8px;
 }
 
+.load-earlier-row {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 12px;
+}
+
 .empty-panel {
   width: min(920px, 100%);
   margin: 0;

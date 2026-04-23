@@ -494,6 +494,31 @@ class ProjectStore:
                 return item
         return None
 
+    def get_cached(self, project_id: str | None) -> dict[str, Any] | None:
+        wanted = str(project_id or "").strip()
+        data = self._read()
+        projects = data.get("projects") or {}
+        if not isinstance(projects, dict):
+            projects = {}
+        if wanted:
+            raw = projects.get(wanted)
+            if not isinstance(raw, dict):
+                return None
+            payload = dict(raw)
+            payload.setdefault("project_id", wanted)
+            return payload
+        default_id = str(data.get("default_project_id") or "").strip()
+        raw_default = projects.get(default_id) if default_id else None
+        if isinstance(raw_default, dict):
+            payload = dict(raw_default)
+            if default_id:
+                payload.setdefault("project_id", default_id)
+            return payload
+        for raw in projects.values():
+            if isinstance(raw, dict) and bool(raw.get("is_default")):
+                return dict(raw)
+        return None
+
     def create(self, *, root_path: str, title: str = "") -> dict[str, Any]:
         root = Path(str(root_path or "").strip()).expanduser()
         if not root.is_absolute():
