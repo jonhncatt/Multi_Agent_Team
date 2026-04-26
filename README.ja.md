@@ -6,7 +6,7 @@
 [Release Flow](RELEASING.md)
 
 これはローカル実行の単一メイン agent ワークステーションです。既定のメイン agent は `vintage_programmer` です。  
-現在の安定版は `v2.5.0` です。
+現在の安定版は `v2.6.0` です。
 
 現在のワークステーション構成:
 - 左側の thread rail
@@ -127,7 +127,7 @@ Settings での現在選択 > ブラウザ保存値 > ブラウザ言語 > `VP_D
 
 - `codex/*` 候補ブランチで変更を進める
 - 回帰確認後に `main` へマージする
-- リリース commit に `v2.5.0` のような annotated tag を付ける
+- リリース commit に `v2.6.0` のような annotated tag を付ける
 - 次の作業は常に最新 `main` から新しい `codex/*` ブランチを切って始める
 
 詳細は [RELEASING.md](RELEASING.md) を参照してください。

@@ -84,6 +84,7 @@ function createMessage(role, text, options = {}) {
     pending: Boolean(options.pending),
     error: Boolean(options.error),
     createdAt: options.createdAt || "",
+    activity: normalizeMessageActivity(options.activity || null),
   };
 }
 
@@ -473,9 +474,47 @@ function extractSessionMessages(data) {
       {
         id: String(turn.id || `${index}-${turn.role || "turn"}-${turn.created_at || ""}`),
         createdAt: String(turn.created_at || ""),
+        activity: turn.activity || {},
       },
     ),
   );
+}
+
+function normalizeActivityTimestamp(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return numeric > 1_000_000_000_000 ? Math.round(numeric) : Math.round(numeric * 1000);
+}
+
+function normalizeTraceEvent(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  return {
+    id: String(item.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    run_id: String(item.run_id || ""),
+    type: String(item.type || ""),
+    title: String(item.title || ""),
+    detail: String(item.detail || ""),
+    status: String(item.status || "running"),
+    timestamp: normalizeActivityTimestamp(item.timestamp),
+    duration_ms: item.duration_ms == null ? null : Math.max(0, Number(item.duration_ms) || 0),
+    payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+    parent_id: item.parent_id ? String(item.parent_id) : null,
+    visible: item.visible !== false,
+  };
+}
+
+function normalizeMessageActivity(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const traceEvents = Array.isArray(item.trace_events) ? item.trace_events.map(normalizeTraceEvent) : [];
+  return {
+    run_id: String(item.run_id || ""),
+    status: String(item.status || ""),
+    started_at: normalizeActivityTimestamp(item.started_at || (traceEvents[0] && traceEvents[0].timestamp) || 0),
+    finished_at: normalizeActivityTimestamp(item.finished_at || (traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0)),
+    run_duration_ms: Math.max(0, Number(item.run_duration_ms) || 0),
+    activity_summary: String(item.activity_summary || ""),
+    trace_events: traceEvents,
+  };
 }
 
 function defaultSkillTemplate(locale) {
@@ -642,6 +681,100 @@ function toolTimelineSummary(item, locale) {
   const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
   if (visibleText) return `${base} · ${visibleText}`;
   return base || translateUi(locale, "labels.no_summary");
+}
+
+function activityStatusFromTraceType(type, fallback = "thinking") {
+  const normalized = String(type || "").trim();
+  if (!normalized) return fallback;
+  if (normalized === "tool.started" || normalized === "tool.call_detected") return "tooling";
+  if (normalized === "answer.started" || normalized === "answer.finished") return "answering";
+  if (normalized === "approval.required" || normalized === "blocked") return "blocked";
+  if (normalized === "run.finished") return "completed";
+  if (normalized === "run.failed") return "failed";
+  if (normalized === "cancelled") return "cancelled";
+  return fallback;
+}
+
+function mergeActivityState(previous, patch = {}) {
+  const prev = normalizeMessageActivity(previous || {});
+  const nextPatch = patch && typeof patch === "object" ? patch : {};
+  const nextTraceEvents = Array.isArray(nextPatch.trace_events)
+    ? nextPatch.trace_events.map(normalizeTraceEvent)
+    : prev.trace_events;
+  const nextStatus = String(nextPatch.status || prev.status || "");
+  return {
+    ...prev,
+    ...nextPatch,
+    run_id: String(nextPatch.run_id || prev.run_id || ""),
+    status: nextStatus,
+    started_at: normalizeActivityTimestamp(nextPatch.started_at || prev.started_at || (nextTraceEvents[0] && nextTraceEvents[0].timestamp) || 0),
+    finished_at: normalizeActivityTimestamp(
+      nextPatch.finished_at
+      || prev.finished_at
+      || ((nextStatus === "completed" || nextStatus === "failed" || nextStatus === "blocked" || nextStatus === "cancelled") && (Date.now()))
+      || 0,
+    ),
+    run_duration_ms: Math.max(0, Number(nextPatch.run_duration_ms || prev.run_duration_ms || 0) || 0),
+    activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
+    trace_events: nextTraceEvents,
+  };
+}
+
+function appendActivityTrace(activity, trace, options = {}) {
+  const current = normalizeMessageActivity(activity || {});
+  const normalizedTrace = normalizeTraceEvent(trace);
+  const nextTraceEvents = [...current.trace_events, normalizedTrace];
+  const nextStatus = String(
+    options.status
+    || current.status
+    || activityStatusFromTraceType(normalizedTrace.type, "thinking"),
+  );
+  const finishedAt = ["completed", "failed", "blocked", "cancelled"].includes(nextStatus)
+    ? (normalizedTrace.timestamp || current.finished_at || Date.now())
+    : current.finished_at;
+  const startedAt = current.started_at || normalizedTrace.timestamp || Date.now();
+  return {
+    ...current,
+    run_id: String(normalizedTrace.run_id || current.run_id || ""),
+    status: nextStatus,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    run_duration_ms: finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : current.run_duration_ms,
+    trace_events: nextTraceEvents.slice(-64),
+    activity_summary: String(current.activity_summary || ""),
+  };
+}
+
+function formatActivityDuration(activity, nowMs = Date.now()) {
+  const item = normalizeMessageActivity(activity || {});
+  const startedAt = item.started_at;
+  if (!startedAt) return "";
+  const durationMs = item.run_duration_ms || (
+    item.finished_at
+      ? Math.max(0, item.finished_at - startedAt)
+      : Math.max(0, nowMs - startedAt)
+  );
+  return `${Math.max(0, Math.round(durationMs / 1000))}s`;
+}
+
+function activityPillLabel(locale, activity, nowMs = Date.now()) {
+  const item = normalizeMessageActivity(activity || {});
+  const status = String(item.status || "");
+  const duration = formatActivityDuration(item, nowMs);
+  if (status === "failed") return `${translateUi(locale, "activity.failed")}${duration ? ` ${duration}` : ""}`;
+  if (status === "blocked") return translateUi(locale, "activity.blocked");
+  if (status === "cancelled") return `${translateUi(locale, "activity.cancelled")}${duration ? ` ${duration}` : ""}`;
+  if (status === "completed") return `${translateUi(locale, "activity.title")}${duration ? ` ${duration}` : ""}`;
+  return `${translateUi(locale, "activity.running")}${duration ? ` ${duration}` : ""}`;
+}
+
+function activityToneClass(status) {
+  const normalized = String(status || "").trim();
+  if (normalized === "failed") return "failed";
+  if (normalized === "blocked") return "blocked";
+  if (normalized === "cancelled") return "cancelled";
+  if (normalized === "completed") return "completed";
+  return "running";
 }
 
 function resolveStateValue(current, nextValue) {
@@ -876,6 +1009,8 @@ function App() {
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState(null);
   const [threadMenu, setThreadMenu] = useState(null);
+  const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
+  const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const contextMeterRef = useRef(null);
@@ -1111,6 +1246,11 @@ function App() {
     if (!chatListRef.current) return;
     chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
   }, [messages, drawerView]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -2242,7 +2382,14 @@ function App() {
       if (!sid) sid = await createSession(projectId);
 
       const userMessage = createMessage("user", messageText);
-      pendingMessage = createMessage("assistant", t("labels.processing"), { pending: true });
+      pendingMessage = createMessage("assistant", t("labels.processing"), {
+        pending: true,
+        activity: {
+          status: "thinking",
+          started_at: Date.now(),
+          trace_events: [],
+        },
+      });
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
       setLiveTurnState({
         goal: messageText,
@@ -2310,6 +2457,7 @@ function App() {
       let latestSessionTokenTotals = {};
       let latestGlobalTokenTotals = {};
       let completedTurnPayload = null;
+      let latestActivity = normalizeMessageActivity(pendingMessage.activity);
 
       const replacePendingText = (text, options = {}) => {
         if (options.onlyWhileWaiting && assistantMessageStarted) return;
@@ -2317,11 +2465,23 @@ function App() {
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
         );
       };
+      const patchPendingActivity = (updater) => {
+        setMessages((prev) =>
+          prev.map((item) => {
+            if (!pendingMessage || item.id !== pendingMessage.id) return item;
+            const nextActivity = typeof updater === "function"
+              ? normalizeMessageActivity(updater(item.activity))
+              : normalizeMessageActivity(updater);
+            latestActivity = nextActivity;
+            return { ...item, activity: nextActivity };
+          }),
+        );
+      };
       const completePendingText = (text) => {
         setMessages((prev) =>
           prev.map((item) => (
             item.id === pendingMessage.id
-              ? createMessage("assistant", text, { id: item.id })
+              ? createMessage("assistant", text, { id: item.id, activity: item.activity })
               : item
           )),
         );
@@ -2391,6 +2551,7 @@ function App() {
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
         current_task_focus: latestRunSnapshot.current_task_focus || {},
+        activity: latestActivity,
         context_meter: latestRunSnapshot.context_meter || {},
         compaction_status: latestRunSnapshot.compaction_status || {},
         token_usage: latestTokenUsage,
@@ -2431,7 +2592,44 @@ function App() {
             if (payload && payload.run_snapshot) {
               applySnapshot(payload.run_snapshot);
             }
-            if (event === "thread/started") {
+            if (event === "run_started") {
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                run_id: String(payload.run_id || ""),
+                status: "thinking",
+                started_at: Date.now(),
+              }));
+            } else if (event === "run_finished") {
+              const nextStatus = String(payload.turn_status || latestRunSnapshot.turn_status || "completed");
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                run_id: String(payload.run_id || ""),
+                status: nextStatus === "needs_user_input" ? "blocked" : (nextStatus || "completed"),
+                finished_at: Date.now(),
+                run_duration_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
+              }));
+              setSending(false);
+              setStoppingRun(false);
+              setActiveRunId("");
+            } else if (event === "run_failed") {
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                run_id: String(payload.run_id || ""),
+                status: "failed",
+                finished_at: Date.now(),
+              }));
+              setSending(false);
+              setStoppingRun(false);
+              setActiveRunId("");
+            } else if (event === "trace_event") {
+              const trace = normalizeTraceEvent(payload.trace || {});
+              if (trace.id) {
+                const nextStatus = activityStatusFromTraceType(trace.type, latestActivity.status || "thinking");
+                patchPendingActivity((activity) => appendActivityTrace(activity, trace, { status: nextStatus }));
+              }
+              const detail = String(trace.title || trace.detail || "");
+              if (detail) {
+                pushLogWithLimit(setLogs, "trace", detail);
+                pushLiveLog("trace", detail);
+              }
+            } else if (event === "thread/started") {
               if (payload.thread) upsertThreadRow(payload.thread, { promote: true });
             } else if (event === "thread/status/changed") {
               updateThreadStatus(payload.thread_id, ((payload.status || {}).type) || "idle");
@@ -2476,6 +2674,10 @@ function App() {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                status: completionStatus === "needs_user_input" ? "blocked" : (completionStatus || "completed"),
+                finished_at: Date.now(),
+              }));
               if (assistantText) completePendingText(assistantText);
               setSending(false);
               setStoppingRun(false);
@@ -2571,7 +2773,10 @@ function App() {
       setMessages((prev) =>
         prev.map((item) =>
           item.id === pendingMessage.id
-            ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), { id: item.id })
+            ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), {
+              id: item.id,
+              activity: finalPayload.activity || latestActivity,
+            })
             : item,
         ),
       );
@@ -2890,6 +3095,77 @@ function App() {
     activeProviderLabel || activeProvider || "-",
   ].filter(Boolean).join(" · ");
 
+  const toggleMessageActivity = (messageId) => {
+    setActivityOpenByMessageId((prev) => ({
+      ...prev,
+      [messageId]: !prev[messageId],
+    }));
+  };
+
+  const renderActivityPayload = (trace) => {
+    const payloadText = stringifyCompactJson((trace && trace.payload) || {});
+    if (!payloadText) return null;
+    return html`
+      <details className="activity-payload">
+        <summary>${t("labels.detail")}</summary>
+        <pre>${payloadText}</pre>
+      </details>
+    `;
+  };
+
+  const renderMessageActivity = (item) => {
+    if (!item || item.role !== "assistant") return null;
+    const activity = normalizeMessageActivity(item.activity || {});
+    const traceEvents = activity.trace_events.filter((trace) => trace.visible !== false);
+    const hasActivity = Boolean(traceEvents.length || activity.run_duration_ms || activity.activity_summary);
+    if (!hasActivity) return null;
+    const isOpen = Boolean(activityOpenByMessageId[item.id]);
+    const tone = activityToneClass(activity.status);
+    const pillLabel = activityPillLabel(uiLocale, activity, activityClockMs || Date.now());
+    return html`
+      <div className=${`message-activity tone-${tone} ${isOpen ? "open" : ""}`}>
+        <button
+          className=${`activity-pill tone-${tone}`}
+          type="button"
+          aria-expanded=${isOpen ? "true" : "false"}
+          onClick=${() => toggleMessageActivity(item.id)}
+        >
+          <span>${pillLabel}</span>
+          <span className="activity-pill-arrow">${isOpen ? "−" : ">"}</span>
+        </button>
+        ${isOpen
+          ? html`
+              <div className="activity-panel">
+                <div className="activity-panel-head">
+                  <div className="activity-panel-title">${t("activity.title")}</div>
+                  <div className=${`activity-badge tone-${tone}`}>${pillLabel}</div>
+                </div>
+                <div className="activity-list">
+                  ${traceEvents.length
+                    ? traceEvents.map(
+                        (trace, index) => html`
+                          <div key=${trace.id || `${item.id}-trace-${index}`} className=${`activity-item tone-${activityToneClass(trace.status)}`}>
+                            <div className="activity-item-head">
+                              <span className="activity-dot" aria-hidden="true"></span>
+                              <span className="activity-item-title">${trace.title || trace.type || t("labels.processing")}</span>
+                              ${trace.duration_ms != null
+                                ? html`<span className="activity-item-duration">${formatActivityDuration({ started_at: trace.timestamp, finished_at: trace.timestamp + trace.duration_ms }, trace.timestamp + trace.duration_ms)}</span>`
+                                : null}
+                            </div>
+                            ${trace.detail ? html`<div className="activity-item-detail">${trace.detail}</div>` : null}
+                            ${renderActivityPayload(trace)}
+                          </div>
+                        `,
+                      )
+                    : html`<div className="empty-inline">${activity.activity_summary || t("labels.processing")}</div>`}
+                </div>
+              </div>
+            `
+          : null}
+      </div>
+    `;
+  };
+
   return html`
     <div className="workspace-shell" id="appShell">
       <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
@@ -3047,6 +3323,7 @@ function App() {
                       ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
                     </div>
                     <div className="message-card">
+                      ${renderMessageActivity(item)}
                       <div
                         className="message-card-body message-markdown"
                         dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text, item.id) }}

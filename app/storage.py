@@ -211,6 +211,7 @@ class SessionStore:
         text: str,
         attachments: list[dict[str, Any]] | None = None,
         answer_bundle: dict[str, Any] | None = None,
+        activity: dict[str, Any] | None = None,
     ) -> None:
         session.setdefault("turns", []).append(
             {
@@ -219,6 +220,7 @@ class SessionStore:
                 "text": text,
                 "attachments": attachments or [],
                 "answer_bundle": answer_bundle or {},
+                "activity": activity or {},
                 "created_at": now_iso(),
             }
         )

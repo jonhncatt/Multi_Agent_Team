@@ -308,6 +308,35 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
     assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
+    assert "Use tools when needed." in prompt
+    assert "Execution must happen through tool calls." not in prompt
+
+
+def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="SSE 是 Server-Sent Events。")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="解释一下 SSE 是什么",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-direct-answer",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "SSE 是 Server-Sent Events。"
+    assert backend.tools.calls == []
+    assert result["activity"]["trace_events"]
 
 
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
@@ -354,6 +383,12 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
+    trace_types = [item["type"] for item in result["activity"]["trace_events"]]
+    assert "run.started" in trace_types
+    assert "runtime_contract.selected" in trace_types
+    assert "tool.started" in trace_types
+    assert "tool.finished" in trace_types
+    assert "run.finished" in trace_types
 
 
 def test_invalid_final_guard_steers_authorized_write_into_tool_call(tmp_path: Path) -> None:

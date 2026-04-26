@@ -40,6 +40,7 @@ from app.document_text import (
 )
 from app.sandbox import DockerSandboxManager
 from app.storage import ProjectStore
+from app.tool_trace_summary import safe_error_message
 from app.workbench import WorkbenchStore
 
 try:
@@ -2146,8 +2147,11 @@ class LocalToolExecutor:
                                 "additionalProperties": False,
                             },
                         },
+                        "steps": {"type": "array", "items": {"type": "object"}},
+                        "items": {"type": "array", "items": {"type": "object"}},
+                        "tasks": {"type": "array", "items": {"type": "object"}},
+                        "plan_state": {"type": "array", "items": {"type": "object"}},
                     },
-                    "required": ["plan"],
                     "additionalProperties": False,
                 },
             },
@@ -2277,6 +2281,22 @@ class LocalToolExecutor:
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         arguments = self._normalize_public_tool_arguments(name, arguments)
         result: dict[str, Any]
+        try:
+            return self._execute_impl(name, arguments)
+        except Exception as exc:
+            return self._decorate_result(
+                {
+                    "ok": False,
+                    "error": {
+                        "kind": "tool_execution_error",
+                        "tool": str(name or ""),
+                        "message": safe_error_message(exc),
+                    },
+                    "summary": safe_error_message(exc),
+                }
+            )
+
+    def _execute_impl(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "exec_command":
             result = self.exec_command(**arguments)
             return self._decorate_result(result)
@@ -2445,7 +2465,17 @@ class LocalToolExecutor:
         if name == "write_agent_spec":
             result = self.write_agent_spec(**arguments)
             return self._decorate_result(result)
-        return self._decorate_result({"ok": False, "error": f"Unknown tool: {name}"})
+        return self._decorate_result(
+            {
+                "ok": False,
+                "error": {
+                    "kind": "unknown_tool",
+                    "tool": str(name or ""),
+                    "message": f"Unknown tool: {name}",
+                },
+                "summary": f"unknown tool: {name}",
+            }
+        )
 
     @staticmethod
     def _normalize_public_tool_arguments(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
@@ -2531,7 +2561,41 @@ class LocalToolExecutor:
         time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
         return self._command_session_snapshot(normalized_session_id, max_output_chars=max_output_chars)
 
-    def update_plan(self, plan: list[dict[str, Any]], explanation: str = "") -> dict[str, Any]:
+    def update_plan(
+        self,
+        plan: list[dict[str, Any]] | None = None,
+        explanation: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if plan is None:
+            plan = (
+                kwargs.get("steps")
+                or kwargs.get("items")
+                or kwargs.get("tasks")
+                or kwargs.get("plan_state")
+            )
+        if plan is None:
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "bad_tool_arguments",
+                    "tool": "update_plan",
+                    "message": "update_plan requires a plan field.",
+                    "received_keys": sorted(kwargs.keys()),
+                },
+                "summary": "missing plan argument",
+            }
+        if not isinstance(plan, list):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "bad_tool_arguments",
+                    "tool": "update_plan",
+                    "message": "plan must be a list.",
+                    "received_type": type(plan).__name__,
+                },
+                "summary": "plan must be a list",
+            }
         normalized_plan: list[dict[str, str]] = []
         in_progress_seen = 0
         for item in list(plan or []):
@@ -2542,14 +2606,38 @@ class LocalToolExecutor:
             if not step:
                 continue
             if status not in {"pending", "in_progress", "completed"}:
-                return {"ok": False, "error": f"Invalid plan status: {status or '(empty)'}"}
+                return {
+                    "ok": False,
+                    "error": {
+                        "kind": "bad_tool_arguments",
+                        "tool": "update_plan",
+                        "message": f"Invalid plan status: {status or '(empty)'}",
+                    },
+                    "summary": f"invalid plan status: {status or '(empty)'}",
+                }
             if status == "in_progress":
                 in_progress_seen += 1
             normalized_plan.append({"step": step, "status": status})
         if not normalized_plan:
-            return {"ok": False, "error": "plan cannot be empty"}
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "bad_tool_arguments",
+                    "tool": "update_plan",
+                    "message": "plan cannot be empty",
+                },
+                "summary": "plan cannot be empty",
+            }
         if in_progress_seen > 1:
-            return {"ok": False, "error": "At most one plan item can be in_progress"}
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "bad_tool_arguments",
+                    "tool": "update_plan",
+                    "message": "At most one plan item can be in_progress",
+                },
+                "summary": "at most one plan item can be in_progress",
+            }
         return {
             "ok": True,
             "plan": normalized_plan,

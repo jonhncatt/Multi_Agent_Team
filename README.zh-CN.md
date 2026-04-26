@@ -6,7 +6,7 @@
 [发布流程](RELEASING.md)
 
 这是一个本地运行的单主 agent 工作台，默认主 agent 是 `vintage_programmer`。  
-当前稳定版本是 `v2.5.0`。
+当前稳定版本是 `v2.6.0`。
 
 当前工作台形态：
 - 左侧线程栏
@@ -126,7 +126,7 @@ Settings 当前选择 > 浏览器本地持久化 > 浏览器语言 > `VP_DEFAULT
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在 `main` 的发布提交上打 annotated tag，例如 `v2.5.0`
+- 在 `main` 的发布提交上打 annotated tag，例如 `v2.6.0`
 - 后续新改动始终从最新 `main` 再切新的 `codex/*` 分支
 
 详细步骤见 [RELEASING.md](RELEASING.md)。

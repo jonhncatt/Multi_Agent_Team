@@ -45,6 +45,30 @@ class ToolEvent(BaseModel):
     module_group: str = ""
 
 
+class TraceEventPayload(BaseModel):
+    id: str = ""
+    run_id: str = ""
+    type: str = ""
+    title: str = ""
+    detail: str = ""
+    status: str = "running"
+    timestamp: float = 0.0
+    duration_ms: int | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    parent_id: str | None = None
+    visible: bool = True
+
+
+class MessageActivity(BaseModel):
+    run_id: str = ""
+    status: str = "idle"
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    run_duration_ms: int = 0
+    activity_summary: str = ""
+    trace_events: list[TraceEventPayload] = Field(default_factory=list)
+
+
 class DebugFlowItem(BaseModel):
     step: int
     stage: str
@@ -196,6 +220,7 @@ class ChatResponse(BaseModel):
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
     recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    activity: MessageActivity = Field(default_factory=MessageActivity)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
@@ -247,6 +272,7 @@ class SessionTurn(BaseModel):
     role: str
     text: str
     answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
+    activity: MessageActivity = Field(default_factory=MessageActivity)
     created_at: str | None = None
 
 

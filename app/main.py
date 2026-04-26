@@ -102,7 +102,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -877,6 +877,7 @@ def _thread_detail_response_payload(
                 role=str(item.get("role") or "user"),
                 text=str(item.get("text") or ""),
                 answer_bundle=item.get("answer_bundle") or {},
+                activity=item.get("activity") or {},
                 created_at=str(item.get("created_at")) if item.get("created_at") else None,
             )
         )
@@ -1857,6 +1858,28 @@ def _process_chat_request(
                 compaction_status=compaction_status_for_runtime,
             ),
         )
+        _emit_progress(
+            progress_cb,
+            "run_started",
+            run_id=run_id,
+            session_id=session_id,
+            thread_id=session_id,
+            turn_status="running",
+            run_snapshot=_build_run_snapshot(
+                goal=req.message,
+                current_task_focus=current_task_focus_for_runtime,
+                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
+                turn_status="running",
+                cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
+                context_meter=_build_context_meter_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                ),
+                compaction_status=compaction_status_for_runtime,
+            ),
+        )
         runtime_result = provider_runtime.run(
             message=req.message,
             settings=req.settings,
@@ -1912,6 +1935,7 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_user_input"), dict)
             else {}
         )
+        activity = dict(runtime_result.get("activity") or {})
         route_state = (
             runtime_result.get("route_state")
             if isinstance(runtime_result.get("route_state"), dict)
@@ -2003,7 +2027,7 @@ def _process_chat_request(
             text=user_text,
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
         )
-        session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle)
+        session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
         inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
@@ -2290,6 +2314,7 @@ def _process_chat_request(
             pending_user_input=pending_user_input,
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             recent_tasks=recent_tasks,
+            activity=activity,
             context_meter=context_meter,
             compaction_status=compaction_status,
             token_usage=TokenUsage(**token_usage),
@@ -2334,6 +2359,28 @@ def _process_chat_request(
                 "items": [],
                 "tokenUsage": dict(token_usage),
             },
+            run_snapshot=_build_run_snapshot(
+                goal=str(inspector_run_state.get("goal") or req.message),
+                current_task_focus=current_task_focus,
+                collaboration_mode=collaboration_mode,
+                turn_status=turn_status,
+                cwd=str(session.get("cwd") or ""),
+                plan=plan,
+                pending_user_input=pending_user_input,
+                tool_count=len(tool_events),
+                evidence_status=str(inspector_evidence.get("status") or "not_needed"),
+                context_meter=context_meter,
+                compaction_status=compaction_status,
+            ),
+        )
+        _emit_progress(
+            progress_cb,
+            "run_finished",
+            run_id=run_id,
+            session_id=session_id,
+            thread_id=session_id,
+            turn_status=turn_status,
+            duration_ms=int(activity.get("run_duration_ms") or 0),
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
@@ -2434,7 +2481,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                 stream_state["thread_id"] = str(data.get("session_id") or "").strip()
             if str(data.get("run_id") or "").strip():
                 stream_state["turn_id"] = str(data.get("run_id") or "").strip()
-            if event_name.startswith(("thread/", "turn/", "item/")) or event_name in {"warning", "error"}:
+            if event_name.startswith(("thread/", "turn/", "item/")) or event_name in {"warning", "error", "trace_event", "run_started", "run_finished", "run_failed"}:
                 put_event(event_name, data)
                 return
 
@@ -2508,13 +2555,32 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             except HTTPException as exc:
                 payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code, locale=locale)
                 put_event(
+                    "run_failed",
+                    {
+                        "run_id": str(stream_state.get("turn_id") or ""),
+                        "thread_id": str(stream_state.get("thread_id") or ""),
+                        "turn_status": "failed",
+                        "error": dict(payload),
+                    },
+                )
+                put_event(
                     "error",
                     {
                         **payload,
                     }
                 )
             except Exception as exc:
-                put_event("error", _normalize_chat_error_payload(exc, locale=locale))
+                payload = _normalize_chat_error_payload(exc, locale=locale)
+                put_event(
+                    "run_failed",
+                    {
+                        "run_id": str(stream_state.get("turn_id") or ""),
+                        "thread_id": str(stream_state.get("thread_id") or ""),
+                        "turn_status": "failed",
+                        "error": dict(payload),
+                    },
+                )
+                put_event("error", payload)
             finally:
                 done_event.set()
                 put_event("done", {"ok": True})

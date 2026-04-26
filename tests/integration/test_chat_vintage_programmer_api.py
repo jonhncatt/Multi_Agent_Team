@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import threading
+import time
 
 from fastapi.testclient import TestClient
 
@@ -128,9 +129,40 @@ class _FakeVintageRuntime:
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings, context)
         project = dict(context.get("project") or {})
+        run_id = str(context.get("run_id") or "run-fake")
+        trace_events = [
+            {
+                "id": "trace-runtime",
+                "run_id": run_id,
+                "type": "runtime_contract.selected",
+                "title": "Full Auto runtime enabled",
+                "detail": "Tool policy: use when needed",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {"mode": "full_auto", "tool_policy": "use_when_needed"},
+                "parent_id": None,
+                "visible": True,
+            },
+            {
+                "id": "trace-answer",
+                "run_id": run_id,
+                "type": "answer.finished",
+                "title": "Answer generation finished",
+                "detail": "",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {},
+                "parent_id": None,
+                "visible": True,
+            },
+        ]
         if progress_cb is not None:
             progress_cb({"event": "stage", "code": "execute", "phase": "execute", "label": "Execute", "status": "running", "detail": "fake runtime running"})
             progress_cb({"event": "plan_update", "plan": [{"step": "Inspect workspace", "status": "completed"}], "collaboration_mode": "default", "turn_status": "running"})
+            for item in trace_events:
+                progress_cb({"event": "trace_event", "trace": dict(item), "run_id": run_id})
         return {
             "text": "single-agent response",
             "effective_model": "gpt-test",
@@ -157,6 +189,15 @@ class _FakeVintageRuntime:
             "turn_status": "completed",
             "plan": [{"step": "Inspect workspace", "status": "completed"}],
             "pending_user_input": {},
+            "activity": {
+                "run_id": run_id,
+                "status": "completed",
+                "started_at": trace_events[0]["timestamp"],
+                "finished_at": trace_events[-1]["timestamp"],
+                "run_duration_ms": 0,
+                "activity_summary": "Full Auto runtime enabled · Answer generation finished",
+                "trace_events": trace_events,
+            },
             "inspector": {
                 "agent": self.descriptor(),
                 "notes": ["fake runtime note"],
@@ -299,7 +340,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.5.0"
+    assert payload["app_version"] == "2.6.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -352,7 +393,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.5.0"
+    assert bootstrap_payload["app_version"] == "2.6.0"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -520,7 +561,7 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["compaction_status"]["mode"] == "token_budget"
 
 
-def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> None:
+def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
 
@@ -554,10 +595,17 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     assert "item/started" in event_names
     assert "item/agentMessage/delta" in event_names
     assert "item/completed" in event_names
+    assert "run_started" in event_names
+    assert "trace_event" in event_names
+    assert "run_finished" in event_names
     assert "final" in event_names
     assert event_names[-1] == "done"
+    assert event_names.index("run_started") < event_names.index("item/agentMessage/delta")
+    assert event_names.index("run_finished") < event_names.index("done")
     stage_payloads = [payload for name, payload in events if name == "stage"]
     assert any(payload.get("phase") == "execute" for payload in stage_payloads)
+    trace_payloads = [payload for name, payload in events if name == "trace_event"]
+    assert any((payload.get("trace") or {}).get("type") == "runtime_contract.selected" for payload in trace_payloads)
     thread_status_payloads = [payload for name, payload in events if name == "thread/status/changed"]
     assert {payload["status"]["type"] for payload in thread_status_payloads} >= {"active", "idle"}
     typed_turn = next(payload for name, payload in events if name == "turn/started")
@@ -566,12 +614,15 @@ def test_chat_stream_emits_stage_final_and_done(monkeypatch, tmp_path: Path) -> 
     assert typed_plan["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
     typed_delta = next(payload for name, payload in events if name == "item/agentMessage/delta")
     assert typed_delta["delta"] == "single-agent response"
+    run_finished_payload = next(payload for name, payload in events if name == "run_finished")
+    assert run_finished_payload["turn_status"] == "completed"
     final_payload = next(payload for name, payload in events if name == "final")
     response_payload = dict(final_payload.get("response") or {})
     assert response_payload["agent_id"] == "vintage_programmer"
     assert response_payload["text"] == "single-agent response"
     assert response_payload["collaboration_mode"] == "default"
     assert response_payload["turn_status"] == "completed"
+    assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
 
 
 def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Path) -> None:
@@ -650,6 +701,8 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
 
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
+    run_failed_payload = next(payload for name, payload in events if name == "run_failed")
+    assert run_failed_payload["run_id"]
     error_payload = next(payload for name, payload in events if name == "error")
     assert error_payload["status_code"] == 429
     assert error_payload["kind"] == "rate_limit"
