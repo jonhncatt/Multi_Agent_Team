@@ -76,6 +76,25 @@ function detectBrowserLocale(supportedLocales, fallbackLocale) {
   return fallbackLocale;
 }
 
+function readStoredLocale(supportedLocales) {
+  const raw = window.localStorage.getItem(LOCALE_STORAGE_KEY) || "";
+  const normalized = normalizeLocaleValue(raw, supportedLocales, "");
+  if (raw && !normalized) {
+    window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  }
+  return normalized;
+}
+
+function resolveInitialLocale({ supportedLocales, serverLocale, fallbackLocale }) {
+  const storedLocale = readStoredLocale(supportedLocales);
+  if (storedLocale) return storedLocale;
+  const normalizedServerLocale = normalizeLocaleValue(serverLocale, supportedLocales, "");
+  if (normalizedServerLocale) return normalizedServerLocale;
+  const browserLocale = detectBrowserLocale(supportedLocales, "");
+  if (browserLocale) return browserLocale;
+  return normalizeLocaleValue(fallbackLocale, supportedLocales, "ja-JP");
+}
+
 function createMessage(role, text, options = {}) {
   return {
     id: options.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -961,6 +980,57 @@ function starterPromptChips(locale, setDraft, handleSend) {
   );
 }
 
+class AppErrorBoundary extends ReactRuntime.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error) {
+    window.console.error(error);
+  }
+
+  render() {
+    if (this.state.error) {
+      const detail = String(
+        (this.state.error && this.state.error.stack) ||
+        this.state.error ||
+        "Unknown frontend error",
+      );
+      return html`
+        <div style=${{
+          padding: "24px",
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          color: "#1f2328",
+        }}>
+          <h2 style=${{ marginTop: 0 }}>Frontend render error</h2>
+          <p>The UI crashed while rendering. You can reset the saved locale and reload.</p>
+          <pre style=${{
+            whiteSpace: "pre-wrap",
+            background: "#f6f8fa",
+            padding: "12px",
+            borderRadius: "8px",
+          }}>${detail}</pre>
+          <button
+            type="button"
+            onClick=${() => {
+              window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+              window.location.reload();
+            }}
+          >
+            Reset locale and reload
+          </button>
+        </div>
+      `;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [appState, dispatch] = useReducer(appStateReducer, undefined, createInitialAppState);
   const health = appState.bootstrap.health;
@@ -978,7 +1048,10 @@ function App() {
   const liveRunLogs = appState.activeTurn.liveRunLogs;
   const lastResponse = appState.activeTurn.lastResponse;
   const [pendingUploads, setPendingUploads] = useState([]);
-  const [chatSettings, setChatSettings] = useState(DEFAULT_SETTINGS);
+  const [chatSettings, setChatSettings] = useState(() => ({
+    ...DEFAULT_SETTINGS,
+    locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
+  }));
   const [modelTouched, setModelTouched] = useState(false);
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
@@ -1097,13 +1170,12 @@ function App() {
 
   useEffect(() => {
     if (!health) return;
-    const storedLocale = window.localStorage.getItem(LOCALE_STORAGE_KEY) || "";
-    const browserLocale = detectBrowserLocale(supportedLocales, defaultLocale);
-    const preferredLocale = normalizeLocaleValue(
-      chatSettings.locale || storedLocale || browserLocale || defaultLocale,
+    const currentLocale = normalizeLocaleValue(chatSettings.locale || "", supportedLocales, "");
+    const preferredLocale = currentLocale || resolveInitialLocale({
       supportedLocales,
-      defaultLocale,
-    );
+      serverLocale: (health && health.default_locale) || "",
+      fallbackLocale: defaultLocale,
+    });
     setChatSettings((prev) => (
       String(prev.locale || "").trim() === preferredLocale
         ? prev
@@ -1112,7 +1184,6 @@ function App() {
   }, [health, supportedLocales, defaultLocale, chatSettings.locale]);
 
   useEffect(() => {
-    window.localStorage.setItem(LOCALE_STORAGE_KEY, uiLocale);
     document.documentElement.lang = uiLocale;
     document.title = translateUi(uiLocale, "app.title");
   }, [uiLocale]);
@@ -1334,6 +1405,20 @@ function App() {
     if (options.markTouched !== false) setModelTouched(true);
     setChatSettings((prev) => ({ ...prev, model: normalized }));
     setSelectedPresetModel(resolvePresetModelValue(normalized, modelOptions, allowCustomModel));
+  }
+
+  function updateLocaleSelection(nextLocale) {
+    const normalized = normalizeLocaleValue(nextLocale, supportedLocales, "");
+    if (!normalized) {
+      window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, normalized);
+    setChatSettings((prev) => (
+      String(prev.locale || "").trim() === normalized
+        ? prev
+        : { ...prev, locale: normalized }
+    ));
   }
 
   function updateProviderSelection(nextProvider) {
@@ -3936,7 +4021,11 @@ function App() {
                     <select
                       className="drawer-input"
                       value=${uiLocale}
-                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, locale: event.currentTarget.value }))}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextLocale = target ? target.value : "";
+                        updateLocaleSelection(nextLocale);
+                      }}
                     >
                       ${supportedLocales.map((item) => html`
                         <option key=${item} value=${item}>${t(`settings.locale.${item}`)}</option>
@@ -3958,7 +4047,11 @@ function App() {
                     <select
                       className="drawer-input"
                       value=${chatSettings.collaboration_mode}
-                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, collaboration_mode: event.currentTarget.value }))}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = target ? target.value : "";
+                        setChatSettings((prev) => ({ ...prev, collaboration_mode: nextValue }));
+                      }}
                     >
                       <option value="default">default</option>
                       <option value="plan">plan</option>
@@ -3970,7 +4063,11 @@ function App() {
                     <select
                       className="drawer-input"
                       value=${chatSettings.response_style}
-                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, response_style: event.currentTarget.value }))}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = target ? target.value : "";
+                        setChatSettings((prev) => ({ ...prev, response_style: nextValue }));
+                      }}
                     >
                       <option value="short">${t("settings.response_style.short")}</option>
                       <option value="normal">${t("settings.response_style.normal")}</option>
@@ -3981,7 +4078,11 @@ function App() {
                     <input
                       type="checkbox"
                       checked=${chatSettings.enable_tools}
-                      onChange=${(event) => setChatSettings((prev) => ({ ...prev, enable_tools: event.currentTarget.checked }))}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = Boolean(target && target.checked);
+                        setChatSettings((prev) => ({ ...prev, enable_tools: nextValue }));
+                      }}
                     />
                     ${t("settings.enable_tools")}
                   </label>
@@ -3991,7 +4092,11 @@ function App() {
                       className="drawer-input"
                       type="number"
                       value=${chatSettings.max_output_tokens}
-                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_output_tokens: Number(event.currentTarget.value || 0) || 1024 }))}
+                      onInput=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = Number((target && target.value) || 0) || 1024;
+                        setChatSettings((prev) => ({ ...prev, max_output_tokens: nextValue }));
+                      }}
                     />
                   </label>
                   <label className="form-field">
@@ -4000,7 +4105,11 @@ function App() {
                       className="drawer-input"
                       type="number"
                       value=${chatSettings.max_context_turns}
-                      onInput=${(event) => setChatSettings((prev) => ({ ...prev, max_context_turns: Number(event.currentTarget.value || 0) || 20 }))}
+                      onInput=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = Number((target && target.value) || 0) || 20;
+                        setChatSettings((prev) => ({ ...prev, max_context_turns: nextValue }));
+                      }}
                     />
                   </label>
                 </section>
@@ -4015,4 +4124,4 @@ function App() {
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing #root");
-createRoot(root).render(html`<${App} />`);
+createRoot(root).render(html`<${AppErrorBoundary}><${App} /></${AppErrorBoundary}>`);
