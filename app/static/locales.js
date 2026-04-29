@@ -717,36 +717,48 @@
     },
   };
 
-  function normalizeLocale(raw, supported, fallback) {
-    const allowed = Array.isArray(supported) && supported.length ? supported : SUPPORTED_LOCALES;
-    const fallbackLocale = fallback && allowed.includes(fallback) ? fallback : allowed[0];
+  function resolveSupportedLocale(raw, allowed) {
     const value = String(raw || "").trim();
-    if (!value) return fallbackLocale;
+    if (!value) return "";
     if (allowed.includes(value)) return value;
     const lowered = value.toLowerCase();
     if (ALIASES[lowered] && allowed.includes(ALIASES[lowered])) return ALIASES[lowered];
     const family = lowered.split("-", 1)[0];
-    const familyHit = allowed.find((item) => String(item || "").toLowerCase().split("-", 1)[0] === family);
-    return familyHit || fallbackLocale;
+    return allowed.find((item) => String(item || "").toLowerCase().split("-", 1)[0] === family) || "";
+  }
+
+  function normalizeLocale(raw, supported, fallback) {
+    const allowed = Array.isArray(supported) && supported.length ? supported : SUPPORTED_LOCALES;
+    const normalized = resolveSupportedLocale(raw, allowed);
+    if (normalized) return normalized;
+    if (fallback === "") return "";
+    return resolveSupportedLocale(fallback, allowed) || allowed[0] || "ja-JP";
   }
 
   function lookup(locale, key) {
-    const normalized = normalizeLocale(locale, SUPPORTED_LOCALES, "ja-JP");
-    const searchOrder = [normalized, "en", "zh-CN"];
+    const searchOrder = [];
+    const pushLocale = (candidate) => {
+      const normalized = normalizeLocale(candidate, SUPPORTED_LOCALES, "");
+      if (!normalized || searchOrder.includes(normalized)) return;
+      searchOrder.push(normalized);
+    };
+    pushLocale(locale);
+    pushLocale("ja-JP");
+    pushLocale("en");
     for (const candidate of searchOrder) {
       const bundle = CATALOG[candidate] || {};
       if (Object.prototype.hasOwnProperty.call(bundle, key)) {
         return bundle[key];
       }
     }
-    return key;
+    return undefined;
   }
 
   function t(locale, key, replacements) {
     const template = lookup(locale, key);
-    if (Array.isArray(template)) return template.slice();
-    if (!replacements || typeof replacements !== "object") return String(template);
-    return String(template).replace(/\{(\w+)\}/g, (_, name) => {
+    const text = typeof template === "string" ? template : key;
+    if (!replacements || typeof replacements !== "object") return String(text);
+    return String(text).replace(/\{(\w+)\}/g, (_, name) => {
       const value = replacements[name];
       return value == null ? "" : String(value);
     });
