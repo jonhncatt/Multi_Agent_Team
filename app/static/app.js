@@ -638,11 +638,11 @@ function activityStageKeyFromTrace(trace, options = {}) {
   const activity = payload.activity && typeof payload.activity === "object" ? payload.activity : {};
   const stage = String(activity.stage || "").trim();
   const allowLegacy = Boolean(options.allowLegacy);
-  const canonicalStages = new Set(["model_proposal", "harness_validation", "answer_generation"]);
+  const canonicalStages = new Set(["high_level_proposal", "step_validation", "execution"]);
   if (canonicalStages.has(stage)) return stage;
   if (allowLegacy && stage) return stage;
   const type = String(item.type || "").trim();
-  if (type.startsWith("answer.")) return "answer_generation";
+  if (type.startsWith("answer.")) return "execution";
   if (allowLegacy && type.startsWith("tool.")) return "tool_decision";
   return "";
 }
@@ -3361,14 +3361,50 @@ function App() {
     `;
   };
 
+  const renderExecutionTraceDetails = (source) => {
+    const entries = Array.isArray(source) ? source : [];
+    if (!entries.length) return null;
+    return html`
+      <details className="activity-payload" open>
+        <summary>${t("activity.execution_trace")}</summary>
+        <div className="activity-structured-details">
+          ${entries.map((entry, index) => {
+            const item = entry && typeof entry === "object" ? entry : {};
+            const lines = [];
+            if (item.action_type) lines.push(`action_type: ${String(item.action_type)}`);
+            if (item.status) lines.push(`status: ${String(item.status)}`);
+            if (item.tool_name) lines.push(`tool_name: ${String(item.tool_name)}`);
+            if (Array.isArray(item.tool_names) && item.tool_names.length) lines.push(`tool_names: ${item.tool_names.join(", ")}`);
+            if (item.result_summary) lines.push(`${t("activity.result_preview")}: ${String(item.result_summary)}`);
+            if (item.observation_summary) lines.push(`${t("activity.observation_summary")}: ${String(item.observation_summary)}`);
+            if (item.error) lines.push(`error: ${String(item.error)}`);
+            return html`
+              <details key=${`execution-trace-${index}`} className="activity-payload" open=${index === entries.length - 1 ? true : undefined}>
+                <summary>${String(item.title || `${t("activity.execution_trace")} ${index + 1}`)}</summary>
+                <pre>${lines.join("\n")}</pre>
+              </details>
+            `;
+          })}
+        </div>
+      </details>
+    `;
+  };
+
   const renderActivityPayload = (trace) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    const highLevelProposal = payload.high_level_proposal || payload.model_proposal;
+    const validatedNextStep = payload.validated_next_step || payload.validated_plan;
+    const runtimeHint = payload.runtime_hint || payload.runtime_guess;
+    const executionTrace = Array.isArray(payload.execution_trace)
+      ? payload.execution_trace
+      : (payload.execution_trace_entry ? [payload.execution_trace_entry] : []);
     const structuredSections = [
-      renderPlanDetails(t("activity.model_proposal"), payload.model_proposal),
-      renderPlanDetails(t("activity.validated_plan"), payload.validated_plan),
+      renderPlanDetails(t("activity.high_level_proposal"), highLevelProposal),
+      renderPlanDetails(t("activity.validated_next_step"), validatedNextStep),
+      renderExecutionTraceDetails(executionTrace),
       renderRevisionSummaryDetails(payload.revision_summary),
       renderToolAuditDetails(payload),
-      renderPlanDetails(t("activity.runtime_guess"), payload.runtime_guess),
+      renderPlanDetails(t("activity.runtime_hint"), runtimeHint),
     ].filter(Boolean);
     const payloadText = stringifyCompactJson(payload);
     const hasPayloadText = Boolean(payloadText && payloadText !== "{}");
