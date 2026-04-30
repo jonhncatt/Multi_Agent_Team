@@ -17,13 +17,12 @@ def _proposal_block(**overrides: Any) -> str:
     payload = {
         "intent": "transform",
         "task_type": "rewrite_review",
-        "output_mode": "direct_answer",
-        "tool_decision": "no_tool_needed",
-        "needs_tools": False,
-        "response_kind": "direct_answer",
+        "current_goal": "Answer directly from the provided context.",
+        "expects_tools": False,
+        "response_mode": "direct_answer",
         "user_stage": "Direct answer generation",
         "summary": "Answer directly from the provided context.",
-        "proposed_tools": [],
+        "next_step_hint": "Prepare the user-facing answer directly.",
         "change_summary_requested": False,
     }
     payload.update(overrides)
@@ -509,12 +508,12 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
                     _proposal_block(
                         intent="transform",
                         task_type="japanese_grammar_review",
-                        output_mode="revision_with_change_summary",
-                        tool_decision="no_tool_needed",
-                        needs_tools=False,
-                        response_kind="direct_answer",
+                        current_goal="Polish the Japanese sentence and produce the revised version.",
+                        expects_tools=False,
+                        response_mode="revision_with_change_summary",
                         user_stage="Japanese grammar cleanup",
                         summary="Polish the Japanese sentence directly and include a short change summary.",
+                        next_step_hint="Return the revised sentence directly.",
                         change_summary_requested=True,
                     )
                     + "今日は駅へ行きます。"
@@ -531,7 +530,7 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     )
     progress_events: list[dict[str, Any]] = []
 
-    runtime.run(
+    result = runtime.run(
         message="请把这句日语润色一下：今日は駅に行きます。",
         settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
         context={
@@ -551,31 +550,44 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     )
 
     trace_payloads = [dict(item.get("trace") or {}) for item in progress_events if str(item.get("event") or "") == "trace_event"]
-    model_proposal_done = next(
+    proposal_done = next(
         item
         for item in trace_payloads
         if str(item.get("type") or "") == "activity.done"
-        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "model_proposal"
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "high_level_proposal"
     )
-    harness_validation_done = next(
+    step_validation_done = next(
         item
         for item in trace_payloads
         if str(item.get("type") or "") == "activity.done"
-        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "harness_validation"
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "step_validation"
+    )
+    execution_done = next(
+        item
+        for item in trace_payloads
+        if str(item.get("type") or "") in {"activity.done", "activity.delta"}
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "execution"
     )
     answer_done = next(item for item in trace_payloads if str(item.get("type") or "") == "answer.done")
     revision_summary = dict((answer_done.get("payload") or {}).get("revision_summary") or {})
     summary_items = list(revision_summary.get("items") or [])
-    proposal_payload = dict((model_proposal_done.get("payload") or {}).get("model_proposal") or {})
-    validated_payload = dict((harness_validation_done.get("payload") or {}).get("validated_plan") or {})
+    proposal_payload = dict((proposal_done.get("payload") or {}).get("high_level_proposal") or {})
+    validated_payload = dict((step_validation_done.get("payload") or {}).get("validated_next_step") or {})
+    execution_payload = dict((execution_done.get("payload") or {}).get("execution_trace_entry") or {})
 
     assert proposal_payload["task_type"] == "japanese_grammar_review"
-    assert proposal_payload["output_mode"] == "revision_with_change_summary"
-    assert validated_payload["tool_decision"] == "no_tool_needed"
+    assert proposal_payload["response_mode"] == "revision_with_change_summary"
+    assert validated_payload["action_type"] == "direct_answer"
+    assert validated_payload["accepted"] is True
     assert revision_summary["task_type"] == "japanese_grammar_review"
     assert summary_items
     assert summary_items[0]["original_excerpt"] == "今日は駅に行きます。"
     assert "今日は駅へ行きます。" in summary_items[0]["result_excerpt"]
+    assert execution_payload["action_type"] == "direct_answer"
+    assert result["high_level_proposal"]["task_type"] == "japanese_grammar_review"
+    assert result["validated_next_step"]["action_type"] == "direct_answer"
+    assert result["execution_trace"]
+    assert result["execution_trace"][-1]["action_type"] == "direct_answer"
 
 
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
@@ -587,13 +599,12 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
                 content=_proposal_block(
                     intent="research",
                     task_type="web_research",
-                    output_mode="direct_answer",
-                    tool_decision="tool_loop",
-                    needs_tools=True,
-                    response_kind="tool_loop",
+                    current_goal="Use web search to gather the latest evidence before answering.",
+                    expects_tools=True,
+                    response_mode="direct_answer",
                     user_stage="Gather evidence with web tools",
                     summary="Use web search before answering.",
-                    proposed_tools=["web_search"],
+                    next_step_hint="Run web search and revise the next proposal from the result.",
                 ),
                 tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": "latest"}}],
             ),
@@ -637,8 +648,12 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
-    assert result["model_proposal"]["tool_decision"] == "tool_loop"
-    assert result["validated_plan"]["approved_tools"] == ["web_search"]
+    assert result["high_level_proposal"]["task_type"] == "web_research"
+    assert result["validated_next_step"]["action_type"] == "direct_answer"
+    assert result["validated_next_step"]["accepted"] is True
+    assert result["execution_trace"]
+    assert result["execution_trace"][0]["action_type"] == "tool_call"
+    assert result["execution_trace"][-1]["action_type"] == "direct_answer"
     assert result["tool_events"][0]["arguments_preview"] == "query=latest"
     assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
     tool_progress = next(item for item in progress_events if str(item.get("event") or "") == "tool")
@@ -653,6 +668,8 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert "tool.started" in trace_types
     assert "tool.finished" in trace_types
     assert "run.finished" in trace_types
+    assert result["model_proposal"]["task_type"] == result["high_level_proposal"]["task_type"]
+    assert result["validated_plan"]["action_type"] == result["validated_next_step"]["action_type"]
 
 
 def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
