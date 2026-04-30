@@ -620,6 +620,96 @@ function formatValidationStatus(locale, status) {
   return translateUiOrFallback(locale, `validation.${normalized}`, normalized);
 }
 
+function formatActivityTraceTitle(locale, trace) {
+  const item = trace && typeof trace === "object" ? trace : {};
+  const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
+  const activity = payload.activity && typeof payload.activity === "object" ? payload.activity : {};
+  const stage = String(activity.stage || "").trim();
+  if (stage) {
+    const label = translateUiOrFallback(locale, `activity.stage.${stage}`, "");
+    if (label) return label;
+  }
+  return String(item.title || item.type || translateUi(locale, "labels.processing"));
+}
+
+function activityStageKeyFromTrace(trace, options = {}) {
+  const item = trace && typeof trace === "object" ? trace : {};
+  const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
+  const activity = payload.activity && typeof payload.activity === "object" ? payload.activity : {};
+  const stage = String(activity.stage || "").trim();
+  const allowLegacy = Boolean(options.allowLegacy);
+  const canonicalStages = new Set(["model_proposal", "harness_validation", "answer_generation"]);
+  if (canonicalStages.has(stage)) return stage;
+  if (allowLegacy && stage) return stage;
+  const type = String(item.type || "").trim();
+  if (type.startsWith("answer.")) return "answer_generation";
+  if (allowLegacy && type.startsWith("tool.")) return "tool_decision";
+  return "";
+}
+
+function activityStageStatusFromTrace(trace) {
+  const item = trace && typeof trace === "object" ? trace : {};
+  const type = String(item.type || "").trim();
+  const status = String(item.status || "").trim();
+  if (status === "failed" || status === "error" || type === "run.failed") return "failed";
+  if (status === "blocked" || type === "blocked") return "blocked";
+  if (status === "cancelled" || type === "cancelled") return "cancelled";
+  if (
+    status === "success"
+    || status === "completed"
+    || type === "activity.done"
+    || type === "answer.done"
+    || type === "answer.finished"
+    || type === "run.finished"
+  ) {
+    return "completed";
+  }
+  return "running";
+}
+
+function buildActivityFlowStages(activity, locale) {
+  const item = normalizeMessageActivity(activity || {});
+  const traces = item.trace_events.filter((trace) => trace.visible !== false);
+  const collectStages = (allowLegacy) => {
+    const stages = new Map();
+    traces.forEach((trace) => {
+      const stageKey = activityStageKeyFromTrace(trace, { allowLegacy });
+      if (!stageKey) return;
+      stages.set(stageKey, {
+        key: stageKey,
+        label: translateUiOrFallback(locale, `activity.stage.${stageKey}`, stageKey),
+        status: activityStageStatusFromTrace(trace),
+      });
+    });
+    return Array.from(stages.values());
+  };
+  const canonicalStages = collectStages(false);
+  return canonicalStages.length ? canonicalStages : collectStages(true);
+}
+
+function latestRevisionSummary(activity) {
+  const item = normalizeMessageActivity(activity || {});
+  const traces = [...item.trace_events].reverse();
+  for (const trace of traces) {
+    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    const summary = payload.revision_summary && typeof payload.revision_summary === "object" ? payload.revision_summary : {};
+    if (Array.isArray(summary.items) && summary.items.length) return summary;
+  }
+  return {};
+}
+
+function formatRevisionSummaryBadge(locale, summary) {
+  const item = summary && typeof summary === "object" ? summary : {};
+  const entries = Array.isArray(item.items) ? item.items : [];
+  if (!entries.length) return "";
+  const firstEntry = entries[0] && typeof entries[0] === "object" ? entries[0] : {};
+  const firstLabel = String(firstEntry.label || "").trim();
+  if (entries.length === 1 && firstLabel) {
+    return `${translateUi(locale, "activity.revision_summary")} · ${firstLabel}`;
+  }
+  return translateUi(locale, "activity.revision_summary_count", { count: entries.length });
+}
+
 function formatLocaleLabel(locale, value) {
   const normalized = String(value || "").trim();
   if (!normalized) return "-";
@@ -3238,6 +3328,12 @@ function App() {
     return html`<div className="activity-structured-details">${sections}</div>`;
   };
 
+  const renderPlanDetails = (label, source) => {
+    const item = source && typeof source === "object" ? source : {};
+    if (!Object.keys(item).length) return null;
+    return renderDetailBlock(label, item);
+  };
+
   const renderRevisionSummaryDetails = (source) => {
     const summary = source && typeof source === "object" ? source : {};
     const items = Array.isArray(summary.items) ? summary.items : [];
@@ -3268,8 +3364,11 @@ function App() {
   const renderActivityPayload = (trace) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
     const structuredSections = [
+      renderPlanDetails(t("activity.model_proposal"), payload.model_proposal),
+      renderPlanDetails(t("activity.validated_plan"), payload.validated_plan),
       renderRevisionSummaryDetails(payload.revision_summary),
       renderToolAuditDetails(payload),
+      renderPlanDetails(t("activity.runtime_guess"), payload.runtime_guess),
     ].filter(Boolean);
     const payloadText = stringifyCompactJson(payload);
     const hasPayloadText = Boolean(payloadText && payloadText !== "{}");
@@ -3285,6 +3384,35 @@ function App() {
               </details>
             `
           : null}
+      </div>
+    `;
+  };
+
+  const renderActivityFlowSummary = (activity) => {
+    const stages = buildActivityFlowStages(activity, uiLocale);
+    const revisionSummary = latestRevisionSummary(activity);
+    const revisionSummaryLabel = formatRevisionSummaryBadge(uiLocale, revisionSummary);
+    const fallbackSummary = stages.length ? "" : String((activity && activity.activity_summary) || "").trim();
+    if (!stages.length && !revisionSummaryLabel && !fallbackSummary) return null;
+    return html`
+      <div className="activity-flow-summary">
+        ${stages.length
+          ? html`
+              <div className="activity-flow-stages">
+                ${stages.map(
+                  (stage, index) => html`
+                    ${index ? html`<span className="activity-flow-arrow" aria-hidden="true">→</span>` : null}
+                    <span key=${stage.key} className=${`activity-flow-stage tone-${activityToneClass(stage.status)}`}>${stage.label}</span>
+                  `,
+                )}
+              </div>
+            `
+          : null}
+        ${revisionSummaryLabel
+          ? html`<div className="activity-flow-note">${revisionSummaryLabel}</div>`
+          : fallbackSummary
+            ? html`<div className="activity-flow-note">${fallbackSummary}</div>`
+            : null}
       </div>
     `;
   };
@@ -3309,6 +3437,7 @@ function App() {
           <span>${pillLabel}</span>
           <span className="activity-pill-arrow">${isOpen ? "−" : ">"}</span>
         </button>
+        ${renderActivityFlowSummary(activity)}
         ${isOpen
           ? html`
               <div className="activity-panel">
@@ -3323,7 +3452,7 @@ function App() {
                           <div key=${trace.id || `${item.id}-trace-${index}`} className=${`activity-item tone-${activityToneClass(trace.status)}`}>
                             <div className="activity-item-head">
                               <span className="activity-dot" aria-hidden="true"></span>
-                              <span className="activity-item-title">${trace.title || trace.type || t("labels.processing")}</span>
+                              <span className="activity-item-title">${formatActivityTraceTitle(uiLocale, trace)}</span>
                               ${trace.duration_ms != null
                                 ? html`<span className="activity-item-duration">${formatActivityDuration({ started_at: trace.timestamp, finished_at: trace.timestamp + trace.duration_ms }, trace.timestamp + trace.duration_ms)}</span>`
                                 : null}

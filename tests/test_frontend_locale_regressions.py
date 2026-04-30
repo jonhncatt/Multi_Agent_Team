@@ -7,6 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_JS_PATH = REPO_ROOT / "app" / "static" / "app.js"
 LOCALES_JS_PATH = REPO_ROOT / "app" / "static" / "locales.js"
+STYLES_CSS_PATH = REPO_ROOT / "app" / "static" / "styles.css"
 SUPPORTED_LOCALES = ("zh-CN", "ja-JP", "en")
 REQUIRED_CORE_KEYS = (
     "settings.locale",
@@ -20,6 +21,10 @@ REQUIRED_CORE_KEYS = (
     "settings.response_style",
     "buttons.save",
     "tabs.settings",
+    "activity.stage.model_proposal",
+    "activity.stage.harness_validation",
+    "activity.stage.answer_generation",
+    "activity.revision_summary_count",
 )
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
@@ -87,3 +92,27 @@ def test_locale_catalog_contains_required_settings_keys() -> None:
             assert locale_entries.get(key) == '"', f"{locale} is missing string key {key}"
         for key in REQUIRED_LIST_KEYS:
             assert locale_entries.get(key) == "[", f"{locale} is missing array key {key}"
+
+
+def test_activity_flow_summary_is_wired_into_frontend() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        "function activityStageKeyFromTrace(",
+        "function buildActivityFlowStages(",
+        "function latestRevisionSummary(",
+        'className="activity-flow-summary"',
+        'className="activity-flow-stage',
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    required_style_tokens = (
+        ".activity-flow-summary",
+        ".activity-flow-stages",
+        ".activity-flow-stage",
+        ".activity-flow-note",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token
