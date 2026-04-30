@@ -600,6 +600,20 @@ function stringifyCompactJson(value) {
   }
 }
 
+function hasDisplayValue(value) {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function displayValueText(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return stringifyCompactJson(value);
+}
+
 function formatValidationStatus(locale, status) {
   const normalized = String(status || "").trim();
   if (!normalized) return "-";
@@ -698,15 +712,21 @@ function toolTimelineSummary(item, locale) {
   const base = String(item.summary || item.output_preview || translateUi(locale, "labels.no_summary")).trim();
   const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
   const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
-  if (visibleText) return `${base} · ${visibleText}`;
-  return base || translateUi(locale, "labels.no_summary");
+  const validation = item.schema_validation && typeof item.schema_validation === "object" ? item.schema_validation : {};
+  const validationStatus = String(validation.status || "").trim();
+  const validationSuffix = validationStatus && validationStatus !== "valid"
+    ? ` · ${formatValidationStatus(locale, validationStatus)}`
+    : "";
+  if (visibleText) return `${base} · ${visibleText}${validationSuffix}`;
+  return `${base || translateUi(locale, "labels.no_summary")}${validationSuffix}`;
 }
 
 function activityStatusFromTraceType(type, fallback = "thinking") {
   const normalized = String(type || "").trim();
   if (!normalized) return fallback;
+  if (normalized.startsWith("activity.")) return "thinking";
   if (normalized === "tool.started" || normalized === "tool.call_detected") return "tooling";
-  if (normalized === "answer.started" || normalized === "answer.finished") return "answering";
+  if (normalized === "answer.started" || normalized === "answer.finished" || normalized === "answer.done" || normalized === "answer.delta") return "answering";
   if (normalized === "approval.required" || normalized === "blocked") return "blocked";
   if (normalized === "run.finished") return "completed";
   if (normalized === "run.failed") return "failed";
@@ -3187,14 +3207,55 @@ function App() {
     }));
   };
 
-  const renderActivityPayload = (trace) => {
-    const payloadText = stringifyCompactJson((trace && trace.payload) || {});
-    if (!payloadText) return null;
+  const renderDetailBlock = (label, value, options = {}) => {
+    if (!hasDisplayValue(value)) return null;
+    const text = displayValueText(value);
+    if (!text) return null;
     return html`
-      <details className="activity-payload">
-        <summary>${t("labels.detail")}</summary>
-        <pre>${payloadText}</pre>
+      <details className="activity-payload" open=${options.open ? true : undefined}>
+        <summary>${label}</summary>
+        <pre>${text}</pre>
       </details>
+    `;
+  };
+
+  const renderToolAuditDetails = (source) => {
+    const item = source && typeof source === "object" ? source : {};
+    const rawArguments = hasDisplayValue(item.raw_arguments) ? item.raw_arguments : item.input;
+    const validation = item.schema_validation && typeof item.schema_validation === "object" ? item.schema_validation : {};
+    const sections = [
+      renderDetailBlock(t("activity.raw_arguments"), rawArguments),
+      renderDetailBlock(t("activity.arguments_preview"), item.arguments_preview),
+      renderDetailBlock(t("activity.preview_error"), item.preview_error),
+      renderDetailBlock(
+        `${t("activity.schema_validation")} · ${formatValidationStatus(uiLocale, validation.status || "missing")}`,
+        validation,
+      ),
+      renderDetailBlock(t("activity.result_preview"), item.result_preview),
+      renderDetailBlock(t("activity.stream_diagnostics"), item.stream_diagnostics),
+    ].filter(Boolean);
+    if (!sections.length) return null;
+    return html`<div className="activity-structured-details">${sections}</div>`;
+  };
+
+  const renderActivityPayload = (trace) => {
+    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    const structured = renderToolAuditDetails(payload);
+    const payloadText = stringifyCompactJson(payload);
+    const hasPayloadText = Boolean(payloadText && payloadText !== "{}");
+    if (!structured && !hasPayloadText) return null;
+    return html`
+      <div className="activity-payload-group">
+        ${structured}
+        ${hasPayloadText
+          ? html`
+              <details className="activity-payload">
+                <summary>${t("labels.payload")}</summary>
+                <pre>${payloadText}</pre>
+              </details>
+            `
+          : null}
+      </div>
     `;
   };
 
@@ -3800,6 +3861,7 @@ function App() {
                                 <span>${formatToolGroupLabel(uiLocale, item.group || item.module_group || "tool")}</span>
                               </div>
                               <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
+                              ${renderToolAuditDetails(item)}
                               ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
                                 ? html`
                                     <details className="timeline-details">
