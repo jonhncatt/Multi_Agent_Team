@@ -458,16 +458,76 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
     )
 
     delta_events = [item for item in progress_events if str(item.get("event") or "") == "item/agentMessage/delta"]
-    trace_types = [str((item.get("trace") or {}).get("type") or "") for item in progress_events if str(item.get("event") or "") == "trace_event"]
+    trace_payloads = [dict(item.get("trace") or {}) for item in progress_events if str(item.get("event") or "") == "trace_event"]
+    trace_types = [str(item.get("type") or "") for item in trace_payloads]
+    answer_delta_traces = [item for item in trace_payloads if str(item.get("type") or "") == "answer.delta"]
 
     assert [item["delta"] for item in delta_events] == ["streamed ", "answer"]
     assert result["answer_stream"]["streamed"] is True
     assert result["answer_stream"]["upstream_progressive"] is True
     assert "activity.started" in trace_types
-    assert "activity.delta" in trace_types
     assert "activity.done" in trace_types
     assert "answer.started" in trace_types
+    assert len(answer_delta_traces) == 2
+    assert all(item.get("visible") is True for item in answer_delta_traces)
     assert "answer.done" in trace_types
+
+
+def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _StreamingBackend([_FakeMessage(content="今日は駅へ行きます。")], deltas=["今日は駅へ", "行きます。"])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    runtime.run(
+        message="请把这句日语润色一下：今日は駅に行きます。",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-jp-revision",
+            "run_id": "run-jp-revision",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "route_state": {
+                "task_type": "followup_transform",
+                "primary_intent": "transform",
+                "execution_policy": "grounded_generation_pipeline",
+                "use_revision": True,
+            },
+        },
+        progress_cb=progress_events.append,
+    )
+
+    trace_payloads = [dict(item.get("trace") or {}) for item in progress_events if str(item.get("event") or "") == "trace_event"]
+    request_analysis_done = next(
+        item
+        for item in trace_payloads
+        if str(item.get("type") or "") == "activity.done"
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "request_analysis"
+    )
+    tool_decision_done = next(
+        item
+        for item in trace_payloads
+        if str(item.get("type") or "") == "activity.done"
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "tool_decision"
+    )
+    answer_done = next(item for item in trace_payloads if str(item.get("type") or "") == "answer.done")
+    revision_summary = dict((answer_done.get("payload") or {}).get("revision_summary") or {})
+    summary_items = list(revision_summary.get("items") or [])
+
+    assert request_analysis_done["detail"].startswith("task_type=japanese_grammar_review")
+    assert "output_mode=revision_with_change_summary" in request_analysis_done["detail"]
+    assert "tool_decision=no_tool_needed" in tool_decision_done["detail"]
+    assert revision_summary["task_type"] == "japanese_grammar_review"
+    assert summary_items
+    assert summary_items[0]["original_excerpt"] == "今日は駅に行きます。"
+    assert "今日は駅へ行きます。" in summary_items[0]["result_excerpt"]
 
 
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
@@ -485,6 +545,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
         agent_dir=agent_dir,
         backend=backend,
     )
+    progress_events: list[dict[str, Any]] = []
 
     result = runtime.run(
         message="帮我查一下最新情况",
@@ -500,6 +561,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
             "history_turns": [],
             "attachments": [],
         },
+        progress_cb=progress_events.append,
     )
 
     assert result["text"] == "final answer"
@@ -516,6 +578,10 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["arguments_preview"] == "query=latest"
     assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
+    tool_progress = next(item for item in progress_events if str(item.get("event") or "") == "tool")
+    assert tool_progress["item"]["raw_arguments"]["query"] == "latest"
+    assert tool_progress["item"]["arguments_preview"] == "query=latest"
+    assert tool_progress["item"]["schema_validation"]["status"] == "valid"
     trace_types = [item["type"] for item in result["activity"]["trace_events"]]
     assert "run.started" in trace_types
     assert "runtime_contract.selected" in trace_types

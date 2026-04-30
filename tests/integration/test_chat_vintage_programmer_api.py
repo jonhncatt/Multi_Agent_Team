@@ -365,6 +365,47 @@ class _StreamingVintageRuntime(_FakeVintageRuntime):
         return payload
 
 
+class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=None)
+        run_id = str(context.get("run_id") or "run-tool-audit")
+        session_id = str(context.get("session_id") or "s-tool-audit")
+        tool_item = {
+            "id": f"{run_id}:tool:web_search",
+            "name": "web_search",
+            "input": {"query": "PLAN.md"},
+            "raw_arguments": {"query": "PLAN.md"},
+            "arguments_preview": "query=PLAN.md",
+            "preview_error": "",
+            "schema_validation": {"status": "valid", "checked": True},
+            "output_preview": "ok",
+            "status": "ok",
+            "group": "web_context",
+            "source": "local_hosted",
+            "summary": "searched",
+            "source_refs": ["https://example.com"],
+        }
+        if progress_cb is not None:
+            progress_cb(
+                {
+                    "event": "tool",
+                    "item": dict(tool_item),
+                    "status": "ok",
+                    "summary": "searched",
+                    "source_refs": ["https://example.com"],
+                    "tool_round": 1,
+                    "tool_index": 1,
+                    "group": "web_context",
+                    "agent_id": "vintage_programmer",
+                    "thread_id": session_id,
+                    "run_id": run_id,
+                }
+            )
+        payload["tool_events"] = [dict(tool_item)]
+        payload["inspector"]["tool_timeline"] = [dict(tool_item)]
+        return payload
+
+
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     for name in ("sessions", "uploads", "shadow_logs", "evolution_logs", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
@@ -763,6 +804,38 @@ def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_p
     assert "streamed answer" not in deltas
     assert response_payload["text"] == "streamed answer"
     assert response_payload["inspector"]["run_state"]["answer_stream"]["upstream_progressive"] is True
+
+
+def test_chat_stream_surfaces_tool_audit_fields_on_live_items(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _ToolAuditStreamingRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "查一下 PLAN.md",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    completed_tool = next(
+        payload["item"]
+        for name, payload in events
+        if name == "item/completed" and str((payload.get("item") or {}).get("tool") or "") == "web_search"
+    )
+
+    assert completed_tool["raw_arguments"]["query"] == "PLAN.md"
+    assert completed_tool["arguments_preview"] == "query=PLAN.md"
+    assert completed_tool["schema_validation"]["status"] == "valid"
 
 
 def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Path) -> None:
