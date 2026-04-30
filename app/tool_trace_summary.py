@@ -93,6 +93,14 @@ def summarize_tool_args(tool_name: str, args: dict[str, Any]) -> str:
     return mask_sensitive_text(json.dumps(arguments, ensure_ascii=False, default=str))[:240]
 
 
+def preview_tool_arguments(tool_name: str, args: dict[str, Any]) -> tuple[str, str]:
+    try:
+        preview = summarize_tool_args(tool_name, args)
+    except Exception as exc:
+        return "", safe_error_message(exc)
+    return str(preview or ""), ""
+
+
 def safe_error_message(exc: BaseException | str) -> str:
     if isinstance(exc, BaseException):
         message = str(exc) or exc.__class__.__name__
@@ -142,3 +150,158 @@ def summarize_tool_result(tool_name: str, result: Any) -> str:
         questions = payload.get("questions") or []
         return f"user input required: {len(questions) if isinstance(questions, list) else 0} questions"
     return mask_sensitive_text(str(payload.get("summary") or json.dumps(payload, ensure_ascii=False, default=str)))[:200]
+
+
+def validate_tool_arguments(args: dict[str, Any], schema: dict[str, Any] | None) -> dict[str, Any]:
+    normalized_schema = dict(schema or {}) if isinstance(schema, dict) else {}
+    if not normalized_schema:
+        return {
+            "status": "missing",
+            "checked": False,
+            "summary": "schema unavailable",
+            "errors": [],
+            "schema_type": "",
+            "required": [],
+        }
+
+    errors: list[str] = []
+    try:
+        _validate_json_value(
+            value=dict(args or {}),
+            schema=normalized_schema,
+            path="$",
+            errors=errors,
+        )
+    except Exception as exc:
+        message = safe_error_message(exc)
+        return {
+            "status": "error",
+            "checked": False,
+            "summary": message,
+            "errors": [message],
+            "schema_type": str(normalized_schema.get("type") or ""),
+            "required": list(normalized_schema.get("required") or []),
+        }
+
+    return {
+        "status": "valid" if not errors else "invalid",
+        "checked": True,
+        "summary": "schema matched" if not errors else errors[0],
+        "errors": errors[:16],
+        "error_count": len(errors),
+        "schema_type": str(normalized_schema.get("type") or ""),
+        "required": [
+            str(item)
+            for item in list(normalized_schema.get("required") or [])
+            if str(item).strip()
+        ],
+        "allows_additional_properties": bool(normalized_schema.get("additionalProperties", True)),
+    }
+
+
+def build_tool_argument_audit(
+    tool_name: str,
+    args: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    preview, preview_error = preview_tool_arguments(tool_name, args)
+    validation = validate_tool_arguments(args, schema)
+    return {
+        "raw_arguments": safe_preview(args, limit=4000),
+        "arguments_preview": preview,
+        "preview_error": preview_error,
+        "schema_validation": validation,
+    }
+
+
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return True
+
+
+def _validate_json_value(
+    *,
+    value: Any,
+    schema: dict[str, Any],
+    path: str,
+    errors: list[str],
+) -> None:
+    raw_type = schema.get("type")
+    expected_types = [raw_type] if isinstance(raw_type, str) else [item for item in list(raw_type or []) if isinstance(item, str)]
+    if expected_types and not any(_schema_type_matches(value, item) for item in expected_types):
+        errors.append(f"{path} expected {'/'.join(expected_types)}, got {type(value).__name__}")
+        return
+
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and enum_values and value not in enum_values:
+        errors.append(f"{path} must be one of {', '.join(mask_sensitive_text(str(item)) for item in enum_values[:8])}")
+        return
+
+    if isinstance(value, dict):
+        properties = schema.get("properties")
+        property_map = dict(properties or {}) if isinstance(properties, dict) else {}
+        required = [
+            str(item)
+            for item in list(schema.get("required") or [])
+            if str(item).strip()
+        ]
+        for key in required:
+            if key not in value:
+                errors.append(f"{path}.{key} is required")
+        if schema.get("additionalProperties") is False:
+            for key in value:
+                if key not in property_map:
+                    errors.append(f"{path}.{key} is not allowed")
+        for key, child_schema in property_map.items():
+            if key not in value or not isinstance(child_schema, dict):
+                continue
+            _validate_json_value(
+                value=value.get(key),
+                schema=child_schema,
+                path=f"{path}.{key}",
+                errors=errors,
+            )
+        return
+
+    if isinstance(value, list):
+        item_schema = schema.get("items")
+        if not isinstance(item_schema, dict):
+            return
+        for index, item in enumerate(value[:16]):
+            _validate_json_value(
+                value=item,
+                schema=item_schema,
+                path=f"{path}[{index}]",
+                errors=errors,
+            )
+        return
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            errors.append(f"{path} must have length >= {min_length}")
+        max_length = schema.get("maxLength")
+        if isinstance(max_length, int) and len(value) > max_length:
+            errors.append(f"{path} must have length <= {max_length}")
+        return
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            errors.append(f"{path} must be >= {minimum}")
+        maximum = schema.get("maximum")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            errors.append(f"{path} must be <= {maximum}")

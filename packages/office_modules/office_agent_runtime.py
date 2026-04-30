@@ -7195,6 +7195,7 @@ class OfficeAgent:
         max_output_tokens: int,
         enable_tools: bool,
         tool_names: list[str] | None = None,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         candidates = self._build_model_candidates(model)
         notes: list[str] = []
@@ -7215,6 +7216,7 @@ class OfficeAgent:
                     max_output_tokens=max_output_tokens,
                     enable_tools=enable_tools,
                     tool_names=tool_names,
+                    event_cb=event_cb,
                 )
                 self._mark_model_success(candidate)
                 if candidate != model:
@@ -7243,6 +7245,7 @@ class OfficeAgent:
                 max_output_tokens=max_output_tokens,
                 enable_tools=enable_tools,
                 tool_names=tool_names,
+                event_cb=event_cb,
             )
             notes.extend(invoke_notes)
             return response, runner, primary, notes
@@ -7259,9 +7262,10 @@ class OfficeAgent:
         max_output_tokens: int,
         enable_tools: bool,
         tool_names: list[str] | None = None,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         try:
-            return runner.invoke(messages), runner, model, []
+            return self._invoke_runner(runner, messages, event_cb=event_cb), runner, model, []
         except Exception as exc:
             if not (self._is_failover_error(exc) or self._is_405_error(exc)):
                 raise
@@ -7271,6 +7275,7 @@ class OfficeAgent:
                 max_output_tokens=max_output_tokens,
                 enable_tools=enable_tools,
                 tool_names=tool_names,
+                event_cb=event_cb,
             )
             prefix = f"模型 {model} 在持续推理阶段失败（{self._shorten(exc, 200)}），已自动恢复重试。"
             return recovered_msg, recovered_runner, recovered_model, [prefix, *notes]
@@ -7282,13 +7287,14 @@ class OfficeAgent:
         max_output_tokens: int,
         enable_tools: bool,
         tool_names: list[str] | None = None,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
         auth = self._auth_manager.require(allow_refresh=False)
         llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
         runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
-            return runner.invoke(messages), runner, notes
+            return self._invoke_runner(runner, messages, event_cb=event_cb), runner, notes
         except Exception as exc:
             if auth.mode == "codex_auth" or not self._is_405_error(exc):
                 raise
@@ -7303,7 +7309,18 @@ class OfficeAgent:
             use_responses_api=fallback_use_responses,
         )
         runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
-        return runner_fb.invoke(messages), runner_fb, notes
+        return self._invoke_runner(runner_fb, messages, event_cb=event_cb), runner_fb, notes
+
+    @staticmethod
+    def _invoke_runner(
+        runner: Any,
+        messages: list[Any],
+        *,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+    ) -> Any:
+        if event_cb is not None and hasattr(runner, "invoke_with_events"):
+            return runner.invoke_with_events(messages, event_cb=event_cb)
+        return runner.invoke(messages)
 
     def _invoke_with_405_fallback(
         self,

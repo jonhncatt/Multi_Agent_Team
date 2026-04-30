@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from openai import OpenAI
@@ -50,7 +51,28 @@ class CodexResponsesRunner:
         self._auth_manager.refresh_codex_auth(force=True)
         return self._invoke_once(messages, allow_refresh=False)
 
-    def _invoke_once(self, messages: list[Any], *, allow_refresh: bool) -> Any:
+    def invoke_with_events(
+        self,
+        messages: list[Any],
+        *,
+        event_cb: Any | None = None,
+    ) -> Any:
+        try:
+            return self._invoke_once(messages, allow_refresh=True, event_cb=event_cb)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "401" not in text and "unauthorized" not in text:
+                raise
+        self._auth_manager.refresh_codex_auth(force=True)
+        return self._invoke_once(messages, allow_refresh=False, event_cb=event_cb)
+
+    def _invoke_once(
+        self,
+        messages: list[Any],
+        *,
+        allow_refresh: bool,
+        event_cb: Any | None = None,
+    ) -> Any:
         auth = self._auth_manager.require(allow_refresh=allow_refresh)
         if auth.mode != "codex_auth":
             raise RuntimeError(f"Codex runner requires codex_auth, got {auth.mode}.")
@@ -81,10 +103,52 @@ class CodexResponsesRunner:
         stream = client.responses.create(**request_kwargs)
         final_response = None
         final_error = None
+        stream_diagnostics: dict[str, Any] = {
+            "provider": "codex_auth",
+            "event_count": 0,
+            "text_delta_count": 0,
+            "text_chars": 0,
+            "first_event_at": 0.0,
+            "first_text_delta_at": 0.0,
+            "last_text_delta_at": 0.0,
+            "completed_at": 0.0,
+        }
         for event in stream:
             event_type = str(getattr(event, "type", "") or "")
+            now = time.time()
+            stream_diagnostics["event_count"] = int(stream_diagnostics.get("event_count") or 0) + 1
+            if not stream_diagnostics["first_event_at"]:
+                stream_diagnostics["first_event_at"] = now
+            if event_cb is not None and event_type == "response.output_text.delta":
+                delta = _coerce_event_text_delta(event)
+                if delta:
+                    stream_diagnostics["text_delta_count"] = int(stream_diagnostics.get("text_delta_count") or 0) + 1
+                    stream_diagnostics["text_chars"] = int(stream_diagnostics.get("text_chars") or 0) + len(delta)
+                    if not stream_diagnostics["first_text_delta_at"]:
+                        stream_diagnostics["first_text_delta_at"] = now
+                    stream_diagnostics["last_text_delta_at"] = now
+                    event_cb(
+                        {
+                            "type": "response.output_text.delta",
+                            "delta": delta,
+                            "timestamp": now,
+                            "model": self._model,
+                            "provider": "codex_auth",
+                        }
+                    )
             if event_type == "response.completed":
                 final_response = getattr(event, "response", None)
+                stream_diagnostics["completed_at"] = now
+                if event_cb is not None:
+                    event_cb(
+                        {
+                            "type": "response.completed",
+                            "timestamp": now,
+                            "model": self._model,
+                            "provider": "codex_auth",
+                            "diagnostics": dict(stream_diagnostics),
+                        }
+                    )
             elif event_type == "response.failed":
                 final_error = getattr(getattr(event, "response", None), "error", None) or getattr(event, "error", None)
 
@@ -92,7 +156,7 @@ class CodexResponsesRunner:
             raise RuntimeError(f"Codex response failed: {final_error}")
         if final_response is None:
             raise RuntimeError("Codex response stream completed without a final response.")
-        return _response_to_ai_message(self._AIMessage, final_response)
+        return _response_to_ai_message(self._AIMessage, final_response, stream_diagnostics=stream_diagnostics)
 
 
 def _messages_to_codex_input(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -191,7 +255,12 @@ def _tool_schema(tool: Any) -> dict[str, Any]:
     return {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
 
 
-def _response_to_ai_message(ai_message_cls: Any, response: Any) -> Any:
+def _response_to_ai_message(
+    ai_message_cls: Any,
+    response: Any,
+    *,
+    stream_diagnostics: dict[str, Any] | None = None,
+) -> Any:
     text_parts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     for item in getattr(response, "output", None) or []:
@@ -235,8 +304,21 @@ def _response_to_ai_message(ai_message_cls: Any, response: Any) -> Any:
             "provider": "codex_auth",
             "response_id": str(getattr(response, "id", "") or ""),
             "model": str(getattr(response, "model", "") or ""),
+            "stream_diagnostics": dict(stream_diagnostics or {}),
         },
     )
+
+
+def _coerce_event_text_delta(event: Any) -> str:
+    direct = getattr(event, "delta", None)
+    if isinstance(direct, str):
+        return direct
+    if direct is not None and hasattr(direct, "text"):
+        return str(getattr(direct, "text", "") or "")
+    item = getattr(event, "item", None)
+    if item is not None and hasattr(item, "text"):
+        return str(getattr(item, "text", "") or "")
+    return ""
 
 
 def _content_to_text(content: Any) -> str:

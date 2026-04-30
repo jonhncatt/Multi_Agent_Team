@@ -1936,6 +1936,7 @@ def _process_chat_request(
             else {}
         )
         activity = dict(runtime_result.get("activity") or {})
+        answer_stream = dict(runtime_result.get("answer_stream") or {})
         route_state = (
             runtime_result.get("route_state")
             if isinstance(runtime_result.get("route_state"), dict)
@@ -2014,12 +2015,13 @@ def _process_chat_request(
             attachment_label = "Attachments" if locale == "en" else ("添付" if locale == "ja-JP" else "附件")
             user_text = f"{user_text}\n\n[{attachment_label}] {attachment_note}"
 
-        _emit_agent_message_events(
-            progress_cb,
-            thread_id=session_id,
-            turn_id=run_id,
-            text=text,
-        )
+        if not bool(answer_stream.get("streamed")):
+            _emit_agent_message_events(
+                progress_cb,
+                thread_id=session_id,
+                turn_id=run_id,
+                text=text,
+            )
 
         session_store.append_turn(
             session,
@@ -2460,6 +2462,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             elif name == "image_read":
                 item_type = "imageView"
             return {
+                **item,
                 "id": item_id,
                 "type": item_type,
                 "tool": name,

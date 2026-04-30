@@ -31,7 +31,12 @@ class ChatRequest(BaseModel):
 class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
+    raw_arguments: Any = None
+    arguments_preview: str = ""
+    preview_error: str = ""
+    schema_validation: dict[str, Any] = Field(default_factory=dict)
     output_preview: str
+    result_preview: Any = None
     status: str = "ok"
     group: str = ""
     source: str = ""

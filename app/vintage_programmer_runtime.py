@@ -16,8 +16,14 @@ from app.models import ChatSettings, ToolEvent
 from app.openai_auth import OpenAIAuthManager
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
-from app.tool_trace_summary import safe_error_message, safe_preview, summarize_tool_args, summarize_tool_result
-from app.trace_events import make_trace_event
+from app.tool_trace_summary import (
+    build_tool_argument_audit,
+    safe_error_message,
+    safe_preview,
+    summarize_tool_args,
+    summarize_tool_result,
+)
+from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
 from packages.office_modules.intent_support import (
     has_image_attachments as has_image_attachments_helper,
@@ -860,7 +866,12 @@ class VintageProgrammerRuntime:
                 "approval.resolved": "确认已处理",
                 "repair.started": "开始修复执行偏差",
                 "repair.finished": "执行偏差修复完成",
+                "activity.started": "开始分析请求",
+                "activity.delta": "处理中",
+                "activity.done": "已确定回答路径",
                 "answer.started": "开始生成回答",
+                "answer.delta": "正在流式生成回答",
+                "answer.done": "生成回答完成",
                 "answer.finished": "生成回答完成",
                 "blocked": "已阻塞",
                 "cancelled": "已取消",
@@ -881,7 +892,12 @@ class VintageProgrammerRuntime:
                 "approval.resolved": "確認が処理されました",
                 "repair.started": "実行修復を開始",
                 "repair.finished": "実行修復が完了",
+                "activity.started": "リクエスト分析を開始",
+                "activity.delta": "処理中",
+                "activity.done": "回答方針を確定",
                 "answer.started": "回答の生成を開始",
+                "answer.delta": "回答をストリーミング中",
+                "answer.done": "回答の生成が完了",
                 "answer.finished": "回答の生成が完了",
                 "blocked": "停止",
                 "cancelled": "キャンセル済み",
@@ -902,7 +918,12 @@ class VintageProgrammerRuntime:
                 "approval.resolved": "Confirmation resolved",
                 "repair.started": "Repairing execution flow",
                 "repair.finished": "Execution flow repaired",
+                "activity.started": "Analyzing request",
+                "activity.delta": "Working",
+                "activity.done": "Answer path selected",
                 "answer.started": "Generating answer",
+                "answer.delta": "Streaming answer",
+                "answer.done": "Answer generation finished",
                 "answer.finished": "Answer generation finished",
                 "blocked": "Blocked",
                 "cancelled": "Cancelled",
@@ -954,6 +975,317 @@ class VintageProgrammerRuntime:
             )
         return str(trace.get("id") or "")
 
+    def _emit_activity_trace(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        run_id: str,
+        locale: str,
+        type: str,
+        stage: str,
+        detail: str = "",
+        status: str = "running",
+        duration_ms: int | None = None,
+        payload: dict[str, Any] | None = None,
+        parent_id: str | None = None,
+        visible: bool = True,
+        trace_events: list[dict[str, Any]] | None = None,
+        sequence: int | None = None,
+    ) -> str | None:
+        trace = make_activity_event(
+            run_id=run_id,
+            type=type,
+            title=self._trace_label(locale, type),
+            stage=stage,
+            detail=detail,
+            status=status,
+            duration_ms=duration_ms,
+            payload=dict(payload or {}),
+            parent_id=parent_id,
+            visible=visible,
+            sequence=sequence,
+        )
+        if trace_events is not None:
+            trace_events.append(dict(trace))
+        if progress_cb is not None:
+            progress_cb(
+                {
+                    "event": "trace_event",
+                    "type": "trace_event",
+                    "trace": trace,
+                    "run_id": str(run_id or ""),
+                }
+            )
+        return str(trace.get("id") or "")
+
+    @staticmethod
+    def _emit_message_item_event(
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        event: str,
+        thread_id: str,
+        turn_id: str,
+        item: dict[str, Any] | None = None,
+        item_id: str = "",
+        delta: str = "",
+    ) -> None:
+        if progress_cb is None:
+            return
+        payload: dict[str, Any] = {
+            "event": event,
+            "thread_id": str(thread_id or ""),
+            "turn_id": str(turn_id or ""),
+        }
+        if item is not None:
+            payload["item"] = dict(item)
+        if item_id:
+            payload["item_id"] = str(item_id)
+        if delta:
+            payload["delta"] = str(delta)
+        progress_cb(payload)
+
+    @staticmethod
+    def _new_answer_stream_state(*, run_id: str, thread_id: str) -> dict[str, Any]:
+        return {
+            "thread_id": str(thread_id or ""),
+            "turn_id": str(run_id or ""),
+            "item_id": f"{str(run_id or 'turn')}:agent_message",
+            "item_started": False,
+            "item_completed": False,
+            "trace_started_id": "",
+            "trace_done_id": "",
+            "text": "",
+            "delta_count": 0,
+            "delta_chars": 0,
+            "text_delta_trace_count": 0,
+            "calls": [],
+            "started_at": 0.0,
+            "finished_at": 0.0,
+        }
+
+    @staticmethod
+    def _start_answer_stream_call(
+        state: dict[str, Any],
+        *,
+        model: str,
+        phase: str,
+        tool_round: int,
+    ) -> dict[str, Any]:
+        call_state = {
+            "index": len(list(state.get("calls") or [])) + 1,
+            "model": str(model or ""),
+            "phase": str(phase or ""),
+            "tool_round": max(0, int(tool_round)),
+            "event_count": 0,
+            "text_delta_count": 0,
+            "text_chars": 0,
+            "first_event_at": 0.0,
+            "first_text_delta_at": 0.0,
+            "last_text_delta_at": 0.0,
+            "completed_at": 0.0,
+        }
+        state.setdefault("calls", []).append(call_state)
+        return call_state
+
+    def _make_model_stream_observer(
+        self,
+        *,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        thread_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
+        answer_stream_state: dict[str, Any],
+        stage: str,
+        model: str,
+        tool_round: int,
+    ) -> Callable[[dict[str, Any]], None]:
+        call_state = self._start_answer_stream_call(
+            answer_stream_state,
+            model=model,
+            phase=stage,
+            tool_round=tool_round,
+        )
+
+        def observer(event: dict[str, Any]) -> None:
+            payload = dict(event or {})
+            event_type = str(payload.get("type") or "").strip()
+            timestamp = float(payload.get("timestamp") or time.time())
+            call_state["event_count"] = int(call_state.get("event_count") or 0) + 1
+            if not call_state["first_event_at"]:
+                call_state["first_event_at"] = timestamp
+            if event_type != "response.output_text.delta":
+                if event_type == "response.completed":
+                    diagnostics = dict(payload.get("diagnostics") or {})
+                    for key, value in diagnostics.items():
+                        if value not in ("", None, [], {}):
+                            call_state[key] = value
+                    call_state["completed_at"] = float(diagnostics.get("completed_at") or timestamp or 0.0)
+                return
+
+            delta = str(payload.get("delta") or "")
+            if not delta:
+                return
+            if not answer_stream_state.get("item_started"):
+                self._emit_message_item_event(
+                    progress_cb,
+                    event="item/started",
+                    thread_id=thread_id,
+                    turn_id=run_id,
+                    item={
+                        "id": str(answer_stream_state.get("item_id") or ""),
+                        "type": "agentMessage",
+                        "text": "",
+                        "status": "inProgress",
+                    },
+                )
+                answer_stream_state["item_started"] = True
+                answer_stream_state["started_at"] = timestamp
+            if not answer_stream_state.get("trace_started_id"):
+                answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    locale=locale,
+                    type="answer.started",
+                    stage="answer_generation",
+                    detail="Receiving streamed answer chunks from the model.",
+                    status="running",
+                    payload={
+                        "model": str(model or ""),
+                        "stream_stage": str(stage or ""),
+                    },
+                    trace_events=trace_events,
+                    sequence=int(answer_stream_state.get("delta_count") or 0),
+                ) or ""
+            self._emit_message_item_event(
+                progress_cb,
+                event="item/agentMessage/delta",
+                thread_id=thread_id,
+                turn_id=run_id,
+                item_id=str(answer_stream_state.get("item_id") or ""),
+                delta=delta,
+            )
+            answer_stream_state["text"] = f"{str(answer_stream_state.get('text') or '')}{delta}"
+            answer_stream_state["delta_count"] = int(answer_stream_state.get("delta_count") or 0) + 1
+            answer_stream_state["delta_chars"] = int(answer_stream_state.get("delta_chars") or 0) + len(delta)
+            answer_stream_state["finished_at"] = timestamp
+            call_state["text_delta_count"] = int(call_state.get("text_delta_count") or 0) + 1
+            call_state["text_chars"] = int(call_state.get("text_chars") or 0) + len(delta)
+            if not call_state["first_text_delta_at"]:
+                call_state["first_text_delta_at"] = timestamp
+            call_state["last_text_delta_at"] = timestamp
+            trace_delta_budget = int(answer_stream_state.get("text_delta_trace_count") or 0)
+            if trace_delta_budget < 8:
+                self._emit_activity_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    locale=locale,
+                    type="answer.delta",
+                    stage="answer_generation",
+                    detail=f"chunk {int(answer_stream_state.get('delta_count') or 0)} · {len(delta)} chars",
+                    status="running",
+                    payload={
+                        "delta_length": len(delta),
+                        "model": str(model or ""),
+                        "stream_stage": str(stage or ""),
+                    },
+                    visible=False,
+                    trace_events=trace_events,
+                    sequence=int(answer_stream_state.get("delta_count") or 0),
+                )
+                answer_stream_state["text_delta_trace_count"] = trace_delta_budget + 1
+
+        return observer
+
+    def _answer_stream_diagnostics(self, state: dict[str, Any]) -> dict[str, Any]:
+        calls = [dict(item) for item in list(state.get("calls") or []) if isinstance(item, dict)]
+        total_delta_count = int(state.get("delta_count") or 0)
+        total_chars = int(state.get("delta_chars") or 0)
+        upstream_progressive = total_delta_count > 1
+        summary = "received streamed answer deltas" if total_delta_count else "no streamed answer deltas observed"
+        return {
+            "streamed": bool(total_delta_count),
+            "upstream_progressive": upstream_progressive,
+            "delta_count": total_delta_count,
+            "text_chars": total_chars,
+            "call_count": len(calls),
+            "summary": summary,
+            "calls": calls,
+        }
+
+    def _finalize_answer_stream(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        run_id: str,
+        thread_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
+        answer_stream_state: dict[str, Any],
+        final_text: str,
+    ) -> dict[str, Any]:
+        final_text_value = str(final_text or "")
+        streamed_text = str(answer_stream_state.get("text") or "")
+        if answer_stream_state.get("item_started"):
+            if final_text_value.startswith(streamed_text):
+                tail = final_text_value[len(streamed_text) :]
+                if tail:
+                    self._emit_message_item_event(
+                        progress_cb,
+                        event="item/agentMessage/delta",
+                        thread_id=thread_id,
+                        turn_id=run_id,
+                        item_id=str(answer_stream_state.get("item_id") or ""),
+                        delta=tail,
+                    )
+                    answer_stream_state["text"] = f"{streamed_text}{tail}"
+            self._emit_message_item_event(
+                progress_cb,
+                event="item/completed",
+                thread_id=thread_id,
+                turn_id=run_id,
+                item={
+                    "id": str(answer_stream_state.get("item_id") or ""),
+                    "type": "agentMessage",
+                    "text": final_text_value,
+                    "status": "completed",
+                },
+            )
+            answer_stream_state["item_completed"] = True
+            answer_stream_state["finished_at"] = float(answer_stream_state.get("finished_at") or time.time())
+
+        diagnostics = self._answer_stream_diagnostics(answer_stream_state)
+        if not answer_stream_state.get("trace_started_id") and final_text_value:
+            answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+                progress_cb,
+                run_id=run_id,
+                locale=locale,
+                type="answer.started",
+                stage="answer_generation",
+                detail="Preparing the final answer text.",
+                status="running",
+                payload=diagnostics,
+                trace_events=trace_events,
+            ) or ""
+        if final_text_value and not answer_stream_state.get("trace_done_id"):
+            answer_stream_state["trace_done_id"] = self._emit_activity_trace(
+                progress_cb,
+                run_id=run_id,
+                locale=locale,
+                type="answer.done",
+                stage="answer_generation",
+                detail=diagnostics.get("summary") or "",
+                status="success",
+                payload={
+                    "preview": safe_preview(final_text_value, limit=240),
+                    "stream_diagnostics": diagnostics,
+                },
+                parent_id=str(answer_stream_state.get("trace_started_id") or "") or None,
+                trace_events=trace_events,
+                sequence=int(answer_stream_state.get("delta_count") or 0),
+            ) or ""
+        return diagnostics
+
     def _collect_source_refs(self, result: dict[str, Any]) -> list[str]:
         refs: list[str] = []
         candidates = [
@@ -978,6 +1310,8 @@ class VintageProgrammerRuntime:
         result: dict[str, Any],
     ) -> ToolEvent:
         result_json = json.dumps(result, ensure_ascii=False)
+        tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
+        tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
         source_refs = self._collect_source_refs(result)
         status = "ok" if bool(result.get("ok")) else "error"
         error_value = result.get("error")
@@ -996,7 +1330,12 @@ class VintageProgrammerRuntime:
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
+            raw_arguments=tool_audit["raw_arguments"],
+            arguments_preview=str(tool_audit.get("arguments_preview") or ""),
+            preview_error=str(tool_audit.get("preview_error") or ""),
+            schema_validation=dict(tool_audit.get("schema_validation") or {}),
             output_preview=self._backend._shorten(result_json, 1200),
+            result_preview=safe_preview(result, limit=4000),
             status=status,
             group=group,
             source=source,
@@ -1042,16 +1381,18 @@ class VintageProgrammerRuntime:
         round_idx: int,
         call_idx: int,
     ) -> tuple[dict[str, Any], ToolEvent]:
+        tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
+        tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
         started_id = self._emit_trace(
             progress_cb,
             run_id=run_id,
             type="tool.started",
             title=self._trace_label(locale, "tool.started", tool=name or "tool"),
-            detail=summarize_tool_args(name, arguments),
+            detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(name, arguments)),
             status="running",
             payload={
                 "tool_name": name,
-                "arguments_preview": safe_preview(arguments),
+                **tool_audit,
             },
             trace_events=trace_events,
         )
@@ -1075,7 +1416,7 @@ class VintageProgrammerRuntime:
             duration_ms=duration_ms,
             payload={
                 "tool_name": name,
-                "arguments_preview": safe_preview(arguments),
+                **tool_audit,
                 "result_preview": safe_preview(result),
             },
             parent_id=started_id,
@@ -1669,6 +2010,7 @@ class VintageProgrammerRuntime:
         plan_state: list[dict[str, Any]],
         pending_user_input: dict[str, Any],
         effective_cwd: str,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Any, Any, str, bool, list[str]]:
         image_path = self._first_attachment_path(attachments, kind="image")
         if not image_path:
@@ -1704,13 +2046,15 @@ class VintageProgrammerRuntime:
                 )
             )
         )
-        ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+        ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+            self._backend._invoke_with_runner_recovery,
             runner=runner,
             messages=messages,
             model=effective_model,
             max_output_tokens=int(settings.max_output_tokens),
             enable_tools=True,
             tool_names=list(spec.allowed_tools),
+            event_cb=event_cb,
         )
         return ai_msg, runner, effective_model, bool(result.get("ok")), invoke_notes
 
@@ -1840,6 +2184,22 @@ class VintageProgrammerRuntime:
         ]
         return compacted_messages, end_index, True, estimated_tokens
 
+    @staticmethod
+    def _invoke_backend_method(
+        method: Callable[..., Any],
+        *,
+        event_cb: Callable[[dict[str, Any]], None] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if event_cb is not None:
+            try:
+                signature = inspect.signature(method)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None and "event_cb" in signature.parameters:
+                kwargs["event_cb"] = event_cb
+        return method(**kwargs)
+
     def run(
         self,
         *,
@@ -1860,6 +2220,7 @@ class VintageProgrammerRuntime:
         context_payload = dict(context or {})
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         run_id = str(context_payload.get("run_id") or "")
+        session_id = str(context_payload.get("session_id") or "")
         attachment_metas = [
             item for item in list(context_payload.get("attachments") or [])
             if isinstance(item, dict)
@@ -1983,6 +2344,33 @@ class VintageProgrammerRuntime:
         last_image_read_result: dict[str, Any] | None = None
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
+        answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
+        activity_sequence = 0
+
+        def emit_runtime_activity(
+            activity_type: str,
+            stage: str,
+            detail: str,
+            *,
+            status: str = "running",
+            payload: dict[str, Any] | None = None,
+            visible: bool = True,
+        ) -> str | None:
+            nonlocal activity_sequence
+            activity_sequence += 1
+            return self._emit_activity_trace(
+                progress_cb,
+                run_id=run_id,
+                locale=locale,
+                type=activity_type,
+                stage=stage,
+                detail=detail,
+                status=status,
+                payload=payload,
+                visible=visible,
+                trace_events=trace_events,
+                sequence=activity_sequence,
+            )
 
         self._emit_trace(
             progress_cb,
@@ -1993,6 +2381,16 @@ class VintageProgrammerRuntime:
             payload={"collaboration_mode": collaboration_mode},
             trace_events=trace_events,
         )
+        emit_runtime_activity(
+            "activity.started",
+            "request_analysis",
+            "Inspecting the request, restored task focus, attachment context, and runtime contract.",
+            payload={
+                "attachments": len(attachment_metas),
+                "expects_tools": expects_tools,
+                "collaboration_mode": collaboration_mode,
+            },
+        )
         self._emit_trace(
             progress_cb,
             run_id=run_id,
@@ -2002,6 +2400,16 @@ class VintageProgrammerRuntime:
             status="success",
             payload=runtime_contract.as_payload(),
             trace_events=trace_events,
+        )
+        emit_runtime_activity(
+            "activity.delta",
+            "tool_decision",
+            "Determining whether the turn should stay direct or enter the tool loop.",
+            payload={
+                "tool_count": len(runnable_tools),
+                "expects_tools": expects_tools,
+                "inline_document": inline_document,
+            },
         )
 
         self._set_tools_runtime_context(
@@ -2028,12 +2436,24 @@ class VintageProgrammerRuntime:
                 },
                 trace_events=trace_events,
             )
-            ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_chat_with_runner(
+            ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                self._backend._invoke_chat_with_runner,
                 messages=messages,
                 model=requested_model,
                 max_output_tokens=int(settings.max_output_tokens),
                 enable_tools=bool(runnable_tools),
                 tool_names=runnable_tools if runnable_tools else None,
+                event_cb=self._make_model_stream_observer(
+                    progress_cb=progress_cb,
+                    run_id=run_id,
+                    thread_id=session_id,
+                    locale=locale,
+                    trace_events=trace_events,
+                    answer_stream_state=answer_stream_state,
+                    stage="initial_model_response",
+                    model=requested_model,
+                    tool_round=0,
+                ),
             )
             self._emit_trace(
                 progress_cb,
@@ -2137,13 +2557,25 @@ class VintageProgrammerRuntime:
                                 )
                             )
                             notes.append("invalid_final_guard_steer")
-                            ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+                            ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                                self._backend._invoke_with_runner_recovery,
                                 runner=runner,
                                 messages=messages,
                                 model=effective_model,
                                 max_output_tokens=int(settings.max_output_tokens),
                                 enable_tools=True,
                                 tool_names=runnable_tools,
+                                event_cb=self._make_model_stream_observer(
+                                    progress_cb=progress_cb,
+                                    run_id=run_id,
+                                    thread_id=session_id,
+                                    locale=locale,
+                                    trace_events=trace_events,
+                                    answer_stream_state=answer_stream_state,
+                                    stage="repair_invalid_final_guard",
+                                    model=effective_model,
+                                    tool_round=round_idx,
+                                ),
                             )
                             self._set_tools_runtime_context(
                                 execution_mode=settings.execution_mode,
@@ -2190,13 +2622,25 @@ class VintageProgrammerRuntime:
                             )
                         )
                         notes.append("strict_agentic_act_now_steer")
-                        ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+                        ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                            self._backend._invoke_with_runner_recovery,
                             runner=runner,
                             messages=messages,
                             model=effective_model,
                             max_output_tokens=int(settings.max_output_tokens),
                             enable_tools=True,
                             tool_names=runnable_tools,
+                            event_cb=self._make_model_stream_observer(
+                                progress_cb=progress_cb,
+                                run_id=run_id,
+                                thread_id=session_id,
+                                locale=locale,
+                                trace_events=trace_events,
+                                answer_stream_state=answer_stream_state,
+                                stage="repair_act_now",
+                                model=effective_model,
+                                tool_round=round_idx,
+                            ),
                         )
                         self._set_tools_runtime_context(
                             execution_mode=settings.execution_mode,
@@ -2244,6 +2688,17 @@ class VintageProgrammerRuntime:
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
                             effective_cwd=effective_cwd,
+                            event_cb=self._make_model_stream_observer(
+                                progress_cb=progress_cb,
+                                run_id=run_id,
+                                thread_id=session_id,
+                                locale=locale,
+                                trace_events=trace_events,
+                                answer_stream_state=answer_stream_state,
+                                stage="image_rescue_response",
+                                model=effective_model,
+                                tool_round=round_idx + 1,
+                            ),
                         )
                         self._set_tools_runtime_context(
                             execution_mode=settings.execution_mode,
@@ -2265,24 +2720,20 @@ class VintageProgrammerRuntime:
                         if rescue_ok:
                             no_progress_cycles = 0
                         continue
-                    if ai_text:
-                        self._emit_trace(
-                            progress_cb,
-                            run_id=run_id,
-                            type="answer.started",
-                            title=self._trace_label(locale, "answer.started"),
-                            status="running",
-                            trace_events=trace_events,
-                        )
-                        self._emit_trace(
-                            progress_cb,
-                            run_id=run_id,
-                            type="answer.finished",
-                            title=self._trace_label(locale, "answer.finished"),
-                            status="success",
-                            payload={"preview": safe_preview(ai_text, limit=240)},
-                            trace_events=trace_events,
-                        )
+                    no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
+                    if self._looks_like_plan_only_response(ai_text):
+                        no_tool_response_kind = "plan_only"
+                    emit_runtime_activity(
+                        "activity.done",
+                        "tool_decision",
+                        "The model returned a no-tool response; runtime guards will decide whether it can be used directly.",
+                        status="success" if no_tool_response_kind == "direct_answer" else "running",
+                        payload={
+                            "tool_count": 0,
+                            "response_kind": no_tool_response_kind,
+                            "answer_preview": safe_preview(ai_text, limit=240),
+                        },
+                    )
                     break
 
                 messages.append(ai_msg)
@@ -2290,6 +2741,18 @@ class VintageProgrammerRuntime:
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
                 stop_after_tools = False
+                emit_runtime_activity(
+                    "activity.delta",
+                    "tool_execution",
+                    f"Executing {len(tool_calls[:8])} tool call(s) returned by the model.",
+                    payload={
+                        "tool_names": [
+                            self._normalize_tool_name(str(call.get("name") or "").strip())
+                            for call in tool_calls[:8]
+                        ],
+                        "tool_count": len(tool_calls[:8]),
+                    },
+                )
                 for call_idx, call in enumerate(tool_calls[:8], start=1):
                     if self._cancel_requested(context_payload):
                         turn_status = "cancelled"
@@ -2313,16 +2776,18 @@ class VintageProgrammerRuntime:
                         arguments=arguments,
                         attachments=attachment_metas,
                     )
+                    tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
+                    tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
                         type="tool.call_detected",
                         title=self._trace_label(locale, "tool.call_detected", tool=name or "tool"),
-                        detail=summarize_tool_args(name, arguments),
+                        detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(name, arguments)),
                         status="running",
                         payload={
                             "tool_name": name,
-                            "arguments_preview": safe_preview(arguments),
+                            **tool_audit,
                         },
                         trace_events=trace_events,
                     )
@@ -2370,7 +2835,7 @@ class VintageProgrammerRuntime:
                             status="failed",
                             payload={
                                 "tool_name": name,
-                                "arguments_preview": safe_preview(arguments),
+                                **tool_audit,
                                 "result_preview": safe_preview(result),
                             },
                             trace_events=trace_events,
@@ -2519,6 +2984,16 @@ class VintageProgrammerRuntime:
                     notes.append("run_cancelled_by_user")
                     break
 
+                emit_runtime_activity(
+                    "activity.delta",
+                    "answer_generation",
+                    "Tool output collected; requesting the next model turn.",
+                    payload={
+                        "completed_tool_calls": len(round_signature_parts),
+                        "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
+                    },
+                )
+
                 round_signature = json.dumps(round_signature_parts, ensure_ascii=False, sort_keys=True)
                 if round_signature:
                     if round_success:
@@ -2573,13 +3048,25 @@ class VintageProgrammerRuntime:
                     payload={"model": effective_model or requested_model},
                     trace_events=trace_events,
                 )
-                ai_msg, runner, effective_model, invoke_notes = self._backend._invoke_with_runner_recovery(
+                ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                    self._backend._invoke_with_runner_recovery,
                     runner=runner,
                     messages=messages,
                     model=effective_model,
                     max_output_tokens=int(settings.max_output_tokens),
                     enable_tools=True,
                     tool_names=runnable_tools,
+                    event_cb=self._make_model_stream_observer(
+                        progress_cb=progress_cb,
+                        run_id=run_id,
+                        thread_id=session_id,
+                        locale=locale,
+                        trace_events=trace_events,
+                        answer_stream_state=answer_stream_state,
+                        stage="post_tool_response",
+                        model=effective_model,
+                        tool_round=round_idx,
+                    ),
                 )
                 self._emit_trace(
                     progress_cb,
@@ -2646,25 +3133,21 @@ class VintageProgrammerRuntime:
             notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
-        has_answer_trace = any(str(item.get("type") or "") == "answer.finished" for item in trace_events)
-        if raw_text and turn_status not in {"blocked", "cancelled"} and not has_answer_trace:
-            self._emit_trace(
+        answer_stream = self._answer_stream_diagnostics(answer_stream_state)
+        if raw_text and (turn_status not in {"blocked", "cancelled"} or answer_stream_state.get("item_started")):
+            answer_stream = self._finalize_answer_stream(
                 progress_cb,
                 run_id=run_id,
-                type="answer.started",
-                title=self._trace_label(locale, "answer.started"),
-                status="running",
+                thread_id=session_id,
+                locale=locale,
                 trace_events=trace_events,
+                answer_stream_state=answer_stream_state,
+                final_text=raw_text,
             )
-            self._emit_trace(
-                progress_cb,
-                run_id=run_id,
-                type="answer.finished",
-                title=self._trace_label(locale, "answer.finished"),
-                status="success",
-                payload={"preview": safe_preview(raw_text, limit=240)},
-                trace_events=trace_events,
-            )
+        if answer_stream.get("streamed"):
+            notes.append(f"answer_stream_deltas:{int(answer_stream.get('delta_count') or 0)}")
+        elif raw_text and turn_status not in {"blocked", "cancelled"}:
+            notes.append("answer_stream_not_observed")
         if turn_status == "blocked":
             self._emit_trace(
                 progress_cb,
@@ -2758,6 +3241,7 @@ class VintageProgrammerRuntime:
                 "recent_tasks": list(context_payload.get("recent_tasks") or []),
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
+                "answer_stream": dict(answer_stream),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
                 "project_root": project_root,
@@ -2840,6 +3324,7 @@ class VintageProgrammerRuntime:
                 "trace_events": [dict(item) for item in trace_events],
             },
             "compaction_status": dict(live_compaction_status),
+            "answer_stream": dict(answer_stream),
             "tool_events": [item.model_dump() for item in tool_events],
             "token_usage": usage_total,
             "inspector": inspector,
