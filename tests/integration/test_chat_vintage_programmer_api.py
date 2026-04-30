@@ -258,6 +258,113 @@ class _ContextCapturingRuntime(_FakeVintageRuntime):
         return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
 
 
+class _StreamingVintageRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings)
+        project = dict(context.get("project") or {})
+        run_id = str(context.get("run_id") or "run-stream")
+        trace_events = [
+            {
+                "id": "trace-runtime",
+                "run_id": run_id,
+                "type": "runtime_contract.selected",
+                "title": "Full Auto runtime enabled",
+                "detail": "Tool policy: use when needed",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {"mode": "full_auto", "tool_policy": "use_when_needed"},
+                "parent_id": None,
+                "visible": True,
+            },
+            {
+                "id": "trace-activity",
+                "run_id": run_id,
+                "type": "activity.done",
+                "title": "Answer path selected",
+                "detail": "The model returned a direct answer path without tools.",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {"tool_count": 0, "direct_answer": True},
+                "parent_id": None,
+                "visible": True,
+            },
+            {
+                "id": "trace-answer",
+                "run_id": run_id,
+                "type": "answer.done",
+                "title": "Answer generation finished",
+                "detail": "received streamed answer deltas",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {
+                    "stream_diagnostics": {
+                        "streamed": True,
+                        "upstream_progressive": True,
+                        "delta_count": 2,
+                        "text_chars": 15,
+                    }
+                },
+                "parent_id": None,
+                "visible": True,
+            },
+        ]
+        if progress_cb is not None:
+            progress_cb({"event": "stage", "code": "execute", "phase": "execute", "label": "Execute", "status": "running", "detail": "fake runtime running"})
+            for item in trace_events:
+                progress_cb({"event": "trace_event", "trace": dict(item), "run_id": run_id})
+            progress_cb(
+                {
+                    "event": "item/started",
+                    "thread_id": str(context.get("session_id") or ""),
+                    "turn_id": run_id,
+                    "item": {"id": f"{run_id}:agent_message", "type": "agentMessage", "text": "", "status": "inProgress"},
+                }
+            )
+            progress_cb(
+                {
+                    "event": "item/agentMessage/delta",
+                    "thread_id": str(context.get("session_id") or ""),
+                    "turn_id": run_id,
+                    "item_id": f"{run_id}:agent_message",
+                    "delta": "streamed ",
+                }
+            )
+            progress_cb(
+                {
+                    "event": "item/agentMessage/delta",
+                    "thread_id": str(context.get("session_id") or ""),
+                    "turn_id": run_id,
+                    "item_id": f"{run_id}:agent_message",
+                    "delta": "answer",
+                }
+            )
+            progress_cb(
+                {
+                    "event": "item/completed",
+                    "thread_id": str(context.get("session_id") or ""),
+                    "turn_id": run_id,
+                    "item": {"id": f"{run_id}:agent_message", "type": "agentMessage", "text": "streamed answer", "status": "completed"},
+                }
+            )
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=None)
+        payload["text"] = "streamed answer"
+        payload["activity"]["trace_events"] = trace_events
+        payload["activity"]["activity_summary"] = "Full Auto runtime enabled · Answer generation finished"
+        payload["answer_stream"] = {
+            "streamed": True,
+            "upstream_progressive": True,
+            "delta_count": 2,
+            "text_chars": 15,
+            "call_count": 1,
+            "summary": "received streamed answer deltas",
+        }
+        payload["inspector"]["run_state"]["answer_stream"] = dict(payload["answer_stream"])
+        return payload
+
+
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     for name in ("sessions", "uploads", "shadow_logs", "evolution_logs", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
@@ -627,6 +734,37 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
 
 
+def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _StreamingVintageRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "请把这句话润色一下",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    deltas = [payload["delta"] for name, payload in events if name == "item/agentMessage/delta"]
+    final_payload = next(payload for name, payload in events if name == "final")
+    response_payload = dict(final_payload.get("response") or {})
+
+    assert deltas == ["streamed ", "answer"]
+    assert "streamed answer" not in deltas
+    assert response_payload["text"] == "streamed answer"
+    assert response_payload["inspector"]["run_state"]["answer_stream"]["upstream_progressive"] is True
+
+
 def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
@@ -677,7 +815,7 @@ def test_chat_endpoint_normalizes_provider_errors(monkeypatch, tmp_path: Path) -
     assert response.status_code == 429
     payload = response.json()
     assert payload["detail"]["kind"] == "rate_limit"
-    assert payload["detail"]["summary"] == translate(load_config().default_locale, "error.rate_limit")
+    assert payload["detail"]["summary"] == translate("ja-JP", "error.rate_limit")
     assert payload["detail"]["provider"] == "Google AI Studio"
     assert payload["detail"]["retryable"] is True
 
@@ -708,7 +846,7 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
     error_payload = next(payload for name, payload in events if name == "error")
     assert error_payload["status_code"] == 429
     assert error_payload["kind"] == "rate_limit"
-    assert error_payload["summary"] == translate(load_config().default_locale, "error.rate_limit")
+    assert error_payload["summary"] == translate("ja-JP", "error.rate_limit")
     assert error_payload["provider"] == "Google AI Studio"
     assert error_payload["retryable"] is True
 

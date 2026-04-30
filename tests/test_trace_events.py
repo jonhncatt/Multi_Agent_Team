@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.trace_events import make_trace_event
+from app.trace_events import make_activity_event, make_trace_event
 
 
 def test_make_trace_event_populates_required_fields() -> None:
@@ -30,3 +30,22 @@ def test_make_trace_event_defaults_payload_and_parent() -> None:
     assert payload["payload"] == {}
     assert payload["parent_id"] is None
     assert payload["duration_ms"] is None
+
+
+def test_make_activity_event_wraps_activity_metadata() -> None:
+    payload = make_activity_event(
+        run_id="run-2",
+        type="activity.delta",
+        title="Working",
+        stage="tool_decision",
+        detail="Choosing the direct-answer path.",
+        status="running",
+        payload={"model": "gpt-test"},
+        sequence=3,
+    )
+
+    assert payload["type"] == "activity.delta"
+    assert payload["detail"] == "Choosing the direct-answer path."
+    assert payload["payload"]["model"] == "gpt-test"
+    assert payload["payload"]["activity"]["stage"] == "tool_decision"
+    assert payload["payload"]["activity"]["sequence"] == 3

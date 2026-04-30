@@ -24,15 +24,51 @@ class _FakeTools:
         self.tool_specs = [
             {"name": "exec_command", "description": "exec command", "parameters": {}},
             {"name": "write_stdin", "description": "write stdin", "parameters": {}},
-            {"name": "read", "description": "read file or directory", "parameters": {}},
+            {
+                "name": "read",
+                "description": "read file or directory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
             {"name": "search_file", "description": "search one file", "parameters": {}},
             {"name": "search_file_multi", "description": "search one file with multiple queries", "parameters": {}},
             {"name": "read_section", "description": "read one section by heading", "parameters": {}},
             {"name": "table_extract", "description": "extract document tables", "parameters": {}},
             {"name": "fact_check_file", "description": "fact check one file", "parameters": {}},
-            {"name": "search_codebase", "description": "search codebase", "parameters": {}},
-            {"name": "web_search", "description": "search web", "parameters": {}},
-            {"name": "web_fetch", "description": "fetch web", "parameters": {}},
+            {
+                "name": "search_codebase",
+                "description": "search codebase",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "web_search",
+                "description": "search web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "web_fetch",
+                "description": "fetch web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string"}},
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
             {"name": "web_download", "description": "download remote file", "parameters": {}},
             {"name": "browser_open", "description": "browser open", "parameters": {}},
             {"name": "sessions_list", "description": "list sessions", "parameters": {}},
@@ -168,6 +204,63 @@ class _FakeBackendWithoutModelContext(_FakeBackend):
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         super().__init__(scripted_messages)
         self.tools = _FakeToolsWithoutModel()
+
+
+class _StreamingBackend(_FakeBackend):
+    def __init__(self, scripted_messages: list[_FakeMessage], *, deltas: list[str]) -> None:
+        super().__init__(scripted_messages)
+        self._deltas = list(deltas)
+
+    def _invoke_chat_with_runner(
+        self,
+        *,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+        event_cb=None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (max_output_tokens, enable_tools, tool_names)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
+        if event_cb is not None:
+            for delta in self._deltas:
+                event_cb({"type": "response.output_text.delta", "delta": delta, "timestamp": 1.0})
+            event_cb(
+                {
+                    "type": "response.completed",
+                    "timestamp": 2.0,
+                    "diagnostics": {
+                        "provider": "codex_auth",
+                        "event_count": len(self._deltas) + 1,
+                        "text_delta_count": len(self._deltas),
+                        "text_chars": sum(len(item) for item in self._deltas),
+                        "completed_at": 2.0,
+                    },
+                }
+            )
+        return self._next(), object(), model, []
+
+    def _invoke_with_runner_recovery(
+        self,
+        *,
+        runner: Any,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+        event_cb=None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = runner
+        return self._invoke_chat_with_runner(
+            messages=messages,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            enable_tools=enable_tools,
+            tool_names=tool_names,
+            event_cb=event_cb,
+        )
 
 
 class _CancellingTools(_FakeTools):
@@ -339,6 +432,44 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
     assert result["activity"]["trace_events"]
 
 
+def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _StreamingBackend([_FakeMessage(content="streamed answer")], deltas=["streamed ", "answer"])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="把这句日语润色一下",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-streaming",
+            "run_id": "run-streaming",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    delta_events = [item for item in progress_events if str(item.get("event") or "") == "item/agentMessage/delta"]
+    trace_types = [str((item.get("trace") or {}).get("type") or "") for item in progress_events if str(item.get("event") or "") == "trace_event"]
+
+    assert [item["delta"] for item in delta_events] == ["streamed ", "answer"]
+    assert result["answer_stream"]["streamed"] is True
+    assert result["answer_stream"]["upstream_progressive"] is True
+    assert "activity.started" in trace_types
+    assert "activity.delta" in trace_types
+    assert "activity.done" in trace_types
+    assert "answer.started" in trace_types
+    assert "answer.done" in trace_types
+
+
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -383,9 +514,13 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
+    assert result["tool_events"][0]["arguments_preview"] == "query=latest"
+    assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
     trace_types = [item["type"] for item in result["activity"]["trace_events"]]
     assert "run.started" in trace_types
     assert "runtime_contract.selected" in trace_types
+    assert "activity.started" in trace_types
+    assert "activity.delta" in trace_types
     assert "tool.started" in trace_types
     assert "tool.finished" in trace_types
     assert "run.finished" in trace_types
@@ -625,7 +760,7 @@ def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:
     )
 
     assert result["turn_status"] == "cancelled"
-    assert result["text"] == translate(load_config().default_locale, "runtime.cancelled.text")
+    assert result["text"] == translate(ChatSettings().locale, "runtime.cancelled.text")
     assert len(result["tool_events"]) == 1
     assert "run_cancelled_by_user" in result["inspector"]["notes"]
 
