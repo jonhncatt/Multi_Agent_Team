@@ -3238,15 +3238,45 @@ function App() {
     return html`<div className="activity-structured-details">${sections}</div>`;
   };
 
+  const renderRevisionSummaryDetails = (source) => {
+    const summary = source && typeof source === "object" ? source : {};
+    const items = Array.isArray(summary.items) ? summary.items : [];
+    if (!items.length) return null;
+    return html`
+      <details className="activity-payload" open>
+        <summary>${t("activity.revision_summary")}</summary>
+        <div className="activity-structured-details">
+          ${items.map((entry, index) => {
+            const item = entry && typeof entry === "object" ? entry : {};
+            const lines = [];
+            if (item.original_excerpt) lines.push(`${t("activity.original_excerpt")}: ${String(item.original_excerpt)}`);
+            if (item.result_excerpt) lines.push(`${t("activity.result_excerpt")}: ${String(item.result_excerpt)}`);
+            if (item.reason) lines.push(`${t("activity.reason")}: ${String(item.reason)}`);
+            if (item.task_type || summary.task_type) lines.push(`task_type: ${String(item.task_type || summary.task_type || "")}`);
+            return html`
+              <details key=${`revision-summary-${index}`} className="activity-payload" open=${index === 0 ? true : undefined}>
+                <summary>${String(item.label || `${t("activity.revision_summary")} ${index + 1}`)}</summary>
+                <pre>${lines.join("\n")}</pre>
+              </details>
+            `;
+          })}
+        </div>
+      </details>
+    `;
+  };
+
   const renderActivityPayload = (trace) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
-    const structured = renderToolAuditDetails(payload);
+    const structuredSections = [
+      renderRevisionSummaryDetails(payload.revision_summary),
+      renderToolAuditDetails(payload),
+    ].filter(Boolean);
     const payloadText = stringifyCompactJson(payload);
     const hasPayloadText = Boolean(payloadText && payloadText !== "{}");
-    if (!structured && !hasPayloadText) return null;
+    if (!structuredSections.length && !hasPayloadText) return null;
     return html`
       <div className="activity-payload-group">
-        ${structured}
+        ${structuredSections}
         ${hasPayloadText
           ? html`
               <details className="activity-payload">
