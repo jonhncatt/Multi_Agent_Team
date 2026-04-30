@@ -50,37 +50,50 @@ class ToolEvent(BaseModel):
     module_group: str = ""
 
 
-class ModelTurnProposal(BaseModel):
+class HighLevelProposal(BaseModel):
     intent: str = ""
     task_type: str = "standard"
-    output_mode: str = "direct_answer"
-    tool_decision: str = "no_tool_needed"
-    needs_tools: bool = False
-    response_kind: str = "direct_answer"
+    current_goal: str = ""
+    expects_tools: bool = False
+    response_mode: str = "direct_answer"
     user_stage: str = ""
     summary: str = ""
-    proposed_tools: list[str] = Field(default_factory=list)
+    next_step_hint: str = ""
     change_summary_requested: bool = False
     source: str = "model"
 
 
-class ValidatedTurnPlan(BaseModel):
-    status: str = "valid"
-    source: str = "model"
-    intent: str = ""
-    task_type: str = "standard"
-    output_mode: str = "direct_answer"
-    tool_decision: str = "no_tool_needed"
-    needs_tools: bool = False
-    response_kind: str = "direct_answer"
-    user_stage: str = ""
-    summary: str = ""
-    proposed_tools: list[str] = Field(default_factory=list)
-    approved_tools: list[str] = Field(default_factory=list)
-    blocked_tools: list[str] = Field(default_factory=list)
-    adjustments: list[str] = Field(default_factory=list)
-    change_summary_requested: bool = False
+class ValidatedNextStep(BaseModel):
+    step_index: int = 0
+    action_type: str = "direct_answer"
+    tool_name: str = ""
+    tool_args: dict[str, Any] = Field(default_factory=dict)
+    tool_names: list[str] = Field(default_factory=list)
+    approved_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    blocked_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    accepted: bool = True
+    normalization: str = ""
     validation: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    response_mode: str = "direct_answer"
+    task_type: str = "standard"
+    current_goal: str = ""
+    change_summary_requested: bool = False
+    source: str = "harness"
+
+
+class ExecutionTraceEntry(BaseModel):
+    step_index: int = 0
+    action_type: str = "direct_answer"
+    status: str = "completed"
+    title: str = ""
+    tool_name: str = ""
+    tool_names: list[str] = Field(default_factory=list)
+    result_summary: str = ""
+    observation_summary: str = ""
+    error: str = ""
+    detail: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceEventPayload(BaseModel):

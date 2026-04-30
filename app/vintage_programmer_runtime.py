@@ -12,7 +12,7 @@ import uuid
 from app.config import AppConfig
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
-from app.models import ChatSettings, ModelTurnProposal, ToolEvent, ValidatedTurnPlan
+from app.models import ChatSettings, ExecutionTraceEntry, HighLevelProposal, ToolEvent, ValidatedNextStep
 from app.openai_auth import OpenAIAuthManager
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
@@ -722,14 +722,15 @@ class VintageProgrammerRuntime:
     @staticmethod
     def _build_model_proposal_prompt() -> str:
         return (
-            "[model_led_turn_protocol]\n"
+            "[rolling_proposal_protocol]\n"
             "- Treat runtime_context_json.route_state and other harness hints as weak hints, not as the final task decision.\n"
-            "- Begin each turn by emitting one operational model proposal block in this exact wrapper format:\n"
+            "- Start the turn, and each materially revised next step after new observation, with one operational proposal block in this exact wrapper format:\n"
             "  <model_proposal>{...json...}</model_proposal>\n"
-            "- The JSON must include: intent, task_type, output_mode, tool_decision, needs_tools, response_kind, user_stage, summary, proposed_tools, change_summary_requested.\n"
-            "- This proposal is a short operational plan, not hidden chain-of-thought. Keep summary concise and factual.\n"
+            "- The JSON must include: intent, task_type, current_goal, expects_tools, response_mode, user_stage, summary, next_step_hint, change_summary_requested.\n"
+            "- This proposal is a short operational work note, not hidden chain-of-thought. Keep it concise, factual, and revisable.\n"
+            "- Do not try to enumerate a full future tool plan up front. Focus on the current goal and the immediate next-action direction.\n"
             "- If no tools are needed, you may continue with the user-facing answer after the proposal block in the same response.\n"
-            "- If tools are needed, emit the proposal block before any external tool use for the turn.\n"
+            "- If tools are needed, emit the proposal block before any external tool use for the current step.\n"
         )
 
     @staticmethod
@@ -1842,31 +1843,35 @@ class VintageProgrammerRuntime:
         return str(safe_preview(" / ".join(candidates[:2]), limit=220) or "")
 
     @staticmethod
-    def _model_proposal_schema() -> dict[str, Any]:
+    def _high_level_proposal_schema() -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
                 "intent": {"type": "string"},
                 "task_type": {"type": "string"},
+                "current_goal": {"type": "string"},
+                "expects_tools": {"type": "boolean"},
+                "response_mode": {"type": "string"},
+                "user_stage": {"type": "string"},
+                "summary": {"type": "string"},
+                "next_step_hint": {"type": "string"},
+                "change_summary_requested": {"type": "boolean"},
+                # Backward-compatible fields from the earlier turn-level proposal schema.
                 "output_mode": {"type": "string"},
                 "tool_decision": {"type": "string"},
                 "needs_tools": {"type": "boolean"},
                 "response_kind": {"type": "string"},
-                "user_stage": {"type": "string"},
-                "summary": {"type": "string"},
                 "proposed_tools": {"type": "array", "items": {"type": "string"}},
-                "change_summary_requested": {"type": "boolean"},
             },
             "required": [
                 "intent",
                 "task_type",
-                "output_mode",
-                "tool_decision",
-                "needs_tools",
-                "response_kind",
+                "current_goal",
+                "expects_tools",
+                "response_mode",
                 "user_stage",
                 "summary",
-                "proposed_tools",
+                "next_step_hint",
                 "change_summary_requested",
             ],
             "additionalProperties": False,
@@ -1886,9 +1891,12 @@ class VintageProgrammerRuntime:
 
     def _build_runtime_guess(self, *, prompt_message: str, route_state: dict[str, Any]) -> dict[str, Any]:
         route = dict(route_state or {})
+        task_checkpoint = dict(route.get("task_checkpoint") or route.get("current_task_focus") or {})
         route_task_type = str(route.get("task_type") or "").strip().lower()
         route_primary_intent = str(route.get("primary_intent") or "").strip().lower()
         execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        current_goal_hint = str(task_checkpoint.get("goal") or route.get("goal") or "").strip()
+        next_action_hint = str(task_checkpoint.get("next_action") or "").strip()
         revision_requested = self._looks_like_revision_request(prompt_message, route_state=route)
         japanese_review = self._looks_like_japanese_review_request(prompt_message, route_state=route)
         if japanese_review:
@@ -1919,6 +1927,8 @@ class VintageProgrammerRuntime:
             "output_mode": output_mode,
             "prefer_change_summary": revision_requested,
             "summary_reason": summary_reason,
+            "current_goal_hint": current_goal_hint,
+            "next_action_hint": next_action_hint,
             "source": "runtime_guess",
         }
 
@@ -1987,51 +1997,61 @@ class VintageProgrammerRuntime:
             },
         )
 
-    def _fallback_model_proposal(
+    def _fallback_high_level_proposal(
         self,
         *,
         prompt_message: str,
-        runtime_guess: dict[str, Any],
+        runtime_hint: dict[str, Any],
+        previous_proposal: dict[str, Any] | None,
         tool_calls: list[dict[str, Any]],
         expects_tools: bool,
-    ) -> ModelTurnProposal:
-        tool_names = [
-            self._normalize_tool_name(str((call.get("name") if isinstance(call, dict) else "") or "").strip())
-            for call in tool_calls[:8]
-            if str((call.get("name") if isinstance(call, dict) else "") or "").strip()
-        ]
-        needs_tools = bool(tool_names or expects_tools)
-        output_mode = str(runtime_guess.get("output_mode") or "direct_answer").strip() or "direct_answer"
-        response_kind = "direct_answer" if not needs_tools else "tool_loop"
-        summary = str(runtime_guess.get("summary_reason") or "").strip() or (
-            "Use tools before answering." if needs_tools else "Answer directly from the provided context."
+    ) -> HighLevelProposal:
+        previous = dict(previous_proposal or {})
+        has_tool_calls = bool(tool_calls)
+        needs_tools = bool(has_tool_calls or expects_tools)
+        response_mode = str(previous.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
+        hinted_goal = str(runtime_hint.get("current_goal_hint") or "").strip()
+        current_goal = hinted_goal or str(previous.get("current_goal") or "").strip() or safe_preview(prompt_message, limit=280) or (
+            "Gather the required tool evidence before answering." if needs_tools else "Answer the user directly."
         )
-        return ModelTurnProposal(
-            intent=str(runtime_guess.get("primary_intent") or "standard"),
-            task_type=str(runtime_guess.get("task_type") or "standard"),
-            output_mode=output_mode,
-            tool_decision="tool_loop" if needs_tools else "no_tool_needed",
-            needs_tools=needs_tools,
-            response_kind=response_kind,
-            user_stage="Direct answer generation" if not needs_tools else "Gather tool evidence before answering",
+        summary = str(previous.get("summary") or runtime_hint.get("summary_reason") or "").strip() or (
+            "Use the next observed tool result to continue." if needs_tools else "Answer directly from the provided context."
+        )
+        next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or (
+            "Use the returned tool result to revise the next proposal."
+            if needs_tools
+            else "Prepare the user-facing answer directly."
+        )
+        return HighLevelProposal(
+            intent=str(previous.get("intent") or runtime_hint.get("primary_intent") or "standard"),
+            task_type=str(previous.get("task_type") or runtime_hint.get("task_type") or "standard"),
+            current_goal=current_goal,
+            expects_tools=needs_tools,
+            response_mode=response_mode,
+            user_stage=str(previous.get("user_stage") or "").strip()
+            or ("Direct answer generation" if not needs_tools else "Gather evidence for the current step"),
             summary=summary,
-            proposed_tools=tool_names,
-            change_summary_requested=bool(runtime_guess.get("prefer_change_summary")),
-            source="runtime_fallback",
+            next_step_hint=next_step_hint,
+            change_summary_requested=bool(previous.get("change_summary_requested"))
+            or bool(runtime_hint.get("prefer_change_summary")),
+            source="proposal_carry_forward" if previous else "runtime_fallback",
         )
 
-    def _normalize_model_proposal(
+    def _normalize_high_level_proposal(
         self,
         *,
         raw_proposal: dict[str, Any],
-        runtime_guess: dict[str, Any],
+        prompt_message: str,
+        runtime_hint: dict[str, Any],
+        previous_proposal: dict[str, Any] | None,
         tool_calls: list[dict[str, Any]],
         expects_tools: bool,
-    ) -> tuple[ModelTurnProposal, dict[str, Any]]:
+    ) -> tuple[HighLevelProposal, dict[str, Any]]:
         if not raw_proposal:
-            fallback = self._fallback_model_proposal(
-                prompt_message="",
-                runtime_guess=runtime_guess,
+            fallback = self._fallback_high_level_proposal(
+                prompt_message=prompt_message,
+                runtime_hint=runtime_hint,
+                previous_proposal=previous_proposal,
                 tool_calls=tool_calls,
                 expects_tools=expects_tools,
             )
@@ -2041,110 +2061,158 @@ class VintageProgrammerRuntime:
                 "summary": "proposal block missing",
                 "errors": [],
             }
-        validation = validate_tool_arguments(raw_proposal, self._model_proposal_schema())
-        fallback = self._fallback_model_proposal(
-            prompt_message="",
-            runtime_guess=runtime_guess,
+        validation = validate_tool_arguments(raw_proposal, self._high_level_proposal_schema())
+        fallback = self._fallback_high_level_proposal(
+            prompt_message=prompt_message,
+            runtime_hint=runtime_hint,
+            previous_proposal=previous_proposal,
             tool_calls=tool_calls,
             expects_tools=expects_tools,
         )
-        proposed_tools = [
-            self._normalize_tool_name(item)
-            for item in self._string_list(raw_proposal.get("proposed_tools"))
-        ]
-        tool_decision = str(raw_proposal.get("tool_decision") or fallback.tool_decision).strip().lower()
-        if tool_decision in {"use_tools", "tools", "needs_tools"}:
-            tool_decision = "tool_loop"
-        elif tool_decision in {"no_tools", "direct_answer"}:
-            tool_decision = "no_tool_needed"
-        if tool_decision not in {"no_tool_needed", "tool_loop", "tool_if_needed"}:
-            tool_decision = fallback.tool_decision
-        needs_tools = bool(raw_proposal.get("needs_tools"))
-        if tool_calls or proposed_tools:
-            needs_tools = True
-        elif expects_tools and tool_decision in {"tool_loop", "tool_if_needed"}:
-            needs_tools = True
-        if tool_calls and tool_decision == "no_tool_needed":
-            tool_decision = "tool_loop"
-        output_mode = str(raw_proposal.get("output_mode") or fallback.output_mode).strip() or fallback.output_mode
-        response_kind = str(raw_proposal.get("response_kind") or fallback.response_kind).strip() or fallback.response_kind
+        legacy_tool_decision = str(raw_proposal.get("tool_decision") or "").strip().lower()
+        expects_tools_value = raw_proposal.get("expects_tools")
+        if expects_tools_value is None:
+            expects_tools_value = raw_proposal.get("needs_tools")
+        proposal_expects_tools = bool(expects_tools_value)
+        if tool_calls:
+            proposal_expects_tools = True
+        elif not proposal_expects_tools and legacy_tool_decision in {"tool_loop", "tool_if_needed", "use_tools", "tools", "needs_tools"}:
+            proposal_expects_tools = True
+        elif not proposal_expects_tools and expects_tools:
+            proposal_expects_tools = True
+        response_mode = str(
+            raw_proposal.get("response_mode")
+            or raw_proposal.get("output_mode")
+            or fallback.response_mode
+        ).strip() or fallback.response_mode
+        current_goal = str(raw_proposal.get("current_goal") or "").strip() or fallback.current_goal
+        summary = str(raw_proposal.get("summary") or "").strip() or fallback.summary
+        next_step_hint = str(raw_proposal.get("next_step_hint") or "").strip()
+        if not next_step_hint:
+            next_step_hint = (
+                "Use the current tool result to decide the next move."
+                if proposal_expects_tools
+                else "Prepare the user-facing answer directly."
+            )
         return (
-            ModelTurnProposal(
+            HighLevelProposal(
                 intent=str(raw_proposal.get("intent") or fallback.intent).strip() or fallback.intent,
                 task_type=str(raw_proposal.get("task_type") or fallback.task_type).strip() or fallback.task_type,
-                output_mode=output_mode,
-                tool_decision=tool_decision,
-                needs_tools=needs_tools,
-                response_kind=response_kind,
+                current_goal=current_goal,
+                expects_tools=proposal_expects_tools,
+                response_mode=response_mode,
                 user_stage=str(raw_proposal.get("user_stage") or fallback.user_stage).strip() or fallback.user_stage,
-                summary=str(raw_proposal.get("summary") or fallback.summary).strip() or fallback.summary,
-                proposed_tools=proposed_tools,
+                summary=summary,
+                next_step_hint=next_step_hint,
                 change_summary_requested=bool(raw_proposal.get("change_summary_requested"))
-                or output_mode == "revision_with_change_summary",
+                or response_mode == "revision_with_change_summary",
                 source="model",
             ),
             validation,
         )
 
-    def _validate_turn_plan(
+    def _validate_next_step(
         self,
         *,
-        proposal: ModelTurnProposal,
+        proposal: HighLevelProposal,
         proposal_validation: dict[str, Any],
-        runtime_guess: dict[str, Any],
+        runtime_hint: dict[str, Any],
         runnable_tools: list[str],
         tool_calls: list[dict[str, Any]],
+        ai_text: str,
         expects_tools: bool,
-    ) -> ValidatedTurnPlan:
-        requested_tools = [
-            self._normalize_tool_name(item)
-            for item in [*proposal.proposed_tools]
-            if str(item or "").strip()
-        ]
+        observed_tool_output: bool,
+        step_index: int,
+    ) -> ValidatedNextStep:
+        approved_tool_calls: list[dict[str, Any]] = []
+        blocked_tool_calls: list[dict[str, Any]] = []
+        normalized_tool_names: list[str] = []
+        normalization_notes: list[str] = []
         for call in tool_calls[:8]:
             if not isinstance(call, dict):
                 continue
-            name = self._normalize_tool_name(str(call.get("name") or "").strip())
-            if name and name not in requested_tools:
-                requested_tools.append(name)
-        approved_tools = [name for name in requested_tools if name in runnable_tools]
-        blocked_tools = [name for name in requested_tools if name and name not in runnable_tools]
-        adjustments: list[str] = []
-        if proposal.source != "model":
-            adjustments.append("model proposal missing, runtime fallback used")
-        if str(proposal_validation.get("status") or "") == "invalid":
-            adjustments.append(str(proposal_validation.get("summary") or "proposal schema mismatch"))
-        if blocked_tools:
-            adjustments.append("blocked tools removed: " + ", ".join(blocked_tools[:6]))
-        needs_tools = bool(proposal.needs_tools or approved_tools or tool_calls or expects_tools and proposal.tool_decision == "tool_if_needed")
-        tool_decision = proposal.tool_decision
-        if approved_tools or tool_calls:
-            tool_decision = "tool_loop"
-        elif tool_decision == "tool_if_needed" and not approved_tools and not expects_tools:
-            tool_decision = "no_tool_needed"
-        if expects_tools and tool_decision == "no_tool_needed" and not approved_tools:
-            adjustments.append("runtime contract still expects tool-capable execution if the model stalls")
-        status = "adjusted" if adjustments else "valid"
-        summary = str(proposal.summary or "").strip()
-        if not summary:
-            summary = str(runtime_guess.get("summary_reason") or "Accepted the model proposal under the current runtime contract.").strip()
-        return ValidatedTurnPlan(
-            status=status,
-            source=proposal.source,
-            intent=proposal.intent or str(runtime_guess.get("primary_intent") or "standard"),
-            task_type=proposal.task_type or str(runtime_guess.get("task_type") or "standard"),
-            output_mode=proposal.output_mode or str(runtime_guess.get("output_mode") or "direct_answer"),
-            tool_decision=tool_decision,
-            needs_tools=needs_tools,
-            response_kind=proposal.response_kind or ("tool_loop" if needs_tools else "direct_answer"),
-            user_stage=proposal.user_stage,
-            summary=summary,
-            proposed_tools=requested_tools,
-            approved_tools=approved_tools,
-            blocked_tools=blocked_tools,
-            adjustments=adjustments,
+            raw_name = str(call.get("name") or "").strip()
+            name = self._normalize_tool_name(raw_name)
+            arguments = call.get("args")
+            if not isinstance(arguments, dict):
+                arguments = {}
+            normalized_call = {
+                "id": str(call.get("id") or ""),
+                "name": name,
+                "raw_name": raw_name,
+                "args": dict(arguments),
+            }
+            if name:
+                normalized_tool_names.append(name)
+            if raw_name and raw_name != name:
+                normalization_notes.append(f"{raw_name}->{name}")
+            if name and name in runnable_tools:
+                approved_tool_calls.append(normalized_call)
+            else:
+                blocked_tool_calls.append(normalized_call)
+
+        action_type = "inspect_context"
+        accepted = True
+        reason = ""
+        if approved_tool_calls or blocked_tool_calls:
+            action_type = "tool_call"
+            if approved_tool_calls:
+                accepted = True
+                reason = (
+                    f"Execute {len(approved_tool_calls)} validated tool call(s) for the current step."
+                    if len(approved_tool_calls) > 1
+                    else f"Execute {approved_tool_calls[0]['name']} as the current validated step."
+                )
+            else:
+                accepted = False
+                reason = "The model proposed tool use, but none of the current-step tool calls are allowed."
+        elif ai_text:
+            action_type = "direct_answer"
+            if (expects_tools or proposal.expects_tools) and not observed_tool_output:
+                accepted = False
+                reason = "A direct answer was proposed, but the current runtime contract still expects a tool-capable step."
+            else:
+                accepted = True
+                reason = "Answer directly from the available context."
+        else:
+            action_type = "inspect_context"
+            accepted = False
+            reason = "The model did not emit an executable current step."
+
+        validation = {
+            "proposal_schema": str(proposal_validation.get("status") or "missing"),
+            "permission": "allowed" if accepted else ("blocked" if blocked_tool_calls else "needs_revision"),
+            "mode": "compatible",
+            "expects_tools": bool(expects_tools or proposal.expects_tools),
+            "approved_tool_count": len(approved_tool_calls),
+            "blocked_tool_count": len(blocked_tool_calls),
+        }
+        normalization = " · ".join(normalization_notes[:6])
+        return ValidatedNextStep(
+            step_index=max(1, int(step_index)),
+            action_type=action_type,
+            tool_name=(
+                str(approved_tool_calls[0].get("name") or "")
+                if approved_tool_calls
+                else (str(blocked_tool_calls[0].get("name") or "") if blocked_tool_calls else "")
+            ),
+            tool_args=(
+                dict(approved_tool_calls[0].get("args") or {})
+                if approved_tool_calls
+                else (dict(blocked_tool_calls[0].get("args") or {}) if blocked_tool_calls else {})
+            ),
+            tool_names=normalized_tool_names,
+            approved_tool_calls=approved_tool_calls,
+            blocked_tool_calls=blocked_tool_calls,
+            accepted=accepted,
+            normalization=normalization,
+            validation=validation,
+            reason=reason,
+            response_mode=proposal.response_mode or str(runtime_hint.get("output_mode") or "direct_answer"),
+            task_type=proposal.task_type or str(runtime_hint.get("task_type") or "standard"),
+            current_goal=proposal.current_goal,
             change_summary_requested=bool(proposal.change_summary_requested),
-            validation=dict(proposal_validation or {}),
+            source="harness",
         )
 
     @staticmethod
@@ -2152,83 +2220,116 @@ class VintageProgrammerRuntime:
         summary = str((proposal or {}).get("summary") or "").strip()
         if summary:
             return summary
-        return VintageProgrammerRuntime._activity_detail(
-            task_type=(proposal or {}).get("task_type"),
-            tool_decision=(proposal or {}).get("tool_decision"),
-            output_mode=(proposal or {}).get("output_mode"),
-        )
+        return str((proposal or {}).get("current_goal") or "").strip() or "Current understanding recorded."
 
     @staticmethod
-    def _validation_activity_detail(validated_plan: dict[str, Any]) -> str:
-        plan = dict(validated_plan or {})
-        adjustments = VintageProgrammerRuntime._string_list(plan.get("adjustments"), limit=3)
-        if adjustments:
-            return "Harness adjusted the proposal: " + " · ".join(adjustments)
-        tool_decision = str(plan.get("tool_decision") or "").strip() or "no_tool_needed"
-        if tool_decision == "tool_loop":
-            approved = VintageProgrammerRuntime._string_list(plan.get("approved_tools"), limit=4)
-            if approved:
-                return "Harness accepted the tool plan and approved: " + ", ".join(approved)
-            return "Harness accepted the tool-capable plan under the current runtime contract."
-        return "Harness accepted the direct-answer plan under the current runtime contract."
+    def _validation_activity_detail(validated_next_step: dict[str, Any]) -> str:
+        step = dict(validated_next_step or {})
+        action_type = str(step.get("action_type") or "").strip()
+        accepted = bool(step.get("accepted"))
+        if not accepted:
+            return str(step.get("reason") or "Harness rejected the current step.")[:280]
+        if action_type == "tool_call":
+            tool_names = VintageProgrammerRuntime._string_list(step.get("tool_names"), limit=4)
+            if tool_names:
+                return "Harness accepted the current step and approved: " + ", ".join(tool_names)
+            return "Harness accepted the current tool step."
+        if action_type == "direct_answer":
+            return "Harness accepted the current direct-answer step."
+        if action_type == "ask_user":
+            return "Harness accepted a user-input step."
+        return "Harness accepted the current step."
 
     @staticmethod
-    def _activity_context_from_plan(validated_plan: dict[str, Any], runtime_guess: dict[str, Any]) -> dict[str, Any]:
-        plan = dict(validated_plan or {})
-        guess = dict(runtime_guess or {})
-        task_type = str(plan.get("task_type") or guess.get("task_type") or "standard").strip() or "standard"
-        output_mode = str(plan.get("output_mode") or guess.get("output_mode") or "direct_answer").strip() or "direct_answer"
+    def _execution_activity_detail(entry: dict[str, Any]) -> str:
+        item = dict(entry or {})
+        observation = str(item.get("observation_summary") or "").strip()
+        if observation:
+            return observation
+        return str(item.get("result_summary") or "").strip() or "Execution recorded."
+
+    @staticmethod
+    def _activity_context_from_step(
+        proposal: dict[str, Any],
+        validated_next_step: dict[str, Any],
+        runtime_hint: dict[str, Any],
+    ) -> dict[str, Any]:
+        step = dict(validated_next_step or {})
+        hint = dict(runtime_hint or {})
+        item = dict(proposal or {})
+        response_mode = str(step.get("response_mode") or item.get("response_mode") or hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
         return {
-            "task_type": task_type,
-            "route_task_type": str(guess.get("route_task_type") or ""),
-            "primary_intent": str(plan.get("intent") or guess.get("primary_intent") or "standard").strip() or "standard",
-            "execution_policy": str(guess.get("execution_policy") or ""),
-            "output_mode": output_mode,
-            "prefer_change_summary": bool(plan.get("change_summary_requested"))
-            or output_mode == "revision_with_change_summary"
-            or bool(guess.get("prefer_change_summary")),
-            "summary_reason": str(plan.get("summary") or guess.get("summary_reason") or "").strip(),
-            "tool_decision": str(plan.get("tool_decision") or ""),
-            "response_kind": str(plan.get("response_kind") or ""),
-            "user_stage": str(plan.get("user_stage") or ""),
-            "source": str(plan.get("source") or guess.get("source") or ""),
+            "task_type": str(step.get("task_type") or item.get("task_type") or hint.get("task_type") or "standard").strip() or "standard",
+            "route_task_type": str(hint.get("route_task_type") or ""),
+            "primary_intent": str(item.get("intent") or hint.get("primary_intent") or "standard").strip() or "standard",
+            "execution_policy": str(hint.get("execution_policy") or ""),
+            "output_mode": response_mode,
+            "prefer_change_summary": bool(step.get("change_summary_requested"))
+            or response_mode == "revision_with_change_summary"
+            or bool(hint.get("prefer_change_summary")),
+            "summary_reason": str(item.get("summary") or hint.get("summary_reason") or "").strip(),
+            "response_mode": response_mode,
+            "current_goal": str(item.get("current_goal") or ""),
+            "action_type": str(step.get("action_type") or ""),
+            "user_stage": str(item.get("user_stage") or ""),
+            "source": str(item.get("source") or hint.get("source") or ""),
         }
 
-    def _resolve_turn_plan(
+    @staticmethod
+    def _append_execution_trace(
+        execution_trace: list[dict[str, Any]],
+        entry: ExecutionTraceEntry,
+    ) -> list[dict[str, Any]]:
+        next_trace = [*list(execution_trace or []), entry.model_dump()]
+        return next_trace[-24:]
+
+    def _resolve_step_state(
         self,
         *,
         prompt_message: str,
         ai_text: str,
-        runtime_guess: dict[str, Any],
+        runtime_hint: dict[str, Any],
+        previous_proposal: dict[str, Any] | None,
         runnable_tools: list[str],
         tool_calls: list[dict[str, Any]],
         expects_tools: bool,
+        observed_tool_output: bool,
+        step_index: int,
     ) -> dict[str, Any]:
         raw_proposal, cleaned_text, block_meta = self._extract_model_proposal_block(ai_text)
-        proposal, proposal_validation = self._normalize_model_proposal(
+        proposal, proposal_validation = self._normalize_high_level_proposal(
             raw_proposal=raw_proposal,
-            runtime_guess=runtime_guess,
+            prompt_message=prompt_message,
+            runtime_hint=runtime_hint,
+            previous_proposal=previous_proposal,
             tool_calls=tool_calls,
             expects_tools=expects_tools,
         )
-        validated_plan = self._validate_turn_plan(
+        validated_next_step = self._validate_next_step(
             proposal=proposal,
             proposal_validation=proposal_validation,
-            runtime_guess=runtime_guess,
+            runtime_hint=runtime_hint,
             runnable_tools=runnable_tools,
             tool_calls=tool_calls,
+            ai_text=cleaned_text,
             expects_tools=expects_tools,
+            observed_tool_output=observed_tool_output,
+            step_index=step_index,
         )
         return {
             "clean_text": cleaned_text,
-            "model_proposal": proposal.model_dump(),
-            "validated_plan": validated_plan.model_dump(),
+            "high_level_proposal": proposal.model_dump(),
+            "validated_next_step": validated_next_step.model_dump(),
             "proposal_diagnostics": {
                 **dict(block_meta or {}),
                 "schema_validation": dict(proposal_validation or {}),
             },
-            "runtime_guess": dict(runtime_guess or {}),
-            "activity_context": self._activity_context_from_plan(validated_plan.model_dump(), runtime_guess),
+            "runtime_hint": dict(runtime_hint or {}),
+            "activity_context": self._activity_context_from_step(
+                proposal.model_dump(),
+                validated_next_step.model_dump(),
+                runtime_hint,
+            ),
         }
 
     def _strip_model_proposal_from_message(self, ai_msg: Any) -> dict[str, Any]:
@@ -2915,7 +3016,7 @@ class VintageProgrammerRuntime:
         context_window_known = bool(compaction_status.get("context_window_known"))
         live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
-        runtime_guess = self._build_runtime_guess(
+        runtime_hint = self._build_runtime_guess(
             prompt_message=prompt_message,
             route_state=route_state_input,
         )
@@ -2985,14 +3086,16 @@ class VintageProgrammerRuntime:
         turn_status = "running"
         forced_text = ""
         last_image_read_result: dict[str, Any] | None = None
-        model_proposal: dict[str, Any] = {}
-        validated_plan: dict[str, Any] = {}
+        high_level_proposal: dict[str, Any] = {}
+        validated_next_step: dict[str, Any] = {}
+        execution_trace: list[dict[str, Any]] = []
         proposal_diagnostics: dict[str, Any] = {}
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
-        turn_activity_context = dict(runtime_guess)
+        turn_activity_context = dict(runtime_hint)
         activity_sequence = 0
+        current_step_index = 0
 
         def emit_runtime_activity(
             activity_type: str,
@@ -3036,7 +3139,8 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "expects_tools": expects_tools,
                 "collaboration_mode": collaboration_mode,
-                "runtime_guess": dict(runtime_guess),
+                "runtime_hint": dict(runtime_hint),
+                "runtime_guess": dict(runtime_hint),
             },
             visible=False,
         )
@@ -3065,21 +3169,91 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "expects_tools": expects_tools,
                 "collaboration_mode": collaboration_mode,
-                "runtime_guess": dict(runtime_guess),
+                "runtime_hint": dict(runtime_hint),
+                "runtime_guess": dict(runtime_hint),
             },
             visible=False,
         )
         emit_runtime_activity(
             "activity.started",
-            "model_proposal",
-            "Requesting a structured turn proposal from the model.",
+            "high_level_proposal",
+            "Requesting a revisable high-level proposal from the model.",
             payload={
                 "tool_count": len(runnable_tools),
                 "expects_tools": expects_tools,
                 "inline_document": inline_document,
-                "runtime_guess": dict(runtime_guess),
+                "runtime_hint": dict(runtime_hint),
+                "runtime_guess": dict(runtime_hint),
             },
         )
+
+        def refresh_model_step(ai_msg: Any, *, event_type: str = "activity.done") -> None:
+            nonlocal current_step_index
+            nonlocal high_level_proposal
+            nonlocal validated_next_step
+            nonlocal proposal_diagnostics
+            nonlocal turn_activity_context
+            nonlocal current_goal
+            nonlocal current_task_focus
+            nonlocal notes
+            current_step_index += 1
+            raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
+            current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
+            step_state = self._resolve_step_state(
+                prompt_message=prompt_message,
+                ai_text=raw_ai_text,
+                runtime_hint=runtime_hint,
+                previous_proposal=high_level_proposal,
+                runnable_tools=runnable_tools,
+                tool_calls=current_tool_calls,
+                expects_tools=expects_tools,
+                observed_tool_output=any(item.status == "ok" for item in tool_events),
+                step_index=current_step_index,
+            )
+            cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
+            high_level_proposal = dict(step_state.get("high_level_proposal") or {})
+            validated_next_step = dict(step_state.get("validated_next_step") or {})
+            proposal_diagnostics = dict(step_state.get("proposal_diagnostics") or {})
+            turn_activity_context = dict(step_state.get("activity_context") or runtime_hint)
+            proposal_goal = str(high_level_proposal.get("current_goal") or "").strip()
+            if proposal_goal:
+                current_goal = proposal_goal
+                current_task_focus["goal"] = current_goal
+            try:
+                ai_msg.content = cleaned_text
+            except Exception:
+                pass
+            if cleaned_text != raw_ai_text:
+                notes.append("model_turn_proposal_stripped_from_answer_text")
+            if str(((proposal_diagnostics.get("schema_validation") or {}).get("status")) or "") not in {"", "valid"}:
+                notes.append("high_level_proposal_schema_adjusted")
+            emit_runtime_activity(
+                event_type,
+                "high_level_proposal",
+                self._proposal_activity_detail(high_level_proposal),
+                status="success",
+                payload={
+                    "high_level_proposal": dict(high_level_proposal),
+                    "runtime_hint": dict(runtime_hint),
+                    "runtime_guess": dict(runtime_hint),
+                    "proposal_diagnostics": dict(proposal_diagnostics),
+                    "revision_index": int(current_step_index),
+                },
+            )
+            emit_runtime_activity(
+                event_type,
+                "step_validation",
+                self._validation_activity_detail(validated_next_step),
+                status="success" if bool(validated_next_step.get("accepted")) else "blocked",
+                payload={
+                    "validated_next_step": dict(validated_next_step),
+                    "high_level_proposal": dict(high_level_proposal),
+                    "runtime_hint": dict(runtime_hint),
+                    "runtime_guess": dict(runtime_hint),
+                    "proposal_diagnostics": dict(proposal_diagnostics),
+                    "revision_index": int(current_step_index),
+                },
+            )
 
         self._set_tools_runtime_context(
             execution_mode=settings.execution_mode,
@@ -3145,52 +3319,7 @@ class VintageProgrammerRuntime:
             )
             notes.extend(invoke_notes)
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-            initial_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
-            initial_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
-            turn_plan = self._resolve_turn_plan(
-                prompt_message=prompt_message,
-                ai_text=initial_ai_text,
-                runtime_guess=runtime_guess,
-                runnable_tools=runnable_tools,
-                tool_calls=initial_tool_calls,
-                expects_tools=expects_tools,
-            )
-            cleaned_initial_text = str(turn_plan.get("clean_text") or initial_ai_text).strip()
-            model_proposal = dict(turn_plan.get("model_proposal") or {})
-            validated_plan = dict(turn_plan.get("validated_plan") or {})
-            proposal_diagnostics = dict(turn_plan.get("proposal_diagnostics") or {})
-            turn_activity_context = dict(turn_plan.get("activity_context") or runtime_guess)
-            try:
-                ai_msg.content = cleaned_initial_text
-            except Exception:
-                pass
-            if cleaned_initial_text != initial_ai_text:
-                notes.append("model_turn_proposal_stripped_from_answer_text")
-            if str(((proposal_diagnostics.get("schema_validation") or {}).get("status")) or "") not in {"", "valid"}:
-                notes.append("model_turn_proposal_schema_adjusted")
-            emit_runtime_activity(
-                "activity.done",
-                "model_proposal",
-                self._proposal_activity_detail(model_proposal),
-                status="success",
-                payload={
-                    "model_proposal": dict(model_proposal),
-                    "runtime_guess": dict(runtime_guess),
-                    "proposal_diagnostics": dict(proposal_diagnostics),
-                },
-            )
-            emit_runtime_activity(
-                "activity.done",
-                "harness_validation",
-                self._validation_activity_detail(validated_plan),
-                status="success",
-                payload={
-                    "validated_plan": dict(validated_plan),
-                    "model_proposal": dict(model_proposal),
-                    "runtime_guess": dict(runtime_guess),
-                    "proposal_diagnostics": dict(proposal_diagnostics),
-                },
-            )
+            refresh_model_step(ai_msg, event_type="activity.done")
 
             act_now_budget = 1 if collaboration_mode in {"default", "execute"} and max_tool_calls_per_turn > 0 else 0
             invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
@@ -3198,7 +3327,6 @@ class VintageProgrammerRuntime:
             halt_for_user_input = False
             turn_started_at = time.monotonic()
             round_idx = 0
-            tool_decision_recorded = bool(validated_plan)
             tool_call_count = 0
             same_tool_repeat_count = 0
             last_tool_name = ""
@@ -3237,9 +3365,12 @@ class VintageProgrammerRuntime:
                     notes.append("turn_budget_wall_clock_exceeded")
                     break
 
-                tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
+                ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
+                tool_calls = list(validated_next_step.get("approved_tool_calls") or [])
+                blocked_tool_calls = list(validated_next_step.get("blocked_tool_calls") or [])
+                step_action_type = str(validated_next_step.get("action_type") or "").strip() or "inspect_context"
+                step_accepted = bool(validated_next_step.get("accepted"))
                 if not tool_calls:
-                    ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
                     invalid_permission_gate = (
                         bool(invalid_final_guard.get("enabled"))
                         and not self._has_write_tool_event(tool_events)
@@ -3306,9 +3437,7 @@ class VintageProgrammerRuntime:
                             )
                             notes.extend(invoke_notes)
                             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                            repair_meta = self._strip_model_proposal_from_message(ai_msg)
-                            if str(repair_meta.get("status") or "") == "parsed":
-                                notes.append("duplicate_model_turn_proposal_stripped")
+                            refresh_model_step(ai_msg, event_type="activity.delta")
                             self._emit_trace(
                                 progress_cb,
                                 run_id=run_id,
@@ -3329,7 +3458,8 @@ class VintageProgrammerRuntime:
                         and not tool_events
                         and collaboration_mode in {"default", "execute"}
                         and (
-                            expects_tools
+                            (not step_accepted)
+                            or expects_tools
                             or self._looks_like_plan_only_response(ai_text)
                             or (has_image_attachments and looks_like_image_capability_denial_helper(ai_text))
                         )
@@ -3375,9 +3505,7 @@ class VintageProgrammerRuntime:
                         )
                         notes.extend(invoke_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                        repair_meta = self._strip_model_proposal_from_message(ai_msg)
-                        if str(repair_meta.get("status") or "") == "parsed":
-                            notes.append("duplicate_model_turn_proposal_stripped")
+                        refresh_model_step(ai_msg, event_type="activity.delta")
                         continue
                     should_auto_rescue_image = (
                         auto_image_rescue_budget > 0
@@ -3437,9 +3565,7 @@ class VintageProgrammerRuntime:
                         )
                         notes.extend(rescue_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                        rescue_meta = self._strip_model_proposal_from_message(ai_msg)
-                        if str(rescue_meta.get("status") or "") == "parsed":
-                            notes.append("duplicate_model_turn_proposal_stripped")
+                        refresh_model_step(ai_msg, event_type="activity.delta")
                         tool_call_count += 1
                         if last_tool_name == "image_read":
                             same_tool_repeat_count += 1
@@ -3452,44 +3578,41 @@ class VintageProgrammerRuntime:
                     no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
                     if self._looks_like_plan_only_response(ai_text):
                         no_tool_response_kind = "plan_only"
-                    if not tool_decision_recorded:
-                        emit_runtime_activity(
-                            "activity.done",
-                            "tool_decision",
-                            self._activity_detail(
-                                task_type=turn_activity_context.get("task_type"),
-                                tool_decision="no_tool_needed",
-                                response_kind=no_tool_response_kind,
-                                output_mode=turn_activity_context.get("output_mode"),
-                            ),
-                            status="success" if no_tool_response_kind == "direct_answer" else "running",
-                            payload={
-                                "tool_count": 0,
-                                "tool_decision": "no_tool_needed",
-                                "response_kind": no_tool_response_kind,
-                                "answer_preview": safe_preview(ai_text, limit=240),
-                                **turn_activity_context,
-                            },
-                        )
-                        tool_decision_recorded = True
-                    elif round_idx > 0:
-                        emit_runtime_activity(
-                            "activity.delta",
-                            "answer_generation",
-                            self._activity_detail(
-                                task_type=turn_activity_context.get("task_type"),
-                                tool_decision="final_answer_after_tools",
-                                response_kind=no_tool_response_kind,
-                                output_mode=turn_activity_context.get("output_mode"),
-                            ),
-                            payload={
-                                "tool_count": 0,
-                                "tool_decision": "final_answer_after_tools",
-                                "response_kind": no_tool_response_kind,
-                                "answer_preview": safe_preview(ai_text, limit=240),
-                                **turn_activity_context,
-                            },
-                        )
+                    if not step_accepted:
+                        blocked_reason = blocked_reason or "validated_next_step_rejected"
+                    execution_entry = ExecutionTraceEntry(
+                        step_index=int(validated_next_step.get("step_index") or current_step_index),
+                        action_type=step_action_type,
+                        status="completed" if step_accepted else "blocked",
+                        title="Direct answer step",
+                        result_summary=safe_preview(ai_text, limit=240),
+                        observation_summary=(
+                            "Direct answer prepared for the user."
+                            if step_accepted
+                            else str(validated_next_step.get("reason") or "The current step was not accepted by the harness.")
+                        ),
+                        detail=str(validated_next_step.get("reason") or ""),
+                        payload={
+                            "validated_next_step": dict(validated_next_step),
+                            "response_kind": no_tool_response_kind,
+                        },
+                    )
+                    execution_trace = self._append_execution_trace(execution_trace, execution_entry)
+                    emit_runtime_activity(
+                        "activity.done" if round_idx == 0 else "activity.delta",
+                        "execution",
+                        self._execution_activity_detail(execution_entry.model_dump()),
+                        status="success" if step_accepted else "blocked",
+                        payload={
+                            "execution_trace": list(execution_trace),
+                            "execution_trace_entry": execution_entry.model_dump(),
+                            "validated_next_step": dict(validated_next_step),
+                            "high_level_proposal": dict(high_level_proposal),
+                            "runtime_hint": dict(runtime_hint),
+                            "runtime_guess": dict(runtime_hint),
+                            **turn_activity_context,
+                        },
+                    )
                     break
 
                 messages.append(ai_msg)
@@ -3497,38 +3620,17 @@ class VintageProgrammerRuntime:
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
                 stop_after_tools = False
-                if not tool_decision_recorded:
-                    emit_runtime_activity(
-                        "activity.done",
-                        "tool_decision",
-                        self._activity_detail(
-                            task_type=turn_activity_context.get("task_type"),
-                            tool_decision="tool_loop",
-                            tool_count=len(tool_calls[:8]),
-                            output_mode=turn_activity_context.get("output_mode"),
-                        ),
-                        status="success",
-                        payload={
-                            "tool_decision": "tool_loop",
-                            "tool_count": len(tool_calls[:8]),
-                            "tool_names": [
-                                self._normalize_tool_name(str(call.get("name") or "").strip())
-                                for call in tool_calls[:8]
-                            ],
-                            **turn_activity_context,
-                        },
-                    )
-                    tool_decision_recorded = True
                 emit_runtime_activity(
                     "activity.delta",
-                    "tool_execution",
-                    f"Executing {len(tool_calls[:8])} tool call(s) returned by the model.",
+                    "execution",
+                    f"Executing {len(tool_calls[:8])} validated tool call(s).",
                     payload={
-                        "tool_names": [
-                            self._normalize_tool_name(str(call.get("name") or "").strip())
-                            for call in tool_calls[:8]
-                        ],
+                        "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
                         "tool_count": len(tool_calls[:8]),
+                        "validated_next_step": dict(validated_next_step),
+                        "high_level_proposal": dict(high_level_proposal),
+                        "runtime_hint": dict(runtime_hint),
+                        "runtime_guess": dict(runtime_hint),
                         **turn_activity_context,
                     },
                 )
@@ -3545,8 +3647,8 @@ class VintageProgrammerRuntime:
                         notes.append("turn_budget_tool_calls_exceeded")
                         stop_after_tools = True
                         break
-                    raw_name = str(call.get("name") or "").strip()
-                    name = self._normalize_tool_name(raw_name)
+                    raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
+                    name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
                     arguments = call.get("args")
                     if not isinstance(arguments, dict):
                         arguments = {}
@@ -3755,6 +3857,55 @@ class VintageProgrammerRuntime:
                         stop_after_tools = True
                         break
 
+                if round_signature_parts:
+                    execution_entry = ExecutionTraceEntry(
+                        step_index=int(validated_next_step.get("step_index") or current_step_index),
+                        action_type="tool_call",
+                        status=(
+                            "blocked"
+                            if turn_status in {"blocked", "needs_user_input"}
+                            else ("completed" if round_success else "failed")
+                        ),
+                        title="Tool execution step",
+                        tool_name=str((validated_next_step.get("tool_name") or "")),
+                        tool_names=[str(item.get("name") or "") for item in round_signature_parts if str(item.get("name") or "")],
+                        result_summary="; ".join(
+                            f"{str(item.get('name') or '')}:{str(item.get('status') or '')}"
+                            for item in round_signature_parts[:8]
+                        )[:280],
+                        observation_summary=(
+                            str(pending_user_input.get("summary") or "")
+                            if halt_for_user_input
+                            else (
+                                "Tool output collected for the next model turn."
+                                if round_success
+                                else "Tool execution finished without a successful result."
+                            )
+                        ),
+                        detail=str(validated_next_step.get("reason") or ""),
+                        payload={
+                            "validated_next_step": dict(validated_next_step),
+                            "completed_tool_calls": len(round_signature_parts),
+                            "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
+                        },
+                    )
+                    execution_trace = self._append_execution_trace(execution_trace, execution_entry)
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "execution",
+                        self._execution_activity_detail(execution_entry.model_dump()),
+                        status="blocked" if turn_status in {"blocked", "needs_user_input"} else ("success" if round_success else "failed"),
+                        payload={
+                            "execution_trace": list(execution_trace),
+                            "execution_trace_entry": execution_entry.model_dump(),
+                            "validated_next_step": dict(validated_next_step),
+                            "high_level_proposal": dict(high_level_proposal),
+                            "runtime_hint": dict(runtime_hint),
+                            "runtime_guess": dict(runtime_hint),
+                            **turn_activity_context,
+                        },
+                    )
+
                 if halt_for_user_input or stop_after_tools:
                     break
                 if self._cancel_requested(context_payload):
@@ -3765,11 +3916,16 @@ class VintageProgrammerRuntime:
 
                 emit_runtime_activity(
                     "activity.delta",
-                    "answer_generation",
+                    "execution",
                     "Tool output collected; requesting the next model turn.",
                     payload={
+                        "execution_trace": list(execution_trace),
                         "completed_tool_calls": len(round_signature_parts),
                         "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
+                        "validated_next_step": dict(validated_next_step),
+                        "high_level_proposal": dict(high_level_proposal),
+                        "runtime_hint": dict(runtime_hint),
+                        "runtime_guess": dict(runtime_hint),
                         **turn_activity_context,
                     },
                 )
@@ -3869,9 +4025,7 @@ class VintageProgrammerRuntime:
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                followup_meta = self._strip_model_proposal_from_message(ai_msg)
-                if str(followup_meta.get("status") or "") == "parsed":
-                    notes.append("duplicate_model_turn_proposal_stripped")
+                refresh_model_step(ai_msg, event_type="activity.delta")
         finally:
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
@@ -3997,6 +4151,27 @@ class VintageProgrammerRuntime:
         )
         if answer_bundle["warnings"]:
             notes.extend(answer_bundle["warnings"])
+        if (
+            validated_next_step
+            and turn_status in {"blocked", "cancelled"}
+            and (
+                not execution_trace
+                or int((execution_trace[-1] or {}).get("step_index") or 0) != int(validated_next_step.get("step_index") or 0)
+            )
+        ):
+            final_execution_entry = ExecutionTraceEntry(
+                step_index=int(validated_next_step.get("step_index") or current_step_index),
+                action_type=str(validated_next_step.get("action_type") or "inspect_context"),
+                status=turn_status,
+                title="Final execution state",
+                tool_name=str(validated_next_step.get("tool_name") or ""),
+                tool_names=[str(item) for item in list(validated_next_step.get("tool_names") or []) if str(item or "")],
+                result_summary=safe_preview(raw_text, limit=240),
+                observation_summary=str(blocked_reason or raw_text or ""),
+                detail=str(validated_next_step.get("reason") or ""),
+                payload={"validated_next_step": dict(validated_next_step)},
+            )
+            execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
         legacy_phase = collaboration_mode if turn_status == "running" else turn_status
         inspector = {
@@ -4033,9 +4208,13 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "answer_stream": dict(answer_stream),
-                "runtime_guess": dict(runtime_guess),
-                "model_proposal": dict(model_proposal),
-                "validated_plan": dict(validated_plan),
+                "runtime_hint": dict(runtime_hint),
+                "runtime_guess": dict(runtime_hint),
+                "high_level_proposal": dict(high_level_proposal),
+                "model_proposal": dict(high_level_proposal),
+                "validated_next_step": dict(validated_next_step),
+                "validated_plan": dict(validated_next_step),
+                "execution_trace": list(execution_trace),
                 "proposal_diagnostics": dict(proposal_diagnostics),
                 "project_contract_loaded": bool(project_contract_text),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
@@ -4110,9 +4289,13 @@ class VintageProgrammerRuntime:
             ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
-            "runtime_guess": dict(runtime_guess),
-            "model_proposal": dict(model_proposal),
-            "validated_plan": dict(validated_plan),
+            "runtime_hint": dict(runtime_hint),
+            "runtime_guess": dict(runtime_hint),
+            "high_level_proposal": dict(high_level_proposal),
+            "model_proposal": dict(high_level_proposal),
+            "validated_next_step": dict(validated_next_step),
+            "validated_plan": dict(validated_next_step),
+            "execution_trace": list(execution_trace),
             "proposal_diagnostics": dict(proposal_diagnostics),
             "activity": {
                 "run_id": run_id,
@@ -4140,8 +4323,12 @@ class VintageProgrammerRuntime:
                 "tool_count": len(tool_events),
                 "loaded_skill_ids": [str(item.get("id") or "") for item in loaded_skills],
                 "inline_document": inline_document,
-                "model_proposal": dict(model_proposal),
-                "validated_plan": dict(validated_plan),
+                "runtime_hint": dict(runtime_hint),
+                "model_proposal": dict(high_level_proposal),
+                "high_level_proposal": dict(high_level_proposal),
+                "validated_plan": dict(validated_next_step),
+                "validated_next_step": dict(validated_next_step),
+                "execution_trace": list(execution_trace),
                 "project_id": project_id,
                 "project_root": project_root,
                 "cwd": effective_cwd,
