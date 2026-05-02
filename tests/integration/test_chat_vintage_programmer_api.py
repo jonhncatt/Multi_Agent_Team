@@ -512,7 +512,22 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
             "id": f"{run_id}:tool:web_search",
             "name": "web_search",
             "input": {"query": "PLAN.md"},
+            "raw_tool_call": {"id": "tc-1", "name": "web_search", "arguments": {"q": "PLAN.md"}},
             "raw_arguments": {"query": "PLAN.md"},
+            "normalized_arguments": {"query": "PLAN.md"},
+            "guard_result": {
+                "status": "normalized",
+                "tool_name": "web_search",
+                "raw_tool_name": "web_search",
+                "normalization_notes": ["q->query"],
+                "checks": {
+                    "json": "passed",
+                    "tool_exists": "passed",
+                    "schema": "normalized",
+                    "policy": "passed",
+                    "permission": "passed",
+                },
+            },
             "arguments_preview": "query=PLAN.md",
             "preview_error": "",
             "schema_validation": {"status": "valid", "checked": True},
@@ -975,6 +990,9 @@ def test_chat_stream_surfaces_tool_audit_fields_on_live_items(monkeypatch, tmp_p
     )
 
     assert completed_tool["raw_arguments"]["query"] == "PLAN.md"
+    assert completed_tool["raw_tool_call"]["arguments"]["q"] == "PLAN.md"
+    assert completed_tool["normalized_arguments"]["query"] == "PLAN.md"
+    assert completed_tool["guard_result"]["status"] == "normalized"
     assert completed_tool["arguments_preview"] == "query=PLAN.md"
     assert completed_tool["schema_validation"]["status"] == "valid"
 

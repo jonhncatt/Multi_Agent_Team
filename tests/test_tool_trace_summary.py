@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.tool_trace_summary import (
     build_tool_argument_audit,
     mask_sensitive_text,
+    normalize_tool_arguments,
     safe_preview,
     summarize_tool_args,
     summarize_tool_result,
@@ -78,3 +79,26 @@ def test_build_tool_argument_audit_keeps_raw_arguments_and_validation() -> None:
     assert audit["preview_error"] == ""
     assert audit["schema_validation"]["status"] == "valid"
     assert audit["raw_arguments"]["path"] == "README.md"
+
+
+def test_normalize_tool_arguments_applies_known_aliases_when_schema_is_clear() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    normalized = normalize_tool_arguments("web_search", {"q": "PLAN.md"}, schema)
+
+    assert normalized["status"] == "normalized"
+    assert normalized["arguments"] == {"query": "PLAN.md"}
+    assert normalized["notes"] == ["q->query"]
+
+
+def test_normalize_tool_arguments_keeps_payload_when_target_schema_is_unknown() -> None:
+    normalized = normalize_tool_arguments("custom_tool", {"q": "PLAN.md"}, None)
+
+    assert normalized["status"] == "unchanged"
+    assert normalized["arguments"] == {"q": "PLAN.md"}
+    assert normalized["notes"] == []

@@ -656,8 +656,10 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["execution_trace"][-1]["action_type"] == "direct_answer"
     assert result["tool_events"][0]["arguments_preview"] == "query=latest"
     assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
+    assert result["tool_events"][0]["guard_result"]["status"] == "accepted"
     tool_progress = next(item for item in progress_events if str(item.get("event") or "") == "tool")
     assert tool_progress["item"]["raw_arguments"]["query"] == "latest"
+    assert tool_progress["item"]["normalized_arguments"]["query"] == "latest"
     assert tool_progress["item"]["arguments_preview"] == "query=latest"
     assert tool_progress["item"]["schema_validation"]["status"] == "valid"
     trace_types = [item["type"] for item in result["activity"]["trace_events"]]
@@ -670,6 +672,117 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert "run.finished" in trace_types
     assert result["model_proposal"]["task_type"] == result["high_level_proposal"]["task_type"]
     assert result["validated_plan"]["action_type"] == result["validated_next_step"]["action_type"]
+
+
+def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {"q": "PLAN.md"}}]),
+            _FakeMessage(content="normalized tool loop done"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 PLAN.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-normalized-tool-guard",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "normalized tool loop done"
+    assert backend.tools.calls == [("web_search", {"query": "PLAN.md"})]
+    assert result["tool_events"][0]["raw_tool_call"]["name"] == "web_search"
+    assert result["tool_events"][0]["raw_arguments"]["q"] == "PLAN.md"
+    assert result["tool_events"][0]["normalized_arguments"]["query"] == "PLAN.md"
+    assert result["tool_events"][0]["guard_result"]["status"] == "normalized"
+    assert "q->query" in result["tool_events"][0]["guard_result"]["normalization_notes"]
+
+
+def test_runtime_guard_rejects_unknown_tool_and_returns_tool_error_to_model(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "readfile", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="I revised the tool choice after the guard rejection."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="读取 README.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-tool-guard-rejected",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "I revised the tool choice after the guard rejection."
+    assert backend.tools.calls == []
+    assert result["tool_events"][0]["guard_result"]["status"] == "rejected"
+    assert result["tool_events"][0]["status"] == "error"
+    assert result["tool_events"][0]["raw_tool_call"]["name"] == "readfile"
+    assert len(backend.invocations) == 2
+    followup_messages = backend.invocations[1]["messages"]
+    tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc1")
+    assert "\"kind\": \"tool_call_rejected\"" in str(tool_message.content)
+    assert "readfile" in str(tool_message.content)
+
+
+def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_tool(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": {"text": "PLAN.md"}}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "web_search", "args": {"query": "PLAN.md"}}]),
+            _FakeMessage(content="retry succeeded"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 PLAN.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-tool-guard-schema-retry",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "retry succeeded"
+    assert backend.tools.calls == [("web_search", {"query": "PLAN.md"})]
+    assert len(result["tool_events"]) == 2
+    assert result["tool_events"][0]["guard_result"]["status"] == "rejected"
+    assert result["tool_events"][0]["schema_validation"]["status"] == "invalid"
+    assert result["tool_events"][1]["guard_result"]["status"] == "accepted"
 
 
 def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
