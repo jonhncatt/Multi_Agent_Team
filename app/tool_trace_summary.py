@@ -199,6 +199,59 @@ def validate_tool_arguments(args: dict[str, Any], schema: dict[str, Any] | None)
     }
 
 
+def normalize_tool_arguments(
+    tool_name: str,
+    args: dict[str, Any],
+    schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_name = str(tool_name or "").strip()
+    original_args = dict(args or {})
+    normalized_args = dict(original_args)
+    normalized_schema = dict(schema or {}) if isinstance(schema, dict) else {}
+    properties = normalized_schema.get("properties")
+    property_map = dict(properties or {}) if isinstance(properties, dict) else {}
+    if not normalized_schema or not property_map:
+        return {
+            "arguments": normalized_args,
+            "changed": False,
+            "notes": [],
+            "status": "unchanged",
+        }
+    allowed_keys = {str(key) for key in property_map.keys() if str(key).strip()}
+    alias_map: dict[str, tuple[str, ...]] = {
+        "path": ("filepath", "filename", "file", "image_path"),
+        "query": ("q", "query_text"),
+        "url": ("uri", "link"),
+        "patch": ("patch_text",),
+    }
+    if normalized_name == "image_read":
+        alias_map["path"] = ("filepath", "filename", "file", "image_path", "image")
+
+    notes: list[str] = []
+    for target, aliases in alias_map.items():
+        if target in normalized_args:
+            continue
+        if allowed_keys and target not in allowed_keys:
+            continue
+        present_aliases = [
+            alias
+            for alias in aliases
+            if alias in normalized_args and normalized_args.get(alias) not in ("", None, [], {})
+        ]
+        if len(present_aliases) != 1:
+            continue
+        source_key = present_aliases[0]
+        normalized_args[target] = normalized_args.pop(source_key)
+        notes.append(f"{source_key}->{target}")
+
+    return {
+        "arguments": normalized_args,
+        "changed": normalized_args != original_args,
+        "notes": notes,
+        "status": "normalized" if normalized_args != original_args else "unchanged",
+    }
+
+
 def build_tool_argument_audit(
     tool_name: str,
     args: dict[str, Any],

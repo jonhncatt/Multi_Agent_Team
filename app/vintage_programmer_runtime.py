@@ -12,12 +12,20 @@ import uuid
 from app.config import AppConfig
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
-from app.models import ChatSettings, ExecutionTraceEntry, HighLevelProposal, ToolEvent, ValidatedNextStep
+from app.models import (
+    ChatSettings,
+    ExecutionTraceEntry,
+    HighLevelProposal,
+    ToolEvent,
+    ToolGuardResult,
+    ValidatedNextStep,
+)
 from app.openai_auth import OpenAIAuthManager
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
 from app.tool_trace_summary import (
     build_tool_argument_audit,
+    normalize_tool_arguments,
     safe_error_message,
     safe_preview,
     summarize_tool_args,
@@ -183,6 +191,7 @@ _DEFAULT_MAX_TOOL_CALLS_PER_TURN = 24
 _DEFAULT_MAX_TURN_SECONDS = 1800
 _DEFAULT_MAX_SAME_TOOL_REPEATS = 4
 _DEFAULT_MAX_NO_PROGRESS_CYCLES = 4
+_DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
 _IMAGE_READ_TOOL_HINTS = (
@@ -722,15 +731,16 @@ class VintageProgrammerRuntime:
     @staticmethod
     def _build_model_proposal_prompt() -> str:
         return (
-            "[rolling_proposal_protocol]\n"
+            "[tool_loop_protocol]\n"
             "- Treat runtime_context_json.route_state and other harness hints as weak hints, not as the final task decision.\n"
-            "- Start the turn, and each materially revised next step after new observation, with one operational proposal block in this exact wrapper format:\n"
+            "- You may answer directly when the current context is sufficient.\n"
+            "- When tools are needed, issue the current tool call directly instead of inventing a heavy upfront plan.\n"
+            "- Tool results and tool-call errors will be returned to you. Use them to decide the next move and continue the turn.\n"
+            "- Do not enumerate a full future tool list up front. Focus on the current objective and the immediate next action.\n"
+            "- If it helps clarify the current objective, you may emit one concise operational proposal block in this exact wrapper format before the current step:\n"
             "  <model_proposal>{...json...}</model_proposal>\n"
-            "- The JSON must include: intent, task_type, current_goal, expects_tools, response_mode, user_stage, summary, next_step_hint, change_summary_requested.\n"
-            "- This proposal is a short operational work note, not hidden chain-of-thought. Keep it concise, factual, and revisable.\n"
-            "- Do not try to enumerate a full future tool plan up front. Focus on the current goal and the immediate next-action direction.\n"
-            "- If no tools are needed, you may continue with the user-facing answer after the proposal block in the same response.\n"
-            "- If tools are needed, emit the proposal block before any external tool use for the current step.\n"
+            "- If you emit that block, keep it short and include: intent, task_type, current_goal, expects_tools, response_mode, user_stage, summary, next_step_hint, change_summary_requested.\n"
+            "- This proposal is an operational note, not hidden chain-of-thought. Keep it concise, factual, and revisable.\n"
         )
 
     @staticmethod
@@ -931,6 +941,7 @@ class VintageProgrammerRuntime:
                 "llm.started": "模型开始分析",
                 "llm.finished": "模型分析完成",
                 "tool.call_detected": "检测到工具调用：{tool}",
+                "tool.guard": "工具检查：{tool}",
                 "tool.started": "调用工具：{tool}",
                 "tool.finished": "工具完成：{tool}",
                 "tool.failed": "工具失败：{tool}",
@@ -957,6 +968,7 @@ class VintageProgrammerRuntime:
                 "llm.started": "モデルが解析を開始",
                 "llm.finished": "モデル解析が完了",
                 "tool.call_detected": "ツール呼び出しを検出: {tool}",
+                "tool.guard": "ツール検査: {tool}",
                 "tool.started": "ツール呼び出し: {tool}",
                 "tool.finished": "ツール完了: {tool}",
                 "tool.failed": "ツール失敗: {tool}",
@@ -983,6 +995,7 @@ class VintageProgrammerRuntime:
                 "llm.started": "Model analysis started",
                 "llm.finished": "Model analysis finished",
                 "tool.call_detected": "Tool call detected: {tool}",
+                "tool.guard": "Tool guard: {tool}",
                 "tool.started": "Calling tool: {tool}",
                 "tool.finished": "Tool finished: {tool}",
                 "tool.failed": "Tool failed: {tool}",
@@ -1449,10 +1462,17 @@ class VintageProgrammerRuntime:
         name: str,
         arguments: dict[str, Any],
         result: dict[str, Any],
+        raw_tool_call: dict[str, Any] | None = None,
+        guard_result: dict[str, Any] | None = None,
+        raw_arguments: Any = None,
     ) -> ToolEvent:
         result_json = json.dumps(result, ensure_ascii=False)
         tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
         tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
+        raw_call_payload = dict(raw_tool_call or {})
+        raw_argument_payload = raw_arguments if raw_arguments is not None else raw_call_payload.get("arguments")
+        if raw_argument_payload is None:
+            raw_argument_payload = arguments
         source_refs = self._collect_source_refs(result)
         status = "ok" if bool(result.get("ok")) else "error"
         error_value = result.get("error")
@@ -1471,7 +1491,10 @@ class VintageProgrammerRuntime:
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
-            raw_arguments=tool_audit["raw_arguments"],
+            raw_tool_call=safe_preview(raw_call_payload, limit=4000) if raw_call_payload else {},
+            raw_arguments=safe_preview(raw_argument_payload, limit=4000),
+            normalized_arguments=safe_preview(arguments, limit=4000) if isinstance(arguments, dict) else {},
+            guard_result=dict(guard_result or {}),
             arguments_preview=str(tool_audit.get("arguments_preview") or ""),
             preview_error=str(tool_audit.get("preview_error") or ""),
             schema_validation=dict(tool_audit.get("schema_validation") or {}),
@@ -1506,6 +1529,9 @@ class VintageProgrammerRuntime:
         *,
         name: str,
         arguments: dict[str, Any],
+        raw_tool_call: dict[str, Any] | None,
+        guard_result: dict[str, Any] | None,
+        raw_arguments: Any = None,
         run_id: str,
         locale: str,
         progress_cb: Callable[[dict[str, Any]], None] | None,
@@ -1533,6 +1559,9 @@ class VintageProgrammerRuntime:
             status="running",
             payload={
                 "tool_name": name,
+                "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
+                "normalized_arguments": safe_preview(arguments, limit=4000),
+                "guard_result": dict(guard_result or {}),
                 **tool_audit,
             },
             trace_events=trace_events,
@@ -1543,7 +1572,14 @@ class VintageProgrammerRuntime:
         except Exception as exc:
             result = self._structured_tool_error_result(name, exc)
         duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
-        event = self._build_tool_event(name=name, arguments=arguments, result=result)
+        event = self._build_tool_event(
+            name=name,
+            arguments=arguments,
+            result=result,
+            raw_tool_call=raw_tool_call,
+            guard_result=guard_result,
+            raw_arguments=raw_arguments,
+        )
         tool_events.append(event)
         trace_type = "tool.finished" if event.status == "ok" else "tool.failed"
         trace_status = "success" if event.status == "ok" else "failed"
@@ -1557,6 +1593,9 @@ class VintageProgrammerRuntime:
             duration_ms=duration_ms,
             payload={
                 "tool_name": name,
+                "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
+                "normalized_arguments": safe_preview(arguments, limit=4000),
+                "guard_result": dict(guard_result or {}),
                 **tool_audit,
                 "result_preview": safe_preview(result),
             },
@@ -2124,8 +2163,7 @@ class VintageProgrammerRuntime:
         observed_tool_output: bool,
         step_index: int,
     ) -> ValidatedNextStep:
-        approved_tool_calls: list[dict[str, Any]] = []
-        blocked_tool_calls: list[dict[str, Any]] = []
+        proposed_tool_calls: list[dict[str, Any]] = []
         normalized_tool_names: list[str] = []
         normalization_notes: list[str] = []
         for call in tool_calls[:8]:
@@ -2133,47 +2171,36 @@ class VintageProgrammerRuntime:
                 continue
             raw_name = str(call.get("name") or "").strip()
             name = self._normalize_tool_name(raw_name)
-            arguments = call.get("args")
-            if not isinstance(arguments, dict):
-                arguments = {}
+            raw_arguments = call.get("args")
+            arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
             normalized_call = {
                 "id": str(call.get("id") or ""),
                 "name": name,
                 "raw_name": raw_name,
                 "args": dict(arguments),
+                "raw_args": raw_arguments,
             }
             if name:
                 normalized_tool_names.append(name)
             if raw_name and raw_name != name:
                 normalization_notes.append(f"{raw_name}->{name}")
-            if name and name in runnable_tools:
-                approved_tool_calls.append(normalized_call)
-            else:
-                blocked_tool_calls.append(normalized_call)
+            proposed_tool_calls.append(normalized_call)
 
         action_type = "inspect_context"
         accepted = True
         reason = ""
-        if approved_tool_calls or blocked_tool_calls:
+        if proposed_tool_calls:
             action_type = "tool_call"
-            if approved_tool_calls:
-                accepted = True
-                reason = (
-                    f"Execute {len(approved_tool_calls)} validated tool call(s) for the current step."
-                    if len(approved_tool_calls) > 1
-                    else f"Execute {approved_tool_calls[0]['name']} as the current validated step."
-                )
-            else:
-                accepted = False
-                reason = "The model proposed tool use, but none of the current-step tool calls are allowed."
+            accepted = True
+            reason = (
+                f"Model proposed {len(proposed_tool_calls)} tool call(s); guard will validate each call before execution."
+                if len(proposed_tool_calls) > 1
+                else f"Model proposed {proposed_tool_calls[0].get('name') or proposed_tool_calls[0].get('raw_name') or 'a tool'}; guard will validate it before execution."
+            )
         elif ai_text:
             action_type = "direct_answer"
-            if (expects_tools or proposal.expects_tools) and not observed_tool_output:
-                accepted = False
-                reason = "A direct answer was proposed, but the current runtime contract still expects a tool-capable step."
-            else:
-                accepted = True
-                reason = "Answer directly from the available context."
+            accepted = True
+            reason = "Answer directly from the available context."
         else:
             action_type = "inspect_context"
             accepted = False
@@ -2181,29 +2208,30 @@ class VintageProgrammerRuntime:
 
         validation = {
             "proposal_schema": str(proposal_validation.get("status") or "missing"),
-            "permission": "allowed" if accepted else ("blocked" if blocked_tool_calls else "needs_revision"),
+            "permission": "allowed" if accepted else "needs_revision",
             "mode": "compatible",
             "expects_tools": bool(expects_tools or proposal.expects_tools),
-            "approved_tool_count": len(approved_tool_calls),
-            "blocked_tool_count": len(blocked_tool_calls),
+            "proposed_tool_count": len(proposed_tool_calls),
+            "guarded_at_execution": bool(proposed_tool_calls),
+            "tool_count": len(proposed_tool_calls),
         }
         normalization = " · ".join(normalization_notes[:6])
         return ValidatedNextStep(
             step_index=max(1, int(step_index)),
             action_type=action_type,
             tool_name=(
-                str(approved_tool_calls[0].get("name") or "")
-                if approved_tool_calls
-                else (str(blocked_tool_calls[0].get("name") or "") if blocked_tool_calls else "")
+                str(proposed_tool_calls[0].get("name") or proposed_tool_calls[0].get("raw_name") or "")
+                if proposed_tool_calls
+                else ""
             ),
             tool_args=(
-                dict(approved_tool_calls[0].get("args") or {})
-                if approved_tool_calls
-                else (dict(blocked_tool_calls[0].get("args") or {}) if blocked_tool_calls else {})
+                dict(proposed_tool_calls[0].get("args") or {})
+                if proposed_tool_calls
+                else {}
             ),
             tool_names=normalized_tool_names,
-            approved_tool_calls=approved_tool_calls,
-            blocked_tool_calls=blocked_tool_calls,
+            approved_tool_calls=proposed_tool_calls,
+            blocked_tool_calls=[],
             accepted=accepted,
             normalization=normalization,
             validation=validation,
@@ -2214,6 +2242,201 @@ class VintageProgrammerRuntime:
             change_summary_requested=bool(proposal.change_summary_requested),
             source="harness",
         )
+
+    def _guard_tool_call(
+        self,
+        *,
+        call: dict[str, Any],
+        runnable_tools: list[str],
+        attachments: list[dict[str, Any]],
+    ) -> ToolGuardResult:
+        raw_tool_name = str(call.get("raw_name") or call.get("name") or "").strip()
+        tool_name = self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
+        raw_arguments = call.get("raw_args")
+        if raw_arguments is None:
+            raw_arguments = call.get("args")
+        checks = {
+            "json": "passed" if isinstance(raw_arguments, dict) else "failed",
+            "tool_exists": "pending",
+            "schema": "pending",
+            "policy": "pending",
+            "permission": "pending",
+        }
+        if not isinstance(raw_arguments, dict):
+            checks.update(
+                {
+                    "tool_exists": "skipped",
+                    "schema": "failed",
+                    "policy": "skipped",
+                    "permission": "skipped",
+                }
+            )
+            return ToolGuardResult(
+                status="rejected",
+                call_id=str(call.get("id") or ""),
+                raw_tool_name=raw_tool_name,
+                tool_name=tool_name,
+                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                normalized_arguments={},
+                normalization_notes=[],
+                checks=checks,
+                schema_validation={
+                    "status": "invalid",
+                    "checked": False,
+                    "summary": "tool arguments must be a JSON object",
+                    "errors": ["tool arguments must be a JSON object"],
+                },
+                reason="Tool arguments must be a JSON object.",
+            )
+
+        tool_exists = bool(tool_name and tool_name in self._tool_specs_by_name)
+        checks["tool_exists"] = "passed" if tool_exists else "failed"
+        if not tool_exists:
+            checks.update({"schema": "skipped", "policy": "failed", "permission": "failed"})
+            return ToolGuardResult(
+                status="rejected",
+                call_id=str(call.get("id") or ""),
+                raw_tool_name=raw_tool_name,
+                tool_name=tool_name or raw_tool_name,
+                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                normalized_arguments={},
+                normalization_notes=[],
+                checks=checks,
+                schema_validation={
+                    "status": "missing",
+                    "checked": False,
+                    "summary": "tool unavailable",
+                    "errors": [],
+                },
+                reason=f"Tool '{raw_tool_name or tool_name or '(empty)'}' is not available in the current runtime.",
+            )
+
+        tool_schema = dict((self._tool_specs_by_name.get(tool_name) or {}).get("parameters") or {})
+        normalization = normalize_tool_arguments(tool_name, raw_arguments, tool_schema)
+        normalized_arguments = dict(normalization.get("arguments") or {})
+        rewrite_arguments = self._rewrite_attachment_tool_arguments(
+            name=tool_name,
+            arguments=normalized_arguments,
+            attachments=attachments,
+        )
+        normalization_notes = [str(item) for item in list(normalization.get("notes") or []) if str(item or "")]
+        if rewrite_arguments != normalized_arguments:
+            normalization_notes.append("attachment_ref_resolved")
+        normalized_arguments = rewrite_arguments
+
+        tool_allowed = bool(tool_name and tool_name in runnable_tools)
+        checks["policy"] = "passed" if tool_allowed else "failed"
+        checks["permission"] = "passed" if tool_allowed else "failed"
+        schema_validation = validate_tool_arguments(normalized_arguments, tool_schema)
+        schema_status = str(schema_validation.get("status") or "")
+        if schema_status == "valid":
+            checks["schema"] = "normalized" if normalization_notes else "passed"
+        elif schema_status == "missing":
+            checks["schema"] = "missing"
+        else:
+            checks["schema"] = "failed"
+
+        if not tool_allowed:
+            return ToolGuardResult(
+                status="rejected",
+                call_id=str(call.get("id") or ""),
+                raw_tool_name=raw_tool_name,
+                tool_name=tool_name,
+                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                normalized_arguments=normalized_arguments,
+                normalization_notes=normalization_notes,
+                checks=checks,
+                schema_validation=schema_validation,
+                reason=f"Tool '{tool_name or raw_tool_name or '(empty)'}' is outside the current tool policy or permission boundary.",
+            )
+
+        if schema_status not in {"valid", "missing"}:
+            return ToolGuardResult(
+                status="rejected",
+                call_id=str(call.get("id") or ""),
+                raw_tool_name=raw_tool_name,
+                tool_name=tool_name,
+                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                normalized_arguments=normalized_arguments,
+                normalization_notes=normalization_notes,
+                checks=checks,
+                schema_validation=schema_validation,
+                reason=str(schema_validation.get("summary") or "Tool arguments did not match the schema."),
+            )
+
+        guard_status = "normalized" if normalization_notes or raw_tool_name != tool_name else "accepted"
+        if guard_status == "normalized":
+            reason = (
+                f"Guard normalized the {tool_name} tool call and approved execution."
+                if tool_name
+                else "Guard normalized the tool call and approved execution."
+            )
+        else:
+            reason = (
+                f"Guard accepted the {tool_name} tool call."
+                if tool_name
+                else "Guard accepted the current tool call."
+            )
+        return ToolGuardResult(
+            status=guard_status,
+            call_id=str(call.get("id") or ""),
+            raw_tool_name=raw_tool_name,
+            tool_name=tool_name,
+            raw_arguments=safe_preview(raw_arguments, limit=4000),
+            normalized_arguments=normalized_arguments,
+            normalization_notes=normalization_notes,
+            checks=checks,
+            schema_validation=schema_validation,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _tool_guard_activity_detail(guard_result: dict[str, Any]) -> str:
+        guard = dict(guard_result or {})
+        status = str(guard.get("status") or "").strip()
+        tool_name = str(guard.get("tool_name") or guard.get("raw_tool_name") or "tool").strip() or "tool"
+        if status == "normalized":
+            notes = [str(item) for item in list(guard.get("normalization_notes") or []) if str(item or "")]
+            suffix = f" ({', '.join(notes[:3])})" if notes else ""
+            return f"Guard normalized {tool_name} and continued execution{suffix}."
+        if status == "rejected":
+            return str(guard.get("reason") or f"Guard rejected {tool_name}.")[:280]
+        return f"Guard accepted {tool_name} for execution."
+
+    @staticmethod
+    def _structured_tool_guard_rejection_result(
+        *,
+        guard_result: ToolGuardResult,
+        runnable_tools: list[str],
+    ) -> dict[str, Any]:
+        guard_payload = guard_result.model_dump()
+        tool_name = str(guard_result.tool_name or guard_result.raw_tool_name or "")
+        allowed_tools = [str(item) for item in list(runnable_tools or []) if str(item or "").strip()]
+        message = str(guard_result.reason or "").strip()
+        if not message:
+            message = f"Tool call rejected: {tool_name or '(empty)'}"
+        if str((guard_result.checks or {}).get("tool_exists") or "") == "failed":
+            allowed_preview = ", ".join(allowed_tools[:8])
+            if allowed_preview:
+                message = f"Tool '{tool_name or '(empty)'}' is not available. Use one of: {allowed_preview}."
+        elif str((guard_result.checks or {}).get("policy") or "") == "failed":
+            message = f"Tool '{tool_name or '(empty)'}' is not allowed in the current runtime."
+        elif str((guard_result.checks or {}).get("schema") or "") == "failed":
+            schema_summary = str((guard_result.schema_validation or {}).get("summary") or "").strip()
+            if schema_summary:
+                message = f"Tool '{tool_name or '(empty)'}' arguments did not pass schema validation: {schema_summary}"
+        return {
+            "ok": False,
+            "error": {
+                "kind": "tool_call_rejected",
+                "tool": tool_name,
+                "message": message,
+                "guard_status": str(guard_result.status or ""),
+            },
+            "guard_result": guard_payload,
+            "allowed_tools": allowed_tools,
+            "summary": message,
+        }
 
     @staticmethod
     def _proposal_activity_detail(proposal: dict[str, Any]) -> str:
@@ -2232,10 +2455,10 @@ class VintageProgrammerRuntime:
         if action_type == "tool_call":
             tool_names = VintageProgrammerRuntime._string_list(step.get("tool_names"), limit=4)
             if tool_names:
-                return "Harness accepted the current step and approved: " + ", ".join(tool_names)
-            return "Harness accepted the current tool step."
+                return "Tool call queued for guard checks: " + ", ".join(tool_names)
+            return "Tool call queued for guard checks."
         if action_type == "direct_answer":
-            return "Harness accepted the current direct-answer step."
+            return "No tool is needed for this step; generating the answer directly."
         if action_type == "ask_user":
             return "Harness accepted a user-input step."
         return "Harness accepted the current step."
@@ -2752,6 +2975,23 @@ class VintageProgrammerRuntime:
         result, _event = self._execute_tool_with_trace(
             name="image_read",
             arguments=arguments,
+            raw_tool_call={"id": "auto_image_read_rescue", "name": "image_read", "arguments": safe_preview(arguments, limit=4000)},
+            guard_result={
+                "status": "accepted",
+                "tool_name": "image_read",
+                "raw_tool_name": "image_read",
+                "normalized_arguments": safe_preview(arguments, limit=4000),
+                "normalization_notes": [],
+                "checks": {
+                    "json": "passed",
+                    "tool_exists": "passed",
+                    "schema": "missing",
+                    "policy": "passed",
+                    "permission": "passed",
+                },
+                "reason": "Auto image rescue executed image_read directly.",
+            },
+            raw_arguments=arguments,
             run_id=run_id,
             locale=locale,
             progress_cb=progress_cb,
@@ -3177,7 +3417,7 @@ class VintageProgrammerRuntime:
         emit_runtime_activity(
             "activity.started",
             "high_level_proposal",
-            "Requesting a revisable high-level proposal from the model.",
+            "Requesting the current objective and next move from the model.",
             payload={
                 "tool_count": len(runnable_tools),
                 "expects_tools": expects_tools,
@@ -3332,6 +3572,7 @@ class VintageProgrammerRuntime:
             last_tool_name = ""
             no_progress_cycles = 0
             last_round_signature = ""
+            guard_rejection_count = 0
             compacted_tool_events = 0
             base_message_count = len(messages)
 
@@ -3367,7 +3608,6 @@ class VintageProgrammerRuntime:
 
                 ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
                 tool_calls = list(validated_next_step.get("approved_tool_calls") or [])
-                blocked_tool_calls = list(validated_next_step.get("blocked_tool_calls") or [])
                 step_action_type = str(validated_next_step.get("action_type") or "").strip() or "inspect_context"
                 step_accepted = bool(validated_next_step.get("accepted"))
                 if not tool_calls:
@@ -3623,7 +3863,7 @@ class VintageProgrammerRuntime:
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
-                    f"Executing {len(tool_calls[:8])} validated tool call(s).",
+                    f"Processing {len(tool_calls[:8])} tool call(s) through the guard and execution loop.",
                     payload={
                         "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
                         "tool_count": len(tool_calls[:8]),
@@ -3648,36 +3888,85 @@ class VintageProgrammerRuntime:
                         stop_after_tools = True
                         break
                     raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
-                    name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
-                    arguments = call.get("args")
-                    if not isinstance(arguments, dict):
-                        arguments = {}
-                    arguments = self._rewrite_attachment_tool_arguments(
-                        name=name,
-                        arguments=arguments,
-                        attachments=attachment_metas,
-                    )
-                    tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
-                    tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
+                    raw_arguments = call.get("raw_args")
+                    if raw_arguments is None:
+                        raw_arguments = call.get("args")
+                    preview_name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
+                    preview_args = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+                    preview_schema = dict((self._tool_specs_by_name.get(preview_name) or {}).get("parameters") or {})
+                    tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema)
+                    raw_tool_call_payload = {
+                        "id": str(call.get("id") or ""),
+                        "name": raw_name or str(call.get("name") or ""),
+                        "arguments": safe_preview(raw_arguments, limit=4000),
+                    }
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
                         type="tool.call_detected",
-                        title=self._trace_label(locale, "tool.call_detected", tool=name or "tool"),
-                        detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(name, arguments)),
+                        title=self._trace_label(locale, "tool.call_detected", tool=preview_name or raw_name or "tool"),
+                        detail=str(
+                            tool_audit.get("arguments_preview")
+                            or summarize_tool_args(preview_name or raw_name, preview_args)
+                        ),
                         status="running",
                         payload={
-                            "tool_name": name,
+                            "tool_name": preview_name or raw_name,
+                            "raw_tool_call": raw_tool_call_payload,
                             **tool_audit,
                         },
                         trace_events=trace_events,
                     )
+                    guard_result = self._guard_tool_call(
+                        call=call,
+                        runnable_tools=runnable_tools,
+                        attachments=attachment_metas,
+                    )
+                    guard_payload = guard_result.model_dump()
+                    name = str(guard_result.tool_name or preview_name or raw_name).strip()
+                    arguments = dict(guard_result.normalized_arguments or {})
                     if raw_name and raw_name != name:
                         notes.append(f"tool_alias:{raw_name}->{name}")
-                    if name and name in runnable_tools:
+                    if guard_result.normalization_notes:
+                        notes.extend(f"tool_guard_normalized:{item}" for item in guard_result.normalization_notes)
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="tool.guard",
+                        title=self._trace_label(locale, "tool.guard", tool=name or raw_name or "tool"),
+                        detail=self._tool_guard_activity_detail(guard_payload),
+                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
+                        payload={
+                            "tool_name": name or raw_name,
+                            "raw_tool_call": raw_tool_call_payload,
+                            "guard_result": guard_payload,
+                            "normalized_arguments": safe_preview(arguments, limit=4000),
+                        },
+                        trace_events=trace_events,
+                    )
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "step_validation",
+                        self._tool_guard_activity_detail(guard_payload),
+                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
+                        payload={
+                            "validated_next_step": dict(validated_next_step),
+                            "high_level_proposal": dict(high_level_proposal),
+                            "runtime_hint": dict(runtime_hint),
+                            "runtime_guess": dict(runtime_hint),
+                            "guard_result": guard_payload,
+                            "raw_tool_call": raw_tool_call_payload,
+                            "normalized_arguments": safe_preview(arguments, limit=4000),
+                            **turn_activity_context,
+                        },
+                    )
+                    if guard_result.status in {"accepted", "normalized"}:
                         result, event = self._execute_tool_with_trace(
                             name=name,
                             arguments=arguments,
+                            raw_tool_call=raw_tool_call_payload,
+                            guard_result=guard_payload,
+                            raw_arguments=raw_arguments,
                             run_id=run_id,
                             locale=locale,
                             progress_cb=progress_cb,
@@ -3695,27 +3984,32 @@ class VintageProgrammerRuntime:
                             call_idx=call_idx,
                         )
                     else:
-                        result = {
-                            "ok": False,
-                            "error": {
-                                "kind": "tool_not_allowed",
-                                "tool": str(name or ""),
-                                "message": f"Tool not allowed: {name or '(empty)'}",
-                            },
-                            "allowed_tools": runnable_tools,
-                            "summary": f"tool not allowed: {name or '(empty)'}",
-                        }
-                        event = self._build_tool_event(name=name, arguments=arguments, result=result)
+                        guard_rejection_count += 1
+                        result = self._structured_tool_guard_rejection_result(
+                            guard_result=guard_result,
+                            runnable_tools=runnable_tools,
+                        )
+                        event = self._build_tool_event(
+                            name=name or raw_name,
+                            arguments=arguments,
+                            result=result,
+                            raw_tool_call=raw_tool_call_payload,
+                            guard_result=guard_payload,
+                            raw_arguments=raw_arguments,
+                        )
                         tool_events.append(event)
                         self._emit_trace(
                             progress_cb,
                             run_id=run_id,
                             type="tool.failed",
-                            title=self._trace_label(locale, "tool.failed", tool=name or "tool"),
-                            detail=summarize_tool_result(name, result),
-                            status="failed",
+                            title=self._trace_label(locale, "tool.failed", tool=name or raw_name or "tool"),
+                            detail=summarize_tool_result(name or raw_name, result),
+                            status="blocked",
                             payload={
-                                "tool_name": name,
+                                "tool_name": name or raw_name,
+                                "raw_tool_call": raw_tool_call_payload,
+                                "guard_result": guard_payload,
+                                "normalized_arguments": safe_preview(arguments, limit=4000),
                                 **tool_audit,
                                 "result_preview": safe_preview(result),
                             },
@@ -3735,6 +4029,12 @@ class VintageProgrammerRuntime:
                                     "agent_id": spec.agent_id,
                                 }
                             )
+                        notes.append("tool_guard_rejected")
+                        if guard_rejection_count > _DEFAULT_MAX_GUARD_REJECTIONS:
+                            turn_status = "blocked"
+                            blocked_reason = blocked_reason or "tool_guard_rejections_exceeded"
+                            forced_text = str(result.get("summary") or translate(locale, "runtime.budget.no_progress"))
+                            stop_after_tools = True
                     if name == "image_read" and bool(result.get("ok")):
                         last_image_read_result = dict(result)
                     current_task_focus = self._task_checkpoint_from_tool(
@@ -3879,7 +4179,7 @@ class VintageProgrammerRuntime:
                             else (
                                 "Tool output collected for the next model turn."
                                 if round_success
-                                else "Tool execution finished without a successful result."
+                                else "Tool result or guard rejection returned to the model for the next step."
                             )
                         ),
                         detail=str(validated_next_step.get("reason") or ""),

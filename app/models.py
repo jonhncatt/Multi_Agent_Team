@@ -31,7 +31,10 @@ class ChatRequest(BaseModel):
 class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
+    raw_tool_call: dict[str, Any] = Field(default_factory=dict)
     raw_arguments: Any = None
+    normalized_arguments: dict[str, Any] = Field(default_factory=dict)
+    guard_result: dict[str, Any] = Field(default_factory=dict)
     arguments_preview: str = ""
     preview_error: str = ""
     schema_validation: dict[str, Any] = Field(default_factory=dict)
@@ -61,6 +64,20 @@ class HighLevelProposal(BaseModel):
     next_step_hint: str = ""
     change_summary_requested: bool = False
     source: str = "model"
+
+
+class ToolGuardResult(BaseModel):
+    status: Literal["accepted", "normalized", "rejected"] = "accepted"
+    call_id: str = ""
+    raw_tool_name: str = ""
+    tool_name: str = ""
+    raw_arguments: Any = None
+    normalized_arguments: dict[str, Any] = Field(default_factory=dict)
+    normalization_notes: list[str] = Field(default_factory=list)
+    checks: dict[str, Any] = Field(default_factory=dict)
+    schema_validation: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    source: str = "tool_call_guard"
 
 
 class ValidatedNextStep(BaseModel):
