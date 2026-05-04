@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from app.i18n import translate
+
 
 _SENSITIVE_PATTERNS = [
     (re.compile(r"(Authorization\s*:\s*Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE), r"\1***"),
@@ -109,7 +111,7 @@ def safe_error_message(exc: BaseException | str) -> str:
     return mask_sensitive_text(message)[:300]
 
 
-def summarize_tool_result(tool_name: str, result: Any) -> str:
+def summarize_tool_result(tool_name: str, result: Any, *, locale: str = "en") -> str:
     normalized = str(tool_name or "").strip()
     payload = dict(result or {}) if isinstance(result, dict) else {}
     if not payload:
@@ -117,48 +119,55 @@ def summarize_tool_result(tool_name: str, result: Any) -> str:
     if not bool(payload.get("ok")):
         error = payload.get("error")
         if isinstance(error, dict):
-            return safe_error_message(error.get("message") or error.get("kind") or "tool failed")
-        return safe_error_message(error or payload.get("summary") or "tool failed")
+            return safe_error_message(error.get("message") or error.get("kind") or translate(locale, "runtime.tool.failed"))
+        return safe_error_message(error or payload.get("summary") or translate(locale, "runtime.tool.failed"))
     if normalized == "read":
-        return f"read {len(str(payload.get('content') or ''))} chars"
+        return translate(locale, "runtime.tool.summary.read_chars", count=len(str(payload.get("content") or "")))
     if normalized == "search_codebase":
-        return f"found {_result_count(payload, 'matches', 'results', 'count')} results"
+        return translate(locale, "runtime.tool.summary.search_results", count=_result_count(payload, "matches", "results", "count"))
     if normalized in {"search_file", "search_file_multi"}:
-        return f"found {_result_count(payload, 'matches', 'results', 'count')} matches"
+        return translate(locale, "runtime.tool.summary.search_matches", count=_result_count(payload, "matches", "results", "count"))
     if normalized == "read_section":
-        return f"read section {len(str(payload.get('content') or ''))} chars"
+        return translate(locale, "runtime.tool.summary.read_section_chars", count=len(str(payload.get("content") or "")))
     if normalized == "web_search":
-        return f"found {_result_count(payload, 'results', 'count')} results"
+        return translate(locale, "runtime.tool.summary.search_results", count=_result_count(payload, "results", "count"))
     if normalized == "web_fetch":
         title = str(payload.get("title") or "").strip()
         status = payload.get("status")
-        return f"status {status}{f' · {title[:120]}' if title else ''}"
+        if title:
+            return translate(locale, "runtime.tool.summary.web_status_title", status=status, title=title[:120])
+        return translate(locale, "runtime.tool.summary.web_status", status=status)
     if normalized == "web_download":
-        return f"downloaded {payload.get('filename') or payload.get('path') or 'file'}"
+        return translate(locale, "runtime.tool.summary.downloaded_file", name=payload.get("filename") or payload.get("path") or "file")
     if normalized == "image_read":
         visible_text = str(payload.get("visible_text") or "").strip().replace("\n", " / ")
-        return visible_text[:120] if visible_text else str(payload.get("analysis") or payload.get("summary") or "image read")[:120]
+        return visible_text[:120] if visible_text else str(payload.get("analysis") or payload.get("summary") or translate(locale, "runtime.tool.summary.image_read"))[:120]
     if normalized == "apply_patch":
-        return str(payload.get("summary") or "patch applied")[:160]
+        return str(payload.get("summary") or translate(locale, "runtime.tool.summary.patch_applied"))[:160]
     if normalized == "exec_command":
         output = str(payload.get("output") or "").strip().replace("\n", " / ")
-        return f"exit {payload.get('returncode')} · {mask_sensitive_text(output)[:120]}".strip()
+        return translate(
+            locale,
+            "runtime.tool.summary.exec_command",
+            returncode=payload.get("returncode"),
+            output=mask_sensitive_text(output)[:120],
+        ).strip()
     if normalized == "update_plan":
         plan = payload.get("plan") or []
-        return f"plan updated: {len(plan) if isinstance(plan, list) else 0} items"
+        return translate(locale, "runtime.tool.summary.plan_updated", count=len(plan) if isinstance(plan, list) else 0)
     if normalized == "request_user_input":
         questions = payload.get("questions") or []
-        return f"user input required: {len(questions) if isinstance(questions, list) else 0} questions"
+        return translate(locale, "runtime.tool.summary.user_input_required", count=len(questions) if isinstance(questions, list) else 0)
     return mask_sensitive_text(str(payload.get("summary") or json.dumps(payload, ensure_ascii=False, default=str)))[:200]
 
 
-def validate_tool_arguments(args: dict[str, Any], schema: dict[str, Any] | None) -> dict[str, Any]:
+def validate_tool_arguments(args: dict[str, Any], schema: dict[str, Any] | None, *, locale: str = "en") -> dict[str, Any]:
     normalized_schema = dict(schema or {}) if isinstance(schema, dict) else {}
     if not normalized_schema:
         return {
             "status": "missing",
             "checked": False,
-            "summary": "schema unavailable",
+            "summary": translate(locale, "runtime.tool.validation.unavailable"),
             "errors": [],
             "schema_type": "",
             "required": [],
@@ -186,7 +195,7 @@ def validate_tool_arguments(args: dict[str, Any], schema: dict[str, Any] | None)
     return {
         "status": "valid" if not errors else "invalid",
         "checked": True,
-        "summary": "schema matched" if not errors else errors[0],
+        "summary": translate(locale, "runtime.tool.validation.matched") if not errors else errors[0],
         "errors": errors[:16],
         "error_count": len(errors),
         "schema_type": str(normalized_schema.get("type") or ""),
@@ -256,9 +265,11 @@ def build_tool_argument_audit(
     tool_name: str,
     args: dict[str, Any],
     schema: dict[str, Any] | None,
+    *,
+    locale: str = "en",
 ) -> dict[str, Any]:
     preview, preview_error = preview_tool_arguments(tool_name, args)
-    validation = validate_tool_arguments(args, schema)
+    validation = validate_tool_arguments(args, schema, locale=locale)
     return {
         "raw_arguments": safe_preview(args, limit=4000),
         "arguments_preview": preview,

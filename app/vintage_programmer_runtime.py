@@ -1462,13 +1462,14 @@ class VintageProgrammerRuntime:
         name: str,
         arguments: dict[str, Any],
         result: dict[str, Any],
+        locale: str,
         raw_tool_call: dict[str, Any] | None = None,
         guard_result: dict[str, Any] | None = None,
         raw_arguments: Any = None,
     ) -> ToolEvent:
         result_json = json.dumps(result, ensure_ascii=False)
         tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
-        tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
+        tool_audit = build_tool_argument_audit(name, arguments, tool_schema, locale=locale)
         raw_call_payload = dict(raw_tool_call or {})
         raw_argument_payload = raw_arguments if raw_arguments is not None else raw_call_payload.get("arguments")
         if raw_argument_payload is None:
@@ -1479,11 +1480,11 @@ class VintageProgrammerRuntime:
         summary = str(result.get("summary") or "").strip()
         if not summary and error_value:
             if isinstance(error_value, dict):
-                summary = safe_error_message(error_value.get("message") or error_value.get("kind") or "tool failed")
+                summary = safe_error_message(error_value.get("message") or error_value.get("kind") or translate(locale, "runtime.tool.failed"))
             else:
                 summary = safe_error_message(error_value)
         if not summary:
-            summary = summarize_tool_result(name, result) or self._backend._shorten(result_json, 180)
+            summary = summarize_tool_result(name, result, locale=locale) or self._backend._shorten(result_json, 180)
         diagnostics = dict(result.get("diagnostics") or {}) if isinstance(result.get("diagnostics"), dict) else {}
         descriptor = dict(self._tool_descriptors_by_name.get(name) or {})
         group = str(descriptor.get("group") or "")
@@ -1549,7 +1550,7 @@ class VintageProgrammerRuntime:
         call_idx: int,
     ) -> tuple[dict[str, Any], ToolEvent]:
         tool_schema = dict((self._tool_specs_by_name.get(name) or {}).get("parameters") or {})
-        tool_audit = build_tool_argument_audit(name, arguments, tool_schema)
+        tool_audit = build_tool_argument_audit(name, arguments, tool_schema, locale=locale)
         started_id = self._emit_trace(
             progress_cb,
             run_id=run_id,
@@ -1576,6 +1577,7 @@ class VintageProgrammerRuntime:
             name=name,
             arguments=arguments,
             result=result,
+            locale=locale,
             raw_tool_call=raw_tool_call,
             guard_result=guard_result,
             raw_arguments=raw_arguments,
@@ -1588,7 +1590,7 @@ class VintageProgrammerRuntime:
             run_id=run_id,
             type=trace_type,
             title=self._trace_label(locale, trace_type, tool=name or "tool"),
-            detail=summarize_tool_result(name, result),
+            detail=summarize_tool_result(name, result, locale=locale),
             status=trace_status,
             duration_ms=duration_ms,
             payload={
@@ -1928,7 +1930,7 @@ class VintageProgrammerRuntime:
                 break
         return normalized
 
-    def _build_runtime_guess(self, *, prompt_message: str, route_state: dict[str, Any]) -> dict[str, Any]:
+    def _build_runtime_guess(self, *, prompt_message: str, route_state: dict[str, Any], locale: str) -> dict[str, Any]:
         route = dict(route_state or {})
         task_checkpoint = dict(route.get("task_checkpoint") or route.get("current_task_focus") or {})
         route_task_type = str(route.get("task_type") or "").strip().lower()
@@ -1954,9 +1956,13 @@ class VintageProgrammerRuntime:
             primary_intent = "standard"
         output_mode = "revision_with_change_summary" if revision_requested else "direct_answer"
         summary_reason = (
-            "Requested Japanese grammar cleanup and more natural phrasing."
+            translate(locale, "runtime.activity.summary.japanese_cleanup_requested")
             if japanese_review
-            else ("Requested rewrite or polish." if revision_requested else "Direct answer path.")
+            else (
+                translate(locale, "runtime.activity.summary.rewrite_requested")
+                if revision_requested
+                else translate(locale, "runtime.activity.summary.direct_answer_path")
+            )
         )
         return {
             "task_type": task_type,
@@ -2249,6 +2255,7 @@ class VintageProgrammerRuntime:
         call: dict[str, Any],
         runnable_tools: list[str],
         attachments: list[dict[str, Any]],
+        locale: str,
     ) -> ToolGuardResult:
         raw_tool_name = str(call.get("raw_name") or call.get("name") or "").strip()
         tool_name = self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
@@ -2263,6 +2270,7 @@ class VintageProgrammerRuntime:
             "permission": "pending",
         }
         if not isinstance(raw_arguments, dict):
+            invalid_args_message = translate(locale, "runtime.tool.guard.arguments_not_object")
             checks.update(
                 {
                     "tool_exists": "skipped",
@@ -2283,16 +2291,17 @@ class VintageProgrammerRuntime:
                 schema_validation={
                     "status": "invalid",
                     "checked": False,
-                    "summary": "tool arguments must be a JSON object",
-                    "errors": ["tool arguments must be a JSON object"],
+                    "summary": invalid_args_message,
+                    "errors": [invalid_args_message],
                 },
-                reason="Tool arguments must be a JSON object.",
+                reason=invalid_args_message,
             )
 
         tool_exists = bool(tool_name and tool_name in self._tool_specs_by_name)
         checks["tool_exists"] = "passed" if tool_exists else "failed"
         if not tool_exists:
             checks.update({"schema": "skipped", "policy": "failed", "permission": "failed"})
+            allowed_preview = ", ".join(runnable_tools[:8])
             return ToolGuardResult(
                 status="rejected",
                 call_id=str(call.get("id") or ""),
@@ -2305,10 +2314,19 @@ class VintageProgrammerRuntime:
                 schema_validation={
                     "status": "missing",
                     "checked": False,
-                    "summary": "tool unavailable",
+                    "summary": translate(locale, "runtime.tool.validation.tool_unavailable"),
                     "errors": [],
                 },
-                reason=f"Tool '{raw_tool_name or tool_name or '(empty)'}' is not available in the current runtime.",
+                reason=(
+                    translate(
+                        locale,
+                        "runtime.tool.guard.unknown_tool",
+                        tool=raw_tool_name or tool_name or "(empty)",
+                        allowed_tools=allowed_preview,
+                    )
+                    if allowed_preview
+                    else translate(locale, "runtime.tool.guard.rejected_call", tool=raw_tool_name or tool_name or "(empty)")
+                ),
             )
 
         tool_schema = dict((self._tool_specs_by_name.get(tool_name) or {}).get("parameters") or {})
@@ -2327,7 +2345,7 @@ class VintageProgrammerRuntime:
         tool_allowed = bool(tool_name and tool_name in runnable_tools)
         checks["policy"] = "passed" if tool_allowed else "failed"
         checks["permission"] = "passed" if tool_allowed else "failed"
-        schema_validation = validate_tool_arguments(normalized_arguments, tool_schema)
+        schema_validation = validate_tool_arguments(normalized_arguments, tool_schema, locale=locale)
         schema_status = str(schema_validation.get("status") or "")
         if schema_status == "valid":
             checks["schema"] = "normalized" if normalization_notes else "passed"
@@ -2347,7 +2365,11 @@ class VintageProgrammerRuntime:
                 normalization_notes=normalization_notes,
                 checks=checks,
                 schema_validation=schema_validation,
-                reason=f"Tool '{tool_name or raw_tool_name or '(empty)'}' is outside the current tool policy or permission boundary.",
+                reason=translate(
+                    locale,
+                    "runtime.tool.guard.outside_boundary",
+                    tool=tool_name or raw_tool_name or "(empty)",
+                ),
             )
 
         if schema_status not in {"valid", "missing"}:
@@ -2361,22 +2383,14 @@ class VintageProgrammerRuntime:
                 normalization_notes=normalization_notes,
                 checks=checks,
                 schema_validation=schema_validation,
-                reason=str(schema_validation.get("summary") or "Tool arguments did not match the schema."),
+                reason=str(schema_validation.get("summary") or translate(locale, "runtime.tool.guard.arguments_invalid")),
             )
 
         guard_status = "normalized" if normalization_notes or raw_tool_name != tool_name else "accepted"
         if guard_status == "normalized":
-            reason = (
-                f"Guard normalized the {tool_name} tool call and approved execution."
-                if tool_name
-                else "Guard normalized the tool call and approved execution."
-            )
+            reason = translate(locale, "runtime.activity.guard.normalized_approved", tool=tool_name or "tool")
         else:
-            reason = (
-                f"Guard accepted the {tool_name} tool call."
-                if tool_name
-                else "Guard accepted the current tool call."
-            )
+            reason = translate(locale, "runtime.activity.guard.accepted", tool=tool_name or "tool")
         return ToolGuardResult(
             status=guard_status,
             call_id=str(call.get("id") or ""),
@@ -2391,21 +2405,22 @@ class VintageProgrammerRuntime:
         )
 
     @staticmethod
-    def _tool_guard_activity_detail(guard_result: dict[str, Any]) -> str:
+    def _tool_guard_activity_detail(locale: str, guard_result: dict[str, Any]) -> str:
         guard = dict(guard_result or {})
         status = str(guard.get("status") or "").strip()
         tool_name = str(guard.get("tool_name") or guard.get("raw_tool_name") or "tool").strip() or "tool"
         if status == "normalized":
             notes = [str(item) for item in list(guard.get("normalization_notes") or []) if str(item or "")]
             suffix = f" ({', '.join(notes[:3])})" if notes else ""
-            return f"Guard normalized {tool_name} and continued execution{suffix}."
+            return translate(locale, "runtime.activity.guard.normalized_continued", tool=tool_name, suffix=suffix)
         if status == "rejected":
-            return str(guard.get("reason") or f"Guard rejected {tool_name}.")[:280]
-        return f"Guard accepted {tool_name} for execution."
+            return str(guard.get("reason") or translate(locale, "runtime.activity.guard.rejected", tool=tool_name))[:280]
+        return translate(locale, "runtime.activity.guard.accepted_execution", tool=tool_name)
 
     @staticmethod
     def _structured_tool_guard_rejection_result(
         *,
+        locale: str,
         guard_result: ToolGuardResult,
         runnable_tools: list[str],
     ) -> dict[str, Any]:
@@ -2414,17 +2429,27 @@ class VintageProgrammerRuntime:
         allowed_tools = [str(item) for item in list(runnable_tools or []) if str(item or "").strip()]
         message = str(guard_result.reason or "").strip()
         if not message:
-            message = f"Tool call rejected: {tool_name or '(empty)'}"
+            message = translate(locale, "runtime.tool.guard.rejected_call", tool=tool_name or "(empty)")
         if str((guard_result.checks or {}).get("tool_exists") or "") == "failed":
             allowed_preview = ", ".join(allowed_tools[:8])
             if allowed_preview:
-                message = f"Tool '{tool_name or '(empty)'}' is not available. Use one of: {allowed_preview}."
+                message = translate(
+                    locale,
+                    "runtime.tool.guard.unknown_tool",
+                    tool=tool_name or "(empty)",
+                    allowed_tools=allowed_preview,
+                )
         elif str((guard_result.checks or {}).get("policy") or "") == "failed":
-            message = f"Tool '{tool_name or '(empty)'}' is not allowed in the current runtime."
+            message = translate(locale, "runtime.tool.guard.policy_blocked", tool=tool_name or "(empty)")
         elif str((guard_result.checks or {}).get("schema") or "") == "failed":
             schema_summary = str((guard_result.schema_validation or {}).get("summary") or "").strip()
             if schema_summary:
-                message = f"Tool '{tool_name or '(empty)'}' arguments did not pass schema validation: {schema_summary}"
+                message = translate(
+                    locale,
+                    "runtime.tool.guard.schema_invalid",
+                    tool=tool_name or "(empty)",
+                    summary=schema_summary,
+                )
         return {
             "ok": False,
             "error": {
@@ -2439,37 +2464,37 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
-    def _proposal_activity_detail(proposal: dict[str, Any]) -> str:
+    def _proposal_activity_detail(locale: str, proposal: dict[str, Any]) -> str:
         summary = str((proposal or {}).get("summary") or "").strip()
         if summary:
             return summary
-        return str((proposal or {}).get("current_goal") or "").strip() or "Current understanding recorded."
+        return str((proposal or {}).get("current_goal") or "").strip() or translate(locale, "runtime.activity.proposal.current_understanding_recorded")
 
     @staticmethod
-    def _validation_activity_detail(validated_next_step: dict[str, Any]) -> str:
+    def _validation_activity_detail(locale: str, validated_next_step: dict[str, Any]) -> str:
         step = dict(validated_next_step or {})
         action_type = str(step.get("action_type") or "").strip()
         accepted = bool(step.get("accepted"))
         if not accepted:
-            return str(step.get("reason") or "Harness rejected the current step.")[:280]
+            return str(step.get("reason") or translate(locale, "runtime.activity.validation.rejected_current_step"))[:280]
         if action_type == "tool_call":
             tool_names = VintageProgrammerRuntime._string_list(step.get("tool_names"), limit=4)
             if tool_names:
-                return "Tool call queued for guard checks: " + ", ".join(tool_names)
-            return "Tool call queued for guard checks."
+                return translate(locale, "runtime.activity.validation.tool_call_queued_named", tools=", ".join(tool_names))
+            return translate(locale, "runtime.activity.validation.tool_call_queued")
         if action_type == "direct_answer":
-            return "No tool is needed for this step; generating the answer directly."
+            return translate(locale, "runtime.activity.validation.direct_answer")
         if action_type == "ask_user":
-            return "Harness accepted a user-input step."
-        return "Harness accepted the current step."
+            return translate(locale, "runtime.activity.validation.user_input_step")
+        return translate(locale, "runtime.activity.validation.current_step_accepted")
 
     @staticmethod
-    def _execution_activity_detail(entry: dict[str, Any]) -> str:
+    def _execution_activity_detail(locale: str, entry: dict[str, Any]) -> str:
         item = dict(entry or {})
         observation = str(item.get("observation_summary") or "").strip()
         if observation:
             return observation
-        return str(item.get("result_summary") or "").strip() or "Execution recorded."
+        return str(item.get("result_summary") or "").strip() or translate(locale, "runtime.activity.execution.recorded")
 
     @staticmethod
     def _activity_context_from_step(
@@ -3259,6 +3284,7 @@ class VintageProgrammerRuntime:
         runtime_hint = self._build_runtime_guess(
             prompt_message=prompt_message,
             route_state=route_state_input,
+            locale=locale,
         )
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
@@ -3470,7 +3496,7 @@ class VintageProgrammerRuntime:
             emit_runtime_activity(
                 event_type,
                 "high_level_proposal",
-                self._proposal_activity_detail(high_level_proposal),
+                self._proposal_activity_detail(locale, high_level_proposal),
                 status="success",
                 payload={
                     "high_level_proposal": dict(high_level_proposal),
@@ -3483,7 +3509,7 @@ class VintageProgrammerRuntime:
             emit_runtime_activity(
                 event_type,
                 "step_validation",
-                self._validation_activity_detail(validated_next_step),
+                self._validation_activity_detail(locale, validated_next_step),
                 status="success" if bool(validated_next_step.get("accepted")) else "blocked",
                 payload={
                     "validated_next_step": dict(validated_next_step),
@@ -3824,12 +3850,12 @@ class VintageProgrammerRuntime:
                         step_index=int(validated_next_step.get("step_index") or current_step_index),
                         action_type=step_action_type,
                         status="completed" if step_accepted else "blocked",
-                        title="Direct answer step",
+                        title=translate(locale, "runtime.activity.execution_title.direct_answer"),
                         result_summary=safe_preview(ai_text, limit=240),
                         observation_summary=(
-                            "Direct answer prepared for the user."
+                            translate(locale, "runtime.activity.execution.direct_answer_prepared")
                             if step_accepted
-                            else str(validated_next_step.get("reason") or "The current step was not accepted by the harness.")
+                            else str(validated_next_step.get("reason") or translate(locale, "runtime.activity.validation.rejected_current_step"))
                         ),
                         detail=str(validated_next_step.get("reason") or ""),
                         payload={
@@ -3841,7 +3867,7 @@ class VintageProgrammerRuntime:
                     emit_runtime_activity(
                         "activity.done" if round_idx == 0 else "activity.delta",
                         "execution",
-                        self._execution_activity_detail(execution_entry.model_dump()),
+                        self._execution_activity_detail(locale, execution_entry.model_dump()),
                         status="success" if step_accepted else "blocked",
                         payload={
                             "execution_trace": list(execution_trace),
@@ -3863,7 +3889,7 @@ class VintageProgrammerRuntime:
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
-                    f"Processing {len(tool_calls[:8])} tool call(s) through the guard and execution loop.",
+                    translate(locale, "runtime.activity.execution.processing_tool_calls", count=len(tool_calls[:8])),
                     payload={
                         "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
                         "tool_count": len(tool_calls[:8]),
@@ -3894,7 +3920,7 @@ class VintageProgrammerRuntime:
                     preview_name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
                     preview_args = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
                     preview_schema = dict((self._tool_specs_by_name.get(preview_name) or {}).get("parameters") or {})
-                    tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema)
+                    tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema, locale=locale)
                     raw_tool_call_payload = {
                         "id": str(call.get("id") or ""),
                         "name": raw_name or str(call.get("name") or ""),
@@ -3921,6 +3947,7 @@ class VintageProgrammerRuntime:
                         call=call,
                         runnable_tools=runnable_tools,
                         attachments=attachment_metas,
+                        locale=locale,
                     )
                     guard_payload = guard_result.model_dump()
                     name = str(guard_result.tool_name or preview_name or raw_name).strip()
@@ -3934,7 +3961,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         type="tool.guard",
                         title=self._trace_label(locale, "tool.guard", tool=name or raw_name or "tool"),
-                        detail=self._tool_guard_activity_detail(guard_payload),
+                        detail=self._tool_guard_activity_detail(locale, guard_payload),
                         status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
                         payload={
                             "tool_name": name or raw_name,
@@ -3947,7 +3974,7 @@ class VintageProgrammerRuntime:
                     emit_runtime_activity(
                         "activity.delta",
                         "step_validation",
-                        self._tool_guard_activity_detail(guard_payload),
+                        self._tool_guard_activity_detail(locale, guard_payload),
                         status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
                         payload={
                             "validated_next_step": dict(validated_next_step),
@@ -3986,6 +4013,7 @@ class VintageProgrammerRuntime:
                     else:
                         guard_rejection_count += 1
                         result = self._structured_tool_guard_rejection_result(
+                            locale=locale,
                             guard_result=guard_result,
                             runnable_tools=runnable_tools,
                         )
@@ -3993,6 +4021,7 @@ class VintageProgrammerRuntime:
                             name=name or raw_name,
                             arguments=arguments,
                             result=result,
+                            locale=locale,
                             raw_tool_call=raw_tool_call_payload,
                             guard_result=guard_payload,
                             raw_arguments=raw_arguments,
@@ -4003,7 +4032,7 @@ class VintageProgrammerRuntime:
                             run_id=run_id,
                             type="tool.failed",
                             title=self._trace_label(locale, "tool.failed", tool=name or raw_name or "tool"),
-                            detail=summarize_tool_result(name or raw_name, result),
+                            detail=summarize_tool_result(name or raw_name, result, locale=locale),
                             status="blocked",
                             payload={
                                 "tool_name": name or raw_name,
@@ -4097,7 +4126,7 @@ class VintageProgrammerRuntime:
                     if name == "request_user_input" and bool(result.get("ok")):
                         pending_user_input = {
                             "questions": list(result.get("questions") or []),
-                            "summary": str(result.get("summary") or "user input required"),
+                            "summary": str(result.get("summary") or translate(locale, "runtime.pending_user_input.summary")),
                         }
                         turn_status = "needs_user_input"
                         halt_for_user_input = True
@@ -4166,7 +4195,7 @@ class VintageProgrammerRuntime:
                             if turn_status in {"blocked", "needs_user_input"}
                             else ("completed" if round_success else "failed")
                         ),
-                        title="Tool execution step",
+                        title=translate(locale, "runtime.activity.execution_title.tool_execution"),
                         tool_name=str((validated_next_step.get("tool_name") or "")),
                         tool_names=[str(item.get("name") or "") for item in round_signature_parts if str(item.get("name") or "")],
                         result_summary="; ".join(
@@ -4177,9 +4206,9 @@ class VintageProgrammerRuntime:
                             str(pending_user_input.get("summary") or "")
                             if halt_for_user_input
                             else (
-                                "Tool output collected for the next model turn."
+                                translate(locale, "runtime.activity.execution.tool_output_collected")
                                 if round_success
-                                else "Tool result or guard rejection returned to the model for the next step."
+                                else translate(locale, "runtime.activity.execution.tool_result_returned")
                             )
                         ),
                         detail=str(validated_next_step.get("reason") or ""),
@@ -4193,7 +4222,7 @@ class VintageProgrammerRuntime:
                     emit_runtime_activity(
                         "activity.delta",
                         "execution",
-                        self._execution_activity_detail(execution_entry.model_dump()),
+                        self._execution_activity_detail(locale, execution_entry.model_dump()),
                         status="blocked" if turn_status in {"blocked", "needs_user_input"} else ("success" if round_success else "failed"),
                         payload={
                             "execution_trace": list(execution_trace),
@@ -4217,7 +4246,7 @@ class VintageProgrammerRuntime:
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
-                    "Tool output collected; requesting the next model turn.",
+                    translate(locale, "runtime.activity.execution.requesting_next_model_turn"),
                     payload={
                         "execution_trace": list(execution_trace),
                         "completed_tool_calls": len(round_signature_parts),
@@ -4434,7 +4463,7 @@ class VintageProgrammerRuntime:
         current_task_focus["cwd"] = effective_cwd or project_root
         current_task_focus["active_attachments"] = self._attachment_refs(attachment_metas)
         if pending_user_input:
-            current_task_focus["next_action"] = str(pending_user_input.get("summary") or "user input required")
+            current_task_focus["next_action"] = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
         elif turn_status == "blocked":
             current_task_focus["next_action"] = raw_text[:240]
         elif turn_status == "cancelled":
