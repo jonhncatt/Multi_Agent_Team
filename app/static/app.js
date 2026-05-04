@@ -1066,12 +1066,12 @@ function buildFallbackProgressItems(activity, locale) {
   const traces = item.trace_events.filter(Boolean);
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
-  const validatedNextStep = latestActivityPayloadValue(item, ["validated_next_step", "validated_plan"]);
-  const stepAction = String((validatedNextStep && validatedNextStep.action_type) || "").trim();
+  const hasStarted = Boolean(item.started_at || traces.length);
+  const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerReady = traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerDelta = traces.some((trace) => String(trace.type || "").trim() === "answer.delta");
   const turnTerminalError = ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(item.status));
-  if (traces.length) {
+  if (hasStarted) {
     progressItems.push({
       id: "request-understood",
       label: translateUi(locale, "activity.status.request_understood"),
@@ -1089,15 +1089,15 @@ function buildFallbackProgressItems(activity, locale) {
       tool_group: group,
     });
   });
-  if (!toolGroups.length) {
+  if (!toolGroups.length && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
-      id: "direct-answer",
-      label: translateUi(locale, "activity.status.direct_answer_no_tool"),
-      status: hasAnswerReady ? "completed" : (item.status === "failed" ? "failed" : "running"),
+      id: "thinking",
+      label: translateUi(locale, "activity.status.thinking"),
+      status: "running",
       source: "fallback",
     });
   }
-  if ((stepAction === "tool_call" || toolGroups.length) && (!turnTerminalError || hasAnswerReady || hasAnswerDelta)) {
+  if (toolGroups.length && hasAnswerStarted && (!turnTerminalError || hasAnswerReady || hasAnswerDelta)) {
     progressItems.push({
       id: "finalizing-answer",
       label: hasAnswerReady
@@ -1106,7 +1106,7 @@ function buildFallbackProgressItems(activity, locale) {
       status: hasAnswerReady ? "completed" : (item.status === "failed" ? "failed" : "running"),
       source: "fallback",
     });
-  } else if ((stepAction === "direct_answer" || hasAnswerDelta || hasAnswerReady) && (!turnTerminalError || hasAnswerReady || hasAnswerDelta)) {
+  } else if (!toolGroups.length && hasAnswerStarted && (!turnTerminalError || hasAnswerReady || hasAnswerDelta)) {
     progressItems.push({
       id: "answer-direct",
       label: hasAnswerReady
@@ -4014,6 +4014,8 @@ function App() {
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
+      || activity.started_at
+      || activity.status
       || activity.run_duration_ms
       || activity.activity_summary,
     );
