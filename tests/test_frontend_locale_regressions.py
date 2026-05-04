@@ -41,6 +41,7 @@ REQUIRED_CORE_KEYS = (
     "activity.stage.step_validation",
     "activity.stage.execution",
     "activity.status.request_understood",
+    "activity.status.thinking",
     "activity.status.direct_answer_no_tool",
     "activity.status.tool_guard_pending",
     "activity.status.tool_guard_normalized",
@@ -175,3 +176,30 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
     )
     for token in required_tokens:
         assert token in script, token
+
+
+def test_early_progress_placeholder_uses_neutral_thinking_state() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function buildFallbackProgressItems\(activity, locale\) \{(?P<body>.*?)\n}\n\nfunction buildActivityProjection",
+        script,
+        re.S,
+    )
+    assert match, "buildFallbackProgressItems function not found"
+    body = match.group("body")
+
+    assert 'label: translateUi(locale, "activity.status.request_understood")' in body
+    assert 'label: translateUi(locale, "activity.status.thinking")' in body
+    assert 'id: "thinking"' in body
+    assert '"answer.started"' in body
+    assert "activity.status.direct_answer_no_tool" not in body
+
+
+def test_early_activity_copy_and_visibility_are_updated() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert '"activity.status.request_understood": "开始处理请求"' in locales
+    assert '"activity.status.thinking": "正在思考"' in locales
+    assert "|| activity.started_at" in script
+    assert "|| activity.status" in script
