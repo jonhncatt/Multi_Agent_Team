@@ -42,6 +42,8 @@ def test_summarize_tool_args_and_result_for_common_tools() -> None:
     assert summarize_tool_result("read", {"ok": True, "content": "hello"}) == "read 5 chars"
     assert summarize_tool_result("search_codebase", {"ok": True, "matches": [1, 2, 3]}) == "found 3 results"
     assert summarize_tool_result("update_plan", {"ok": True, "plan": [{"step": "Inspect", "status": "completed"}]}) == "plan updated: 1 items"
+    assert summarize_tool_result("read", {"ok": True, "content": "hello"}, locale="zh-CN") == "已读取 5 个字符"
+    assert summarize_tool_result("read", {"ok": True, "content": "hello"}, locale="ja-JP") == "5 文字を読み取りました"
 
 
 def test_validate_tool_arguments_reports_valid_and_invalid_payloads() -> None:
@@ -60,9 +62,16 @@ def test_validate_tool_arguments_reports_valid_and_invalid_payloads() -> None:
 
     assert valid["status"] == "valid"
     assert valid["checked"] is True
+    assert valid["summary"] == "schema matched"
     assert invalid["status"] == "invalid"
     assert any("$.query is required" in item for item in invalid["errors"])
     assert any("$.extra is not allowed" in item for item in invalid["errors"])
+
+    zh_valid = validate_tool_arguments({"query": "needle"}, schema, locale="zh-CN")
+    ja_missing = validate_tool_arguments({"query": "needle"}, None, locale="ja-JP")
+
+    assert zh_valid["summary"] == "schema 匹配"
+    assert ja_missing["summary"] == "schema は利用できません"
 
 
 def test_build_tool_argument_audit_keeps_raw_arguments_and_validation() -> None:
@@ -79,6 +88,9 @@ def test_build_tool_argument_audit_keeps_raw_arguments_and_validation() -> None:
     assert audit["preview_error"] == ""
     assert audit["schema_validation"]["status"] == "valid"
     assert audit["raw_arguments"]["path"] == "README.md"
+
+    zh_audit = build_tool_argument_audit("read", {"path": "README.md"}, schema, locale="zh-CN")
+    assert zh_audit["schema_validation"]["summary"] == "schema 匹配"
 
 
 def test_normalize_tool_arguments_applies_known_aliases_when_schema_is_clear() -> None:

@@ -13,6 +13,57 @@ from app.models import ChatSettings
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
+REQUIRED_RUNTIME_ACTIVITY_KEYS = (
+    "runtime.activity.summary.japanese_cleanup_requested",
+    "runtime.activity.summary.rewrite_requested",
+    "runtime.activity.summary.direct_answer_path",
+    "runtime.activity.proposal.current_understanding_recorded",
+    "runtime.activity.validation.rejected_current_step",
+    "runtime.activity.validation.tool_call_queued",
+    "runtime.activity.validation.tool_call_queued_named",
+    "runtime.activity.validation.direct_answer",
+    "runtime.activity.validation.user_input_step",
+    "runtime.activity.validation.current_step_accepted",
+    "runtime.activity.execution.recorded",
+    "runtime.activity.execution.direct_answer_prepared",
+    "runtime.activity.execution.tool_output_collected",
+    "runtime.activity.execution.tool_result_returned",
+    "runtime.activity.execution.requesting_next_model_turn",
+    "runtime.activity.execution.processing_tool_calls",
+    "runtime.activity.guard.normalized_approved",
+    "runtime.activity.guard.accepted",
+    "runtime.activity.guard.normalized_continued",
+    "runtime.activity.guard.accepted_execution",
+    "runtime.activity.guard.rejected",
+    "runtime.activity.execution_title.direct_answer",
+    "runtime.activity.execution_title.tool_execution",
+    "runtime.pending_user_input.summary",
+    "runtime.tool.failed",
+    "runtime.tool.guard.outside_boundary",
+    "runtime.tool.guard.arguments_invalid",
+    "runtime.tool.guard.arguments_not_object",
+    "runtime.tool.guard.rejected_call",
+    "runtime.tool.guard.unknown_tool",
+    "runtime.tool.guard.policy_blocked",
+    "runtime.tool.guard.schema_invalid",
+    "runtime.tool.summary.read_chars",
+    "runtime.tool.summary.search_results",
+    "runtime.tool.summary.search_matches",
+    "runtime.tool.summary.read_section_chars",
+    "runtime.tool.summary.web_status",
+    "runtime.tool.summary.web_status_title",
+    "runtime.tool.summary.downloaded_file",
+    "runtime.tool.summary.image_read",
+    "runtime.tool.summary.patch_applied",
+    "runtime.tool.summary.exec_command",
+    "runtime.tool.summary.plan_updated",
+    "runtime.tool.summary.user_input_required",
+    "runtime.tool.validation.unavailable",
+    "runtime.tool.validation.matched",
+    "runtime.tool.validation.tool_unavailable",
+)
+
+
 def _proposal_block(**overrides: Any) -> str:
     payload = {
         "intent": "transform",
@@ -420,6 +471,27 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Execution must happen through tool calls." not in prompt
+
+
+def test_runtime_activity_copy_has_locale_parity() -> None:
+    for locale in ("zh-CN", "ja-JP", "en"):
+        for key in REQUIRED_RUNTIME_ACTIVITY_KEYS:
+            assert translate(locale, key) != key, f"{locale} missing {key}"
+
+
+def test_runtime_activity_helpers_use_requested_locale() -> None:
+    assert VintageProgrammerRuntime._validation_activity_detail(
+        "zh-CN",
+        {"accepted": True, "action_type": "direct_answer"},
+    ) == translate("zh-CN", "runtime.activity.validation.direct_answer")
+    assert VintageProgrammerRuntime._execution_activity_detail("ja-JP", {}) == translate(
+        "ja-JP",
+        "runtime.activity.execution.recorded",
+    )
+    assert VintageProgrammerRuntime._tool_guard_activity_detail(
+        "en",
+        {"status": "accepted", "tool_name": "read"},
+    ) == translate("en", "runtime.activity.guard.accepted_execution", tool="read")
 
 
 def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_path: Path) -> None:
