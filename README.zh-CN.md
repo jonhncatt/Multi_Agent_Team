@@ -6,7 +6,7 @@
 [发布流程](RELEASING.md)
 
 这是一个本地运行的单主 agent 工作台，默认主 agent 是 `vintage_programmer`。  
-当前稳定版本是 `v2.6.9`。
+当前稳定版本是 `v2.7.0`。
 
 当前工作台形态：
 - 左侧线程栏
