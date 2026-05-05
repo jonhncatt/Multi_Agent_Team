@@ -113,6 +113,17 @@ class ExecutionTraceEntry(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProgressSignal(BaseModel):
+    has_progress: bool = False
+    score: int = 0
+    kind: str = ""
+    summary: str = ""
+    action_fingerprint: str = ""
+    tool_name: str = ""
+    detail: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class TraceEventPayload(BaseModel):
     id: str = ""
     run_id: str = ""

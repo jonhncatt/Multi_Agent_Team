@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import inspect
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ from app.models import (
     ChatSettings,
     ExecutionTraceEntry,
     HighLevelProposal,
+    ProgressSignal,
     ToolEvent,
     ToolGuardResult,
     ValidatedNextStep,
@@ -188,8 +190,9 @@ _TOOL_NAME_ALIASES = {
 
 _DEFAULT_MAX_TOOL_CALLS_PER_TURN = 24
 _DEFAULT_MAX_TURN_SECONDS = 1800
-_DEFAULT_MAX_SAME_TOOL_REPEATS = 4
-_DEFAULT_MAX_NO_PROGRESS_CYCLES = 4
+_DEFAULT_MAX_SAME_ACTION_REPEATS = 4
+_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN = 3
+_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
 _DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
@@ -213,10 +216,16 @@ _IMAGE_READ_ACTION_HINTS = (
 def default_loop_safeguards() -> dict[str, Any]:
     return {
         "max_total_tool_calls_per_turn": int(_DEFAULT_MAX_TOOL_CALLS_PER_TURN),
-        "max_same_tool_repeats": int(_DEFAULT_MAX_SAME_TOOL_REPEATS),
-        "max_no_progress_cycles": int(_DEFAULT_MAX_NO_PROGRESS_CYCLES),
+        "max_same_action_repeats": int(_DEFAULT_MAX_SAME_ACTION_REPEATS),
+        "no_progress_threshold_before_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN),
+        "no_progress_threshold_after_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN),
         "max_guard_rejections": int(_DEFAULT_MAX_GUARD_REJECTIONS),
         "max_turn_seconds": int(_DEFAULT_MAX_TURN_SECONDS),
+        "long_task_guard": True,
+        "progress_signal_guard": True,
+        "same_action_repeat_guard": True,
+        "automatic_replan": True,
+        "tool_output_truncation": True,
         "supports_user_cancel": True,
         "context_compaction": True,
     }
@@ -2547,6 +2556,462 @@ class VintageProgrammerRuntime:
         next_trace = [*list(execution_trace or []), entry.model_dump()]
         return next_trace[-24:]
 
+    @staticmethod
+    def _stable_json_for_hash(value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            return repr(value)
+
+    @classmethod
+    def _hash_payload(cls, value: Any) -> str:
+        raw = cls._stable_json_for_hash(value)
+        return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    @classmethod
+    def _action_fingerprint(cls, tool_name: str, normalized_arguments: dict[str, Any]) -> str:
+        name = str(tool_name or "").strip() or "tool"
+        return f"{name}:{cls._hash_payload(dict(normalized_arguments or {}))}"
+
+    @staticmethod
+    def _new_progress_tracker() -> dict[str, Any]:
+        return {
+            "file_reads": set(),
+            "directory_entries": set(),
+            "glob_matches": set(),
+            "search_hits": set(),
+            "section_reads": set(),
+            "command_results": set(),
+            "web_results": set(),
+            "generic_results": set(),
+            "patches": set(),
+            "plan_completed": set(),
+            "error_kinds": set(),
+        }
+
+    @staticmethod
+    def _tool_result_items(result: dict[str, Any], *keys: str) -> list[Any]:
+        payload = dict(result or {}) if isinstance(result, dict) else {}
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return list(value)
+        return []
+
+    @staticmethod
+    def _progress_detail_from_result(tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> str:
+        payload = dict(result or {}) if isinstance(result, dict) else {}
+        if tool_name in {"read_file", "read_section"}:
+            return str(arguments.get("path") or payload.get("path") or "").strip()
+        if tool_name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase"}:
+            query = arguments.get("query")
+            if query in ("", None):
+                queries = list(arguments.get("queries") or [])
+                query = ",".join(str(item) for item in queries[:4])
+            path = str(arguments.get("path") or payload.get("path") or "").strip()
+            return " · ".join(item for item in [path, str(query or "").strip()] if item)
+        if tool_name == "glob_file_search":
+            return str(arguments.get("pattern") or "").strip()
+        if tool_name == "list_dir":
+            return str(arguments.get("path") or payload.get("path") or "").strip()
+        if tool_name == "apply_patch":
+            files = list(payload.get("files") or [])
+            return ", ".join(str(item) for item in files[:4] if str(item or "").strip())
+        if tool_name == "exec_command":
+            return str(arguments.get("cmd") or "").strip()
+        if tool_name == "update_plan":
+            return str(payload.get("summary") or "").strip()
+        return str(payload.get("summary") or "").strip()
+
+    @classmethod
+    def _progress_signal_from_tool_result(
+        cls,
+        *,
+        locale: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: dict[str, Any],
+        event_status: str,
+        plan_state_before: list[dict[str, Any]],
+        tracker: dict[str, Any],
+        action_fingerprint: str,
+    ) -> ProgressSignal:
+        name = str(tool_name or "").strip() or "tool"
+        payload = dict(result or {}) if isinstance(result, dict) else {}
+        ok = bool(payload.get("ok"))
+        detail = cls._progress_detail_from_result(name, arguments, payload)
+        if not ok:
+            error = payload.get("error")
+            error_kind = str(error.get("kind") or "") if isinstance(error, dict) else ""
+            error_message = safe_error_message(
+                (error.get("message") if isinstance(error, dict) else error)
+                or payload.get("summary")
+                or translate(locale, "runtime.tool.failed")
+            )
+            error_key = f"{name}:{error_kind or 'error'}"
+            seen_error_kinds = tracker.setdefault("error_kinds", set())
+            if error_key not in seen_error_kinds:
+                seen_error_kinds.add(error_key)
+                return ProgressSignal(
+                    has_progress=True,
+                    score=1,
+                    kind="new_error_type",
+                    summary=translate(locale, "runtime.progress.new_error_type", detail=error_message[:120]),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=detail,
+                    payload={"error_kind": error_kind or "error", "event_status": event_status},
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="repeated_error",
+                summary=translate(locale, "runtime.progress.repeated_error", detail=error_message[:120]),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=detail,
+                payload={"error_kind": error_kind or "error", "event_status": event_status},
+            )
+
+        if name == "read_file":
+            path = str(arguments.get("path") or payload.get("path") or "").strip()
+            content_key = f"{path}:{cls._hash_payload(payload.get('content') or payload.get('summary') or path)}"
+            seen = tracker.setdefault("file_reads", set())
+            if content_key not in seen:
+                seen.add(content_key)
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_file_read",
+                    summary=translate(locale, "runtime.progress.new_file_read", target=path or name),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=path,
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="duplicate_result",
+                summary=translate(locale, "runtime.progress.duplicate_result", detail=path or name),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=path,
+            )
+
+        if name == "list_dir":
+            base_path = str(arguments.get("path") or payload.get("path") or ".").strip() or "."
+            entries = cls._tool_result_items(payload, "entries")
+            new_entries = 0
+            seen = tracker.setdefault("directory_entries", set())
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry_key = str(entry.get("path") or f"{base_path}:{entry.get('name') or ''}")
+                else:
+                    entry_key = str(entry)
+                if entry_key and entry_key not in seen:
+                    seen.add(entry_key)
+                    new_entries += 1
+            if new_entries > 0:
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_directory_entries",
+                    summary=translate(locale, "runtime.progress.new_directory_entries", target=base_path, count=new_entries),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=base_path,
+                    payload={"new_entries": new_entries},
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="no_new_info",
+                summary=translate(locale, "runtime.progress.no_new_info", detail=base_path),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=base_path,
+            )
+
+        if name == "glob_file_search":
+            matches = cls._tool_result_items(payload, "matches")
+            seen = tracker.setdefault("glob_matches", set())
+            new_matches = 0
+            for item in matches:
+                match_key = str(item.get("path") or item) if isinstance(item, dict) else str(item)
+                if match_key and match_key not in seen:
+                    seen.add(match_key)
+                    new_matches += 1
+            if new_matches > 0:
+                pattern = str(arguments.get("pattern") or "").strip()
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_glob_matches",
+                    summary=translate(locale, "runtime.progress.new_glob_matches", target=pattern or name, count=new_matches),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=pattern,
+                    payload={"new_matches": new_matches},
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="no_new_info",
+                summary=translate(locale, "runtime.progress.no_new_info", detail=str(arguments.get("pattern") or name)),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=str(arguments.get("pattern") or ""),
+            )
+
+        if name in {"search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "web_search"}:
+            hits = cls._tool_result_items(payload, "matches", "results")
+            seen = tracker.setdefault("search_hits", set())
+            new_hits = 0
+            for item in hits:
+                item_key = cls._hash_payload(item)
+                scoped_key = f"{name}:{item_key}"
+                if scoped_key not in seen:
+                    seen.add(scoped_key)
+                    new_hits += 1
+            query_value = arguments.get("query")
+            if query_value in ("", None):
+                queries = list(arguments.get("queries") or [])
+                query_value = ",".join(str(item) for item in queries[:4])
+            query_text = str(query_value or "").strip()
+            if new_hits > 0:
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_search_hits",
+                    summary=translate(locale, "runtime.progress.new_search_hits", target=query_text or name, count=new_hits),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=detail,
+                    payload={"new_hits": new_hits},
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="no_new_info",
+                summary=translate(locale, "runtime.progress.no_new_info", detail=query_text or detail or name),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=detail,
+            )
+
+        if name == "read_section":
+            path = str(arguments.get("path") or payload.get("path") or "").strip()
+            heading = str(arguments.get("heading") or "").strip()
+            section_key = f"{path}:{heading}:{cls._hash_payload(payload.get('content') or payload.get('summary') or '')}"
+            seen = tracker.setdefault("section_reads", set())
+            if section_key not in seen:
+                seen.add(section_key)
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_section_read",
+                    summary=translate(locale, "runtime.progress.new_section_read", target=path or heading or name),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=detail,
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="duplicate_result",
+                summary=translate(locale, "runtime.progress.duplicate_result", detail=detail or name),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=detail,
+            )
+
+        if name == "apply_patch":
+            patch_key = cls._hash_payload({"files": payload.get("files") or [], "summary": payload.get("summary") or ""})
+            seen = tracker.setdefault("patches", set())
+            if patch_key not in seen:
+                seen.add(patch_key)
+                return ProgressSignal(
+                    has_progress=True,
+                    score=4,
+                    kind="patch_applied",
+                    summary=translate(locale, "runtime.progress.patch_applied", detail=detail or name),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=detail,
+                )
+
+        if name == "exec_command":
+            command = str(arguments.get("cmd") or "").strip()
+            signature = cls._hash_payload(
+                {
+                    "cmd": command,
+                    "returncode": payload.get("returncode"),
+                    "output": payload.get("output"),
+                }
+            )
+            seen = tracker.setdefault("command_results", set())
+            if signature not in seen:
+                seen.add(signature)
+                is_test_command = bool(re.search(r"\b(pytest|test|npm test|pnpm test|yarn test|uv run)\b", command))
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2 if not is_test_command else 3,
+                    kind="test_result_changed" if is_test_command else "command_result_changed",
+                    summary=translate(
+                        locale,
+                        "runtime.progress.test_result_changed" if is_test_command else "runtime.progress.command_result_changed",
+                        detail=command[:120] or name,
+                    ),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=command,
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="duplicate_result",
+                summary=translate(locale, "runtime.progress.duplicate_result", detail=command[:120] or name),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=command,
+            )
+
+        if name == "update_plan":
+            previous_completed = {
+                f"{str(item.get('step') or '')}:{str(item.get('status') or '')}"
+                for item in list(plan_state_before or [])
+                if isinstance(item, dict) and str(item.get("status") or "").strip() == "completed"
+            }
+            next_plan = list(payload.get("plan") or [])
+            next_completed = {
+                f"{str(item.get('step') or '')}:{str(item.get('status') or '')}"
+                for item in next_plan
+                if isinstance(item, dict) and str(item.get("status") or "").strip() == "completed"
+            }
+            newly_completed = sorted(next_completed - previous_completed)
+            seen = tracker.setdefault("plan_completed", set())
+            for item in newly_completed:
+                seen.add(item)
+            if newly_completed:
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="plan_updated",
+                    summary=translate(locale, "runtime.progress.plan_updated", count=len(newly_completed)),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=str(payload.get("summary") or ""),
+                    payload={"completed_items": newly_completed[:8]},
+                )
+            return ProgressSignal(
+                has_progress=False,
+                score=0,
+                kind="no_new_info",
+                summary=translate(locale, "runtime.progress.no_new_info", detail=str(payload.get("summary") or name)),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=str(payload.get("summary") or ""),
+            )
+
+        if name in {"web_fetch", "web_download", "image_read", "image_inspect"}:
+            signature = cls._hash_payload(
+                {
+                    "url": payload.get("url") or arguments.get("url"),
+                    "path": payload.get("path") or arguments.get("path"),
+                    "title": payload.get("title"),
+                    "summary": payload.get("summary"),
+                    "visible_text": payload.get("visible_text"),
+                }
+            )
+            seen = tracker.setdefault("web_results", set())
+            if signature not in seen:
+                seen.add(signature)
+                return ProgressSignal(
+                    has_progress=True,
+                    score=2,
+                    kind="new_web_result",
+                    summary=translate(locale, "runtime.progress.new_web_result", detail=detail or name),
+                    action_fingerprint=action_fingerprint,
+                    tool_name=name,
+                    detail=detail,
+                )
+
+        generic_signature = f"{name}:{event_status}:{cls._hash_payload(payload.get('summary') or payload)}"
+        seen = tracker.setdefault("generic_results", set())
+        if generic_signature not in seen:
+            seen.add(generic_signature)
+            return ProgressSignal(
+                has_progress=True,
+                score=1,
+                kind="new_tool_output",
+                summary=translate(locale, "runtime.progress.new_tool_output", detail=detail or name),
+                action_fingerprint=action_fingerprint,
+                tool_name=name,
+                detail=detail,
+            )
+        return ProgressSignal(
+            has_progress=False,
+            score=0,
+            kind="duplicate_result",
+            summary=translate(locale, "runtime.progress.duplicate_result", detail=detail or name),
+            action_fingerprint=action_fingerprint,
+            tool_name=name,
+            detail=detail,
+        )
+
+    @staticmethod
+    def _recent_action_summaries(signals: list[dict[str, Any]], *, limit: int = 6) -> list[str]:
+        items: list[str] = []
+        for signal in list(signals or [])[-limit:]:
+            if not isinstance(signal, dict):
+                continue
+            summary = str(signal.get("summary") or "").strip()
+            if summary:
+                items.append(summary)
+        return items[-limit:]
+
+    @staticmethod
+    def _recent_failed_action_summaries(tool_events: list[ToolEvent], *, limit: int = 6) -> list[str]:
+        items: list[str] = []
+        for event in list(tool_events or [])[-limit:]:
+            if getattr(event, "status", "") == "ok":
+                continue
+            detail = str(getattr(event, "summary", "") or getattr(event, "output_preview", "")).strip()
+            label = str(getattr(event, "name", "") or "tool").strip() or "tool"
+            if detail:
+                items.append(f"{label}: {detail[:160]}")
+            else:
+                items.append(label)
+        return items[-limit:]
+
+    def _build_replan_checkpoint_prompt(
+        self,
+        *,
+        locale: str,
+        current_goal: str,
+        current_task_focus: dict[str, Any],
+        progress_signals: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        trigger: str,
+    ) -> str:
+        active_files = [str(item) for item in list(current_task_focus.get("active_files") or []) if str(item or "").strip()]
+        recent_progress = self._recent_action_summaries(progress_signals)
+        recent_failures = self._recent_failed_action_summaries(tool_events)
+        lines = [
+            translate(locale, "runtime.replan.system_prompt", trigger=trigger),
+            f"current_goal: {current_goal}",
+        ]
+        if active_files:
+            lines.append("active_files: " + json.dumps(active_files[:6], ensure_ascii=False))
+        if recent_progress:
+            lines.append(translate(locale, "runtime.replan.known_facts_intro"))
+            lines.extend(f"- {item}" for item in recent_progress[:6])
+        if recent_failures:
+            lines.append(translate(locale, "runtime.replan.failed_actions_intro"))
+            lines.extend(f"- {item}" for item in recent_failures[:6])
+        lines.append(translate(locale, "runtime.replan.required_next_move"))
+        return "\n".join(item for item in lines if item).strip()
+
     def _resolve_step_state(
         self,
         *,
@@ -3271,9 +3736,13 @@ class VintageProgrammerRuntime:
         max_tool_calls_per_turn = int(loop_safeguards.get("max_total_tool_calls_per_turn") or 0)
         runnable_tools = list(selected_tools if selected_tools else ())
         max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
-        max_same_tool_repeats = int(loop_safeguards.get("max_same_tool_repeats") or 0)
-        max_no_progress_cycles = int(loop_safeguards.get("max_no_progress_cycles") or 0)
+        max_same_action_repeats = int(loop_safeguards.get("max_same_action_repeats") or 0)
+        no_progress_threshold_before_replan = int(loop_safeguards.get("no_progress_threshold_before_replan") or 0)
+        no_progress_threshold_after_replan = int(loop_safeguards.get("no_progress_threshold_after_replan") or 0)
         max_guard_rejections = int(loop_safeguards.get("max_guard_rejections") or 0)
+        automatic_replan_enabled = bool(loop_safeguards.get("automatic_replan"))
+        progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
+        same_action_repeat_guard_enabled = bool(loop_safeguards.get("same_action_repeat_guard"))
         inline_document = _looks_like_inline_document_payload(prompt_message)
         attachment_requires_tools = self._attachments_require_tools(attachment_metas)
         attachment_evidence_pack = [
@@ -3619,11 +4088,15 @@ class VintageProgrammerRuntime:
             turn_started_at = time.monotonic()
             round_idx = 0
             tool_call_count = 0
-            same_tool_repeat_count = 0
-            last_tool_name = ""
+            same_action_repeat_count = 0
+            last_action_fingerprint = ""
             no_progress_cycles = 0
-            last_round_signature = ""
+            post_replan_no_progress_cycles = 0
             guard_rejection_count = 0
+            progress_tracker = self._new_progress_tracker()
+            progress_signals: list[dict[str, Any]] = []
+            replan_history: list[dict[str, Any]] = []
+            replan_attempt_count = 0
             compacted_tool_events = 0
             base_message_count = len(messages)
 
@@ -3859,13 +4332,21 @@ class VintageProgrammerRuntime:
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
                         refresh_model_step(ai_msg, event_type="activity.delta")
                         tool_call_count += 1
-                        if last_tool_name == "image_read":
-                            same_tool_repeat_count += 1
+                        rescue_path = ""
+                        for meta in attachment_metas:
+                            candidate = str(meta.get("path") or "").strip()
+                            if candidate:
+                                rescue_path = candidate
+                                break
+                        rescue_fingerprint = self._action_fingerprint("image_read", {"path": rescue_path})
+                        if last_action_fingerprint == rescue_fingerprint:
+                            same_action_repeat_count += 1
                         else:
-                            last_tool_name = "image_read"
-                            same_tool_repeat_count = 1
+                            last_action_fingerprint = rescue_fingerprint
+                            same_action_repeat_count = 1
                         if rescue_ok:
                             no_progress_cycles = 0
+                            post_replan_no_progress_cycles = 0
                         continue
                     no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
                     if self._looks_like_plan_only_response(ai_text):
@@ -3911,7 +4392,12 @@ class VintageProgrammerRuntime:
                 round_idx += 1
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
+                round_progress_signals: list[dict[str, Any]] = []
+                round_has_progress = False
                 stop_after_tools = False
+                needs_replan = False
+                replan_trigger = ""
+                replan_detail = ""
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
@@ -4014,6 +4500,7 @@ class VintageProgrammerRuntime:
                             **turn_activity_context,
                         },
                     )
+                    plan_state_before = [dict(item) for item in list(plan_state or []) if isinstance(item, dict)]
                     if guard_result.status in {"accepted", "normalized"}:
                         result, event = self._execute_tool_with_trace(
                             name=name,
@@ -4087,9 +4574,16 @@ class VintageProgrammerRuntime:
                             )
                         notes.append("tool_guard_rejected")
                         if max_guard_rejections and guard_rejection_count > max_guard_rejections:
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "tool_guard_rejections_exceeded"
-                            forced_text = str(result.get("summary") or translate(locale, "runtime.budget.no_progress"))
+                            if automatic_replan_enabled and replan_attempt_count == 0:
+                                needs_replan = True
+                                replan_trigger = "guard_rejection_limit"
+                                replan_detail = str(result.get("summary") or "")
+                                notes.append("tool_guard_rejection_replan_requested")
+                            else:
+                                turn_status = "blocked"
+                                blocked_reason = blocked_reason or "tool_guard_rejections_exceeded"
+                                forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
+                                notes.append("tool_guard_rejections_exceeded")
                             stop_after_tools = True
                     if name == "image_read" and bool(result.get("ok")):
                         last_image_read_result = dict(result)
@@ -4113,20 +4607,36 @@ class VintageProgrammerRuntime:
                         locale=locale,
                     )
                     tool_call_count += 1
-                    if name == last_tool_name:
-                        same_tool_repeat_count += 1
-                    else:
-                        last_tool_name = name
-                        same_tool_repeat_count = 1
+                    action_fingerprint = self._action_fingerprint(name, arguments)
                     round_signature_parts.append(
                         {
                             "name": name,
                             "input": arguments,
                             "status": event.status,
+                            "action_fingerprint": action_fingerprint,
                         }
                     )
                     if event.status == "ok":
                         round_success = True
+                    progress_signal = self._progress_signal_from_tool_result(
+                        locale=locale,
+                        tool_name=name,
+                        arguments=arguments,
+                        result=result,
+                        event_status=event.status,
+                        plan_state_before=plan_state_before,
+                        tracker=progress_tracker,
+                        action_fingerprint=action_fingerprint,
+                    )
+                    progress_signal_payload = progress_signal.model_dump()
+                    round_progress_signals.append(progress_signal_payload)
+                    progress_signals = [*progress_signals, progress_signal_payload][-48:]
+                    round_has_progress = round_has_progress or bool(progress_signal.has_progress)
+                    if progress_signal.has_progress or last_action_fingerprint != action_fingerprint:
+                        same_action_repeat_count = 1
+                    else:
+                        same_action_repeat_count += 1
+                    last_action_fingerprint = action_fingerprint
                     if name == "update_plan" and bool(result.get("ok")):
                         plan_state = list(result.get("plan") or [])
                         if progress_cb is not None:
@@ -4195,25 +4705,44 @@ class VintageProgrammerRuntime:
                             name=name or "unknown_tool",
                         )
                     )
-                    if same_tool_repeat_count > max_same_tool_repeats:
+                    if (
+                        same_action_repeat_guard_enabled
+                        and max_same_action_repeats
+                        and same_action_repeat_count > max_same_action_repeats
+                    ):
                         if name == "image_read" and last_image_read_result:
                             fallback_answer = self._build_image_read_fallback_answer(last_image_read_result, locale=locale)
                             if fallback_answer:
                                 turn_status = "completed"
                                 forced_text = fallback_answer
                                 notes.append("image_read_repeat_fallback_answer")
+                                stop_after_tools = True
+                            else:
+                                if automatic_replan_enabled and replan_attempt_count == 0:
+                                    needs_replan = True
+                                    replan_trigger = "same_action_repeat"
+                                    replan_detail = action_fingerprint
+                                    notes.append("turn_budget_same_action_repeat_replan_requested")
+                                else:
+                                    turn_status = "blocked"
+                                    blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
+                                    forced_text = translate(locale, "runtime.budget.same_action_repeat")
+                                    notes.append("turn_budget_same_action_repeats_exceeded")
+                                stop_after_tools = True
+                        else:
+                            if automatic_replan_enabled and replan_attempt_count == 0:
+                                needs_replan = True
+                                replan_trigger = "same_action_repeat"
+                                replan_detail = action_fingerprint
+                                notes.append("turn_budget_same_action_repeat_replan_requested")
                             else:
                                 turn_status = "blocked"
-                                blocked_reason = blocked_reason or "turn_budget_same_tool_repeats_exceeded"
-                                forced_text = translate(locale, "runtime.budget.same_tool_repeat")
-                                notes.append("turn_budget_same_tool_repeats_exceeded")
-                        else:
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "turn_budget_same_tool_repeats_exceeded"
-                            forced_text = translate(locale, "runtime.budget.same_tool_repeat")
-                            notes.append("turn_budget_same_tool_repeats_exceeded")
-                        stop_after_tools = True
-                        break
+                                blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
+                                forced_text = translate(locale, "runtime.budget.same_action_repeat")
+                                notes.append("turn_budget_same_action_repeats_exceeded")
+                            stop_after_tools = True
+                        if stop_after_tools:
+                            break
 
                 if round_signature_parts:
                     execution_entry = ExecutionTraceEntry(
@@ -4245,6 +4774,7 @@ class VintageProgrammerRuntime:
                             "validated_next_step": dict(validated_next_step),
                             "completed_tool_calls": len(round_signature_parts),
                             "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
+                            "progress_signals": list(round_progress_signals),
                         },
                     )
                     execution_trace = self._append_execution_trace(execution_trace, execution_entry)
@@ -4260,9 +4790,82 @@ class VintageProgrammerRuntime:
                             "high_level_proposal": dict(high_level_proposal),
                             "runtime_hint": dict(runtime_hint),
                             "runtime_guess": dict(runtime_hint),
+                            "progress_signals": list(round_progress_signals),
                             **turn_activity_context,
                         },
                     )
+
+                if progress_signal_guard_enabled and round_signature_parts:
+                    if round_has_progress:
+                        no_progress_cycles = 0
+                        post_replan_no_progress_cycles = 0
+                    else:
+                        no_progress_cycles += 1
+                        if replan_attempt_count > 0:
+                            post_replan_no_progress_cycles += 1
+                    if (
+                        not needs_replan
+                        and not halt_for_user_input
+                        and automatic_replan_enabled
+                        and replan_attempt_count == 0
+                        and no_progress_threshold_before_replan > 0
+                        and no_progress_cycles >= no_progress_threshold_before_replan
+                    ):
+                        needs_replan = True
+                        replan_trigger = "no_progress"
+                        replan_detail = ", ".join(self._recent_action_summaries(progress_signals, limit=3))
+                    elif (
+                        not needs_replan
+                        and replan_attempt_count > 0
+                        and no_progress_threshold_after_replan > 0
+                        and post_replan_no_progress_cycles >= no_progress_threshold_after_replan
+                    ):
+                        turn_status = "blocked"
+                        blocked_reason = blocked_reason or "turn_budget_no_progress_after_replan_exceeded"
+                        forced_text = translate(locale, "runtime.budget.no_progress_after_replan")
+                        notes.append("turn_budget_no_progress_after_replan_exceeded")
+                        stop_after_tools = True
+
+                if needs_replan and not halt_for_user_input and turn_status not in {"blocked", "cancelled"}:
+                    replan_prompt = self._build_replan_checkpoint_prompt(
+                        locale=locale,
+                        current_goal=current_goal,
+                        current_task_focus=current_task_focus,
+                        progress_signals=progress_signals,
+                        tool_events=tool_events,
+                        trigger=replan_trigger or "no_progress",
+                    )
+                    replan_attempt_count += 1
+                    post_replan_no_progress_cycles = 0
+                    replan_payload = {
+                        "trigger": replan_trigger or "no_progress",
+                        "detail": replan_detail,
+                        "known_facts": self._recent_action_summaries(progress_signals),
+                        "failed_actions": self._recent_failed_action_summaries(tool_events),
+                        "prompt": replan_prompt,
+                        "round_index": round_idx,
+                    }
+                    replan_history = [*replan_history, replan_payload][-8:]
+                    notes.append(f"replan_requested:{replan_trigger or 'no_progress'}")
+                    messages.append(self._backend._SystemMessage(content=replan_prompt))
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "step_validation",
+                        translate(locale, "runtime.replan.requested", trigger=replan_trigger or "no_progress"),
+                        payload={
+                            "validated_next_step": dict(validated_next_step),
+                            "high_level_proposal": dict(high_level_proposal),
+                            "runtime_hint": dict(runtime_hint),
+                            "runtime_guess": dict(runtime_hint),
+                            "progress_signals": list(progress_signals),
+                            "replan_history": list(replan_history),
+                            **turn_activity_context,
+                        },
+                    )
+                    stop_after_tools = False
+                    turn_status = "running"
+                    blocked_reason = ""
+                    forced_text = ""
 
                 if halt_for_user_input or stop_after_tools:
                     break
@@ -4284,25 +4887,11 @@ class VintageProgrammerRuntime:
                         "high_level_proposal": dict(high_level_proposal),
                         "runtime_hint": dict(runtime_hint),
                         "runtime_guess": dict(runtime_hint),
+                        "progress_signals": list(progress_signals),
+                        "replan_history": list(replan_history),
                         **turn_activity_context,
                     },
                 )
-
-                round_signature = json.dumps(round_signature_parts, ensure_ascii=False, sort_keys=True)
-                if round_signature:
-                    if round_success:
-                        no_progress_cycles = 0
-                    elif round_signature == last_round_signature:
-                        no_progress_cycles += 1
-                    else:
-                        no_progress_cycles = 1
-                    last_round_signature = round_signature
-                if no_progress_cycles > max_no_progress_cycles:
-                    turn_status = "blocked"
-                    blocked_reason = blocked_reason or "turn_budget_no_progress_exceeded"
-                    forced_text = translate(locale, "runtime.budget.no_progress")
-                    notes.append("turn_budget_no_progress_exceeded")
-                    break
 
                 messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
                     messages=messages,
@@ -4574,6 +5163,8 @@ class VintageProgrammerRuntime:
                 "validated_next_step": dict(validated_next_step),
                 "validated_plan": dict(validated_next_step),
                 "execution_trace": list(execution_trace),
+                "progress_signals": list(progress_signals),
+                "replan_history": list(replan_history),
                 "proposal_diagnostics": dict(proposal_diagnostics),
                 "project_contract_loaded": bool(project_contract_text),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
@@ -4655,6 +5246,8 @@ class VintageProgrammerRuntime:
             "validated_next_step": dict(validated_next_step),
             "validated_plan": dict(validated_next_step),
             "execution_trace": list(execution_trace),
+            "progress_signals": list(progress_signals),
+            "replan_history": list(replan_history),
             "proposal_diagnostics": dict(proposal_diagnostics),
             "activity": {
                 "run_id": run_id,
@@ -4688,6 +5281,8 @@ class VintageProgrammerRuntime:
                 "validated_plan": dict(validated_next_step),
                 "validated_next_step": dict(validated_next_step),
                 "execution_trace": list(execution_trace),
+                "progress_signals": list(progress_signals),
+                "replan_history": list(replan_history),
                 "project_id": project_id,
                 "project_root": project_root,
                 "cwd": effective_cwd,
