@@ -6,7 +6,7 @@
 [Release Flow](RELEASING.md)
 
 これはローカル実行の単一メイン agent ワークステーションです。既定のメイン agent は `vintage_programmer` です。  
-現在の安定版は `v2.6.0` です。
+現在の安定版は `v2.6.9` です。
 
 現在のワークステーション構成:
 - 左側の thread rail
