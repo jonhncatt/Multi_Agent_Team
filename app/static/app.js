@@ -1330,15 +1330,39 @@ function buildRuntimeStatsSummary({
     ((latestTool && (latestTool.tool || latestTool.name || latestTool.type)) || "")
   ).trim() || "-";
   const safeContextMeter = contextMeter && typeof contextMeter === "object" ? contextMeter : {};
-  const contextUsage = Math.max(0, Number(safeContextMeter.auto_compact_token_limit || 0) || 0)
-    ? `${formatTokenCount(safeContextMeter.estimated_tokens)} / ${formatTokenCount(safeContextMeter.auto_compact_token_limit)}`
+  const estimatedTokens = Math.max(0, Number(safeContextMeter.estimated_tokens || 0) || 0);
+  const contextWindow = Math.max(0, Number(safeContextMeter.context_window || 0) || 0);
+  const usedRatioByWindow = contextWindow > 0 ? Math.min(1, estimatedTokens / contextWindow) : 0;
+  const usedPercent = contextWindow > 0
+    ? Math.max(0, Math.min(100, Math.round(usedRatioByWindow * 100)))
+    : null;
+  const remainingPercent = usedPercent == null ? null : Math.max(0, 100 - usedPercent);
+  const contextUsage = contextWindow > 0
+    ? `${formatTokenCount(estimatedTokens)} / ${formatTokenCount(contextWindow)}`
     : translateUi(locale, "context_meter.unknown");
+  const compactUsage = usedPercent == null
+    ? translateUi(locale, "context_meter.compact_usage_unknown")
+    : translateUi(locale, "context_meter.compact_usage", { used: usedPercent, remaining: remainingPercent });
+  const compactTokens = contextWindow > 0
+    ? translateUi(locale, "context_meter.compact_tokens", {
+      used: formatTokenCount(estimatedTokens),
+      total: formatTokenCount(contextWindow),
+    })
+    : translateUi(locale, "context_meter.compact_tokens_unknown");
+  const elapsedValue = formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown");
+  const autoCompactionEnabled = Boolean(safeContextMeter.compaction_enabled || safeguards.context_compaction);
   return {
+    compact: [
+      { key: "usage", text: compactUsage },
+      { key: "tokens", text: compactTokens },
+      { key: "elapsed_tools", text: translateUi(locale, "context_meter.compact_elapsed_tools", { elapsed: elapsedValue, count: toolTimeline.length }) },
+      { key: "compaction", text: translateUi(locale, "context_meter.compact_auto_compact", { status: formatRuntimeToggle(locale, autoCompactionEnabled) }) },
+    ],
     run: [
       { key: "project", label: translateUi(locale, "context_meter.field.project"), value: workspaceLabel || "-" },
       { key: "status", label: translateUi(locale, "context_meter.field.status"), value: formatRunEnum(locale, "turn_status", activeTurnStatus, "-") },
       { key: "model", label: translateUi(locale, "context_meter.field.model"), value: activeModel || "-" },
-      { key: "elapsed", label: translateUi(locale, "context_meter.field.elapsed"), value: formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown") },
+      { key: "elapsed", label: translateUi(locale, "context_meter.field.elapsed"), value: elapsedValue },
       { key: "runtime_mode", label: translateUi(locale, "context_meter.field.runtime_mode"), value: formatRuntimeModeLabel(locale, currentRuntimeStatus.execution_mode) },
     ],
     tools: [
@@ -1357,11 +1381,13 @@ function buildRuntimeStatsSummary({
         : []),
     ],
     safeguards: [
-      { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_tool_calls"), value: String(safeguards.max_total_tool_calls_per_turn || "-") },
-      { key: "same_tool", label: translateUi(locale, "context_meter.field.guard_same_tool"), value: String(safeguards.max_same_tool_repeats || "-") },
-      { key: "no_progress", label: translateUi(locale, "context_meter.field.guard_no_progress"), value: String(safeguards.max_no_progress_cycles || "-") },
-      { key: "rejections", label: translateUi(locale, "context_meter.field.guard_rejections"), value: String(safeguards.max_guard_rejections || "-") },
+      { key: "long_task", label: translateUi(locale, "context_meter.field.guard_long_task"), value: formatRuntimeToggle(locale, Boolean(safeguards.long_task_guard)) },
+      { key: "progress_signal", label: translateUi(locale, "context_meter.field.guard_progress_signal"), value: formatRuntimeToggle(locale, Boolean(safeguards.progress_signal_guard)) },
+      { key: "same_action", label: translateUi(locale, "context_meter.field.guard_same_action"), value: formatRuntimeToggle(locale, Boolean(safeguards.same_action_repeat_guard)) },
+      { key: "replan", label: translateUi(locale, "context_meter.field.guard_replan"), value: formatRuntimeToggle(locale, Boolean(safeguards.automatic_replan)) },
+      { key: "tool_output", label: translateUi(locale, "context_meter.field.guard_tool_output"), value: formatRuntimeToggle(locale, Boolean(safeguards.tool_output_truncation)) },
       { key: "wall_clock", label: translateUi(locale, "context_meter.field.guard_wall_clock"), value: formatWallClockLimit(safeguards.max_turn_seconds) },
+      { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_tool_calls"), value: String(safeguards.max_total_tool_calls_per_turn || "-") },
       { key: "user_stop", label: translateUi(locale, "context_meter.field.guard_user_stop"), value: formatRuntimeToggle(locale, Boolean(safeguards.supports_user_cancel)) },
       { key: "compaction", label: translateUi(locale, "context_meter.field.guard_compaction"), value: formatRuntimeToggle(locale, Boolean(safeguards.context_compaction)) },
     ],
@@ -4627,26 +4653,36 @@ function App() {
                   ? html`
                       <div className="context-meter-popover" role="dialog" aria-label=${t("context_meter.title")}>
                         <div className="context-meter-title">${t("context_meter.title")}</div>
-                        ${[
-                          [t("context_meter.section.run"), runtimeStats.run],
-                          [t("context_meter.section.tools"), runtimeStats.tools],
-                          [t("context_meter.section.context"), runtimeStats.context],
-                          [t("context_meter.section.safeguards"), runtimeStats.safeguards],
-                        ].map(
-                          ([sectionTitle, rows]) => html`
-                            <div className="context-meter-section" key=${sectionTitle}>
-                              <div className="context-meter-section-title">${sectionTitle}</div>
-                              ${rows.map(
-                                (row) => html`
-                                  <div key=${row.key} className="context-meter-kv">
-                                    <span className="context-meter-label">${row.label}</span>
-                                    <span className="context-meter-value">${row.value}</span>
-                                  </div>
-                                `,
-                              )}
-                            </div>
-                          `,
-                        )}
+                        <div className="context-meter-compact">
+                          ${runtimeStats.compact.map(
+                            (row) => html`<div key=${row.key} className="context-meter-line">${row.text}</div>`,
+                          )}
+                        </div>
+                        <details className="context-meter-details">
+                          <summary className="context-meter-details-toggle">${t("context_meter.details_toggle")}</summary>
+                          <div className="context-meter-details-body">
+                            ${[
+                              [t("context_meter.section.run"), runtimeStats.run],
+                              [t("context_meter.section.tools"), runtimeStats.tools],
+                              [t("context_meter.section.context"), runtimeStats.context],
+                              [t("context_meter.section.safeguards"), runtimeStats.safeguards],
+                            ].map(
+                              ([sectionTitle, rows]) => html`
+                                <div className="context-meter-section" key=${sectionTitle}>
+                                  <div className="context-meter-section-title">${sectionTitle}</div>
+                                  ${rows.map(
+                                    (row) => html`
+                                      <div key=${row.key} className="context-meter-kv">
+                                        <span className="context-meter-label">${row.label}</span>
+                                        <span className="context-meter-value">${row.value}</span>
+                                      </div>
+                                    `,
+                                  )}
+                                </div>
+                              `,
+                            )}
+                          </div>
+                        </details>
                       </div>
                     `
                   : null}

@@ -1319,6 +1319,44 @@ button {
   margin-bottom: 8px;
 }
 
+.context-meter-compact {
+  display: grid;
+  gap: 4px;
+}
+
+.context-meter-details {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(23, 33, 43, 0.08);
+}
+
+.context-meter-details-toggle {
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.context-meter-details-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.context-meter-details-toggle::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 140ms ease;
+}
+
+.context-meter-details[open] .context-meter-details-toggle::before {
+  transform: rotate(90deg);
+}
+
+.context-meter-details-body {
+  margin-top: 10px;
+}
+
 .context-meter-section + .context-meter-section {
   margin-top: 12px;
   padding-top: 10px;
