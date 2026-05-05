@@ -43,9 +43,11 @@ from packages.office_modules.request_analysis import looks_like_permission_gate_
 
 
 _READ_ONLY_TOOL_NAMES = {
-    "read",
-    "search_file",
-    "search_file_multi",
+    "read_file",
+    "list_dir",
+    "glob_file_search",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
     "read_section",
     "table_extract",
     "fact_check_file",
@@ -176,13 +178,10 @@ _TOOL_NAME_ALIASES = {
     "image_to_text": "image_read",
     "image_tool": "image_read",
     "list_sessions": "sessions_list",
-    "multi_query_search": "search_file_multi",
     "ocr_image": "image_read",
     "read_image": "image_read",
     "read_section_by_heading": "read_section",
     "read_session_history": "sessions_history",
-    "read_text_file": "read",
-    "search_text_in_file": "search_file",
     "search_web": "web_search",
     "view_image": "image_inspect",
 }
@@ -756,7 +755,7 @@ class VintageProgrammerRuntime:
             "- Use tools when needed.\n"
             "- Do not force tools for self-contained text tasks such as plain chat, explanation, translation, rewriting, meeting minutes, or summarization of text already provided by the user.\n"
             "- Use tools when the request requires external context, workspace inspection, file reading, code search, file modification, testing, command execution, or long-running task progress.\n"
-            "- File edits use apply_patch. Workspace inspection uses read/search_codebase/exec_command. Attachment understanding uses read/image_read/search_file/read_section/table_extract as appropriate.\n"
+            "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
             "- Use update_plan for multi-step workspace tasks, debugging, code changes, release work, or long-running operations. Do not use update_plan for simple chat, translation, rewriting, meeting minutes, or summarizing text already provided by the user.\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
             "- After each tool result, continue the turn until the task is complete, needs structured user input, is blocked by a concrete policy, is cancelled, or a runtime budget is exhausted.\n"
@@ -1763,7 +1762,18 @@ class VintageProgrammerRuntime:
 
         active_files = list(updated.get("active_files") or [])
         primary_path = result.get("path") or arguments.get("path")
-        if tool_name in {"read", "search_file", "search_file_multi", "read_section", "table_extract", "fact_check_file", "image_read", "image_inspect"}:
+        if tool_name in {
+            "read_file",
+            "list_dir",
+            "glob_file_search",
+            "search_contents_in_file",
+            "search_contents_in_file_multi",
+            "read_section",
+            "table_extract",
+            "fact_check_file",
+            "image_read",
+            "image_inspect",
+        }:
             self._maybe_add_active_file(active_files, primary_path)
         for item in list(result.get("files") or [])[:8]:
             self._maybe_add_active_file(active_files, item)
@@ -2717,7 +2727,7 @@ class VintageProgrammerRuntime:
         lines = [
             translate(locale, "runtime.invalid_final_guard.steer"),
             f"write_authorization_state: {json.dumps(write_authorization_state, ensure_ascii=False)}",
-            "Required behavior: call apply_patch/exec_command/read/search_codebase or another appropriate tool now; do not ask for confirmation in prose.",
+            "Required behavior: call apply_patch/exec_command/read_file/list_dir/glob_file_search/search_codebase or another appropriate tool now; do not ask for confirmation in prose.",
         ]
         if attachment_evidence_pack:
             lines.append(
@@ -2960,7 +2970,16 @@ class VintageProgrammerRuntime:
             fallback_path = self._first_attachment_path(attachments, kind="image")
             if fallback_path:
                 normalized["path"] = fallback_path
-        elif tool_name in {"read", "search_file", "search_file_multi", "read_section", "table_extract", "fact_check_file"} and "path" in normalized:
+        elif tool_name in {
+            "read_file",
+            "list_dir",
+            "glob_file_search",
+            "search_contents_in_file",
+            "search_contents_in_file_multi",
+            "read_section",
+            "table_extract",
+            "fact_check_file",
+        } and "path" in normalized:
             normalized["path"] = self._resolve_attachment_argument_path(normalized.get("path"), attachments)
         elif tool_name == "archive_extract" and "zip_path" in normalized:
             normalized["zip_path"] = self._resolve_attachment_argument_path(normalized.get("zip_path"), attachments)

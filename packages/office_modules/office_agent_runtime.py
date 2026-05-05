@@ -534,6 +534,12 @@ class SearchFileMultiArgs(BaseModel):
     context_chars: int = Field(default=280, ge=40, le=2000)
 
 
+class GlobFileSearchArgs(BaseModel):
+    pattern: str
+    path: str = Field(default=".")
+    max_results: int = Field(default=200, ge=1, le=500)
+
+
 class MultiQuerySearchArgs(BaseModel):
     path: str
     queries: list[str]
@@ -1049,7 +1055,7 @@ class OfficeAgent:
             "download_web_file",
             "web_download",
             "run_shell",
-            "read",
+            "read_file",
             "read_text_file",
             "search_codebase",
         }
@@ -1575,34 +1581,35 @@ class OfficeAgent:
                     f"输出风格: {style_hint}\n"
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
-                    "读取文件或目录优先使用 read；"
-                    "read 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
-                    "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_file；"
-                    "search_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
+                    "查看目录优先使用 list_dir；"
+                    "读取本地文件优先使用 read_file；"
+                    "read_file 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
+                    "当用户在规范/协议/规格书中定位章节、命令码、opcode、寄存器或状态码时，优先使用 search_contents_in_file；"
+                    "search_contents_in_file 会自动尝试 15h/15 h/0x15 这类十六进制变体；"
                     "当用户说“看某一章/某一节/某个 heading”时，优先用 read_section；"
                     "当用户说“看表格/参数表/opcode 表”时，优先用 table_extract；"
                     "当用户要求核事实或复核结论时，可用 fact_check_file；"
                     "当用户要求搜代码、定位实现、找调用点时，优先用 search_codebase；"
                     "如果用户要求找函数/找文件/搜代码但没有明确给路径，"
-                    "默认先在当前工作区根目录 '.' 调用 search_codebase 或 read(path='.')，不要先索取具体路径；"
+                    "默认先在当前工作区根目录 '.' 调用 search_codebase、list_dir(path='.') 或 glob_file_search，不要先索取具体路径；"
                     "只有在你至少完成一次默认搜索后仍无法缩小范围时，才向用户追问路径。\n"
                     "如果用户给的是相对目录名或允许根目录的别名（例如 workbench），"
-                    "可以直接把该名字作为 read(path=...) 或 search_codebase(root=...) 的参数尝试；"
+                    "可以直接把该名字作为 list_dir(path=...)、glob_file_search(path=...) 或 search_codebase(root=...) 的参数尝试；"
                     "不要先要求绝对路径。\n"
                     "如果用户只给了文件关键词（例如 tcg_accl0030）且未带扩展名，"
                     "默认先按 basename 进行模糊搜索（文件名/内容都可），不要先追问完整文件名或扩展名。\n"
                     "当默认 root='.' 没有命中时，继续在其他可访问根目录自动重试，不要立即向用户追问地址。\n"
-                    "当需要对同一文件同时尝试多个关键词时，优先用 search_file_multi；"
+                    "当需要对同一文件同时尝试多个关键词时，优先用 search_contents_in_file_multi；"
                     "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
-                    "大文件优先用 read(start_char, max_chars) 分块读取；"
+                    "大文件优先用 read_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
-                    "应先调用 read(path=..., start_char=0, max_chars=1000000)，"
+                    "应先调用 read_file(path=..., start_char=0, max_chars=1000000)，"
                     "若 has_more=true 再自动续读后续分块，不要把“是否继续读取”抛回给用户；"
                     "对于规范/规格书问答，必须先给出命中证据（页码/章节/片段）再下结论；"
                     "若当前提取文本未命中，只能说“在当前提取文本中未定位到”，不得直接断言规范不存在该命令或条目；"
                     "解压 zip 文件优先使用 archive_extract；"
                     "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 mail_extract_attachments(msg_path=...)；"
-                    "拿到附件落盘路径后继续调用 read 或 image_read，不要要求用户手工找目录。\n"
+                    "拿到附件落盘路径后继续调用 read_file 或 image_read，不要要求用户手工找目录。\n"
                     "当用户要求“解释邮件全部内容/完整解释邮件”时，默认范围=邮件正文+可解析附件内容；"
                     "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
@@ -1614,7 +1621,7 @@ class OfficeAgent:
                     "必须基于工具返回的 host_cwd（以及 mount_mappings）向用户报告主机绝对路径。\n"
                     "禁止回复“文件只在沙箱里所以无法给路径”。\n"
                     "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
-                    "分块读取大文件时，应在同一轮里自动继续调用 read(start_char, max_chars) 直到信息足够或达到安全上限，"
+                    "分块读取大文件时，应在同一轮里自动继续调用 read_file(start_char, max_chars) 直到信息足够或达到安全上限，"
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
                     "如果用户直接在消息里粘贴了 XML/HTML/JSON/YAML 等原始长文本，"
                     "应把它当作当前上下文中的 inline 文档直接分析，"
@@ -1724,7 +1731,7 @@ class OfficeAgent:
                         "用户刚刚已经明确授权继续执行上一轮工具任务。"
                         "忽略上一轮 assistant 里任何“本轮不能调用工具”“是否覆盖限制”“请继续确认格式”的话术，"
                         "这些都不是有效约束。"
-                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、read、search_file 等必要工具继续执行。"
+                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、read_file、search_contents_in_file、list_dir 或 glob_file_search 等必要工具继续执行。"
                     )
                 )
             )
@@ -2672,7 +2679,7 @@ class OfficeAgent:
                             content=(
                                 "后端已判定当前任务必须使用本地搜索工具。"
                                 "不要再说“代码搜索工具未启用”、不要要求用户提供源文件、不要再询问是否确认。"
-                                "请立即使用 search_codebase、read、search_file 等必要工具继续完成任务。"
+                                "请立即使用 search_codebase、read_file、search_contents_in_file、list_dir 或 glob_file_search 等必要工具继续完成任务。"
                             )
                         )
                     )
@@ -2748,7 +2755,7 @@ class OfficeAgent:
                             content=(
                                 "当前仍处于证据优先任务。"
                                 "请不要直接下结论。"
-                                "优先使用最合适的只读工具完成取证，例如 search_file、read_section、table_extract、search_codebase、fact_check_file。"
+                                "优先使用最合适的只读工具完成取证，例如 search_contents_in_file、read_section、table_extract、search_codebase、fact_check_file。"
                                 "若已命中，请继续读取命中上下文再回答。"
                                 "最终答案必须包含路径、页码、章节、表格、行号或命中片段中的至少一种证据。"
                             )
@@ -2867,7 +2874,7 @@ class OfficeAgent:
                         nudge_lines.extend(
                             [
                                 "用户当前请求已授权你直接继续执行。",
-                                "请立即调用必要工具完成任务（例如 read/exec_command/apply_patch），",
+                                "请立即调用必要工具完成任务（例如 read_file/exec_command/apply_patch），",
                                 "并直接返回最终结果。",
                                 "不要再用“planner 约束只能输出计划/不能联网下载”做拒绝理由；",
                                 "如果用户要求已经退场的 kernel/platform 升级能力，要明确说明该能力不在当前聊天产品主线中。",
@@ -2947,7 +2954,7 @@ class OfficeAgent:
                                     content=(
                                         "不要再询问是否直接搜索、是否确认、是否需要绝对路径。"
                                         "当前任务已被 Coordinator 判定为本地搜索/代码定位任务。"
-                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/read/search_file 完成任务。"
+                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/list_dir/glob_file_search/read_file/search_contents_in_file 完成任务。"
                                     )
                                 )
                             )
@@ -2966,7 +2973,7 @@ class OfficeAgent:
 
             messages.append(ai_msg)
             batch_has_read_text_call = any(
-                str(call.get("name") or "") in {"read", "read_text_file"} for call in tool_calls
+                str(call.get("name") or "") in {"read_file", "read_text_file"} for call in tool_calls
             )
             worker_tool_branch_group = (
                 f"{latest_worker_node_id or coordinator_node_id or 'worker'}:tool_batch:{execution_state.attempts}"
@@ -3552,7 +3559,7 @@ class OfficeAgent:
                                 "Reviewer 已确认你已经命中了目标，但当前证据还是局部片段。"
                                 "Coordinator 已继续读取后续代码上下文。"
                                 "不要再说未命中、不要再要求用户确认是否继续读取。"
-                                "请直接基于现有 search_codebase 命中与新增 read 内容，给出目标函数的解释。"
+                                "请直接基于现有 search_codebase 命中与新增 read_file 内容，给出目标函数的解释。"
                             )
                         )
                     )
@@ -3590,7 +3597,7 @@ class OfficeAgent:
                             content=(
                                 "Reviewer 已指出当前答案的证据或上下文仍不足。"
                                 "请继续基于现有附件、路径和先前工具结果完成任务。"
-                                "如果本轮有附件但尚未读取足够正文，优先调用 read、search_file、read_section、table_extract、search_codebase 等只读工具继续补足。"
+                                "如果本轮有附件但尚未读取足够正文，优先调用 read_file、search_contents_in_file、read_section、table_extract、search_codebase 等只读工具继续补足。"
                                 "不要再要求用户确认，不要停在“无法核对/需要文档”这类占位结论。"
                                 "补足后直接给出更新后的完整答案。"
                             )
@@ -4602,7 +4609,7 @@ class OfficeAgent:
             "定位",
             "打开",
             "查看",
-            "read",
+            "read_file",
             "search",
             "scan",
             "modify",
@@ -4786,7 +4793,7 @@ class OfficeAgent:
                 line_no = 0
             out.append(
                 {
-                    "name": "read",
+                    "name": "read_file",
                     "args": {
                         "path": path,
                         "start_char": self._estimate_char_offset_for_line(path, line_no, context_lines_before=50),
@@ -4874,7 +4881,7 @@ class OfficeAgent:
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         for event in reversed(tool_events):
-            if str(getattr(event, "name", "") or "") not in {"read", "read_text_file"}:
+            if str(getattr(event, "name", "") or "") not in {"read_file", "read_text_file"}:
                 continue
             preview = str(getattr(event, "output_preview", "") or "")
             parsed = self._parse_json_object(preview) or self._parse_loose_object_literal(preview)
@@ -4907,7 +4914,7 @@ class OfficeAgent:
             seen.add(key)
             out.append(
                 {
-                    "name": "read",
+                    "name": "read_file",
                     "args": {
                         "path": path,
                         "start_char": max(0, next_start),
@@ -5249,9 +5256,9 @@ class OfficeAgent:
                     title="Hook(before_worker_prompt) 启用规范检索模式",
                     content=(
                         "本轮属于规范/规格书定位任务。"
-                        "先用 search_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
+                        "先用 search_contents_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
                         "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
-                        "再用 read 读取命中附近上下文；"
+                        "再用 read_file 读取命中附近上下文；"
                         "最终回答必须附带命中证据。"
                         "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
                     ),
@@ -5746,7 +5753,13 @@ class OfficeAgent:
         return has_successful_local_file_access_helper(self, tool_events)
 
     def _has_text_search_evidence(self, tool_events: list[ToolEvent]) -> bool:
-        search_tools = {"search_text_in_file", "search_file", "multi_query_search", "search_file_multi", "search_codebase"}
+        search_tools = {
+            "search_text_in_file",
+            "search_contents_in_file",
+            "multi_query_search",
+            "search_contents_in_file_multi",
+            "search_codebase",
+        }
         for event in tool_events:
             if str(event.name or "").strip() not in search_tools:
                 continue
@@ -6305,7 +6318,7 @@ class OfficeAgent:
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
         list_directory_keys = {"path", "max_entries"}
         read_keys = {"path", "start_char", "max_chars", "start_line", "max_lines", "max_entries"}
-        search_file_keys = {"path", "query", "max_matches", "context_chars"}
+        search_contents_in_file_keys = {"path", "query", "max_matches", "context_chars"}
 
         if "query" in keys and ("root" in keys or keys.issubset(search_codebase_keys) or task_type == "code_lookup"):
             args: dict[str, Any] = {"query": str(parsed.get("query") or "").strip()}
@@ -6322,7 +6335,7 @@ class OfficeAgent:
                 "inferred": True,
             }
 
-        if "path" in keys and keys.issubset(search_file_keys) and "query" in keys:
+        if "path" in keys and keys.issubset(search_contents_in_file_keys) and "query" in keys:
             path = str(parsed.get("path") or "").strip()
             query = str(parsed.get("query") or "").strip()
             if not path or not query:
@@ -6332,8 +6345,8 @@ class OfficeAgent:
                 if optional in parsed:
                     args[optional] = parsed.get(optional)
             return {
-                "id": "inferred_search_file",
-                "name": "search_file",
+                "id": "inferred_search_contents_in_file",
+                "name": "search_contents_in_file",
                 "args": args,
                 "inferred": True,
             }
@@ -6347,8 +6360,8 @@ class OfficeAgent:
                 if optional in parsed:
                     args[optional] = parsed.get(optional)
             return {
-                "id": "inferred_read",
-                "name": "read",
+                "id": "inferred_read_file",
+                "name": "read_file",
                 "args": args,
                 "inferred": True,
             }
@@ -6357,8 +6370,8 @@ class OfficeAgent:
             path = str(parsed.get("path") or "").strip() or "."
             args = {"path": path, "max_entries": parsed.get("max_entries", 200)}
             return {
-                "id": "inferred_read_directory",
-                "name": "read",
+                "id": "inferred_list_dir",
+                "name": "list_dir",
                 "args": args,
                 "inferred": True,
             }
@@ -7101,7 +7114,7 @@ class OfficeAgent:
         if task_type == "code_lookup":
             return (
                 "本轮属于本地代码定位/函数解释任务。"
-                "直接调用 search_codebase、read、search_file 等工具搜索并读取上下文。"
+                "直接调用 search_codebase、list_dir、glob_file_search、read_file、search_contents_in_file 等工具搜索并读取上下文。"
                 "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
                 "当用户只给了不带扩展名的关键词时，先按 basename 模糊搜索，不要先追问扩展名。"
                 "若 root='.' 首次未命中，自动在其余可访问根目录继续搜索。"
@@ -7416,22 +7429,34 @@ class OfficeAgent:
                 func=self._apply_patch_tool,
             ),
             self._StructuredTool.from_function(
-                name="read",
-                description="Read a local file or directory. Files support chunked reads and Office/PDF text extraction; directories return sorted entries.",
-                args_schema=ReadArgs,
-                func=self._read_tool,
+                name="read_file",
+                description="Read one local file. Supports chunked reads and Office/PDF text extraction for large document formats.",
+                args_schema=ReadTextFileArgs,
+                func=self._read_file_tool,
             ),
             self._StructuredTool.from_function(
-                name="search_file",
-                description="Search inside one local file or extracted document text and return evidence snippets with read hints.",
-                args_schema=SearchFileArgs,
-                func=self._search_file_tool,
+                name="list_dir",
+                description="List files and directories under one local directory path without reading file contents.",
+                args_schema=ListDirectoryArgs,
+                func=self._list_dir_tool,
             ),
             self._StructuredTool.from_function(
-                name="search_file_multi",
-                description="Run multiple search queries against one local file or extracted document text and merge the evidence snippets.",
+                name="glob_file_search",
+                description="Find files by glob pattern relative to the workspace or a given directory root.",
+                args_schema=GlobFileSearchArgs,
+                func=self._glob_file_search_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="search_contents_in_file",
+                description="Search text inside one known local file or extracted document text and return evidence snippets with read hints.",
+                args_schema=SearchTextInFileArgs,
+                func=self._search_contents_in_file_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="search_contents_in_file_multi",
+                description="Run multiple search queries against one known local file or extracted document text and merge the evidence snippets.",
                 args_schema=SearchFileMultiArgs,
-                func=self._search_file_multi_tool,
+                func=self._search_contents_in_file_multi_tool,
             ),
             self._StructuredTool.from_function(
                 name="read_section",
@@ -7714,55 +7739,6 @@ class OfficeAgent:
 
     def _apply_patch_tool(self, patch: str, cwd: str = ".", check: bool = False) -> str:
         result = self.tools.apply_patch(patch=patch, cwd=cwd, check=check)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _read_tool(
-        self,
-        path: str = ".",
-        start_char: int = 0,
-        max_chars: int = 200000,
-        start_line: int = 0,
-        max_lines: int = 0,
-        max_entries: int = 200,
-    ) -> str:
-        result = self.tools.read(
-            path=path,
-            start_char=start_char,
-            max_chars=max_chars,
-            start_line=start_line,
-            max_lines=max_lines,
-            max_entries=max_entries,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _search_file_tool(
-        self,
-        path: str,
-        query: str,
-        max_matches: int = 8,
-        context_chars: int = 280,
-    ) -> str:
-        result = self.tools.search_file(
-            path=path,
-            query=query,
-            max_matches=max_matches,
-            context_chars=context_chars,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _search_file_multi_tool(
-        self,
-        path: str,
-        queries: list[str],
-        per_query_max_matches: int = 3,
-        context_chars: int = 280,
-    ) -> str:
-        result = self.tools.search_file_multi(
-            path=path,
-            queries=queries,
-            per_query_max_matches=per_query_max_matches,
-            context_chars=context_chars,
-        )
         return json.dumps(result, ensure_ascii=False)
 
     def _read_section_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
@@ -8076,11 +8052,20 @@ class OfficeAgent:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 
-    def _list_directory_tool(self, path: str = ".", max_entries: int = 200) -> str:
-        result = self.tools.list_directory(path=path, max_entries=max_entries)
+    def _list_dir_tool(self, path: str = ".", max_entries: int = 200) -> str:
+        result = self.tools.list_dir(path=path, max_entries=max_entries)
         return json.dumps(result, ensure_ascii=False)
 
-    def _read_text_file_tool(
+    def _glob_file_search_tool(
+        self,
+        pattern: str,
+        path: str = ".",
+        max_results: int = 200,
+    ) -> str:
+        result = self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_file_tool(
         self,
         path: str,
         start_char: int = 0,
@@ -8088,7 +8073,7 @@ class OfficeAgent:
         start_line: int = 0,
         max_lines: int = 0,
     ) -> str:
-        result = self.tools.read_text_file(
+        result = self.tools.read_file(
             path=path,
             start_char=start_char,
             max_chars=max_chars,
@@ -8097,13 +8082,28 @@ class OfficeAgent:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _search_text_in_file_tool(
+    def _search_contents_in_file_tool(
         self, path: str, query: str, max_matches: int = 8, context_chars: int = 280
     ) -> str:
-        result = self.tools.search_text_in_file(
+        result = self.tools.search_contents_in_file(
             path=path,
             query=query,
             max_matches=max_matches,
+            context_chars=context_chars,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_contents_in_file_multi_tool(
+        self,
+        path: str,
+        queries: list[str],
+        per_query_max_matches: int = 3,
+        context_chars: int = 280,
+    ) -> str:
+        result = self.tools.search_contents_in_file_multi(
+            path=path,
+            queries=queries,
+            per_query_max_matches=per_query_max_matches,
             context_chars=context_chars,
         )
         return json.dumps(result, ensure_ascii=False)
@@ -8387,10 +8387,10 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_file(path=该路径, query=目标关键词)；"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_contents_in_file(path=该路径, query=目标关键词)；"
                                 "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
                                 "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
+                                "随后再用 read_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
                             ),
                         }
                     )
@@ -8407,16 +8407,16 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_file(path=该路径, query=目标关键词)；"
+                                "若任务是在规范/协议中定位章节或命令码，先调用 search_contents_in_file(path=该路径, query=目标关键词)；"
                                 "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
                                 "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
+                                "随后再用 read_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
                             ),
                         }
                     )
                     notes.append(f"文档(大文件-路径):{name}")
                     issues.append(
-                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read 分块读取。"
+                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read_file 分块读取。"
                     )
                     continue
 

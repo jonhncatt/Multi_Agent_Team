@@ -14,9 +14,11 @@ allowed_tools:
   - exec_command
   - write_stdin
   - apply_patch
-  - read
-  - search_file
-  - search_file_multi
+  - read_file
+  - list_dir
+  - glob_file_search
+  - search_contents_in_file
+  - search_contents_in_file_multi
   - read_section
   - table_extract
   - fact_check_file

@@ -1869,8 +1869,8 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "read",
-                "description": "Read a local file or directory. Files support chunked reads and Office/PDF text extraction; directories return sorted entries.",
+                "name": "read_file",
+                "description": "Read one local file. Supports chunked reads plus Office/PDF text extraction for large document formats.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1879,6 +1879,18 @@ class LocalToolExecutor:
                         "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
                         "start_line": {"type": "integer", "minimum": 0, "default": 0},
                         "max_lines": {"type": "integer", "minimum": 0, "maximum": 200000, "default": 0},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "list_dir",
+                "description": "List files and directories under one local directory path without reading file contents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "default": "."},
                         "max_entries": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
                     },
                     "additionalProperties": False,
@@ -1886,8 +1898,23 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "search_file",
-                "description": "Search inside one local file or extracted document text and return evidence snippets with read hints.",
+                "name": "glob_file_search",
+                "description": "Find files by glob pattern relative to the workspace or a given directory root.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {"type": "string", "default": "."},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "search_contents_in_file",
+                "description": "Search text inside one known local file or extracted document text and return evidence snippets with read hints.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1902,8 +1929,8 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
-                "name": "search_file_multi",
-                "description": "Run multiple searches against one local file or extracted document text and merge the evidence snippets.",
+                "name": "search_contents_in_file_multi",
+                "description": "Run multiple text searches against one known local file or extracted document text and merge the evidence snippets.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2303,14 +2330,20 @@ class LocalToolExecutor:
         if name == "write_stdin":
             result = self.write_stdin(**arguments)
             return self._decorate_result(result)
-        if name == "read":
-            result = self.read(**arguments)
+        if name == "read_file":
+            result = self.read_file(**arguments)
             return self._decorate_result(result)
-        if name == "search_file":
-            result = self.search_file(**arguments)
+        if name == "list_dir":
+            result = self.list_dir(**arguments)
             return self._decorate_result(result)
-        if name == "search_file_multi":
-            result = self.search_file_multi(**arguments)
+        if name == "glob_file_search":
+            result = self.glob_file_search(**arguments)
+            return self._decorate_result(result)
+        if name == "search_contents_in_file":
+            result = self.search_contents_in_file(**arguments)
+            return self._decorate_result(result)
+        if name == "search_contents_in_file_multi":
+            result = self.search_contents_in_file_multi(**arguments)
             return self._decorate_result(result)
         if name == "read_section":
             result = self.read_section(**arguments)
@@ -2690,43 +2723,22 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "web_search")
         return payload
 
-    def read(
+    def read_file(
         self,
         path: str = ".",
         start_char: int = 0,
         max_chars: int = 200000,
         start_line: int = 0,
         max_lines: int = 0,
-        max_entries: int = 200,
     ) -> dict[str, Any]:
         try:
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if real_path.is_dir():
-                limit = max(1, min(500, int(max_entries)))
-                ordered = sorted(real_path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
-                entries = [
-                    {
-                        "name": child.name,
-                        "is_dir": child.is_dir(),
-                        "size": child.stat().st_size if child.is_file() else None,
-                    }
-                    for child in ordered[:limit]
-                ]
-                has_more = len(ordered) > limit
                 return {
-                    "ok": True,
-                    "tool_name": "read",
-                    "kind": "directory",
-                    "path": str(real_path),
-                    "entries": entries,
-                    "entry_count": len(entries),
-                    "total_entries": len(ordered),
-                    "max_entries": limit,
-                    "truncated": has_more,
-                    "has_more": has_more,
-                    "source_format": "directory_listing",
+                    "ok": False,
+                    "error": f"Path is a directory: {path}. Use list_dir instead.",
                 }
 
             result = self.read_text_file(
@@ -2739,13 +2751,61 @@ class LocalToolExecutor:
             if isinstance(result, dict) and bool(result.get("ok")):
                 payload = dict(result)
                 payload.setdefault("kind", "file")
-                payload.setdefault("tool_name", "read")
+                payload.setdefault("tool_name", "read_file")
                 return payload
             return result
         except Exception as exc:
-            return {"ok": False, "error": f"read failed: {exc}"}
+            return {"ok": False, "error": f"read_file failed: {exc}"}
 
-    def search_file(
+    def list_dir(
+        self,
+        path: str = ".",
+        max_entries: int = 200,
+    ) -> dict[str, Any]:
+        result = self.list_directory(path=path, max_entries=max_entries)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "list_dir failed: invalid result"}
+        payload = dict(result)
+        payload.setdefault("tool_name", "list_dir")
+        return payload
+
+    def glob_file_search(
+        self,
+        pattern: str,
+        path: str = ".",
+        max_results: int = 200,
+    ) -> dict[str, Any]:
+        try:
+            normalized_pattern = str(pattern or "").strip()
+            if not normalized_pattern:
+                return {"ok": False, "error": "pattern is empty"}
+            real_root = self._resolve_path(path)
+            if not real_root.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_root.is_dir():
+                return {"ok": False, "error": f"Not a directory: {path}"}
+            limit = max(1, min(500, int(max_results)))
+            all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+            matches: list[str] = []
+            for candidate in all_matches[:limit]:
+                matches.append(str(candidate.resolve()))
+            truncated = len(all_matches) > limit
+            return {
+                "ok": True,
+                "tool_name": "glob_file_search",
+                "path": str(real_root),
+                "pattern": normalized_pattern,
+                "count": len(matches),
+                "matches": matches,
+                "total_matches": len(all_matches),
+                "max_results": limit,
+                "truncated": truncated,
+                "summary": f"matched {len(matches)} files",
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"glob_file_search failed: {exc}"}
+
+    def search_contents_in_file(
         self,
         path: str,
         query: str,
@@ -2759,12 +2819,12 @@ class LocalToolExecutor:
             context_chars=context_chars,
         )
         if not isinstance(result, dict):
-            return {"ok": False, "error": "search_file failed: invalid result"}
+            return {"ok": False, "error": "search_contents_in_file failed: invalid result"}
         payload = dict(result)
-        payload.setdefault("tool_name", "search_file")
+        payload.setdefault("tool_name", "search_contents_in_file")
         return payload
 
-    def search_file_multi(
+    def search_contents_in_file_multi(
         self,
         path: str,
         queries: list[str],
@@ -2778,9 +2838,9 @@ class LocalToolExecutor:
             context_chars=context_chars,
         )
         if not isinstance(result, dict):
-            return {"ok": False, "error": "search_file_multi failed: invalid result"}
+            return {"ok": False, "error": "search_contents_in_file_multi failed: invalid result"}
         payload = dict(result)
-        payload.setdefault("tool_name", "search_file_multi")
+        payload.setdefault("tool_name", "search_contents_in_file_multi")
         return payload
 
     def read_section(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
@@ -3206,18 +3266,31 @@ class LocalToolExecutor:
             if not real_path.is_dir():
                 return {"ok": False, "error": f"Not a directory: {path}"}
 
+            limit = max(1, min(500, int(max_entries)))
+            ordered = sorted(real_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
             entries = []
-            for child in sorted(real_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            for child in ordered[:limit]:
                 entries.append(
                     {
                         "name": child.name,
+                        "type": "symlink" if child.is_symlink() else ("directory" if child.is_dir() else "file"),
                         "is_dir": child.is_dir(),
                         "size": child.stat().st_size if child.is_file() else None,
                     }
                 )
-                if len(entries) >= max_entries:
-                    break
-            return {"ok": True, "path": str(real_path), "entries": entries}
+            truncated = len(ordered) > limit
+            return {
+                "ok": True,
+                "path": str(real_path),
+                "entries": entries,
+                "entry_count": len(entries),
+                "total_entries": len(ordered),
+                "max_entries": limit,
+                "truncated": truncated,
+                "has_more": truncated,
+                "source_format": "directory_listing",
+                "summary": f"listed {len(entries)} entries",
+            }
         except Exception as exc:
             return {"ok": False, "error": f"list_directory failed: {exc}"}
 

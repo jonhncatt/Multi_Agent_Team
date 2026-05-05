@@ -302,7 +302,12 @@ def looks_like_table_reformat_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
-    if "table_extract" in lowered or "read_text_file" in lowered or "read(" in lowered or "search_file" in lowered:
+    if (
+        "table_extract" in lowered
+        or "read_text_file" in lowered
+        or "read_file(" in lowered
+        or "search_contents_in_file" in lowered
+    ):
         return False
     has_table_ref = text_has_any(lowered, TABLE_REFERENCE_HINTS)
     if not has_table_ref:
@@ -358,7 +363,7 @@ def looks_like_understanding_request(
     if agent._requires_evidence_mode(user_message, []):
         return False
     tool_markers = (
-        "read", "read_text_file", "search_file", "search_text_in_file", "search_file_multi",
+        "read_file", "read_text_file", "list_dir", "glob_file_search", "search_contents_in_file", "search_text_in_file", "search_contents_in_file_multi",
         "read_section", "read_section_by_heading", "table_extract", "fact_check_file", "search_codebase",
         "web_search", "search_web", "web_fetch", "fetch_web", "web_download", "download_web_file",
     )
@@ -429,16 +434,17 @@ def evidence_mode_needs_more_support(agent: Any, ai_msg: Any, tool_events: list[
 
     tool_names = {tool.name for tool in tool_events}
     evidence_tool_hits = tool_names & {
-        "search_file", "search_text_in_file", "search_file_multi", "multi_query_search",
-        "read", "read_text_file", "read_section", "read_section_by_heading",
+        "search_contents_in_file", "search_text_in_file", "search_contents_in_file_multi", "multi_query_search",
+        "read_file", "read_text_file", "read_section", "read_section_by_heading",
+        "list_dir", "glob_file_search",
         "table_extract", "fact_check_file", "search_codebase",
     }
-    if spec_lookup_request and not ({"search_file", "search_text_in_file"} & tool_names):
+    if spec_lookup_request and not ({"search_contents_in_file", "search_text_in_file"} & tool_names):
         return True
     if not evidence_tool_hits:
         return True
     if spec_lookup_request and not (
-        {"read", "read_text_file", "read_section", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names
+        {"read_file", "read_text_file", "read_section", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names
     ):
         return True
 
@@ -468,8 +474,8 @@ def request_likely_requires_tools(agent: Any, user_message: str, attachment_meta
     direct_hints = (
         "路径", "目录", "文件夹", "测试", "用例", "测试文件", "文件名", "扩展名", "函数", "方法", "代码", "源码",
         "代码库", "仓库", "repo", "项目", "实现", "调用点", "定义", "声明", "master", "source", "src", "test",
-        "tests", "case", "在哪", "搜索", "上网", "网上", "查一下", "搜一下", "read", "read_text_file", "search_file",
-        "search_text_in_file", "search_file_multi", "multi_query_search", "read_section", "read_section_by_heading",
+        "tests", "case", "在哪", "搜索", "上网", "网上", "查一下", "搜一下", "read_file", "read_text_file", "list_dir", "glob_file_search", "search_contents_in_file",
+        "search_text_in_file", "search_contents_in_file_multi", "multi_query_search", "read_section", "read_section_by_heading",
         "table_extract", "fact_check_file", "search_codebase", "apply_patch", "写入", "替换", "更新", "改成", "改为",
         "保存", "落盘", "apply", "patch", "write back", "overwrite", "replace", "update", "exec_command",
         "run_shell", "web_search", "search_web", "web_fetch", "fetch_web", "web_download", "download_web_file", ".pdf",

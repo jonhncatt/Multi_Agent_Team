@@ -4,9 +4,11 @@ from typing import Any
 
 
 _TOOL_ALIASES = {
-    "read": {"read", "read_text_file", "list_directory"},
-    "search_file": {"search_file", "search_text_in_file"},
-    "search_file_multi": {"search_file_multi", "multi_query_search"},
+    "read_file": {"read_file", "read_text_file"},
+    "list_dir": {"list_dir", "list_directory"},
+    "glob_file_search": {"glob_file_search"},
+    "search_contents_in_file": {"search_contents_in_file", "search_text_in_file"},
+    "search_contents_in_file_multi": {"search_contents_in_file_multi", "multi_query_search"},
     "read_section": {"read_section", "read_section_by_heading"},
     "web_search": {"web_search", "search_web"},
     "web_fetch": {"web_fetch", "fetch_web"},
@@ -21,12 +23,14 @@ def _tool_name_is(name: str, canonical: str) -> bool:
 
 def reviewer_readonly_tool_names() -> list[str]:
     return [
-        "read",
         "read_text_file",
-        "search_file",
+        "read_file",
+        "list_dir",
+        "glob_file_search",
         "search_text_in_file",
-        "search_file_multi",
+        "search_contents_in_file",
         "multi_query_search",
+        "search_contents_in_file_multi",
         "read_section",
         "read_section_by_heading",
         "table_extract",
@@ -61,7 +65,7 @@ def normalize_reviewer_verdict(
     verdict = str(raw_verdict or "pass").strip().lower()
     partial_evidence_available = bool(attachment_context_available or worker_evidence_available)
     readonly_set = set(readonly_checks)
-    has_spec_search = bool(readonly_set & {"search_file", "search_text_in_file"})
+    has_spec_search = bool(readonly_set & {"search_contents_in_file", "search_text_in_file"})
     if verdict == "needs_attention":
         if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
             spec_lookup_request and not has_spec_search and not partial_evidence_available
@@ -108,7 +112,7 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         query_text = ", ".join(queries) if queries else "(none)"
         return f"fact_check_file verdict={verdict}, evidence={evidence_count}, queries={query_text}"
 
-    if _tool_name_is(name, "search_file"):
+    if _tool_name_is(name, "search_contents_in_file"):
         query = str(result.get("query") or "").strip() or "(empty)"
         matches = list(result.get("matches") or [])
         match_count = int(result.get("match_count") or len(matches))
@@ -116,16 +120,16 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         page_hint = int(first.get("page_hint") or 0)
         matched_text = agent._shorten(first.get("matched_text") or "", 60) if first else ""
         if page_hint > 0:
-            return f"search_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
-        return f"search_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
+            return f"search_contents_in_file query={query}, matches={match_count}, first_page={page_hint}, first_hit={matched_text or '(none)'}"
+        return f"search_contents_in_file query={query}, matches={match_count}, first_hit={matched_text or '(none)'}"
 
-    if _tool_name_is(name, "search_file_multi"):
+    if _tool_name_is(name, "search_contents_in_file_multi"):
         queries = agent._normalize_string_list(result.get("queries") or [], limit=4, item_limit=40)
         matches = list(result.get("matches") or [])
         match_count = int(result.get("match_count") or len(matches))
         first = matches[0] if matches else {}
         page_hint = int(first.get("page_hint") or 0)
-        return f"search_file_multi queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
+        return f"search_contents_in_file_multi queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
 
     if name == "doc_index_build":
         page_count = int(result.get("page_count") or 0)
@@ -182,7 +186,16 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
             )
         return f"web_fetch url={agent._shorten(url, 80)}, format={source_format or 'unknown'}, length={length}"
 
-    if _tool_name_is(name, "read"):
+    if _tool_name_is(name, "list_dir"):
+        entry_count = int(result.get("entry_count") or len(result.get("entries") or []))
+        return f"list_dir path={agent._shorten(result.get('path') or '', 60)}, entries={entry_count}"
+
+    if _tool_name_is(name, "glob_file_search"):
+        pattern = str(result.get("pattern") or "").strip() or "(empty)"
+        match_count = int(result.get("count") or len(result.get("matches") or []))
+        return f"glob_file_search pattern={pattern}, matches={match_count}"
+
+    if _tool_name_is(name, "read_file"):
         path = str(result.get("path") or "").strip()
         length = int(result.get("length") or 0)
         start_char = int(result.get("start_char") or 0)
@@ -193,11 +206,11 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
             end_line = int(result.get("end_line") or 0)
             total_lines = int(result.get("total_lines") or 0)
             return (
-                f"read path={agent._shorten(path, 60)}, chars={length}, "
+                f"read_file path={agent._shorten(path, 60)}, chars={length}, "
                 f"lines={start_line}-{end_line}/{total_lines}, truncated={str(truncated).lower()}"
             )
         return (
-            f"read path={agent._shorten(path, 60)}, chars={length}, "
+            f"read_file path={agent._shorten(path, 60)}, chars={length}, "
             f"range={start_char}-{end_char}, truncated={str(truncated).lower()}"
         )
 

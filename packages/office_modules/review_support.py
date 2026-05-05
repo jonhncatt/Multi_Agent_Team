@@ -123,12 +123,14 @@ def summarize_validation_context(agent: Any, tool_events: list[ToolEvent]) -> di
 
 def has_successful_local_file_access(agent: Any, tool_events: list[ToolEvent]) -> bool:
     local_file_tools = {
-        "read",
         "read_text_file",
-        "search_file",
+        "read_file",
+        "list_dir",
+        "glob_file_search",
         "search_text_in_file",
-        "search_file_multi",
+        "search_contents_in_file",
         "multi_query_search",
+        "search_contents_in_file_multi",
         "read_section",
         "read_section_by_heading",
         "table_extract",

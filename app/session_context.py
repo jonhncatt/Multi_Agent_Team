@@ -898,7 +898,7 @@ def record_turn_memory(
         name = str(item.get("name") or "").strip()
         if name:
             source_tool = name
-            if name in {"image_read", "read", "read_section", "table_extract", "fact_check_file"}:
+            if name in {"image_read", "read_file", "read_section", "table_extract", "fact_check_file"}:
                 break
 
     artifact_memory = _session_artifact_memory(session)

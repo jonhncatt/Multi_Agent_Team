@@ -20,7 +20,7 @@ _TRACKING_QUERY_KEYS = {
 _TOOL_ALIASES = {
     "web_search": {"web_search", "search_web"},
     "web_fetch": {"web_fetch", "fetch_web"},
-    "search_file": {"search_file", "search_text_in_file"},
+    "search_contents_in_file": {"search_contents_in_file", "search_text_in_file"},
     "read_section": {"read_section", "read_section_by_heading"},
 }
 
@@ -135,7 +135,7 @@ def extract_citations_from_tool_result(
         )
         return out
 
-    if _tool_name_is(name, "search_file"):
+    if _tool_name_is(name, "search_contents_in_file"):
         query = str(result.get("query") or arguments.get("query") or "").strip()
         for match in list(result.get("matches") or [])[:4]:
             if not isinstance(match, dict):
@@ -146,7 +146,7 @@ def extract_citations_from_tool_result(
                 {
                     "source_type": "document",
                     "kind": "evidence",
-                    "tool": "search_file",
+                    "tool": "search_contents_in_file",
                     "label": Path(path or "document").name,
                     "path": path,
                     "locator": f"{locator}, query={query}" if locator and query else (locator or f"query={query}" if query else None),
@@ -290,7 +290,7 @@ def finalize_citation_candidates(agent: Any, citations: list[dict[str, Any]]) ->
             "web_fetch": 6,
             "fetch_web": 6,
             "fact_check_file": 5,
-            "search_file": 5,
+            "search_contents_in_file": 5,
             "search_text_in_file": 5,
             "read_section": 5,
             "read_section_by_heading": 5,

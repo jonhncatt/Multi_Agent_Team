@@ -936,11 +936,15 @@ function formatToolProgressLabel(locale, group) {
   const toolName = String(item.tool_name || "").trim();
   const target = toolCallTargetFromSource(item);
   const labelValue = target || toolName || "tool";
-  const readTools = new Set(["read", "read_section", "image_read", "image_inspect", "table_extract"]);
-  const searchTools = new Set(["search_file", "search_file_multi", "fact_check_file", "web_search"]);
+  const readTools = new Set(["read_file", "read_section", "image_read", "image_inspect", "table_extract"]);
+  const listTools = new Set(["list_dir"]);
+  const globTools = new Set(["glob_file_search"]);
+  const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "fact_check_file", "web_search"]);
   const commandTools = new Set(["exec_command", "run_command", "shell", "bash"]);
   const patchTools = new Set(["apply_patch"]);
   if (readTools.has(toolName)) return translateUi(locale, "activity.progress.read", { target: labelValue });
+  if (listTools.has(toolName)) return translateUi(locale, "activity.progress.list_dir", { target: labelValue });
+  if (globTools.has(toolName)) return translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
   if (searchTools.has(toolName)) return translateUi(locale, "activity.progress.search", { target: labelValue });
   if (commandTools.has(toolName)) return translateUi(locale, "activity.progress.execute_command", { target: labelValue });
   if (patchTools.has(toolName)) return translateUi(locale, "activity.progress.apply_patch", { target: labelValue });

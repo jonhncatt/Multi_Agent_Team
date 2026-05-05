@@ -123,9 +123,11 @@ _CODEX_CORE_TOOL_NAMES = (
     "request_user_input",
 )
 _FS_CONTENT_TOOL_NAMES = (
-    "read",
-    "search_file",
-    "search_file_multi",
+    "read_file",
+    "list_dir",
+    "glob_file_search",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
     "read_section",
     "table_extract",
     "fact_check_file",
@@ -193,7 +195,7 @@ def build_office_tool_modules() -> tuple[ToolModule, ...]:
         ToolModule(
             module_id="fs_content_tools",
             title="FS Content Tool Module",
-            description="统一的文件、目录、长文读取与结构化代码搜索工具。",
+            description="统一的目录发现、文件读取、文档定位与结构化代码搜索工具。",
             build_executor=_build_scoped_executor_factory(
                 module_id="fs_content_tools",
                 title="FS Content Tool Module",

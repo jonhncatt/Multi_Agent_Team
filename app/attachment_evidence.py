@@ -165,10 +165,10 @@ def build_attachment_evidence_pack(
                 )
                 item["has_more"] = True
                 item["read_hint"] = {
-                    "tool": "read",
+                    "tool": "read_file",
                     "path": str(path),
                     "max_chars": 24000,
-                    "followups": ["search_file", "search_file_multi", "read_section", "table_extract"],
+                    "followups": ["search_contents_in_file", "search_contents_in_file_multi", "read_section", "table_extract"],
                 }
                 pack.append(item)
                 continue
@@ -185,16 +185,16 @@ def build_attachment_evidence_pack(
                 item["summary"] = _compact_text(f"{name or path.name} · {item['source_format']} · {first_line}", _SUMMARY_CHARS)
             item["has_more"] = bool(total_len >= _PREVIEW_CHARS or int(item.get("size") or 0) > _PREVIEW_CHARS)
             item["read_hint"] = {
-                "tool": "read",
+                "tool": "read_file",
                 "path": str(path),
                 "max_chars": 24000,
-                "followups": ["search_file", "search_file_multi", "read_section", "table_extract"],
+                "followups": ["search_contents_in_file", "search_contents_in_file_multi", "read_section", "table_extract"],
             }
             pack.append(item)
             continue
 
         item["source_format"] = "binary_or_unknown"
         item["summary"] = f"{name or path.name} · {mime or suffix or 'unknown'} · use read/search tools if needed"
-        item["read_hint"] = {"tool": "read", "path": str(path), "max_chars": 12000}
+        item["read_hint"] = {"tool": "read_file", "path": str(path), "max_chars": 12000}
         pack.append(item)
     return pack

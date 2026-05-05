@@ -61,13 +61,19 @@ def _result_count(result: dict[str, Any], *keys: str) -> int:
 def summarize_tool_args(tool_name: str, args: dict[str, Any]) -> str:
     normalized = str(tool_name or "").strip()
     arguments = dict(args or {})
-    if normalized == "read":
+    if normalized == "read_file":
         return f"path={arguments.get('path') or '.'}"
-    if normalized in {"search_file", "search_codebase"}:
+    if normalized == "list_dir":
+        return f"path={arguments.get('path') or '.'}"
+    if normalized == "glob_file_search":
+        pattern = arguments.get("pattern") or ""
+        path = arguments.get("path") or "."
+        return f"pattern={mask_sensitive_text(str(pattern))[:120]} · path={path}"
+    if normalized in {"search_contents_in_file", "search_codebase"}:
         query = arguments.get("query") or arguments.get("pattern") or ""
         path = arguments.get("path") or ""
         return f"query={mask_sensitive_text(str(query))[:120]}{f' · path={path}' if path else ''}"
-    if normalized == "search_file_multi":
+    if normalized == "search_contents_in_file_multi":
         queries = list(arguments.get("queries") or [])
         return f"path={arguments.get('path') or '.'} · queries={len(queries)}"
     if normalized == "read_section":
@@ -121,11 +127,15 @@ def summarize_tool_result(tool_name: str, result: Any, *, locale: str = "en") ->
         if isinstance(error, dict):
             return safe_error_message(error.get("message") or error.get("kind") or translate(locale, "runtime.tool.failed"))
         return safe_error_message(error or payload.get("summary") or translate(locale, "runtime.tool.failed"))
-    if normalized == "read":
+    if normalized == "read_file":
         return translate(locale, "runtime.tool.summary.read_chars", count=len(str(payload.get("content") or "")))
+    if normalized == "list_dir":
+        return translate(locale, "runtime.tool.summary.listed_entries", count=_result_count(payload, "entries", "entry_count", "count"))
+    if normalized == "glob_file_search":
+        return translate(locale, "runtime.tool.summary.file_matches", count=_result_count(payload, "matches", "count", "total_matches"))
     if normalized == "search_codebase":
         return translate(locale, "runtime.tool.summary.search_results", count=_result_count(payload, "matches", "results", "count"))
-    if normalized in {"search_file", "search_file_multi"}:
+    if normalized in {"search_contents_in_file", "search_contents_in_file_multi"}:
         return translate(locale, "runtime.tool.summary.search_matches", count=_result_count(payload, "matches", "results", "count"))
     if normalized == "read_section":
         return translate(locale, "runtime.tool.summary.read_section_chars", count=len(str(payload.get("content") or "")))
