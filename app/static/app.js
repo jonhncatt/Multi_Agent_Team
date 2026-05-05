@@ -1826,6 +1826,7 @@ function App() {
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const contextMeterRef = useRef(null);
+  const contextMeterCloseTimerRef = useRef(null);
   const bootReadyRef = useRef(false);
   const composerDragDepthRef = useRef(0);
   const projectMenuRef = useRef(null);
@@ -2063,6 +2064,15 @@ function App() {
   }, [messages, drawerView]);
 
   useEffect(() => {
+    return () => {
+      if (contextMeterCloseTimerRef.current) {
+        window.clearTimeout(contextMeterCloseTimerRef.current);
+        contextMeterCloseTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
   }, []);
@@ -2156,6 +2166,24 @@ function App() {
     const normalized = normalizeUiError(uiLocale, errorLike, fallbackSummary, fallback);
     setUiError(normalized);
     return normalized;
+  }
+
+  function openContextMeter() {
+    if (contextMeterCloseTimerRef.current) {
+      window.clearTimeout(contextMeterCloseTimerRef.current);
+      contextMeterCloseTimerRef.current = null;
+    }
+    setContextMeterOpen(true);
+  }
+
+  function scheduleContextMeterClose() {
+    if (contextMeterCloseTimerRef.current) {
+      window.clearTimeout(contextMeterCloseTimerRef.current);
+    }
+    contextMeterCloseTimerRef.current = window.setTimeout(() => {
+      contextMeterCloseTimerRef.current = null;
+      setContextMeterOpen(false);
+    }, 160);
   }
 
   function updateModelSelection(nextModel, options = {}) {
@@ -4627,8 +4655,8 @@ function App() {
               <div
                 className="context-meter-wrap"
                 ref=${contextMeterRef}
-                onMouseEnter=${() => setContextMeterOpen(true)}
-                onMouseLeave=${() => setContextMeterOpen(false)}
+                onMouseEnter=${openContextMeter}
+                onMouseLeave=${scheduleContextMeterClose}
               >
                 <button
                   className="context-meter-trigger"
@@ -4637,6 +4665,10 @@ function App() {
                   aria-expanded=${contextMeterOpen ? "true" : "false"}
                   onClick=${(event) => {
                     event.stopPropagation();
+                    if (contextMeterCloseTimerRef.current) {
+                      window.clearTimeout(contextMeterCloseTimerRef.current);
+                      contextMeterCloseTimerRef.current = null;
+                    }
                     setContextMeterOpen((prev) => !prev);
                   }}
                 >
@@ -4651,7 +4683,13 @@ function App() {
                 </button>
                 ${contextMeterOpen
                   ? html`
-                      <div className="context-meter-popover" role="dialog" aria-label=${t("context_meter.title")}>
+                      <div
+                        className="context-meter-popover"
+                        role="dialog"
+                        aria-label=${t("context_meter.title")}
+                        onMouseEnter=${openContextMeter}
+                        onMouseLeave=${scheduleContextMeterClose}
+                      >
                         <div className="context-meter-title">${t("context_meter.title")}</div>
                         <div className="context-meter-compact">
                           ${runtimeStats.compact.map(

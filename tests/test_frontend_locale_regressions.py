@@ -344,3 +344,20 @@ def test_context_meter_uses_compact_summary_with_collapsed_details() -> None:
     assert '<details className="context-meter-details">' in script
     assert 'className="context-meter-details-toggle"' in script
     assert "<details className=\"context-meter-details\" open>" not in script
+
+
+def test_context_meter_hover_close_uses_delayed_timer() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "contextMeterCloseTimerRef",
+        "function openContextMeter()",
+        "function scheduleContextMeterClose()",
+        "window.setTimeout(() => {",
+        "onMouseEnter=${openContextMeter}",
+        "onMouseLeave=${scheduleContextMeterClose}",
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+    assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
