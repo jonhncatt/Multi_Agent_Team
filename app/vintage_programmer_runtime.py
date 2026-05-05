@@ -208,6 +208,18 @@ _IMAGE_READ_ACTION_HINTS = (
     "caption",
     "tool",
 )
+
+
+def default_loop_safeguards() -> dict[str, Any]:
+    return {
+        "max_total_tool_calls_per_turn": int(_DEFAULT_MAX_TOOL_CALLS_PER_TURN),
+        "max_same_tool_repeats": int(_DEFAULT_MAX_SAME_TOOL_REPEATS),
+        "max_no_progress_cycles": int(_DEFAULT_MAX_NO_PROGRESS_CYCLES),
+        "max_guard_rejections": int(_DEFAULT_MAX_GUARD_REJECTIONS),
+        "max_turn_seconds": int(_DEFAULT_MAX_TURN_SECONDS),
+        "supports_user_cancel": True,
+        "context_compaction": True,
+    }
 _IMAGE_INSPECT_ACTION_HINTS = (
     "inspect",
     "meta",
@@ -437,7 +449,6 @@ class VintageProgrammerSpec:
     approval_policy: str
     evidence_policy: str
     collaboration_modes: tuple[str, ...]
-    max_tool_rounds: int
     allowed_tools: tuple[str, ...]
     soul_text: str
     identity_text: str
@@ -484,7 +495,7 @@ class VintageProgrammerSpec:
             "title": self.title,
             "default_model": self.default_model,
             "tool_policy": self.tool_policy,
-            "max_tool_rounds": self.max_tool_rounds,
+            "loop_safeguards": default_loop_safeguards(),
             "allowed_tools": list(self.allowed_tools),
             "spec_files": list(self.spec_files),
             "identity": {
@@ -593,14 +604,10 @@ class VintageProgrammerRuntime:
         collaboration_modes = tuple(
             item for item in collaboration_modes if item in {"default", "plan", "execute"}
         ) or ("default", "plan", "execute")
-        max_tool_rounds = int(frontmatter.get("max_tool_rounds") or 8)
-        max_tool_rounds = max(0, min(12, max_tool_rounds))
         explicit_tools = []
         if isinstance(frontmatter.get("allowed_tools"), list):
             explicit_tools = [str(item or "").strip() for item in frontmatter["allowed_tools"] if str(item or "").strip()]
         allowed_tools = self._resolve_allowed_tools(tool_policy=tool_policy, explicit_tools=explicit_tools)
-        if not allowed_tools:
-            max_tool_rounds = 0
 
         spec_files = ["soul.md", "identity.md", "agent.md"]
         if tools_text:
@@ -615,7 +622,6 @@ class VintageProgrammerRuntime:
             approval_policy=approval_policy,
             evidence_policy=evidence_policy,
             collaboration_modes=collaboration_modes,
-            max_tool_rounds=max_tool_rounds,
             allowed_tools=allowed_tools,
             soul_text=soul_text,
             identity_text=identity_text,
@@ -3261,13 +3267,13 @@ class VintageProgrammerRuntime:
                 name for name in selected_tools
                 if name in _READ_ONLY_TOOL_NAMES and name != "update_plan"
             ]
-        tool_round_limit = spec.max_tool_rounds if selected_tools else 0
-        legacy_tool_loop_disabled = bool(selected_tools) and int(spec.max_tool_rounds or 0) == 0
-        max_tool_calls_per_turn = 0 if legacy_tool_loop_disabled else (_DEFAULT_MAX_TOOL_CALLS_PER_TURN if selected_tools else 0)
-        runnable_tools = list(selected_tools if max_tool_calls_per_turn > 0 else ())
-        max_turn_seconds = _DEFAULT_MAX_TURN_SECONDS if max_tool_calls_per_turn > 0 else 0
-        max_same_tool_repeats = _DEFAULT_MAX_SAME_TOOL_REPEATS
-        max_no_progress_cycles = _DEFAULT_MAX_NO_PROGRESS_CYCLES
+        loop_safeguards = default_loop_safeguards() if selected_tools else {}
+        max_tool_calls_per_turn = int(loop_safeguards.get("max_total_tool_calls_per_turn") or 0)
+        runnable_tools = list(selected_tools if selected_tools else ())
+        max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
+        max_same_tool_repeats = int(loop_safeguards.get("max_same_tool_repeats") or 0)
+        max_no_progress_cycles = int(loop_safeguards.get("max_no_progress_cycles") or 0)
+        max_guard_rejections = int(loop_safeguards.get("max_guard_rejections") or 0)
         inline_document = _looks_like_inline_document_payload(prompt_message)
         attachment_requires_tools = self._attachments_require_tools(attachment_metas)
         attachment_evidence_pack = [
@@ -3647,6 +3653,7 @@ class VintageProgrammerRuntime:
                     break
                 if max_turn_seconds and (time.monotonic() - turn_started_at) >= max_turn_seconds:
                     turn_status = "blocked"
+                    blocked_reason = blocked_reason or "turn_budget_wall_clock_exceeded"
                     forced_text = translate(locale, "runtime.budget.wall_clock")
                     notes.append("turn_budget_wall_clock_exceeded")
                     break
@@ -3928,6 +3935,7 @@ class VintageProgrammerRuntime:
                         break
                     if max_tool_calls_per_turn and tool_call_count >= max_tool_calls_per_turn:
                         turn_status = "blocked"
+                        blocked_reason = blocked_reason or "turn_budget_tool_calls_exceeded"
                         forced_text = translate(locale, "runtime.budget.tool_calls")
                         notes.append("turn_budget_tool_calls_exceeded")
                         stop_after_tools = True
@@ -4078,7 +4086,7 @@ class VintageProgrammerRuntime:
                                 }
                             )
                         notes.append("tool_guard_rejected")
-                        if guard_rejection_count > _DEFAULT_MAX_GUARD_REJECTIONS:
+                        if max_guard_rejections and guard_rejection_count > max_guard_rejections:
                             turn_status = "blocked"
                             blocked_reason = blocked_reason or "tool_guard_rejections_exceeded"
                             forced_text = str(result.get("summary") or translate(locale, "runtime.budget.no_progress"))
@@ -4196,10 +4204,12 @@ class VintageProgrammerRuntime:
                                 notes.append("image_read_repeat_fallback_answer")
                             else:
                                 turn_status = "blocked"
+                                blocked_reason = blocked_reason or "turn_budget_same_tool_repeats_exceeded"
                                 forced_text = translate(locale, "runtime.budget.same_tool_repeat")
                                 notes.append("turn_budget_same_tool_repeats_exceeded")
                         else:
                             turn_status = "blocked"
+                            blocked_reason = blocked_reason or "turn_budget_same_tool_repeats_exceeded"
                             forced_text = translate(locale, "runtime.budget.same_tool_repeat")
                             notes.append("turn_budget_same_tool_repeats_exceeded")
                         stop_after_tools = True
@@ -4289,6 +4299,7 @@ class VintageProgrammerRuntime:
                     last_round_signature = round_signature
                 if no_progress_cycles > max_no_progress_cycles:
                     turn_status = "blocked"
+                    blocked_reason = blocked_reason or "turn_budget_no_progress_exceeded"
                     forced_text = translate(locale, "runtime.budget.no_progress")
                     notes.append("turn_budget_no_progress_exceeded")
                     break
@@ -4536,6 +4547,7 @@ class VintageProgrammerRuntime:
                 "write_authorization_state": dict(write_authorization_state),
                 "invalid_final_guard": dict(invalid_final_guard),
                 "blocked_reason": blocked_reason,
+                "loop_safeguards": dict(loop_safeguards),
                 "attachment_evidence_pack_preview": [
                     {
                         "id": str(item.get("id") or ""),
@@ -4548,7 +4560,6 @@ class VintageProgrammerRuntime:
                 ],
                 "requires_tools": expects_tools,
                 "runtime_contract": runtime_contract.as_payload(),
-                "tool_round_limit": tool_round_limit,
                 "network_mode": spec.network_mode,
                 "inline_document": inline_document,
                 "thread_memory": dict(context_payload.get("thread_memory") or {}),

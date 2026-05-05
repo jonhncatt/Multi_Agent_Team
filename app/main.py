@@ -80,7 +80,7 @@ from app.pricing import estimate_usage_cost
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
+from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
 
 APP_TITLE = "Vintage Programmer"
@@ -789,6 +789,7 @@ def _runtime_status_response_payload(
         "default_project_id": str(_default_project().get("project_id") or ""),
         "git_branch": str(selected_project.get("git_branch") or ""),
         "build_version": BUILD_VERSION,
+        "loop_safeguards": default_loop_safeguards(),
     }
     context_meter = _build_context_meter_for_session(
         model=active_model,

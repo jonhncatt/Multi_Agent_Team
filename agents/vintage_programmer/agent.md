@@ -40,7 +40,6 @@ allowed_tools:
   - browser_wait
   - browser_snapshot
   - browser_screenshot
-max_tool_rounds: 8
 ---
 
 # Vintage Programmer Agent
