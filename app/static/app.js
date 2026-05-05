@@ -35,7 +35,9 @@ const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
-const BRANCH_REFRESH_INTERVAL_MS = 15_000;
+const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
+const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
+const PROJECTS_REFRESH_STALE_MS = 60_000;
 const UPLOAD_CONCURRENCY = 3;
 const THREAD_DETAIL_PAGE_SIZE = 40;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
@@ -1217,6 +1219,161 @@ function formatCompactionWarning(locale, compactionStatus, contextMeter) {
   return String(status.warning || meter.warning || "").trim();
 }
 
+function formatRuntimeModeLabel(locale, value) {
+  const normalized = String(value || "").trim() || "host";
+  return translateUiOrFallback(locale, `context_meter.mode.${normalized}`, normalized);
+}
+
+function formatRuntimeToggle(locale, value) {
+  return translateUi(locale, value ? "context_meter.value.enabled" : "context_meter.value.disabled");
+}
+
+function formatRuntimeTokenUsage(locale, value) {
+  const usage = value && typeof value === "object" ? value : {};
+  const input = Math.max(0, Number(usage.input_tokens || 0) || 0);
+  const output = Math.max(0, Number(usage.output_tokens || 0) || 0);
+  const total = Math.max(0, Number(usage.total_tokens || 0) || 0);
+  if (!input && !output && !total) return translateUi(locale, "context_meter.unknown");
+  return translateUi(locale, "context_meter.token_usage_value", {
+    input: formatTokenCount(input),
+    output: formatTokenCount(output),
+    total: formatTokenCount(total || (input + output)),
+  });
+}
+
+function formatWallClockLimit(seconds) {
+  const normalized = Math.max(0, Number(seconds || 0) || 0);
+  if (!normalized) return "-";
+  if (normalized % 60 === 0) return `${Math.round(normalized / 60)}m`;
+  return `${normalized}s`;
+}
+
+function latestAssistantActivity(messages) {
+  const items = Array.isArray(messages) ? messages : [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const message = items[index];
+    if (String((message && message.role) || "") !== "assistant") continue;
+    const activity = normalizeMessageActivity((message && message.activity) || {});
+    if (activity.started_at || activity.run_duration_ms || activity.trace_events.length) {
+      return activity;
+    }
+  }
+  return normalizeMessageActivity({});
+}
+
+function runtimeToolTimelineForStats({ hasLiveRunState, liveToolTimeline, inspectorToolTimeline, fallbackToolTimeline }) {
+  if (hasLiveRunState) {
+    return Array.isArray(liveToolTimeline) ? liveToolTimeline : [];
+  }
+  if (Array.isArray(inspectorToolTimeline) && inspectorToolTimeline.length) {
+    return inspectorToolTimeline;
+  }
+  return Array.isArray(fallbackToolTimeline) ? fallbackToolTimeline : [];
+}
+
+function normalizeRuntimeToolOutcome(item) {
+  const entry = item && typeof item === "object" ? item : {};
+  const rawStatus = String(entry.status || "").trim().toLowerCase();
+  const guardStatus = String(((entry.guard_result || {}).status) || "").trim().toLowerCase();
+  const resultPreview = entry.result_preview && typeof entry.result_preview === "object" ? entry.result_preview : {};
+  const errorKind = String((((resultPreview.error || {}).kind) || "")).trim().toLowerCase();
+  if (guardStatus === "rejected" || errorKind === "tool_call_rejected") return "rejected";
+  if (["ok", "completed", "success"].includes(rawStatus)) return "succeeded";
+  if (["error", "failed", "blocked"].includes(rawStatus)) return "failed";
+  return "unknown";
+}
+
+function buildRuntimeStatsSummary({
+  locale,
+  workspaceLabel,
+  runtimeStatus,
+  activeModel,
+  activeTurnStatus,
+  messages,
+  activityClockMs,
+  hasLiveRunState,
+  liveToolTimeline,
+  inspectorToolTimeline,
+  fallbackToolTimeline,
+  contextMeter,
+  maxOutputTokens,
+  tokenUsage,
+}) {
+  const currentRuntimeStatus = runtimeStatus && typeof runtimeStatus === "object" ? runtimeStatus : {};
+  const safeguards = (currentRuntimeStatus.loop_safeguards && typeof currentRuntimeStatus.loop_safeguards === "object")
+    ? currentRuntimeStatus.loop_safeguards
+    : {};
+  const activity = latestAssistantActivity(messages);
+  const toolTimeline = runtimeToolTimelineForStats({
+    hasLiveRunState,
+    liveToolTimeline,
+    inspectorToolTimeline,
+    fallbackToolTimeline,
+  });
+  let succeeded = 0;
+  let failed = 0;
+  let rejected = 0;
+  for (const item of toolTimeline) {
+    const outcome = normalizeRuntimeToolOutcome(item);
+    if (outcome === "succeeded") succeeded += 1;
+    else if (outcome === "rejected") rejected += 1;
+    else if (outcome === "failed") failed += 1;
+  }
+  const latestTool = toolTimeline.length
+    ? (
+      hasLiveRunState
+        ? toolTimeline[0]
+        : toolTimeline[toolTimeline.length - 1]
+    )
+    : null;
+  const latestToolName = String(
+    ((latestTool && (latestTool.tool || latestTool.name || latestTool.type)) || "")
+  ).trim() || "-";
+  const safeContextMeter = contextMeter && typeof contextMeter === "object" ? contextMeter : {};
+  const contextUsage = Math.max(0, Number(safeContextMeter.auto_compact_token_limit || 0) || 0)
+    ? `${formatTokenCount(safeContextMeter.estimated_tokens)} / ${formatTokenCount(safeContextMeter.auto_compact_token_limit)}`
+    : translateUi(locale, "context_meter.unknown");
+  return {
+    run: [
+      { key: "project", label: translateUi(locale, "context_meter.field.project"), value: workspaceLabel || "-" },
+      { key: "status", label: translateUi(locale, "context_meter.field.status"), value: formatRunEnum(locale, "turn_status", activeTurnStatus, "-") },
+      { key: "model", label: translateUi(locale, "context_meter.field.model"), value: activeModel || "-" },
+      { key: "elapsed", label: translateUi(locale, "context_meter.field.elapsed"), value: formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown") },
+      { key: "runtime_mode", label: translateUi(locale, "context_meter.field.runtime_mode"), value: formatRuntimeModeLabel(locale, currentRuntimeStatus.execution_mode) },
+    ],
+    tools: [
+      { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(toolTimeline.length) },
+      { key: "succeeded", label: translateUi(locale, "context_meter.field.tool_succeeded"), value: String(succeeded) },
+      { key: "failed", label: translateUi(locale, "context_meter.field.tool_failed"), value: String(failed) },
+      { key: "rejected", label: translateUi(locale, "context_meter.field.tool_rejected"), value: String(rejected) },
+      { key: "latest", label: translateUi(locale, "context_meter.field.tool_latest"), value: latestToolName },
+    ],
+    context: [
+      { key: "usage", label: translateUi(locale, "context_meter.field.context_usage"), value: contextUsage },
+      { key: "output_limit", label: translateUi(locale, "context_meter.field.output_limit"), value: formatTokenCount(maxOutputTokens) },
+      { key: "token_usage", label: translateUi(locale, "context_meter.field.token_usage"), value: formatRuntimeTokenUsage(locale, tokenUsage) },
+      ...(safeContextMeter.context_window
+        ? [{ key: "context_window", label: translateUi(locale, "context_meter.field.context_window"), value: formatTokenCount(safeContextMeter.context_window) }]
+        : []),
+    ],
+    safeguards: [
+      { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_tool_calls"), value: String(safeguards.max_total_tool_calls_per_turn || "-") },
+      { key: "same_tool", label: translateUi(locale, "context_meter.field.guard_same_tool"), value: String(safeguards.max_same_tool_repeats || "-") },
+      { key: "no_progress", label: translateUi(locale, "context_meter.field.guard_no_progress"), value: String(safeguards.max_no_progress_cycles || "-") },
+      { key: "rejections", label: translateUi(locale, "context_meter.field.guard_rejections"), value: String(safeguards.max_guard_rejections || "-") },
+      { key: "wall_clock", label: translateUi(locale, "context_meter.field.guard_wall_clock"), value: formatWallClockLimit(safeguards.max_turn_seconds) },
+      { key: "user_stop", label: translateUi(locale, "context_meter.field.guard_user_stop"), value: formatRuntimeToggle(locale, Boolean(safeguards.supports_user_cancel)) },
+      { key: "compaction", label: translateUi(locale, "context_meter.field.guard_compaction"), value: formatRuntimeToggle(locale, Boolean(safeguards.context_compaction)) },
+    ],
+  };
+}
+
+function nextRuntimeStatusPollIntervalMs({ sending, activeRunId, drawerView, contextMeterOpen }) {
+  if (sending || String(activeRunId || "").trim()) return RUNTIME_STATUS_ACTIVE_INTERVAL_MS;
+  if (drawerView === "run" || contextMeterOpen) return RUNTIME_STATUS_IDLE_INTERVAL_MS;
+  return 0;
+}
+
 function mergeRunSnapshot(prev, snapshot) {
   const next = snapshot && typeof snapshot === "object" ? snapshot : {};
   return {
@@ -1650,6 +1807,8 @@ function App() {
   const threadMenuRef = useRef(null);
   const threadLongPressRef = useRef({ timer: null, consumed: false });
   const projectsRequestSeqRef = useRef(0);
+  const projectsInFlightRef = useRef(null);
+  const projectsLastFetchedAtRef = useRef(0);
   const sessionsRequestSeqRef = useRef(0);
   const activeThreadRequestSeqRef = useRef(0);
   const activeThreadAbortRef = useRef(null);
@@ -1659,6 +1818,9 @@ function App() {
   const pendingTempThreadIdRef = useRef("");
   const skillsRequestSeqRef = useRef(0);
   const runtimeStatusRequestSeqRef = useRef(0);
+  const runtimeStatusAbortRef = useRef(null);
+  const runtimeStatusInFlightRef = useRef({ key: "", promise: null });
+  const runtimeStatusLastFetchedAtRef = useRef(0);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
   const setHealth = (value) => dispatch({ type: "update", path: ["bootstrap", "health"], value });
@@ -1917,34 +2079,48 @@ function App() {
     if (!bootReadyRef.current) return undefined;
     let disposed = false;
 
-    const refreshBranches = async () => {
+    const refreshVisibleState = async () => {
       if (disposed || document.visibilityState === "hidden") return;
-      await Promise.all([refreshProjects(), refreshRuntimeStatus(projectId, { background: true })]);
+      await Promise.all([
+        refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS }),
+        refreshRuntimeStatus(projectId, { background: true }),
+      ]);
     };
 
     const handleWindowFocus = () => {
-      refreshBranches();
+      refreshVisibleState();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        refreshBranches();
+        refreshVisibleState();
       }
     };
-
-    const intervalId = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      refreshBranches();
-    }, BRANCH_REFRESH_INTERVAL_MS);
 
     window.addEventListener("focus", handleWindowFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       disposed = true;
-      window.clearInterval(intervalId);
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [projectId]);
+  }, [projectId, chatSettings.model, chatSettings.max_output_tokens]);
+
+  useEffect(() => {
+    if (!bootReadyRef.current || document.visibilityState === "hidden") return undefined;
+    refreshRuntimeStatus(projectId, { background: true });
+    const intervalMs = nextRuntimeStatusPollIntervalMs({
+      sending,
+      activeRunId,
+      drawerView,
+      contextMeterOpen,
+    });
+    if (!intervalMs) return undefined;
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      refreshRuntimeStatus(projectId, { background: true });
+    }, intervalMs);
+    return () => window.clearInterval(intervalId);
+  }, [projectId, chatSettings.model, chatSettings.max_output_tokens, sending, activeRunId, drawerView, contextMeterOpen]);
 
   function clearUiError() {
     setUiError(null);
@@ -2037,7 +2213,6 @@ function App() {
   }
 
   async function refreshRuntimeStatus(targetProjectId = projectId, options = {}) {
-    const requestSeq = ++runtimeStatusRequestSeqRef.current;
     const background = Boolean(options.background);
     const params = new URLSearchParams();
     const normalizedProjectId = String(targetProjectId || "").trim();
@@ -2045,21 +2220,46 @@ function App() {
     if (normalizedProjectId) params.set("project_id", normalizedProjectId);
     if (normalizedModel) params.set("model", normalizedModel);
     params.set("max_output_tokens", String(chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens));
-    try {
-      const data = await fetchJson(`/api/runtime-status?${params.toString()}`);
-      if (requestSeq !== runtimeStatusRequestSeqRef.current) return data;
-      if (!background) clearUiError();
-      applyHealthSlices(null, data);
-      dispatch({ type: "update", path: ["bootstrap", "runtimeStatus"], value: data });
-      return data;
-    } catch (err) {
-      if (requestSeq !== runtimeStatusRequestSeqRef.current) return null;
-      const nextError = background
-        ? normalizeUiError(uiLocale, err, t("errors.refresh_state_failed"))
-        : applyUiError(err, t("errors.refresh_state_failed"));
-      pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
-      return null;
+    const requestKey = params.toString();
+    const currentInFlight = runtimeStatusInFlightRef.current;
+    if (currentInFlight && currentInFlight.key === requestKey && currentInFlight.promise) {
+      return currentInFlight.promise;
     }
+    if (runtimeStatusAbortRef.current) {
+      runtimeStatusAbortRef.current.abort();
+      runtimeStatusAbortRef.current = null;
+    }
+    const requestSeq = ++runtimeStatusRequestSeqRef.current;
+    const controller = new AbortController();
+    runtimeStatusAbortRef.current = controller;
+    const requestPromise = (async () => {
+      try {
+        const data = await fetchJson(`/api/runtime-status?${requestKey}`, { signal: controller.signal });
+        if (requestSeq !== runtimeStatusRequestSeqRef.current) return data;
+        if (!background) clearUiError();
+        applyHealthSlices(null, data);
+        dispatch({ type: "update", path: ["bootstrap", "runtimeStatus"], value: data });
+        runtimeStatusLastFetchedAtRef.current = Date.now();
+        return data;
+      } catch (err) {
+        if (err && err.name === "AbortError") return null;
+        if (requestSeq !== runtimeStatusRequestSeqRef.current) return null;
+        const nextError = background
+          ? normalizeUiError(uiLocale, err, t("errors.refresh_state_failed"))
+          : applyUiError(err, t("errors.refresh_state_failed"));
+        pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
+        return null;
+      } finally {
+        if (runtimeStatusAbortRef.current === controller) {
+          runtimeStatusAbortRef.current = null;
+        }
+        if (runtimeStatusInFlightRef.current && runtimeStatusInFlightRef.current.promise === requestPromise) {
+          runtimeStatusInFlightRef.current = { key: "", promise: null };
+        }
+      }
+    })();
+    runtimeStatusInFlightRef.current = { key: requestKey, promise: requestPromise };
+    return requestPromise;
   }
 
   async function refreshHealth() {
@@ -2366,20 +2566,40 @@ function App() {
   }
 
   async function refreshProjects() {
+    if (projectsInFlightRef.current) return projectsInFlightRef.current;
     const requestSeq = ++projectsRequestSeqRef.current;
-    try {
-      const data = await fetchJson("/api/projects");
-      const list = Array.isArray(data.projects) ? data.projects : [];
-      if (requestSeq !== projectsRequestSeqRef.current) return list;
-      clearUiError();
-      setProjects(list);
-      return list;
-    } catch (err) {
-      if (requestSeq !== projectsRequestSeqRef.current) return [];
-      const nextError = applyUiError(err, t("errors.refresh_projects_failed"));
-      pushLogWithLimit(setLogs, "error", t("log.refresh_projects_failed", { summary: nextError.summary }));
-      return [];
+    const requestPromise = (async () => {
+      try {
+        const data = await fetchJson("/api/projects");
+        const list = Array.isArray(data.projects) ? data.projects : [];
+        if (requestSeq !== projectsRequestSeqRef.current) return list;
+        clearUiError();
+        setProjects(list);
+        projectsLastFetchedAtRef.current = Date.now();
+        return list;
+      } catch (err) {
+        if (requestSeq !== projectsRequestSeqRef.current) return [];
+        const nextError = applyUiError(err, t("errors.refresh_projects_failed"));
+        pushLogWithLimit(setLogs, "error", t("log.refresh_projects_failed", { summary: nextError.summary }));
+        return [];
+      } finally {
+        if (projectsInFlightRef.current === requestPromise) {
+          projectsInFlightRef.current = null;
+        }
+      }
+    })();
+    projectsInFlightRef.current = requestPromise;
+    return requestPromise;
+  }
+
+  async function refreshProjectsIfStale(options = {}) {
+    const minAgeMs = Math.max(0, Number(options.minAgeMs || 0) || 0);
+    if (projectsInFlightRef.current) return projectsInFlightRef.current;
+    const lastFetchedAt = Number(projectsLastFetchedAtRef.current || 0) || 0;
+    if (minAgeMs && lastFetchedAt && (Date.now() - lastFetchedAt) < minAgeMs) {
+      return Array.isArray(projects) ? projects : [];
     }
+    return refreshProjects();
   }
 
   async function refreshSessions(targetProjectId = projectId, options = {}) {
@@ -3747,6 +3967,37 @@ function App() {
     workspaceLabel || "-",
     activeProviderLabel || activeProvider || "-",
   ].filter(Boolean).join(" · ");
+  const runtimeStats = useMemo(() => buildRuntimeStatsSummary({
+    locale: uiLocale,
+    workspaceLabel,
+    runtimeStatus,
+    activeModel,
+    activeTurnStatus,
+    messages,
+    activityClockMs,
+    hasLiveRunState,
+    liveToolTimeline,
+    inspectorToolTimeline: lastInspector.tool_timeline,
+    fallbackToolTimeline: toolTimeline,
+    contextMeter: activeContextMeter,
+    maxOutputTokens: chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens,
+    tokenUsage: (lastResponse && lastResponse.token_usage) || {},
+  }), [
+    uiLocale,
+    workspaceLabel,
+    runtimeStatus,
+    activeModel,
+    activeTurnStatus,
+    messages,
+    activityClockMs,
+    hasLiveRunState,
+    liveToolTimeline,
+    lastInspector,
+    toolTimeline,
+    activeContextMeter,
+    chatSettings.max_output_tokens,
+    lastResponse,
+  ]);
 
   const toggleMessageActivity = (messageId) => {
     setActivityOpenByMessageId((prev) => ({
@@ -4376,51 +4627,26 @@ function App() {
                   ? html`
                       <div className="context-meter-popover" role="dialog" aria-label=${t("context_meter.title")}>
                         <div className="context-meter-title">${t("context_meter.title")}</div>
-                        <div className="context-meter-line">
-                          ${t("context_meter.used", {
-                            used: activeContextMeter.used_percent,
-                            remaining: activeContextMeter.remaining_percent,
-                          })}
-                        </div>
-                        <div className="context-meter-line">
-                          ${t("context_meter.tokens", {
-                            estimated: formatTokenCount(activeContextMeter.estimated_tokens),
-                            limit: formatTokenCount(activeContextMeter.auto_compact_token_limit),
-                          })}
-                        </div>
-                        ${activeContextMeter.context_window
-                          ? html`
-                              <div className="context-meter-line subtle">
-                                ${t("context_meter.window", {
-                                  window: formatTokenCount(activeContextMeter.context_window),
-                                  source: formatContextThresholdSource(uiLocale, activeContextMeter.threshold_source || "estimate"),
-                                })}
-                              </div>
-                            `
-                          : null}
-                        ${activeContextMeter.last_compacted_at
-                          ? html`
-                              <div className="context-meter-line subtle">
-                                ${t("context_meter.last_compacted", { time: formatTime(activeContextMeter.last_compacted_at, uiLocale) })}
-                              </div>
-                            `
-                          : null}
-                        ${activeCompactionStatus.generation
-                          ? html`
-                              <div className="context-meter-line subtle">
-                                ${t("context_meter.replacement_history", {
-                                  generation: activeCompactionStatus.generation,
-                                  phase: activeCompactionStatus.last_compaction_phase
-                                    ? ` · ${formatRunEnum(uiLocale, "compaction_phase", activeCompactionStatus.last_compaction_phase, activeCompactionStatus.last_compaction_phase)}`
-                                    : "",
-                                })}
-                              </div>
-                            `
-                          : null}
-                        <div className="context-meter-line strong">${t("context_meter.auto_compact")}</div>
-                        ${compactionWarningText
-                          ? html`<div className="context-meter-line subtle">${compactionWarningText}</div>`
-                          : null}
+                        ${[
+                          [t("context_meter.section.run"), runtimeStats.run],
+                          [t("context_meter.section.tools"), runtimeStats.tools],
+                          [t("context_meter.section.context"), runtimeStats.context],
+                          [t("context_meter.section.safeguards"), runtimeStats.safeguards],
+                        ].map(
+                          ([sectionTitle, rows]) => html`
+                            <div className="context-meter-section" key=${sectionTitle}>
+                              <div className="context-meter-section-title">${sectionTitle}</div>
+                              ${rows.map(
+                                (row) => html`
+                                  <div key=${row.key} className="context-meter-kv">
+                                    <span className="context-meter-label">${row.label}</span>
+                                    <span className="context-meter-value">${row.value}</span>
+                                  </div>
+                                `,
+                              )}
+                            </div>
+                          `,
+                        )}
                       </div>
                     `
                   : null}

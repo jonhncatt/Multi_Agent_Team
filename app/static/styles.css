@@ -1319,6 +1319,21 @@ button {
   margin-bottom: 8px;
 }
 
+.context-meter-section + .context-meter-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(23, 33, 43, 0.08);
+}
+
+.context-meter-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+}
+
 .context-meter-line {
   font-size: 12.5px;
   line-height: 1.45;
@@ -1335,6 +1350,31 @@ button {
 
 .context-meter-line.subtle {
   color: var(--ink-soft);
+}
+
+.context-meter-kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.context-meter-kv + .context-meter-kv {
+  margin-top: 4px;
+}
+
+.context-meter-label {
+  color: var(--ink-soft);
+  flex: 1 1 auto;
+}
+
+.context-meter-value {
+  color: var(--ink);
+  text-align: right;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-error {
