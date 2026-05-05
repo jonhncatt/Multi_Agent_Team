@@ -82,6 +82,37 @@ REQUIRED_CORE_KEYS = (
     "validation.invalid",
     "validation.missing",
     "validation.error",
+    "context_meter.section.run",
+    "context_meter.section.tools",
+    "context_meter.section.context",
+    "context_meter.section.safeguards",
+    "context_meter.field.project",
+    "context_meter.field.status",
+    "context_meter.field.model",
+    "context_meter.field.elapsed",
+    "context_meter.field.runtime_mode",
+    "context_meter.field.tool_total",
+    "context_meter.field.tool_succeeded",
+    "context_meter.field.tool_failed",
+    "context_meter.field.tool_rejected",
+    "context_meter.field.tool_latest",
+    "context_meter.field.context_usage",
+    "context_meter.field.output_limit",
+    "context_meter.field.context_window",
+    "context_meter.field.token_usage",
+    "context_meter.field.guard_tool_calls",
+    "context_meter.field.guard_same_tool",
+    "context_meter.field.guard_no_progress",
+    "context_meter.field.guard_rejections",
+    "context_meter.field.guard_wall_clock",
+    "context_meter.field.guard_user_stop",
+    "context_meter.field.guard_compaction",
+    "context_meter.value.enabled",
+    "context_meter.value.disabled",
+    "context_meter.mode.host",
+    "context_meter.mode.docker",
+    "context_meter.token_usage_value",
+    "context_meter.unknown",
 )
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
@@ -159,12 +190,15 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "function activityStageKeyFromTrace(",
         "function buildActivityFlowStages(",
         "function buildActivityProjection(",
+        "function buildRuntimeStatsSummary(",
         "function buildToolProgressGroups(",
         "function toolCallIdentityFromSource(",
         "function latestRevisionSummary(",
+        "function nextRuntimeStatusPollIntervalMs(",
         "renderExecutionTraceDetails(",
         "plan_explanation",
         "tool_items",
+        "loop_safeguards",
         "activity.status.request_understood",
         "activity.status.tool_guard_pending",
         "high_level_proposal",
@@ -245,3 +279,37 @@ def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
     assert '"search_contents_in_file_multi"' in script
     assert '"search_file"' not in script
     assert '"search_file_multi"' not in script
+
+
+def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        "RUNTIME_STATUS_ACTIVE_INTERVAL_MS",
+        "RUNTIME_STATUS_IDLE_INTERVAL_MS",
+        "PROJECTS_REFRESH_STALE_MS",
+        "runtimeStatusAbortRef",
+        "projectsInFlightRef",
+        "refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS })",
+        "currentRuntimeStatus.loop_safeguards",
+        't("context_meter.section.run")',
+        't("context_meter.section.tools")',
+        't("context_meter.section.context")',
+        't("context_meter.section.safeguards")',
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    assert "BRANCH_REFRESH_INTERVAL_MS" not in script
+    assert 'Promise.all([refreshProjects(), refreshRuntimeStatus(projectId, { background: true })])' not in script
+
+    required_style_tokens = (
+        ".context-meter-section",
+        ".context-meter-section-title",
+        ".context-meter-kv",
+        ".context-meter-label",
+        ".context-meter-value",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token

@@ -714,6 +714,8 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert runtime_payload["ok"] is True
     assert runtime_payload["project_id"] == bootstrap_payload["default_project_id"]
     assert runtime_payload["runtime_status"]["workspace_label"]
+    assert runtime_payload["runtime_status"]["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
+    assert runtime_payload["runtime_status"]["loop_safeguards"]["max_turn_seconds"] > 0
     assert runtime_payload["context_meter"]["auto_compact_token_limit"] > 0
     assert runtime_payload["compaction_status"]["mode"] == "token_budget"
 

@@ -472,6 +472,8 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["network"]["mode"] == "explicit_tools"
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
     assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
+    assert "max_tool_rounds" not in descriptor
+    assert descriptor["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Execution must happen through tool calls." not in prompt
@@ -1054,6 +1056,8 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
         "sessions_list",
     ]
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
+    assert "tool_round_limit" not in result["inspector"]["run_state"]
+    assert result["inspector"]["run_state"]["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
 
 
 def test_runtime_blocks_when_same_tool_repeats_too_many_times(tmp_path: Path) -> None:
