@@ -13,7 +13,7 @@ def _session_with_checkpoint() -> dict[str, object]:
                 "cwd": "/tmp/demo",
                 "active_files": ["/tmp/demo/app.py"],
                 "active_attachments": [],
-                "last_completed_step": "read: app.py",
+                "last_completed_step": "read_file: app.py",
                 "next_action": "patch app.py",
             }
         },
@@ -61,7 +61,7 @@ def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment(
                 "cwd": "/tmp/demo",
                 "active_files": [],
                 "active_attachments": [{"id": "mail-1", "name": "notice.msg", "kind": "document", "path": "/tmp/demo/notice.msg"}],
-                "last_completed_step": "read: notice.msg",
+                "last_completed_step": "read_file: notice.msg",
                 "next_action": "",
             }
         },
@@ -74,7 +74,7 @@ def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment(
                 "path": "/tmp/demo/notice.msg",
                 "mime": "application/vnd.ms-outlook",
                 "turn_id": "turn-mail",
-                "source_tool": "read",
+                "source_tool": "read_file",
                 "summary_digest": "邮件摘要",
                 "created_at": "2026-04-21T00:00:02Z",
             },

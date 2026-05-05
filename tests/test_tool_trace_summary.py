@@ -39,11 +39,13 @@ def test_safe_preview_truncates_nested_payloads() -> None:
 def test_summarize_tool_args_and_result_for_common_tools() -> None:
     assert summarize_tool_args("search_codebase", {"query": "update_plan"}) == "query=update_plan"
     assert summarize_tool_args("update_plan", {"steps": [{"step": "Inspect", "status": "completed"}]}) == "items=1"
-    assert summarize_tool_result("read", {"ok": True, "content": "hello"}) == "read 5 chars"
+    assert summarize_tool_result("read_file", {"ok": True, "content": "hello"}) == "read 5 chars"
+    assert summarize_tool_result("list_dir", {"ok": True, "entries": [{"name": "a"}, {"name": "b"}]}) == "listed 2 entries"
+    assert summarize_tool_result("glob_file_search", {"ok": True, "matches": ["a.py", "b.py"]}) == "matched 2 files"
     assert summarize_tool_result("search_codebase", {"ok": True, "matches": [1, 2, 3]}) == "found 3 results"
     assert summarize_tool_result("update_plan", {"ok": True, "plan": [{"step": "Inspect", "status": "completed"}]}) == "plan updated: 1 items"
-    assert summarize_tool_result("read", {"ok": True, "content": "hello"}, locale="zh-CN") == "已读取 5 个字符"
-    assert summarize_tool_result("read", {"ok": True, "content": "hello"}, locale="ja-JP") == "5 文字を読み取りました"
+    assert summarize_tool_result("read_file", {"ok": True, "content": "hello"}, locale="zh-CN") == "已读取 5 个字符"
+    assert summarize_tool_result("read_file", {"ok": True, "content": "hello"}, locale="ja-JP") == "5 文字を読み取りました"
 
 
 def test_validate_tool_arguments_reports_valid_and_invalid_payloads() -> None:
@@ -82,14 +84,14 @@ def test_build_tool_argument_audit_keeps_raw_arguments_and_validation() -> None:
         "additionalProperties": False,
     }
 
-    audit = build_tool_argument_audit("read", {"path": "README.md"}, schema)
+    audit = build_tool_argument_audit("read_file", {"path": "README.md"}, schema)
 
     assert audit["arguments_preview"] == "path=README.md"
     assert audit["preview_error"] == ""
     assert audit["schema_validation"]["status"] == "valid"
     assert audit["raw_arguments"]["path"] == "README.md"
 
-    zh_audit = build_tool_argument_audit("read", {"path": "README.md"}, schema, locale="zh-CN")
+    zh_audit = build_tool_argument_audit("read_file", {"path": "README.md"}, schema, locale="zh-CN")
     assert zh_audit["schema_validation"]["summary"] == "schema 匹配"
 
 

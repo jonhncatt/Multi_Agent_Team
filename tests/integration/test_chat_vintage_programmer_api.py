@@ -26,9 +26,11 @@ class _FakeVintageRuntime:
             "allowed_tools": [
                 "exec_command",
                 "apply_patch",
-                "read",
-                "search_file",
-                "search_file_multi",
+                "read_file",
+                "list_dir",
+                "glob_file_search",
+                "search_contents_in_file",
+                "search_contents_in_file_multi",
                 "read_section",
                 "table_extract",
                 "fact_check_file",
@@ -61,9 +63,11 @@ class _FakeVintageRuntime:
                 "allowed_tools": [
                     "exec_command",
                     "apply_patch",
-                    "read",
-                    "search_file",
-                    "search_file_multi",
+                    "read_file",
+                    "list_dir",
+                    "glob_file_search",
+                    "search_contents_in_file",
+                    "search_contents_in_file_multi",
                     "read_section",
                     "table_extract",
                     "fact_check_file",
@@ -79,13 +83,15 @@ class _FakeVintageRuntime:
                     "update_plan",
                     "request_user_input",
                 ],
-                "tool_count": 17,
+                "tool_count": 21,
                 "tools": [
                     {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
                     {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
-                    {"name": "read", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file or directory"},
-                    {"name": "search_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
-                    {"name": "search_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+                    {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
+                    {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
+                    {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+                    {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+                    {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
                     {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
                     {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
                     {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
@@ -105,9 +111,11 @@ class _FakeVintageRuntime:
             "tools": [
                 {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
                 {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
-                {"name": "read", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read file or directory"},
-                {"name": "search_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
-                {"name": "search_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+                {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
+                {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
+                {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+                {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+                {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
                 {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
                 {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
                 {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
@@ -1103,7 +1111,7 @@ def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) 
             "cwd": str(tmp_path),
             "active_files": [str(tmp_path / "old.py")],
             "active_attachments": [],
-            "last_completed_step": "read: old.py",
+            "last_completed_step": "read_file: old.py",
             "next_action": "modify old.py",
         }
     }
@@ -1211,9 +1219,10 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     )
     assert "view_image" not in {item["name"] for item in tool_rows}
     assert "read_text_file" not in {item["name"] for item in tool_rows}
-    assert {"web_download", "image_read", "search_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
+    assert {"web_download", "image_read", "list_dir", "glob_file_search", "search_contents_in_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
         {item["name"] for item in tool_rows}
     )
+    assert {"read", "search_file", "search_file_multi"}.isdisjoint({item["name"] for item in tool_rows})
 
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200

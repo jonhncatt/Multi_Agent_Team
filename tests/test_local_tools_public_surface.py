@@ -36,9 +36,11 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "exec_command",
         "write_stdin",
         "apply_patch",
-        "read",
-        "search_file",
-        "search_file_multi",
+        "read_file",
+        "list_dir",
+        "glob_file_search",
+        "search_contents_in_file",
+        "search_contents_in_file_multi",
         "read_section",
         "table_extract",
         "fact_check_file",
@@ -64,6 +66,9 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "view_image",
         "list_sessions",
         "read_session_history",
+        "read",
+        "search_file",
+        "search_file_multi",
     }.isdisjoint(tool_names)
 
 
@@ -324,7 +329,86 @@ def test_ocr_status_prefers_rapidocr_and_reports_fallbacks(tmp_path: Path, monke
     assert status["warning"] == ""
 
 
-def test_read_msg_returns_email_meta_and_attachment_list(tmp_path: Path, monkeypatch) -> None:
+def test_read_file_and_search_tools_use_canonical_names(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    code_path = tmp_path / "app.py"
+    code_path.write_text("def build_progress():\n    return 'progress checklist'\n", encoding="utf-8")
+
+    read_result = executor.read_file(str(code_path))
+    search_result = executor.search_contents_in_file(str(code_path), "progress checklist")
+    multi_result = executor.search_contents_in_file_multi(str(code_path), ["build_progress", "checklist"])
+
+    assert read_result["ok"] is True
+    assert read_result["tool_name"] == "read_file"
+    assert "progress checklist" in str(read_result.get("content") or "")
+    assert search_result["ok"] is True
+    assert search_result["tool_name"] == "search_contents_in_file"
+    assert search_result["match_count"] >= 1
+    assert multi_result["ok"] is True
+    assert multi_result["tool_name"] == "search_contents_in_file_multi"
+    assert multi_result["match_count"] >= 2
+
+
+def test_list_dir_lists_children_and_glob_file_search_finds_matches(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    list_result = executor.list_dir(".")
+    glob_result = executor.glob_file_search("**/*.py")
+
+    assert list_result["ok"] is True
+    assert list_result["tool_name"] == "list_dir"
+    assert {item["name"] for item in list_result["entries"]} >= {"src", "README.md"}
+    assert {item["type"] for item in list_result["entries"]} >= {"directory", "file"}
+    assert glob_result["ok"] is True
+    assert glob_result["tool_name"] == "glob_file_search"
+    assert any(path.endswith("/src/main.py") for path in glob_result["matches"])
+
+
+def test_list_dir_rejects_non_directory_and_glob_file_search_handles_no_matches(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("hello\n", encoding="utf-8")
+
+    list_result = executor.list_dir(str(file_path))
+    glob_result = executor.glob_file_search("**/*.js")
+
+    assert list_result["ok"] is False
+    assert "Not a directory" in str(list_result["error"])
+    assert glob_result["ok"] is True
+    assert glob_result["tool_name"] == "glob_file_search"
+    assert glob_result["count"] == 0
+    assert glob_result["matches"] == []
+
+
+def test_removed_legacy_public_tool_names_return_unknown_tool(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    sample_path = tmp_path / "README.md"
+    sample_path.write_text("demo\n", encoding="utf-8")
+
+    for name, arguments in (
+        ("read", {"path": str(sample_path)}),
+        ("search_file", {"path": str(sample_path), "query": "demo"}),
+        ("search_file_multi", {"path": str(sample_path), "queries": ["demo"]}),
+    ):
+        result = executor.execute(name, arguments)
+        assert result["ok"] is False
+        assert result["error"]["kind"] == "unknown_tool"
+        assert result["error"]["tool"] == name
+
+
+def test_read_file_rejects_directory_path(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+
+    result = executor.read_file(str(tmp_path))
+
+    assert result["ok"] is False
+    assert "Use list_dir instead" in str(result["error"])
+
+
+def test_read_file_returns_email_meta_and_attachment_list(tmp_path: Path, monkeypatch) -> None:
     config = _config(tmp_path)
     executor = LocalToolExecutor(config)
     msg_path = tmp_path / "sample.msg"
@@ -349,10 +433,47 @@ def test_read_msg_returns_email_meta_and_attachment_list(tmp_path: Path, monkeyp
 
     monkeypatch.setattr("app.attachments.extract_outlook_msg_payload", _fake_extract)
 
-    result = executor.read(str(msg_path))
+    result = executor.read_file(str(msg_path))
 
     assert result["ok"] is True
+    assert result["tool_name"] == "read_file"
     assert result["source_format"] == "msg_text_extracted"
     assert result["email_meta"]["subject"] == "Demo"
     assert result["attachment_list"][0]["name"] == "chart.png"
     assert "Body" in str(result.get("content") or "")
+
+
+def test_apply_patch_supports_check_create_update_and_delete(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    add_patch = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch\n"
+    update_patch = "*** Begin Patch\n*** Update File: notes.txt\n@@\n-hello\n+hello world\n*** End Patch\n"
+    delete_patch = "*** Begin Patch\n*** Delete File: notes.txt\n*** End Patch\n"
+
+    cwd = str(tmp_path)
+    check_result = executor.apply_patch(add_patch, cwd=cwd, check=True)
+    assert check_result["ok"] is True
+    assert check_result["summary"] == "patch validated"
+    assert (tmp_path / "notes.txt").exists() is False
+
+    add_result = executor.apply_patch(add_patch, cwd=cwd)
+
+    assert add_result["ok"] is True
+    assert add_result["summary"] == "patch applied"
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello\n"
+    update_result = executor.apply_patch(update_patch, cwd=cwd)
+    assert update_result["ok"] is True
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "hello world\n"
+    delete_result = executor.apply_patch(delete_patch, cwd=cwd)
+    assert delete_result["ok"] is True
+    assert (tmp_path / "notes.txt").exists() is False
+
+
+def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    delete_patch = "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch\n"
+
+    result = executor.apply_patch(delete_patch, cwd=str(tmp_path))
+
+    assert result["ok"] is False
+    assert "File not found: missing.txt" in str(result["error"])
+    assert result["files"] == []

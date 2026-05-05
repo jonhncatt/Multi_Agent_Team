@@ -47,6 +47,8 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.tool.guard.policy_blocked",
     "runtime.tool.guard.schema_invalid",
     "runtime.tool.summary.read_chars",
+    "runtime.tool.summary.listed_entries",
+    "runtime.tool.summary.file_matches",
     "runtime.tool.summary.search_results",
     "runtime.tool.summary.search_matches",
     "runtime.tool.summary.read_section_chars",
@@ -93,8 +95,8 @@ class _FakeTools:
             {"name": "exec_command", "description": "exec command", "parameters": {}},
             {"name": "write_stdin", "description": "write stdin", "parameters": {}},
             {
-                "name": "read",
-                "description": "read file or directory",
+                "name": "read_file",
+                "description": "read one file",
                 "parameters": {
                     "type": "object",
                     "properties": {"path": {"type": "string"}},
@@ -102,8 +104,10 @@ class _FakeTools:
                     "additionalProperties": False,
                 },
             },
-            {"name": "search_file", "description": "search one file", "parameters": {}},
-            {"name": "search_file_multi", "description": "search one file with multiple queries", "parameters": {}},
+            {"name": "list_dir", "description": "list one directory", "parameters": {}},
+            {"name": "glob_file_search", "description": "find files by glob pattern", "parameters": {}},
+            {"name": "search_contents_in_file", "description": "search one file", "parameters": {}},
+            {"name": "search_contents_in_file_multi", "description": "search one file with multiple queries", "parameters": {}},
             {"name": "read_section", "description": "read one section by heading", "parameters": {}},
             {"name": "table_extract", "description": "extract document tables", "parameters": {}},
             {"name": "fact_check_file", "description": "fact check one file", "parameters": {}},
@@ -490,8 +494,8 @@ def test_runtime_activity_helpers_use_requested_locale() -> None:
     )
     assert VintageProgrammerRuntime._tool_guard_activity_detail(
         "en",
-        {"status": "accepted", "tool_name": "read"},
-    ) == translate("en", "runtime.activity.guard.accepted_execution", tool="read")
+        {"status": "accepted", "tool_name": "read_file"},
+    ) == translate("en", "runtime.activity.guard.accepted_execution", tool="read_file")
 
 
 def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_path: Path) -> None:
@@ -782,12 +786,12 @@ def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Pa
     assert "q->query" in result["tool_events"][0]["guard_result"]["normalization_notes"]
 
 
-def test_runtime_guard_rejects_unknown_tool_and_returns_tool_error_to_model(tmp_path: Path) -> None:
+def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_to_model(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend(
         [
-            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "readfile", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read", "args": {"path": "README.md"}}]),
             _FakeMessage(content="I revised the tool choice after the guard rejection."),
         ]
     )
@@ -813,12 +817,12 @@ def test_runtime_guard_rejects_unknown_tool_and_returns_tool_error_to_model(tmp_
     assert backend.tools.calls == []
     assert result["tool_events"][0]["guard_result"]["status"] == "rejected"
     assert result["tool_events"][0]["status"] == "error"
-    assert result["tool_events"][0]["raw_tool_call"]["name"] == "readfile"
+    assert result["tool_events"][0]["raw_tool_call"]["name"] == "read"
     assert len(backend.invocations) == 2
     followup_messages = backend.invocations[1]["messages"]
     tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc1")
     assert "\"kind\": \"tool_call_rejected\"" in str(tool_message.content)
-    assert "readfile" in str(tool_message.content)
+    assert "\"tool\": \"read\"" in str(tool_message.content)
 
 
 def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_tool(tmp_path: Path) -> None:
@@ -996,7 +1000,7 @@ def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: P
                     "name": "requirements.pdf",
                     "kind": "document",
                     "summary": "missing export button",
-                    "read_hint": {"tool": "read", "path": "/tmp/requirements.pdf"},
+                    "read_hint": {"tool": "read_file", "path": "/tmp/requirements.pdf"},
                 }
             ],
         },
@@ -1015,7 +1019,7 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
     backend = _FakeBackend(
         [
             _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": "one"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "README.md"}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "search_codebase", "args": {"query": "needle"}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "web_fetch", "args": {"url": "https://example.com"}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc5", "name": "sessions_list", "args": {"limit": 5}}]),
@@ -1044,7 +1048,7 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
     assert len(result["tool_events"]) == 5
     assert [item["name"] for item in result["tool_events"]] == [
         "web_search",
-        "read",
+        "read_file",
         "search_codebase",
         "web_fetch",
         "sessions_list",
@@ -1480,7 +1484,7 @@ def test_runtime_restores_task_checkpoint_for_followup_turn(tmp_path: Path) -> N
                     "cwd": str(tmp_path),
                     "active_files": [str(tmp_path / "app.py")],
                     "active_attachments": [],
-                    "last_completed_step": "read: app.py",
+                    "last_completed_step": "read_file: app.py",
                     "next_action": "modify app.py",
                 }
             },

@@ -52,6 +52,8 @@ REQUIRED_CORE_KEYS = (
     "activity.result_excerpt",
     "activity.reason",
     "activity.progress.read",
+    "activity.progress.list_dir",
+    "activity.progress.glob_file_search",
     "activity.progress.search",
     "activity.progress.execute_command",
     "activity.progress.apply_patch",
@@ -231,3 +233,15 @@ def test_early_activity_copy_and_visibility_are_updated() -> None:
     assert '"activity.status.thinking": "正在思考"' in locales
     assert "|| activity.started_at" in script
     assert "|| activity.status" in script
+
+
+def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert '"read_file"' in script
+    assert '"list_dir"' in script
+    assert '"glob_file_search"' in script
+    assert '"search_contents_in_file"' in script
+    assert '"search_contents_in_file_multi"' in script
+    assert '"search_file"' not in script
+    assert '"search_file_multi"' not in script

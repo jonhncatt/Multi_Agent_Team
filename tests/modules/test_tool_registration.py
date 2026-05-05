@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from packages.office_modules import tools as tools_module
 
 
@@ -55,9 +57,11 @@ def test_codex_core_tool_module_exposes_core_tools() -> None:
     assert "apply_patch" in tool_names
     assert "update_plan" in tool_names
     assert set(fs_tools.tool_names) == {
-        "read",
-        "search_file",
-        "search_file_multi",
+        "read_file",
+        "list_dir",
+        "glob_file_search",
+        "search_contents_in_file",
+        "search_contents_in_file_multi",
         "read_section",
         "table_extract",
         "fact_check_file",
@@ -83,3 +87,23 @@ def test_scoped_executor_accepts_case_variant_tool_name(monkeypatch) -> None:
 
     assert bool(result.get("ok")) is True
     assert result.get("name") == "exec_command"
+
+
+def test_vintage_programmer_specs_only_expose_canonical_file_tool_names() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    spec_files = (
+        repo_root / "agents" / "vintage_programmer" / "agent.md",
+        repo_root / "agents" / "vintage_programmer" / "tools.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "agent.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "tools.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "agent.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "tools.md",
+    )
+
+    for path in spec_files:
+        content = path.read_text(encoding="utf-8")
+        assert "\n  - read\n" not in content
+        assert "`search_file`" not in content
+        assert "`search_file_multi`" not in content
+        assert "read_file" in content
+        assert "search_contents_in_file" in content
