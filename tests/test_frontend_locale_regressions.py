@@ -86,6 +86,13 @@ REQUIRED_CORE_KEYS = (
     "context_meter.section.tools",
     "context_meter.section.context",
     "context_meter.section.safeguards",
+    "context_meter.details_toggle",
+    "context_meter.compact_usage",
+    "context_meter.compact_usage_unknown",
+    "context_meter.compact_tokens",
+    "context_meter.compact_tokens_unknown",
+    "context_meter.compact_elapsed_tools",
+    "context_meter.compact_auto_compact",
     "context_meter.field.project",
     "context_meter.field.status",
     "context_meter.field.model",
@@ -100,6 +107,11 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.output_limit",
     "context_meter.field.context_window",
     "context_meter.field.token_usage",
+    "context_meter.field.guard_long_task",
+    "context_meter.field.guard_progress_signal",
+    "context_meter.field.guard_same_action",
+    "context_meter.field.guard_replan",
+    "context_meter.field.guard_tool_output",
     "context_meter.field.guard_tool_calls",
     "context_meter.field.guard_same_tool",
     "context_meter.field.guard_no_progress",
@@ -293,10 +305,16 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
         "projectsInFlightRef",
         "refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS })",
         "currentRuntimeStatus.loop_safeguards",
+        'translateUi(locale, "context_meter.compact_usage"',
+        'translateUi(locale, "context_meter.compact_tokens"',
+        'translateUi(locale, "context_meter.compact_elapsed_tools"',
+        'translateUi(locale, "context_meter.compact_auto_compact"',
         't("context_meter.section.run")',
         't("context_meter.section.tools")',
         't("context_meter.section.context")',
         't("context_meter.section.safeguards")',
+        'className="context-meter-details"',
+        'className="context-meter-details-toggle"',
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -305,6 +323,10 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
     assert 'Promise.all([refreshProjects(), refreshRuntimeStatus(projectId, { background: true })])' not in script
 
     required_style_tokens = (
+        ".context-meter-compact",
+        ".context-meter-details",
+        ".context-meter-details-toggle",
+        ".context-meter-details-body",
         ".context-meter-section",
         ".context-meter-section-title",
         ".context-meter-kv",
@@ -313,3 +335,12 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
     )
     for token in required_style_tokens:
         assert token in styles, token
+
+
+def test_context_meter_uses_compact_summary_with_collapsed_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "runtimeStats.compact.map(" in script
+    assert '<details className="context-meter-details">' in script
+    assert 'className="context-meter-details-toggle"' in script
+    assert "<details className=\"context-meter-details\" open>" not in script

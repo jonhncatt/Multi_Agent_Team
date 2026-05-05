@@ -63,6 +63,29 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.tool.validation.unavailable",
     "runtime.tool.validation.matched",
     "runtime.tool.validation.tool_unavailable",
+    "runtime.budget.same_action_repeat",
+    "runtime.budget.no_progress_after_replan",
+    "runtime.budget.guard_rejections",
+    "runtime.progress.new_error_type",
+    "runtime.progress.repeated_error",
+    "runtime.progress.new_file_read",
+    "runtime.progress.new_directory_entries",
+    "runtime.progress.new_glob_matches",
+    "runtime.progress.new_search_hits",
+    "runtime.progress.new_section_read",
+    "runtime.progress.patch_applied",
+    "runtime.progress.test_result_changed",
+    "runtime.progress.command_result_changed",
+    "runtime.progress.plan_updated",
+    "runtime.progress.new_web_result",
+    "runtime.progress.new_tool_output",
+    "runtime.progress.no_new_info",
+    "runtime.progress.duplicate_result",
+    "runtime.replan.requested",
+    "runtime.replan.system_prompt",
+    "runtime.replan.known_facts_intro",
+    "runtime.replan.failed_actions_intro",
+    "runtime.replan.required_next_move",
 )
 
 
@@ -1060,16 +1083,17 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
     assert result["inspector"]["run_state"]["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
 
 
-def test_runtime_blocks_when_same_tool_repeats_too_many_times(tmp_path: Path) -> None:
+def test_runtime_blocks_when_same_action_repeats_after_replan(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend(
         [
-            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": "same"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "web_search", "args": {"query": "same"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "web_search", "args": {"query": "same"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "web_search", "args": {"query": "same"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc5", "name": "web_search", "args": {"query": "same"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc5", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc6", "name": "read_file", "args": {"path": "README.md"}}]),
             _FakeMessage(content="should not reach"),
         ]
     )
@@ -1092,8 +1116,91 @@ def test_runtime_blocks_when_same_tool_repeats_too_many_times(tmp_path: Path) ->
     )
 
     assert result["turn_status"] == "blocked"
-    assert "turn_budget_same_tool_repeats_exceeded" in result["inspector"]["notes"]
+    assert any(
+        note in {"replan_requested:no_progress", "replan_requested:same_action_repeat"}
+        for note in result["inspector"]["notes"]
+    )
+    assert "turn_budget_same_action_repeats_exceeded" in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["replan_history"][0]["trigger"] in {"no_progress", "same_action_repeat"}
     assert "should not reach" not in result["text"]
+
+
+def test_runtime_different_read_file_paths_do_not_count_as_same_action_repeat(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "a.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "b.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "c.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "read_file", "args": {"path": "d.py"}}]),
+            _FakeMessage(content="done"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="依次读取几个不同文件再结束",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-different-read-paths",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert [item["name"] for item in result["tool_events"]] == ["read_file", "read_file", "read_file", "read_file"]
+    assert "turn_budget_same_action_repeats_exceeded" not in result["inspector"]["notes"]
+    assert any(
+        signal["kind"] == "new_file_read" and signal["has_progress"]
+        for signal in result["inspector"]["run_state"]["progress_signals"]
+    )
+
+
+def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="replanned answer"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="先搜索，没有结果时换思路",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-replan-no-progress",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "replanned answer"
+    assert "replan_requested:no_progress" in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["replan_history"][0]["trigger"] == "no_progress"
+    assert any(
+        signal["kind"] == "no_new_info"
+        for signal in result["inspector"]["run_state"]["progress_signals"]
+    )
 
 
 def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:
@@ -1413,7 +1520,10 @@ def test_runtime_finishes_with_image_read_fallback_after_repeat_loop(tmp_path: P
     assert "Vintage" in result["text"]
     assert "new_validation_agent" in result["text"]
     assert len(result["tool_events"]) == 5
-    assert "image_read_repeat_fallback_answer" in result["inspector"]["notes"]
+    assert any(
+        note in {"image_read_repeat_fallback_answer", "image_read_result_forced_summary"}
+        for note in result["inspector"]["notes"]
+    )
 
 
 def test_runtime_forces_tool_based_summary_for_generic_image_read_requests(tmp_path: Path) -> None:
