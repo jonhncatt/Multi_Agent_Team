@@ -592,14 +592,24 @@ function mergeActivityToolItems(previousItems, nextItems) {
   return order.map((id) => map.get(id)).filter(Boolean).slice(-24);
 }
 
+function isActivityTerminalStatus(status) {
+  const normalized = String(status || "").trim();
+  return normalized === "completed" || normalized === "failed" || normalized === "blocked" || normalized === "cancelled";
+}
+
 function normalizeMessageActivity(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const traceEvents = Array.isArray(item.trace_events) ? item.trace_events.map(normalizeTraceEvent) : [];
+  const status = String(item.status || "");
+  const explicitFinishedAt = normalizeActivityTimestamp(item.finished_at || 0);
+  const fallbackFinishedAt = isActivityTerminalStatus(status) && traceEvents.length
+    ? normalizeActivityTimestamp(traceEvents[traceEvents.length - 1].timestamp || 0)
+    : 0;
   return {
     run_id: String(item.run_id || ""),
-    status: String(item.status || ""),
+    status,
     started_at: normalizeActivityTimestamp(item.started_at || (traceEvents[0] && traceEvents[0].timestamp) || 0),
-    finished_at: normalizeActivityTimestamp(item.finished_at || (traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0)),
+    finished_at: explicitFinishedAt || fallbackFinishedAt,
     run_duration_ms: Math.max(0, Number(item.run_duration_ms) || 0),
     activity_summary: String(item.activity_summary || ""),
     plan: normalizePlanChecklist(item.plan),
@@ -1387,7 +1397,7 @@ function buildRuntimeStatsSummary({
       { key: "replan", label: translateUi(locale, "context_meter.field.guard_replan"), value: formatRuntimeToggle(locale, Boolean(safeguards.automatic_replan)) },
       { key: "tool_output", label: translateUi(locale, "context_meter.field.guard_tool_output"), value: formatRuntimeToggle(locale, Boolean(safeguards.tool_output_truncation)) },
       { key: "wall_clock", label: translateUi(locale, "context_meter.field.guard_wall_clock"), value: formatWallClockLimit(safeguards.max_turn_seconds) },
-      { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_tool_calls"), value: String(safeguards.max_total_tool_calls_per_turn || "-") },
+      { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_emergency_tool_calls"), value: String(safeguards.emergency_max_tool_calls_per_turn || "-") },
       { key: "user_stop", label: translateUi(locale, "context_meter.field.guard_user_stop"), value: formatRuntimeToggle(locale, Boolean(safeguards.supports_user_cancel)) },
       { key: "compaction", label: translateUi(locale, "context_meter.field.guard_compaction"), value: formatRuntimeToggle(locale, Boolean(safeguards.context_compaction)) },
     ],
@@ -1457,6 +1467,7 @@ function mergeActivityState(previous, patch = {}) {
     ? mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
     : prev.tool_items;
   const nextStatus = String(nextPatch.status || prev.status || "");
+  const terminalFinishedAt = isActivityTerminalStatus(nextStatus) ? Date.now() : 0;
   return {
     ...prev,
     ...nextPatch,
@@ -1466,7 +1477,7 @@ function mergeActivityState(previous, patch = {}) {
     finished_at: normalizeActivityTimestamp(
       nextPatch.finished_at
       || prev.finished_at
-      || ((nextStatus === "completed" || nextStatus === "failed" || nextStatus === "blocked" || nextStatus === "cancelled") && (Date.now()))
+      || terminalFinishedAt
       || 0,
     ),
     run_duration_ms: Math.max(0, Number(nextPatch.run_duration_ms || prev.run_duration_ms || 0) || 0),
@@ -1487,7 +1498,7 @@ function appendActivityTrace(activity, trace, options = {}) {
     || current.status
     || activityStatusFromTraceType(normalizedTrace.type, "thinking"),
   );
-  const finishedAt = ["completed", "failed", "blocked", "cancelled"].includes(nextStatus)
+  const finishedAt = isActivityTerminalStatus(nextStatus)
     ? (normalizedTrace.timestamp || current.finished_at || Date.now())
     : current.finished_at;
   const startedAt = current.started_at || normalizedTrace.timestamp || Date.now();
@@ -1863,6 +1874,14 @@ function App() {
   const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
   const setLoadingSession = (value) => dispatch({ type: "update", path: ["threadIndex", "loading"], value });
   const setLiveRunLogs = (value) => dispatch({ type: "update", path: ["activeTurn", "liveRunLogs"], value });
+  const hasRunningActivity = useMemo(
+    () => messages.some((item) => {
+      if (!item || item.role !== "assistant") return false;
+      const activity = normalizeMessageActivity(item.activity || {});
+      return Boolean(activity.started_at) && !isActivityTerminalStatus(activity.status);
+    }),
+    [messages],
+  );
   const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
   const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
   const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
@@ -2073,9 +2092,15 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId);
+    if (!shouldTickActivityClock) {
+      setActivityClockMs(Date.now());
+      return undefined;
+    }
+    setActivityClockMs(Date.now());
     const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [activeRunId, hasRunningActivity, sending]);
 
   useEffect(() => {
     function handlePointerDown(event) {

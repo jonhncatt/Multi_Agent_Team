@@ -112,7 +112,7 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.guard_same_action",
     "context_meter.field.guard_replan",
     "context_meter.field.guard_tool_output",
-    "context_meter.field.guard_tool_calls",
+    "context_meter.field.guard_emergency_tool_calls",
     "context_meter.field.guard_same_tool",
     "context_meter.field.guard_no_progress",
     "context_meter.field.guard_rejections",
@@ -305,6 +305,7 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
         "projectsInFlightRef",
         "refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS })",
         "currentRuntimeStatus.loop_safeguards",
+        "emergency_max_tool_calls_per_turn",
         'translateUi(locale, "context_meter.compact_usage"',
         'translateUi(locale, "context_meter.compact_tokens"',
         'translateUi(locale, "context_meter.compact_elapsed_tools"',
@@ -320,6 +321,7 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
         assert token in script, token
 
     assert "BRANCH_REFRESH_INTERVAL_MS" not in script
+    assert "context_meter.field.guard_tool_calls" not in script
     assert 'Promise.all([refreshProjects(), refreshRuntimeStatus(projectId, { background: true })])' not in script
 
     required_style_tokens = (
@@ -359,5 +361,22 @@ def test_context_meter_hover_close_uses_delayed_timer() -> None:
     )
     for token in required_tokens:
         assert token in script, token
+
+
+def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function normalizeMessageActivity\(raw\) \{(?P<body>.*?)\n}\n\nfunction defaultSkillTemplate",
+        script,
+        re.S,
+    )
+    assert match, "normalizeMessageActivity function not found"
+    body = match.group("body")
+
+    assert "isActivityTerminalStatus(status) && traceEvents.length" in body
+    assert "item.finished_at || 0" in body
+    assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
+    assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId);" in script
+    assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
