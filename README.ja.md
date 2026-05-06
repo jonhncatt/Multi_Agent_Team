@@ -13,7 +13,7 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 1 回の turn の中で Agent が何を提案し、runtime が何を検証し、どの tool が実行され、どのような観測結果が返ったのかを見えるようにすることを目的としています。
 **ユーザー要求 -> モデル提案 -> harness 検証 -> tool 実行 -> 観測結果 -> 最終回答**
 
-[English README](README.md) · [中文 README](README.zh-CN.md) · [English Mirror](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
+[中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
 現在の安定版: `v2.7.4`
 

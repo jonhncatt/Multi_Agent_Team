@@ -13,7 +13,7 @@
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型提案 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
-[English README](README.md) · [日本語 README](README.ja.md) · [English Mirror](README.en.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
+[中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
 当前稳定版本：`v2.7.4`
 
