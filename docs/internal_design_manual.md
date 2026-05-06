@@ -433,7 +433,7 @@ tool_name + stable_hash(normalized_arguments)
 
 以下为当前源码中可确认的默认值：
 
-- `max_total_tool_calls_per_turn`: `24`
+- `emergency_max_tool_calls_per_turn`: `1000`
 - `max_same_action_repeats`: `4`
 - `no_progress_threshold_before_replan`: `3`
 - `no_progress_threshold_after_replan`: `2`
@@ -449,9 +449,9 @@ tool_name + stable_hash(normalized_arguments)
 
 这里必须特别说明：
 
-### max_total_tool_calls_per_turn 是什么
+### emergency_max_tool_calls_per_turn 是什么
 
-`max_total_tool_calls_per_turn` 是一个 user turn（用户一轮请求）内的总工具调用上限。
+`emergency_max_tool_calls_per_turn` 是一个 user turn（用户一轮请求）内的总工具调用绝对兜底上限。
 
 它不是：
 
@@ -465,7 +465,7 @@ tool_name + stable_hash(normalized_arguments)
 - 到这一轮最终结束
 - 整体一共尝试了多少次工具调用
 
-当前默认值 `24` 可能对长任务偏保守，但本文档只记录现状，不在本任务中调整行为。后续可以单独审计是否应该提高到更适合作为硬兜底的高位值。
+当前默认值 `1000` 是 emergency cap（紧急兜底上限），不是常规长任务保护。长任务的主要保护仍然是 progress-aware guard（进展感知保护）、same-action repeat（重复动作检测）、no-progress replan（无进展复盘）、context compaction（上下文压缩）、tool output truncation（工具输出截断）、wall-clock timeout（连续运行时间上限）、user cancel（用户停止）和 forbidden action rejection（越界/危险操作拒绝）。
 
 ## 12. Context Compaction（上下文压缩）
 
@@ -570,9 +570,9 @@ Context compaction（上下文压缩）的目标是：
 
 因为当前工具体系已经切到 canonical names（标准工具名），语义更明确，也便于 guard 和 UI 统一处理。
 
-### Q5. `max_total_tool_calls_per_turn = 24` 是什么？
+### Q5. `emergency_max_tool_calls_per_turn = 1000` 是什么？
 
-它是一个 user turn 内的总工具调用上限，不是 model round 数，也不是 `max_tool_rounds`。
+它是一个 user turn 内的总工具调用紧急兜底上限，不是 model round 数，也不是 `max_tool_rounds`。
 
 ### Q6. 长任务为什么不能完全无限？
 
@@ -587,7 +587,7 @@ Context compaction（上下文压缩）的目标是：
 
 ### Q7. 为什么会看到“正在执行 0s / Ns”这类实时状态？
 
-因为前端会基于 `started_at / finished_at / run_duration_ms` 做 live timer（实时计时）。运行中会刷新，结束后冻结。
+因为前端会基于 `started_at / finished_at / run_duration_ms` 做 live timer（实时计时），并且运行中的秒数主要由前端本地定时器驱动。运行中会刷新，结束后冻结，不依赖 `/api/runtime-status` 轮询来推动秒数更新。
 
 ## 15. Version History Notes（版本演进摘要）
 
@@ -596,6 +596,7 @@ Context compaction（上下文压缩）的目标是：
 - `v2.7.0`：整理 runtime stats（运行统计）、轮询策略，并移除 `max_tool_rounds` 主路径依赖
 - `v2.7.1`：背景信息窗口改成简洁默认层 + 折叠详细信息，并把长任务保护升级为 progress-aware safeguards（进展感知保护）
 - `v2.7.2`：新增本内部设计手册，统一记录当前实现
+- `v2.7.3`：修复前端 live timer，移除小工具调用数主路径限制，并把绝对工具上限降级为 emergency cap（紧急兜底上限）
 
 ## 16. 源码依据与待确认点
 
@@ -618,5 +619,5 @@ Context compaction（上下文压缩）的目标是：
 ### 待确认点
 
 1. `Responses API` 相关代码是否会在未来成为稳定主路径：当前仓库存在可选 runner，但不是本文主线。
-2. `24` 作为 `max_total_tool_calls_per_turn` 是否过于保守：当前只记录现状，不做行为调整。
+2. `1000` 作为 `emergency_max_tool_calls_per_turn` 是否仍然偏高或偏低：当前只记录现状，不做进一步行为调整。
 3. 是否需要在未来引入独立 `read_range`：当前源码没有该工具，局部读取由 `read_file` 参数承担。

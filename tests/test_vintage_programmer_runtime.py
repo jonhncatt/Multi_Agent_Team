@@ -63,6 +63,7 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.tool.validation.unavailable",
     "runtime.tool.validation.matched",
     "runtime.tool.validation.tool_unavailable",
+    "runtime.budget.emergency_tool_calls",
     "runtime.budget.same_action_repeat",
     "runtime.budget.no_progress_after_replan",
     "runtime.budget.guard_rejections",
@@ -496,7 +497,8 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
     assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
     assert "max_tool_rounds" not in descriptor
-    assert descriptor["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
+    assert descriptor["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
+    assert "max_total_tool_calls_per_turn" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Execution must happen through tool calls." not in prompt
@@ -1080,7 +1082,91 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
     ]
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
     assert "tool_round_limit" not in result["inspector"]["run_state"]
-    assert result["inspector"]["run_state"]["loop_safeguards"]["max_total_tool_calls_per_turn"] > 0
+    assert result["inspector"]["run_state"]["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
+    assert "max_total_tool_calls_per_turn" not in result["inspector"]["run_state"]["loop_safeguards"]
+
+
+def test_runtime_can_continue_past_old_24_tool_calls_when_progress_continues(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend_messages = [
+        _FakeMessage(
+            content="",
+            tool_calls=[{"id": f"tc{index}", "name": "read_file", "args": {"path": f"file_{index}.py"}}],
+        )
+        for index in range(1, 26)
+    ]
+    backend_messages.append(_FakeMessage(content="long productive loop done"))
+    backend = _FakeBackend(backend_messages)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="持续检查不同文件直到完成",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-tool-budget-progress",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "long productive loop done"
+    assert len(result["tool_events"]) == 25
+    assert "turn_budget_emergency_tool_calls_exceeded" not in result["inspector"]["notes"]
+
+
+def test_runtime_emergency_tool_call_cap_is_only_a_high_fail_safe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import app.vintage_programmer_runtime as runtime_module
+
+    base_safeguards = runtime_module.default_loop_safeguards()
+    monkeypatch.setattr(
+        runtime_module,
+        "default_loop_safeguards",
+        lambda: {
+            **base_safeguards,
+            "emergency_max_tool_calls_per_turn": 2,
+        },
+    )
+
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "a.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "b.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "c.py"}}]),
+            _FakeMessage(content="should not reach"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="持续读取文件直到结束",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-emergency-tool-cap",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "turn_budget_emergency_tool_calls_exceeded"
+    assert "turn_budget_emergency_tool_calls_exceeded" in result["inspector"]["notes"]
+    assert "should not reach" not in result["text"]
 
 
 def test_runtime_blocks_when_same_action_repeats_after_replan(tmp_path: Path) -> None:

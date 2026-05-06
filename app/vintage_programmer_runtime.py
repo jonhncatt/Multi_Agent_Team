@@ -188,7 +188,7 @@ _TOOL_NAME_ALIASES = {
     "view_image": "image_inspect",
 }
 
-_DEFAULT_MAX_TOOL_CALLS_PER_TURN = 24
+_DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
 _DEFAULT_MAX_TURN_SECONDS = 1800
 _DEFAULT_MAX_SAME_ACTION_REPEATS = 4
 _DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN = 3
@@ -215,7 +215,7 @@ _IMAGE_READ_ACTION_HINTS = (
 
 def default_loop_safeguards() -> dict[str, Any]:
     return {
-        "max_total_tool_calls_per_turn": int(_DEFAULT_MAX_TOOL_CALLS_PER_TURN),
+        "emergency_max_tool_calls_per_turn": int(_DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN),
         "max_same_action_repeats": int(_DEFAULT_MAX_SAME_ACTION_REPEATS),
         "no_progress_threshold_before_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN),
         "no_progress_threshold_after_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN),
@@ -3733,7 +3733,7 @@ class VintageProgrammerRuntime:
                 if name in _READ_ONLY_TOOL_NAMES and name != "update_plan"
             ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
-        max_tool_calls_per_turn = int(loop_safeguards.get("max_total_tool_calls_per_turn") or 0)
+        emergency_max_tool_calls_per_turn = int(loop_safeguards.get("emergency_max_tool_calls_per_turn") or 0)
         runnable_tools = list(selected_tools if selected_tools else ())
         max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
         max_same_action_repeats = int(loop_safeguards.get("max_same_action_repeats") or 0)
@@ -4081,7 +4081,7 @@ class VintageProgrammerRuntime:
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
             refresh_model_step(ai_msg, event_type="activity.done")
 
-            act_now_budget = 1 if collaboration_mode in {"default", "execute"} and max_tool_calls_per_turn > 0 else 0
+            act_now_budget = 1 if collaboration_mode in {"default", "execute"} and bool(runnable_tools) else 0
             invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
             auto_image_rescue_budget = 1 if has_image_attachments and "image_read" in runnable_tools else 0
             halt_for_user_input = False
@@ -4419,11 +4419,11 @@ class VintageProgrammerRuntime:
                         notes.append("run_cancelled_by_user")
                         stop_after_tools = True
                         break
-                    if max_tool_calls_per_turn and tool_call_count >= max_tool_calls_per_turn:
+                    if emergency_max_tool_calls_per_turn and tool_call_count >= emergency_max_tool_calls_per_turn:
                         turn_status = "blocked"
-                        blocked_reason = blocked_reason or "turn_budget_tool_calls_exceeded"
-                        forced_text = translate(locale, "runtime.budget.tool_calls")
-                        notes.append("turn_budget_tool_calls_exceeded")
+                        blocked_reason = blocked_reason or "turn_budget_emergency_tool_calls_exceeded"
+                        forced_text = translate(locale, "runtime.budget.emergency_tool_calls")
+                        notes.append("turn_budget_emergency_tool_calls_exceeded")
                         stop_after_tools = True
                         break
                     raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
