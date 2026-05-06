@@ -91,7 +91,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v1.0.0`
+- 在发布提交上打 annotated tag，例如 `v2.7.3`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。
