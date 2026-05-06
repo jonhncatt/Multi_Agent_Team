@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.7.3-blue)
+![Version](https://img.shields.io/badge/version-v2.7.4-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,7 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [English README](README.md) · [中文 README](README.zh-CN.md) · [English Mirror](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.7.3`
+現在の安定版: `v2.7.4`
 
 ## これは何か
 

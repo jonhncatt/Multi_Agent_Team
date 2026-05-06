@@ -649,7 +649,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.7.3"
+    assert payload["app_version"] == "2.7.4"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -704,7 +704,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.7.3"
+    assert bootstrap_payload["app_version"] == "2.7.4"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
