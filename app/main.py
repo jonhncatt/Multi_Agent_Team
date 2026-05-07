@@ -102,7 +102,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.7.5"
+APP_VERSION = "2.7.6"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -1477,20 +1477,25 @@ def _process_chat_request(
             default_project=_default_project(),
         )
         fallback_text = translate(locale, "chat.auth_missing")
-        user_turn = {"role": "user", "text": req.message}
-        assistant_turn = {
-            "role": "assistant",
-            "text": fallback_text,
-            "answer_bundle": {
+        user_turn = session_store.append_turn(seed_session, role="user", text=req.message)
+        session_store.append_turn(
+            seed_session,
+            role="assistant",
+            text=fallback_text,
+            answer_bundle={
                 "summary": fallback_text,
                 "claims": [],
                 "citations": [],
                 "warnings": ["missing_model_auth"],
             },
-        }
-        seed_session.setdefault("turns", [])
-        seed_session["turns"].append(user_turn)
-        seed_session["turns"].append(assistant_turn)
+            activity={
+                "status": "blocked",
+                "triggering_user_message": str(req.message or "").strip(),
+                "triggering_user_turn_id": str(user_turn.get("id") or ""),
+                "session_id": str(seed_session.get("id") or ""),
+                "thread_id": str(seed_session.get("id") or ""),
+            },
+        )
         seed_session["summary"] = fallback_text
         seed_session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         fallback_context_meter = _build_context_meter_for_session(
@@ -1881,6 +1886,19 @@ def _process_chat_request(
                 compaction_status=compaction_status_for_runtime,
             ),
         )
+        attachment_note = ""
+        user_text = req.message.strip()
+        if attachment_note:
+            attachment_label = "Attachments" if locale == "en" else ("添付" if locale == "ja-JP" else "附件")
+            user_text = f"{user_text}\n\n[{attachment_label}] {attachment_note}"
+        user_turn = session_store.append_turn(
+            session,
+            role="user",
+            text=user_text,
+            attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+        )
+        user_turn_id = str(user_turn.get("id") or "")
+        session_store.save(session)
         runtime_result = provider_runtime.run(
             message=req.message,
             settings=req.settings,
@@ -1944,7 +1962,13 @@ def _process_chat_request(
             else dict(route_state_input or {})
         )
         inspector = dict(runtime_result.get("inspector") or {})
-        attachment_note = ""
+        activity = {
+            **activity,
+            "triggering_user_message": user_text,
+            "triggering_user_turn_id": user_turn_id,
+            "session_id": session_id,
+            "thread_id": session_id,
+        }
 
         _emit_progress(
             progress_cb,
@@ -2011,11 +2035,6 @@ def _process_chat_request(
             _emit_progress(progress_cb, "trace", message=cleared_msg, run_id=run_id)
         inspector["notes"] = inspector_notes
 
-        user_text = req.message.strip()
-        if attachment_note:
-            attachment_label = "Attachments" if locale == "en" else ("添付" if locale == "ja-JP" else "附件")
-            user_text = f"{user_text}\n\n[{attachment_label}] {attachment_note}"
-
         if not bool(answer_stream.get("streamed")):
             _emit_agent_message_events(
                 progress_cb,
@@ -2024,12 +2043,6 @@ def _process_chat_request(
                 text=text,
             )
 
-        session_store.append_turn(
-            session,
-            role="user",
-            text=user_text,
-            attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
-        )
         session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}

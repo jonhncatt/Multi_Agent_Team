@@ -212,18 +212,18 @@ class SessionStore:
         attachments: list[dict[str, Any]] | None = None,
         answer_bundle: dict[str, Any] | None = None,
         activity: dict[str, Any] | None = None,
-    ) -> None:
-        session.setdefault("turns", []).append(
-            {
-                "id": str(uuid.uuid4()),
-                "role": role,
-                "text": text,
-                "attachments": attachments or [],
-                "answer_bundle": answer_bundle or {},
-                "activity": activity or {},
-                "created_at": now_iso(),
-            }
-        )
+    ) -> dict[str, Any]:
+        turn = {
+            "id": str(uuid.uuid4()),
+            "role": role,
+            "text": text,
+            "attachments": attachments or [],
+            "answer_bundle": answer_bundle or {},
+            "activity": activity or {},
+            "created_at": now_iso(),
+        }
+        session.setdefault("turns", []).append(turn)
+        return turn
 
     def list_sessions(
         self,

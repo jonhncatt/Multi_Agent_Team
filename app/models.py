@@ -145,6 +145,10 @@ class MessageActivity(BaseModel):
     finished_at: float = 0.0
     run_duration_ms: int = 0
     activity_summary: str = ""
+    triggering_user_message: str = ""
+    triggering_user_turn_id: str = ""
+    session_id: str = ""
+    thread_id: str = ""
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
 
 
