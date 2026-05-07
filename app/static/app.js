@@ -626,6 +626,10 @@ function normalizeMessageActivity(raw) {
     run_duration_ms: runDurationMs,
     final_elapsed_ms: finalElapsedMs,
     activity_summary: String(item.activity_summary || ""),
+    triggering_user_message: String(item.triggering_user_message || item.triggeringUserMessage || ""),
+    triggering_user_turn_id: String(item.triggering_user_turn_id || item.triggeringUserTurnId || ""),
+    session_id: String(item.session_id || item.sessionId || ""),
+    thread_id: String(item.thread_id || item.threadId || ""),
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
     tool_items: normalizeActivityToolItems(item.tool_items),
@@ -3996,6 +4000,13 @@ function App() {
   }
 
   function handleComposerKeyDown(event) {
+    if (
+      event.isComposing
+      || (event.nativeEvent && event.nativeEvent.isComposing)
+      || (event.nativeEvent && event.nativeEvent.keyCode === 229)
+    ) {
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSend();
@@ -4335,6 +4346,8 @@ function App() {
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
     const toolItems = Array.isArray((projection && projection.tool_items)) ? projection.tool_items : [];
     const debugSections = [
+      renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
+      renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id),
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,
