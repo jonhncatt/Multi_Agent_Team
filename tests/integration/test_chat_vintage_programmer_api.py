@@ -567,6 +567,64 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
         return payload
 
 
+class _BlockingVintageRuntime(_FakeVintageRuntime):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings, context, progress_cb)
+        self.started.set()
+        self.release.wait(timeout=5.0)
+        return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+
+
+class _FollowupContextRuntime(_FakeVintageRuntime):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        history_turns = list(context.get("history_turns") or [])
+        self.calls.append(
+            {
+                "message": str(message or ""),
+                "history_turns": [
+                    {
+                        "role": str(item.get("role") or ""),
+                        "text": str(item.get("text") or ""),
+                    }
+                    for item in history_turns
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        current = str(message or "").strip()
+        latest_previous_user = next(
+            (
+                str(item.get("text") or "")
+                for item in reversed(history_turns)
+                if isinstance(item, dict) and str(item.get("role") or "") == "user"
+            ),
+            "",
+        )
+        if current == "题目":
+            text = "件名：明日の会議時間変更のお願い"
+        elif current == "刚刚我问你什么了":
+            text = f"你刚刚问的是“{latest_previous_user}”。"
+        elif "メール" in current or "邮件" in current or "メールを書いて" in current:
+            text = (
+                "お世話になっております。\n\n"
+                "明日の会議ですが、10時から11時に変更させていただけますでしょうか。\n\n"
+                "よろしくお願いいたします。"
+            )
+        else:
+            text = f"echo:{current}"
+        payload["text"] = text
+        payload["answer_bundle"] = {"summary": text, "claims": [], "citations": [], "warnings": []}
+        return payload
+
+
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     for name in ("sessions", "uploads", "shadow_logs", "evolution_logs", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
@@ -649,7 +707,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.7.5"
+    assert payload["app_version"] == "2.7.6"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -704,7 +762,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.7.5"
+    assert bootstrap_payload["app_version"] == "2.7.6"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -1143,6 +1201,153 @@ def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) 
     assert seen["thread_memory"]["summary"] == "old summary"
     assert seen["current_task_focus"]["task_id"] == "task-old"
     assert seen["route_state"]["task_checkpoint"]["task_id"] == "task-old"
+
+
+def test_chat_stream_persists_latest_user_turn_before_runtime_completes(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    runtime = _BlockingVintageRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    client = TestClient(main_app.app)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    response_holder: dict[str, object] = {}
+
+    def _run_stream() -> None:
+        response_holder["response"] = client.post(
+            "/api/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "题目",
+                "settings": {
+                    "model": "gpt-test",
+                    "max_output_tokens": 1024,
+                    "max_context_turns": 20,
+                    "enable_tools": True,
+                    "response_style": "short",
+                },
+            },
+        )
+
+    worker = threading.Thread(target=_run_stream, daemon=True)
+    worker.start()
+    assert runtime.started.wait(timeout=2.0) is True
+
+    detail_response = client.get(f"/api/thread/{session['id']}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert any(item["role"] == "user" and item["text"] == "题目" for item in detail_payload["turns"])
+
+    runtime.release.set()
+    worker.join(timeout=5.0)
+    response = response_holder.get("response")
+    assert response is not None
+    assert response.status_code == 200
+
+
+def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    runtime = _FollowupContextRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "题目",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["text"] == "件名：明日の会議時間変更のお願い"
+
+    third = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "刚刚我问你什么了",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert third.status_code == 200
+    assert third.json()["text"] == "你刚刚问的是“题目”。"
+
+    detail_response = client.get(f"/api/thread/{session_id}")
+    assert detail_response.status_code == 200
+    turns = detail_response.json()["turns"]
+    assert [(item["role"], item["text"]) for item in turns[-6:]] == [
+        ("user", "日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"),
+        ("assistant", "お世話になっております。\n\n明日の会議ですが、10時から11時に変更させていただけますでしょうか。\n\nよろしくお願いいたします。"),
+        ("user", "题目"),
+        ("assistant", "件名：明日の会議時間変更のお願い"),
+        ("user", "刚刚我问你什么了"),
+        ("assistant", "你刚刚问的是“题目”。"),
+    ]
+    assert runtime.calls[1]["message"] == "题目"
+    assert runtime.calls[1]["history_turns"][-1]["role"] == "assistant"
+    assert runtime.calls[2]["message"] == "刚刚我问你什么了"
+    assert runtime.calls[2]["history_turns"][-2] == {"role": "user", "text": "题目"}
+    assert runtime.calls[2]["history_turns"][-1] == {"role": "assistant", "text": "件名：明日の会議時間変更のお願い"}
+
+
+def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _FollowupContextRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "题目",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["activity"]["triggering_user_message"] == "题目"
+    assert payload["activity"]["triggering_user_turn_id"]
+
+    detail_response = client.get(f"/api/thread/{payload['session_id']}")
+    assert detail_response.status_code == 200
+    assistant_turn = detail_response.json()["turns"][-1]
+    assert assistant_turn["role"] == "assistant"
+    assert assistant_turn["activity"]["triggering_user_message"] == "题目"
+    assert assistant_turn["activity"]["triggering_user_turn_id"]
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:

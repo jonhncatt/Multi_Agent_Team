@@ -51,6 +51,8 @@ REQUIRED_CORE_KEYS = (
     "activity.original_excerpt",
     "activity.result_excerpt",
     "activity.reason",
+    "activity.triggering_user_message",
+    "activity.triggering_user_turn_id",
     "activity.progress.read",
     "activity.progress.list_dir",
     "activity.progress.glob_file_search",
@@ -411,3 +413,27 @@ def test_timer_visibility_checks_use_turn_level_start_timestamp() -> None:
     assert "Boolean(activity.turn_started_at || activity.started_at) && !isActivityTerminalStatus(activity.status)" in script
     assert "activity.turn_started_at || activity.started_at || activity.run_duration_ms || activity.trace_events.length" in script
     assert "const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);" in script
+
+
+def test_composer_submit_ignores_enter_during_ime_composition() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function handleComposerKeyDown\(event\) \{(?P<body>.*?)\n  \}",
+        script,
+        re.S,
+    )
+    assert match, "handleComposerKeyDown not found"
+    body = match.group("body")
+
+    assert "event.isComposing" in body
+    assert "event.nativeEvent" in body
+    assert "keyCode === 229" in body
+    assert "handleSend();" in body
+
+
+def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "triggering_user_message" in script
+    assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
+    assert 'renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id)' in script
