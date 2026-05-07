@@ -374,9 +374,40 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     body = match.group("body")
 
     assert "isActivityTerminalStatus(status) && traceEvents.length" in body
+    assert "const turnStartedAt = normalizeActivityTimestamp(item.turn_started_at || item.turnStartedAt || startedAt || 0);" in body
+    assert "const finalElapsedMs = isActivityTerminalStatus(status)" in body
     assert "item.finished_at || 0" in body
     assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
+    assert "const turnStartedAt = item.turn_started_at || item.started_at;" in script
+    assert "const frozenElapsedMs = Math.max(0, Number(item.final_elapsed_ms || 0) || 0);" in script
     assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId);" in script
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
+
+
+def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "prev.started_at || nextStartedAtCandidate || 0" in script
+    assert "prev.turn_started_at || nextTurnStartedAtCandidate || nextStartedAt || 0" in script
+    assert "Number(prev.final_elapsed_ms || 0) || 0" in script
+    assert "turn_started_at: Date.now()," in script
+
+    run_started_match = re.search(
+        r'if \(event === "run_started"\) \{(?P<body>.*?)\n            \} else if \(event === "run_finished"\)',
+        script,
+        re.S,
+    )
+    assert run_started_match, "run_started handler not found"
+    run_started_body = run_started_match.group("body")
+    assert 'status: "thinking"' in run_started_body
+    assert "started_at" not in run_started_body
+
+
+def test_timer_visibility_checks_use_turn_level_start_timestamp() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "Boolean(activity.turn_started_at || activity.started_at) && !isActivityTerminalStatus(activity.status)" in script
+    assert "activity.turn_started_at || activity.started_at || activity.run_duration_ms || activity.trace_events.length" in script
+    assert "const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);" in script
