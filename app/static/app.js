@@ -38,6 +38,7 @@ const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
 const PROJECTS_REFRESH_STALE_MS = 60_000;
+const MODEL_WAIT_SLOW_HINT_MS = 8_000;
 const UPLOAD_CONCURRENCY = 3;
 const THREAD_DETAIL_PAGE_SIZE = 40;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
@@ -638,6 +639,10 @@ function normalizeMessageActivity(raw) {
     recent_user_messages: Array.isArray(item.recent_user_messages)
       ? item.recent_user_messages.map((entry) => String(entry || "")).filter(Boolean)
       : [],
+    phase_timings:
+      item.phase_timings && typeof item.phase_timings === "object"
+        ? item.phase_timings
+        : (item.phaseTimings && typeof item.phaseTimings === "object" ? item.phaseTimings : {}),
     session_id: String(item.session_id || item.sessionId || ""),
     thread_id: String(item.thread_id || item.threadId || ""),
     plan: normalizePlanChecklist(item.plan),
@@ -1105,12 +1110,26 @@ function buildToolProgressGroups(activity) {
   return Array.from(groups.values()).sort((left, right) => left.order_index - right.order_index);
 }
 
-function buildFallbackProgressItems(activity, locale) {
+function latestTraceTimestampByTypes(traces, types) {
+  const wanted = new Set((Array.isArray(types) ? types : [types]).map((item) => String(item || "").trim()).filter(Boolean));
+  if (!wanted.size) return 0;
+  for (let index = (Array.isArray(traces) ? traces.length : 0) - 1; index >= 0; index -= 1) {
+    const trace = traces[index];
+    const traceType = String((trace && trace.type) || "").trim();
+    if (wanted.has(traceType)) {
+      return normalizeActivityTimestamp((trace && trace.timestamp) || 0);
+    }
+  }
+  return 0;
+}
+
+function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const traces = item.trace_events.filter(Boolean);
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
+  const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerReady = traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerDelta = traces.some((trace) => String(trace.type || "").trim() === "answer.delta");
@@ -1133,7 +1152,26 @@ function buildFallbackProgressItems(activity, locale) {
       tool_group: group,
     });
   });
-  if (!toolGroups.length && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  if (!toolGroups.length && !llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+    progressItems.push({
+      id: "request-understanding",
+      label: translateUi(locale, "activity.status.request_understanding"),
+      status: "running",
+      source: "fallback",
+    });
+  } else if (!toolGroups.length && llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+    progressItems.push({
+      id: "waiting-model",
+      label: translateUi(
+        locale,
+        nowMs - llmStartedAt >= MODEL_WAIT_SLOW_HINT_MS
+          ? "activity.status.waiting_model_slow"
+          : "activity.status.waiting_model",
+      ),
+      status: "running",
+      source: "fallback",
+    });
+  } else if (!toolGroups.length && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "thinking",
       label: translateUi(locale, "activity.status.thinking"),
@@ -1165,12 +1203,12 @@ function buildFallbackProgressItems(activity, locale) {
   ));
 }
 
-function buildActivityProjection(activity, locale) {
+function buildActivityProjection(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const revisionSummary = latestRevisionSummary(item);
   const progressItems = item.plan.length
     ? buildPlanChecklistItems(item.plan)
-    : buildFallbackProgressItems(item, locale);
+    : buildFallbackProgressItems(item, locale, nowMs);
   return {
     progress_items: progressItems,
     revision_summary: revisionSummary,
@@ -1206,6 +1244,19 @@ function formatRunEnum(locale, group, value, fallback = "-") {
 
 function formatRunBoolean(locale, value) {
   return formatRunEnum(locale, "bool", String(Boolean(value)), String(Boolean(value)));
+}
+
+function formatPhaseTimingLabel(locale, key) {
+  const normalized = String(key || "").trim();
+  if (!normalized) return "-";
+  const fallback = normalized
+    .replace(/_ms$/, "")
+    .replaceAll("_", " ");
+  return translateUiOrFallback(locale, `activity.phase.${normalized}`, fallback);
+}
+
+function formatPhaseTimingMs(value) {
+  return `${Math.max(0, Number(value || 0) || 0)} ms`;
 }
 
 function formatToolGroupLabel(locale, value) {
@@ -1341,6 +1392,9 @@ function buildRuntimeStatsSummary({
   const safeguards = (currentRuntimeStatus.loop_safeguards && typeof currentRuntimeStatus.loop_safeguards === "object")
     ? currentRuntimeStatus.loop_safeguards
     : {};
+  const providerDiagnostics = (currentRuntimeStatus.provider_diagnostics && typeof currentRuntimeStatus.provider_diagnostics === "object")
+    ? currentRuntimeStatus.provider_diagnostics
+    : {};
   const activity = latestAssistantActivity(messages);
   const toolTimeline = runtimeToolTimelineForStats({
     hasLiveRunState,
@@ -1428,6 +1482,20 @@ function buildRuntimeStatsSummary({
       { key: "tool_calls", label: translateUi(locale, "context_meter.field.guard_emergency_tool_calls"), value: String(safeguards.emergency_max_tool_calls_per_turn || "-") },
       { key: "user_stop", label: translateUi(locale, "context_meter.field.guard_user_stop"), value: formatRuntimeToggle(locale, Boolean(safeguards.supports_user_cancel)) },
       { key: "compaction", label: translateUi(locale, "context_meter.field.guard_compaction"), value: formatRuntimeToggle(locale, Boolean(safeguards.context_compaction)) },
+    ],
+    diagnostics: [
+      ...(providerDiagnostics.runtime_status_total_ms != null
+        ? [{ key: "runtime_status_total_ms", label: translateUi(locale, "context_meter.field.runtime_status_total"), value: formatPhaseTimingMs(providerDiagnostics.runtime_status_total_ms) }]
+        : []),
+      ...(providerDiagnostics.runtime_status_runtime_meta_ms != null
+        ? [{ key: "runtime_status_runtime_meta_ms", label: translateUi(locale, "context_meter.field.runtime_status_runtime_meta"), value: formatPhaseTimingMs(providerDiagnostics.runtime_status_runtime_meta_ms) }]
+        : []),
+      ...(providerDiagnostics.runtime_status_provider_options_ms != null
+        ? [{ key: "runtime_status_provider_options_ms", label: translateUi(locale, "context_meter.field.runtime_status_provider_options"), value: formatPhaseTimingMs(providerDiagnostics.runtime_status_provider_options_ms) }]
+        : []),
+      ...(providerDiagnostics.runtime_status_auth_summary_ms != null
+        ? [{ key: "runtime_status_auth_summary_ms", label: translateUi(locale, "context_meter.field.runtime_status_auth_summary"), value: formatPhaseTimingMs(providerDiagnostics.runtime_status_auth_summary_ms) }]
+        : []),
     ],
   };
 }
@@ -1531,6 +1599,10 @@ function mergeActivityState(previous, patch = {}) {
     run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
+    phase_timings:
+      nextPatch.phase_timings && typeof nextPatch.phase_timings === "object"
+        ? nextPatch.phase_timings
+        : prev.phase_timings,
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
     tool_items: nextToolItems,
@@ -3360,6 +3432,7 @@ function App() {
   async function handleSend(overrideText) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
+    const clientSubmittedAtMs = Date.now();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
       const summary = t("errors.upload_in_progress");
@@ -3420,6 +3493,7 @@ function App() {
           session_id: sid,
           project_id: projectId,
           message: messageText,
+          client_submitted_at_ms: clientSubmittedAtMs,
           mode_override: chatSettings.collaboration_mode,
           attachment_ids: readyAttachmentIds,
           settings: {
@@ -4204,6 +4278,51 @@ function App() {
     return renderDetailBlock(label, item);
   };
 
+  const renderPhaseTimingDetails = (source) => {
+    const timings = source && typeof source === "object" ? source : {};
+    const preferredOrder = [
+      "frontend_submit_to_backend_ms",
+      "provider_profile_resolve_ms",
+      "provider_auth_summary_ms",
+      "project_resolve_ms",
+      "session_seed_ms",
+      "queue_wait_ms",
+      "session_load_ms",
+      "session_ready_ms",
+      "pre_turn_compaction_ms",
+      "attachment_context_ms",
+      "attachment_load_ms",
+      "runtime_context_ms",
+      "runtime_context_ready_ms",
+      "runtime_run_ms",
+      "runtime_auth_summary_ms",
+      "agent_spec_load_ms",
+      "skills_load_ms",
+      "model_request_start_ms",
+      "model_first_event_ms",
+      "model_first_text_delta_ms",
+      "answer_ready_ms",
+      "runtime_total_ms",
+      "total_ms",
+    ];
+    const entries = Object.entries(timings)
+      .filter(([, value]) => Number.isFinite(Number(value)))
+      .sort((left, right) => {
+        const leftIndex = preferredOrder.indexOf(left[0]);
+        const rightIndex = preferredOrder.indexOf(right[0]);
+        const safeLeft = leftIndex >= 0 ? leftIndex : preferredOrder.length + 1;
+        const safeRight = rightIndex >= 0 ? rightIndex : preferredOrder.length + 1;
+        return safeLeft - safeRight || left[0].localeCompare(right[0]);
+      });
+    if (!entries.length) return null;
+    return html`
+      <details className="activity-payload">
+        <summary>${t("activity.phase_timings")}</summary>
+        <pre>${entries.map(([key, value]) => `${formatPhaseTimingLabel(uiLocale, key)}: ${formatPhaseTimingMs(value)}`).join("\n")}</pre>
+      </details>
+    `;
+  };
+
   const renderRevisionSummaryDetails = (source) => {
     const summary = source && typeof source === "object" ? source : {};
     const items = Array.isArray(summary.items) ? summary.items : [];
@@ -4363,6 +4482,7 @@ function App() {
       renderDetailBlock(t("activity.current_turn_goal_source"), item.current_turn_goal_source),
       renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus),
       renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages),
+      renderPhaseTimingDetails(item.phase_timings),
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,
@@ -4429,7 +4549,7 @@ function App() {
   const renderMessageActivity = (item) => {
     if (!item || item.role !== "assistant") return null;
     const activity = normalizeMessageActivity(item.activity || {});
-    const projection = buildActivityProjection(activity, uiLocale);
+    const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
@@ -4815,7 +4935,8 @@ function App() {
                               [t("context_meter.section.tools"), runtimeStats.tools],
                               [t("context_meter.section.context"), runtimeStats.context],
                               [t("context_meter.section.safeguards"), runtimeStats.safeguards],
-                            ].map(
+                              [t("context_meter.section.diagnostics"), runtimeStats.diagnostics],
+                            ].filter(([, rows]) => Array.isArray(rows) && rows.length).map(
                               ([sectionTitle, rows]) => html`
                                 <div className="context-meter-section" key=${sectionTitle}>
                                   <div className="context-meter-section-title">${sectionTitle}</div>
