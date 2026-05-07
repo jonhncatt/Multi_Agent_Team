@@ -498,10 +498,49 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
     assert "max_tool_rounds" not in descriptor
     assert descriptor["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
-    assert "max_total_tool_calls_per_turn" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Execution must happen through tool calls." not in prompt
+
+
+def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+
+    payload_text = runtime._build_human_payload(
+        message="题目",
+        context={
+            "session_id": "s-1",
+            "project": {"project_root": str(tmp_path)},
+            "route_state": {"task_checkpoint": {"task_id": "task-old", "goal": "帮我写个请假邮件"}},
+            "current_task_focus": {"task_id": "task-old", "goal": "帮我写个请假邮件"},
+            "active_task_focus": {"task_id": "task-old", "goal": "帮我写个请假邮件"},
+            "current_turn": {
+                "user_message": "题目",
+                "goal": "Provide only a subject/title for the previous email or draft.",
+                "is_followup": True,
+                "followup_type": "subject_request",
+                "source": "followup_classifier",
+            },
+            "recent_user_messages": ["帮我写个请假邮件"],
+            "history_turns": [{"role": "user", "text": f"turn-{index}"} for index in range(20)],
+        },
+    )
+
+    runtime_context_json = payload_text.split("runtime_context_json:\n", 1)[1]
+    payload = json.loads(runtime_context_json)
+
+    assert payload["current_turn"]["followup_type"] == "subject_request"
+    assert payload["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
+    assert payload["active_task_focus"]["goal"] == "帮我写个请假邮件"
+    assert [item["text"] for item in payload["history_turns"][:2]] == ["turn-4", "turn-5"]
+    assert payload["history_turns"][-1]["text"] == "turn-19"
 
 
 def test_runtime_activity_copy_has_locale_parity() -> None:

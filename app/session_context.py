@@ -152,6 +152,16 @@ _TASK_RECALL_HINTS = (
     "记得吗",
     "我刚刚让你",
     "我之前让你",
+    "我刚刚问你什么了",
+    "我刚才问你什么了",
+    "我刚刚问了什么",
+    "我刚才问了什么",
+    "刚刚我问你什么了",
+    "刚才我问你什么了",
+    "刚刚我问了什么",
+    "刚才我问了什么",
+    "我刚才问你的所有问题",
+    "我问你的所有问题",
     "刚刚让你",
     "之前让你",
     "上一个任务",
@@ -168,6 +178,21 @@ _TASK_RECALL_HINTS = (
     "remember",
     "previous image",
     "previous email",
+)
+_TASK_SUBJECT_FOLLOWUP_HINTS = (
+    "题目",
+    "题目呢",
+    "标题",
+    "标题呢",
+    "邮件题目",
+    "邮件标题",
+    "subject",
+    "subject line",
+    "email subject",
+    "title",
+    "title only",
+    "件名",
+    "メール件名",
 )
 _TASK_SHORT_ACTION_HINTS = (
     "修改",
@@ -186,7 +211,7 @@ _TASK_SHORT_ACTION_HINTS = (
     "修一下",
 )
 _IMAGE_HINTS = ("图片", "截图", "照片", "image", "screenshot", "photo", "png", "jpg", "jpeg", "gif", "webp", "heic")
-_MAIL_HINTS = ("邮件", "邮箱", "msg", ".msg", "email", "outlook", "信件")
+_MAIL_HINTS = ("邮件", "邮箱", "msg", ".msg", "email", "mail", "outlook", "信件", "メール", "件名")
 _DOCUMENT_HINTS = ("pdf", "文档", "docx", "xlsx", "pptx", "表格", "幻灯片", "文件")
 _RESET_FOCUS_HINTS = (
     "忽略刚才",
@@ -195,6 +220,25 @@ _RESET_FOCUS_HINTS = (
     "从头开始",
     "new task",
     "start over",
+)
+_RECENT_USER_LIST_HINTS = (
+    "我刚才问你的所有问题",
+    "我问你的所有问题",
+    "list all my questions",
+    "list my recent questions",
+    "what were my recent questions",
+)
+_RECENT_USER_LAST_HINTS = (
+    "我刚刚问你什么了",
+    "我刚才问你什么了",
+    "我刚刚问了什么",
+    "我刚才问了什么",
+    "刚刚我问你什么了",
+    "刚才我问你什么了",
+    "刚刚我问了什么",
+    "刚才我问了什么",
+    "what did i just ask",
+    "what was my last question",
 )
 
 
@@ -372,7 +416,42 @@ def message_requests_task_recall(message: str) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
-    return any(hint in text for hint in _TASK_RECALL_HINTS)
+    return (
+        any(hint in text for hint in _TASK_RECALL_HINTS)
+        or message_requests_latest_user_question(message)
+        or message_requests_recent_user_list(message)
+    )
+
+
+def message_requests_latest_user_question(message: str) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return any(hint in text for hint in _RECENT_USER_LAST_HINTS)
+
+
+def message_requests_recent_user_list(message: str) -> bool:
+    raw = str(message or "").strip()
+    text = raw.lower()
+    if not text:
+        return False
+    if any(hint in text for hint in _RECENT_USER_LIST_HINTS):
+        return True
+    return any(token in text for token in ("all my questions", "所有问题")) and any(
+        token in text for token in ("list", "罗列", "列", "show")
+    )
+
+
+def message_requests_subject_followup(message: str) -> bool:
+    raw = str(message or "").strip()
+    text = raw.lower()
+    if not text:
+        return False
+    if any(hint == text for hint in _TASK_SUBJECT_FOLLOWUP_HINTS):
+        return True
+    if len(raw) <= 24 and any(hint in text for hint in _TASK_SUBJECT_FOLLOWUP_HINTS):
+        return True
+    return False
 
 
 def message_requests_attachment_context(message: str) -> bool:
@@ -449,6 +528,114 @@ def _session_artifact_memory(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _session_task_checkpoint(session: dict[str, Any]) -> dict[str, Any]:
     return compat_task_checkpoint_from_focus(_session_current_task_focus(session))
+
+
+def _recent_user_messages_from_turns(
+    turns: list[dict[str, Any]] | None,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    collected: list[str] = []
+    for item in list(turns or []):
+        if not isinstance(item, dict) or str(item.get("role") or "") != "user":
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            collected.append(text)
+    return collected[-max(1, limit) :]
+
+
+def get_recent_user_messages(
+    session: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    turns = session.get("turns", [])
+    if isinstance(turns, list) and turns:
+        return _recent_user_messages_from_turns(turns, limit=limit)
+    return []
+
+
+def _message_mentions_email_context(message: str) -> bool:
+    raw = str(message or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    return any(token in raw for token in ("邮件", "邮箱", "信件", "メール", "件名")) or any(
+        token in lowered for token in ("email", "mail", "subject")
+    )
+
+
+def _recent_assistant_messages_from_turns(
+    turns: list[dict[str, Any]] | None,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    collected: list[str] = []
+    for item in list(turns or []):
+        if not isinstance(item, dict) or str(item.get("role") or "") != "assistant":
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            collected.append(text)
+    return collected[-max(1, limit) :]
+
+
+def _has_email_followup_context(
+    session: dict[str, Any],
+    *,
+    history_turns: list[dict[str, Any]] | None = None,
+) -> bool:
+    focus = _session_current_task_focus(session)
+    candidates = [str(focus.get("goal") or "").strip()]
+    candidates.extend(_recent_user_messages_from_turns(history_turns or session.get("turns") or [], limit=4))
+    candidates.extend(_recent_assistant_messages_from_turns(history_turns or session.get("turns") or [], limit=3))
+    return any(_message_mentions_email_context(item) for item in candidates if str(item or "").strip())
+
+
+def derive_current_turn_context(
+    session: dict[str, Any],
+    *,
+    message: str,
+    history_turns: list[dict[str, Any]] | None = None,
+    recent_user_messages: list[str] | None = None,
+) -> dict[str, Any]:
+    raw = str(message or "").strip()
+    history = list(history_turns or [])
+    prior_user_messages = list(recent_user_messages or _recent_user_messages_from_turns(history, limit=8))
+    followup_type = ""
+    goal_source = "latest_user_message"
+    is_followup = False
+    goal = raw[:240]
+
+    if message_requests_recent_user_list(raw):
+        goal = "List the recent user questions from this thread in order."
+        followup_type = "recent_user_messages_list"
+        goal_source = "recent_user_messages"
+        is_followup = True
+    elif message_requests_latest_user_question(raw):
+        goal = "Answer what the previous user message was in this thread."
+        followup_type = "recent_user_message_recall"
+        goal_source = "recent_user_messages"
+        is_followup = True
+    elif message_requests_subject_followup(raw) and _has_email_followup_context(session, history_turns=history):
+        goal = "Provide only a subject/title for the previous email or draft."
+        followup_type = "subject_request"
+        goal_source = "followup_classifier"
+        is_followup = True
+    elif message_likely_continues_task(raw, session=session):
+        followup_type = "task_followup"
+        goal_source = "latest_user_message"
+        is_followup = True
+
+    return {
+        "user_message": raw,
+        "goal": goal,
+        "is_followup": bool(is_followup),
+        "followup_type": followup_type,
+        "source": goal_source,
+        "recent_user_messages": prior_user_messages[-8:],
+    }
 
 
 def message_likely_continues_task(message: str, *, session: dict[str, Any] | None = None) -> bool:

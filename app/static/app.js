@@ -628,6 +628,16 @@ function normalizeMessageActivity(raw) {
     activity_summary: String(item.activity_summary || ""),
     triggering_user_message: String(item.triggering_user_message || item.triggeringUserMessage || ""),
     triggering_user_turn_id: String(item.triggering_user_turn_id || item.triggeringUserTurnId || ""),
+    current_turn_goal: String(item.current_turn_goal || item.currentTurnGoal || ""),
+    current_turn_followup_type: String(item.current_turn_followup_type || item.currentTurnFollowupType || ""),
+    current_turn_goal_source: String(item.current_turn_goal_source || item.currentTurnGoalSource || ""),
+    active_task_focus:
+      item.active_task_focus && typeof item.active_task_focus === "object"
+        ? item.active_task_focus
+        : (item.activeTaskFocus && typeof item.activeTaskFocus === "object" ? item.activeTaskFocus : {}),
+    recent_user_messages: Array.isArray(item.recent_user_messages)
+      ? item.recent_user_messages.map((entry) => String(entry || "")).filter(Boolean)
+      : [],
     session_id: String(item.session_id || item.sessionId || ""),
     thread_id: String(item.thread_id || item.threadId || ""),
     plan: normalizePlanChecklist(item.plan),
@@ -4348,6 +4358,11 @@ function App() {
     const debugSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
       renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id),
+      renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal),
+      renderDetailBlock(t("activity.current_turn_followup_type"), item.current_turn_followup_type),
+      renderDetailBlock(t("activity.current_turn_goal_source"), item.current_turn_goal_source),
+      renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus),
+      renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages),
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,

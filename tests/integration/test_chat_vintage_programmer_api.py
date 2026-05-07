@@ -585,9 +585,15 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
 
     def run(self, *, message, settings, context, progress_cb=None):
         history_turns = list(context.get("history_turns") or [])
+        current_turn = dict(context.get("current_turn") or {})
+        active_task_focus = dict(context.get("active_task_focus") or context.get("current_task_focus") or {})
+        recent_user_messages = [str(item or "") for item in list(context.get("recent_user_messages") or []) if str(item or "").strip()]
         self.calls.append(
             {
                 "message": str(message or ""),
+                "current_turn": dict(current_turn),
+                "active_task_focus": dict(active_task_focus),
+                "recent_user_messages": list(recent_user_messages),
                 "history_turns": [
                     {
                         "role": str(item.get("role") or ""),
@@ -608,10 +614,26 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
             ),
             "",
         )
-        if current == "题目":
+        goal = str(current_turn.get("goal") or active_task_focus.get("goal") or current).strip()
+        followup_type = str(current_turn.get("followup_type") or "").strip()
+        if current == "题目" and followup_type == "subject_request":
             text = "件名：明日の会議時間変更のお願い"
+        elif current == "题目":
+            text = (
+                "当然，下面是一封自然、简洁的请假邮件：\n\n"
+                "お世話になっております。\n\n"
+                "明日は検査のため、一日お休みをいただきたく存じます。\n\n"
+                "よろしくお願いいたします。"
+            )
+        elif current == "刚刚我问你什么了" and followup_type == "recent_user_message_recall":
+            recalled = recent_user_messages[-1] if recent_user_messages else latest_previous_user
+            text = f"你刚刚问的是“{recalled}”。"
         elif current == "刚刚我问你什么了":
-            text = f"你刚刚问的是“{latest_previous_user}”。"
+            text = f"你刚刚问的是“{goal}”。"
+        elif current == "我刚才问你的所有问题，罗列一下" and followup_type == "recent_user_messages_list":
+            text = "\n".join(f"{index + 1}. {entry}" for index, entry in enumerate(recent_user_messages))
+        elif current == "我刚才问你的所有问题，罗列一下":
+            text = goal
         elif "メール" in current or "邮件" in current or "メールを書いて" in current:
             text = (
                 "お世話になっております。\n\n"
@@ -622,6 +644,23 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
             text = f"echo:{current}"
         payload["text"] = text
         payload["answer_bundle"] = {"summary": text, "claims": [], "citations": [], "warnings": []}
+        payload["activity"] = {
+            **dict(payload.get("activity") or {}),
+            "current_turn_goal": goal,
+            "current_turn_followup_type": followup_type,
+            "active_task_focus": dict(active_task_focus),
+            "recent_user_messages": list(recent_user_messages),
+        }
+        payload["inspector"] = {
+            **dict(payload.get("inspector") or {}),
+            "run_state": {
+                **dict(((payload.get("inspector") or {}).get("run_state") or {})),
+                "goal": goal,
+                "current_turn": dict(current_turn),
+                "active_task_focus": dict(active_task_focus),
+                "recent_user_messages": list(recent_user_messages),
+            },
+        }
         return payload
 
 
@@ -707,7 +746,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.7.6"
+    assert payload["app_version"] == "2.7.7"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -762,7 +801,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.7.6"
+    assert bootstrap_payload["app_version"] == "2.7.7"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -1282,6 +1321,10 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     )
     assert second.status_code == 200
     assert second.json()["text"] == "件名：明日の会議時間変更のお願い"
+    assert runtime.calls[1]["current_turn"]["followup_type"] == "subject_request"
+    assert runtime.calls[1]["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
+    assert runtime.calls[1]["active_task_focus"]["goal"] != runtime.calls[1]["current_turn"]["goal"]
+    assert runtime.calls[1]["recent_user_messages"] == ["日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"]
 
     third = client.post(
         "/api/chat",
@@ -1299,23 +1342,63 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     )
     assert third.status_code == 200
     assert third.json()["text"] == "你刚刚问的是“题目”。"
+    assert runtime.calls[2]["current_turn"]["followup_type"] == "recent_user_message_recall"
+    assert runtime.calls[2]["recent_user_messages"][-1] == "题目"
+
+    fourth = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "我刚才问你的所有问题，罗列一下",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert fourth.status_code == 200
+    assert fourth.json()["text"] == "\n".join(
+        [
+            "1. 日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。",
+            "2. 题目",
+            "3. 刚刚我问你什么了",
+        ]
+    )
+    assert runtime.calls[3]["current_turn"]["followup_type"] == "recent_user_messages_list"
+    assert runtime.calls[3]["recent_user_messages"] == [
+        "日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。",
+        "题目",
+        "刚刚我问你什么了",
+    ]
 
     detail_response = client.get(f"/api/thread/{session_id}")
     assert detail_response.status_code == 200
     turns = detail_response.json()["turns"]
-    assert [(item["role"], item["text"]) for item in turns[-6:]] == [
+    assert [(item["role"], item["text"]) for item in turns[-8:]] == [
         ("user", "日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"),
         ("assistant", "お世話になっております。\n\n明日の会議ですが、10時から11時に変更させていただけますでしょうか。\n\nよろしくお願いいたします。"),
         ("user", "题目"),
         ("assistant", "件名：明日の会議時間変更のお願い"),
         ("user", "刚刚我问你什么了"),
         ("assistant", "你刚刚问的是“题目”。"),
+        ("user", "我刚才问你的所有问题，罗列一下"),
+        ("assistant", "1. 日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。\n2. 题目\n3. 刚刚我问你什么了"),
     ]
     assert runtime.calls[1]["message"] == "题目"
     assert runtime.calls[1]["history_turns"][-1]["role"] == "assistant"
     assert runtime.calls[2]["message"] == "刚刚我问你什么了"
     assert runtime.calls[2]["history_turns"][-2] == {"role": "user", "text": "题目"}
     assert runtime.calls[2]["history_turns"][-1] == {"role": "assistant", "text": "件名：明日の会議時間変更のお願い"}
+    assert runtime.calls[3]["message"] == "我刚才问你的所有问题，罗列一下"
+    subject_assistant_turn = turns[-5]
+    assert subject_assistant_turn["role"] == "assistant"
+    assert subject_assistant_turn["activity"]["current_turn_goal"] == "Provide only a subject/title for the previous email or draft."
+    assert subject_assistant_turn["activity"]["current_turn_followup_type"] == "subject_request"
+    assert subject_assistant_turn["activity"]["active_task_focus"]["goal"]
+    assert subject_assistant_turn["activity"]["recent_user_messages"] == ["日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"]
 
 
 def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_path: Path) -> None:
@@ -1341,6 +1424,9 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     payload = response.json()
     assert payload["activity"]["triggering_user_message"] == "题目"
     assert payload["activity"]["triggering_user_turn_id"]
+    assert payload["activity"]["current_turn_goal"] == "题目"
+    assert payload["activity"]["active_task_focus"]["goal"] == ""
+    assert payload["activity"]["recent_user_messages"] == []
 
     detail_response = client.get(f"/api/thread/{payload['session_id']}")
     assert detail_response.status_code == 200
@@ -1348,6 +1434,7 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     assert assistant_turn["role"] == "assistant"
     assert assistant_turn["activity"]["triggering_user_message"] == "题目"
     assert assistant_turn["activity"]["triggering_user_turn_id"]
+    assert assistant_turn["activity"]["current_turn_goal"] == "题目"
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:

@@ -102,7 +102,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.7.6"
+APP_VERSION = "2.7.7"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -1804,6 +1804,18 @@ def _process_chat_request(
         summary_for_runtime = str(runtime_history_view.get("summary") or "")
         thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
         current_task_focus_for_runtime = copy.deepcopy(session_context_impl.get_current_task_focus(session))
+        active_task_focus_for_runtime = copy.deepcopy(current_task_focus_for_runtime)
+        recent_user_messages_for_runtime = list(
+            session_context_impl.get_recent_user_messages(session, limit=8)
+        )
+        current_turn_context = copy.deepcopy(
+            session_context_impl.derive_current_turn_context(
+                session,
+                message=req.message,
+                history_turns=history_turns_for_runtime,
+                recent_user_messages=recent_user_messages_for_runtime,
+            )
+        )
         recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
         artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
         compaction_status_for_runtime = _build_compaction_status_for_session(
@@ -1830,7 +1842,7 @@ def _process_chat_request(
             session_id=session_id,
             thread_id=session_id,
             run_snapshot=_build_run_snapshot(
-                goal=req.message,
+                goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
@@ -1850,7 +1862,7 @@ def _process_chat_request(
             thread_id=session_id,
             turn_id=run_id,
             run_snapshot=_build_run_snapshot(
-                goal=req.message,
+                goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
@@ -1872,7 +1884,7 @@ def _process_chat_request(
             thread_id=session_id,
             turn_status="running",
             run_snapshot=_build_run_snapshot(
-                goal=req.message,
+                goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
@@ -1918,6 +1930,9 @@ def _process_chat_request(
                 },
                 "summary": summary_for_runtime,
                 "thread_memory": thread_memory_for_runtime,
+                "current_turn": current_turn_context,
+                "recent_user_messages": recent_user_messages_for_runtime,
+                "active_task_focus": active_task_focus_for_runtime,
                 "current_task_focus": current_task_focus_for_runtime,
                 "recent_tasks": recent_tasks_for_runtime,
                 "artifact_memory_preview": artifact_memory_preview,
@@ -1966,6 +1981,15 @@ def _process_chat_request(
             **activity,
             "triggering_user_message": user_text,
             "triggering_user_turn_id": user_turn_id,
+            "current_turn_goal": str(
+                ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal")
+                or current_turn_context.get("goal")
+                or user_text
+            ),
+            "current_turn_followup_type": str(current_turn_context.get("followup_type") or ""),
+            "current_turn_goal_source": str(current_turn_context.get("source") or ""),
+            "active_task_focus": dict(active_task_focus_for_runtime),
+            "recent_user_messages": list(recent_user_messages_for_runtime),
             "session_id": session_id,
             "thread_id": session_id,
         }
@@ -2137,12 +2161,18 @@ def _process_chat_request(
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
+        inspector_run_state["current_turn"] = dict(current_turn_context)
+        inspector_run_state["active_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(active_task_focus_for_runtime)
+        inspector_run_state["recent_user_messages"] = list(recent_user_messages_for_runtime)
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
+        inspector_session["current_turn"] = dict(current_turn_context)
+        inspector_session["active_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(active_task_focus_for_runtime)
+        inspector_session["recent_user_messages"] = list(recent_user_messages_for_runtime)
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["thread_memory"] = dict(thread_memory)

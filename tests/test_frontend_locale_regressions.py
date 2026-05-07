@@ -53,6 +53,11 @@ REQUIRED_CORE_KEYS = (
     "activity.reason",
     "activity.triggering_user_message",
     "activity.triggering_user_turn_id",
+    "activity.current_turn_goal",
+    "activity.current_turn_followup_type",
+    "activity.current_turn_goal_source",
+    "activity.active_task_focus",
+    "activity.recent_user_messages",
     "activity.progress.read",
     "activity.progress.list_dir",
     "activity.progress.glob_file_search",
@@ -437,3 +442,6 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     assert "triggering_user_message" in script
     assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
     assert 'renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id)' in script
+    assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' in script
+    assert 'renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus)' in script
+    assert 'renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages)' in script

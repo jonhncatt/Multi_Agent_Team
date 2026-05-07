@@ -802,7 +802,7 @@ class VintageProgrammerRuntime:
                 "role": str(item.get("role") or ""),
                 "text": str(item.get("text") or "")[:1200],
             }
-            for item in history_turns[:16]
+            for item in history_turns[-16:]
             if isinstance(item, dict)
         ]
         attachments = [
@@ -821,6 +821,13 @@ class VintageProgrammerRuntime:
             or route_state.get("current_task_focus")
             or route_state.get("task_checkpoint")
         )
+        active_task_focus = normalize_current_task_focus(
+            context.get("active_task_focus")
+            or context.get("current_task_focus")
+            or route_state.get("current_task_focus")
+            or route_state.get("task_checkpoint")
+        )
+        current_turn = dict(context.get("current_turn") or {})
         thread_memory = dict(context.get("thread_memory") or {})
         recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
@@ -835,8 +842,11 @@ class VintageProgrammerRuntime:
                 "recent_cwds": list(thread_memory.get("recent_cwds") or [])[:6],
                 "recent_files": list(thread_memory.get("recent_files") or [])[:8],
             },
+            "current_turn": current_turn,
             "route_state": route_state,
+            "active_task_focus": active_task_focus,
             "current_task_focus": current_task_focus,
+            "recent_user_messages": list(context.get("recent_user_messages") or [])[:8],
             "recent_tasks": recent_tasks[:8],
             "artifact_memory_preview": artifact_memory_preview[:8],
             "compaction_status": {
@@ -1711,13 +1721,14 @@ class VintageProgrammerRuntime:
         cwd: str,
         goal: str,
         attachments: list[dict[str, Any]],
+        prefer_goal: bool = False,
     ) -> dict[str, Any]:
         restored = self._normalize_task_checkpoint((route_state or {}).get("task_checkpoint"))
         if restored:
             restored["task_id"] = restored.get("task_id") or str(uuid.uuid4())
             restored["project_root"] = restored.get("project_root") or project_root
             restored["cwd"] = restored.get("cwd") or cwd or project_root
-            restored["goal"] = restored.get("goal") or goal
+            restored["goal"] = goal if prefer_goal and goal else (restored.get("goal") or goal)
             if attachments:
                 restored["active_attachments"] = self._attachment_refs(attachments)
             return restored
@@ -1955,23 +1966,40 @@ class VintageProgrammerRuntime:
                 break
         return normalized
 
-    def _build_runtime_guess(self, *, prompt_message: str, route_state: dict[str, Any], locale: str) -> dict[str, Any]:
+    def _build_runtime_guess(
+        self,
+        *,
+        prompt_message: str,
+        route_state: dict[str, Any],
+        locale: str,
+        current_turn: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         route = dict(route_state or {})
+        turn = dict(current_turn or {})
         task_checkpoint = dict(route.get("task_checkpoint") or route.get("current_task_focus") or {})
         route_task_type = str(route.get("task_type") or "").strip().lower()
         route_primary_intent = str(route.get("primary_intent") or "").strip().lower()
         execution_policy = str(route.get("execution_policy") or "").strip().lower()
-        current_goal_hint = str(task_checkpoint.get("goal") or route.get("goal") or "").strip()
+        current_turn_followup_type = str(turn.get("followup_type") or "").strip().lower()
+        current_goal_hint = str(turn.get("goal") or "").strip() or str(task_checkpoint.get("goal") or route.get("goal") or "").strip()
         next_action_hint = str(task_checkpoint.get("next_action") or "").strip()
         revision_requested = self._looks_like_revision_request(prompt_message, route_state=route)
         japanese_review = self._looks_like_japanese_review_request(prompt_message, route_state=route)
-        if japanese_review:
+        if current_turn_followup_type == "subject_request":
+            task_type = "followup_transform"
+        elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
+            task_type = "simple_understanding"
+        elif japanese_review:
             task_type = "japanese_grammar_review"
         elif revision_requested and route_task_type in {"", "standard", "simple_understanding", "simple_qa", "followup_transform"}:
             task_type = "rewrite_review"
         else:
             task_type = route_task_type or "standard"
-        if route_primary_intent:
+        if current_turn_followup_type == "subject_request":
+            primary_intent = "transform"
+        elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
+            primary_intent = "understanding"
+        elif route_primary_intent:
             primary_intent = route_primary_intent
         elif revision_requested:
             primary_intent = "transform"
@@ -1999,6 +2027,8 @@ class VintageProgrammerRuntime:
             "summary_reason": summary_reason,
             "current_goal_hint": current_goal_hint,
             "next_action_hint": next_action_hint,
+            "current_turn_followup_type": current_turn_followup_type,
+            "current_turn_goal_source": str(turn.get("source") or "").strip(),
             "source": "runtime_guess",
         }
 
@@ -3775,19 +3805,28 @@ class VintageProgrammerRuntime:
         context_window_known = bool(compaction_status.get("context_window_known"))
         live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
+        current_turn_context = dict(context_payload.get("current_turn") or {})
+        active_task_focus = self._normalize_task_checkpoint(
+            context_payload.get("active_task_focus")
+            or context_payload.get("current_task_focus")
+            or route_state_input.get("current_task_focus")
+            or route_state_input.get("task_checkpoint")
+        )
         runtime_hint = self._build_runtime_guess(
             prompt_message=prompt_message,
             route_state=route_state_input,
             locale=locale,
+            current_turn=current_turn_context,
         )
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
             project_root=project_root,
             cwd=effective_cwd,
-            goal=_truncate_goal(prompt_message),
+            goal=str(current_turn_context.get("goal") or _truncate_goal(prompt_message)),
             attachments=attachment_metas,
+            prefer_goal=True,
         )
-        current_goal = str(current_task_focus.get("goal") or _truncate_goal(prompt_message))
+        current_goal = str(current_task_focus.get("goal") or current_turn_context.get("goal") or _truncate_goal(prompt_message))
         current_task_focus["goal"] = current_goal
         if current_task_focus.get("cwd"):
             effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
@@ -5158,6 +5197,9 @@ class VintageProgrammerRuntime:
                 "answer_stream": dict(answer_stream),
                 "runtime_hint": dict(runtime_hint),
                 "runtime_guess": dict(runtime_hint),
+                "current_turn": dict(current_turn_context),
+                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
+                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
                 "high_level_proposal": dict(high_level_proposal),
                 "model_proposal": dict(high_level_proposal),
                 "validated_next_step": dict(validated_next_step),
@@ -5188,8 +5230,11 @@ class VintageProgrammerRuntime:
                 "project_root": project_root,
                 "git_branch": str(project_context.get("git_branch") or ""),
                 "cwd": effective_cwd,
+                "current_turn": dict(current_turn_context),
+                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
+                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
                 "thread_memory": dict(context_payload.get("thread_memory") or {}),
                 "recent_tasks": list(context_payload.get("recent_tasks") or []),
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
@@ -5256,6 +5301,11 @@ class VintageProgrammerRuntime:
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
                 "activity_summary": activity_summary,
+                "current_turn_goal": current_goal,
+                "current_turn_followup_type": str(current_turn_context.get("followup_type") or runtime_hint.get("current_turn_followup_type") or ""),
+                "current_turn_goal_source": str(current_turn_context.get("source") or runtime_hint.get("current_turn_goal_source") or ""),
+                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
+                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
                 "trace_events": [dict(item) for item in trace_events],
             },
             "compaction_status": dict(live_compaction_status),

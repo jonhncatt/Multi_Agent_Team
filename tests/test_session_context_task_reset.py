@@ -51,6 +51,50 @@ def test_should_start_new_task_when_new_attachment_arrives_without_followup_lang
     assert session_context.should_start_new_task(session, message="解释图片内容", requested_attachment_ids=["img-2"]) is True
 
 
+def test_message_requests_latest_user_question_is_detected() -> None:
+    assert session_context.message_requests_task_recall("我刚刚问你什么了") is True
+    assert session_context.message_requests_latest_user_question("我刚刚问你什么了") is True
+
+
+def test_derive_current_turn_context_classifies_subject_followup_after_email() -> None:
+    session = _session_with_checkpoint()
+    session["turns"] = [
+        {"role": "user", "text": "帮我写个请假邮件"},
+        {"role": "assistant", "text": "当然，下面是一封请假邮件。"},
+    ]
+    session["agent_state"]["task_checkpoint"]["goal"] = "帮我写个请假邮件"
+
+    current_turn = session_context.derive_current_turn_context(
+        session,
+        message="题目",
+        history_turns=session["turns"],
+    )
+
+    assert current_turn["followup_type"] == "subject_request"
+    assert current_turn["goal"] == "Provide only a subject/title for the previous email or draft."
+    assert current_turn["recent_user_messages"] == ["帮我写个请假邮件"]
+
+
+def test_derive_current_turn_context_uses_recent_user_history_for_recall() -> None:
+    session = _session_with_checkpoint()
+    session["turns"] = [
+        {"role": "user", "text": "帮我写个请假邮件"},
+        {"role": "assistant", "text": "邮件正文"},
+        {"role": "user", "text": "题目"},
+        {"role": "assistant", "text": "件名：明日の検査に伴う休暇取得のお願い"},
+    ]
+
+    current_turn = session_context.derive_current_turn_context(
+        session,
+        message="我刚刚问你什么了",
+        history_turns=session["turns"],
+    )
+
+    assert current_turn["followup_type"] == "recent_user_message_recall"
+    assert current_turn["goal"] == "Answer what the previous user message was in this thread."
+    assert current_turn["recent_user_messages"] == ["帮我写个请假邮件", "题目"]
+
+
 def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment() -> None:
     session = {
         "agent_state": {

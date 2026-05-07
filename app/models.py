@@ -147,6 +147,11 @@ class MessageActivity(BaseModel):
     activity_summary: str = ""
     triggering_user_message: str = ""
     triggering_user_turn_id: str = ""
+    current_turn_goal: str = ""
+    current_turn_followup_type: str = ""
+    current_turn_goal_source: str = ""
+    active_task_focus: dict[str, Any] = Field(default_factory=dict)
+    recent_user_messages: list[str] = Field(default_factory=list)
     session_id: str = ""
     thread_id: str = ""
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
