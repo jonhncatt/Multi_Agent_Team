@@ -23,6 +23,7 @@ from app.models import (
     ValidatedNextStep,
 )
 from app.openai_auth import OpenAIAuthManager
+from app.phase_timing import PhaseTimer
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
 from app.tool_trace_summary import (
@@ -1243,6 +1244,7 @@ class VintageProgrammerRuntime:
         model: str,
         tool_round: int,
         answer_context: dict[str, Any] | None = None,
+        phase_timer: PhaseTimer | None = None,
     ) -> Callable[[dict[str, Any]], None]:
         call_state = self._start_answer_stream_call(
             answer_stream_state,
@@ -1256,9 +1258,41 @@ class VintageProgrammerRuntime:
             payload = dict(event or {})
             event_type = str(payload.get("type") or "").strip()
             timestamp = float(payload.get("timestamp") or time.time())
+            arrival_perf = time.perf_counter()
             call_state["event_count"] = int(call_state.get("event_count") or 0) + 1
             if not call_state["first_event_at"]:
                 call_state["first_event_at"] = timestamp
+                if phase_timer is not None:
+                    phase_timer.record_offset_ms("model_first_event_ms", perf_value=arrival_perf, if_missing=True)
+            if (
+                event_type
+                and event_type != "response.completed"
+                and not answer_stream_state.get("trace_started_id")
+            ):
+                answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    locale=locale,
+                    type="answer.started",
+                    stage="answer_generation",
+                    detail=(
+                        self._activity_detail(
+                            task_type=activity_context.get("task_type"),
+                            output_mode=activity_context.get("output_mode"),
+                            stream_stage=stage,
+                        )
+                        or "Waiting for the model to finish generating the answer."
+                    ),
+                    status="running",
+                    payload={
+                        "model": str(model or ""),
+                        "stream_stage": str(stage or ""),
+                        "event_type": event_type,
+                        **activity_context,
+                    },
+                    trace_events=trace_events,
+                    sequence=int(answer_stream_state.get("delta_count") or 0),
+                ) or ""
             if event_type != "response.output_text.delta":
                 if event_type == "response.completed":
                     diagnostics = dict(payload.get("diagnostics") or {})
@@ -1327,6 +1361,8 @@ class VintageProgrammerRuntime:
             call_state["text_chars"] = int(call_state.get("text_chars") or 0) + len(delta)
             if not call_state["first_text_delta_at"]:
                 call_state["first_text_delta_at"] = timestamp
+                if phase_timer is not None:
+                    phase_timer.record_offset_ms("model_first_text_delta_ms", perf_value=arrival_perf, if_missing=True)
             call_state["last_text_delta_at"] = timestamp
             trace_delta_budget = int(answer_stream_state.get("text_delta_trace_count") or 0)
             if trace_delta_budget < 4:
@@ -1383,6 +1419,7 @@ class VintageProgrammerRuntime:
         final_text: str,
         answer_context: dict[str, Any] | None = None,
         revision_summary: dict[str, Any] | None = None,
+        phase_timer: PhaseTimer | None = None,
     ) -> dict[str, Any]:
         final_text_value = str(final_text or "")
         streamed_text = str(answer_stream_state.get("text") or "")
@@ -1415,6 +1452,8 @@ class VintageProgrammerRuntime:
             )
             answer_stream_state["item_completed"] = True
             answer_stream_state["finished_at"] = float(answer_stream_state.get("finished_at") or time.time())
+        if phase_timer is not None and final_text_value:
+            phase_timer.record_offset_ms("answer_ready_ms", if_missing=True)
 
         diagnostics = self._answer_stream_diagnostics(answer_stream_state)
         if not answer_stream_state.get("trace_started_id") and final_text_value:
@@ -3729,12 +3768,16 @@ class VintageProgrammerRuntime:
         if not prompt_message:
             raise ValueError("message cannot be empty")
 
+        context_payload = dict(context or {})
+        phase_timer = PhaseTimer(
+            offset_base_ms=max(0, int(context_payload.get("phase_timing_base_ms") or 0) or 0),
+        )
         if self._require_runtime_auth:
-            auth_summary = OpenAIAuthManager(self._config).auth_summary()
+            with phase_timer.measure("runtime_auth_summary_ms"):
+                auth_summary = OpenAIAuthManager(self._config).auth_summary()
             if not bool(auth_summary.get("available")):
                 raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
 
-        context_payload = dict(context or {})
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         run_id = str(context_payload.get("run_id") or "")
         session_id = str(context_payload.get("session_id") or "")
@@ -3744,8 +3787,10 @@ class VintageProgrammerRuntime:
         ]
         attachment_guidance = self._build_attachment_tool_guidance(attachment_metas, locale=locale)
         has_image_attachments = has_image_attachments_helper(attachment_metas)
-        spec = self._load_spec(locale=locale)
-        loaded_skills = self._enabled_skills(spec.agent_id)
+        with phase_timer.measure("agent_spec_load_ms"):
+            spec = self._load_spec(locale=locale)
+        with phase_timer.measure("skills_load_ms"):
+            loaded_skills = self._enabled_skills(spec.agent_id)
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
         requested_mode = str(
             context_payload.get("mode_override")
@@ -4078,6 +4123,7 @@ class VintageProgrammerRuntime:
                 },
                 trace_events=trace_events,
             )
+            phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                 self._backend._invoke_chat_with_runner,
                 messages=messages,
@@ -4096,6 +4142,7 @@ class VintageProgrammerRuntime:
                     model=requested_model,
                     tool_round=0,
                     answer_context=turn_activity_context,
+                    phase_timer=phase_timer,
                 ),
             )
             self._emit_trace(
@@ -4209,6 +4256,7 @@ class VintageProgrammerRuntime:
                                 )
                             )
                             notes.append("invalid_final_guard_steer")
+                            phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
                             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                                 self._backend._invoke_with_runner_recovery,
                                 runner=runner,
@@ -4228,6 +4276,7 @@ class VintageProgrammerRuntime:
                                     model=effective_model,
                                     tool_round=round_idx,
                                     answer_context=turn_activity_context,
+                                    phase_timer=phase_timer,
                                 ),
                             )
                             self._set_tools_runtime_context(
@@ -4277,6 +4326,7 @@ class VintageProgrammerRuntime:
                             )
                         )
                         notes.append("strict_agentic_act_now_steer")
+                        phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
                         ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                             self._backend._invoke_with_runner_recovery,
                             runner=runner,
@@ -4296,6 +4346,7 @@ class VintageProgrammerRuntime:
                                 model=effective_model,
                                 tool_round=round_idx,
                                 answer_context=turn_activity_context,
+                                phase_timer=phase_timer,
                             ),
                         )
                         self._set_tools_runtime_context(
@@ -4356,6 +4407,7 @@ class VintageProgrammerRuntime:
                                 model=effective_model,
                                 tool_round=round_idx + 1,
                                 answer_context=turn_activity_context,
+                                phase_timer=phase_timer,
                             ),
                         )
                         self._set_tools_runtime_context(
@@ -4971,6 +5023,7 @@ class VintageProgrammerRuntime:
                     payload={"model": effective_model or requested_model},
                     trace_events=trace_events,
                 )
+                phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                     self._backend._invoke_with_runner_recovery,
                     runner=runner,
@@ -4990,6 +5043,7 @@ class VintageProgrammerRuntime:
                         model=effective_model,
                         tool_round=round_idx,
                         answer_context=turn_activity_context,
+                        phase_timer=phase_timer,
                     ),
                 )
                 self._emit_trace(
@@ -5075,6 +5129,7 @@ class VintageProgrammerRuntime:
                 final_text=raw_text,
                 answer_context=turn_activity_context,
                 revision_summary=revision_summary,
+                phase_timer=phase_timer,
             )
         if answer_stream.get("streamed"):
             notes.append(f"answer_stream_deltas:{int(answer_stream.get('delta_count') or 0)}")
@@ -5101,6 +5156,7 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
         run_duration_ms = max(0, int((time.monotonic() - run_started_at) * 1000))
+        phase_timings = phase_timer.snapshot(total_key="runtime_total_ms")
         run_trace_status = "success"
         if turn_status == "blocked":
             run_trace_status = "blocked"
@@ -5213,6 +5269,7 @@ class VintageProgrammerRuntime:
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
                 "project_root": project_root,
                 "cwd": effective_cwd,
+                "phase_timings": dict(phase_timings),
             },
             "tool_timeline": [item.model_dump() for item in tool_events],
             "trace_events": [dict(item) for item in trace_events],
@@ -5241,6 +5298,7 @@ class VintageProgrammerRuntime:
                 "compaction_status": dict(live_compaction_status),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
+                "phase_timings": dict(phase_timings),
             },
             "token_usage": dict(usage_total),
             "loaded_skills": [
@@ -5306,6 +5364,7 @@ class VintageProgrammerRuntime:
                 "current_turn_goal_source": str(current_turn_context.get("source") or runtime_hint.get("current_turn_goal_source") or ""),
                 "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
                 "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
+                "phase_timings": dict(phase_timings),
                 "trace_events": [dict(item) for item in trace_events],
             },
             "compaction_status": dict(live_compaction_status),

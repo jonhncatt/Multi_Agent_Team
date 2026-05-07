@@ -38,6 +38,7 @@ from app.models import (
     DeleteThreadResponse,
     DeleteSessionResponse,
     HealthResponse,
+    MessageActivity,
     NewSessionResponse,
     NewSessionRequest,
     NewThreadResponse,
@@ -76,6 +77,7 @@ from app.models import (
     WorkbenchToolsResponse,
 )
 from app.openai_auth import OpenAIAuthManager
+from app.phase_timing import PhaseTimer
 from app.pricing import estimate_usage_cost
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
@@ -102,13 +104,30 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.7.7"
+APP_VERSION = "2.7.8"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
 _provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
 _active_chat_runs_lock = threading.Lock()
 _active_chat_runs: dict[str, dict[str, Any]] = {}
+
+
+def _merge_phase_timings(*payloads: Any) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for raw_key, raw_value in payload.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            try:
+                value = int(raw_value)
+            except Exception:
+                continue
+            merged[key] = max(0, value)
+    return merged
 
 
 def _git_value(*args: str) -> str:
@@ -612,17 +631,20 @@ def _resolve_project_for_thread_create(project_id: str | None) -> dict[str, Any]
     return project
 
 
-def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any]]:
-    runtime_meta = (
-        get_chat_product_runtime().runtime_meta()
-        if include_runtime
-        else {
-            "docker_available": False,
-            "docker_message": "runtime status is loaded asynchronously",
-            "ocr_status": {},
-        }
-    )
-    provider_options = _provider_options_payload()
+def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any], dict[str, int]]:
+    timer = PhaseTimer()
+    with timer.measure("runtime_status_runtime_meta_ms"):
+        runtime_meta = (
+            get_chat_product_runtime().runtime_meta()
+            if include_runtime
+            else {
+                "docker_available": False,
+                "docker_message": "runtime status is loaded asynchronously",
+                "ocr_status": {},
+            }
+        )
+    with timer.measure("runtime_status_provider_options_ms"):
+        provider_options = _provider_options_payload()
     active_provider = next(
         (
             item
@@ -633,7 +655,8 @@ def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dic
     )
     active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
     active_provider_config = build_provider_config(config, active_provider_name)
-    auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
+    with timer.measure("runtime_status_auth_summary_ms"):
+        auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
     return (
         provider_options,
         active_provider or {},
@@ -641,6 +664,7 @@ def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dic
         active_provider_config,
         auth_summary,
         runtime_meta,
+        timer.snapshot(total_key="runtime_status_total_ms"),
     )
 
 
@@ -720,6 +744,7 @@ def _bootstrap_response_payload() -> BootstrapResponse:
         active_provider_config,
         auth_summary,
         runtime_meta,
+        _provider_diagnostics,
     ) = _runtime_provider_payload(include_runtime=False)
     default_project = get_project_store().ensure_default_project()
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
@@ -765,6 +790,7 @@ def _runtime_status_response_payload(
         active_provider_config,
         auth_summary,
         runtime_meta,
+        provider_diagnostics,
     ) = _runtime_provider_payload()
     _ = provider_options
     agent_descriptor = get_vintage_programmer_runtime().descriptor()
@@ -790,6 +816,7 @@ def _runtime_status_response_payload(
         "git_branch": str(selected_project.get("git_branch") or ""),
         "build_version": BUILD_VERSION,
         "loop_safeguards": default_loop_safeguards(),
+        "provider_diagnostics": dict(provider_diagnostics),
     }
     context_meter = _build_context_meter_for_session(
         model=active_model,
@@ -1461,15 +1488,25 @@ def _process_chat_request(
 ) -> ChatResponse:
     req.settings.locale = normalize_locale(getattr(req.settings, "locale", ""), config.default_locale)
     locale = req.settings.locale
-    requested_provider = _resolve_requested_provider(req)
+    request_phase_timer = PhaseTimer()
+    client_submitted_at_ms = int(req.client_submitted_at_ms or 0) if req.client_submitted_at_ms else 0
+    if client_submitted_at_ms > 0:
+        request_phase_timer.record_duration_ms(
+            "frontend_submit_to_backend_ms",
+            max(0, request_phase_timer.started_at_ms - client_submitted_at_ms),
+        )
+    with request_phase_timer.measure("provider_profile_resolve_ms"):
+        requested_provider = _resolve_requested_provider(req)
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
     if req.mode_override:
         req.settings.collaboration_mode = req.mode_override
     requested_model = str(req.settings.model or provider_config.default_model or "").strip() or provider_config.default_model
-    auth_summary = OpenAIAuthManager(provider_config).auth_summary()
+    with request_phase_timer.measure("provider_auth_summary_ms"):
+        auth_summary = OpenAIAuthManager(provider_config).auth_summary()
     if not bool(auth_summary.get("available")):
         fallback_goal = str(req.message or "").strip()[:160]
+        fallback_phase_timings = request_phase_timer.snapshot(total_key="total_ms")
         requested_project = _resolve_project_or_default(req.project_id)
         seed_session = session_store.load_or_create(
             req.session_id,
@@ -1492,6 +1529,7 @@ def _process_chat_request(
                 "status": "blocked",
                 "triggering_user_message": str(req.message or "").strip(),
                 "triggering_user_turn_id": str(user_turn.get("id") or ""),
+                "phase_timings": dict(fallback_phase_timings),
                 "session_id": str(seed_session.get("id") or ""),
                 "thread_id": str(seed_session.get("id") or ""),
             },
@@ -1554,6 +1592,7 @@ def _process_chat_request(
                     "plan": [],
                     "pending_user_input": {},
                     "context_meter": dict(fallback_context_meter),
+                    "phase_timings": dict(fallback_phase_timings),
                 },
                 "tool_timeline": [],
                 "evidence": {"status": "not_needed", "required": False, "warning": "", "source_refs": []},
@@ -1566,10 +1605,19 @@ def _process_chat_request(
                     "history_turn_count": len(seed_session.get("turns") or []),
                     "attachment_count": 0,
                     "context_meter": dict(fallback_context_meter),
+                    "phase_timings": dict(fallback_phase_timings),
                 },
                 "token_usage": {"total_tokens": 0},
                 "loaded_skills": [],
             },
+            activity=MessageActivity(
+                status="blocked",
+                triggering_user_message=str(req.message or "").strip(),
+                triggering_user_turn_id=str(user_turn.get("id") or ""),
+                phase_timings=dict(fallback_phase_timings),
+                session_id=str(seed_session.get("id") or ""),
+                thread_id=str(seed_session.get("id") or ""),
+            ),
             context_meter=fallback_context_meter,
             turn_count=len(seed_session.get("turns") or []),
             summarized=False,
@@ -1592,12 +1640,14 @@ def _process_chat_request(
         run_id=run_id,
     )
     try:
-        requested_project = _resolve_project_or_default(req.project_id)
-        seed_session = session_store.load_or_create(
-            req.session_id,
-            project=requested_project,
-            default_project=_default_project(),
-        )
+        with request_phase_timer.measure("project_resolve_ms"):
+            requested_project = _resolve_project_or_default(req.project_id)
+        with request_phase_timer.measure("session_seed_ms"):
+            seed_session = session_store.load_or_create(
+                req.session_id,
+                project=requested_project,
+                default_project=_default_project(),
+            )
         session_id = str(seed_session.get("id") or "")
         if not session_id:
             raise HTTPException(status_code=500, detail="Session create failed")
@@ -1606,6 +1656,7 @@ def _process_chat_request(
         queue_wait_ms = 0
         with run_queue.run_slot(session_id) as ticket:
             queue_wait_ms = int(ticket.wait_ms)
+            request_phase_timer.record_duration_ms("queue_wait_ms", queue_wait_ms)
             if queue_wait_ms >= config.run_queue_wait_notice_ms:
                 _emit_progress(
                     progress_cb,
@@ -1614,11 +1665,12 @@ def _process_chat_request(
                     run_id=run_id,
                 )
 
-            session = session_store.load_or_create(
-                session_id,
-                project=requested_project,
-                default_project=_default_project(),
-            )
+            with request_phase_timer.measure("session_load_ms"):
+                session = session_store.load_or_create(
+                    session_id,
+                    project=requested_project,
+                    default_project=_default_project(),
+                )
             session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
             get_project_store().touch(str(session_project.get("project_id") or ""))
             session["project_id"] = str(session_project.get("project_id") or "")
@@ -1676,16 +1728,18 @@ def _process_chat_request(
                     ),
                 ),
             )
+            request_phase_timer.record_offset_ms("session_ready_ms")
             _emit_thread_started(progress_cb, session_id)
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
-        compaction_result = maybe_auto_compact_session(
-            session=session,
-            model=requested_model,
-            max_output_tokens=req.settings.max_output_tokens,
-            pending_message=req.message,
-            phase="pre_turn",
-        )
+        with request_phase_timer.measure("pre_turn_compaction_ms"):
+            compaction_result = maybe_auto_compact_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+                phase="pre_turn",
+            )
         summarized = bool(compaction_result.get("compacted"))
         if summarized:
             compaction_after = dict(compaction_result.get("status_after") or {})
@@ -1721,11 +1775,12 @@ def _process_chat_request(
             )
         session_context_impl.sync_session_memory_state(session)
 
-        attachment_context = session_context_impl.resolve_attachment_context(
-            session,
-            message=req.message,
-            requested_attachment_ids=req.attachment_ids,
-        )
+        with request_phase_timer.measure("attachment_context_ms"):
+            attachment_context = session_context_impl.resolve_attachment_context(
+                session,
+                message=req.message,
+                requested_attachment_ids=req.attachment_ids,
+            )
         requested_attachment_ids = attachment_context["requested_attachment_ids"]
         clear_attachment_context = bool(attachment_context["clear_attachment_context"])
         attachment_context_mode = str(attachment_context["attachment_context_mode"] or "none")
@@ -1740,7 +1795,8 @@ def _process_chat_request(
             effective_attachment_ids = []
             attachment_context_key = ""
 
-        attachments = upload_store.get_many(effective_attachment_ids)
+        with request_phase_timer.measure("attachment_load_ms"):
+            attachments = upload_store.get_many(effective_attachment_ids)
         attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
         _emit_progress(
             progress_cb,
@@ -1790,45 +1846,47 @@ def _process_chat_request(
         resolved_attachment_context_key = attachment_context_key or ""
         if resolved_attachment_ids:
             resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
-        route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
-            session,
-            attachment_ids=resolved_attachment_ids,
-        )
-        route_state_input = session_context_impl.prepare_route_state_for_turn(
-            route_state_input,
-            reset_focus=focus_shift_requested,
-        )
-        route_state_scope = "focus_reset" if focus_shift_requested and route_state_scope == "session" else route_state_scope
-        runtime_history_view = build_runtime_context_payload(session=session)
-        history_turns_for_runtime = copy.deepcopy(runtime_history_view.get("history_turns") or [])
-        summary_for_runtime = str(runtime_history_view.get("summary") or "")
-        thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
-        current_task_focus_for_runtime = copy.deepcopy(session_context_impl.get_current_task_focus(session))
-        active_task_focus_for_runtime = copy.deepcopy(current_task_focus_for_runtime)
-        recent_user_messages_for_runtime = list(
-            session_context_impl.get_recent_user_messages(session, limit=8)
-        )
-        current_turn_context = copy.deepcopy(
-            session_context_impl.derive_current_turn_context(
+        with request_phase_timer.measure("runtime_context_ms"):
+            route_state_input, route_state_scope = session_context_impl.resolve_scoped_route_state(
                 session,
-                message=req.message,
-                history_turns=history_turns_for_runtime,
-                recent_user_messages=recent_user_messages_for_runtime,
+                attachment_ids=resolved_attachment_ids,
             )
-        )
-        recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
-        artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
-        compaction_status_for_runtime = _build_compaction_status_for_session(
-            session=session,
-            model=requested_model,
-            max_output_tokens=req.settings.max_output_tokens,
-            pending_message=req.message,
-        )
-        recalled_context = copy.deepcopy({
-            "recalled_task": attachment_context.get("recalled_task") or {},
-            "recalled_artifacts": attachment_context.get("recalled_artifacts") or [],
-            "recalled_artifact_ids": attachment_context.get("recalled_attachment_ids") or [],
-        })
+            route_state_input = session_context_impl.prepare_route_state_for_turn(
+                route_state_input,
+                reset_focus=focus_shift_requested,
+            )
+            route_state_scope = "focus_reset" if focus_shift_requested and route_state_scope == "session" else route_state_scope
+            runtime_history_view = build_runtime_context_payload(session=session)
+            history_turns_for_runtime = copy.deepcopy(runtime_history_view.get("history_turns") or [])
+            summary_for_runtime = str(runtime_history_view.get("summary") or "")
+            thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
+            current_task_focus_for_runtime = copy.deepcopy(session_context_impl.get_current_task_focus(session))
+            active_task_focus_for_runtime = copy.deepcopy(current_task_focus_for_runtime)
+            recent_user_messages_for_runtime = list(
+                session_context_impl.get_recent_user_messages(session, limit=8)
+            )
+            current_turn_context = copy.deepcopy(
+                session_context_impl.derive_current_turn_context(
+                    session,
+                    message=req.message,
+                    history_turns=history_turns_for_runtime,
+                    recent_user_messages=recent_user_messages_for_runtime,
+                )
+            )
+            recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
+            artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
+            compaction_status_for_runtime = _build_compaction_status_for_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+            )
+            recalled_context = copy.deepcopy({
+                "recalled_task": attachment_context.get("recalled_task") or {},
+                "recalled_artifacts": attachment_context.get("recalled_artifacts") or [],
+                "recalled_artifact_ids": attachment_context.get("recalled_attachment_ids") or [],
+            })
+        request_phase_timer.record_offset_ms("runtime_context_ready_ms")
 
         _emit_progress(
             progress_cb,
@@ -1911,50 +1969,52 @@ def _process_chat_request(
         )
         user_turn_id = str(user_turn.get("id") or "")
         session_store.save(session)
-        runtime_result = provider_runtime.run(
-            message=req.message,
-            settings=req.settings,
-            context={
-                "session_id": session_id,
-                "run_id": run_id,
-                "cancel_event": cancel_event,
-                "mode_override": req.mode_override or req.settings.collaboration_mode,
-                "user_input_response": dict(req.user_input_response or {}),
-                "project": {
-                    "project_id": str(session_project.get("project_id") or ""),
-                    "project_title": str(session_project.get("title") or ""),
-                    "project_root": str(session_project.get("root_path") or ""),
-                    "git_branch": str(session_project.get("git_branch") or ""),
-                    "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
-                    "is_worktree": bool(session_project.get("is_worktree")),
+        with request_phase_timer.measure("runtime_run_ms"):
+            runtime_result = provider_runtime.run(
+                message=req.message,
+                settings=req.settings,
+                context={
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "cancel_event": cancel_event,
+                    "mode_override": req.mode_override or req.settings.collaboration_mode,
+                    "user_input_response": dict(req.user_input_response or {}),
+                    "phase_timing_base_ms": request_phase_timer.elapsed_ms(),
+                    "project": {
+                        "project_id": str(session_project.get("project_id") or ""),
+                        "project_title": str(session_project.get("title") or ""),
+                        "project_root": str(session_project.get("root_path") or ""),
+                        "git_branch": str(session_project.get("git_branch") or ""),
+                        "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
+                        "is_worktree": bool(session_project.get("is_worktree")),
+                    },
+                    "summary": summary_for_runtime,
+                    "thread_memory": thread_memory_for_runtime,
+                    "current_turn": current_turn_context,
+                    "recent_user_messages": recent_user_messages_for_runtime,
+                    "active_task_focus": active_task_focus_for_runtime,
+                    "current_task_focus": current_task_focus_for_runtime,
+                    "recent_tasks": recent_tasks_for_runtime,
+                    "artifact_memory_preview": artifact_memory_preview,
+                    "compaction_status": compaction_status_for_runtime,
+                    "attachment_evidence_pack": attachment_evidence_pack,
+                    "recalled_context": recalled_context,
+                    "history_turns": history_turns_for_runtime,
+                    "route_state": route_state_input,
+                    "attachments": [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "name": str(item.get("original_name") or item.get("name") or ""),
+                            "mime": str(item.get("mime") or ""),
+                            "kind": str(item.get("kind") or ""),
+                            "path": str(item.get("path") or ""),
+                        }
+                        for item in attachments
+                        if isinstance(item, dict)
+                    ],
                 },
-                "summary": summary_for_runtime,
-                "thread_memory": thread_memory_for_runtime,
-                "current_turn": current_turn_context,
-                "recent_user_messages": recent_user_messages_for_runtime,
-                "active_task_focus": active_task_focus_for_runtime,
-                "current_task_focus": current_task_focus_for_runtime,
-                "recent_tasks": recent_tasks_for_runtime,
-                "artifact_memory_preview": artifact_memory_preview,
-                "compaction_status": compaction_status_for_runtime,
-                "attachment_evidence_pack": attachment_evidence_pack,
-                "recalled_context": recalled_context,
-                "history_turns": history_turns_for_runtime,
-                "route_state": route_state_input,
-                "attachments": [
-                    {
-                        "id": str(item.get("id") or ""),
-                        "name": str(item.get("original_name") or item.get("name") or ""),
-                        "mime": str(item.get("mime") or ""),
-                        "kind": str(item.get("kind") or ""),
-                        "path": str(item.get("path") or ""),
-                    }
-                    for item in attachments
-                    if isinstance(item, dict)
-                ],
-            },
-            progress_cb=progress_cb,
-        )
+                progress_cb=progress_cb,
+            )
         text = str(runtime_result.get("text") or "")
         tool_events = list(runtime_result.get("tool_events") or [])
         answer_bundle = runtime_result.get("answer_bundle") or {}
@@ -1970,6 +2030,11 @@ def _process_chat_request(
             else {}
         )
         activity = dict(runtime_result.get("activity") or {})
+        runtime_phase_timings = dict(activity.get("phase_timings") or {})
+        combined_phase_timings = _merge_phase_timings(
+            request_phase_timer.snapshot(total_key="total_ms"),
+            runtime_phase_timings,
+        )
         answer_stream = dict(runtime_result.get("answer_stream") or {})
         route_state = (
             runtime_result.get("route_state")
@@ -1990,6 +2055,7 @@ def _process_chat_request(
             "current_turn_goal_source": str(current_turn_context.get("source") or ""),
             "active_task_focus": dict(active_task_focus_for_runtime),
             "recent_user_messages": list(recent_user_messages_for_runtime),
+            "phase_timings": dict(combined_phase_timings),
             "session_id": session_id,
             "thread_id": session_id,
         }
@@ -2168,6 +2234,7 @@ def _process_chat_request(
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
+        inspector_run_state["phase_timings"] = dict(combined_phase_timings)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
         inspector_session["current_turn"] = dict(current_turn_context)
@@ -2180,6 +2247,7 @@ def _process_chat_request(
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
         inspector_session["context_meter"] = dict(context_meter)
         inspector_session["compaction_status"] = dict(compaction_status)
+        inspector_session["phase_timings"] = dict(combined_phase_timings)
         inspector["session"] = inspector_session
         session_context_impl.store_scoped_route_state(
             session,

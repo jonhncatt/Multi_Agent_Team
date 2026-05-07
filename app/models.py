@@ -22,6 +22,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     project_id: str | None = None
     message: str = Field(min_length=1)
+    client_submitted_at_ms: int | None = None
     attachment_ids: list[str] = Field(default_factory=list)
     mode_override: Literal["default", "plan", "execute"] | None = None
     user_input_response: dict[str, Any] = Field(default_factory=dict)
@@ -152,6 +153,7 @@ class MessageActivity(BaseModel):
     current_turn_goal_source: str = ""
     active_task_focus: dict[str, Any] = Field(default_factory=dict)
     recent_user_messages: list[str] = Field(default_factory=list)
+    phase_timings: dict[str, Any] = Field(default_factory=dict)
     session_id: str = ""
     thread_id: str = ""
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
