@@ -601,16 +601,30 @@ function normalizeMessageActivity(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const traceEvents = Array.isArray(item.trace_events) ? item.trace_events.map(normalizeTraceEvent) : [];
   const status = String(item.status || "");
+  const startedAt = normalizeActivityTimestamp(item.started_at || (traceEvents[0] && traceEvents[0].timestamp) || 0);
+  const turnStartedAt = normalizeActivityTimestamp(item.turn_started_at || item.turnStartedAt || startedAt || 0);
   const explicitFinishedAt = normalizeActivityTimestamp(item.finished_at || 0);
   const fallbackFinishedAt = isActivityTerminalStatus(status) && traceEvents.length
     ? normalizeActivityTimestamp(traceEvents[traceEvents.length - 1].timestamp || 0)
     : 0;
+  const finishedAt = explicitFinishedAt || fallbackFinishedAt;
+  const runDurationMs = Math.max(0, Number(item.run_duration_ms) || 0);
+  const finalElapsedMs = isActivityTerminalStatus(status)
+    ? Math.max(
+      0,
+      Number(item.final_elapsed_ms || 0) || 0,
+      runDurationMs,
+      turnStartedAt && finishedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
+    )
+    : Math.max(0, Number(item.final_elapsed_ms || 0) || 0);
   return {
     run_id: String(item.run_id || ""),
     status,
-    started_at: normalizeActivityTimestamp(item.started_at || (traceEvents[0] && traceEvents[0].timestamp) || 0),
-    finished_at: explicitFinishedAt || fallbackFinishedAt,
-    run_duration_ms: Math.max(0, Number(item.run_duration_ms) || 0),
+    started_at: startedAt,
+    turn_started_at: turnStartedAt,
+    finished_at: finishedAt,
+    run_duration_ms: runDurationMs,
+    final_elapsed_ms: finalElapsedMs,
     activity_summary: String(item.activity_summary || ""),
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
@@ -1082,7 +1096,7 @@ function buildFallbackProgressItems(activity, locale) {
   const traces = item.trace_events.filter(Boolean);
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
-  const hasStarted = Boolean(item.started_at || traces.length);
+  const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerReady = traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerDelta = traces.some((trace) => String(trace.type || "").trim() === "answer.delta");
@@ -1264,7 +1278,7 @@ function latestAssistantActivity(messages) {
     const message = items[index];
     if (String((message && message.role) || "") !== "assistant") continue;
     const activity = normalizeMessageActivity((message && message.activity) || {});
-    if (activity.started_at || activity.run_duration_ms || activity.trace_events.length) {
+    if (activity.turn_started_at || activity.started_at || activity.run_duration_ms || activity.trace_events.length) {
       return activity;
     }
   }
@@ -1468,19 +1482,40 @@ function mergeActivityState(previous, patch = {}) {
     : prev.tool_items;
   const nextStatus = String(nextPatch.status || prev.status || "");
   const terminalFinishedAt = isActivityTerminalStatus(nextStatus) ? Date.now() : 0;
+  const nextStartedAtCandidate = normalizeActivityTimestamp(
+    nextPatch.started_at || (nextTraceEvents[0] && nextTraceEvents[0].timestamp) || 0,
+  );
+  const nextStartedAt = prev.started_at || nextStartedAtCandidate || 0;
+  const nextTurnStartedAtCandidate = normalizeActivityTimestamp(nextPatch.turn_started_at || nextPatch.turnStartedAt || 0);
+  const nextTurnStartedAt = prev.turn_started_at || nextTurnStartedAtCandidate || nextStartedAt || 0;
+  const nextFinishedAt = normalizeActivityTimestamp(
+    nextPatch.finished_at
+    || prev.finished_at
+    || terminalFinishedAt
+    || 0,
+  );
+  const nextRunDurationMs = Math.max(0, Number(
+    nextPatch.run_duration_ms != null ? nextPatch.run_duration_ms : prev.run_duration_ms,
+  ) || 0);
+  const nextFinalElapsedMs = isActivityTerminalStatus(nextStatus)
+    ? Math.max(
+      0,
+      Number(prev.final_elapsed_ms || 0) || 0,
+      Number(nextPatch.final_elapsed_ms || 0) || 0,
+      nextRunDurationMs,
+      nextTurnStartedAt && nextFinishedAt ? Math.max(0, nextFinishedAt - nextTurnStartedAt) : 0,
+    )
+    : Math.max(0, Number(prev.final_elapsed_ms || 0) || 0);
   return {
     ...prev,
     ...nextPatch,
     run_id: String(nextPatch.run_id || prev.run_id || ""),
     status: nextStatus,
-    started_at: normalizeActivityTimestamp(nextPatch.started_at || prev.started_at || (nextTraceEvents[0] && nextTraceEvents[0].timestamp) || 0),
-    finished_at: normalizeActivityTimestamp(
-      nextPatch.finished_at
-      || prev.finished_at
-      || terminalFinishedAt
-      || 0,
-    ),
-    run_duration_ms: Math.max(0, Number(nextPatch.run_duration_ms || prev.run_duration_ms || 0) || 0),
+    started_at: nextStartedAt,
+    turn_started_at: nextTurnStartedAt,
+    finished_at: nextFinishedAt,
+    run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
+    final_elapsed_ms: nextFinalElapsedMs,
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
@@ -1502,13 +1537,29 @@ function appendActivityTrace(activity, trace, options = {}) {
     ? (normalizedTrace.timestamp || current.finished_at || Date.now())
     : current.finished_at;
   const startedAt = current.started_at || normalizedTrace.timestamp || Date.now();
+  const turnStartedAt = current.turn_started_at || current.started_at || normalizedTrace.timestamp || Date.now();
+  const finalElapsedMs = isActivityTerminalStatus(nextStatus)
+    ? Math.max(
+      0,
+      Number(current.final_elapsed_ms || 0) || 0,
+      Number(current.run_duration_ms || 0) || 0,
+      finishedAt && turnStartedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
+    )
+    : Math.max(0, Number(current.final_elapsed_ms || 0) || 0);
   return {
     ...current,
     run_id: String(normalizedTrace.run_id || current.run_id || ""),
     status: nextStatus,
     started_at: startedAt,
+    turn_started_at: turnStartedAt,
     finished_at: finishedAt,
-    run_duration_ms: finishedAt && startedAt ? Math.max(0, finishedAt - startedAt) : current.run_duration_ms,
+    run_duration_ms: isActivityTerminalStatus(nextStatus)
+      ? Math.max(
+        Number(current.run_duration_ms || 0) || 0,
+        finishedAt && turnStartedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
+      )
+      : current.run_duration_ms,
+    final_elapsed_ms: finalElapsedMs,
     trace_events: nextTraceEvents.slice(-64),
     activity_summary: String(current.activity_summary || ""),
   };
@@ -1516,12 +1567,17 @@ function appendActivityTrace(activity, trace, options = {}) {
 
 function formatActivityDuration(activity, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
-  const startedAt = item.started_at;
-  if (!startedAt) return "";
-  const durationMs = item.run_duration_ms || (
+  const turnStartedAt = item.turn_started_at || item.started_at;
+  if (!turnStartedAt) return "";
+  const frozenElapsedMs = Math.max(0, Number(item.final_elapsed_ms || 0) || 0);
+  const durationMs = frozenElapsedMs || (
     item.finished_at
-      ? Math.max(0, item.finished_at - startedAt)
-      : Math.max(0, nowMs - startedAt)
+      ? Math.max(
+        0,
+        Number(item.run_duration_ms || 0) || 0,
+        Math.max(0, item.finished_at - turnStartedAt),
+      )
+      : Math.max(0, nowMs - turnStartedAt)
   );
   return `${Math.max(0, Math.round(durationMs / 1000))}s`;
 }
@@ -1878,7 +1934,7 @@ function App() {
     () => messages.some((item) => {
       if (!item || item.role !== "assistant") return false;
       const activity = normalizeMessageActivity(item.activity || {});
-      return Boolean(activity.started_at) && !isActivityTerminalStatus(activity.status);
+      return Boolean(activity.turn_started_at || activity.started_at) && !isActivityTerminalStatus(activity.status);
     }),
     [messages],
   );
@@ -3327,6 +3383,7 @@ function App() {
         activity: {
           status: "thinking",
           started_at: Date.now(),
+          turn_started_at: Date.now(),
           trace_events: [],
         },
       });
@@ -3539,7 +3596,6 @@ function App() {
               patchPendingActivity((activity) => mergeActivityState(activity, {
                 run_id: String(payload.run_id || ""),
                 status: "thinking",
-                started_at: Date.now(),
               }));
             } else if (event === "run_finished") {
               const nextStatus = String(payload.turn_status || latestRunSnapshot.turn_status || "completed");
@@ -3548,6 +3604,7 @@ function App() {
                 status: nextStatus === "needs_user_input" ? "blocked" : (nextStatus || "completed"),
                 finished_at: Date.now(),
                 run_duration_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
+                final_elapsed_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
               }));
               setSending(false);
               setStoppingRun(false);
@@ -4348,6 +4405,7 @@ function App() {
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
+      || activity.turn_started_at
       || activity.started_at
       || activity.status
       || activity.run_duration_ms
