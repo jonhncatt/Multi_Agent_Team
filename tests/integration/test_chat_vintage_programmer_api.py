@@ -746,7 +746,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.7.7"
+    assert payload["app_version"] == "2.7.8"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -801,7 +801,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.7.7"
+    assert bootstrap_payload["app_version"] == "2.7.8"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -814,6 +814,10 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert runtime_payload["runtime_status"]["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
     assert "max_total_tool_calls_per_turn" not in runtime_payload["runtime_status"]["loop_safeguards"]
     assert runtime_payload["runtime_status"]["loop_safeguards"]["max_turn_seconds"] > 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_total_ms"] >= 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_runtime_meta_ms"] >= 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_provider_options_ms"] >= 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_auth_summary_ms"] >= 0
     assert runtime_payload["context_meter"]["auto_compact_token_limit"] > 0
     assert runtime_payload["compaction_status"]["mode"] == "token_budget"
 
@@ -1037,6 +1041,11 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert response_payload["collaboration_mode"] == "default"
     assert response_payload["turn_status"] == "completed"
     assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
+    assert response_payload["activity"]["phase_timings"]["provider_auth_summary_ms"] >= 0
+    assert response_payload["activity"]["phase_timings"]["session_load_ms"] >= 0
+    assert response_payload["activity"]["phase_timings"]["runtime_context_ms"] >= 0
+    assert response_payload["activity"]["phase_timings"]["runtime_run_ms"] >= 0
+    assert response_payload["activity"]["phase_timings"]["total_ms"] >= 0
 
 
 def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:

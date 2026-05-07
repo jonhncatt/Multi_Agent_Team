@@ -58,6 +58,7 @@ REQUIRED_CORE_KEYS = (
     "activity.current_turn_goal_source",
     "activity.active_task_focus",
     "activity.recent_user_messages",
+    "activity.phase_timings",
     "activity.progress.read",
     "activity.progress.list_dir",
     "activity.progress.glob_file_search",
@@ -74,6 +75,9 @@ REQUIRED_CORE_KEYS = (
     "activity.stage.tool_decision",
     "activity.stage.answer_generation",
     "activity.status.request_understood",
+    "activity.status.request_understanding",
+    "activity.status.waiting_model",
+    "activity.status.waiting_model_slow",
     "activity.status.thinking",
     "activity.status.direct_answer_no_tool",
     "activity.status.tool_guard_pending",
@@ -93,6 +97,7 @@ REQUIRED_CORE_KEYS = (
     "context_meter.section.tools",
     "context_meter.section.context",
     "context_meter.section.safeguards",
+    "context_meter.section.diagnostics",
     "context_meter.details_toggle",
     "context_meter.compact_usage",
     "context_meter.compact_usage_unknown",
@@ -126,6 +131,10 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.guard_wall_clock",
     "context_meter.field.guard_user_stop",
     "context_meter.field.guard_compaction",
+    "context_meter.field.runtime_status_total",
+    "context_meter.field.runtime_status_runtime_meta",
+    "context_meter.field.runtime_status_provider_options",
+    "context_meter.field.runtime_status_auth_summary",
     "context_meter.value.enabled",
     "context_meter.value.disabled",
     "context_meter.mode.host",
@@ -261,10 +270,10 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
         assert token in script, token
 
 
-def test_early_progress_placeholder_uses_neutral_thinking_state() -> None:
+def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     match = re.search(
-        r"function buildFallbackProgressItems\(activity, locale\) \{(?P<body>.*?)\n}\n\nfunction buildActivityProjection",
+        r"function buildFallbackProgressItems\(activity, locale, nowMs = Date\.now\(\)\) \{(?P<body>.*?)\n}\n\nfunction buildActivityProjection",
         script,
         re.S,
     )
@@ -272,8 +281,11 @@ def test_early_progress_placeholder_uses_neutral_thinking_state() -> None:
     body = match.group("body")
 
     assert 'label: translateUi(locale, "activity.status.request_understood")' in body
-    assert 'label: translateUi(locale, "activity.status.thinking")' in body
-    assert 'id: "thinking"' in body
+    assert 'label: translateUi(locale, "activity.status.request_understanding")' in body
+    assert '"activity.status.waiting_model"' in body
+    assert '"activity.status.waiting_model_slow"' in body
+    assert "MODEL_WAIT_SLOW_HINT_MS" in script
+    assert "const llmStartedAt = latestTraceTimestampByTypes(traces, \"llm.started\");" in body
     assert '"answer.started"' in body
     assert "activity.status.direct_answer_no_tool" not in body
 
@@ -283,7 +295,9 @@ def test_early_activity_copy_and_visibility_are_updated() -> None:
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert '"activity.status.request_understood": "开始处理请求"' in locales
-    assert '"activity.status.thinking": "正在思考"' in locales
+    assert '"activity.status.request_understanding": "正在理解问题"' in locales
+    assert '"activity.status.waiting_model": "等待模型返回"' in locales
+    assert '"activity.status.waiting_model_slow": "模型响应较慢，仍在等待返回"' in locales
     assert "|| activity.started_at" in script
     assert "|| activity.status" in script
 
@@ -307,11 +321,13 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
     required_script_tokens = (
         "RUNTIME_STATUS_ACTIVE_INTERVAL_MS",
         "RUNTIME_STATUS_IDLE_INTERVAL_MS",
+        "MODEL_WAIT_SLOW_HINT_MS",
         "PROJECTS_REFRESH_STALE_MS",
         "runtimeStatusAbortRef",
         "projectsInFlightRef",
         "refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS })",
         "currentRuntimeStatus.loop_safeguards",
+        "currentRuntimeStatus.provider_diagnostics",
         "emergency_max_tool_calls_per_turn",
         'translateUi(locale, "context_meter.compact_usage"',
         'translateUi(locale, "context_meter.compact_tokens"',
@@ -321,6 +337,7 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
         't("context_meter.section.tools")',
         't("context_meter.section.context")',
         't("context_meter.section.safeguards")',
+        't("context_meter.section.diagnostics")',
         'className="context-meter-details"',
         'className="context-meter-details-toggle"',
     )
@@ -445,3 +462,20 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' in script
     assert 'renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus)' in script
     assert 'renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages)' in script
+
+
+def test_activity_debug_drawer_surfaces_phase_timings() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const renderPhaseTimingDetails = (source) => {" in script
+    assert 'summary>${t("activity.phase_timings")}</summary>' in script
+    assert 'formatPhaseTimingLabel(uiLocale, key)' in script
+    assert 'formatPhaseTimingMs(value)' in script
+    assert "item.phase_timings" in script
+
+
+def test_handle_send_includes_client_submission_timestamp() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const clientSubmittedAtMs = Date.now();" in script
+    assert "client_submitted_at_ms: clientSubmittedAtMs," in script

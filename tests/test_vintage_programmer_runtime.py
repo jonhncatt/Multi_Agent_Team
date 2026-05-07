@@ -640,6 +640,51 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
     assert "answer.done" in trace_types
 
 
+def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _StreamingBackend(
+        [
+            _FakeMessage(
+                content=_proposal_block(summary="Polish the sentence directly.") + "streamed answer",
+            )
+        ],
+        deltas=[
+            _proposal_block(summary="Polish the sentence directly."),
+            "streamed ",
+            "answer",
+        ],
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="把这句日语润色一下",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-timing",
+            "run_id": "run-timing",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    phase_timings = dict((result.get("activity") or {}).get("phase_timings") or {})
+    assert phase_timings["agent_spec_load_ms"] >= 0
+    assert phase_timings["skills_load_ms"] >= 0
+    assert phase_timings["model_request_start_ms"] >= 0
+    assert phase_timings["model_first_event_ms"] >= phase_timings["model_request_start_ms"]
+    assert phase_timings["model_first_text_delta_ms"] >= phase_timings["model_first_event_ms"]
+    assert phase_timings["answer_ready_ms"] >= phase_timings["model_first_text_delta_ms"]
+    assert phase_timings["runtime_total_ms"] >= phase_timings["answer_ready_ms"]
+    assert dict((result.get("inspector") or {}).get("run_state") or {}).get("phase_timings")
+
+
 def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
