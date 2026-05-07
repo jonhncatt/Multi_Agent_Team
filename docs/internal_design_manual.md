@@ -333,11 +333,28 @@ checklist（检查清单）相关状态的来源分两层：
 - 工具统计
 - 上下文
 - 保护机制
+- 诊断（如果当前 runtime status 有 provider diagnostics）
 
 为什么默认折叠：
 
 - 这些信息对调试很重要
 - 但默认全展示会让背景信息窗口太像内部监控面板，不够紧凑
+
+### 阶段耗时诊断
+
+从 `v2.7.8` 开始，assistant activity debug details（助手活动调试详情）会附带 `phase_timings`（阶段耗时）。
+
+它的用途是帮助区分慢点主要出现在：
+
+- frontend submit 到 backend receive（前端提交到后端接收）
+- session load / session ready（会话加载 / 会话就绪）
+- runtime context preparation（运行时上下文准备）
+- provider auth summary（Provider 鉴权摘要）
+- model request start（模型请求发出）
+- model first event / first text delta（模型首个事件 / 首个文本增量）
+- answer ready（最终答案准备完成）
+
+这些 timing 默认不放进主进度列表，只放在 debug/details（调试详情）里，避免默认 UI 变复杂。
 
 ## 10. Long-task Safeguards（长任务保护机制）
 
@@ -541,6 +558,13 @@ Context compaction（上下文压缩）的目标是：
 - 其他空闲场景：不轮询
 - 页面隐藏时：暂停
 
+当前 `/api/runtime-status` 还会返回 `provider_diagnostics`（Provider 诊断）字段，用于观察：
+
+- `runtime_status_total_ms`
+- `runtime_status_runtime_meta_ms`
+- `runtime_status_provider_options_ms`
+- `runtime_status_auth_summary_ms`
+
 前端还做了：
 
 - `AbortController`（中止控制器）取消旧请求
@@ -551,6 +575,12 @@ Context compaction（上下文压缩）的目标是：
 - 在需要时刷新
 - 在空闲 / 隐藏场景减速或暂停
 - 避免重复 in-flight 请求
+
+按当前源码确认：
+
+- `runtime_meta()` 已有约 10 秒缓存
+- `auth_summary()` 主要读取本地配置 / token 状态，不直接代表网络刷新
+- 因此当前实现不额外叠加新的 readiness TTL cache（短 TTL 缓存），而是先暴露 timing 诊断结果
 
 ## 14. Common Questions（常见问题）
 
@@ -597,6 +627,7 @@ Context compaction（上下文压缩）的目标是：
 - `v2.7.1`：背景信息窗口改成简洁默认层 + 折叠详细信息，并把长任务保护升级为 progress-aware safeguards（进展感知保护）
 - `v2.7.2`：新增本内部设计手册，统一记录当前实现
 - `v2.7.3`：修复前端 live timer，移除小工具调用数主路径限制，并把绝对工具上限降级为 emergency cap（紧急兜底上限）
+- `v2.7.8`：新增 phase timing diagnostics（阶段耗时诊断），并把 no-tool direct answer（无工具直接回答）路径改成“理解问题 / 等待模型 / 生成回答”的更清晰状态词
 
 ## 16. 源码依据与待确认点
 
