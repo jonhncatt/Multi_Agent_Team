@@ -128,9 +128,30 @@ def _message_content_chars(content: Any) -> int:
     return len(str(content))
 
 
+def _dict_text_field_lengths(value: Any) -> tuple[int, list[str]]:
+    if not isinstance(value, dict):
+        return 0, []
+    total = 0
+    fields: list[str] = []
+    for key in (
+        "text",
+        "content",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_text",
+        "thinking",
+        "output_text",
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            total += len(item)
+            fields.append(key)
+    return total, fields
+
+
 def _chunk_content_len(chunk: Any) -> tuple[int, str]:
     content = getattr(chunk, "content", "")
-    if isinstance(content, str):
+    if isinstance(content, str) and content:
         return len(content), "content_str"
     if isinstance(content, list):
         total = 0
@@ -138,25 +159,46 @@ def _chunk_content_len(chunk: Any) -> tuple[int, str]:
         for item in content:
             if isinstance(item, str):
                 total += len(item)
-                fields.append("str")
+                fields.append("content.list.str")
             elif isinstance(item, dict):
-                for key in ("text", "content", "reasoning"):
-                    value = item.get(key)
-                    if isinstance(value, str) and value:
-                        total += len(value)
-                        fields.append(key)
+                item_total, item_fields = _dict_text_field_lengths(item)
+                total += item_total
+                fields.extend([f"content.list.{name}" for name in item_fields])
             else:
                 text = str(item or "")
                 total += len(text)
                 if text:
-                    fields.append(type(item).__name__)
-        return total, "+".join(fields[:4]) or "content_list_empty"
-    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
-    if isinstance(additional_kwargs, dict):
-        reasoning = additional_kwargs.get("reasoning")
-        if isinstance(reasoning, str) and reasoning:
-            return len(reasoning), "additional_kwargs.reasoning"
-    return len(str(content or "")), type(content).__name__
+                    fields.append(f"content.list.{type(item).__name__}")
+        if total:
+            return total, "+".join(fields[:6])
+    for attr_name in ("additional_kwargs", "response_metadata", "usage_metadata"):
+        raw = getattr(chunk, attr_name, {}) or {}
+        total, fields = _dict_text_field_lengths(raw)
+        if total:
+            return total, "+".join([f"{attr_name}.{name}" for name in fields[:6]])
+    return 0, _chunk_debug_shape(chunk)
+
+
+def _safe_dict_keys(value: Any, limit: int = 8) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    keys = [str(key) for key in value.keys()][:limit]
+    return ",".join(keys) if keys else "-"
+
+
+def _chunk_debug_shape(chunk: Any) -> str:
+    content = getattr(chunk, "content", "")
+    content_type = type(content).__name__
+    additional_keys = _safe_dict_keys(getattr(chunk, "additional_kwargs", {}) or {})
+    response_keys = _safe_dict_keys(getattr(chunk, "response_metadata", {}) or {})
+    usage_keys = _safe_dict_keys(getattr(chunk, "usage_metadata", {}) or {})
+    tool_chunks = getattr(chunk, "tool_call_chunks", None)
+    tool_chunk_count = len(tool_chunks) if isinstance(tool_chunks, list) else 0
+    return (
+        f"empty content_type={content_type} "
+        f"additional_keys={additional_keys} response_keys={response_keys} "
+        f"usage_keys={usage_keys} tool_call_chunks={tool_chunk_count}"
+    )
 
 
 def message_stats(messages: list[Any] | tuple[Any, ...] | None) -> tuple[int, int]:
