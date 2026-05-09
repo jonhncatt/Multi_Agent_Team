@@ -139,6 +139,59 @@ def message_stats(messages: list[Any] | tuple[Any, ...] | None) -> tuple[int, in
     return len(rows), total_chars
 
 
+def debug_payload_enabled(provider: str | None = None) -> bool:
+    normalized_provider = str(provider or _provider_from_env() or "").strip()
+    prefix = _provider_prefix(normalized_provider)
+    if prefix:
+        return _env_bool(f"{prefix}_DEBUG_PAYLOAD", False)
+    return False
+
+
+def _emit_debug_line(message: str) -> None:
+    logger.warning(message)
+    # Some local uvicorn/logging setups do not show non-root package loggers.
+    # Print only when the explicit debug flag is enabled; never print prompt text.
+    try:
+        print(message, flush=True)
+    except Exception:
+        pass
+
+
+def log_provider_config_summary(
+    stage: str,
+    *,
+    provider: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    stream: Any = None,
+    max_tokens: Any = None,
+    local_base_url: Any = None,
+) -> None:
+    resolved_provider = str(provider or _provider_from_env() or "").strip()
+    if not debug_payload_enabled(resolved_provider):
+        return
+    resolved_base_url = str(
+        base_url
+        or os.environ.get("VP_OPENAI_COMPAT_BASE_URL")
+        or os.environ.get("VP_OLLAMA_BASE_URL")
+        or os.environ.get("VP_LLM_BASE_URL")
+        or ""
+    )
+    resolved_model = str(
+        model
+        or os.environ.get("VP_OPENAI_COMPAT_DEFAULT_MODEL")
+        or os.environ.get("VP_OLLAMA_DEFAULT_MODEL")
+        or os.environ.get("VP_DEFAULT_MODEL")
+        or ""
+    )
+    local_flag = is_local_base_url(resolved_base_url) if local_base_url is None else bool(local_base_url)
+    _emit_debug_line(
+        "provider config summary: "
+        f"stage={stage} provider={resolved_provider} base_url={resolved_base_url} "
+        f"model={resolved_model} stream={stream} max_tokens={max_tokens} local_base_url={local_flag}"
+    )
+
+
 def apply_local_provider_defaults(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     provider = _provider_from_env()
     prefix = _provider_prefix(provider)
@@ -231,15 +284,11 @@ def _log_payload_summary(instance: Any, messages: list[Any] | tuple[Any, ...] | 
         max_tokens=max_tokens,
         messages=messages,
     )
-    logger.info(
-        "provider payload summary: provider=%s base_url=%s model=%s stream=%s max_tokens=%s messages_count=%s total_chars=%s",
-        summary["provider"],
-        summary["base_url"],
-        summary["model"],
-        summary["stream"],
-        summary["max_tokens"],
-        summary["messages_count"],
-        summary["total_chars"],
+    _emit_debug_line(
+        "provider payload summary: "
+        f"provider={summary['provider']} base_url={summary['base_url']} "
+        f"model={summary['model']} stream={summary['stream']} max_tokens={summary['max_tokens']} "
+        f"messages_count={summary['messages_count']} total_chars={summary['total_chars']}"
     )
 
 
@@ -258,6 +307,15 @@ def install_langchain_openai_patch() -> bool:
 
     def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
         adjusted_kwargs, diagnostics = apply_local_provider_defaults(kwargs)
+        log_provider_config_summary(
+            "chatopenai.init.before",
+            provider=str(diagnostics.get("provider") or ""),
+            base_url=str(diagnostics.get("base_url") or _coerce_base_url(adjusted_kwargs)),
+            model=str(diagnostics.get("model") or _coerce_model(adjusted_kwargs)),
+            stream=adjusted_kwargs.get("streaming"),
+            max_tokens=adjusted_kwargs.get("max_tokens"),
+            local_base_url=diagnostics.get("local_base_url"),
+        )
         original_init(self, *args, **adjusted_kwargs)
         meta = {
             "provider": diagnostics.get("provider"),
@@ -272,6 +330,15 @@ def install_langchain_openai_patch() -> bool:
             object.__setattr__(self, "_vp_provider_meta", meta)
         except Exception:
             pass
+        log_provider_config_summary(
+            "chatopenai.init.after",
+            provider=str(meta.get("provider") or ""),
+            base_url=str(meta.get("base_url") or ""),
+            model=str(meta.get("model") or ""),
+            stream=meta.get("stream"),
+            max_tokens=meta.get("max_tokens"),
+            local_base_url=meta.get("local_base_url"),
+        )
 
     def patched_generate(self: Any, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
         _log_payload_summary(self, messages, stream=False)
