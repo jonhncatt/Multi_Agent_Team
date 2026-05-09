@@ -11,6 +11,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.config import AppConfig
+from app.openai_compatible_streaming import install_langchain_openai_patch
+
+install_langchain_openai_patch()
 
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 DEFAULT_CODEX_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex"
