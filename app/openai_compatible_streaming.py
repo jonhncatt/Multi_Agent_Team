@@ -10,6 +10,21 @@ logger = logging.getLogger("multi_agent_team.provider")
 _PATCH_MARKER = "_vp_openai_compatible_stream_patch_installed"
 
 _PRIVATE_NETWORK_PREFIXES = ("192.168.", "10.")
+_OPENAI_COMPAT_ENV_KEYS = (
+    "VP_OPENAI_COMPAT_API_KEY",
+    "VP_OPENAI_COMPAT_BASE_URL",
+    "VP_OPENAI_COMPAT_DEFAULT_MODEL",
+    "VP_OPENAI_COMPAT_STREAM",
+    "VP_OPENAI_COMPAT_MAX_OUTPUT_TOKENS",
+    "VP_OPENAI_COMPAT_DEBUG_PAYLOAD",
+)
+_OLLAMA_ENV_KEYS = (
+    "VP_OLLAMA_API_KEY",
+    "VP_OLLAMA_BASE_URL",
+    "VP_OLLAMA_DEFAULT_MODEL",
+    "VP_OLLAMA_STREAM",
+    "VP_OLLAMA_MAX_OUTPUT_TOKENS",
+)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -28,6 +43,10 @@ def _env_int(name: str, default: int | None = None) -> int | None:
     except Exception:
         return default
     return value if value > 0 else default
+
+
+def _has_any_env(keys: tuple[str, ...]) -> bool:
+    return any(str(os.environ.get(key) or "").strip() for key in keys)
 
 
 def is_local_base_url(base_url: str | None) -> bool:
@@ -56,7 +75,15 @@ def is_local_base_url(base_url: str | None) -> bool:
 def _provider_from_env() -> str:
     raw = str(os.environ.get("VP_LLM_PROVIDER") or os.environ.get("VP_MODEL_PROVIDER") or "").strip().lower()
     normalized = raw.replace("-", "_")
-    return normalized or "openai"
+    if normalized:
+        return normalized
+    # Users often configure only the provider-specific env profile in `.env`.
+    # In that case, infer the provider so VP_OPENAI_COMPAT_* and VP_OLLAMA_* are actually honored.
+    if _has_any_env(_OPENAI_COMPAT_ENV_KEYS):
+        return "openai_compatible"
+    if _has_any_env(_OLLAMA_ENV_KEYS):
+        return "ollama"
+    return "openai"
 
 
 def _provider_prefix(provider: str) -> str:
@@ -72,7 +99,7 @@ def _coerce_base_url(kwargs: dict[str, Any]) -> str:
         value = kwargs.get(key)
         if value:
             return str(value)
-    return str(os.environ.get("VP_OPENAI_COMPAT_BASE_URL") or os.environ.get("VP_LLM_BASE_URL") or "")
+    return str(os.environ.get("VP_OPENAI_COMPAT_BASE_URL") or os.environ.get("VP_OLLAMA_BASE_URL") or os.environ.get("VP_LLM_BASE_URL") or "")
 
 
 def _coerce_model(kwargs: dict[str, Any]) -> str:
@@ -80,7 +107,7 @@ def _coerce_model(kwargs: dict[str, Any]) -> str:
         value = kwargs.get(key)
         if value:
             return str(value)
-    return str(os.environ.get("VP_OPENAI_COMPAT_DEFAULT_MODEL") or os.environ.get("VP_DEFAULT_MODEL") or "")
+    return str(os.environ.get("VP_OPENAI_COMPAT_DEFAULT_MODEL") or os.environ.get("VP_OLLAMA_DEFAULT_MODEL") or os.environ.get("VP_DEFAULT_MODEL") or "")
 
 
 def _message_content_chars(content: Any) -> int:
