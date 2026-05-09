@@ -238,6 +238,7 @@ def apply_local_provider_defaults(kwargs: dict[str, Any]) -> tuple[dict[str, Any
 
 def provider_payload_summary(
     *,
+    stage: str,
     provider: str,
     base_url: str,
     model: str,
@@ -247,6 +248,7 @@ def provider_payload_summary(
 ) -> dict[str, Any]:
     messages_count, total_chars = message_stats(messages)
     return {
+        "stage": str(stage or ""),
         "provider": str(provider or ""),
         "base_url": str(base_url or ""),
         "model": str(model or ""),
@@ -265,7 +267,13 @@ def _instance_value(instance: Any, name: str, default: Any = "") -> Any:
     return value if value is not None else default
 
 
-def _log_payload_summary(instance: Any, messages: list[Any] | tuple[Any, ...] | None, *, stream: bool) -> None:
+def _log_payload_summary(
+    instance: Any,
+    messages: list[Any] | tuple[Any, ...] | None,
+    *,
+    stream: bool,
+    stage: str,
+) -> None:
     provider_meta = getattr(instance, "_vp_provider_meta", {}) or {}
     provider = str(provider_meta.get("provider") or _provider_from_env())
     prefix = _provider_prefix(provider)
@@ -277,6 +285,7 @@ def _log_payload_summary(instance: Any, messages: list[Any] | tuple[Any, ...] | 
     if max_tokens is None:
         max_tokens = _instance_value(instance, "max_tokens", None)
     summary = provider_payload_summary(
+        stage=stage,
         provider=provider,
         base_url=base_url,
         model=model,
@@ -286,7 +295,7 @@ def _log_payload_summary(instance: Any, messages: list[Any] | tuple[Any, ...] | 
     )
     _emit_debug_line(
         "provider payload summary: "
-        f"provider={summary['provider']} base_url={summary['base_url']} "
+        f"stage={summary['stage']} provider={summary['provider']} base_url={summary['base_url']} "
         f"model={summary['model']} stream={summary['stream']} max_tokens={summary['max_tokens']} "
         f"messages_count={summary['messages_count']} total_chars={summary['total_chars']}"
     )
@@ -341,11 +350,11 @@ def install_langchain_openai_patch() -> bool:
         )
 
     def patched_generate(self: Any, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
-        _log_payload_summary(self, messages, stream=False)
+        _log_payload_summary(self, messages, stream=False, stage="chatopenai._generate")
         return original_generate(self, messages, *args, **kwargs)
 
     def patched_stream(self: Any, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
-        _log_payload_summary(self, messages, stream=True)
+        _log_payload_summary(self, messages, stream=True, stage="chatopenai._stream")
         yield from original_stream(self, messages, *args, **kwargs)
 
     ChatOpenAI.__init__ = patched_init
