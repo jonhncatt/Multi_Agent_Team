@@ -128,6 +128,37 @@ def _message_content_chars(content: Any) -> int:
     return len(str(content))
 
 
+def _chunk_content_len(chunk: Any) -> tuple[int, str]:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return len(content), "content_str"
+    if isinstance(content, list):
+        total = 0
+        fields: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                total += len(item)
+                fields.append("str")
+            elif isinstance(item, dict):
+                for key in ("text", "content", "reasoning"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value:
+                        total += len(value)
+                        fields.append(key)
+            else:
+                text = str(item or "")
+                total += len(text)
+                if text:
+                    fields.append(type(item).__name__)
+        return total, "+".join(fields[:4]) or "content_list_empty"
+    additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+    if isinstance(additional_kwargs, dict):
+        reasoning = additional_kwargs.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            return len(reasoning), "additional_kwargs.reasoning"
+    return len(str(content or "")), type(content).__name__
+
+
 def message_stats(messages: list[Any] | tuple[Any, ...] | None) -> tuple[int, int]:
     rows = list(messages or [])
     total_chars = 0
@@ -301,6 +332,17 @@ def _log_payload_summary(
     )
 
 
+def _log_chunk_summary(*, provider: str, chunk_index: int, delta_chars: int, field: str) -> None:
+    prefix = _provider_prefix(provider)
+    if prefix and not _env_bool(f"{prefix}_DEBUG_PAYLOAD", False):
+        return
+    if chunk_index <= 8 or chunk_index in {16, 32, 64, 128, 256, 512, 1024}:
+        _emit_debug_line(
+            "provider chunk summary: "
+            f"provider={provider} chunk_index={chunk_index} delta_chars={delta_chars} field={field}"
+        )
+
+
 def install_langchain_openai_patch() -> bool:
     try:
         from langchain_openai import ChatOpenAI
@@ -354,8 +396,23 @@ def install_langchain_openai_patch() -> bool:
         return original_generate(self, messages, *args, **kwargs)
 
     def patched_stream(self: Any, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
+        provider_meta = getattr(self, "_vp_provider_meta", {}) or {}
+        provider = str(provider_meta.get("provider") or _provider_from_env())
         _log_payload_summary(self, messages, stream=True, stage="chatopenai._stream")
-        yield from original_stream(self, messages, *args, **kwargs)
+        chunk_count = 0
+        text_char_count = 0
+        for chunk in original_stream(self, messages, *args, **kwargs):
+            chunk_count += 1
+            delta_chars, field = _chunk_content_len(chunk)
+            text_char_count += max(0, int(delta_chars or 0))
+            _log_chunk_summary(provider=provider, chunk_index=chunk_count, delta_chars=delta_chars, field=field)
+            yield chunk
+        prefix = _provider_prefix(provider)
+        if not prefix or _env_bool(f"{prefix}_DEBUG_PAYLOAD", False):
+            _emit_debug_line(
+                "provider stream summary: "
+                f"provider={provider} chunks={chunk_count} text_chars={text_char_count}"
+            )
 
     ChatOpenAI.__init__ = patched_init
     if callable(original_generate):
