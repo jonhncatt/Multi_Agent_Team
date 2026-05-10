@@ -363,6 +363,7 @@ class AppConfig:
     web_fetch_max_chars: int
     web_skip_tls_verify: bool
     web_ca_cert_path: str | None
+    llm_backend: str
     llm_provider: str
     llm_primary_api_key_env: str
     llm_api_key_env_keys: list[str]
@@ -827,6 +828,10 @@ def load_config() -> AppConfig:
         default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
     ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
+    llm_backend = (_env("VP_LLM_BACKEND", default="openai_native") or "openai_native").strip().lower()
+    if llm_backend not in {"openai_native", "langchain"}:
+        llm_backend = "openai_native"
+
     llm_provider = _normalize_llm_provider(
         _env(
             "VP_LLM_PROVIDER",
@@ -1170,6 +1175,7 @@ def load_config() -> AppConfig:
         web_fetch_max_chars=max(2000, min(500000, web_fetch_max_chars)),
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
+        llm_backend=llm_backend,
         llm_provider=llm_provider,
         llm_primary_api_key_env=llm_primary_api_key_env,
         llm_api_key_env_keys=llm_api_key_env_keys,

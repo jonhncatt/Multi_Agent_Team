@@ -97,6 +97,7 @@ from packages.office_modules.specialist_role import (
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig, get_access_roots
 from app.codex_runner import CodexResponsesRunner
+from app.llm import AIMessage, HumanMessage, OpenAINativeLLMAdapter, RuntimeStructuredTool, SystemMessage, ToolMessage
 from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
@@ -835,22 +836,14 @@ class OfficeAgent:
             ).strip().lower()
             or "kernel_robot"
         )
-
-        try:
-            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-            from langchain_core.tools import StructuredTool
-            from langchain_openai import ChatOpenAI
-        except Exception as exc:
-            raise RuntimeError(
-                "Missing dependency: langchain_openai. Install with `pip install langchain-openai`."
-            ) from exc
-
         self._AIMessage = AIMessage
         self._HumanMessage = HumanMessage
         self._SystemMessage = SystemMessage
         self._ToolMessage = ToolMessage
-        self._StructuredTool = StructuredTool
-        self._ChatOpenAI = ChatOpenAI
+        self._StructuredTool = RuntimeStructuredTool
+        self._ChatOpenAI = None
+        if self.config.llm_backend == "langchain":
+            self._ensure_langchain_backend()
         _ = kernel_runtime
         self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {
@@ -7186,6 +7179,23 @@ class OfficeAgent:
                 ai_message_cls=self._AIMessage,
             )
 
+        normalized_base_url = (
+            self._normalize_base_url(self.config.openai_base_url)
+            if self.config.openai_base_url
+            else None
+        )
+        if self.config.llm_backend == "openai_native":
+            return OpenAINativeLLMAdapter(
+                auth_manager=self._auth_manager,
+                base_url=normalized_base_url,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                temperature=self.config.openai_temperature,
+                ai_message_cls=self._AIMessage,
+                verify=self.config.openai_ca_cert_path,
+            )
+
+        self._ensure_langchain_backend()
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
             "model": model,
@@ -7195,8 +7205,8 @@ class OfficeAgent:
         }
         if self.config.openai_temperature is not None:
             kwargs["temperature"] = self.config.openai_temperature
-        if self.config.openai_base_url:
-            kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
+        if normalized_base_url:
+            kwargs["base_url"] = normalized_base_url
         if self.config.openai_ca_cert_path:
             self._ensure_openai_ca_env(self.config.openai_ca_cert_path)
         return self._ChatOpenAI(**kwargs)
@@ -7309,7 +7319,11 @@ class OfficeAgent:
         try:
             return self._invoke_runner(runner, messages, event_cb=event_cb), runner, notes
         except Exception as exc:
-            if auth.mode == "codex_auth" or not self._is_405_error(exc):
+            if (
+                auth.mode == "codex_auth"
+                or self.config.llm_backend != "langchain"
+                or not self._is_405_error(exc)
+            ):
                 raise
 
         fallback_use_responses = not self.config.openai_use_responses_api
@@ -7323,6 +7337,27 @@ class OfficeAgent:
         )
         runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
         return self._invoke_runner(runner_fb, messages, event_cb=event_cb), runner_fb, notes
+
+    def _ensure_langchain_backend(self) -> None:
+        if self._ChatOpenAI is not None:
+            return
+        try:
+            from langchain_core.messages import AIMessage as LangChainAIMessage
+            from langchain_core.messages import HumanMessage as LangChainHumanMessage
+            from langchain_core.messages import SystemMessage as LangChainSystemMessage
+            from langchain_core.messages import ToolMessage as LangChainToolMessage
+            from langchain_core.tools import StructuredTool
+            from langchain_openai import ChatOpenAI
+        except Exception as exc:
+            raise RuntimeError(
+                "Missing dependency: langchain_openai. Install with `pip install langchain-openai`."
+            ) from exc
+        self._AIMessage = LangChainAIMessage
+        self._HumanMessage = LangChainHumanMessage
+        self._SystemMessage = LangChainSystemMessage
+        self._ToolMessage = LangChainToolMessage
+        self._StructuredTool = StructuredTool
+        self._ChatOpenAI = ChatOpenAI
 
     @staticmethod
     def _invoke_runner(

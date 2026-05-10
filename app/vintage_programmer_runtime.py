@@ -2271,8 +2271,12 @@ class VintageProgrammerRuntime:
                 continue
             raw_name = str(call.get("name") or "").strip()
             name = self._normalize_tool_name(raw_name)
-            raw_arguments = call.get("args")
-            arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+            raw_arguments = call.get("raw_args")
+            if raw_arguments is None:
+                raw_arguments = call.get("args")
+            arguments = call.get("args") if isinstance(call.get("args"), dict) else {}
+            if not arguments and isinstance(raw_arguments, dict):
+                arguments = dict(raw_arguments)
             normalized_call = {
                 "id": str(call.get("id") or ""),
                 "name": name,

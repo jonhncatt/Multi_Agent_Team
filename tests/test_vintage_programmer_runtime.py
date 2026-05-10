@@ -972,6 +972,39 @@ def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_too
     assert result["tool_events"][1]["guard_result"]["status"] == "accepted"
 
 
+def test_runtime_guard_preserves_malformed_raw_tool_arguments_from_backend(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {}, "raw_args": '{"query":'}]),
+            _FakeMessage(content="I corrected the malformed tool call."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 PLAN.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-tool-guard-raw-json",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "I corrected the malformed tool call."
+    assert backend.tools.calls == []
+    assert result["tool_events"][0]["guard_result"]["checks"]["json"] == "failed"
+    assert result["tool_events"][0]["raw_tool_call"]["arguments"] == '{"query":'
+
+
 def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

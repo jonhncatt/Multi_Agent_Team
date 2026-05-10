@@ -283,6 +283,7 @@ def _response_to_ai_message(
                 {
                     "name": str(getattr(item, "name", "") or ""),
                     "args": parsed_args,
+                    "raw_args": raw_arguments,
                     "id": str(getattr(item, "call_id", "") or getattr(item, "id", "") or "call_missing"),
                     "type": "tool_call",
                 }

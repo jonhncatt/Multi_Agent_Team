@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.7.8-blue)
+![Version](https://img.shields.io/badge/version-v2.8.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,7 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.7.8`
+当前稳定版本：`v2.8.0`
 
 ## 这是什么
 
@@ -126,9 +126,29 @@ Windows 版本的推荐启动方式见 [README.windows.md](README.windows.md)。
 
 复制 `.env.example` 为 `.env`，然后只保留一个 provider profile（模型提供方配置）。
 
+## LLM Backend
+
+默认 LLM backend 现在是 `openai_native`，直接使用官方 `openai` Python SDK 的 Chat Completions 路径。
+
+```env
+VP_LLM_BACKEND=openai_native
+VP_OPENAI_API_KEY=...
+VP_OPENAI_BASE_URL=...
+VP_OPENAI_DEFAULT_MODEL=...
+```
+
+如果需要临时回退到旧的 LangChain 路径：
+
+```env
+VP_LLM_BACKEND=langchain
+```
+
+通过 `base_url` 仍然支持 OpenAI-compatible 网关。
+
 ### OpenAI 官方
 
 ```env
+VP_LLM_BACKEND=openai_native
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=your_key
 VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
@@ -137,6 +157,7 @@ VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ### OpenAI 官方 + Codex auth
 
 ```env
+VP_LLM_BACKEND=openai_native
 VP_LLM_PROVIDER=openai
 VP_CODEX_HOME=/absolute/path/to/.codex
 VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
@@ -148,6 +169,7 @@ VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ### OpenAI-compatible 网关
 
 ```env
+VP_LLM_BACKEND=openai_native
 VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=your_gateway_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
@@ -158,6 +180,7 @@ VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
 ### OpenRouter
 
 ```env
+VP_LLM_BACKEND=openai_native
 VP_LLM_PROVIDER=openrouter
 VP_OPENROUTER_API_KEY=your_openrouter_key
 VP_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
@@ -168,6 +191,7 @@ VP_OPENROUTER_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free
 ### 本地 Ollama
 
 ```env
+VP_LLM_BACKEND=openai_native
 VP_LLM_PROVIDER=ollama
 VP_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
 VP_OLLAMA_API_KEY=ollama
