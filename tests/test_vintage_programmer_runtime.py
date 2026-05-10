@@ -632,6 +632,7 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
     assert result["text"] == "streamed answer"
     assert result["answer_stream"]["streamed"] is True
     assert result["answer_stream"]["upstream_progressive"] is True
+    assert "answer_stream_not_observed" not in list((result.get("inspector") or {}).get("notes") or [])
     assert "activity.started" in trace_types
     assert "activity.done" in trace_types
     assert "answer.started" in trace_types

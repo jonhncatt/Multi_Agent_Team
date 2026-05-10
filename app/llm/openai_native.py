@@ -26,6 +26,16 @@ from .message_codec import encode_messages
 from .tool_schema import build_openai_tools
 from .types import AIMessage, NativeLLMResponse, NativeLLMToolCall
 
+_PROVIDER = "openai_native"
+
+
+class _StreamingAttemptError(Exception):
+    def __init__(self, exc: Exception, *, stream_started: bool, include_usage: bool) -> None:
+        super().__init__(str(exc))
+        self.original = exc
+        self.stream_started = bool(stream_started)
+        self.include_usage = bool(include_usage)
+
 
 class OpenAINativeLLMAdapter:
     def __init__(
@@ -79,7 +89,96 @@ class OpenAINativeLLMAdapter:
         *,
         event_cb: Any | None = None,
     ) -> Any:
-        return self._invoke_once(messages, allow_refresh=True, event_cb=event_cb)
+        try:
+            return self._invoke_streaming_attempt(
+                messages,
+                allow_refresh=True,
+                event_cb=event_cb,
+                include_usage=True,
+            )
+        except _StreamingAttemptError as exc:
+            if not exc.stream_started and exc.include_usage and _looks_like_stream_usage_error(exc.original):
+                try:
+                    return self._invoke_streaming_attempt(
+                        messages,
+                        allow_refresh=True,
+                        event_cb=event_cb,
+                        include_usage=False,
+                    )
+                except _StreamingAttemptError as retry_exc:
+                    return self._handle_streaming_attempt_error(
+                        retry_exc,
+                        messages=messages,
+                        allow_refresh=True,
+                        event_cb=event_cb,
+                    )
+            return self._handle_streaming_attempt_error(
+                exc,
+                messages=messages,
+                allow_refresh=True,
+                event_cb=event_cb,
+            )
+
+    def _handle_streaming_attempt_error(
+        self,
+        exc: _StreamingAttemptError,
+        *,
+        messages: list[Any],
+        allow_refresh: bool,
+        event_cb: Any | None = None,
+    ) -> Any:
+        if not exc.stream_started and _looks_like_streaming_unsupported(exc.original):
+            return self._invoke_once(messages, allow_refresh=allow_refresh, event_cb=event_cb)
+        _raise_openai_error(exc.original, model=self._model, event_cb=event_cb)
+
+    def _invoke_streaming_attempt(
+        self,
+        messages: list[Any],
+        *,
+        allow_refresh: bool,
+        event_cb: Any | None = None,
+        include_usage: bool,
+    ) -> Any:
+        http_client: httpx.Client | None = None
+        diagnostics = _new_stream_diagnostics()
+        try:
+            api_key = self._resolve_api_key(allow_refresh=allow_refresh)
+            if self._verify is not None:
+                http_client = httpx.Client(verify=self._verify)
+            client = OpenAI(
+                api_key=api_key,
+                base_url=self._base_url,
+                default_headers=self._extra_headers or None,
+                timeout=self._timeout,
+                http_client=http_client,
+            )
+            request_kwargs = self._build_request_kwargs(messages)
+            request_kwargs["stream"] = True
+            if include_usage:
+                request_kwargs["stream_options"] = {"include_usage": True}
+            stream = client.chat.completions.create(**request_kwargs)
+            native_response, diagnostics = _stream_to_native_response(
+                stream,
+                model=self._model,
+                event_cb=event_cb,
+                diagnostics=diagnostics,
+            )
+            return _native_response_to_ai_message(
+                self._AIMessage,
+                native_response,
+                stream_diagnostics=diagnostics,
+            )
+        except _StreamingAttemptError:
+            raise
+        except Exception as exc:
+            raise _StreamingAttemptError(
+                exc,
+                stream_started=bool(diagnostics.get("event_count")),
+                include_usage=include_usage,
+            ) from exc
+        finally:
+            if http_client is not None:
+                http_client.close()
 
     def _invoke_once(
         self,
@@ -101,61 +200,53 @@ class OpenAINativeLLMAdapter:
                 timeout=self._timeout,
                 http_client=http_client,
             )
-            request_kwargs: dict[str, Any] = {
-                "model": self._model,
-                "messages": encode_messages(messages),
-                "max_tokens": self._max_output_tokens,
-            }
-            if self._temperature is not None:
-                request_kwargs["temperature"] = float(self._temperature)
-            tool_payloads = build_openai_tools(self._tools)
-            if tool_payloads:
-                request_kwargs["tools"] = tool_payloads
-                request_kwargs["tool_choice"] = "auto"
-            response = client.chat.completions.create(**request_kwargs)
+            response = client.chat.completions.create(**self._build_request_kwargs(messages))
             native_response = _response_to_native(response)
             completed_at = time.time()
+            diagnostics = {
+                "provider": _PROVIDER,
+                "event_count": 1,
+                "text_delta_count": 0,
+                "text_chars": 0,
+                "first_event_at": started_at,
+                "first_text_delta_at": 0.0,
+                "last_text_delta_at": 0.0,
+                "completed_at": completed_at,
+            }
             if event_cb is not None:
                 event_cb(
                     {
                         "type": "response.completed",
                         "timestamp": completed_at,
                         "model": self._model,
-                        "provider": "openai_native",
-                        "diagnostics": {
-                            "provider": "openai_native",
-                            "event_count": 1,
-                            "text_delta_count": 0,
-                            "text_chars": 0,
-                            "first_event_at": started_at,
-                            "first_text_delta_at": 0.0,
-                            "last_text_delta_at": 0.0,
-                            "completed_at": completed_at,
-                        },
+                        "provider": _PROVIDER,
+                        "diagnostics": dict(diagnostics),
                     }
                 )
-            return _native_response_to_ai_message(self._AIMessage, native_response)
-        except AuthenticationError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI authentication failed: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI authentication failed: {_safe_error_text(exc)}") from exc
-        except RateLimitError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI rate limit exceeded: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI rate limit exceeded: {_safe_error_text(exc)}") from exc
-        except APITimeoutError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI request timed out: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI request timed out: {_safe_error_text(exc)}") from exc
-        except APIConnectionError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI connection failed: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI connection failed: {_safe_error_text(exc)}") from exc
-        except BadRequestError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI bad request: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI bad request: {_safe_error_text(exc)}") from exc
-        except APIError as exc:
-            _emit_failure_event(event_cb, self._model, f"OpenAI request failed: {_safe_error_text(exc)}")
-            raise RuntimeError(f"OpenAI request failed: {_safe_error_text(exc)}") from exc
+            return _native_response_to_ai_message(
+                self._AIMessage,
+                native_response,
+                stream_diagnostics=diagnostics,
+            )
+        except Exception as exc:
+            _raise_openai_error(exc, model=self._model, event_cb=event_cb)
         finally:
             if http_client is not None:
                 http_client.close()
+
+    def _build_request_kwargs(self, messages: list[Any]) -> dict[str, Any]:
+        request_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": encode_messages(messages),
+            "max_tokens": self._max_output_tokens,
+        }
+        if self._temperature is not None:
+            request_kwargs["temperature"] = float(self._temperature)
+        tool_payloads = build_openai_tools(self._tools)
+        if tool_payloads:
+            request_kwargs["tools"] = tool_payloads
+            request_kwargs["tool_choice"] = "auto"
+        return request_kwargs
 
     def _resolve_api_key(self, *, allow_refresh: bool) -> str:
         if self._auth_manager is not None:
@@ -180,44 +271,161 @@ def _response_to_native(response: Any) -> NativeLLMResponse:
     if message is None:
         raise RuntimeError("OpenAI response choice did not include a message.")
 
-    tool_calls: list[NativeLLMToolCall] = []
-    for index, call in enumerate(getattr(message, "tool_calls", None) or [], start=1):
-        function = getattr(call, "function", None)
-        raw_arguments = str(getattr(function, "arguments", "") or "")
-        try:
-            parsed_arguments = json.loads(raw_arguments) if raw_arguments.strip() else {}
-        except json.JSONDecodeError:
-            parsed_arguments = {}
-        tool_calls.append(
-            NativeLLMToolCall(
-                id=str(getattr(call, "id", "") or f"call_{index}"),
-                name=str(getattr(function, "name", "") or ""),
-                arguments=parsed_arguments if isinstance(parsed_arguments, dict) else {},
-                raw_arguments=raw_arguments,
-            )
-        )
-
-    usage = getattr(response, "usage", None)
-    usage_payload = {
-        "input_tokens": int(getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)) or 0),
-        "output_tokens": int(getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)) or 0),
-        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-    }
-    if usage_payload["total_tokens"] <= 0:
-        usage_payload["total_tokens"] = usage_payload["input_tokens"] + usage_payload["output_tokens"]
-
     return NativeLLMResponse(
         content=_message_content_to_text(getattr(message, "content", "")),
-        tool_calls=tool_calls,
+        tool_calls=_tool_calls_to_native(getattr(message, "tool_calls", None) or []),
         raw=response,
         finish_reason=str(getattr(choice, "finish_reason", "") or ""),
-        usage=usage_payload,
+        usage=_usage_to_payload(getattr(response, "usage", None)),
         response_id=str(getattr(response, "id", "") or ""),
         model=str(getattr(response, "model", "") or ""),
     )
 
 
-def _native_response_to_ai_message(ai_message_cls: Any, response: NativeLLMResponse) -> Any:
+def _stream_to_native_response(
+    stream: Any,
+    *,
+    model: str,
+    event_cb: Any | None,
+    diagnostics: dict[str, Any],
+) -> tuple[NativeLLMResponse, dict[str, Any]]:
+    text_parts: list[str] = []
+    tool_call_buffers: dict[int, dict[str, str]] = {}
+    response_id = ""
+    response_model = ""
+    finish_reason = ""
+    usage_payload = _usage_to_payload(None)
+
+    for chunk in stream:
+        now = time.time()
+        diagnostics["event_count"] = int(diagnostics.get("event_count") or 0) + 1
+        if not diagnostics.get("first_event_at"):
+            diagnostics["first_event_at"] = now
+        response_id = str(getattr(chunk, "id", "") or response_id)
+        response_model = str(getattr(chunk, "model", "") or response_model)
+        usage_payload = _merge_usage_payload(usage_payload, _usage_to_payload(getattr(chunk, "usage", None)))
+
+        choices = list(getattr(chunk, "choices", None) or [])
+        if not choices:
+            continue
+
+        choice = choices[0]
+        finish_reason = str(getattr(choice, "finish_reason", "") or finish_reason)
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        text_delta = _message_content_to_text(getattr(delta, "content", ""))
+        if text_delta:
+            text_parts.append(text_delta)
+            diagnostics["text_delta_count"] = int(diagnostics.get("text_delta_count") or 0) + 1
+            diagnostics["text_chars"] = int(diagnostics.get("text_chars") or 0) + len(text_delta)
+            if not diagnostics.get("first_text_delta_at"):
+                diagnostics["first_text_delta_at"] = now
+            diagnostics["last_text_delta_at"] = now
+            if event_cb is not None:
+                event_cb(
+                    {
+                        "type": "response.output_text.delta",
+                        "delta": text_delta,
+                        "timestamp": now,
+                        "model": model,
+                        "provider": _PROVIDER,
+                    }
+                )
+
+        for call_delta in list(getattr(delta, "tool_calls", None) or []):
+            _merge_tool_call_delta(tool_call_buffers, call_delta)
+
+    if not diagnostics.get("event_count"):
+        raise RuntimeError("OpenAI response stream completed without emitting any chunks.")
+
+    completed_at = time.time()
+    diagnostics["completed_at"] = completed_at
+    if event_cb is not None:
+        event_cb(
+            {
+                "type": "response.completed",
+                "timestamp": completed_at,
+                "model": model,
+                "provider": _PROVIDER,
+                "diagnostics": dict(diagnostics),
+            }
+        )
+
+    return (
+        NativeLLMResponse(
+            content="".join(text_parts),
+            tool_calls=_tool_call_buffers_to_native(tool_call_buffers),
+            raw=None,
+            finish_reason=finish_reason,
+            usage=usage_payload,
+            response_id=response_id,
+            model=response_model or model,
+        ),
+        diagnostics,
+    )
+
+
+def _tool_calls_to_native(tool_calls: list[Any]) -> list[NativeLLMToolCall]:
+    native_calls: list[NativeLLMToolCall] = []
+    for index, call in enumerate(tool_calls, start=1):
+        function = getattr(call, "function", None)
+        raw_arguments = str(getattr(function, "arguments", "") or "")
+        native_calls.append(
+            NativeLLMToolCall(
+                id=str(getattr(call, "id", "") or f"call_{index}"),
+                name=str(getattr(function, "name", "") or ""),
+                arguments=_parse_tool_arguments(raw_arguments),
+                raw_arguments=raw_arguments,
+            )
+        )
+    return native_calls
+
+
+def _tool_call_buffers_to_native(buffers: dict[int, dict[str, str]]) -> list[NativeLLMToolCall]:
+    tool_calls: list[NativeLLMToolCall] = []
+    for index in sorted(buffers):
+        item = dict(buffers.get(index) or {})
+        raw_arguments = str(item.get("arguments", "") or "")
+        tool_calls.append(
+            NativeLLMToolCall(
+                id=str(item.get("id", "") or f"call_{index + 1}"),
+                name=str(item.get("name", "") or ""),
+                arguments=_parse_tool_arguments(raw_arguments),
+                raw_arguments=raw_arguments,
+            )
+        )
+    return tool_calls
+
+
+def _merge_tool_call_delta(buffers: dict[int, dict[str, str]], call_delta: Any) -> None:
+    try:
+        index = int(getattr(call_delta, "index", len(buffers)) or 0)
+    except Exception:
+        index = len(buffers)
+    item = buffers.setdefault(index, {"id": "", "name": "", "arguments": ""})
+
+    call_id = str(getattr(call_delta, "id", "") or "")
+    if call_id:
+        item["id"] = call_id
+
+    function = getattr(call_delta, "function", None)
+    name_piece = str(getattr(function, "name", "") or "")
+    if name_piece:
+        item["name"] = _merge_stream_piece(item["name"], name_piece)
+
+    arguments_piece = str(getattr(function, "arguments", "") or "")
+    if arguments_piece:
+        item["arguments"] = f"{item['arguments']}{arguments_piece}"
+
+
+def _native_response_to_ai_message(
+    ai_message_cls: Any,
+    response: NativeLLMResponse,
+    *,
+    stream_diagnostics: dict[str, Any] | None = None,
+) -> Any:
     tool_calls = [
         {
             "name": call.name,
@@ -234,22 +442,58 @@ def _native_response_to_ai_message(ai_message_cls: Any, response: NativeLLMRespo
         usage_metadata=dict(response.usage),
         response_metadata={
             "token_usage": dict(response.usage),
-            "provider": "openai_native",
+            "provider": _PROVIDER,
             "response_id": response.response_id,
             "model": response.model,
             "finish_reason": response.finish_reason,
-            "stream_diagnostics": {
-                "provider": "openai_native",
-                "event_count": 1,
-                "text_delta_count": 0,
-                "text_chars": 0,
-                "first_event_at": 0.0,
-                "first_text_delta_at": 0.0,
-                "last_text_delta_at": 0.0,
-                "completed_at": 0.0,
-            },
+            "stream_diagnostics": dict(stream_diagnostics or _new_stream_diagnostics()),
         },
     )
+
+
+def _new_stream_diagnostics() -> dict[str, Any]:
+    return {
+        "provider": _PROVIDER,
+        "event_count": 0,
+        "text_delta_count": 0,
+        "text_chars": 0,
+        "first_event_at": 0.0,
+        "first_text_delta_at": 0.0,
+        "last_text_delta_at": 0.0,
+        "completed_at": 0.0,
+    }
+
+
+def _usage_to_payload(usage: Any) -> dict[str, int]:
+    payload = {
+        "input_tokens": int(getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)) or 0),
+        "output_tokens": int(getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+    }
+    if payload["total_tokens"] <= 0:
+        payload["total_tokens"] = payload["input_tokens"] + payload["output_tokens"]
+    return payload
+
+
+def _merge_usage_payload(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+    if not any(int(right.get(key, 0) or 0) for key in ("input_tokens", "output_tokens", "total_tokens")):
+        return dict(left)
+    merged = {
+        "input_tokens": int(right.get("input_tokens", 0) or 0),
+        "output_tokens": int(right.get("output_tokens", 0) or 0),
+        "total_tokens": int(right.get("total_tokens", 0) or 0),
+    }
+    if merged["total_tokens"] <= 0:
+        merged["total_tokens"] = merged["input_tokens"] + merged["output_tokens"]
+    return merged
+
+
+def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_arguments) if str(raw_arguments or "").strip() else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _message_content_to_text(content: Any) -> str:
@@ -258,11 +502,92 @@ def _message_content_to_text(content: Any) -> str:
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
-            text_value = getattr(item, "text", None)
+            text_value = _content_part_to_text(item)
             if text_value:
-                parts.append(str(text_value))
-        return "\n".join(parts).strip()
+                parts.append(text_value)
+        return "".join(parts)
+    if isinstance(content, dict):
+        return _content_part_to_text(content)
     return str(content or "").strip()
+
+
+def _content_part_to_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        text_value = item.get("text")
+        if text_value is not None:
+            return str(text_value)
+        inner = item.get("content")
+        if isinstance(inner, str):
+            return inner
+        return ""
+    text_value = getattr(item, "text", None)
+    if text_value is not None:
+        return str(text_value)
+    inner = getattr(item, "content", None)
+    if isinstance(inner, str):
+        return inner
+    return ""
+
+
+def _merge_stream_piece(existing: str, piece: str) -> str:
+    if not piece:
+        return str(existing or "")
+    if not existing:
+        return piece
+    if existing == piece or existing.endswith(piece):
+        return existing
+    if piece.startswith(existing) or existing in piece:
+        return piece
+    max_overlap = min(len(existing), len(piece))
+    for overlap in range(max_overlap, 0, -1):
+        if existing.endswith(piece[:overlap]):
+            return f"{existing}{piece[overlap:]}"
+    return f"{existing}{piece}"
+
+
+def _looks_like_stream_usage_error(exc: Exception) -> bool:
+    text = _safe_error_text(exc).lower()
+    return "stream_options" in text or ("include_usage" in text and "stream" in text)
+
+
+def _looks_like_streaming_unsupported(exc: Exception) -> bool:
+    text = _safe_error_text(exc).lower()
+    if "stream" not in text:
+        return False
+    unsupported_hints = (
+        "unsupported",
+        "not supported",
+        "does not support",
+        "invalid parameter",
+        "unknown parameter",
+        "unrecognized request argument",
+        "extra inputs are not permitted",
+        "extra fields not permitted",
+    )
+    return any(hint in text for hint in unsupported_hints)
+
+
+def _raise_openai_error(exc: Exception, *, model: str, event_cb: Any | None = None) -> Any:
+    if isinstance(exc, AuthenticationError):
+        error_text = f"OpenAI authentication failed: {_safe_error_text(exc)}"
+    elif isinstance(exc, RateLimitError):
+        error_text = f"OpenAI rate limit exceeded: {_safe_error_text(exc)}"
+    elif isinstance(exc, APITimeoutError):
+        error_text = f"OpenAI request timed out: {_safe_error_text(exc)}"
+    elif isinstance(exc, APIConnectionError):
+        error_text = f"OpenAI connection failed: {_safe_error_text(exc)}"
+    elif isinstance(exc, BadRequestError):
+        error_text = f"OpenAI bad request: {_safe_error_text(exc)}"
+    elif isinstance(exc, APIError):
+        error_text = f"OpenAI request failed: {_safe_error_text(exc)}"
+    elif isinstance(exc, RuntimeError):
+        error_text = str(exc)
+    else:
+        error_text = f"OpenAI request failed: {_safe_error_text(exc)}"
+    _emit_failure_event(event_cb, model, error_text)
+    raise RuntimeError(error_text) from exc
 
 
 def _emit_failure_event(event_cb: Any | None, model: str, error_text: str) -> None:
@@ -273,7 +598,7 @@ def _emit_failure_event(event_cb: Any | None, model: str, error_text: str) -> No
             "type": "response.failed",
             "timestamp": time.time(),
             "model": model,
-            "provider": "openai_native",
+            "provider": _PROVIDER,
             "error": error_text,
         }
     )
