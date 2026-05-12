@@ -17,6 +17,7 @@ from app.model_runtime_diagnostics import (
     build_assistant_response_summary_from_message,
     build_model_runtime_analysis,
     build_request_summary,
+    should_expose_tools,
 )
 from app.models import (
     ChatSettings,
@@ -31,6 +32,7 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
+from app.tool_call_normalizer import canonicalize_tool_call
 from app.tool_trace_summary import (
     build_tool_argument_audit,
     normalize_tool_arguments,
@@ -1532,6 +1534,7 @@ class VintageProgrammerRuntime:
         result: dict[str, Any],
         locale: str,
         raw_tool_call: dict[str, Any] | None = None,
+        canonical_tool_call: dict[str, Any] | None = None,
         guard_result: dict[str, Any] | None = None,
         raw_arguments: Any = None,
     ) -> ToolEvent:
@@ -1561,6 +1564,7 @@ class VintageProgrammerRuntime:
             name=name or "(unknown)",
             input=arguments,
             raw_tool_call=safe_preview(raw_call_payload, limit=4000) if raw_call_payload else {},
+            canonical_tool_call=safe_preview(canonical_tool_call, limit=4000) if canonical_tool_call else {},
             raw_arguments=safe_preview(raw_argument_payload, limit=4000),
             normalized_arguments=safe_preview(arguments, limit=4000) if isinstance(arguments, dict) else {},
             guard_result=dict(guard_result or {}),
@@ -1599,6 +1603,7 @@ class VintageProgrammerRuntime:
         name: str,
         arguments: dict[str, Any],
         raw_tool_call: dict[str, Any] | None,
+        canonical_tool_call: dict[str, Any] | None,
         guard_result: dict[str, Any] | None,
         raw_arguments: Any = None,
         run_id: str,
@@ -1629,6 +1634,7 @@ class VintageProgrammerRuntime:
             payload={
                 "tool_name": name,
                 "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
+                "canonical_tool_call": safe_preview(canonical_tool_call, limit=4000) if canonical_tool_call else {},
                 "normalized_arguments": safe_preview(arguments, limit=4000),
                 "guard_result": dict(guard_result or {}),
                 **tool_audit,
@@ -1647,6 +1653,7 @@ class VintageProgrammerRuntime:
             result=result,
             locale=locale,
             raw_tool_call=raw_tool_call,
+            canonical_tool_call=canonical_tool_call,
             guard_result=guard_result,
             raw_arguments=raw_arguments,
         )
@@ -1664,6 +1671,7 @@ class VintageProgrammerRuntime:
             payload={
                 "tool_name": name,
                 "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
+                "canonical_tool_call": safe_preview(canonical_tool_call, limit=4000) if canonical_tool_call else {},
                 "normalized_arguments": safe_preview(arguments, limit=4000),
                 "guard_result": dict(guard_result or {}),
                 **tool_audit,
@@ -2029,6 +2037,9 @@ class VintageProgrammerRuntime:
         next_action_hint = str(task_checkpoint.get("next_action") or "").strip()
         revision_requested = self._looks_like_revision_request(prompt_message, route_state=route)
         japanese_review = self._looks_like_japanese_review_request(prompt_message, route_state=route)
+        explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
+        workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
+        network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
         if current_turn_followup_type == "subject_request":
             task_type = "followup_transform"
         elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
@@ -2051,16 +2062,28 @@ class VintageProgrammerRuntime:
             primary_intent = "understanding"
         else:
             primary_intent = "standard"
-        output_mode = "revision_with_change_summary" if revision_requested else "direct_answer"
-        summary_reason = (
-            translate(locale, "runtime.activity.summary.japanese_cleanup_requested")
-            if japanese_review
-            else (
-                translate(locale, "runtime.activity.summary.rewrite_requested")
-                if revision_requested
+        if revision_requested:
+            output_mode = "revision_with_change_summary"
+            summary_reason = translate(locale, "runtime.activity.summary.rewrite_requested")
+        elif workspace_action_requested or explicit_tool_request:
+            output_mode = "tool_assisted_answer"
+            summary_reason = {
+                "zh-CN": "需要读取工作区文件。",
+                "ja-JP": "ワークスペースの確認が必要です。",
+            }.get(locale, "Need workspace inspection before answering.")
+        elif network_requested:
+            output_mode = "tool_assisted_answer"
+            summary_reason = {
+                "zh-CN": "需要查询外部信息。",
+                "ja-JP": "外部情報の確認が必要です。",
+            }.get(locale, "Need external information before answering.")
+        else:
+            output_mode = "direct_answer"
+            summary_reason = (
+                translate(locale, "runtime.activity.summary.japanese_cleanup_requested")
+                if japanese_review
                 else translate(locale, "runtime.activity.summary.direct_answer_path")
             )
-        )
         return {
             "task_type": task_type,
             "route_task_type": route_task_type or "",
@@ -2160,27 +2183,44 @@ class VintageProgrammerRuntime:
         previous = dict(previous_proposal or {})
         has_tool_calls = bool(tool_calls)
         needs_tools = bool(has_tool_calls or expects_tools)
-        response_mode = str(previous.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
+        explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
+        workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
+        network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
+        if needs_tools and (workspace_action_requested or explicit_tool_request or network_requested):
+            response_mode = "tool_assisted_answer"
+        else:
+            response_mode = str(previous.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
         hinted_goal = str(runtime_hint.get("current_goal_hint") or "").strip()
         current_goal = hinted_goal or str(previous.get("current_goal") or "").strip() or safe_preview(prompt_message, limit=280) or (
             "Gather the required tool evidence before answering." if needs_tools else "Answer the user directly."
         )
-        summary = str(previous.get("summary") or runtime_hint.get("summary_reason") or "").strip() or (
-            "Use the next observed tool result to continue." if needs_tools else "Answer directly from the provided context."
-        )
-        next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or (
-            "Use the returned tool result to revise the next proposal."
-            if needs_tools
-            else "Prepare the user-facing answer directly."
-        )
+        if needs_tools and (workspace_action_requested or explicit_tool_request):
+            summary = str(previous.get("summary") or "").strip() or "需要读取工作区文件。"
+            next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or "Call read_file for the requested path."
+            user_stage = str(previous.get("user_stage") or "").strip() or "Use tool to inspect requested workspace file"
+        elif needs_tools and network_requested:
+            summary = str(previous.get("summary") or "").strip() or "需要查询外部信息。"
+            next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or "Call a network tool for the requested information."
+            user_stage = str(previous.get("user_stage") or "").strip() or "Use tool to inspect requested external information"
+        else:
+            summary = str(previous.get("summary") or runtime_hint.get("summary_reason") or "").strip() or (
+                "Use the next observed tool result to continue." if needs_tools else "Answer directly from the provided context."
+            )
+            next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or (
+                "Use the returned tool result to revise the next proposal."
+                if needs_tools
+                else "Prepare the user-facing answer directly."
+            )
+            user_stage = str(previous.get("user_stage") or "").strip() or (
+                "Direct answer generation" if not needs_tools else "Gather evidence for the current step"
+            )
         return HighLevelProposal(
             intent=str(previous.get("intent") or runtime_hint.get("primary_intent") or "standard"),
             task_type=str(previous.get("task_type") or runtime_hint.get("task_type") or "standard"),
             current_goal=current_goal,
             expects_tools=needs_tools,
             response_mode=response_mode,
-            user_stage=str(previous.get("user_stage") or "").strip()
-            or ("Direct answer generation" if not needs_tools else "Gather evidence for the current step"),
+            user_stage=user_stage,
             summary=summary,
             next_step_hint=next_step_hint,
             change_summary_requested=bool(previous.get("change_summary_requested"))
@@ -2281,20 +2321,18 @@ class VintageProgrammerRuntime:
         for call in tool_calls[:8]:
             if not isinstance(call, dict):
                 continue
-            raw_name = str(call.get("name") or "").strip()
-            name = self._normalize_tool_name(raw_name)
-            raw_arguments = call.get("raw_args")
-            if raw_arguments is None:
-                raw_arguments = call.get("args")
-            arguments = call.get("args") if isinstance(call.get("args"), dict) else {}
-            if not arguments and isinstance(raw_arguments, dict):
-                arguments = dict(raw_arguments)
+            canonical = canonicalize_tool_call(call)
+            raw_name = str(canonical.raw_name or canonical.name or "").strip()
+            name = self._normalize_tool_name(str(canonical.name or raw_name).strip())
             normalized_call = {
-                "id": str(call.get("id") or ""),
+                "id": str(canonical.id or ""),
                 "name": name,
                 "raw_name": raw_name,
-                "args": dict(arguments),
-                "raw_args": raw_arguments,
+                "args": dict(canonical.args),
+                "raw_args": canonical.raw_args,
+                "arguments_parse_status": canonical.arguments_parse_status,
+                "normalization_notes": list(canonical.normalization_notes),
+                "error": canonical.error,
             }
             if name:
                 normalized_tool_names.append(name)
@@ -2367,20 +2405,24 @@ class VintageProgrammerRuntime:
         attachments: list[dict[str, Any]],
         locale: str,
     ) -> ToolGuardResult:
-        raw_tool_name = str(call.get("raw_name") or call.get("name") or "").strip()
-        tool_name = self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
-        raw_arguments = call.get("raw_args")
-        if raw_arguments is None:
-            raw_arguments = call.get("args")
+        canonical = canonicalize_tool_call(call)
+        raw_tool_name = str(canonical.raw_name or canonical.name or "").strip()
+        tool_name = self._normalize_tool_name(str(canonical.name or raw_tool_name).strip())
+        raw_arguments_preview = canonical.raw_args if str(canonical.raw_args or "").strip() else canonical.args
+        canonical_payload = canonical.as_payload()
         checks = {
-            "json": "passed" if isinstance(raw_arguments, dict) else "failed",
+            "json": "passed" if canonical.arguments_parse_status in {"valid_object", "empty_object", "missing"} else "failed",
             "tool_exists": "pending",
             "schema": "pending",
             "policy": "pending",
             "permission": "pending",
         }
-        if not isinstance(raw_arguments, dict):
-            invalid_args_message = translate(locale, "runtime.tool.guard.arguments_not_object")
+        if canonical.arguments_parse_status in {"invalid_json", "not_object"}:
+            invalid_args_message = (
+                f"tool arguments JSON parse failed: {canonical.error}"
+                if canonical.arguments_parse_status == "invalid_json"
+                else (canonical.error or translate(locale, "runtime.tool.guard.arguments_not_object"))
+            )
             checks.update(
                 {
                     "tool_exists": "skipped",
@@ -2391,10 +2433,11 @@ class VintageProgrammerRuntime:
             )
             return ToolGuardResult(
                 status="rejected",
-                call_id=str(call.get("id") or ""),
+                call_id=str(canonical.id or ""),
                 raw_tool_name=raw_tool_name,
                 tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                canonical_tool_call=canonical_payload,
+                raw_arguments=safe_preview(raw_arguments_preview, limit=4000),
                 normalized_arguments={},
                 normalization_notes=[],
                 checks=checks,
@@ -2403,6 +2446,7 @@ class VintageProgrammerRuntime:
                     "checked": False,
                     "summary": invalid_args_message,
                     "errors": [invalid_args_message],
+                    "arguments_parse_status": canonical.arguments_parse_status,
                 },
                 reason=invalid_args_message,
             )
@@ -2414,10 +2458,11 @@ class VintageProgrammerRuntime:
             allowed_preview = ", ".join(runnable_tools[:8])
             return ToolGuardResult(
                 status="rejected",
-                call_id=str(call.get("id") or ""),
+                call_id=str(canonical.id or ""),
                 raw_tool_name=raw_tool_name,
                 tool_name=tool_name or raw_tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                canonical_tool_call=canonical_payload,
+                raw_arguments=safe_preview(raw_arguments_preview, limit=4000),
                 normalized_arguments={},
                 normalization_notes=[],
                 checks=checks,
@@ -2440,14 +2485,18 @@ class VintageProgrammerRuntime:
             )
 
         tool_schema = dict((self._tool_specs_by_name.get(tool_name) or {}).get("parameters") or {})
-        normalization = normalize_tool_arguments(tool_name, raw_arguments, tool_schema)
+        normalization = normalize_tool_arguments(tool_name, canonical.args, tool_schema)
         normalized_arguments = dict(normalization.get("arguments") or {})
         rewrite_arguments = self._rewrite_attachment_tool_arguments(
             name=tool_name,
             arguments=normalized_arguments,
             attachments=attachments,
         )
-        normalization_notes = [str(item) for item in list(normalization.get("notes") or []) if str(item or "")]
+        normalization_notes = [
+            str(item)
+            for item in list(normalization.get("notes") or [])
+            if str(item or "")
+        ]
         if rewrite_arguments != normalized_arguments:
             normalization_notes.append("attachment_ref_resolved")
         normalized_arguments = rewrite_arguments
@@ -2467,10 +2516,11 @@ class VintageProgrammerRuntime:
         if not tool_allowed:
             return ToolGuardResult(
                 status="rejected",
-                call_id=str(call.get("id") or ""),
+                call_id=str(canonical.id or ""),
                 raw_tool_name=raw_tool_name,
                 tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                canonical_tool_call=canonical_payload,
+                raw_arguments=safe_preview(raw_arguments_preview, limit=4000),
                 normalized_arguments=normalized_arguments,
                 normalization_notes=normalization_notes,
                 checks=checks,
@@ -2485,10 +2535,11 @@ class VintageProgrammerRuntime:
         if schema_status not in {"valid", "missing"}:
             return ToolGuardResult(
                 status="rejected",
-                call_id=str(call.get("id") or ""),
+                call_id=str(canonical.id or ""),
                 raw_tool_name=raw_tool_name,
                 tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
+                canonical_tool_call=canonical_payload,
+                raw_arguments=safe_preview(raw_arguments_preview, limit=4000),
                 normalized_arguments=normalized_arguments,
                 normalization_notes=normalization_notes,
                 checks=checks,
@@ -2503,10 +2554,11 @@ class VintageProgrammerRuntime:
             reason = translate(locale, "runtime.activity.guard.accepted", tool=tool_name or "tool")
         return ToolGuardResult(
             status=guard_status,
-            call_id=str(call.get("id") or ""),
+            call_id=str(canonical.id or ""),
             raw_tool_name=raw_tool_name,
             tool_name=tool_name,
-            raw_arguments=safe_preview(raw_arguments, limit=4000),
+            canonical_tool_call=canonical_payload,
+            raw_arguments=safe_preview(raw_arguments_preview, limit=4000),
             normalized_arguments=normalized_arguments,
             normalization_notes=normalization_notes,
             checks=checks,
@@ -3576,6 +3628,16 @@ class VintageProgrammerRuntime:
             name="image_read",
             arguments=arguments,
             raw_tool_call={"id": "auto_image_read_rescue", "name": "image_read", "arguments": safe_preview(arguments, limit=4000)},
+            canonical_tool_call={
+                "id": "auto_image_read_rescue",
+                "name": "image_read",
+                "raw_name": "image_read",
+                "args": dict(arguments),
+                "raw_args": json.dumps(arguments, ensure_ascii=False),
+                "arguments_parse_status": "valid_object",
+                "normalization_notes": ["args_dict_preserved"],
+                "error": "",
+            },
             guard_result={
                 "status": "accepted",
                 "tool_name": "image_read",
@@ -3840,6 +3902,7 @@ class VintageProgrammerRuntime:
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
             if isinstance(item, dict)
         ]
+        attachment_requires_tooling = bool(attachment_requires_tools or attachment_evidence_pack)
         explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
         network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
         workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
@@ -3853,12 +3916,6 @@ class VintageProgrammerRuntime:
             config=self._config,
             context=context_payload,
             requires_tools_hint=requires_tools_hint,
-        )
-        expects_tools = (
-            collaboration_mode in {"default", "execute"}
-            and bool(runnable_tools)
-            and not inline_document
-            and (explicit_tool_request or attachment_requires_tools or bool(attachment_evidence_pack))
         )
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
@@ -3881,6 +3938,15 @@ class VintageProgrammerRuntime:
             route_state=route_state_input,
             locale=locale,
             current_turn=current_turn_context,
+        )
+        expects_tools, _ = should_expose_tools(
+            tools_available=bool(collaboration_mode in {"default", "execute"} and runnable_tools and not inline_document),
+            runtime_output_mode=str(runtime_hint.get("output_mode") or "direct_answer"),
+            explicit_tool_request=explicit_tool_request,
+            attachment_requires_tooling=attachment_requires_tooling,
+            workspace_action_requested=workspace_action_requested,
+            network_requested=network_requested,
+            proposal_expects_tools=False,
         )
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
@@ -4051,6 +4117,21 @@ class VintageProgrammerRuntime:
             },
         )
 
+        def decide_tool_exposure(
+            *,
+            proposal_expects_tools: bool,
+            output_mode: str | None = None,
+        ) -> tuple[bool, str]:
+            return should_expose_tools(
+                tools_available=bool(collaboration_mode in {"default", "execute"} and runnable_tools and not inline_document),
+                runtime_output_mode=str(output_mode or runtime_hint.get("output_mode") or "direct_answer"),
+                explicit_tool_request=explicit_tool_request,
+                attachment_requires_tooling=attachment_requires_tooling,
+                workspace_action_requested=workspace_action_requested,
+                network_requested=network_requested,
+                proposal_expects_tools=bool(proposal_expects_tools),
+            )
+
         def build_request_summary_hint(
             *,
             model_name: str,
@@ -4090,17 +4171,9 @@ class VintageProgrammerRuntime:
             actual_tools_exposed = request_summary.get("tools_exposed")
             exposed_tool_count = int(request_summary.get("tool_count_exposed") or 0)
             exposed_tool_names = runnable_tools[:exposed_tool_count] if bool(actual_tools_exposed) else []
-            tools_should_be_exposed = bool(
-                runtime_contract.tools_available
-                and (
-                    explicit_tool_request
-                    or attachment_requires_tools
-                    or bool(attachment_evidence_pack)
-                    or workspace_action_requested
-                    or network_requested
-                    or str(runtime_hint.get("output_mode") or "") not in {"", "direct_answer"}
-                    or str(high_level_proposal.get("response_mode") or "") not in {"", "direct_answer"}
-                )
+            tools_should_be_exposed, _ = decide_tool_exposure(
+                proposal_expects_tools=bool(high_level_proposal.get("expects_tools")),
+                output_mode=str(high_level_proposal.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer"),
             )
             return build_model_runtime_analysis(
                 request_summary=request_summary,
@@ -4109,7 +4182,7 @@ class VintageProgrammerRuntime:
                 proposal_diagnostics=proposal_diagnostics,
                 runtime_contract=runtime_contract,
                 explicit_tool_request=explicit_tool_request,
-                attachment_requires_tooling=bool(attachment_requires_tools or attachment_evidence_pack),
+                attachment_requires_tooling=attachment_requires_tooling,
                 workspace_action_requested=workspace_action_requested,
                 network_requested=network_requested,
                 tools_should_be_exposed=tools_should_be_exposed,
@@ -4225,11 +4298,15 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
             phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+            initial_tools_exposed, _ = decide_tool_exposure(
+                proposal_expects_tools=False,
+                output_mode=str(runtime_hint.get("output_mode") or "direct_answer"),
+            )
             initial_request_summary = build_request_summary_hint(
                 model_name=requested_model,
                 request_messages=list(messages),
-                tools_exposed=bool(runnable_tools),
-                tool_count_exposed=len(runnable_tools),
+                tools_exposed=initial_tools_exposed,
+                tool_count_exposed=len(runnable_tools) if initial_tools_exposed else 0,
                 streaming=True,
             )
             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
@@ -4237,8 +4314,8 @@ class VintageProgrammerRuntime:
                 messages=messages,
                 model=requested_model,
                 max_output_tokens=int(settings.max_output_tokens),
-                enable_tools=bool(runnable_tools),
-                tool_names=runnable_tools if runnable_tools else None,
+                enable_tools=initial_tools_exposed,
+                tool_names=runnable_tools if initial_tools_exposed else None,
                 event_cb=self._make_model_stream_observer(
                     progress_cb=progress_cb,
                     run_id=run_id,
@@ -4632,18 +4709,24 @@ class VintageProgrammerRuntime:
                         notes.append("turn_budget_emergency_tool_calls_exceeded")
                         stop_after_tools = True
                         break
-                    raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
-                    raw_arguments = call.get("raw_args")
-                    if raw_arguments is None:
-                        raw_arguments = call.get("args")
-                    preview_name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
-                    preview_args = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+                    canonical_call = canonicalize_tool_call(call)
+                    raw_name = str(canonical_call.raw_name or canonical_call.name or "").strip()
+                    preview_name = self._normalize_tool_name(str(canonical_call.name or raw_name).strip())
+                    preview_args = dict(canonical_call.args)
                     preview_schema = dict((self._tool_specs_by_name.get(preview_name) or {}).get("parameters") or {})
                     tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema, locale=locale)
+                    raw_argument_payload = (
+                        dict(canonical_call.args)
+                        if canonical_call.arguments_parse_status in {"valid_object", "empty_object", "missing"}
+                        else (canonical_call.raw_args or preview_args)
+                    )
                     raw_tool_call_payload = {
-                        "id": str(call.get("id") or ""),
-                        "name": raw_name or str(call.get("name") or ""),
-                        "arguments": safe_preview(raw_arguments, limit=4000),
+                        "id": str(canonical_call.id or ""),
+                        "name": raw_name or str(canonical_call.name or ""),
+                        "arguments": safe_preview(
+                            canonical_call.raw_args if str(canonical_call.raw_args or "").strip() else canonical_call.args,
+                            limit=4000,
+                        ),
                     }
                     self._emit_trace(
                         progress_cb,
@@ -4658,7 +4741,9 @@ class VintageProgrammerRuntime:
                         payload={
                             "tool_name": preview_name or raw_name,
                             "raw_tool_call": raw_tool_call_payload,
+                            "canonical_tool_call": canonical_call.as_payload(),
                             **tool_audit,
+                            "raw_arguments": safe_preview(raw_argument_payload, limit=4000),
                         },
                         trace_events=trace_events,
                     )
@@ -4685,6 +4770,8 @@ class VintageProgrammerRuntime:
                         payload={
                             "tool_name": name or raw_name,
                             "raw_tool_call": raw_tool_call_payload,
+                            "canonical_tool_call": dict(guard_payload.get("canonical_tool_call") or canonical_call.as_payload()),
+                            "raw_arguments": safe_preview(raw_argument_payload, limit=4000),
                             "guard_result": guard_payload,
                             "normalized_arguments": safe_preview(arguments, limit=4000),
                         },
@@ -4702,6 +4789,8 @@ class VintageProgrammerRuntime:
                             "runtime_guess": dict(runtime_hint),
                             "guard_result": guard_payload,
                             "raw_tool_call": raw_tool_call_payload,
+                            "canonical_tool_call": dict(guard_payload.get("canonical_tool_call") or canonical_call.as_payload()),
+                            "raw_arguments": safe_preview(raw_argument_payload, limit=4000),
                             "normalized_arguments": safe_preview(arguments, limit=4000),
                             **turn_activity_context,
                         },
@@ -4712,8 +4801,9 @@ class VintageProgrammerRuntime:
                             name=name,
                             arguments=arguments,
                             raw_tool_call=raw_tool_call_payload,
+                            canonical_tool_call=dict(guard_payload.get("canonical_tool_call") or canonical_call.as_payload()),
                             guard_result=guard_payload,
-                            raw_arguments=raw_arguments,
+                            raw_arguments=raw_argument_payload,
                             run_id=run_id,
                             locale=locale,
                             progress_cb=progress_cb,
@@ -4743,8 +4833,9 @@ class VintageProgrammerRuntime:
                             result=result,
                             locale=locale,
                             raw_tool_call=raw_tool_call_payload,
+                            canonical_tool_call=dict(guard_payload.get("canonical_tool_call") or canonical_call.as_payload()),
                             guard_result=guard_payload,
-                            raw_arguments=raw_arguments,
+                            raw_arguments=raw_argument_payload,
                         )
                         tool_events.append(event)
                         self._emit_trace(
@@ -4757,9 +4848,11 @@ class VintageProgrammerRuntime:
                             payload={
                                 "tool_name": name or raw_name,
                                 "raw_tool_call": raw_tool_call_payload,
+                                "canonical_tool_call": dict(guard_payload.get("canonical_tool_call") or canonical_call.as_payload()),
                                 "guard_result": guard_payload,
                                 "normalized_arguments": safe_preview(arguments, limit=4000),
                                 **tool_audit,
+                                "raw_arguments": safe_preview(raw_argument_payload, limit=4000),
                                 "result_preview": safe_preview(result),
                             },
                             trace_events=trace_events,
@@ -5139,11 +5232,15 @@ class VintageProgrammerRuntime:
                     trace_events=trace_events,
                 )
                 phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+                followup_tools_exposed, _ = decide_tool_exposure(
+                    proposal_expects_tools=bool(high_level_proposal.get("expects_tools")),
+                    output_mode=str(high_level_proposal.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer"),
+                )
                 followup_request_summary = build_request_summary_hint(
                     model_name=effective_model or requested_model,
                     request_messages=list(messages),
-                    tools_exposed=bool(runnable_tools),
-                    tool_count_exposed=len(runnable_tools),
+                    tools_exposed=followup_tools_exposed,
+                    tool_count_exposed=len(runnable_tools) if followup_tools_exposed else 0,
                     streaming=True,
                 )
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
@@ -5152,8 +5249,8 @@ class VintageProgrammerRuntime:
                     messages=messages,
                     model=effective_model,
                     max_output_tokens=int(settings.max_output_tokens),
-                    enable_tools=True,
-                    tool_names=runnable_tools,
+                    enable_tools=followup_tools_exposed,
+                    tool_names=runnable_tools if followup_tools_exposed else None,
                     event_cb=self._make_model_stream_observer(
                         progress_cb=progress_cb,
                         run_id=run_id,

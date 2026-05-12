@@ -33,6 +33,7 @@ class ToolEvent(BaseModel):
     name: str
     input: dict | None = None
     raw_tool_call: dict[str, Any] = Field(default_factory=dict)
+    canonical_tool_call: dict[str, Any] = Field(default_factory=dict)
     raw_arguments: Any = None
     normalized_arguments: dict[str, Any] = Field(default_factory=dict)
     guard_result: dict[str, Any] = Field(default_factory=dict)
@@ -72,6 +73,7 @@ class ToolGuardResult(BaseModel):
     call_id: str = ""
     raw_tool_name: str = ""
     tool_name: str = ""
+    canonical_tool_call: dict[str, Any] = Field(default_factory=dict)
     raw_arguments: Any = None
     normalized_arguments: dict[str, Any] = Field(default_factory=dict)
     normalization_notes: list[str] = Field(default_factory=list)
