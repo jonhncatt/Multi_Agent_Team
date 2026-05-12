@@ -13,6 +13,11 @@ import uuid
 from app.config import AppConfig
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
+from app.model_runtime_diagnostics import (
+    build_assistant_response_summary_from_message,
+    build_model_runtime_analysis,
+    build_request_summary,
+)
 from app.models import (
     ChatSettings,
     ExecutionTraceEntry,
@@ -964,7 +969,7 @@ class VintageProgrammerRuntime:
                 "runtime_contract.selected": "Full Auto runtime 已启用",
                 "runtime_contract.detail": "工具策略：需要时使用",
                 "llm.started": "模型开始分析",
-                "llm.finished": "模型分析完成",
+                "llm.finished": "请求分析完成",
                 "tool.call_detected": "检测到工具调用：{tool}",
                 "tool.guard": "工具检查：{tool}",
                 "tool.started": "调用工具：{tool}",
@@ -991,7 +996,7 @@ class VintageProgrammerRuntime:
                 "runtime_contract.selected": "Full Auto runtime を有効化",
                 "runtime_contract.detail": "ツール方針：必要なときのみ使用",
                 "llm.started": "モデルが解析を開始",
-                "llm.finished": "モデル解析が完了",
+                "llm.finished": "リクエスト分析完了",
                 "tool.call_detected": "ツール呼び出しを検出: {tool}",
                 "tool.guard": "ツール検査: {tool}",
                 "tool.started": "ツール呼び出し: {tool}",
@@ -1018,7 +1023,7 @@ class VintageProgrammerRuntime:
                 "runtime_contract.selected": "Full Auto runtime enabled",
                 "runtime_contract.detail": "Tool policy: use when needed",
                 "llm.started": "Model analysis started",
-                "llm.finished": "Model analysis finished",
+                "llm.finished": "Request analysis completed",
                 "tool.call_detected": "Tool call detected: {tool}",
                 "tool.guard": "Tool guard: {tool}",
                 "tool.started": "Calling tool: {tool}",
@@ -2100,6 +2105,7 @@ class VintageProgrammerRuntime:
             )
         proposal_text = raw[open_idx + len(_MODEL_PROPOSAL_OPEN_TAG) : close_idx].strip()
         cleaned_text = f"{raw[:open_idx]}{raw[close_idx + len(_MODEL_PROPOSAL_CLOSE_TAG):]}".strip()
+        proposal_preview = safe_preview(proposal_text, limit=1000)
         try:
             payload = json.loads(proposal_text) if proposal_text else {}
         except Exception as exc:
@@ -2112,6 +2118,8 @@ class VintageProgrammerRuntime:
                     "checked": False,
                     "summary": message,
                     "errors": [message],
+                    "raw_proposal_chars": len(proposal_text),
+                    "raw_proposal_preview": proposal_preview,
                 },
             )
         if not isinstance(payload, dict):
@@ -2123,6 +2131,8 @@ class VintageProgrammerRuntime:
                     "checked": False,
                     "summary": "proposal block must decode to a JSON object",
                     "errors": ["proposal block must decode to a JSON object"],
+                    "raw_proposal_chars": len(proposal_text),
+                    "raw_proposal_preview": proposal_preview,
                 },
             )
         return (
@@ -2133,6 +2143,8 @@ class VintageProgrammerRuntime:
                 "checked": True,
                 "summary": "proposal block parsed",
                 "errors": [],
+                "raw_proposal_chars": len(proposal_text),
+                "raw_proposal_preview": proposal_preview,
             },
         )
 
@@ -3828,8 +3840,11 @@ class VintageProgrammerRuntime:
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
             if isinstance(item, dict)
         ]
+        explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
+        network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
+        workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
         requires_tools_hint = bool(
-            _looks_like_explicit_tool_request(prompt_message)
+            explicit_tool_request
             or attachment_requires_tools
             or bool(attachment_evidence_pack)
         )
@@ -3843,7 +3858,7 @@ class VintageProgrammerRuntime:
             collaboration_mode in {"default", "execute"}
             and bool(runnable_tools)
             and not inline_document
-            and (_looks_like_explicit_tool_request(prompt_message) or attachment_requires_tools or bool(attachment_evidence_pack))
+            and (explicit_tool_request or attachment_requires_tools or bool(attachment_evidence_pack))
         )
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
@@ -3938,6 +3953,7 @@ class VintageProgrammerRuntime:
         validated_next_step: dict[str, Any] = {}
         execution_trace: list[dict[str, Any]] = []
         proposal_diagnostics: dict[str, Any] = {}
+        model_runtime_analysis: dict[str, Any] = {}
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
@@ -4035,11 +4051,86 @@ class VintageProgrammerRuntime:
             },
         )
 
-        def refresh_model_step(ai_msg: Any, *, event_type: str = "activity.done") -> None:
+        def build_request_summary_hint(
+            *,
+            model_name: str,
+            request_messages: list[Any],
+            tools_exposed: bool,
+            tool_count_exposed: int,
+            streaming: bool,
+        ) -> dict[str, Any]:
+            return build_request_summary(
+                backend=self._config.llm_backend,
+                provider=self._config.llm_provider,
+                model=model_name,
+                streaming=streaming,
+                api_path="chat_completions" if self._config.llm_backend == "openai_native" else "langchain_chat_openai",
+                messages=request_messages,
+                max_output_tokens=int(settings.max_output_tokens),
+                temperature=self._config.openai_temperature,
+                tools_available_count=len(runnable_tools),
+                tools_exposed=tools_exposed,
+                tool_choice="auto" if tools_exposed else "none",
+                tool_count_exposed=tool_count_exposed,
+            )
+
+        def build_model_runtime_analysis_payload(
+            ai_msg: Any,
+            *,
+            request_summary_hint: dict[str, Any] | None,
+        ) -> dict[str, Any]:
+            response_metadata = dict(getattr(ai_msg, "response_metadata", None) or {})
+            request_summary = {
+                **dict(request_summary_hint or {}),
+                **dict(response_metadata.get("request_summary") or {}),
+            }
+            assistant_response_summary = dict(response_metadata.get("assistant_response_summary") or {})
+            if not assistant_response_summary:
+                assistant_response_summary = build_assistant_response_summary_from_message(ai_msg)
+            actual_tools_exposed = request_summary.get("tools_exposed")
+            exposed_tool_count = int(request_summary.get("tool_count_exposed") or 0)
+            exposed_tool_names = runnable_tools[:exposed_tool_count] if bool(actual_tools_exposed) else []
+            tools_should_be_exposed = bool(
+                runtime_contract.tools_available
+                and (
+                    explicit_tool_request
+                    or attachment_requires_tools
+                    or bool(attachment_evidence_pack)
+                    or workspace_action_requested
+                    or network_requested
+                    or str(runtime_hint.get("output_mode") or "") not in {"", "direct_answer"}
+                    or str(high_level_proposal.get("response_mode") or "") not in {"", "direct_answer"}
+                )
+            )
+            return build_model_runtime_analysis(
+                request_summary=request_summary,
+                runtime_guess=runtime_hint,
+                high_level_proposal=high_level_proposal,
+                proposal_diagnostics=proposal_diagnostics,
+                runtime_contract=runtime_contract,
+                explicit_tool_request=explicit_tool_request,
+                attachment_requires_tooling=bool(attachment_requires_tools or attachment_evidence_pack),
+                workspace_action_requested=workspace_action_requested,
+                network_requested=network_requested,
+                tools_should_be_exposed=tools_should_be_exposed,
+                actual_tools_exposed=bool(actual_tools_exposed) if actual_tools_exposed is not None else None,
+                tool_choice=str(request_summary.get("tool_choice") or ""),
+                exposed_tool_names=exposed_tool_names,
+                assistant_message=ai_msg,
+                assistant_response_summary=assistant_response_summary,
+            )
+
+        def refresh_model_step(
+            ai_msg: Any,
+            *,
+            event_type: str = "activity.done",
+            request_summary_hint: dict[str, Any] | None = None,
+        ) -> None:
             nonlocal current_step_index
             nonlocal high_level_proposal
             nonlocal validated_next_step
             nonlocal proposal_diagnostics
+            nonlocal model_runtime_analysis
             nonlocal turn_activity_context
             nonlocal current_goal
             nonlocal current_task_focus
@@ -4075,6 +4166,10 @@ class VintageProgrammerRuntime:
                 notes.append("model_turn_proposal_stripped_from_answer_text")
             if str(((proposal_diagnostics.get("schema_validation") or {}).get("status")) or "") not in {"", "valid"}:
                 notes.append("high_level_proposal_schema_adjusted")
+            model_runtime_analysis = build_model_runtime_analysis_payload(
+                ai_msg,
+                request_summary_hint=request_summary_hint,
+            )
             emit_runtime_activity(
                 event_type,
                 "high_level_proposal",
@@ -4085,6 +4180,7 @@ class VintageProgrammerRuntime:
                     "runtime_hint": dict(runtime_hint),
                     "runtime_guess": dict(runtime_hint),
                     "proposal_diagnostics": dict(proposal_diagnostics),
+                    "model_runtime_analysis": dict(model_runtime_analysis),
                     "revision_index": int(current_step_index),
                 },
             )
@@ -4099,6 +4195,7 @@ class VintageProgrammerRuntime:
                     "runtime_hint": dict(runtime_hint),
                     "runtime_guess": dict(runtime_hint),
                     "proposal_diagnostics": dict(proposal_diagnostics),
+                    "model_runtime_analysis": dict(model_runtime_analysis),
                     "revision_index": int(current_step_index),
                 },
             )
@@ -4128,6 +4225,13 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
             phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+            initial_request_summary = build_request_summary_hint(
+                model_name=requested_model,
+                request_messages=list(messages),
+                tools_exposed=bool(runnable_tools),
+                tool_count_exposed=len(runnable_tools),
+                streaming=True,
+            )
             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                 self._backend._invoke_chat_with_runner,
                 messages=messages,
@@ -4149,15 +4253,6 @@ class VintageProgrammerRuntime:
                     phase_timer=phase_timer,
                 ),
             )
-            self._emit_trace(
-                progress_cb,
-                run_id=run_id,
-                type="llm.finished",
-                title=self._trace_label(locale, "llm.finished"),
-                status="success",
-                payload={"model": effective_model or requested_model},
-                trace_events=trace_events,
-            )
             self._set_tools_runtime_context(
                 execution_mode=settings.execution_mode,
                 session_id=str(context_payload.get("session_id") or ""),
@@ -4169,7 +4264,23 @@ class VintageProgrammerRuntime:
             )
             notes.extend(invoke_notes)
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-            refresh_model_step(ai_msg, event_type="activity.done")
+            refresh_model_step(
+                ai_msg,
+                event_type="activity.done",
+                request_summary_hint=initial_request_summary,
+            )
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="llm.finished",
+                title=self._trace_label(locale, "llm.finished"),
+                status="success",
+                payload={
+                    "model": effective_model or requested_model,
+                    "model_runtime_analysis": dict(model_runtime_analysis),
+                },
+                trace_events=trace_events,
+            )
 
             act_now_budget = 1 if collaboration_mode in {"default", "execute"} and bool(runnable_tools) else 0
             invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
@@ -5028,6 +5139,13 @@ class VintageProgrammerRuntime:
                     trace_events=trace_events,
                 )
                 phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+                followup_request_summary = build_request_summary_hint(
+                    model_name=effective_model or requested_model,
+                    request_messages=list(messages),
+                    tools_exposed=bool(runnable_tools),
+                    tool_count_exposed=len(runnable_tools),
+                    streaming=True,
+                )
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                     self._backend._invoke_with_runner_recovery,
                     runner=runner,
@@ -5050,15 +5168,6 @@ class VintageProgrammerRuntime:
                         phase_timer=phase_timer,
                     ),
                 )
-                self._emit_trace(
-                    progress_cb,
-                    run_id=run_id,
-                    type="llm.finished",
-                    title=self._trace_label(locale, "llm.finished"),
-                    status="success",
-                    payload={"model": effective_model or requested_model},
-                    trace_events=trace_events,
-                )
                 self._set_tools_runtime_context(
                     execution_mode=settings.execution_mode,
                     session_id=str(context_payload.get("session_id") or ""),
@@ -5070,7 +5179,23 @@ class VintageProgrammerRuntime:
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                refresh_model_step(ai_msg, event_type="activity.delta")
+                refresh_model_step(
+                    ai_msg,
+                    event_type="activity.delta",
+                    request_summary_hint=followup_request_summary,
+                )
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="llm.finished",
+                    title=self._trace_label(locale, "llm.finished"),
+                    status="success",
+                    payload={
+                        "model": effective_model or requested_model,
+                        "model_runtime_analysis": dict(model_runtime_analysis),
+                    },
+                    trace_events=trace_events,
+                )
         finally:
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
@@ -5257,6 +5382,7 @@ class VintageProgrammerRuntime:
                 "answer_stream": dict(answer_stream),
                 "runtime_hint": dict(runtime_hint),
                 "runtime_guess": dict(runtime_hint),
+                "model_runtime_analysis": dict(model_runtime_analysis),
                 "current_turn": dict(current_turn_context),
                 "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
                 "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
@@ -5348,6 +5474,7 @@ class VintageProgrammerRuntime:
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_hint": dict(runtime_hint),
             "runtime_guess": dict(runtime_hint),
+            "model_runtime_analysis": dict(model_runtime_analysis),
             "high_level_proposal": dict(high_level_proposal),
             "model_proposal": dict(high_level_proposal),
             "validated_next_step": dict(validated_next_step),

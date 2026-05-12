@@ -28,6 +28,7 @@ def test_vp_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:
 def test_llm_backend_defaults_to_openai_native(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("VP_LLM_BACKEND", raising=False)
 
     config = load_config()
 

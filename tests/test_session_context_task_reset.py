@@ -166,3 +166,36 @@ def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment(
 
     assert resolved["effective_attachment_ids"] == ["img-1"]
     assert resolved["recalled_task"]["task_id"] == "task-image"
+
+
+def test_route_state_sanitization_drops_model_runtime_analysis_from_persisted_context() -> None:
+    session = {
+        "route_state": {"phase": "completed", "model_runtime_analysis": {"tool_gating": {"actual_tools_exposed": True}}},
+        "attachment_route_states": {
+            "img-1": {"phase": "completed", "model_runtime_analysis": {"diagnostic_warnings": [{"code": "x"}]}}
+        },
+    }
+
+    route_state, scope = session_context.resolve_scoped_route_state(session, attachment_ids=[])
+    attachment_state, attachment_scope = session_context.resolve_scoped_route_state(session, attachment_ids=["img-1"])
+
+    session_context.store_scoped_route_state(
+        session,
+        attachment_ids=[],
+        route_state={"phase": "completed", "model_runtime_analysis": {"request_summary": {"tools_exposed": True}}},
+    )
+    session_context.record_turn_memory(
+        session,
+        user_message="你好",
+        assistant_text="你好",
+        attachments=[],
+        route_state={"phase": "completed", "model_runtime_analysis": {"request_summary": {"tools_exposed": True}}},
+        tool_events=[],
+        answer_bundle={},
+    )
+
+    assert scope == "session"
+    assert attachment_scope == "attachment"
+    assert "model_runtime_analysis" not in route_state
+    assert "model_runtime_analysis" not in attachment_state
+    assert "model_runtime_analysis" not in dict(session.get("route_state") or {})

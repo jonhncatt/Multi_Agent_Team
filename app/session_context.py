@@ -709,11 +709,18 @@ def prepare_route_state_for_turn(
     *,
     reset_focus: bool = False,
 ) -> dict[str, Any]:
-    state = dict(route_state or {})
+    state = sanitize_route_state(route_state)
     if not reset_focus:
         return state
     state.pop("current_task_focus", None)
     state.pop("task_checkpoint", None)
+    return state
+
+
+def sanitize_route_state(route_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = dict(route_state or {})
+    # Keep diagnostics visible in inspector/logs, but never feed them back into the next model turn.
+    state.pop("model_runtime_analysis", None)
     return state
 
 
@@ -954,11 +961,11 @@ def resolve_scoped_route_state(
     if context_key:
         scoped = _coerce_route_state_map(session.get("attachment_route_states")).get(context_key)
         if isinstance(scoped, dict) and scoped:
-            return dict(scoped), "attachment"
+            return sanitize_route_state(scoped), "attachment"
         return {}, "attachment_miss"
     route_state = session.get("route_state")
     if isinstance(route_state, dict) and route_state:
-        return dict(route_state), "session"
+        return sanitize_route_state(route_state), "session"
     return {}, "none"
 
 
@@ -968,7 +975,7 @@ def store_scoped_route_state(
     attachment_ids: list[str] | None,
     route_state: dict[str, Any] | None,
 ) -> None:
-    normalized_state = dict(route_state or {})
+    normalized_state = sanitize_route_state(route_state)
     session["route_state"] = normalized_state
 
     context_key = attachment_context_key(attachment_ids)
@@ -1058,7 +1065,7 @@ def record_turn_memory(
     answer_bundle: dict[str, Any] | None,
 ) -> None:
     now = _now_iso()
-    session["route_state"] = dict(route_state or {})
+    session["route_state"] = sanitize_route_state(route_state)
     focus = normalize_current_task_focus(
         ((route_state or {}).get("current_task_focus") if isinstance(route_state, dict) else None)
         or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else None)

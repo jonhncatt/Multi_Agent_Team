@@ -1218,6 +1218,7 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
     trace_events: item.trace_events,
     tool_groups: buildToolProgressGroups(item),
     tool_items: item.tool_items,
+    model_runtime_analysis: latestActivityPayloadValue(item, ["model_runtime_analysis"]),
     high_level_proposal: latestActivityPayloadValue(item, ["high_level_proposal", "model_proposal"]),
     validated_next_step: latestActivityPayloadValue(item, ["validated_next_step", "validated_plan"]),
     runtime_hint: latestActivityPayloadValue(item, ["runtime_hint", "runtime_guess"]),
@@ -4278,6 +4279,65 @@ function App() {
     return renderDetailBlock(label, item);
   };
 
+  const formatAnalysisScalar = (value, fallback = "unknown") => {
+    if (value === null || value === undefined || value === "") return fallback;
+    if (typeof value === "boolean") return value ? "true" : "false";
+    return String(value);
+  };
+
+  const formatModelRuntimeAnalysisSummary = (source) => {
+    const item = source && typeof source === "object" ? source : {};
+    const requestSummary = item.request_summary && typeof item.request_summary === "object" ? item.request_summary : {};
+    const toolGating = item.tool_gating && typeof item.tool_gating === "object" ? item.tool_gating : {};
+    const proposalParse = item.proposal_parse && typeof item.proposal_parse === "object" ? item.proposal_parse : {};
+    const responseSummary = item.assistant_response_summary && typeof item.assistant_response_summary === "object" ? item.assistant_response_summary : {};
+    return [
+      `backend=${formatAnalysisScalar(requestSummary.backend)}`,
+      `model=${formatAnalysisScalar(requestSummary.model)}`,
+      `mode=${formatAnalysisScalar(toolGating.runtime_output_mode)}`,
+      `tools_exposed=${formatAnalysisScalar(toolGating.actual_tools_exposed)}`,
+      `tool_choice=${formatAnalysisScalar(toolGating.tool_choice)}`,
+      `proposal=${formatAnalysisScalar(proposalParse.proposal_source)}`,
+      `tool_calls=${Number(responseSummary.assistant_tool_calls_count || 0)}`,
+    ].join(" · ");
+  };
+
+  const renderDiagnosticWarningsDetails = (source) => {
+    const warnings = Array.isArray(source) ? source : [];
+    if (!warnings.length) return null;
+    const lines = warnings.map((entry) => {
+      const item = entry && typeof entry === "object" ? entry : {};
+      const message = String(item.message || item.code || "").trim();
+      return message ? `⚠ ${message}` : "";
+    }).filter(Boolean);
+    if (!lines.length) return null;
+    return html`
+      <details className="activity-payload" open>
+        <summary>${t("activity.diagnostic_warnings")}</summary>
+        <pre>${lines.join("\n")}</pre>
+      </details>
+    `;
+  };
+
+  const renderModelRuntimeAnalysisDetails = (source) => {
+    const item = source && typeof source === "object" ? source : {};
+    if (!Object.keys(item).length) return null;
+    const summary = formatModelRuntimeAnalysisSummary(item);
+    return html`
+      <details className="activity-payload" open>
+        <summary>${t("activity.model_runtime_analysis")} · ${summary}</summary>
+        <div className="activity-structured-details">
+          ${renderDiagnosticWarningsDetails(item.diagnostic_warnings)}
+          ${renderDetailBlock(t("activity.request_summary"), item.request_summary)}
+          ${renderDetailBlock(t("activity.runtime_initial_guess"), item.runtime_guess)}
+          ${renderDetailBlock(t("activity.model_proposal_diagnostics"), item.proposal_parse)}
+          ${renderDetailBlock(t("activity.tool_gating_decision"), item.tool_gating)}
+          ${renderDetailBlock(t("activity.actual_response_summary"), item.assistant_response_summary)}
+        </div>
+      </details>
+    `;
+  };
+
   const renderPhaseTimingDetails = (source) => {
     const timings = source && typeof source === "object" ? source : {};
     const preferredOrder = [
@@ -4382,6 +4442,7 @@ function App() {
   const renderActivityPayload = (trace, options = {}) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
     const rawOnly = Boolean(options.rawOnly);
+    const modelRuntimeAnalysis = payload.model_runtime_analysis;
     const highLevelProposal = payload.high_level_proposal || payload.model_proposal;
     const validatedNextStep = payload.validated_next_step || payload.validated_plan;
     const runtimeHint = payload.runtime_hint || payload.runtime_guess;
@@ -4390,9 +4451,11 @@ function App() {
       : (payload.execution_trace_entry ? [payload.execution_trace_entry] : []);
     const structuredSections = rawOnly
       ? [
+          renderModelRuntimeAnalysisDetails(modelRuntimeAnalysis),
           renderToolAuditDetails(payload),
         ].filter(Boolean)
       : [
+          renderModelRuntimeAnalysisDetails(modelRuntimeAnalysis),
           renderPlanDetails(t("activity.high_level_proposal"), highLevelProposal),
           renderPlanDetails(t("activity.validated_next_step"), validatedNextStep),
           renderExecutionTraceDetails(executionTrace),
@@ -4489,6 +4552,7 @@ function App() {
             plan: item.plan,
           })
         : null,
+      renderModelRuntimeAnalysisDetails(projection.model_runtime_analysis),
       renderPlanDetails(t("activity.high_level_proposal"), projection.high_level_proposal),
       renderPlanDetails(t("activity.validated_next_step"), projection.validated_next_step),
       renderExecutionTraceDetails(projection.execution_trace),

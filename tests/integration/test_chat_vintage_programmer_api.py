@@ -138,6 +138,87 @@ class _FakeVintageRuntime:
         _ = (message, settings, context)
         project = dict(context.get("project") or {})
         run_id = str(context.get("run_id") or "run-fake")
+        model_runtime_analysis = {
+            "request_summary": {
+                "backend": "openai_native",
+                "provider": "openrouter",
+                "model": "gpt-test",
+                "streaming": True,
+                "api_path": "chat_completions",
+                "message_count": 2,
+                "system_message_count": 1,
+                "user_message_count": 1,
+                "assistant_message_count": 0,
+                "tool_message_count": 0,
+                "max_output_tokens": 4096,
+                "temperature": None,
+                "tools_available_count": 21,
+                "tools_exposed": True,
+                "tool_choice": "auto",
+                "tool_count_exposed": 21,
+            },
+            "runtime_guess": {
+                "source": "runtime_guess",
+                "task_type": "workspace_inspection",
+                "route_task_type": "",
+                "primary_intent": "inspect",
+                "execution_policy": "",
+                "output_mode": "direct_answer",
+                "prefer_change_summary": False,
+                "summary_reason": "direct answer",
+                "current_goal_hint": "workspace inspection",
+                "next_action_hint": "",
+                "current_turn_followup_type": "",
+                "current_turn_goal_source": "latest_user_message",
+            },
+            "proposal_parse": {
+                "proposal_source": "model",
+                "proposal_block_found": True,
+                "proposal_block_valid_json": True,
+                "proposal_schema_status": "valid",
+                "intent": "inspect",
+                "task_type": "workspace_inspection",
+                "current_goal": "Inspect the workspace and summarize the result.",
+                "expects_tools": True,
+                "response_mode": "direct_answer",
+                "user_stage": "Inspect workspace",
+                "summary": "Check the workspace before answering.",
+                "next_step_hint": "Run a web search step and use the result.",
+                "change_summary_requested": False,
+                "raw_proposal_chars": 120,
+                "errors": [],
+            },
+            "tool_gating": {
+                "runtime_output_mode": "direct_answer",
+                "proposal_response_mode": "direct_answer",
+                "proposal_expects_tools": True,
+                "explicit_tool_request": True,
+                "attachment_requires_tooling": False,
+                "workspace_action_requested": True,
+                "network_requested": False,
+                "runtime_contract_tools_available": True,
+                "direct_answer_gate_applied": False,
+                "tools_should_be_exposed": True,
+                "actual_tools_exposed": True,
+                "tool_choice": "auto",
+                "tool_count_exposed": 21,
+                "tool_names_preview": ["web_search", "read_file"],
+                "tool_names_truncated": True,
+                "decision_source": "runtime_gate",
+                "reason": "tool exposure allowed because the request explicitly indicates tool or workspace/network work",
+            },
+            "assistant_response_summary": {
+                "assistant_content_chars": 21,
+                "assistant_content_preview": "single-agent response",
+                "assistant_tool_calls_count": 0,
+                "finish_reason": "stop",
+                "response_id": "resp_fake",
+                "usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+                "stream_diagnostics": {"provider": "openai_native", "event_count": 3, "text_delta_count": 2},
+                "tool_calls": [],
+            },
+            "diagnostic_warnings": [],
+        }
         trace_events = [
             {
                 "id": "trace-runtime",
@@ -149,6 +230,19 @@ class _FakeVintageRuntime:
                 "timestamp": time.time(),
                 "duration_ms": 0,
                 "payload": {"mode": "full_auto", "tool_policy": "use_when_needed"},
+                "parent_id": None,
+                "visible": True,
+            },
+            {
+                "id": "trace-analysis",
+                "run_id": run_id,
+                "type": "llm.finished",
+                "title": "Request analysis completed",
+                "detail": "",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {"model": "gpt-test", "model_runtime_analysis": model_runtime_analysis},
                 "parent_id": None,
                 "visible": True,
             },
@@ -178,6 +272,7 @@ class _FakeVintageRuntime:
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
             "runtime_hint": {"task_type": "workspace_inspection", "primary_intent": "inspect", "output_mode": "direct_answer"},
+            "model_runtime_analysis": model_runtime_analysis,
             "high_level_proposal": {
                 "intent": "inspect",
                 "task_type": "workspace_inspection",
@@ -311,6 +406,7 @@ class _FakeVintageRuntime:
                     "pending_user_input": {},
                     "inline_document": False,
                     "runtime_hint": {"task_type": "workspace_inspection", "primary_intent": "inspect", "output_mode": "direct_answer"},
+                    "model_runtime_analysis": model_runtime_analysis,
                     "high_level_proposal": {
                         "intent": "inspect",
                         "task_type": "workspace_inspection",
@@ -746,7 +842,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.8.1"
+    assert payload["app_version"] == "2.8.2"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -801,7 +897,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.8.1"
+    assert bootstrap_payload["app_version"] == "2.8.2"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
 
@@ -956,6 +1052,8 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["inspector"]["run_state"]["turn_status"] == "completed"
     assert payload["inspector"]["run_state"]["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["inspector"]["run_state"]["compaction_status"]["mode"] == "token_budget"
+    assert payload["inspector"]["run_state"]["model_runtime_analysis"]["request_summary"]["backend"] == "openai_native"
+    assert payload["inspector"]["run_state"]["model_runtime_analysis"]["assistant_response_summary"]["assistant_tool_calls_count"] == 0
     assert payload["inspector"]["run_state"]["high_level_proposal"]["task_type"] == "workspace_inspection"
     assert payload["inspector"]["run_state"]["validated_next_step"]["action_type"] == "tool_call"
     assert payload["inspector"]["run_state"]["execution_trace"][0]["action_type"] == "tool_call"
@@ -1024,6 +1122,7 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert any(payload.get("phase") == "execute" for payload in stage_payloads)
     trace_payloads = [payload for name, payload in events if name == "trace_event"]
     assert any((payload.get("trace") or {}).get("type") == "runtime_contract.selected" for payload in trace_payloads)
+    assert any(((payload.get("trace") or {}).get("payload") or {}).get("model_runtime_analysis") for payload in trace_payloads)
     thread_status_payloads = [payload for name, payload in events if name == "thread/status/changed"]
     assert {payload["status"]["type"] for payload in thread_status_payloads} >= {"active", "idle"}
     typed_turn = next(payload for name, payload in events if name == "turn/started")
@@ -1041,6 +1140,7 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert response_payload["collaboration_mode"] == "default"
     assert response_payload["turn_status"] == "completed"
     assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
+    assert response_payload["inspector"]["run_state"]["model_runtime_analysis"]["tool_gating"]["tool_choice"] == "auto"
     assert response_payload["activity"]["phase_timings"]["provider_auth_summary_ms"] >= 0
     assert response_payload["activity"]["phase_timings"]["session_load_ms"] >= 0
     assert response_payload["activity"]["phase_timings"]["runtime_context_ms"] >= 0

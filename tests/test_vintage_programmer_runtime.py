@@ -591,6 +591,75 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
     assert result["activity"]["trace_events"]
 
 
+def test_runtime_exposes_model_runtime_analysis_for_direct_answer_diagnostics(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content=_proposal_block(intent="standard", task_type="standard") + "你好！")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="你好",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-analysis",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    analysis = dict(result.get("model_runtime_analysis") or {})
+    warning_codes = {item["code"] for item in analysis.get("diagnostic_warnings") or []}
+    llm_finished = next(
+        item for item in result["activity"]["trace_events"] if str(item.get("type") or "") == "llm.finished"
+    )
+
+    assert analysis["runtime_guess"]["output_mode"] == "direct_answer"
+    assert analysis["proposal_parse"]["proposal_source"] == "model"
+    assert "tool_gating" in analysis
+    assert analysis["assistant_response_summary"]["assistant_tool_calls_count"] == 0
+    assert "direct_answer_tools_exposed" in warning_codes
+    assert "model_runtime_analysis" not in dict(result.get("route_state") or {})
+    assert (llm_finished.get("payload") or {}).get("model_runtime_analysis")
+
+
+def test_runtime_marks_runtime_fallback_when_model_proposal_block_is_missing(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="你好！")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="你好",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-analysis-fallback",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    analysis = dict(result.get("model_runtime_analysis") or {})
+
+    assert analysis["proposal_parse"]["proposal_block_found"] is False
+    assert analysis["proposal_parse"]["proposal_source"] == "runtime_fallback"
+    assert any(
+        str(item.get("code") or "") == "proposal_block_missing_runtime_fallback"
+        for item in list(analysis.get("diagnostic_warnings") or [])
+    )
+
+
 def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

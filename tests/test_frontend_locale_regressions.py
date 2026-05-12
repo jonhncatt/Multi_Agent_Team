@@ -43,6 +43,13 @@ REQUIRED_CORE_KEYS = (
     "activity.model_proposal",
     "activity.validated_plan",
     "activity.runtime_guess",
+    "activity.model_runtime_analysis",
+    "activity.request_summary",
+    "activity.runtime_initial_guess",
+    "activity.model_proposal_diagnostics",
+    "activity.tool_gating_decision",
+    "activity.actual_response_summary",
+    "activity.diagnostic_warnings",
     "activity.raw_tool_call",
     "activity.normalized_arguments",
     "activity.guard_result",
@@ -254,6 +261,20 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
     )
     for token in required_style_tokens:
         assert token in styles, token
+
+
+def test_model_runtime_analysis_rendering_tokens_exist_in_frontend() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "formatModelRuntimeAnalysisSummary(",
+        "renderModelRuntimeAnalysisDetails(",
+        "payload.model_runtime_analysis",
+        't("activity.model_runtime_analysis")',
+        't("activity.diagnostic_warnings")',
+    )
+    for token in required_tokens:
+        assert token in script, token
 
 
 def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> None:
