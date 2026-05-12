@@ -7189,6 +7189,7 @@ class OfficeAgent:
                 auth_manager=self._auth_manager,
                 base_url=normalized_base_url,
                 model=model,
+                provider=self.config.llm_provider,
                 max_output_tokens=max_output_tokens,
                 temperature=self.config.openai_temperature,
                 ai_message_cls=self._AIMessage,

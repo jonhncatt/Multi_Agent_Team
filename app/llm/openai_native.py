@@ -20,6 +20,10 @@ except Exception:  # pragma: no cover - fallback for older SDKs
     BadRequestError = _OpenAIError
     RateLimitError = _OpenAIError
 
+from app.model_runtime_diagnostics import (
+    build_assistant_response_summary_from_message,
+    build_request_summary,
+)
 from app.openai_auth import OpenAIAuthManager
 
 from .message_codec import encode_messages
@@ -45,6 +49,7 @@ class OpenAINativeLLMAdapter:
         api_key: str | None = None,
         base_url: str | None,
         model: str,
+        provider: str | None = None,
         max_output_tokens: int,
         temperature: float | None,
         ai_message_cls: Any = AIMessage,
@@ -57,6 +62,7 @@ class OpenAINativeLLMAdapter:
         self._api_key = str(api_key or "").strip() or None
         self._base_url = str(base_url or "").strip() or None
         self._model = model
+        self._provider = str(provider or "").strip() or _PROVIDER
         self._max_output_tokens = max_output_tokens
         self._temperature = temperature
         self._AIMessage = ai_message_cls
@@ -71,6 +77,7 @@ class OpenAINativeLLMAdapter:
             api_key=self._api_key,
             base_url=self._base_url,
             model=self._model,
+            provider=self._provider,
             max_output_tokens=self._max_output_tokens,
             temperature=self._temperature,
             ai_message_cls=self._AIMessage,
@@ -156,6 +163,7 @@ class OpenAINativeLLMAdapter:
             request_kwargs["stream"] = True
             if include_usage:
                 request_kwargs["stream_options"] = {"include_usage": True}
+            request_diagnostics = self._build_request_diagnostics(request_kwargs)
             stream = client.chat.completions.create(**request_kwargs)
             native_response, diagnostics = _stream_to_native_response(
                 stream,
@@ -166,6 +174,7 @@ class OpenAINativeLLMAdapter:
             return _native_response_to_ai_message(
                 self._AIMessage,
                 native_response,
+                request_summary=request_diagnostics,
                 stream_diagnostics=diagnostics,
             )
         except _StreamingAttemptError:
@@ -200,7 +209,9 @@ class OpenAINativeLLMAdapter:
                 timeout=self._timeout,
                 http_client=http_client,
             )
-            response = client.chat.completions.create(**self._build_request_kwargs(messages))
+            request_kwargs = self._build_request_kwargs(messages)
+            request_diagnostics = self._build_request_diagnostics(request_kwargs)
+            response = client.chat.completions.create(**request_kwargs)
             native_response = _response_to_native(response)
             completed_at = time.time()
             diagnostics = {
@@ -226,6 +237,7 @@ class OpenAINativeLLMAdapter:
             return _native_response_to_ai_message(
                 self._AIMessage,
                 native_response,
+                request_summary=request_diagnostics,
                 stream_diagnostics=diagnostics,
             )
         except Exception as exc:
@@ -247,6 +259,22 @@ class OpenAINativeLLMAdapter:
             request_kwargs["tools"] = tool_payloads
             request_kwargs["tool_choice"] = "auto"
         return request_kwargs
+
+    def _build_request_diagnostics(self, request_kwargs: dict[str, Any]) -> dict[str, Any]:
+        return build_request_summary(
+            backend=_PROVIDER,
+            provider=self._provider,
+            model=self._model,
+            streaming=bool(request_kwargs.get("stream")),
+            api_path="chat_completions",
+            messages=list(request_kwargs.get("messages") or []),
+            max_output_tokens=int(request_kwargs.get("max_tokens") or 0) or self._max_output_tokens,
+            temperature=request_kwargs.get("temperature"),
+            tools_available_count=len(self._tools),
+            tools_exposed=bool(request_kwargs.get("tools")),
+            tool_choice=str(request_kwargs.get("tool_choice") or "none"),
+            tool_count_exposed=len(list(request_kwargs.get("tools") or [])),
+        )
 
     def _resolve_api_key(self, *, allow_refresh: bool) -> str:
         if self._auth_manager is not None:
@@ -424,6 +452,7 @@ def _native_response_to_ai_message(
     ai_message_cls: Any,
     response: NativeLLMResponse,
     *,
+    request_summary: dict[str, Any] | None = None,
     stream_diagnostics: dict[str, Any] | None = None,
 ) -> Any:
     tool_calls = [
@@ -436,7 +465,7 @@ def _native_response_to_ai_message(
         }
         for call in response.tool_calls
     ]
-    return ai_message_cls(
+    message = ai_message_cls(
         content=response.content,
         tool_calls=tool_calls,
         usage_metadata=dict(response.usage),
@@ -446,9 +475,14 @@ def _native_response_to_ai_message(
             "response_id": response.response_id,
             "model": response.model,
             "finish_reason": response.finish_reason,
+            "request_summary": dict(request_summary or {}),
             "stream_diagnostics": dict(stream_diagnostics or _new_stream_diagnostics()),
         },
     )
+    response_metadata = getattr(message, "response_metadata", None)
+    if isinstance(response_metadata, dict):
+        response_metadata["assistant_response_summary"] = build_assistant_response_summary_from_message(message)
+    return message
 
 
 def _new_stream_diagnostics() -> dict[str, Any]:

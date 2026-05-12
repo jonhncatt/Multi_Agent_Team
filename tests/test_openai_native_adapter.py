@@ -101,6 +101,9 @@ def test_openai_native_adapter_builds_chat_completions_request(monkeypatch) -> N
     ]
     assert request_kwargs["tools"][0]["function"]["name"] == "search_codebase"
     assert request_kwargs["tool_choice"] == "auto"
+    assert message.response_metadata["request_summary"]["tools_exposed"] is True
+    assert message.response_metadata["request_summary"]["tool_choice"] == "auto"
+    assert message.response_metadata["assistant_response_summary"]["assistant_tool_calls_count"] == 0
 
 
 def test_openai_native_adapter_preserves_raw_tool_arguments(monkeypatch) -> None:
@@ -189,6 +192,9 @@ def test_openai_native_adapter_streams_text_deltas_and_usage(monkeypatch) -> Non
     assert message.response_metadata["stream_diagnostics"]["text_delta_count"] == 2
     assert message.response_metadata["stream_diagnostics"]["event_count"] == 2
     assert message.response_metadata["token_usage"]["total_tokens"] == 24
+    assert message.response_metadata["request_summary"]["streaming"] is True
+    assert message.response_metadata["request_summary"]["tools_exposed"] is False
+    assert message.response_metadata["assistant_response_summary"]["assistant_content_chars"] == len("hello world")
     assert captured[0]["messages"] == [{"role": "user", "content": "stream this"}]
 
 
@@ -231,6 +237,8 @@ def test_openai_native_adapter_streaming_tool_call_assembles_raw_arguments(monke
             "type": "tool_call",
         }
     ]
+    assert message.response_metadata["assistant_response_summary"]["assistant_tool_calls_count"] == 1
+    assert message.response_metadata["assistant_response_summary"]["tool_calls"][0]["args_parse_status"] == "valid_object"
 
 
 def test_openai_native_adapter_streaming_preserves_invalid_tool_json(monkeypatch) -> None:
@@ -265,6 +273,7 @@ def test_openai_native_adapter_streaming_preserves_invalid_tool_json(monkeypatch
     assert message.tool_calls[0]["name"] == "web_fetch"
     assert message.tool_calls[0]["args"] == {}
     assert message.tool_calls[0]["raw_args"] == '{"url":'
+    assert message.response_metadata["assistant_response_summary"]["tool_calls"][0]["args_parse_status"] == "invalid_json"
 
 
 def test_openai_native_adapter_retries_stream_without_usage_when_needed(monkeypatch) -> None:
@@ -334,6 +343,7 @@ def test_openai_native_adapter_falls_back_to_non_streaming_when_stream_is_unsupp
     assert "stream" not in requests[1]
     assert [event["type"] for event in events] == ["response.completed"]
     assert message.response_metadata["stream_diagnostics"]["text_delta_count"] == 0
+    assert message.response_metadata["request_summary"]["streaming"] is False
 
 
 def test_openai_native_adapter_raises_on_empty_choices(monkeypatch) -> None:
