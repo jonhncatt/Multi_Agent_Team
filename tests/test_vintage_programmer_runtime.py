@@ -123,7 +123,7 @@ class _FakeTools:
                 "description": "read one file",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
                     "required": ["path"],
                     "additionalProperties": False,
                 },
@@ -277,8 +277,16 @@ class _FakeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
-        _ = (max_output_tokens, enable_tools, tool_names)
-        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
+        _ = max_output_tokens
+        self.invocations.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "kind": "initial",
+                "enable_tools": bool(enable_tools),
+                "tool_names": list(tool_names or []),
+            }
+        )
         return self._next(), object(), model, []
 
     def _invoke_with_runner_recovery(
@@ -291,8 +299,16 @@ class _FakeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
-        _ = (runner, max_output_tokens, enable_tools, tool_names)
-        self.invocations.append({"messages": list(messages), "model": model, "kind": "followup"})
+        _ = (runner, max_output_tokens)
+        self.invocations.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "kind": "followup",
+                "enable_tools": bool(enable_tools),
+                "tool_names": list(tool_names or []),
+            }
+        )
         return self._next(), object(), model, []
 
 
@@ -317,8 +333,16 @@ class _StreamingBackend(_FakeBackend):
         tool_names: list[str] | None = None,
         event_cb=None,
     ) -> tuple[Any, Any, str, list[str]]:
-        _ = (max_output_tokens, enable_tools, tool_names)
-        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
+        _ = max_output_tokens
+        self.invocations.append(
+            {
+                "messages": list(messages),
+                "model": model,
+                "kind": "initial",
+                "enable_tools": bool(enable_tools),
+                "tool_names": list(tool_names or []),
+            }
+        )
         if event_cb is not None:
             for delta in self._deltas:
                 event_cb({"type": "response.output_text.delta", "delta": delta, "timestamp": 1.0})
@@ -591,7 +615,7 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
     assert result["activity"]["trace_events"]
 
 
-def test_runtime_exposes_model_runtime_analysis_for_direct_answer_diagnostics(tmp_path: Path) -> None:
+def test_runtime_exposes_model_runtime_analysis_for_direct_answer_without_tool_exposure(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend([_FakeMessage(content=_proposal_block(intent="standard", task_type="standard") + "你好！")])
@@ -621,9 +645,11 @@ def test_runtime_exposes_model_runtime_analysis_for_direct_answer_diagnostics(tm
 
     assert analysis["runtime_guess"]["output_mode"] == "direct_answer"
     assert analysis["proposal_parse"]["proposal_source"] == "model"
-    assert "tool_gating" in analysis
+    assert analysis["tool_gating"]["tools_should_be_exposed"] is False
+    assert analysis["tool_gating"]["actual_tools_exposed"] is False
     assert analysis["assistant_response_summary"]["assistant_tool_calls_count"] == 0
-    assert "direct_answer_tools_exposed" in warning_codes
+    assert backend.invocations[0]["enable_tools"] is False
+    assert "direct_answer_tools_exposed" not in warning_codes
     assert "model_runtime_analysis" not in dict(result.get("route_state") or {})
     assert (llm_finished.get("payload") or {}).get("model_runtime_analysis")
 
@@ -1073,6 +1099,93 @@ def test_runtime_guard_preserves_malformed_raw_tool_arguments_from_backend(tmp_p
     assert backend.tools.calls == []
     assert result["tool_events"][0]["guard_result"]["checks"]["json"] == "failed"
     assert result["tool_events"][0]["raw_tool_call"]["arguments"] == '{"query":'
+
+
+def test_runtime_guard_accepts_openai_native_arguments_string_shape(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "chatcmpl-tool-bf0f59f49ca8c971",
+                        "name": "read_file",
+                        "arguments": '{"path": "AGENT.MD", "max_chars": 2000}',
+                    }
+                ],
+            ),
+            _FakeMessage(content="文件读取完成。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="请查看当前文件夹下的AGENT.MD文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-openai-native-tool-string",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    first_step = dict((result["execution_trace"][0] or {}).get("payload") or {})
+
+    assert result["text"] == "文件读取完成。"
+    assert backend.tools.calls == [("read_file", {"path": "AGENT.MD", "max_chars": 2000})]
+    assert first_step["validated_next_step"]["approved_tool_calls"][0]["args"] == {"path": "AGENT.MD", "max_chars": 2000}
+    assert result["tool_events"][0]["raw_arguments"]["path"] == "AGENT.MD"
+    assert result["tool_events"][0]["raw_tool_call"]["arguments"] == '{"path": "AGENT.MD", "max_chars": 2000}'
+    assert result["tool_events"][0]["guard_result"]["checks"]["json"] == "passed"
+    assert result["tool_events"][0]["guard_result"]["status"] == "accepted"
+    assert result["tool_events"][0]["arguments_preview"] == "path=AGENT.MD"
+    assert backend.invocations[0]["enable_tools"] is True
+
+
+def test_runtime_workspace_file_request_exposes_tools_without_direct_answer_bug_warning(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-read", "name": "read_file", "args": {"path": "AGENT.MD"}}]),
+            _FakeMessage(content="已经读取。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="请查看当前文件夹下的AGENT.MD文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-workspace-tool-request",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    analysis = dict(result.get("model_runtime_analysis") or {})
+    warning_codes = {item["code"] for item in list(analysis.get("diagnostic_warnings") or [])}
+
+    assert analysis["runtime_guess"]["output_mode"] == "tool_assisted_answer"
+    assert analysis["tool_gating"]["workspace_action_requested"] is True
+    assert analysis["tool_gating"]["tools_should_be_exposed"] is True
+    assert analysis["tool_gating"]["actual_tools_exposed"] is True
+    assert backend.invocations[0]["enable_tools"] is True
+    assert "direct_answer_tools_exposed" not in warning_codes
 
 
 def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:

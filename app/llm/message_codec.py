@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.tool_call_normalizer import canonicalize_tool_call
+
 from .types import NativeLLMMessage, NativeLLMToolCall
 
 
@@ -25,28 +27,14 @@ def runtime_message_to_native(message: Any) -> NativeLLMMessage:
     for index, call in enumerate(getattr(message, "tool_calls", None) or [], start=1):
         if not isinstance(call, dict):
             continue
-        raw_arguments = call.get("raw_args")
-        if isinstance(raw_arguments, str):
-            serialized_arguments = raw_arguments
-        elif raw_arguments is None:
-            raw_fallback = call.get("arguments")
-            if isinstance(raw_fallback, str):
-                serialized_arguments = raw_fallback
-            else:
-                serialized_arguments = ""
-        else:
-            serialized_arguments = json.dumps(raw_arguments, ensure_ascii=False, default=str)
-
-        parsed_arguments = call.get("args")
-        if not isinstance(parsed_arguments, dict):
-            parsed_arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+        canonical = canonicalize_tool_call(call)
 
         tool_calls.append(
             NativeLLMToolCall(
-                id=str(call.get("id") or f"call_{index}"),
-                name=str(call.get("name") or ""),
-                arguments=dict(parsed_arguments),
-                raw_arguments=serialized_arguments,
+                id=str(canonical.id or f"call_{index}"),
+                name=str(canonical.name or canonical.raw_name),
+                arguments=dict(canonical.args),
+                raw_arguments=canonical.raw_args,
             )
         )
 

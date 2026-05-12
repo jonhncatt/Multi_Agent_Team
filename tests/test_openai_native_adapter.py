@@ -228,15 +228,13 @@ def test_openai_native_adapter_streaming_tool_call_assembles_raw_arguments(monke
     message = adapter.invoke_with_events([HumanMessage(content="Need tool help")], event_cb=lambda _event: None)
 
     assert message.content == ""
-    assert message.tool_calls == [
-        {
-            "name": "web_fetch",
-            "args": {"url": "https://example.com"},
-            "raw_args": '{"url":"https://example.com"}',
-            "id": "call_1",
-            "type": "tool_call",
-        }
-    ]
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0]["name"] == "web_fetch"
+    assert message.tool_calls[0]["raw_name"] == "web_fetch"
+    assert message.tool_calls[0]["args"] == {"url": "https://example.com"}
+    assert message.tool_calls[0]["raw_args"] == '{"url":"https://example.com"}'
+    assert message.tool_calls[0]["id"] == "call_1"
+    assert message.tool_calls[0]["type"] == "tool_call"
     assert message.response_metadata["assistant_response_summary"]["assistant_tool_calls_count"] == 1
     assert message.response_metadata["assistant_response_summary"]["tool_calls"][0]["args_parse_status"] == "valid_object"
 

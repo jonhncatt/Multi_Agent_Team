@@ -110,6 +110,51 @@ def test_model_runtime_analysis_surfaces_direct_answer_tool_mismatch_and_runtime
     assert "proposal_block_missing_runtime_fallback" in warning_codes
 
 
+def test_model_runtime_analysis_does_not_flag_workspace_tool_request_as_direct_answer_bug() -> None:
+    analysis = build_model_runtime_analysis(
+        request_summary=build_request_summary(
+            backend="openai_native",
+            provider="openrouter",
+            model="demo-model",
+            streaming=True,
+            api_path="chat_completions",
+            messages=[{"role": "user", "content": "请查看当前文件夹下的AGENT.MD文件"}],
+            max_output_tokens=4096,
+            temperature=None,
+            tools_available_count=31,
+            tools_exposed=True,
+            tool_choice="auto",
+            tool_count_exposed=5,
+        ),
+        runtime_guess={"source": "runtime_guess", "task_type": "standard", "primary_intent": "standard", "output_mode": "tool_assisted_answer"},
+        high_level_proposal={
+            "source": "runtime_fallback",
+            "intent": "standard",
+            "task_type": "standard",
+            "current_goal": "请查看当前文件夹下的AGENT.MD文件",
+            "expects_tools": True,
+            "response_mode": "tool_assisted_answer",
+            "summary": "需要读取工作区文件。",
+        },
+        proposal_diagnostics={"status": "missing", "checked": False, "schema_validation": {"status": "missing"}},
+        runtime_contract={"tools_available": True, "tool_policy": "use_when_needed"},
+        explicit_tool_request=True,
+        attachment_requires_tooling=False,
+        workspace_action_requested=True,
+        network_requested=False,
+        tools_should_be_exposed=True,
+        actual_tools_exposed=True,
+        tool_choice="auto",
+        exposed_tool_names=["read_file", "list_dir"],
+        assistant_response_summary={"assistant_tool_calls_count": 1, "tool_calls": []},
+    )
+
+    warning_codes = {item["code"] for item in analysis["diagnostic_warnings"]}
+
+    assert analysis["tool_gating"]["reason"] == "workspace tool request"
+    assert "direct_answer_tools_exposed" not in warning_codes
+
+
 def test_assistant_response_summary_marks_tool_argument_parse_states_and_masks_sensitive_text() -> None:
     message = AIMessage(
         content="Authorization: Bearer sk-live-secret-value",

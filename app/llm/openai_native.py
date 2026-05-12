@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 import time
 from typing import Any
 
@@ -25,6 +23,7 @@ from app.model_runtime_diagnostics import (
     build_request_summary,
 )
 from app.openai_auth import OpenAIAuthManager
+from app.tool_call_normalizer import canonicalize_tool_call
 
 from .message_codec import encode_messages
 from .tool_schema import build_openai_tools
@@ -398,14 +397,13 @@ def _stream_to_native_response(
 def _tool_calls_to_native(tool_calls: list[Any]) -> list[NativeLLMToolCall]:
     native_calls: list[NativeLLMToolCall] = []
     for index, call in enumerate(tool_calls, start=1):
-        function = getattr(call, "function", None)
-        raw_arguments = str(getattr(function, "arguments", "") or "")
+        canonical = canonicalize_tool_call(call)
         native_calls.append(
             NativeLLMToolCall(
-                id=str(getattr(call, "id", "") or f"call_{index}"),
-                name=str(getattr(function, "name", "") or ""),
-                arguments=_parse_tool_arguments(raw_arguments),
-                raw_arguments=raw_arguments,
+                id=canonical.id or f"call_{index}",
+                name=canonical.name or canonical.raw_name,
+                arguments=dict(canonical.args),
+                raw_arguments=canonical.raw_args,
             )
         )
     return native_calls
@@ -415,13 +413,13 @@ def _tool_call_buffers_to_native(buffers: dict[int, dict[str, str]]) -> list[Nat
     tool_calls: list[NativeLLMToolCall] = []
     for index in sorted(buffers):
         item = dict(buffers.get(index) or {})
-        raw_arguments = str(item.get("arguments", "") or "")
+        canonical = canonicalize_tool_call(item)
         tool_calls.append(
             NativeLLMToolCall(
-                id=str(item.get("id", "") or f"call_{index + 1}"),
-                name=str(item.get("name", "") or ""),
-                arguments=_parse_tool_arguments(raw_arguments),
-                raw_arguments=raw_arguments,
+                id=canonical.id or f"call_{index + 1}",
+                name=canonical.name or canonical.raw_name,
+                arguments=dict(canonical.args),
+                raw_arguments=canonical.raw_args,
             )
         )
     return tool_calls
@@ -455,16 +453,29 @@ def _native_response_to_ai_message(
     request_summary: dict[str, Any] | None = None,
     stream_diagnostics: dict[str, Any] | None = None,
 ) -> Any:
-    tool_calls = [
-        {
-            "name": call.name,
-            "args": dict(call.arguments),
-            "raw_args": call.raw_arguments,
-            "id": call.id,
-            "type": "tool_call",
-        }
-        for call in response.tool_calls
-    ]
+    tool_calls = []
+    for call in response.tool_calls:
+        canonical = canonicalize_tool_call(
+            {
+                "id": call.id,
+                "name": call.name,
+                "args": dict(call.arguments),
+                "raw_args": call.raw_arguments,
+            }
+        )
+        tool_calls.append(
+            {
+                "name": canonical.name or canonical.raw_name,
+                "raw_name": canonical.raw_name,
+                "args": dict(canonical.args),
+                "raw_args": canonical.raw_args,
+                "id": canonical.id,
+                "type": "tool_call",
+                "arguments_parse_status": canonical.arguments_parse_status,
+                "normalization_notes": list(canonical.normalization_notes),
+                "error": canonical.error,
+            }
+        )
     message = ai_message_cls(
         content=response.content,
         tool_calls=tool_calls,
@@ -520,16 +531,6 @@ def _merge_usage_payload(left: dict[str, int], right: dict[str, int]) -> dict[st
     if merged["total_tokens"] <= 0:
         merged["total_tokens"] = merged["input_tokens"] + merged["output_tokens"]
     return merged
-
-
-def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw_arguments) if str(raw_arguments or "").strip() else {}
-    except json.JSONDecodeError:
-        parsed = {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _message_content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content

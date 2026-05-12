@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.tool_call_normalizer import canonicalize_tool_call
 from app.tool_trace_summary import safe_error_message, safe_preview
 
 
@@ -146,7 +147,16 @@ def build_tool_gating_summary(
         attachment_required = bool(attachment_requires_tooling)
         workspace_requested = bool(workspace_action_requested)
         network = bool(network_requested)
-        should_expose = bool(tools_should_be_exposed)
+        computed_should_expose, computed_reason = should_expose_tools(
+            tools_available=bool(contract.get("tools_available")),
+            runtime_output_mode=runtime_output_mode,
+            explicit_tool_request=explicit,
+            attachment_requires_tooling=attachment_required,
+            workspace_action_requested=workspace_requested,
+            network_requested=network,
+            proposal_expects_tools=proposal_expects_tools,
+        )
+        should_expose = computed_should_expose if tools_should_be_exposed is None else bool(tools_should_be_exposed)
         actual_exposed = bool(actual_tools_exposed) if actual_tools_exposed is not None else None
         tool_names = [str(item or "").strip() for item in list(exposed_tool_names or []) if str(item or "").strip()]
         preview = tool_names[:_TOOL_NAME_PREVIEW_LIMIT]
@@ -158,17 +168,14 @@ def build_tool_gating_summary(
             and not network
         )
         direct_answer_gate_applied = gate_expected and actual_exposed is False
-        reason = _tool_gating_reason(
-            runtime_output_mode=runtime_output_mode,
-            proposal_response_mode=proposal_response_mode,
-            proposal_expects_tools=proposal_expects_tools,
-            explicit_tool_request=explicit,
-            attachment_requires_tooling=attachment_required,
-            workspace_action_requested=workspace_requested,
-            network_requested=network,
-            tools_should_be_exposed=should_expose,
-            actual_tools_exposed=actual_exposed,
-        )
+        if (
+            runtime_output_mode == "direct_answer"
+            and actual_exposed is True
+            and not (explicit or attachment_required or workspace_requested or network)
+        ):
+            reason = "BUG: direct_answer predicted but tools were exposed"
+        else:
+            reason = computed_reason
         return {
             "runtime_output_mode": runtime_output_mode,
             "proposal_response_mode": proposal_response_mode,
@@ -283,6 +290,31 @@ def build_model_runtime_analysis(
         return {"diagnostics_error": safe_error_message(exc)}
 
 
+def should_expose_tools(
+    *,
+    tools_available: bool,
+    runtime_output_mode: str,
+    explicit_tool_request: bool,
+    attachment_requires_tooling: bool,
+    workspace_action_requested: bool,
+    network_requested: bool,
+    proposal_expects_tools: bool,
+) -> tuple[bool, str]:
+    if not tools_available:
+        return False, "tools unavailable"
+    if explicit_tool_request or workspace_action_requested:
+        return True, "workspace tool request"
+    if network_requested:
+        return True, "network tool request"
+    if attachment_requires_tooling:
+        return True, "attachment requires tooling"
+    if proposal_expects_tools and str(runtime_output_mode or "").strip() not in {"", "direct_answer"}:
+        return True, "proposal expects tools"
+    if str(runtime_output_mode or "").strip() == "direct_answer":
+        return False, "direct answer and no explicit tool need"
+    return False, "no tool need detected"
+
+
 def _message_role_counts(messages: list[Any]) -> dict[str, int]:
     counts = {"system": 0, "user": 0, "assistant": 0, "tool": 0}
     for message in list(messages or []):
@@ -320,88 +352,37 @@ def _as_payload(runtime_contract: dict[str, Any] | Any | None) -> dict[str, Any]
     }
 
 
-def _tool_gating_reason(
-    *,
-    runtime_output_mode: str,
-    proposal_response_mode: str,
-    proposal_expects_tools: bool,
-    explicit_tool_request: bool,
-    attachment_requires_tooling: bool,
-    workspace_action_requested: bool,
-    network_requested: bool,
-    tools_should_be_exposed: bool,
-    actual_tools_exposed: bool | None,
-) -> str:
-    if runtime_output_mode == "direct_answer" and actual_tools_exposed:
-        return "BUG: direct_answer predicted but tools were exposed"
-    if explicit_tool_request or attachment_requires_tooling or workspace_action_requested or network_requested:
-        return "tool exposure allowed because the request explicitly indicates tool or workspace/network work"
-    if tools_should_be_exposed:
-        return "tool exposure allowed by runtime gate"
-    if runtime_output_mode == "direct_answer" and proposal_response_mode == "direct_answer":
-        if proposal_expects_tools:
-            return "runtime output_mode is direct_answer, but the model proposal still expects tools"
-        return "runtime output_mode is direct_answer and no explicit tool request was detected"
-    return "tool exposure decision followed the current runtime and proposal state"
-
-
 def _tool_call_summary(index: int, tool_call: Any) -> dict[str, Any]:
-    item = dict(tool_call or {}) if isinstance(tool_call, dict) else {}
-    raw_args = item.get("raw_args")
-    parsed_args = item.get("args")
-    args_type, args_preview, raw_args_chars, raw_args_preview, parse_status = _analyze_tool_call_args(
-        raw_args=raw_args,
-        parsed_args=parsed_args,
-    )
+    canonical = canonicalize_tool_call(tool_call)
+    args_type, args_preview = _canonical_args_type_and_preview(canonical)
+    raw_args_preview = safe_preview(canonical.raw_args, limit=_ARGS_PREVIEW_LIMIT)
     return {
         "index": int(index),
-        "id_present": bool(str(item.get("id") or "").strip()),
-        "name": str(item.get("name") or ""),
+        "id_present": bool(str(canonical.id or "").strip()),
+        "name": str(canonical.name or canonical.raw_name or ""),
         "args_type": args_type,
         "args_preview": args_preview,
-        "raw_args_chars": raw_args_chars,
+        "raw_args_chars": len(canonical.raw_args or ""),
         "raw_args_preview": raw_args_preview,
-        "args_parse_status": parse_status,
+        "args_parse_status": canonical.arguments_parse_status,
     }
 
 
-def _analyze_tool_call_args(
-    *,
-    raw_args: Any,
-    parsed_args: Any,
-) -> tuple[str, Any, int, Any, str]:
-    raw_preview = safe_preview(raw_args, limit=_ARGS_PREVIEW_LIMIT)
-    if isinstance(raw_args, str):
-        raw_text = raw_args
-        raw_chars = len(raw_text)
-        stripped = raw_text.strip()
-        if not stripped:
-            if isinstance(parsed_args, dict):
-                return "dict", safe_preview(parsed_args, limit=_ARGS_PREVIEW_LIMIT), raw_chars, raw_preview, (
-                    "empty_object" if not parsed_args else "valid_object"
-                )
-            return "missing", None, raw_chars, raw_preview, "missing"
+def _canonical_args_type_and_preview(canonical: Any) -> tuple[str, Any]:
+    status = str(getattr(canonical, "arguments_parse_status", "") or "")
+    args = dict(getattr(canonical, "args", {}) or {})
+    raw_args = str(getattr(canonical, "raw_args", "") or "")
+    if status in {"valid_object", "empty_object"}:
+        return "dict", safe_preview(args, limit=_ARGS_PREVIEW_LIMIT)
+    if status == "missing":
+        return "missing", None
+    if raw_args.strip():
         try:
-            decoded = json.loads(stripped)
+            decoded = json.loads(raw_args)
         except json.JSONDecodeError:
-            return "str", None, raw_chars, raw_preview, "invalid_json"
-        if isinstance(decoded, dict):
-            status = "empty_object" if not decoded else "valid_object"
-            return "dict", safe_preview(decoded, limit=_ARGS_PREVIEW_LIMIT), raw_chars, raw_preview, status
-        return type(decoded).__name__, None, raw_chars, raw_preview, "not_object"
-
-    if isinstance(raw_args, dict):
-        status = "empty_object" if not raw_args else "valid_object"
-        return "dict", safe_preview(raw_args, limit=_ARGS_PREVIEW_LIMIT), len(json.dumps(raw_args, ensure_ascii=False)), raw_preview, status
-
-    if isinstance(parsed_args, dict):
-        status = "empty_object" if not parsed_args else "valid_object"
-        return "dict", safe_preview(parsed_args, limit=_ARGS_PREVIEW_LIMIT), 0, raw_preview, status
-
-    if raw_args is None and parsed_args in (None, ""):
-        return "missing", None, 0, raw_preview, "missing"
-
-    return type(raw_args).__name__ if raw_args is not None else "unknown", None, 0, raw_preview, "unknown"
+            return "str", None
+        return type(decoded).__name__, None
+    return "unknown", None
 
 
 def _collect_diagnostic_warnings(
@@ -429,6 +410,10 @@ def _collect_diagnostic_warnings(
     if (
         str(tool_gating.get("runtime_output_mode") or "") == "direct_answer"
         and tool_gating.get("actual_tools_exposed") is True
+        and not bool(tool_gating.get("explicit_tool_request"))
+        and not bool(tool_gating.get("attachment_requires_tooling"))
+        and not bool(tool_gating.get("workspace_action_requested"))
+        and not bool(tool_gating.get("network_requested"))
     ):
         add(
             "direct_answer_tools_exposed",
@@ -439,6 +424,20 @@ def _collect_diagnostic_warnings(
                 "simple_direct_answer_tool_choice_auto",
                 "tools were exposed while tool_choice=auto for a simple direct answer",
             )
+    elif (
+        str(tool_gating.get("runtime_output_mode") or "") == "direct_answer"
+        and (
+            bool(tool_gating.get("explicit_tool_request"))
+            or bool(tool_gating.get("attachment_requires_tooling"))
+            or bool(tool_gating.get("workspace_action_requested"))
+            or bool(tool_gating.get("network_requested"))
+        )
+    ):
+        add(
+            "runtime_output_mode_direct_answer_but_tool_required",
+            "runtime output_mode is direct_answer, but explicit workspace tool request requires tools",
+            severity="info",
+        )
 
     if (
         str(tool_gating.get("runtime_output_mode") or "") == "direct_answer"
