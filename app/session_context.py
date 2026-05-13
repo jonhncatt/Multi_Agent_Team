@@ -284,6 +284,10 @@ def _normalize_attachment_refs(raw: Any, *, limit: int = 8) -> list[dict[str, st
             "kind": str(item.get("kind") or "").strip(),
             "path": str(item.get("path") or "").strip(),
         }
+        for extra_key in ("last_tool", "summary", "format_rules"):
+            extra_value = str(item.get(extra_key) or "").strip()
+            if extra_value:
+                ref[extra_key] = extra_value
         key = ref["id"] or ref["path"] or ref["name"]
         if not key or key in seen:
             continue

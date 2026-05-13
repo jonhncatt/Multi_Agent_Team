@@ -258,15 +258,20 @@ _MISSING_CONTEXT_RESPONSE_HINTS = (
 )
 _GENERIC_IMAGE_READ_REQUEST_HINTS = (
     "看看图片内容",
+    "看看这张图",
+    "看看这张图里写了什么",
     "解释图片内容",
     "看图",
     "读图",
+    "帮我读图",
+    "帮我读一下这张截图",
     "读取图片",
     "读取截图",
     "识别图片",
     "识别截图",
     "提取图片文字",
     "提取截图文字",
+    "图里写了什么",
     "图片里写了什么",
     "截图里写了什么",
     "查看附件内容",
@@ -277,6 +282,88 @@ _GENERIC_IMAGE_READ_REQUEST_HINTS = (
     "read image",
     "analyze image",
     "ocr this image",
+)
+_IMAGE_FORMAT_OR_LOGIC_HINTS = (
+    "理解图片",
+    "理解这张图片",
+    "参考图片",
+    "根据图片",
+    "按图片",
+    "图片里的格式",
+    "图片里的逻辑",
+    "图片格式",
+    "图片逻辑",
+    "截图格式",
+    "按照这个格式",
+    "按这个格式",
+    "整理下面的数据",
+    "格式整理",
+    "based on the image",
+    "follow the image",
+    "according to the image",
+    "use the image format",
+)
+_TASK_CONTINUATION_HINTS = (
+    "继续",
+    "接着",
+    "然后",
+    "按刚才",
+    "按照刚才",
+    "按之前",
+    "参考之前",
+    "用那个图片",
+    "按那个图片",
+    "刚才图片",
+    "that image",
+    "previous image",
+    "continue",
+    "go on",
+    "follow up",
+)
+_PROMISE_TO_ACT_HINTS = (
+    "我先",
+    "我会",
+    "我将",
+    "接下来",
+    "让我先",
+    "先看一下",
+    "先分析一下",
+    "确认后再",
+    "确认之后再",
+    "读取之后",
+    "分析之后",
+    "再帮你",
+    "稍等",
+    "i will first",
+    "i'll first",
+    "let me first",
+    "i'll check",
+    "i will check",
+    "i'll analyze",
+    "i will analyze",
+    "after checking",
+)
+_STATUS_ONLY_COMPLETION_HINTS = (
+    "已理解格式",
+    "已经理解格式",
+    "我已经理解格式",
+    "file read complete",
+    "format understood",
+)
+_DELIVERABLE_MARKERS = (
+    "如下",
+    "整理如下",
+    "结果如下",
+    "总结如下",
+    "已根据",
+    "已经根据",
+    "下面是",
+    "这是整理结果",
+    "这里是整理结果",
+    "organized data",
+    "here is the result",
+    "summary:",
+    "result:",
 )
 
 _WRITE_INTENT_HINTS = (
@@ -1708,9 +1795,20 @@ class VintageProgrammerRuntime:
         return result, event
 
     @staticmethod
-    def _attachment_refs(attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+    def _attachment_refs(
+        attachments: list[dict[str, Any]],
+        *,
+        existing: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, str]]:
         refs: list[dict[str, str]] = []
         seen: set[str] = set()
+        existing_index: dict[str, dict[str, Any]] = {}
+        for item in list(existing or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("path") or item.get("id") or item.get("name") or "").strip()
+            if key:
+                existing_index[key] = dict(item)
         for item in attachments:
             if not isinstance(item, dict):
                 continue
@@ -1719,14 +1817,19 @@ class VintageProgrammerRuntime:
             if not key or key in seen:
                 continue
             seen.add(key)
-            refs.append(
-                {
-                    "id": str(item.get("id") or "").strip(),
-                    "name": str(item.get("name") or item.get("original_name") or "").strip(),
-                    "kind": str(item.get("kind") or "").strip(),
-                    "path": path,
-                }
-            )
+            ref = {
+                "id": str(item.get("id") or "").strip(),
+                "name": str(item.get("name") or item.get("original_name") or "").strip(),
+                "kind": str(item.get("kind") or "").strip(),
+                "path": path,
+            }
+            preserved = existing_index.get(key) or existing_index.get(str(item.get("id") or "").strip()) or existing_index.get(ref["name"])
+            if preserved:
+                for extra_key in ("last_tool", "summary", "format_rules"):
+                    extra_value = str(preserved.get(extra_key) or "").strip()
+                    if extra_value:
+                        ref[extra_key] = extra_value
+            refs.append(ref)
         return refs[:8]
 
     @staticmethod
@@ -1749,6 +1852,10 @@ class VintageProgrammerRuntime:
                 "kind": str(item.get("kind") or "").strip(),
                 "path": str(item.get("path") or "").strip(),
             }
+            for extra_key in ("last_tool", "summary", "format_rules"):
+                extra_value = str(item.get(extra_key) or "").strip()
+                if extra_value:
+                    ref[extra_key] = extra_value
             key = ref["path"] or ref["id"] or ref["name"]
             if not key or key in seen_attachment_keys:
                 continue
@@ -1782,7 +1889,10 @@ class VintageProgrammerRuntime:
             restored["cwd"] = restored.get("cwd") or cwd or project_root
             restored["goal"] = goal if prefer_goal and goal else (restored.get("goal") or goal)
             if attachments:
-                restored["active_attachments"] = self._attachment_refs(attachments)
+                restored["active_attachments"] = self._attachment_refs(
+                    attachments,
+                    existing=list(restored.get("active_attachments") or []),
+                )
             return restored
         return {
             "task_id": str(uuid.uuid4()),
@@ -1872,7 +1982,30 @@ class VintageProgrammerRuntime:
                     candidate_parent = candidate.parent
                     if str(candidate_parent).strip():
                         updated["cwd"] = str(candidate_parent)
-        updated["active_attachments"] = self._attachment_refs(attachments)
+        updated["active_attachments"] = self._attachment_refs(attachments, existing=list(updated.get("active_attachments") or []))
+        if tool_name in {"image_read", "image_inspect"}:
+            attachment_summary = safe_preview(
+                result.get("visible_text") or result.get("analysis") or result.get("summary") or "",
+                limit=400,
+            )
+            format_rules = safe_preview(
+                result.get("visible_text") or result.get("analysis") or result.get("summary") or "",
+                limit=600,
+            )
+            target_path = str(primary_path or "").strip()
+            for ref in list(updated.get("active_attachments") or []):
+                if not isinstance(ref, dict):
+                    continue
+                ref_path = str(ref.get("path") or "").strip()
+                if target_path and ref_path and ref_path != target_path:
+                    continue
+                ref["last_tool"] = tool_name
+                if attachment_summary:
+                    ref["summary"] = attachment_summary
+                if format_rules:
+                    ref["format_rules"] = format_rules
+                if target_path or len(list(updated.get("active_attachments") or [])) == 1:
+                    break
         summary = str(result.get("summary") or result.get("error") or "").strip()
         if summary:
             updated["last_completed_step"] = f"{tool_name}: {summary}"[:240]
@@ -2023,11 +2156,15 @@ class VintageProgrammerRuntime:
         *,
         prompt_message: str,
         route_state: dict[str, Any],
+        attachments: list[dict[str, Any]] | None = None,
+        active_task_focus: dict[str, Any] | None = None,
         locale: str,
         current_turn: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         route = dict(route_state or {})
         turn = dict(current_turn or {})
+        focus = self._normalize_task_checkpoint(active_task_focus)
+        attachment_metas = [item for item in list(attachments or []) if isinstance(item, dict)]
         task_checkpoint = dict(route.get("task_checkpoint") or route.get("current_task_focus") or {})
         route_task_type = str(route.get("task_type") or "").strip().lower()
         route_primary_intent = str(route.get("primary_intent") or "").strip().lower()
@@ -2040,6 +2177,29 @@ class VintageProgrammerRuntime:
         explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
         workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
         network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
+        has_image_context = bool(has_image_attachments_helper(attachment_metas)) or self._active_focus_has_image_context(focus)
+        image_attachment_needs_read = bool(
+            has_image_context
+            and (
+                self._looks_like_generic_image_read_request(prompt_message)
+                or self._looks_like_image_format_or_logic_request(prompt_message)
+            )
+        )
+        previous_task_focus_requires_tooling = bool(
+            focus
+            and (
+                self._looks_like_task_continuation_message(prompt_message)
+                or str(turn.get("is_followup") or "").strip().lower() in {"true", "1"}
+                or bool(turn.get("is_followup"))
+            )
+            and (
+                bool(focus.get("active_files"))
+                or bool(focus.get("active_attachments"))
+                or str(focus.get("next_action") or "").strip()
+                or str(focus.get("last_completed_step") or "").strip()
+            )
+        )
+        attachment_requires_tooling = bool(self._attachments_require_tools(attachment_metas))
         if current_turn_followup_type == "subject_request":
             task_type = "followup_transform"
         elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
@@ -2065,12 +2225,29 @@ class VintageProgrammerRuntime:
         if revision_requested:
             output_mode = "revision_with_change_summary"
             summary_reason = translate(locale, "runtime.activity.summary.rewrite_requested")
-        elif workspace_action_requested or explicit_tool_request:
+        elif (
+            workspace_action_requested
+            or explicit_tool_request
+            or attachment_requires_tooling
+            or image_attachment_needs_read
+            or previous_task_focus_requires_tooling
+        ):
             output_mode = "tool_assisted_answer"
-            summary_reason = {
-                "zh-CN": "需要读取工作区文件。",
-                "ja-JP": "ワークスペースの確認が必要です。",
-            }.get(locale, "Need workspace inspection before answering.")
+            if image_attachment_needs_read:
+                summary_reason = {
+                    "zh-CN": "需要先读取图片并提取格式逻辑，然后继续整理数据。",
+                    "ja-JP": "先に画像を読み取り、形式ロジックを抽出してから整理を続ける必要があります。",
+                }.get(locale, "Need to read the image and extract its format logic before continuing.")
+            elif previous_task_focus_requires_tooling and has_image_context:
+                summary_reason = {
+                    "zh-CN": "需要沿用之前的图片上下文继续完成当前整理任务。",
+                    "ja-JP": "前回の画像コンテキストを使って今回の整理を続ける必要があります。",
+                }.get(locale, "Need to continue the current task with the previous image context.")
+            else:
+                summary_reason = {
+                    "zh-CN": "需要读取工作区文件。",
+                    "ja-JP": "ワークスペースの確認が必要です。",
+                }.get(locale, "Need workspace inspection before answering.")
         elif network_requested:
             output_mode = "tool_assisted_answer"
             summary_reason = {
@@ -2096,6 +2273,19 @@ class VintageProgrammerRuntime:
             "next_action_hint": next_action_hint,
             "current_turn_followup_type": current_turn_followup_type,
             "current_turn_goal_source": str(turn.get("source") or "").strip(),
+            "requires_tools_hint": bool(
+                workspace_action_requested
+                or explicit_tool_request
+                or network_requested
+                or attachment_requires_tooling
+                or image_attachment_needs_read
+                or previous_task_focus_requires_tooling
+            ),
+            "tool_assisted": output_mode == "tool_assisted_answer",
+            "attachment_requires_tooling": attachment_requires_tooling,
+            "image_attachment_needs_read": image_attachment_needs_read,
+            "previous_task_focus_requires_tooling": previous_task_focus_requires_tooling,
+            "preferred_tool": "image_read" if image_attachment_needs_read else "",
             "source": "runtime_guess",
         }
 
@@ -2186,7 +2376,15 @@ class VintageProgrammerRuntime:
         explicit_tool_request = _looks_like_explicit_tool_request(prompt_message)
         workspace_action_requested = _contains_any(prompt_message, _EXPLICIT_WORKSPACE_HINTS)
         network_requested = _contains_any(prompt_message, _EXPLICIT_NETWORK_HINTS)
-        if needs_tools and (workspace_action_requested or explicit_tool_request or network_requested):
+        image_attachment_needs_read = bool(runtime_hint.get("image_attachment_needs_read"))
+        previous_task_focus_requires_tooling = bool(runtime_hint.get("previous_task_focus_requires_tooling"))
+        if needs_tools and (
+            workspace_action_requested
+            or explicit_tool_request
+            or network_requested
+            or image_attachment_needs_read
+            or previous_task_focus_requires_tooling
+        ):
             response_mode = "tool_assisted_answer"
         else:
             response_mode = str(previous.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
@@ -2194,7 +2392,21 @@ class VintageProgrammerRuntime:
         current_goal = hinted_goal or str(previous.get("current_goal") or "").strip() or safe_preview(prompt_message, limit=280) or (
             "Gather the required tool evidence before answering." if needs_tools else "Answer the user directly."
         )
-        if needs_tools and (workspace_action_requested or explicit_tool_request):
+        if needs_tools and image_attachment_needs_read:
+            summary = str(previous.get("summary") or "").strip() or "需要先读取图片并提取格式逻辑，然后继续整理数据。"
+            next_step_hint = (
+                str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip()
+                or "Call image_read for the relevant attachment, then apply the extracted format to the user's data."
+            )
+            user_stage = str(previous.get("user_stage") or "").strip() or "Read image and extract formatting logic"
+        elif needs_tools and previous_task_focus_requires_tooling:
+            summary = str(previous.get("summary") or "").strip() or "需要沿用之前的图片上下文继续完成当前整理任务。"
+            next_step_hint = (
+                str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip()
+                or "Reuse the previous image-derived format rules and complete the requested transformation."
+            )
+            user_stage = str(previous.get("user_stage") or "").strip() or "Continue the image-based transformation"
+        elif needs_tools and (workspace_action_requested or explicit_tool_request):
             summary = str(previous.get("summary") or "").strip() or "需要读取工作区文件。"
             next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or "Call read_file for the requested path."
             user_stage = str(previous.get("user_stage") or "").strip() or "Use tool to inspect requested workspace file"
@@ -3239,17 +3451,270 @@ class VintageProgrammerRuntime:
             ],
         }
 
-    def _looks_like_plan_only_response(self, text: str) -> bool:
+    @staticmethod
+    def _looks_like_task_continuation_message(text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).lower()
+        if not normalized:
+            return False
+        return any(marker.lower() in normalized for marker in _TASK_CONTINUATION_HINTS)
+
+    @staticmethod
+    def _looks_like_image_format_or_logic_request(text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).lower()
+        if not normalized:
+            return False
+        return any(marker.lower() in normalized for marker in _IMAGE_FORMAT_OR_LOGIC_HINTS)
+
+    @staticmethod
+    def _active_focus_has_image_context(focus: dict[str, Any]) -> bool:
+        for item in list((focus or {}).get("active_attachments") or []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "").strip().lower() == "image":
+                return True
+            if str(item.get("last_tool") or "").strip() in {"image_read", "image_inspect"}:
+                return True
+            if str(item.get("summary") or "").strip() or str(item.get("format_rules") or "").strip():
+                return True
+        return "image_read" in str((focus or {}).get("last_completed_step") or "")
+
+    @staticmethod
+    def _tool_events_include_success(tool_events: list[ToolEvent], names: set[str] | None = None) -> bool:
+        wanted = {str(item or "").strip() for item in list(names or set()) if str(item or "").strip()}
+        for item in list(tool_events or []):
+            if str(getattr(item, "status", "") or "") != "ok":
+                continue
+            name = str(getattr(item, "name", "") or "").strip()
+            if not wanted or name in wanted:
+                return True
+        return False
+
+    @staticmethod
+    def _assistant_text_has_deliverable_markers(text: str) -> bool:
+        normalized = " ".join(str(text or "").split())
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if any(marker.lower() in lowered for marker in _DELIVERABLE_MARKERS):
+            return True
+        lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+        if len(lines) >= 3:
+            return True
+        return any(
+            line.startswith(("- ", "* ", "1.", "2.", "3.", "•"))
+            for line in lines
+        )
+
+    @classmethod
+    def _contains_promise_to_act(cls, text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).lower()
+        if not normalized:
+            return False
+        return cls._looks_like_plan_only_response(normalized) or any(
+            marker.lower() in normalized for marker in _PROMISE_TO_ACT_HINTS
+        )
+
+    @staticmethod
+    def _looks_like_status_only_completion(text: str) -> bool:
+        normalized = " ".join(str(text or "").split()).lower()
+        if not normalized:
+            return False
+        if len(normalized) > 120:
+            return False
+        return any(marker.lower() in normalized for marker in _STATUS_ONLY_COMPLETION_HINTS)
+
+    @staticmethod
+    def _active_focus_has_completed_image_evidence(focus: dict[str, Any]) -> bool:
+        for item in list((focus or {}).get("active_attachments") or []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("last_tool") or "").strip() in {"image_read", "image_inspect"}:
+                return True
+            if str(item.get("summary") or "").strip() or str(item.get("format_rules") or "").strip():
+                return True
+        return "image_read" in str((focus or {}).get("last_completed_step") or "")
+
+    def _expected_deliverable_type(
+        self,
+        *,
+        user_goal: str,
+        attachments_required: bool,
+        tools_required: bool,
+        has_image_context: bool,
+    ) -> str:
+        if has_image_context and self._looks_like_image_format_or_logic_request(user_goal):
+            return "organized_data"
+        if has_image_context:
+            return "image_summary"
+        if tools_required and _contains_any(user_goal, _EXPLICIT_WORKSPACE_HINTS):
+            return "workspace_summary"
+        if tools_required and _contains_any(user_goal, _EXPLICIT_NETWORK_HINTS):
+            return "external_lookup_answer"
+        if attachments_required:
+            return "attachment_based_answer"
+        return "direct_text_answer"
+
+    def _is_invalid_incomplete_final_answer(
+        self,
+        *,
+        user_goal: str,
+        assistant_text: str,
+        runtime_output_mode: str,
+        expected_deliverable_type: str,
+        attachments_required: bool,
+        tools_required: bool,
+        tools_used: list[str],
+    ) -> tuple[bool, str]:
+        text = " ".join(str(assistant_text or "").split()).strip()
+        if not text:
+            return True, "empty_response_without_deliverable"
+        if not tools_required and not attachments_required and str(runtime_output_mode or "").strip() == "direct_answer":
+            return False, "requested_deliverable_produced"
+        has_deliverable_markers = self._assistant_text_has_deliverable_markers(text)
+        if self._contains_promise_to_act(text) and not has_deliverable_markers:
+            return True, "promise_to_act_without_deliverable"
+        if self._looks_like_status_only_completion(text) and not has_deliverable_markers:
+            return True, "status_only_without_deliverable"
+        if expected_deliverable_type == "organized_data" and tools_used and len(text) < 24 and not has_deliverable_markers:
+            return True, "deliverable_missing_after_tooling"
+        return False, "requested_deliverable_produced"
+
+    def _should_continue_after_model_response(
+        self,
+        *,
+        user_goal: str,
+        assistant_text: str,
+        tool_calls: list[Any],
+        recent_tool_results: list[ToolEvent],
+        runtime_output_mode: str,
+        active_task_focus: dict[str, Any],
+        attachments: list[dict[str, Any]],
+        attachments_required: bool,
+        tools_required: bool,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        image_context = bool(has_image_attachments_helper(attachments)) or self._active_focus_has_image_context(active_task_focus)
+        prior_image_evidence = self._active_focus_has_completed_image_evidence(active_task_focus)
+        expected_deliverable_type = self._expected_deliverable_type(
+            user_goal=user_goal,
+            attachments_required=attachments_required,
+            tools_required=tools_required,
+            has_image_context=image_context,
+        )
+        successful_tools = [
+            str(getattr(item, "name", "") or "").strip()
+            for item in list(recent_tool_results or [])
+            if str(getattr(item, "status", "") or "") == "ok" and str(getattr(item, "name", "") or "").strip()
+        ]
+        image_read_observed = self._tool_events_include_success(recent_tool_results, {"image_read", "image_inspect"})
+        workspace_evidence_observed = self._tool_events_include_success(
+            recent_tool_results,
+            {
+                "read_file",
+                "list_dir",
+                "glob_file_search",
+                "search_contents_in_file",
+                "search_contents_in_file_multi",
+                "read_section",
+                "table_extract",
+                "fact_check_file",
+                "search_codebase",
+                "exec_command",
+            },
+        )
+        invalid_final, invalid_reason = self._is_invalid_incomplete_final_answer(
+            user_goal=user_goal,
+            assistant_text=assistant_text,
+            runtime_output_mode=runtime_output_mode,
+            expected_deliverable_type=expected_deliverable_type,
+            attachments_required=attachments_required,
+            tools_required=tools_required,
+            tools_used=successful_tools,
+        )
+        deliverable_detected = bool(str(assistant_text or "").strip()) and not invalid_final
+        should_continue = False
+        reason = "requested_deliverable_produced"
+        if tool_calls:
+            should_continue = True
+            reason = "model_returned_tool_calls"
+        elif (
+            image_context
+            and (
+                self._looks_like_generic_image_read_request(user_goal)
+                or self._looks_like_image_format_or_logic_request(user_goal)
+            )
+            and not (image_read_observed or prior_image_evidence)
+        ):
+            should_continue = True
+            reason = "image_attachment_not_read_yet"
+        elif tools_required and _contains_any(user_goal, _EXPLICIT_WORKSPACE_HINTS) and not workspace_evidence_observed:
+            should_continue = True
+            reason = "workspace_evidence_not_collected_yet"
+        elif invalid_final:
+            should_continue = True
+            reason = invalid_reason
+        continuity = {
+            "active_goal": str(user_goal or "").strip(),
+            "requires_tools": bool(tools_required),
+            "attachments_required": bool(attachments_required),
+            "tools_used": successful_tools,
+            "expected_deliverable_type": expected_deliverable_type,
+            "deliverable_detected": deliverable_detected,
+            "should_continue": should_continue,
+            "reason": reason,
+        }
+        return should_continue, reason, continuity
+
+    def _build_continuation_steer(
+        self,
+        *,
+        locale: str,
+        current_goal: str,
+        current_task_focus: dict[str, Any],
+        continuation_reason: str,
+    ) -> str:
+        attachment_brief = [
+            {
+                "name": str(item.get("name") or ""),
+                "kind": str(item.get("kind") or ""),
+                "summary": str(item.get("summary") or item.get("format_rules") or "")[:240],
+            }
+            for item in list(current_task_focus.get("active_attachments") or [])[:4]
+            if isinstance(item, dict)
+        ]
+        lines = [
+            "The previous assistant message was not a valid final answer.",
+            "The user requested a completed deliverable, but the message only promised future action or reported an intermediate status.",
+            "Continue the current turn. Use tools if needed. Do not ask the user for confirmation if the required context is already available.",
+            f"continuation_reason: {continuation_reason}",
+            f"current_goal: {current_goal}",
+        ]
+        if attachment_brief:
+            lines.append("active_attachment_context: " + json.dumps(attachment_brief, ensure_ascii=False))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _looks_like_plan_only_response(text: str) -> bool:
         normalized = " ".join(str(text or "").split()).lower()
         if not normalized:
             return False
         markers = (
             "i'll",
             "i will",
-            "plan",
             "next i",
+            "let me first",
+            "i will first",
+            "i'll check",
+            "i'll analyze",
             "接下来",
+            "让我先",
+            "我先",
             "我会先",
+            "我会",
+            "我将",
+            "先读取图片",
+            "先确认格式",
+            "确认后再",
+            "再按照这个格式",
             "计划是",
             "方案如下",
         )
@@ -3936,6 +4401,8 @@ class VintageProgrammerRuntime:
         runtime_hint = self._build_runtime_guess(
             prompt_message=prompt_message,
             route_state=route_state_input,
+            attachments=attachment_metas,
+            active_task_focus=active_task_focus,
             locale=locale,
             current_turn=current_turn_context,
         )
@@ -3944,6 +4411,8 @@ class VintageProgrammerRuntime:
             runtime_output_mode=str(runtime_hint.get("output_mode") or "direct_answer"),
             explicit_tool_request=explicit_tool_request,
             attachment_requires_tooling=attachment_requires_tooling,
+            image_attachment_needs_read=bool(runtime_hint.get("image_attachment_needs_read")),
+            previous_task_focus_requires_tooling=bool(runtime_hint.get("previous_task_focus_requires_tooling")),
             workspace_action_requested=workspace_action_requested,
             network_requested=network_requested,
             proposal_expects_tools=False,
@@ -3970,6 +4439,22 @@ class VintageProgrammerRuntime:
             "enabled": bool(write_authorized and collaboration_mode in {"default", "execute"} and bool(runnable_tools)),
             "triggered": False,
             "attempts": 0,
+            "reason": "",
+        }
+        final_answer_guard_state: dict[str, Any] = {
+            "checked": False,
+            "accepted": False,
+            "reason": "",
+            "attempts": 0,
+        }
+        task_continuity_state: dict[str, Any] = {
+            "active_goal": current_goal,
+            "requires_tools": bool(expects_tools),
+            "attachments_required": bool(attachment_requires_tooling),
+            "tools_used": [],
+            "expected_deliverable_type": "",
+            "deliverable_detected": False,
+            "should_continue": False,
             "reason": "",
         }
         blocked_reason = ""
@@ -4020,6 +4505,7 @@ class VintageProgrammerRuntime:
         execution_trace: list[dict[str, Any]] = []
         proposal_diagnostics: dict[str, Any] = {}
         model_runtime_analysis: dict[str, Any] = {}
+        last_request_summary_hint: dict[str, Any] = {}
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
@@ -4127,6 +4613,8 @@ class VintageProgrammerRuntime:
                 runtime_output_mode=str(output_mode or runtime_hint.get("output_mode") or "direct_answer"),
                 explicit_tool_request=explicit_tool_request,
                 attachment_requires_tooling=attachment_requires_tooling,
+                image_attachment_needs_read=bool(runtime_hint.get("image_attachment_needs_read")),
+                previous_task_focus_requires_tooling=bool(runtime_hint.get("previous_task_focus_requires_tooling")),
                 workspace_action_requested=workspace_action_requested,
                 network_requested=network_requested,
                 proposal_expects_tools=bool(proposal_expects_tools),
@@ -4160,11 +4648,15 @@ class VintageProgrammerRuntime:
             *,
             request_summary_hint: dict[str, Any] | None,
         ) -> dict[str, Any]:
+            nonlocal last_request_summary_hint
             response_metadata = dict(getattr(ai_msg, "response_metadata", None) or {})
             request_summary = {
+                **dict(last_request_summary_hint or {}),
                 **dict(request_summary_hint or {}),
                 **dict(response_metadata.get("request_summary") or {}),
             }
+            if request_summary:
+                last_request_summary_hint = dict(request_summary)
             assistant_response_summary = dict(response_metadata.get("assistant_response_summary") or {})
             if not assistant_response_summary:
                 assistant_response_summary = build_assistant_response_summary_from_message(ai_msg)
@@ -4183,6 +4675,8 @@ class VintageProgrammerRuntime:
                 runtime_contract=runtime_contract,
                 explicit_tool_request=explicit_tool_request,
                 attachment_requires_tooling=attachment_requires_tooling,
+                image_attachment_needs_read=bool(runtime_hint.get("image_attachment_needs_read")),
+                previous_task_focus_requires_tooling=bool(runtime_hint.get("previous_task_focus_requires_tooling")),
                 workspace_action_requested=workspace_action_requested,
                 network_requested=network_requested,
                 tools_should_be_exposed=tools_should_be_exposed,
@@ -4191,6 +4685,8 @@ class VintageProgrammerRuntime:
                 exposed_tool_names=exposed_tool_names,
                 assistant_message=ai_msg,
                 assistant_response_summary=assistant_response_summary,
+                final_answer_guard=final_answer_guard_state,
+                task_continuity=task_continuity_state,
             )
 
         def refresh_model_step(
@@ -4207,6 +4703,8 @@ class VintageProgrammerRuntime:
             nonlocal turn_activity_context
             nonlocal current_goal
             nonlocal current_task_focus
+            nonlocal final_answer_guard_state
+            nonlocal task_continuity_state
             nonlocal notes
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
@@ -4231,6 +4729,23 @@ class VintageProgrammerRuntime:
             if proposal_goal:
                 current_goal = proposal_goal
                 current_task_focus["goal"] = current_goal
+            final_answer_guard_state = {
+                **dict(final_answer_guard_state or {}),
+                "checked": False,
+                "accepted": False,
+                "reason": "",
+            }
+            task_continuity_state = {
+                **dict(task_continuity_state or {}),
+                "active_goal": current_goal,
+                "requires_tools": bool(expects_tools or high_level_proposal.get("expects_tools")),
+                "attachments_required": bool(attachment_requires_tooling),
+                "tools_used": list(task_continuity_state.get("tools_used") or []),
+                "expected_deliverable_type": str(task_continuity_state.get("expected_deliverable_type") or ""),
+                "deliverable_detected": False,
+                "should_continue": False,
+                "reason": "",
+            }
             try:
                 ai_msg.content = cleaned_text
             except Exception:
@@ -4361,6 +4876,7 @@ class VintageProgrammerRuntime:
 
             act_now_budget = 1 if collaboration_mode in {"default", "execute"} and bool(runnable_tools) else 0
             invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
+            continuation_repair_budget = 2 if collaboration_mode in {"default", "execute"} else 0
             auto_image_rescue_budget = 1 if has_image_attachments and "image_read" in runnable_tools else 0
             halt_for_user_input = False
             turn_started_at = time.monotonic()
@@ -4498,35 +5014,101 @@ class VintageProgrammerRuntime:
                         forced_text = translate(locale, "runtime.invalid_final_guard.blocked")
                         notes.append(blocked_reason)
                         break
-                    should_steer = (
-                        act_now_budget > 0
-                        and not tool_events
+                    continuation_should_continue, continuation_reason, continuity_payload = self._should_continue_after_model_response(
+                        user_goal=current_goal or prompt_message,
+                        assistant_text=ai_text,
+                        tool_calls=tool_calls,
+                        recent_tool_results=tool_events,
+                        runtime_output_mode=str(
+                            high_level_proposal.get("response_mode")
+                            or validated_next_step.get("response_mode")
+                            or runtime_hint.get("output_mode")
+                            or "direct_answer"
+                        ),
+                        active_task_focus=current_task_focus,
+                        attachments=attachment_metas,
+                        attachments_required=bool(attachment_requires_tooling),
+                        tools_required=bool(expects_tools or high_level_proposal.get("expects_tools")),
+                    )
+                    task_continuity_state = dict(continuity_payload)
+                    final_answer_guard_state = {
+                        **dict(final_answer_guard_state or {}),
+                        "checked": True,
+                        "accepted": not continuation_should_continue,
+                        "reason": continuation_reason,
+                    }
+                    model_runtime_analysis = build_model_runtime_analysis_payload(
+                        ai_msg,
+                        request_summary_hint=None,
+                    )
+                    should_auto_rescue_image = (
+                        auto_image_rescue_budget > 0
                         and collaboration_mode in {"default", "execute"}
+                        and has_image_attachments
+                        and not any(item.name == "image_read" and item.status == "ok" for item in tool_events)
                         and (
-                            (not step_accepted)
-                            or expects_tools
-                            or self._looks_like_plan_only_response(ai_text)
-                            or (has_image_attachments and looks_like_image_capability_denial_helper(ai_text))
+                            looks_like_image_capability_denial_helper(ai_text)
+                            or self._looks_like_missing_context_response(ai_text)
+                        )
+                        and int(final_answer_guard_state.get("attempts") or 0) > 0
+                    )
+                    should_steer = (
+                        continuation_repair_budget > 0
+                        and collaboration_mode in {"default", "execute"}
+                        and not should_auto_rescue_image
+                        and (
+                            continuation_should_continue
+                            or (not step_accepted)
                         )
                     )
                     if should_steer:
-                        act_now_budget -= 1
+                        continuation_repair_budget -= 1
+                        if not tool_events and act_now_budget > 0:
+                            act_now_budget -= 1
+                        final_answer_guard_state["attempts"] = int(final_answer_guard_state.get("attempts") or 0) + 1
+                        final_answer_guard_state["accepted"] = False
                         messages.append(ai_msg)
                         messages.append(
                             self._backend._SystemMessage(
-                                content=self._build_act_now_steer(attachment_metas, locale=locale)
+                                content=(
+                                    self._build_act_now_steer(attachment_metas, locale=locale)
+                                    if not tool_events
+                                    else self._build_continuation_steer(
+                                        locale=locale,
+                                        current_goal=current_goal,
+                                        current_task_focus=current_task_focus,
+                                        continuation_reason=continuation_reason,
+                                    )
+                                )
                             )
                         )
-                        notes.append("strict_agentic_act_now_steer")
+                        notes.append("strict_agentic_act_now_steer" if not tool_events else "incomplete_final_answer_steer")
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="repair.started",
+                            title=self._trace_label(locale, "repair.started"),
+                            detail="incomplete_final_guard",
+                            status="running",
+                            trace_events=trace_events,
+                        )
                         phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+                        steer_tools_exposed, _ = decide_tool_exposure(
+                            proposal_expects_tools=bool(high_level_proposal.get("expects_tools") or continuation_should_continue),
+                            output_mode=str(
+                                high_level_proposal.get("response_mode")
+                                or runtime_hint.get("output_mode")
+                                or "direct_answer"
+                            ),
+                        )
                         ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                             self._backend._invoke_with_runner_recovery,
                             runner=runner,
                             messages=messages,
                             model=effective_model,
                             max_output_tokens=int(settings.max_output_tokens),
-                            enable_tools=True,
-                            tool_names=runnable_tools,
+                            enable_tools=steer_tools_exposed,
+                            tool_names=runnable_tools if steer_tools_exposed else None,
                             event_cb=self._make_model_stream_observer(
                                 progress_cb=progress_cb,
                                 run_id=run_id,
@@ -4553,17 +5135,16 @@ class VintageProgrammerRuntime:
                         notes.extend(invoke_notes)
                         usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
                         refresh_model_step(ai_msg, event_type="activity.delta")
-                        continue
-                    should_auto_rescue_image = (
-                        auto_image_rescue_budget > 0
-                        and collaboration_mode in {"default", "execute"}
-                        and has_image_attachments
-                        and not any(item.name == "image_read" and item.status == "ok" for item in tool_events)
-                        and (
-                            looks_like_image_capability_denial_helper(ai_text)
-                            or self._looks_like_missing_context_response(ai_text)
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="repair.finished",
+                            title=self._trace_label(locale, "repair.finished"),
+                            detail="incomplete_final_guard",
+                            status="success",
+                            trace_events=trace_events,
                         )
-                    )
+                        continue
                     if should_auto_rescue_image:
                         auto_image_rescue_budget -= 1
                         messages.append(ai_msg)
@@ -4634,6 +5215,8 @@ class VintageProgrammerRuntime:
                     no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
                     if self._looks_like_plan_only_response(ai_text):
                         no_tool_response_kind = "plan_only"
+                    if continuation_should_continue:
+                        no_tool_response_kind = "incomplete_final"
                     if not step_accepted:
                         blocked_reason = blocked_reason or "validated_next_step_rejected"
                     execution_entry = ExecutionTraceEntry(
@@ -5321,23 +5904,100 @@ class VintageProgrammerRuntime:
             evidence_status = "collected" if has_successful_tool else "needs_evidence_review"
             if (expects_tools or tool_events) and not has_successful_tool:
                 notes.append("tool_expectation_not_met")
+        task_continuity_state = {
+            **dict(task_continuity_state or {}),
+            "active_goal": current_goal,
+            "requires_tools": bool(expects_tools or high_level_proposal.get("expects_tools")),
+            "attachments_required": bool(attachment_requires_tooling),
+            "tools_used": [
+                str(item.name or "").strip()
+                for item in tool_events
+                if str(item.status or "") == "ok" and str(item.name or "").strip()
+            ],
+        }
         if turn_status in {"cancelled", "blocked"}:
             pass
         elif pending_user_input:
             turn_status = "needs_user_input"
-        elif collaboration_mode in {"default", "execute"} and expects_tools and not tool_events:
+            final_answer_guard_state = {
+                **dict(final_answer_guard_state or {}),
+                "checked": True,
+                "accepted": False,
+                "reason": "pending_user_input_required",
+            }
+        elif collaboration_mode in {"default", "execute"} and not tool_events and bool(task_continuity_state.get("should_continue")):
             turn_status = "blocked"
-            blocked_reason = blocked_reason or "required_tooling_not_used"
+            blocked_reason = blocked_reason or str(task_continuity_state.get("reason") or "required_tooling_not_used")
+            final_answer_guard_state = {
+                **dict(final_answer_guard_state or {}),
+                "checked": True,
+                "accepted": False,
+                "reason": blocked_reason,
+            }
             if has_image_attachments and looks_like_image_capability_denial_helper(raw_text):
                 notes.append("image_attachment_tooling_not_used")
             else:
                 notes.append("strict_agentic_blocked_without_required_tools")
-        elif collaboration_mode in {"default", "execute"} and not tool_events and self._looks_like_plan_only_response(raw_text):
+        elif collaboration_mode in {"default", "execute"} and final_answer_guard_state.get("checked") and not bool(final_answer_guard_state.get("accepted")):
             turn_status = "blocked"
-            blocked_reason = blocked_reason or "plan_only_response_after_steer"
-            notes.append("strict_agentic_blocked_after_steer")
+            blocked_reason = blocked_reason or str(final_answer_guard_state.get("reason") or "incomplete_final_answer")
+            notes.append("invalid_incomplete_final_answer")
         else:
             turn_status = "completed"
+            if not bool(final_answer_guard_state.get("checked")):
+                final_answer_guard_state = {
+                    **dict(final_answer_guard_state or {}),
+                    "checked": True,
+                    "accepted": True,
+                    "reason": "requested_deliverable_produced",
+                }
+        task_continuity_state = {
+            **dict(task_continuity_state or {}),
+            "deliverable_detected": bool(turn_status == "completed"),
+            "should_continue": bool(turn_status not in {"completed", "needs_user_input", "cancelled"}),
+            "reason": str(
+                final_answer_guard_state.get("reason")
+                or task_continuity_state.get("reason")
+                or ("requested_deliverable_produced" if turn_status == "completed" else blocked_reason)
+            ),
+        }
+        assistant_response_summary = (
+            build_assistant_response_summary_from_message(ai_msg)
+            if ai_msg is not None
+            else {
+                "assistant_content_chars": len(raw_text),
+                "assistant_content_preview": safe_preview(raw_text, limit=1000) or "",
+                "assistant_tool_calls_count": 0,
+                "finish_reason": "",
+                "response_id": "",
+                "usage": dict(usage_total),
+                "stream_diagnostics": {},
+                "tool_calls": [],
+            }
+        )
+        preserved_request_summary = dict((model_runtime_analysis or {}).get("request_summary") or last_request_summary_hint or {})
+        preserved_tool_gating = dict((model_runtime_analysis or {}).get("tool_gating") or {})
+        model_runtime_analysis = build_model_runtime_analysis(
+            request_summary=preserved_request_summary,
+            runtime_guess=runtime_hint,
+            high_level_proposal=high_level_proposal,
+            proposal_diagnostics=proposal_diagnostics,
+            runtime_contract=runtime_contract,
+            explicit_tool_request=explicit_tool_request,
+            attachment_requires_tooling=attachment_requires_tooling,
+            image_attachment_needs_read=bool(runtime_hint.get("image_attachment_needs_read")),
+            previous_task_focus_requires_tooling=bool(runtime_hint.get("previous_task_focus_requires_tooling")),
+            workspace_action_requested=workspace_action_requested,
+            network_requested=network_requested,
+            tools_should_be_exposed=preserved_tool_gating.get("tools_should_be_exposed"),
+            actual_tools_exposed=preserved_request_summary.get("tools_exposed"),
+            tool_choice=str(preserved_request_summary.get("tool_choice") or ""),
+            exposed_tool_names=list(preserved_tool_gating.get("tool_names_preview") or []),
+            assistant_message=ai_msg,
+            assistant_response_summary=assistant_response_summary,
+            final_answer_guard=final_answer_guard_state,
+            task_continuity=task_continuity_state,
+        )
         revision_summary = self._build_revision_summary(
             prompt_message=prompt_message,
             raw_text=raw_text,
@@ -5401,7 +6061,13 @@ class VintageProgrammerRuntime:
         )
         current_task_focus["project_root"] = project_root
         current_task_focus["cwd"] = effective_cwd or project_root
-        current_task_focus["active_attachments"] = self._attachment_refs(attachment_metas)
+        if attachment_metas:
+            current_task_focus["active_attachments"] = self._attachment_refs(
+                attachment_metas,
+                existing=list(current_task_focus.get("active_attachments") or []),
+            )
+        else:
+            current_task_focus["active_attachments"] = list(current_task_focus.get("active_attachments") or [])
         if pending_user_input:
             current_task_focus["next_action"] = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
         elif turn_status == "blocked":
@@ -5456,6 +6122,8 @@ class VintageProgrammerRuntime:
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
                 "invalid_final_guard": dict(invalid_final_guard),
+                "final_answer_guard": dict(final_answer_guard_state),
+                "task_continuity": dict(task_continuity_state),
                 "blocked_reason": blocked_reason,
                 "loop_safeguards": dict(loop_safeguards),
                 "attachment_evidence_pack_preview": [
@@ -5556,6 +6224,8 @@ class VintageProgrammerRuntime:
             "pending_approval": {},
             "write_authorization_state": dict(write_authorization_state),
             "invalid_final_guard": dict(invalid_final_guard),
+            "final_answer_guard": dict(final_answer_guard_state),
+            "task_continuity": dict(task_continuity_state),
             "blocked_reason": blocked_reason,
             "attachment_evidence_pack_preview": [
                 {

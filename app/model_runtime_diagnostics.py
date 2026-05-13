@@ -73,6 +73,12 @@ def build_runtime_guess_summary(runtime_guess: dict[str, Any] | None) -> dict[st
             "next_action_hint": str(guess.get("next_action_hint") or ""),
             "current_turn_followup_type": str(guess.get("current_turn_followup_type") or ""),
             "current_turn_goal_source": str(guess.get("current_turn_goal_source") or ""),
+            "requires_tools_hint": bool(guess.get("requires_tools_hint")),
+            "tool_assisted": bool(guess.get("tool_assisted")),
+            "attachment_requires_tooling": bool(guess.get("attachment_requires_tooling")),
+            "image_attachment_needs_read": bool(guess.get("image_attachment_needs_read")),
+            "previous_task_focus_requires_tooling": bool(guess.get("previous_task_focus_requires_tooling")),
+            "preferred_tool": str(guess.get("preferred_tool") or ""),
         }
     except Exception as exc:  # pragma: no cover - defensive
         return {"source": "error", "diagnostics_error": safe_error_message(exc)}
@@ -128,6 +134,8 @@ def build_tool_gating_summary(
     runtime_contract: dict[str, Any] | Any | None,
     explicit_tool_request: bool | None,
     attachment_requires_tooling: bool | None,
+    image_attachment_needs_read: bool | None = None,
+    previous_task_focus_requires_tooling: bool | None = None,
     workspace_action_requested: bool | None,
     network_requested: bool | None,
     tools_should_be_exposed: bool | None,
@@ -145,6 +153,8 @@ def build_tool_gating_summary(
         proposal_expects_tools = bool(proposal.get("expects_tools"))
         explicit = bool(explicit_tool_request)
         attachment_required = bool(attachment_requires_tooling)
+        image_attachment_needed = bool(image_attachment_needs_read)
+        previous_focus_requires_tooling = bool(previous_task_focus_requires_tooling)
         workspace_requested = bool(workspace_action_requested)
         network = bool(network_requested)
         computed_should_expose, computed_reason = should_expose_tools(
@@ -152,6 +162,8 @@ def build_tool_gating_summary(
             runtime_output_mode=runtime_output_mode,
             explicit_tool_request=explicit,
             attachment_requires_tooling=attachment_required,
+            image_attachment_needs_read=image_attachment_needed,
+            previous_task_focus_requires_tooling=previous_focus_requires_tooling,
             workspace_action_requested=workspace_requested,
             network_requested=network,
             proposal_expects_tools=proposal_expects_tools,
@@ -164,6 +176,8 @@ def build_tool_gating_summary(
             runtime_output_mode == "direct_answer"
             and not explicit
             and not attachment_required
+            and not image_attachment_needed
+            and not previous_focus_requires_tooling
             and not workspace_requested
             and not network
         )
@@ -171,7 +185,14 @@ def build_tool_gating_summary(
         if (
             runtime_output_mode == "direct_answer"
             and actual_exposed is True
-            and not (explicit or attachment_required or workspace_requested or network)
+            and not (
+                explicit
+                or attachment_required
+                or image_attachment_needed
+                or previous_focus_requires_tooling
+                or workspace_requested
+                or network
+            )
         ):
             reason = "BUG: direct_answer predicted but tools were exposed"
         else:
@@ -182,6 +203,8 @@ def build_tool_gating_summary(
             "proposal_expects_tools": proposal_expects_tools,
             "explicit_tool_request": explicit,
             "attachment_requires_tooling": attachment_required,
+            "image_attachment_needs_read": image_attachment_needed,
+            "previous_task_focus_requires_tooling": previous_focus_requires_tooling,
             "workspace_action_requested": workspace_requested,
             "network_requested": network,
             "runtime_contract_tools_available": bool(contract.get("tools_available")),
@@ -238,6 +261,8 @@ def build_model_runtime_analysis(
     runtime_contract: dict[str, Any] | Any | None,
     explicit_tool_request: bool | None,
     attachment_requires_tooling: bool | None,
+    image_attachment_needs_read: bool | None = None,
+    previous_task_focus_requires_tooling: bool | None = None,
     workspace_action_requested: bool | None,
     network_requested: bool | None,
     tools_should_be_exposed: bool | None,
@@ -246,6 +271,8 @@ def build_model_runtime_analysis(
     exposed_tool_names: list[str] | None,
     assistant_message: Any | None = None,
     assistant_response_summary: dict[str, Any] | None = None,
+    final_answer_guard: dict[str, Any] | None = None,
+    task_continuity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         request = dict(request_summary or {})
@@ -262,6 +289,8 @@ def build_model_runtime_analysis(
             runtime_contract=runtime_contract,
             explicit_tool_request=explicit_tool_request,
             attachment_requires_tooling=attachment_requires_tooling,
+            image_attachment_needs_read=image_attachment_needs_read,
+            previous_task_focus_requires_tooling=previous_task_focus_requires_tooling,
             workspace_action_requested=workspace_action_requested,
             network_requested=network_requested,
             tools_should_be_exposed=tools_should_be_exposed,
@@ -284,6 +313,8 @@ def build_model_runtime_analysis(
             "proposal_parse": proposal,
             "tool_gating": tool_gating,
             "assistant_response_summary": assistant,
+            "final_answer_guard": dict(final_answer_guard or {}),
+            "task_continuity": dict(task_continuity or {}),
             "diagnostic_warnings": warnings,
         }
     except Exception as exc:  # pragma: no cover - defensive
@@ -296,6 +327,8 @@ def should_expose_tools(
     runtime_output_mode: str,
     explicit_tool_request: bool,
     attachment_requires_tooling: bool,
+    image_attachment_needs_read: bool = False,
+    previous_task_focus_requires_tooling: bool = False,
     workspace_action_requested: bool,
     network_requested: bool,
     proposal_expects_tools: bool,
@@ -304,10 +337,12 @@ def should_expose_tools(
         return False, "tools unavailable"
     if explicit_tool_request or workspace_action_requested:
         return True, "workspace tool request"
+    if attachment_requires_tooling or image_attachment_needs_read:
+        return True, "attachment/image requires tooling"
     if network_requested:
         return True, "network tool request"
-    if attachment_requires_tooling:
-        return True, "attachment requires tooling"
+    if previous_task_focus_requires_tooling:
+        return True, "previous task focus requires tool continuation"
     if proposal_expects_tools and str(runtime_output_mode or "").strip() not in {"", "direct_answer"}:
         return True, "proposal expects tools"
     if str(runtime_output_mode or "").strip() == "direct_answer":
@@ -412,6 +447,8 @@ def _collect_diagnostic_warnings(
         and tool_gating.get("actual_tools_exposed") is True
         and not bool(tool_gating.get("explicit_tool_request"))
         and not bool(tool_gating.get("attachment_requires_tooling"))
+        and not bool(tool_gating.get("image_attachment_needs_read"))
+        and not bool(tool_gating.get("previous_task_focus_requires_tooling"))
         and not bool(tool_gating.get("workspace_action_requested"))
         and not bool(tool_gating.get("network_requested"))
     ):
@@ -429,6 +466,8 @@ def _collect_diagnostic_warnings(
         and (
             bool(tool_gating.get("explicit_tool_request"))
             or bool(tool_gating.get("attachment_requires_tooling"))
+            or bool(tool_gating.get("image_attachment_needs_read"))
+            or bool(tool_gating.get("previous_task_focus_requires_tooling"))
             or bool(tool_gating.get("workspace_action_requested"))
             or bool(tool_gating.get("network_requested"))
         )

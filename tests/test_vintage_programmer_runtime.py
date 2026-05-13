@@ -2039,7 +2039,150 @@ def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) ->
     assert checkpoint["cwd"] == str(tmp_path)
     assert checkpoint["active_files"] == [str(image_path)]
     assert checkpoint["active_attachments"][0]["id"] == "img-1"
+    assert checkpoint["active_attachments"][0]["last_tool"] == "image_read"
+    assert "Vintage" in checkpoint["active_attachments"][0]["summary"]
+    assert "Vintage" in checkpoint["active_attachments"][0]["format_rules"]
     assert checkpoint["last_completed_step"].startswith("image_read:")
+
+
+def test_runtime_file_request_continues_past_plan_only_reply_and_reads_file(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="我先读取文件，确认内容后再告诉你。"),
+            _FakeMessage(content="", tool_calls=[{"id": "tc-read", "name": "read_file", "args": {"path": "AGENT.MD"}}]),
+            _FakeMessage(content="AGENT.MD 主要说明了项目合同、工作模式、UI 约束和验证要求。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="请查看当前文件夹下的AGENT.MD文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-file-continue",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert backend.tools.calls == [("read_file", {"path": "AGENT.MD"})]
+    assert result["text"] == "AGENT.MD 主要说明了项目合同、工作模式、UI 约束和验证要求。"
+    assert result["turn_status"] == "completed"
+    assert result["model_runtime_analysis"]["runtime_guess"]["output_mode"] == "tool_assisted_answer"
+    assert result["final_answer_guard"]["accepted"] is True
+    assert "strict_agentic_act_now_steer" in result["inspector"]["notes"]
+
+
+def test_runtime_rejects_incomplete_final_after_image_read_and_continues_same_turn(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "format.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-image", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="我已经理解格式，接下来按照这个格式整理。"),
+            _FakeMessage(content="已根据图片中的格式整理如下：\n- 数据 A\n- 数据 B"),
+        ],
+        _FakeImageReadTools(),
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="请先理解这张图片里的整理格式，然后按照这个逻辑整理下面的数据：数据 A、数据 B",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-format",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "img-format",
+                    "name": "format.png",
+                    "mime": "image/png",
+                    "kind": "image",
+                    "path": str(image_path),
+                }
+            ],
+        },
+    )
+
+    assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
+    assert result["text"].startswith("已根据图片中的格式整理如下")
+    assert result["turn_status"] == "completed"
+    assert result["model_runtime_analysis"]["runtime_guess"]["output_mode"] == "tool_assisted_answer"
+    assert result["model_runtime_analysis"]["tool_gating"]["tools_should_be_exposed"] is True
+    assert result["final_answer_guard"]["accepted"] is True
+    assert result["task_continuity"]["deliverable_detected"] is True
+    assert "incomplete_final_answer_steer" in result["inspector"]["notes"]
+
+
+def test_runtime_followup_can_reuse_previous_image_context_without_reread(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    image_path = tmp_path / "format.png"
+    image_path.write_bytes(b"fake-image")
+    backend = _FakeBackend([_FakeMessage(content="已按刚才图片的格式整理如下：\n- 数据 A")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="继续，按刚才图片里的逻辑整理这些数据：数据 A",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-image-followup",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "route_state": {
+                "task_checkpoint": {
+                    "task_id": "task-image-followup",
+                    "goal": "按照图片格式整理后续数据",
+                    "project_root": str(tmp_path),
+                    "cwd": str(tmp_path),
+                    "active_files": [str(image_path)],
+                    "active_attachments": [
+                        {
+                            "id": "img-followup",
+                            "name": "format.png",
+                            "kind": "image",
+                            "path": str(image_path),
+                            "last_tool": "image_read",
+                            "summary": "图片展示了两列列表格式。",
+                            "format_rules": "每行以短横线开头，先标题后说明。",
+                        }
+                    ],
+                    "last_completed_step": "image_read: 图片展示了两列列表格式。",
+                    "next_action": "apply image format to user data",
+                }
+            },
+            "current_turn": {"is_followup": True, "source": "followup_classifier"},
+            "attachments": [],
+        },
+    )
+
+    assert backend.tools.calls == []
+    assert result["text"].startswith("已按刚才图片的格式整理如下")
+    assert result["model_runtime_analysis"]["runtime_guess"]["output_mode"] == "tool_assisted_answer"
+    assert result["model_runtime_analysis"]["tool_gating"]["tools_should_be_exposed"] is True
+    assert result["route_state"]["task_checkpoint"]["active_attachments"][0]["summary"] == "图片展示了两列列表格式。"
+    assert result["route_state"]["task_checkpoint"]["active_attachments"][0]["format_rules"] == "每行以短横线开头，先标题后说明。"
 
 
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:

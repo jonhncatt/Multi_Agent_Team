@@ -59,6 +59,8 @@ def test_model_runtime_analysis_direct_answer_without_tools() -> None:
     assert analysis["proposal_parse"]["proposal_source"] == "model"
     assert analysis["tool_gating"]["actual_tools_exposed"] is False
     assert analysis["assistant_response_summary"]["assistant_tool_calls_count"] == 0
+    assert analysis["final_answer_guard"] == {}
+    assert analysis["task_continuity"] == {}
     assert analysis["diagnostic_warnings"] == []
 
 
@@ -153,6 +155,61 @@ def test_model_runtime_analysis_does_not_flag_workspace_tool_request_as_direct_a
 
     assert analysis["tool_gating"]["reason"] == "workspace tool request"
     assert "direct_answer_tools_exposed" not in warning_codes
+
+
+def test_model_runtime_analysis_can_include_final_answer_guard_and_task_continuity() -> None:
+    analysis = build_model_runtime_analysis(
+        request_summary=build_request_summary(
+            backend="openai_native",
+            provider="openrouter",
+            model="demo-model",
+            streaming=True,
+            api_path="chat_completions",
+            messages=[{"role": "user", "content": "请先理解图片格式再整理"}],
+            max_output_tokens=4096,
+            temperature=None,
+            tools_available_count=31,
+            tools_exposed=True,
+            tool_choice="auto",
+            tool_count_exposed=2,
+        ),
+        runtime_guess={"source": "runtime_guess", "task_type": "standard", "primary_intent": "standard", "output_mode": "tool_assisted_answer"},
+        high_level_proposal={
+            "source": "runtime_fallback",
+            "intent": "standard",
+            "task_type": "standard",
+            "current_goal": "请先理解图片格式再整理",
+            "expects_tools": True,
+            "response_mode": "tool_assisted_answer",
+            "summary": "需要先读取图片并提取格式逻辑，然后继续整理数据。",
+        },
+        proposal_diagnostics={"status": "missing", "checked": False, "schema_validation": {"status": "missing"}},
+        runtime_contract={"tools_available": True, "tool_policy": "use_when_needed"},
+        explicit_tool_request=False,
+        attachment_requires_tooling=True,
+        image_attachment_needs_read=True,
+        previous_task_focus_requires_tooling=False,
+        workspace_action_requested=False,
+        network_requested=False,
+        tools_should_be_exposed=True,
+        actual_tools_exposed=True,
+        tool_choice="auto",
+        exposed_tool_names=["image_read", "read_file"],
+        assistant_response_summary={"assistant_tool_calls_count": 0, "tool_calls": []},
+        final_answer_guard={"checked": True, "accepted": False, "reason": "promise_to_act_without_deliverable"},
+        task_continuity={
+            "active_goal": "请先理解图片格式再整理",
+            "requires_tools": True,
+            "attachments_required": True,
+            "tools_used": ["image_read"],
+            "deliverable_detected": False,
+            "should_continue": True,
+            "reason": "tool_result_collected_but_deliverable_missing",
+        },
+    )
+
+    assert analysis["final_answer_guard"]["accepted"] is False
+    assert analysis["task_continuity"]["should_continue"] is True
 
 
 def test_assistant_response_summary_marks_tool_argument_parse_states_and_masks_sensitive_text() -> None:

@@ -199,3 +199,27 @@ def test_route_state_sanitization_drops_model_runtime_analysis_from_persisted_co
     assert "model_runtime_analysis" not in route_state
     assert "model_runtime_analysis" not in attachment_state
     assert "model_runtime_analysis" not in dict(session.get("route_state") or {})
+
+
+def test_normalize_current_task_focus_preserves_attachment_summary_fields() -> None:
+    focus = session_context.normalize_current_task_focus(
+        {
+            "task_id": "task-image",
+            "goal": "按照图片格式整理",
+            "active_attachments": [
+                {
+                    "id": "img-1",
+                    "name": "format.png",
+                    "kind": "image",
+                    "path": "/tmp/format.png",
+                    "last_tool": "image_read",
+                    "summary": "图片展示了两列列表格式。",
+                    "format_rules": "每行以短横线开头。",
+                }
+            ],
+        }
+    )
+
+    assert focus["active_attachments"][0]["last_tool"] == "image_read"
+    assert focus["active_attachments"][0]["summary"] == "图片展示了两列列表格式。"
+    assert focus["active_attachments"][0]["format_rules"] == "每行以短横线开头。"
