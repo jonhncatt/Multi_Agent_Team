@@ -91,3 +91,22 @@ def test_vp_default_locale_can_be_configured(monkeypatch, tmp_path, locale: str)
     config = load_config()
 
     assert config.default_locale == locale
+
+
+def test_vp_max_output_tokens_defaults_to_stable_4096(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+
+    config = load_config()
+
+    assert config.max_output_tokens == 4096
+
+
+def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_MAX_OUTPUT_TOKENS", "2048")
+
+    config = load_config()
+
+    assert config.max_output_tokens == 2048

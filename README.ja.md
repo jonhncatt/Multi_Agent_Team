@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.7.8-blue)
+![Version](https://img.shields.io/badge/version-v2.9.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,24 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.7.8`
+現在の安定版: `v2.9.0`
+
+## Stable Runtime
+
+v2.9.0 は安定性回復リリースです。
+v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.0 では v2.7.8 を基準にした LangChain-based stable runtime に戻し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
+
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。
+
+## Max Output Tokens
+
+推奨デフォルト:
+
+```env
+VP_MAX_OUTPUT_TOKENS=4096
+```
+
+これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。長いタスクは 1 回の巨大な応答ではなく、複数回の model/tool loop で完了させます。
 
 ## これは何か
 

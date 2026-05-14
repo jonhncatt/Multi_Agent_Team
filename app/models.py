@@ -9,7 +9,7 @@ class ChatSettings(BaseModel):
     provider: str | None = None
     model: str | None = None
     locale: str = "ja-JP"
-    max_output_tokens: int = Field(default=128000, ge=120, le=128000)
+    max_output_tokens: int = Field(default=4096, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
     enable_tools: bool = True
     execution_mode: Literal["host", "docker"] | None = None
@@ -566,6 +566,7 @@ class HealthResponse(BaseModel):
     platform_name: str = ""
     workspace_root: str = ""
     allowed_roots: list[str] = Field(default_factory=list)
+    default_max_output_tokens: int = 4096
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)
@@ -597,6 +598,7 @@ class BootstrapResponse(BaseModel):
     platform_name: str = ""
     workspace_root: str = ""
     allowed_roots: list[str] = Field(default_factory=list)
+    default_max_output_tokens: int = 4096
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)

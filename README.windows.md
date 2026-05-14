@@ -1,6 +1,21 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.7.8`。
+当前稳定版本：`v2.9.0`。
+
+## Stable Runtime
+
+v2.9.0 是稳定恢复版本，默认使用 LangChain-based stable runtime。
+v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。
+
+## Max Output Tokens
+
+推荐默认设置：
+
+```env
+VP_MAX_OUTPUT_TOKENS=4096
+```
+
+这是单次模型调用的输出上限，不是整个任务的总上限。
 
 默认建议：不要激活 `Activate.ps1`，直接使用 `.venv\Scripts\python.exe`。
 
@@ -91,7 +106,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.7.8`
+- 在发布提交上打 annotated tag，例如 `v2.9.0`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。

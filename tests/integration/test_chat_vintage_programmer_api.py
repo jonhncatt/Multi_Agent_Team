@@ -746,7 +746,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert response.status_code == 200
     payload = response.json()
     assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.7.8"
+    assert payload["app_version"] == "2.9.0"
     assert payload["agent"]["agent_id"] == "vintage_programmer"
     assert payload["runtime_status"]["workspace_label"]
     assert "rapidocr_available" in payload["ocr_status"]
@@ -759,6 +759,7 @@ def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: 
     assert payload["default_model"] in payload["model_options"]
     assert payload["default_locale"] == main_app.config.default_locale
     assert payload["default_locale"] in payload["supported_locales"]
+    assert payload["default_max_output_tokens"] == main_app.config.max_output_tokens
     assert payload["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["compaction_status"]["mode"] == "token_budget"
     assert "used_percent" in payload["context_meter"]
@@ -801,9 +802,10 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.7.8"
+    assert bootstrap_payload["app_version"] == "2.9.0"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
+    assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
 
     runtime_response = client.get("/api/runtime-status")
     assert runtime_response.status_code == 200

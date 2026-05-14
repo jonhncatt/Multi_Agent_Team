@@ -86,8 +86,8 @@ from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loo
 from app.workbench import WorkbenchStore
 
 APP_TITLE = "Vintage Programmer"
-DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = 128_000
 config = load_config()
+DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = int(config.max_output_tokens)
 AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
 project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
 session_store = SessionStore(config.sessions_dir)
@@ -104,7 +104,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.7.8"
+APP_VERSION = "2.9.0"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -441,6 +441,7 @@ def health() -> HealthResponse:
         platform_name=bootstrap.platform_name,
         workspace_root=bootstrap.workspace_root,
         allowed_roots=bootstrap.allowed_roots,
+        default_max_output_tokens=bootstrap.default_max_output_tokens,
         max_upload_mb=bootstrap.max_upload_mb,
         web_allow_all_domains=bootstrap.web_allow_all_domains,
         web_allowed_domains=bootstrap.web_allowed_domains,
@@ -769,6 +770,7 @@ def _bootstrap_response_payload() -> BootstrapResponse:
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
         allowed_roots=effective_roots,
+        default_max_output_tokens=int(config.max_output_tokens),
         max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,

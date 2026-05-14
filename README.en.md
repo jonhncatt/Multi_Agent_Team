@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.7.8-blue)
+![Version](https://img.shields.io/badge/version-v2.9.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,24 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.7.8`
+Current stable release: `v2.9.0`
+
+## Stable Runtime
+
+v2.9.0 is a stability recovery release.
+The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.0 returns to the v2.7.8 LangChain-based stable runtime path to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
+
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release.
+
+## Max Output Tokens
+
+Recommended default:
+
+```env
+VP_MAX_OUTPUT_TOKENS=4096
+```
+
+This is the per-call output cap, not the total task limit. Long tasks should complete through multiple model/tool-loop steps rather than one extremely large response.
 
 ## What it is
 

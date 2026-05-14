@@ -49,7 +49,7 @@ const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
   locale: "",
-  max_output_tokens: 128000,
+  max_output_tokens: 4096,
   max_context_turns: 2000,
   enable_tools: true,
   collaboration_mode: "default",
@@ -2173,6 +2173,17 @@ function App() {
         : { ...prev, provider: preferredProvider }
     ));
   }, [health, availableProviders, chatSettings.provider]);
+
+  useEffect(() => {
+    if (!health) return;
+    const serverDefault = Number(health.default_max_output_tokens || 0);
+    if (!Number.isFinite(serverDefault) || serverDefault <= 0) return;
+    setChatSettings((prev) => (
+      Number(prev.max_output_tokens || 0) === Number(DEFAULT_SETTINGS.max_output_tokens || 0)
+        ? { ...prev, max_output_tokens: serverDefault }
+        : prev
+    ));
+  }, [health]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;

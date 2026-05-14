@@ -385,6 +385,7 @@ class AppConfig:
     model_cooldown_max_sec: int
     summary_model: str
     system_prompt: str
+    max_output_tokens: int
     summary_trigger_turns: int
     max_context_turns: int
     max_attachment_chars: int
@@ -1190,7 +1191,7 @@ def load_config() -> AppConfig:
         model_fallbacks=model_fallbacks,
         model_cooldown_base_sec=max(10, min(3600, model_cooldown_base_sec)),
         model_cooldown_max_sec=max(60, min(86400, model_cooldown_max_sec)),
-        summary_model=(
+    summary_model=(
             _env(
                 "VP_SUMMARY_MODEL",
                 "VP_SUMMARY_MODE",
@@ -1200,6 +1201,13 @@ def load_config() -> AppConfig:
         ),
         system_prompt=_env("VP_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
         or DEFAULT_SYSTEM_PROMPT,
+        max_output_tokens=max(
+            120,
+            min(
+                128000,
+                int(_env("VP_MAX_OUTPUT_TOKENS", default="4096") or "4096"),
+            ),
+        ),
         summary_trigger_turns=max(
             6,
             min(

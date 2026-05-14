@@ -410,6 +410,14 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
 
 
+def test_frontend_uses_stable_default_max_output_tokens_and_server_bootstrap_override() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "max_output_tokens: 4096" in script
+    assert "health.default_max_output_tokens" in script
+    assert "setChatSettings((prev) =>" in script
+
+
 def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

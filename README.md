@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.7.8-blue)
+![Version](https://img.shields.io/badge/version-v2.9.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,24 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.7.8`
+当前稳定版本：`v2.9.0`
+
+## Stable Runtime
+
+v2.9.0 是一个稳定恢复版本。
+v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.0 回到以 v2.7.8 为基线的 LangChain-based stable runtime，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+
+OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。
+
+## Max Output Tokens
+
+推荐默认设置：
+
+```env
+VP_MAX_OUTPUT_TOKENS=4096
+```
+
+这个值是单次模型调用的输出上限，不是整个任务的总上限。长任务应通过多轮 model/tool loop 完成，而不是依赖一次超大回复。
 
 ## 这是什么
 

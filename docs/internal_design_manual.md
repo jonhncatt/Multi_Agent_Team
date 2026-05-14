@@ -629,7 +629,64 @@ Context compaction（上下文压缩）的目标是：
 - `v2.7.3`：修复前端 live timer，移除小工具调用数主路径限制，并把绝对工具上限降级为 emergency cap（紧急兜底上限）
 - `v2.7.8`：新增 phase timing diagnostics（阶段耗时诊断），并把 no-tool direct answer（无工具直接回答）路径改成“理解问题 / 等待模型 / 生成回答”的更清晰状态词
 
-## 16. 源码依据与待确认点
+## 16. v2.9.0 Stability Decision
+
+v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
+The v2.8.x series experimented with OpenAI native SDK, streaming, detailed diagnostics, and tool-call canonicalization. These experiments improved low-level visibility but introduced regressions in task continuity, image_read behavior, tool-call stability, CPU usage, and latency.
+For v2.9.0, the project prioritizes stable Codex-style execution over experimental streaming.
+The stable runtime must preserve:
+
+- long-task continuation
+- reliable tool loop behavior
+- image/file task completion
+- predictable LangChain tool calling
+- lightweight timing display
+
+## 17. Runtime Backend Policy
+
+The stable backend for v2.9.0 is the LangChain-based runtime.
+OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
+
+- greeting without tools
+- file read
+- image read
+- long task continuation
+- tool result continuation
+- final deliverable completion
+
+## 18. Streaming Policy
+
+Streaming is postponed for v2.9.0.
+Any future streaming implementation must preserve the existing Codex-style loop:
+
+1. tool calls must remain reliable;
+2. tool results must return to the model;
+3. image/file tasks must complete;
+4. the runtime must not stop on intermediate plan-like text;
+5. long tasks must continue until final deliverable.
+
+## 19. Max Output Token Policy
+
+v2.9.0 uses a conservative default output cap.
+Default:
+
+```env
+VP_MAX_OUTPUT_TOKENS=4096
+```
+
+This value is a per-call upper bound, not the whole task limit.
+
+Long tasks should be completed through multiple model calls and tool loops, not by setting a very large output cap for every request.
+
+Future dynamic policy may use:
+
+- simple chat: 1024
+- default answer: 4096
+- plan/design document: 6144
+- long report: 8192
+- hard upper limit: 12000
+
+## 20. 源码依据与待确认点
 
 ### 本手册主要依据的源码
 

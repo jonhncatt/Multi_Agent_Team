@@ -591,6 +591,33 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
     assert result["activity"]["trace_events"]
 
 
+def test_runtime_answers_simple_greeting_without_tool_calls(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="你好，有什么我可以帮你？")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="你好",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-greeting",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "你好，有什么我可以帮你？"
+    assert backend.tools.calls == []
+    assert result["tool_events"] == []
+
+
 def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
