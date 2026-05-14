@@ -10,7 +10,12 @@ class ChatSettings(BaseModel):
     model: str | None = None
     locale: str = "ja-JP"
     max_output_tokens: int = Field(default=4096, ge=120, le=128000)
-    max_context_turns: int = Field(default=2000, ge=2, le=2000)
+    max_context_turns: int = Field(
+        default=2000,
+        ge=2,
+        le=2000,
+        description="Maximum historical turns considered for the current model context.",
+    )
     enable_tools: bool = True
     execution_mode: Literal["host", "docker"] | None = None
     collaboration_mode: Literal["default", "plan", "execute"] = "default"

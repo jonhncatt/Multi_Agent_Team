@@ -104,7 +104,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.0"
+APP_VERSION = "2.9.1"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -1170,16 +1170,17 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
             failed += 1
 
         started = time.perf_counter()
-        if "python3" in config.allowed_commands:
-            py_result = tools.run_shell(command="python3 --version", cwd=".", timeout_sec=12)
+        python_command = str(config.python_command or "python").strip() or "python"
+        if python_command in config.allowed_commands:
+            py_result = tools.run_shell(command=f"{python_command} --version", cwd=".", timeout_sec=12)
             py_ok = bool(py_result.get("ok"))
             py_out = str(py_result.get("stdout") or py_result.get("stderr") or "").strip().splitlines()
             py_detail = py_out[0] if py_out else (
-                str(py_result.get("error") or "python3 --version failed") if not py_ok else "python3 ok"
+                str(py_result.get("error") or f"{python_command} --version failed") if not py_ok else f"{python_command} ok"
             )
             _append_drill_step(
                 steps,
-                name="run_shell_python3_version",
+                name="run_shell_python_version",
                 ok=py_ok,
                 detail=py_detail,
                 started_at=started,
@@ -1189,9 +1190,9 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         else:
             _append_drill_step(
                 steps,
-                name="run_shell_python3_version",
+                name="run_shell_python_version",
                 ok=True,
-                detail="skipped: python3 is not in VP_ALLOWED_COMMANDS",
+                detail=f"skipped: {python_command} is not in VP_ALLOWED_COMMANDS",
                 started_at=started,
             )
 

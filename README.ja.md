@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.0-blue)
+![Version](https://img.shields.io/badge/version-v2.9.1-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.0`
+現在の安定版: `v2.9.1`
 
 ## Stable Runtime
 
-v2.9.0 は安定性回復リリースです。
-v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.0 では v2.7.8 を基準にした LangChain-based stable runtime に戻し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
+v2.9.1 は小さな安定性 polish リリースであり、v2.9.0 の安定回復方針を維持します。
+v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.1 では文書、Context Turns の説明、Python コマンド案内のみを整えます。
 
 ## Max Output Tokens
 
@@ -123,10 +123,10 @@ flowchart LR
 ### macOS / Linux
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 -m playwright install chromium
+python -m playwright install chromium
 cp .env.example .env
 ./run.sh
 ```
@@ -134,6 +134,8 @@ cp .env.example .env
 起動先:
 
 - <http://127.0.0.1:8080>
+
+プロジェクト単位の Python モジュール実行は `python -m ...` を優先し、Windows で `python` が使えない場合のみ `py -m ...` を検討してください。
 
 ### Windows
 

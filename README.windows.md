@@ -1,11 +1,13 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.9.0`。
+当前稳定版本：`v2.9.1`。
 
 ## Stable Runtime
 
-v2.9.0 是稳定恢复版本，默认使用 LangChain-based stable runtime。
-v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。
+v2.9.1 是小型稳定 polish 版本，继续默认使用 LangChain-based stable runtime。
+v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.1 只补充文档、Context Turns 说明和 Python 命令指引。
+
+项目级 Python 模块命令建议优先使用 `python -m ...`；如果当前环境没有 `python`，再使用 `py -m ...`。
 
 ## Max Output Tokens
 
@@ -106,7 +108,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.9.0`
+- 在发布提交上打 annotated tag，例如 `v2.9.1`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。

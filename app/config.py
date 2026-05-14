@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import platform as py_platform
 import re
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from app.i18n import normalize_locale
 
@@ -388,6 +390,8 @@ class AppConfig:
     max_output_tokens: int
     summary_trigger_turns: int
     max_context_turns: int
+    python_command: str
+    python_command_source: str
     max_attachment_chars: int
     max_upload_mb: int
     default_locale: str
@@ -683,6 +687,23 @@ def _default_extra_allowed_roots_for_platform(home: Path) -> tuple[str, list[Pat
     return platform_name, deduped
 
 
+def resolve_python_command(
+    platform_name: str = "",
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+) -> str:
+    platform_lower = str(platform_name or "").strip().lower()
+    if "windows" in platform_lower or platform_lower.startswith("win"):
+        for candidate in ("python", "py", "python3"):
+            if which(candidate):
+                return candidate
+        return "python"
+    for candidate in ("python", "python3", "py"):
+        if which(candidate):
+            return candidate
+    return "python"
+
+
 def get_access_roots(config: AppConfig) -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
@@ -825,8 +846,8 @@ def load_config() -> AppConfig:
 
     allowed_commands_raw = _env(
         "VP_ALLOWED_COMMANDS",
-        default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
-    ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
+        default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
+    ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
     llm_provider = _normalize_llm_provider(
         _env(
@@ -985,6 +1006,8 @@ def load_config() -> AppConfig:
             workspace_sibling_root = parent_root
 
     platform_name, default_extra_root_paths = _default_extra_allowed_roots_for_platform(Path.home())
+    python_command = resolve_python_command(platform_name)
+    python_command_source = "shutil.which" if shutil.which(python_command) else "fallback"
     default_extra_roots = [str(path) for path in default_extra_root_paths]
     extra_allowed_roots_source = (
         "env_override"
@@ -1225,6 +1248,8 @@ def load_config() -> AppConfig:
                 int(_env("VP_MAX_CONTEXT_TURNS", default="2000") or "2000"),
             ),
         ),
+        python_command=python_command,
+        python_command_source=python_command_source,
         max_attachment_chars=max(
             2000,
             min(

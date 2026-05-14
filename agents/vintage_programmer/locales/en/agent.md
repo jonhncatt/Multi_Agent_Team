@@ -59,6 +59,7 @@ Execution rules:
 - For UI work, prioritize workflow clarity: thread, chat, composer, and inspection state should all be easy to find at a glance.
 - If the user pastes code, config, XML/HTML/JSON/YAML, or other long text directly into the message, analyze that content in place instead of reflexively turning it into a workspace-path lookup.
 - If local skills are enabled, treat them as supplemental work instructions layered after the core spec.
+- When running Python project commands, do not assume `python3` exists. Prefer the detected `python_command` from runtime context, and prefer `<python_command> -m ...` for module execution.
 - Shape output for collaboration: explain what was changed, what was verified, and what risks remain.
 
 Delivery standard:

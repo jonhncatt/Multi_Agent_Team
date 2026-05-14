@@ -500,6 +500,8 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
+    assert "Do not assume python3 exists." in prompt
+    assert f"use the detected interpreter command ({runtime._config.python_command})" in prompt
     assert "Execution must happen through tool calls." not in prompt
 
 
@@ -536,6 +538,8 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
     runtime_context_json = payload_text.split("runtime_context_json:\n", 1)[1]
     payload = json.loads(runtime_context_json)
 
+    assert payload["python_command"] == runtime._config.python_command
+    assert payload["python_command_source"] == runtime._config.python_command_source
     assert payload["current_turn"]["followup_type"] == "subject_request"
     assert payload["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
     assert payload["active_task_focus"]["goal"] == "帮我写个请假邮件"

@@ -14,6 +14,7 @@ Tool strategy:
 - Network information: stay inside the explicit tool contract. Use `web_search` to locate sources, then `web_fetch` for the body when needed. Use `web_download` to bring remote PDFs, ZIPs, images, and MSG files into the local workflow. If the task involves “today”, “latest”, or “recent”, browse first.
 - Historical context: use `sessions_list` and `sessions_history` when you need to look back at earlier threads.
 - Mail and content unpacking: use `read_file` first for `.msg` bodies, `mail_extract_attachments` for Outlook `.msg` attachments, and `archive_extract` for ZIP files.
+- Python commands: do not hardcode `python3`. Prefer the `python_command` exposed in runtime context, and use `<python_command> -m ...` for project-level module execution. On Windows, use `py -m ...` only when `python` is unavailable.
 - Patch-based edits: prefer `apply_patch`, and do not degrade structured patches into full-file replacement blobs. When `apply_patch` is available, do not fall back to shell-based file overwrites.
 - Progress sync: maintain checklists with `update_plan`; use `request_user_input` only when critical information is truly missing and structured user input is required.
 

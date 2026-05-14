@@ -709,6 +709,7 @@ class VintageProgrammerRuntime:
                 locale=locale,
                 model=str(settings.model or spec.default_model or ""),
                 runtime_contract=runtime_contract,
+                python_command=self._config.python_command,
             )
         )
         return "\n\n".join(item for item in parts if str(item).strip())
@@ -759,10 +760,17 @@ class VintageProgrammerRuntime:
         )
 
     @staticmethod
-    def _build_full_auto_tool_policy_prompt(*, locale: str, runtime_contract: RuntimeContract, model: str = "") -> str:
+    def _build_full_auto_tool_policy_prompt(
+        *,
+        locale: str,
+        runtime_contract: RuntimeContract,
+        model: str = "",
+        python_command: str = "python",
+    ) -> str:
         model_label = str(model or "").strip().lower()
         coding_agent_like = any(token in model_label for token in ("codex", "claude", "coder", "devstral", "qwen3-coder"))
         strength = "standard" if coding_agent_like else "strict"
+        detected_python = str(python_command or "python").strip() or "python"
         return (
             "[full_auto_tool_policy]\n"
             f"enforcement_level: {strength}\n"
@@ -773,6 +781,7 @@ class VintageProgrammerRuntime:
             "- Use tools when the request requires external context, workspace inspection, file reading, code search, file modification, testing, command execution, or long-running task progress.\n"
             "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
             "- Use update_plan for multi-step workspace tasks, debugging, code changes, release work, or long-running operations. Do not use update_plan for simple chat, translation, rewriting, meeting minutes, or summarizing text already provided by the user.\n"
+            f"- When running Python commands, use the detected interpreter command ({detected_python}). Do not assume python3 exists. Prefer {detected_python} -m ... for project-level module execution.\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
             "- After each tool result, continue the turn until the task is complete, needs structured user input, is blocked by a concrete policy, is cancelled, or a runtime budget is exhausted.\n"
             f"- Keep the final response in the active locale ({locale}), but keep tool decisions concrete and agentic."
@@ -785,6 +794,7 @@ class VintageProgrammerRuntime:
         locale: str,
         model: str = "",
         runtime_contract: RuntimeContract | None = None,
+        python_command: str = "python",
     ) -> str:
         contract = runtime_contract or RuntimeContract()
         return "\n".join(
@@ -792,7 +802,12 @@ class VintageProgrammerRuntime:
                 cls._build_runtime_contract_prompt(runtime_contract=contract),
                 cls._build_anti_permission_gate_prompt(),
                 cls._build_model_proposal_prompt(),
-                cls._build_full_auto_tool_policy_prompt(locale=locale, runtime_contract=contract, model=model),
+                cls._build_full_auto_tool_policy_prompt(
+                    locale=locale,
+                    runtime_contract=contract,
+                    model=model,
+                    python_command=python_command,
+                ),
             ]
         )
 
@@ -836,6 +851,8 @@ class VintageProgrammerRuntime:
         payload = {
             "session_id": str(context.get("session_id") or ""),
             "project": dict(context.get("project") or {}),
+            "python_command": str(self._config.python_command or "python"),
+            "python_command_source": str(self._config.python_command_source or ""),
             "summary": str(context.get("summary") or "")[:4000],
             "thread_memory": {
                 "summary": str(thread_memory.get("summary") or "")[:4000],
