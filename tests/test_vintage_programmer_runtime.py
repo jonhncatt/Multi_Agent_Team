@@ -13,6 +13,7 @@ from app.models import ChatSettings
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.activity.summary.japanese_cleanup_requested",
     "runtime.activity.summary.rewrite_requested",
@@ -501,7 +502,9 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Do not assume python3 exists." in prompt
-    assert f"use the detected interpreter command ({runtime._config.python_command})" in prompt
+    assert "./.venv/bin/python" in prompt
+    assert ".venv\\Scripts\\python.exe" in prompt
+    assert f"detected interpreter command ({runtime._config.python_command})" in prompt
     assert "Execution must happen through tool calls." not in prompt
 
 
@@ -551,6 +554,18 @@ def test_runtime_activity_copy_has_locale_parity() -> None:
     for locale in ("zh-CN", "ja-JP", "en"):
         for key in REQUIRED_RUNTIME_ACTIVITY_KEYS:
             assert translate(locale, key) != key, f"{locale} missing {key}"
+
+
+def test_agent_docs_prefer_project_venv_python() -> None:
+    agent_doc = (REPO_ROOT / "agents" / "vintage_programmer" / "agent.md").read_text(encoding="utf-8")
+    tools_doc = (REPO_ROOT / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8")
+
+    assert "./.venv/bin/python" in agent_doc
+    assert ".venv\\Scripts\\python.exe" in agent_doc
+    assert "不要假定 `python3`" in agent_doc
+    assert "./.venv/bin/python" in tools_doc
+    assert ".venv\\Scripts\\python.exe" in tools_doc
+    assert "不要默认写死 `python3`" in tools_doc
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:

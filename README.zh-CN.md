@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.1-blue)
+![Version](https://img.shields.io/badge/version-v2.9.2-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.1`
+当前稳定版本：`v2.9.2`
 
 ## Stable Runtime
 
-v2.9.1 是一个小型稳定 polish 版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.2 是一个小型实用性 polish 版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.1 只补充文档、Context Turns 说明和 Python 命令指引。
+OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.2 只补充实用 tool UX、Python 执行指引和失败信息展示。
 
 ## Max Output Tokens
 
@@ -33,6 +33,14 @@ VP_MAX_OUTPUT_TOKENS=4096
 ```
 
 这个值是单次模型调用的输出上限，不是整个任务的总上限。长任务应通过多轮 model/tool loop 完成，而不是依赖一次超大回复。
+
+## Python Commands
+
+运行项目 Python 命令时，如果项目根目录存在 `./.venv/bin/python`，优先使用它执行测试、脚本和 `-m` 模块命令。Windows 上对应优先使用 `.venv\Scripts\python.exe`。如果没有项目虚拟环境，再使用可用的宿主 `python`；只有 `python` 不可用时才退回 `py`。不要默认假定 `python3` 一定存在。
+
+## Command Safety
+
+`exec_command` 继续使用保守 allowlist。v2.9.2 起允许 `printf` 用于小型格式化输出和轻量文件创建；高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` 仍保持阻止。
 
 ## 这是什么
 
@@ -135,7 +143,7 @@ cp .env.example .env
 
 - <http://127.0.0.1:8080>
 
-项目级 Python 模块命令建议优先使用 `python -m ...`；如果在 Windows 上 `python` 不可用，再考虑 `py -m ...`。
+项目级 Python 模块命令建议优先使用 `./.venv/bin/python -m ...`；如果没有 `.venv`，再使用 `python -m ...`。只有在 Windows 上 `python` 不可用时，再考虑 `py -m ...`。
 
 ### Windows
 

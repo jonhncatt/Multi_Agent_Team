@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.1-blue)
+![Version](https://img.shields.io/badge/version-v2.9.2-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.1`
+Current stable release: `v2.9.2`
 
 ## Stable Runtime
 
-v2.9.1 is a small stability polish release that keeps the v2.9.0 recovery policy intact.
+v2.9.2 is a small practical polish release that keeps the v2.9.0 recovery policy intact.
 The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.1 only polishes documentation, Context Turns wording, and Python command guidance.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.2 only polishes practical tool UX, Python execution guidance, and failure visibility.
 
 ## Max Output Tokens
 
@@ -33,6 +33,14 @@ VP_MAX_OUTPUT_TOKENS=4096
 ```
 
 This is the per-call output cap, not the total task limit. Long tasks should complete through multiple model/tool-loop steps rather than one extremely large response.
+
+## Python Commands
+
+When running project Python commands, prefer `./.venv/bin/python` if the project root contains a virtual environment. On Windows, prefer `.venv\Scripts\python.exe`. If no project virtual environment is present, use the available host `python`, and fall back to `py` only when `python` is unavailable. Do not assume `python3` exists.
+
+## Command Safety
+
+`exec_command` keeps a conservative allowlist. Starting in v2.9.2, `printf` is allowed for small formatted output and lightweight file creation. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, and `sudo` remain blocked.
 
 ## What it is
 
@@ -133,7 +141,7 @@ Open:
 
 - <http://127.0.0.1:8080>
 
-For project-level Python module commands, prefer `python -m ...`; on Windows, use `py -m ...` only when `python` is unavailable.
+For project-level Python module commands, prefer `./.venv/bin/python -m ...`; if no `.venv` exists, use `python -m ...`. On Windows, use `py -m ...` only when `python` is unavailable.
 
 ### Windows
 

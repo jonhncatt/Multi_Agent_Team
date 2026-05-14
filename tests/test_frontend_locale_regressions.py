@@ -14,6 +14,11 @@ REQUIRED_CORE_KEYS = (
     "labels.payload",
     "settings.locale",
     "settings.context_turns.help",
+    "tool.failure.error",
+    "tool.failure.stderr",
+    "tool.failure.returncode",
+    "tool.failure.cwd",
+    "tool.failure.command",
     "settings.locale.zh-CN",
     "settings.locale.ja-JP",
     "settings.locale.en",
@@ -434,10 +439,32 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.1）")
-    assert "## 16. v2.9.1 Polish Notes" in manual
+    assert manual.startswith("# 内部设计手册（v2.9.2）")
+    assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 21. Context Turns" in manual
     assert "## 22. Python Command Handling" in manual
+    assert "## 23. Shell Command Allowlist" in manual
+
+
+def test_failed_tool_summary_defaults_are_wired_into_frontend() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function toolFailureSummary(item, locale)" in script
+    assert 'translateUi(locale, "tool.failure.error")' in script
+    assert 'translateUi(locale, "tool.failure.stderr")' in script
+    assert 'translateUi(locale, "tool.failure.returncode")' in script
+    assert 'translateUi(locale, "tool.failure.cwd")' in script
+    assert 'translateUi(locale, "tool.failure.command")' in script
+    assert 'status === "failed" || status === "error"' in script
+    assert "lines.slice(0, 5).join(\"\\n\")" in script
+    assert "white-space: pre-wrap;" in styles
+    assert '"tool.failure.error": "error"' in locales
+    assert '"tool.failure.stderr": "stderr"' in locales
+    assert '"tool.failure.returncode": "returncode"' in locales
+    assert '"tool.failure.cwd": "cwd"' in locales
+    assert '"tool.failure.command": "command"' in locales
 
 
 def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:

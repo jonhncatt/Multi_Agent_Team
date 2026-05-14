@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.1）
+# 内部设计手册（v2.9.2）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -629,10 +629,14 @@ Context compaction（上下文压缩）的目标是：
 - `v2.7.3`：修复前端 live timer，移除小工具调用数主路径限制，并把绝对工具上限降级为 emergency cap（紧急兜底上限）
 - `v2.7.8`：新增 phase timing diagnostics（阶段耗时诊断），并把 no-tool direct answer（无工具直接回答）路径改成“理解问题 / 等待模型 / 生成回答”的更清晰状态词
 
-## 16. v2.9.1 Polish Notes
+## 16. v2.9.2 Tool UX Polish Notes
 
-v2.9.1 keeps the v2.9.0 stable LangChain runtime policy.
-This release only clarifies documentation, Context Turns semantics, and Python command handling guidance.
+v2.9.2 keeps the v2.9.x stable LangChain runtime policy.
+This release makes three practical improvements:
+
+- `printf` is allowed in `exec_command` for small formatted shell output and lightweight file creation.
+- Python execution guidance now prefers the project `.venv` interpreter when available and avoids assuming `python3`.
+- Failed tool cards show useful failure details such as error, stderr, return code, and cwd by default.
 
 ## 17. v2.9.0 Stability Decision
 
@@ -706,14 +710,35 @@ Future dynamic policy may use:
 ## 22. Python Command Handling
 
 当 runtime 需要执行 Python 项目命令时，不应假定 `python3` 一定存在。
-v2.9.1 的稳定策略是：
+v2.9.2 的稳定策略是：
 
-- 优先使用 runtime 检测到的 `python_command`
+- 如果项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先使用它执行项目测试、脚本和模块命令
+- 如果没有项目 `.venv`，优先使用 runtime 检测到的 `python_command`
 - 项目级模块执行优先 `<python_command> -m ...`
 - Windows 上如果 `python` 不可用，可退回 `py -m ...`
 - 这属于命令提示与轻量兼容处理，不改变稳定 LangChain runtime 的核心 tool loop
 
-## 23. 源码依据与待确认点
+推荐示例：
+
+```bash
+./.venv/bin/python -m pytest
+./.venv/bin/python -m compileall app packages tests
+```
+
+如果没有 `.venv`，再使用：
+
+```bash
+python -m pytest
+python -m compileall app packages tests
+```
+
+## 23. Shell Command Allowlist
+
+`exec_command` 继续使用保守 allowlist。
+v2.9.2 起允许 `printf`，用于小型格式化输出和轻量文件创建。
+高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` 仍保持阻止。
+
+## 24. 源码依据与待确认点
 
 ### 本手册主要依据的源码
 

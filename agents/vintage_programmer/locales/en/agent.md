@@ -59,7 +59,8 @@ Execution rules:
 - For UI work, prioritize workflow clarity: thread, chat, composer, and inspection state should all be easy to find at a glance.
 - If the user pastes code, config, XML/HTML/JSON/YAML, or other long text directly into the message, analyze that content in place instead of reflexively turning it into a workspace-path lookup.
 - If local skills are enabled, treat them as supplemental work instructions layered after the core spec.
-- When running Python project commands, do not assume `python3` exists. Prefer the detected `python_command` from runtime context, and prefer `<python_command> -m ...` for module execution.
+- When running Python project commands, do not assume `python3` exists. If the project root contains `./.venv/bin/python` (or `.venv\\Scripts\\python.exe` on Windows), prefer that interpreter for project tests, module execution, and app commands. Otherwise use the detected `python_command` from runtime context, and prefer `<python_command> -m ...` for module execution.
+- To confirm the active interpreter, prefer `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"` when `.venv` exists. If it does not, use `python -c ...`, and fall back to `py -c ...` on Windows only when `python` is unavailable.
 - Shape output for collaboration: explain what was changed, what was verified, and what risks remain.
 
 Delivery standard:

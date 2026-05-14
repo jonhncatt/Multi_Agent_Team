@@ -14,7 +14,7 @@
 - ネットワーク情報: 明示ツール契約を守る。まず `web_search` でソースを探し、必要なら `web_fetch` で本文を読む。リモートの PDF/ZIP/画像/MSG をローカルワークフローに入れるには `web_download` を使う。「今日」「最新」「最近」が含まれるときは先にネット接続する。
 - 履歴コンテキスト: 以前の thread を見返す必要があるときは `sessions_list` と `sessions_history` を優先する。
 - メールと内容展開: `.msg` 本文はまず `read_file`、Outlook `.msg` の添付は `mail_extract_attachments`、ZIP は `archive_extract` を優先する。
-- Python コマンド: `python3` を固定で書かない。runtime context の `python_command` を優先し、プロジェクト単位のモジュール実行は `<python_command> -m ...` を優先する。Windows では `python` が使えない場合だけ `py -m ...` を検討する。
+- Python コマンド: `python3` を固定で書かない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれでプロジェクトのテスト、スクリプト、モジュール実行を行う。`.venv` がない場合は runtime context の `python_command` を優先し、プロジェクト単位のモジュール実行は `<python_command> -m ...` を優先する。Windows では `python` が使えない場合だけ `py -m ...` を検討する。
 - パッチ型変更: まず `apply_patch` を使い、構造化パッチを巨大なファイル全置換に退化させない。`apply_patch` が使えるときは shell ベースの上書きに退化させない。
 - 進捗同期: `update_plan` で checklist を維持し、重要情報が本当に欠けているときだけ `request_user_input` を使って構造化入力を待つ。
 

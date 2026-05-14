@@ -1575,6 +1575,8 @@ button {
   font-size: 13px;
   line-height: 1.55;
   color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .timeline-details {

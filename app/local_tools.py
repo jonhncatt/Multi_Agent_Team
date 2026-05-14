@@ -1677,6 +1677,64 @@ class LocalToolExecutor:
         payload.setdefault("project_id", self._current_project_id())
         return payload
 
+    def _project_python_candidates(self) -> list[Path]:
+        project_root = self._current_project_root()
+        candidates = [
+            (project_root / ".venv" / "bin" / "python").resolve(),
+            (project_root / ".venv" / "Scripts" / "python.exe").resolve(),
+        ]
+        return [candidate for candidate in candidates if candidate.exists()]
+
+    def _preferred_python_command(self, *, execution_mode: str) -> str:
+        if execution_mode == "docker":
+            return "python3"
+        project_python = next((str(candidate) for candidate in self._project_python_candidates()), "")
+        if project_python:
+            return project_python
+        return str(self.config.python_command or "python").strip() or "python"
+
+    def _is_project_python_command(self, raw_command: str) -> bool:
+        raw = str(raw_command or "").strip()
+        if not raw:
+            return False
+        normalized_raw = raw.replace("\\", "/")
+        candidate_path = Path(normalized_raw).expanduser()
+        project_root = self._current_project_root()
+        try:
+            resolved = candidate_path.resolve() if candidate_path.is_absolute() else (project_root / candidate_path).resolve()
+        except Exception:
+            return False
+        allowed = {str(candidate.resolve()) for candidate in self._project_python_candidates()}
+        return str(resolved) in allowed
+
+    def _is_allowed_command(self, base_cmd: str) -> bool:
+        raw = str(base_cmd or "").strip()
+        if not raw:
+            return False
+        return raw in self.config.allowed_commands or self._is_project_python_command(raw)
+
+    def _command_failure_result(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        error: str,
+        returncode: int = 126,
+        stderr: str | None = None,
+    ) -> dict[str, Any]:
+        cwd_text = str(cwd or self._current_cwd_hint() or self._current_project_root())
+        return {
+            "ok": False,
+            "command": str(command or "").strip(),
+            "cwd": cwd_text,
+            "host_cwd": cwd_text,
+            "returncode": returncode,
+            "stdout": "",
+            "stderr": str(stderr if stderr is not None else error),
+            "error": str(error or "").strip(),
+            "execution_mode": self._current_execution_mode(),
+        }
+
     def _normalize_python_command_argv(self, argv: list[str], *, execution_mode: str) -> list[str]:
         if not argv:
             return argv
@@ -1684,10 +1742,7 @@ class LocalToolExecutor:
         if base not in {"python", "python3", "py"}:
             return argv
         normalized = list(argv)
-        if execution_mode == "docker":
-            normalized[0] = "python3"
-            return normalized
-        normalized[0] = str(self.config.python_command or normalized[0]).strip() or normalized[0]
+        normalized[0] = self._preferred_python_command(execution_mode=execution_mode)
         return normalized
 
     def _safe_split_command(self, command: str, *, for_session: bool = False) -> tuple[list[str], str | None]:
@@ -1705,7 +1760,7 @@ class LocalToolExecutor:
         execution_mode = self._current_execution_mode()
         argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
         base_cmd = argv[0]
-        if base_cmd not in self.config.allowed_commands:
+        if not self._is_allowed_command(base_cmd):
             return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
         if for_session and execution_mode == "docker":
             return [], "Interactive exec_command sessions are only supported in host mode."
@@ -2540,13 +2595,13 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         argv, error = self._safe_split_command(cmd, for_session=True)
         if error:
-            return {"ok": False, "error": error}
+            return self._command_failure_result(command=cmd, cwd=cwd, error=error)
         try:
             real_cwd = self._resolve_path(cwd)
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
-            return {"ok": False, "error": f"Invalid cwd: {cwd}"}
+            return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
 
         try:
             proc = subprocess.Popen(
@@ -2559,7 +2614,7 @@ class LocalToolExecutor:
                 bufsize=0,
             )
         except Exception as exc:
-            return {"ok": False, "error": f"exec_command failed: {exc}"}
+            return self._command_failure_result(command=cmd, cwd=str(real_cwd), error=f"exec_command failed: {exc}", returncode=1)
 
         session_id = next(self._command_session_ids)
         with self._command_sessions_lock:
@@ -3186,16 +3241,17 @@ class LocalToolExecutor:
         try:
             argv = shlex.split(command)
         except Exception as exc:
-            return {"ok": False, "error": f"Command parse failed: {exc}"}
+            return self._command_failure_result(command=command, cwd=cwd, error=f"Command parse failed: {exc}")
 
         if not argv:
-            return {"ok": False, "error": "Empty command"}
+            return self._command_failure_result(command=command, cwd=cwd, error="Empty command")
 
         if any(token in command for token in ["|", "&&", "||", ";", "$(", "`"]):
-            return {
-                "ok": False,
-                "error": "Complex shell operators are blocked for safety. Use a single command only.",
-            }
+            return self._command_failure_result(
+                command=command,
+                cwd=cwd,
+                error="Complex shell operators are blocked for safety. Use a single command only.",
+            )
 
         execution_mode = self._current_execution_mode()
         session_id = self._current_session_id()
@@ -3204,16 +3260,17 @@ class LocalToolExecutor:
         argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
 
         base_cmd = argv[0]
-        if base_cmd not in self.config.allowed_commands:
-            return {
-                "ok": False,
-                "error": f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}",
-            }
+        if not self._is_allowed_command(base_cmd):
+            return self._command_failure_result(
+                command=command,
+                cwd=cwd,
+                error=f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}",
+            )
 
         try:
             real_cwd = self._resolve_path(cwd)
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return self._command_failure_result(command=command, cwd=cwd, error=str(exc), returncode=1)
 
         timeout_val = max(1, min(120, timeout_sec))
         execution_mode = self._current_execution_mode()

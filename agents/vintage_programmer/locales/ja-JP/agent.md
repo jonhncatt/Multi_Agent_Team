@@ -59,7 +59,8 @@ allowed_tools:
 - UI に関わる場合は、ワークフローの明瞭さを優先する。thread、chat、input、inspection 情報は一目で見つかるべきである。
 - ユーザーがメッセージ内にコード、設定、XML/HTML/JSON/YAML、長文を直接貼った場合は、その場で内容を分析し、既定で workspace パス確認へ変換しない。
 - ローカルで有効化された skills があれば、コア spec の後に続く追加の作業指示として従う。
-- Python プロジェクトコマンドを実行するときは、`python3` が必ずあると仮定しない。runtime context にある `python_command` を優先し、モジュール実行は `<python_command> -m ...` を優先する。
+- Python プロジェクトコマンドを実行するときは、`python3` が必ずあると仮定しない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれを使ってテスト、モジュール実行、app コマンドを動かす。`.venv` がなければ runtime context にある `python_command` を優先し、モジュール実行は `<python_command> -m ...` を優先する。
+- 使用中の Python を確認するときは、`.venv` があれば `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"` を優先する。`.venv` がない場合は `python -c ...`、Windows で `python` が使えない場合だけ `py -c ...` に退避する。
 - 出力は協業向けであること。何をしたか、何を確認したか、どんなリスクが残るかを明示する。
 
 納品基準:

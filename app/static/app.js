@@ -1525,6 +1525,11 @@ function mergeRunSnapshot(prev, snapshot) {
 
 function toolTimelineSummary(item, locale) {
   if (!item || typeof item !== "object") return translateUi(locale, "labels.no_summary");
+  const status = String(item.status || "").trim().toLowerCase();
+  if (status === "failed" || status === "error") {
+    const failureSummary = toolFailureSummary(item, locale);
+    if (failureSummary) return failureSummary;
+  }
   const base = String(item.summary || item.output_preview || translateUi(locale, "labels.no_summary")).trim();
   const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
   const visibleText = String(diagnostics.visible_text_preview || "").trim().replaceAll("\n", " / ");
@@ -1535,6 +1540,37 @@ function toolTimelineSummary(item, locale) {
     : "";
   if (visibleText) return `${base} · ${visibleText}${validationSuffix}`;
   return `${base || translateUi(locale, "labels.no_summary")}${validationSuffix}`;
+}
+
+function compactFailureText(value, limit = 240) {
+  const text = String(value == null ? "" : value).trim();
+  if (!text) return "";
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function toolFailureSummary(item, locale) {
+  const result = item.result_preview && typeof item.result_preview === "object" ? item.result_preview : {};
+  const guardResult = item.guard_result && typeof item.guard_result === "object" ? item.guard_result : {};
+  const returncode = result.returncode ?? item.returncode ?? null;
+  const errorText = compactFailureText(
+    result.error
+    || item.error
+    || item.preview_error
+    || guardResult.reason
+    || item.summary,
+  );
+  const stderrText = compactFailureText(result.stderr || item.stderr || "");
+  const cwdText = compactFailureText(result.cwd || item.cwd || "");
+  const commandText = compactFailureText(result.command || item.command || "");
+  const lines = [];
+  if (errorText) lines.push(`${translateUi(locale, "tool.failure.error")}: ${errorText}`);
+  if (stderrText && stderrText !== errorText) lines.push(`${translateUi(locale, "tool.failure.stderr")}: ${stderrText}`);
+  if (returncode != null && String(returncode).trim() !== "") {
+    lines.push(`${translateUi(locale, "tool.failure.returncode")}: ${returncode}`);
+  }
+  if (cwdText) lines.push(`${translateUi(locale, "tool.failure.cwd")}: ${cwdText}`);
+  if (commandText) lines.push(`${translateUi(locale, "tool.failure.command")}: ${commandText}`);
+  return lines.slice(0, 5).join("\n");
 }
 
 function activityStatusFromTraceType(type, fallback = "thinking") {

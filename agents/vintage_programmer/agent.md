@@ -59,7 +59,8 @@ allowed_tools:
 - 涉及 UI 时，优先保证工作流清晰：线程、聊天、输入、检查信息应一眼能找到。
 - 如果用户直接在消息里粘贴代码、配置、XML/HTML/JSON/YAML 或长文本，先就地分析当前消息内容，不要默认把问题转成 workspace 路径核查。
 - 如果本地已启用 skills，把它们当作核心规范之后的补充工作说明执行。
-- 运行 Python 项目命令时，不要假定 `python3` 一定存在。优先使用 runtime context 里检测到的 `python_command`；执行模块命令时优先 `<python_command> -m ...`。
+- 运行 Python 项目命令时，不要假定 `python3` 一定存在。若项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先使用它跑项目测试、模块命令和 app 命令；否则再使用 runtime context 里检测到的 `python_command`。执行模块命令时优先 `<python_command> -m ...`。
+- 确认 Python 解释器时，优先运行 `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"`；若 `.venv` 不存在，再用 `python -c ...`，Windows 只有 `python` 不可用时才退回 `py -c ...`。
 - 输出要面向协作：说明做了什么、验证了什么、还剩什么风险。
 
 交付标准：
