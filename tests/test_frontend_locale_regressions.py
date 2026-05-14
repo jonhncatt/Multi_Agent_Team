@@ -8,10 +8,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_JS_PATH = REPO_ROOT / "app" / "static" / "app.js"
 LOCALES_JS_PATH = REPO_ROOT / "app" / "static" / "locales.js"
 STYLES_CSS_PATH = REPO_ROOT / "app" / "static" / "styles.css"
+INTERNAL_MANUAL_PATH = REPO_ROOT / "docs" / "internal_design_manual.md"
 SUPPORTED_LOCALES = ("zh-CN", "ja-JP", "en")
 REQUIRED_CORE_KEYS = (
     "labels.payload",
     "settings.locale",
+    "settings.context_turns.help",
     "settings.locale.zh-CN",
     "settings.locale.ja-JP",
     "settings.locale.en",
@@ -416,6 +418,26 @@ def test_frontend_uses_stable_default_max_output_tokens_and_server_bootstrap_ove
     assert "max_output_tokens: 4096" in script
     assert "health.default_max_output_tokens" in script
     assert "setChatSettings((prev) =>" in script
+
+
+def test_context_turns_help_text_is_wired_into_frontend() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'className="field-hint"' in script
+    assert 't("settings.context_turns.help")' in script
+    assert '"settings.context_turns.help": "本次请求构建模型上下文时，最多纳入的历史对话轮数；不是当前 thread 的总轮数。"' in locales
+    assert '"settings.context_turns.help": "今回のモデル文脈に含める履歴ターン数の上限です。スレッド全体の総ターン数ではありません。"' in locales
+    assert '"settings.context_turns.help": "Maximum historical turns considered for the current model context, not the total thread turn count."' in locales
+
+
+def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
+    manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
+
+    assert manual.startswith("# 内部设计手册（v2.9.1）")
+    assert "## 16. v2.9.1 Polish Notes" in manual
+    assert "## 21. Context Turns" in manual
+    assert "## 22. Python Command Handling" in manual
 
 
 def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:

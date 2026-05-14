@@ -1,4 +1,4 @@
-# 内部设计手册（v2.7.2）
+# 内部设计手册（v2.9.1）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -629,7 +629,12 @@ Context compaction（上下文压缩）的目标是：
 - `v2.7.3`：修复前端 live timer，移除小工具调用数主路径限制，并把绝对工具上限降级为 emergency cap（紧急兜底上限）
 - `v2.7.8`：新增 phase timing diagnostics（阶段耗时诊断），并把 no-tool direct answer（无工具直接回答）路径改成“理解问题 / 等待模型 / 生成回答”的更清晰状态词
 
-## 16. v2.9.0 Stability Decision
+## 16. v2.9.1 Polish Notes
+
+v2.9.1 keeps the v2.9.0 stable LangChain runtime policy.
+This release only clarifies documentation, Context Turns semantics, and Python command handling guidance.
+
+## 17. v2.9.0 Stability Decision
 
 v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
 The v2.8.x series experimented with OpenAI native SDK, streaming, detailed diagnostics, and tool-call canonicalization. These experiments improved low-level visibility but introduced regressions in task continuity, image_read behavior, tool-call stability, CPU usage, and latency.
@@ -642,7 +647,7 @@ The stable runtime must preserve:
 - predictable LangChain tool calling
 - lightweight timing display
 
-## 17. Runtime Backend Policy
+## 18. Runtime Backend Policy
 
 The stable backend for v2.9.0 is the LangChain-based runtime.
 OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
@@ -654,7 +659,7 @@ OpenAI native SDK and Responses API support are future adapter work. They must n
 - tool result continuation
 - final deliverable completion
 
-## 18. Streaming Policy
+## 19. Streaming Policy
 
 Streaming is postponed for v2.9.0.
 Any future streaming implementation must preserve the existing Codex-style loop:
@@ -665,7 +670,7 @@ Any future streaming implementation must preserve the existing Codex-style loop:
 4. the runtime must not stop on intermediate plan-like text;
 5. long tasks must continue until final deliverable.
 
-## 19. Max Output Token Policy
+## 20. Max Output Token Policy
 
 v2.9.0 uses a conservative default output cap.
 Default:
@@ -686,7 +691,29 @@ Future dynamic policy may use:
 - long report: 8192
 - hard upper limit: 12000
 
-## 20. 源码依据与待确认点
+## 21. Context Turns
+
+`Context Turns` 对应 `max_context_turns`。
+它表示在构建当前模型上下文时，最多可能纳入多少历史 user/assistant turn（历史用户/助手轮次）的上限。
+它不是 thread（线程）里的总轮数。
+
+示例：
+
+- Thread total turns: `3000`
+- Context Turns: `2000`
+- 在 token budget（token 预算）和 compaction（上下文压缩）继续生效之前，runtime 最多考虑最近或最相关的 `2000` 个历史 turn
+
+## 22. Python Command Handling
+
+当 runtime 需要执行 Python 项目命令时，不应假定 `python3` 一定存在。
+v2.9.1 的稳定策略是：
+
+- 优先使用 runtime 检测到的 `python_command`
+- 项目级模块执行优先 `<python_command> -m ...`
+- Windows 上如果 `python` 不可用，可退回 `py -m ...`
+- 这属于命令提示与轻量兼容处理，不改变稳定 LangChain runtime 的核心 tool loop
+
+## 23. 源码依据与待确认点
 
 ### 本手册主要依据的源码
 

@@ -5449,6 +5449,7 @@ function App() {
                   </label>
                   <label className="form-field">
                     <span>${t("settings.context_turns")}</span>
+                    <span className="field-hint">${t("settings.context_turns.help")}</span>
                     <input
                       className="drawer-input"
                       type="number"

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import list_provider_profiles, load_config
+from app.config import list_provider_profiles, load_config, resolve_python_command
+from app.models import ChatSettings
 from app.openai_auth import OpenAIAuthManager
 
 
@@ -110,3 +111,31 @@ def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
     config = load_config()
 
     assert config.max_output_tokens == 2048
+
+
+def test_chat_settings_max_context_turns_default_remains_2000() -> None:
+    assert ChatSettings().max_context_turns == 2000
+
+
+def test_resolve_python_command_prefers_python_on_windows() -> None:
+    which = lambda name: f"/fake/{name}" if name in {"python", "py", "python3"} else None
+
+    assert resolve_python_command("Windows", which=which) == "python"
+
+
+def test_resolve_python_command_prefers_python_then_python3_on_non_windows() -> None:
+    which = lambda name: f"/fake/{name}" if name in {"python", "python3"} else None
+
+    assert resolve_python_command("Linux", which=which) == "python"
+
+
+def test_resolve_python_command_uses_python3_when_python_missing() -> None:
+    which = lambda name: f"/fake/{name}" if name == "python3" else None
+
+    assert resolve_python_command("Linux", which=which) == "python3"
+
+
+def test_resolve_python_command_falls_back_to_py_when_needed() -> None:
+    which = lambda name: f"/fake/{name}" if name == "py" else None
+
+    assert resolve_python_command("Windows", which=which) == "py"

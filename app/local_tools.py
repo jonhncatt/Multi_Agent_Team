@@ -1677,6 +1677,19 @@ class LocalToolExecutor:
         payload.setdefault("project_id", self._current_project_id())
         return payload
 
+    def _normalize_python_command_argv(self, argv: list[str], *, execution_mode: str) -> list[str]:
+        if not argv:
+            return argv
+        base = str(argv[0] or "").strip().lower()
+        if base not in {"python", "python3", "py"}:
+            return argv
+        normalized = list(argv)
+        if execution_mode == "docker":
+            normalized[0] = "python3"
+            return normalized
+        normalized[0] = str(self.config.python_command or normalized[0]).strip() or normalized[0]
+        return normalized
+
     def _safe_split_command(self, command: str, *, for_session: bool = False) -> tuple[list[str], str | None]:
         raw = str(command or "").strip()
         if not raw:
@@ -1690,8 +1703,7 @@ class LocalToolExecutor:
         if not argv:
             return [], "Empty command"
         execution_mode = self._current_execution_mode()
-        if execution_mode == "docker" and argv[0] == "python":
-            argv[0] = "python3"
+        argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
         base_cmd = argv[0]
         if base_cmd not in self.config.allowed_commands:
             return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
@@ -3189,9 +3201,7 @@ class LocalToolExecutor:
         session_id = self._current_session_id()
         timeout_val = max(1, min(120, timeout_sec))
 
-        # Docker image commonly exposes python3, while users may type python.
-        if execution_mode == "docker" and argv[0] == "python":
-            argv[0] = "python3"
+        argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
 
         base_cmd = argv[0]
         if base_cmd not in self.config.allowed_commands:

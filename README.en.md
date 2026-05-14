@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.0-blue)
+![Version](https://img.shields.io/badge/version-v2.9.1-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.0`
+Current stable release: `v2.9.1`
 
 ## Stable Runtime
 
-v2.9.0 is a stability recovery release.
-The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.0 returns to the v2.7.8 LangChain-based stable runtime path to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
+v2.9.1 is a small stability polish release that keeps the v2.9.0 recovery policy intact.
+The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.1 only polishes documentation, Context Turns wording, and Python command guidance.
 
 ## Max Output Tokens
 
@@ -121,10 +121,10 @@ flowchart LR
 ### macOS / Linux
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 -m playwright install chromium
+python -m playwright install chromium
 cp .env.example .env
 ./run.sh
 ```
@@ -132,6 +132,8 @@ cp .env.example .env
 Open:
 
 - <http://127.0.0.1:8080>
+
+For project-level Python module commands, prefer `python -m ...`; on Windows, use `py -m ...` only when `python` is unavailable.
 
 ### Windows
 

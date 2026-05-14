@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.0-blue)
+![Version](https://img.shields.io/badge/version-v2.9.1-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.0`
+当前稳定版本：`v2.9.1`
 
 ## Stable Runtime
 
-v2.9.0 是一个稳定恢复版本。
-v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.0 回到以 v2.7.8 为基线的 LangChain-based stable runtime，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+v2.9.1 是一个小型稳定 polish 版本，延续 v2.9.0 的稳定恢复策略。
+v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。
+OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.1 只补充文档、Context Turns 说明和 Python 命令指引。
 
 ## Max Output Tokens
 
@@ -123,10 +123,10 @@ flowchart LR
 ### macOS / Linux
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python3 -m playwright install chromium
+python -m playwright install chromium
 cp .env.example .env
 ./run.sh
 ```
@@ -134,6 +134,8 @@ cp .env.example .env
 打开：
 
 - <http://127.0.0.1:8080>
+
+项目级 Python 模块命令建议优先使用 `python -m ...`；如果在 Windows 上 `python` 不可用，再考虑 `py -m ...`。
 
 ### Windows
 

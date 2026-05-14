@@ -14,6 +14,7 @@
 - 网络信息：统一走显式工具契约，先 `web_search` 找来源，再按需用 `web_fetch` 读正文；需要把远程 PDF/ZIP/图片/MSG 落盘进入本地工作流时用 `web_download`；涉及“今天/最新/最近”时应先联网。
 - 历史上下文：需要回看之前线程时优先 `sessions_list`、`sessions_history`。
 - 邮件与内容解包：`.msg` 正文优先直接用 `read_file`；Outlook `.msg` 附件优先 `mail_extract_attachments`；ZIP 优先 `archive_extract`。
+- Python 命令：不要默认写死 `python3`。优先使用 runtime context 里的 `python_command`；项目级模块执行优先 `<python_command> -m ...`，在 Windows 上只有 `python` 不可用时再考虑 `py -m ...`。
 - 补丁式改动：优先 `apply_patch`，不要把结构化补丁退化成大段整文件覆盖；能用 `apply_patch` 时，不要退化成 shell 覆盖写文件。
 - 进度同步：用 `update_plan` 维护 checklist；当确实缺关键信息时用 `request_user_input` 挂起并请求结构化输入。
 
