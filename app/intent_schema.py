@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.serialization import dump_model
+
 
 PrimaryIntent = Literal[
     "understanding",
@@ -84,7 +86,7 @@ class RequestSignals(BaseModel):
     ambiguity_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        payload = self.model_dump()
+        payload = dump_model(self)
         payload["ambiguity_score"] = max(0.0, min(1.0, float(payload.get("ambiguity_score") or 0.0)))
         return payload
 
@@ -157,7 +159,7 @@ class IntentClassification(BaseModel):
     task_control: TaskControl = Field(default_factory=TaskControl)
 
     def to_dict(self) -> dict[str, Any]:
-        payload = self.model_dump()
+        payload = dump_model(self)
         payload["confidence"] = max(0.0, min(1.0, float(payload.get("confidence") or 0.0)))
         return payload
 
@@ -213,7 +215,7 @@ class RouteDecision(BaseModel):
     default_root_search: bool = False
 
     def to_route_dict(self) -> dict[str, Any]:
-        payload = self.model_dump()
+        payload = dump_model(self)
         payload["intent_confidence"] = max(0.0, min(1.0, float(payload.get("intent_confidence") or 0.0)))
         payload["intent_margin"] = max(0.0, min(1.0, float(payload.get("intent_margin") or 0.0)))
         return payload

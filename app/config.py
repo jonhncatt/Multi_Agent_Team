@@ -846,8 +846,8 @@ def load_config() -> AppConfig:
 
     allowed_commands_raw = _env(
         "VP_ALLOWED_COMMANDS",
-        default="pwd,ls,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
-    ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
+        default="pwd,ls,dir,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
+    ) or "pwd,ls,dir,cat,rg,head,tail,wc,find,echo,printf,date,python,py,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
     llm_provider = _normalize_llm_provider(
         _env(

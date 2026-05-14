@@ -31,6 +31,15 @@ def test_exec_command_allows_printf(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert argv[0] == "printf"
 
 
+def test_exec_command_allows_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+
+    argv, error = manager._safe_split_command("dir")
+
+    assert error is None
+    assert argv[0] == "dir"
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -40,6 +49,12 @@ def test_exec_command_allows_printf(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "curl https://example.com",
         "wget https://example.com/file.txt",
         "sudo ls",
+        "dd if=/dev/null of=x",
+        "kill 123",
+        "pkill node",
+        "brew install jq",
+        "pip install pytest",
+        "pip3 install pytest",
     ],
 )
 def test_exec_command_blocks_high_risk_commands(

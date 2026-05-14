@@ -113,6 +113,16 @@ def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.max_output_tokens == 2048
 
 
+def test_vp_allowed_commands_env_is_full_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_ALLOWED_COMMANDS", "printf,dir")
+
+    config = load_config()
+
+    assert config.allowed_commands == ["printf", "dir"]
+
+
 def test_chat_settings_max_context_turns_default_remains_2000() -> None:
     assert ChatSettings().max_context_turns == 2000
 

@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.2-blue)
+![Version](https://img.shields.io/badge/version-v2.9.3-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.2`
+現在の安定版: `v2.9.3`
 
 ## Stable Runtime
 
-v2.9.2 は小さな実用性 polish リリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.3 は小さな安定性 hardening リリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.2 では実用的な tool UX、Python 実行案内、失敗情報の見え方のみを整えます。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.3 では allowlist 互換性、defensive serialization、Python バージョン案内のみを整えます。
 
 ## Max Output Tokens
 
@@ -38,9 +38,13 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 プロジェクトの Python コマンドを実行するときは、プロジェクトルートに仮想環境があれば `./.venv/bin/python` を優先してください。Windows では `.venv\Scripts\python.exe` を優先します。仮想環境がない場合のみ、利用可能なホスト `python` を使い、`python` が使えない場合だけ `py` に退避します。`python3` が必ずあるとは仮定しません。
 
+## Python Version
+
+安定版 v2.9.x runtime では Python `3.11` を推奨します。Python `3.12` も利用可能です。Python `3.13` はまだ主要なテスト対象ではなく、OCR、ONNXRuntime、画像/PDF 処理など native wheel に依存するパッケージで環境差が出る可能性があります。
+
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.2 から `printf` は小さな整形出力と軽量なファイル作成のために許可されます。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.3 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
 
 ## これは何か
 

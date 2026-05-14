@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.context_assembly import AssembledContext, coerce_active_task
 from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals
+from app.serialization import dump_model
 
 
 class RouteVerifier:
@@ -96,7 +97,7 @@ class RouteVerifier:
             updated["reason"] = "verifier_translation_session_override"
             updated["summary"] = "识别到文档翻译连续任务控制，强制切到 translation session pipeline。"
             if active_task is not None:
-                updated["active_task"] = active_task.model_dump()
+                updated["active_task"] = dump_model(active_task)
                 updated["target"] = str(updated.get("target") or active_task.target_id or "")
                 updated["active_task_kind"] = "document_translation"
             updated["task_control_mode"] = str(updated.get("task_control_mode") or decision.task_control.mode_switch or "")

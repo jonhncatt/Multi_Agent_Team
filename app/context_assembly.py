@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.intent_schema import ActiveTask, TaskControl
+from app.serialization import dump_model
 
 
 _TRANSLATION_MARKERS = (
@@ -155,7 +156,7 @@ class ContextAssembler:
                 user_message=user_message,
             ),
             tool_capabilities=dict(tool_availability or {}),
-            task_control=task_control.model_dump(),
+            task_control=dump_model(task_control),
             active_task=task,
         )
 

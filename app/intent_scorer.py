@@ -6,6 +6,7 @@ from typing import Any
 from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target, infer_task_control
 from app.intent_constants import INTENT_HIGH_AMBIGUITY_THRESHOLD, INTENT_LOW_CONFIDENCE_THRESHOLD, INTENT_MARGIN_MIXED_THRESHOLD
 from app.intent_schema import ConversationFrame, IntentDecision, IntentScore, RequestSignals, TaskControl
+from app.serialization import dump_model
 
 
 _ALLOWED_INTENTS = {
@@ -60,7 +61,7 @@ class IntentScorer:
                     "source": "rules",
                     "task_kind": rules_decision.task_kind,
                     "intent": rules_decision.top_intent,
-                    "task_control": rules_decision.task_control.model_dump(),
+                    "task_control": dump_model(rules_decision.task_control),
                     "confidence": rules_decision.confidence,
                 },
                 ensure_ascii=False,
@@ -334,20 +335,20 @@ class IntentScorer:
 
         active_task = assembled_context.active_task if assembled_context is not None else None
         scorer_input = {
-            "context_assembly": assembled_context.model_dump() if assembled_context is not None else {},
+            "context_assembly": dump_model(assembled_context) if assembled_context is not None else {},
             "user_message": str(user_message or "").strip(),
             "history_summary": str(summary or "").strip(),
             "attachments": self._agent._summarize_attachment_metas_for_agents(attachment_metas),
             "enable_tools": bool(getattr(settings, "enable_tools", False)),
             "signals": signals.to_dict(),
-            "frame": frame.model_dump(),
-            "candidates": [item.model_dump() for item in ranked[:7]],
+            "frame": dump_model(frame),
+            "candidates": [dump_model(item) for item in ranked[:7]],
             "rules_hints": {
                 "task_kind": rules_decision.task_kind,
                 "top_intent": rules_decision.top_intent,
                 "second_intent": rules_decision.second_intent,
                 "target": rules_decision.target,
-                "task_control": rules_decision.task_control.model_dump(),
+                "task_control": dump_model(rules_decision.task_control),
                 "reason_short": rules_decision.reason_short,
             },
         }

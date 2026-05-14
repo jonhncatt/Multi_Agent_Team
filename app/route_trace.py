@@ -4,6 +4,7 @@ from typing import Any
 
 from app.context_assembly import AssembledContext, coerce_active_task
 from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals, RouteTrace
+from app.serialization import dump_model
 
 
 def build_signal_summary(signals: RequestSignals) -> dict[str, Any]:
@@ -112,7 +113,7 @@ def build_route_trace(
         user_message_excerpt=excerpt,
         signal_summary=build_signal_summary(signals),
         frame_summary=build_frame_summary(frame),
-        intent_candidates=[item.model_dump() for item in decision.candidates],
+        intent_candidates=[dump_model(item) for item in decision.candidates],
         top_intent=str(decision.top_intent or "standard"),
         second_intent=str(decision.second_intent or ""),
         task_kind=str(decision.task_kind or "standard"),
@@ -151,7 +152,7 @@ def build_route_trace(
 
 def route_trace_payload(trace: RouteTrace, *, detailed: bool) -> dict[str, Any]:
     if detailed:
-        return trace.model_dump()
+        return dump_model(trace)
     return {
         "request_id": trace.request_id,
         "timestamp": trace.timestamp,

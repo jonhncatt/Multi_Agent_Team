@@ -79,6 +79,7 @@ from app.models import (
 from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.pricing import estimate_usage_cost
+from app.serialization import dump_model
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
@@ -104,7 +105,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.2"
+APP_VERSION = "2.9.3"
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
@@ -1241,7 +1242,7 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
     if not progress_cb:
         return
     try:
-        progress_cb({"event": event, **payload})
+        progress_cb(dump_model({"event": event, **payload}))
     except Exception:
         pass
 
@@ -1250,7 +1251,7 @@ def _emit_thread_started(progress_cb: Callable[[dict[str, Any]], None] | None, t
     item = _thread_list_item_for_session_id(thread_id)
     if item is None:
         return
-    _emit_progress(progress_cb, "thread/started", thread=item.model_dump())
+    _emit_progress(progress_cb, "thread/started", thread=dump_model(item))
 
 
 def _emit_thread_status_changed(
@@ -2285,7 +2286,7 @@ def _process_chat_request(
         )
         updated_thread = _thread_list_item_for_session_id(session["id"])
         if updated_thread is not None:
-            _emit_progress(progress_cb, "thread/updated", thread=updated_thread.model_dump())
+            _emit_progress(progress_cb, "thread/updated", thread=dump_model(updated_thread))
 
         pricing_meta = estimate_usage_cost(
             model=selected_model,
@@ -2346,7 +2347,7 @@ def _process_chat_request(
                 answer_bundle=answer_bundle,
                 attachment_context_mode=attachment_context_mode,
                 attachment_count=len(resolved_attachment_ids),
-                settings=req.settings.model_dump(),
+                settings=dump_model(req.settings),
                 effective_model=selected_model,
                 turn_count=len(session.get("turns", [])),
             )
@@ -2389,7 +2390,7 @@ def _process_chat_request(
                     "token_usage": token_usage,
                     "inspector": inspector,
                     "message": req.message,
-                    "settings": req.settings.model_dump(),
+                    "settings": dump_model(req.settings),
                     "summary_before": summary_before,
                     "history_turns_before": history_turns_before,
                     "attachment_metas": attachments,
@@ -2669,7 +2670,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
         def worker() -> None:
             try:
                 response = _process_chat_request(req, progress_cb=emit)
-                put_event("final", {"response": response.model_dump()})
+                put_event("final", {"response": dump_model(response)})
             except HTTPException as exc:
                 payload = _normalize_chat_error_payload(exc.detail, status_code=exc.status_code, locale=locale)
                 put_event(

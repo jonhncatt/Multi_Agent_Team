@@ -6,6 +6,7 @@ from uuid import uuid4
 from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target
 from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_schema import ActiveTask, ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision, TaskControl
+from app.serialization import dump_model
 from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
 
 
@@ -333,7 +334,7 @@ class PolicyRouter:
             "mixed_intent": bool(decision.mixed_intent),
             "inherited_from_state": str(decision.inherited_from_state or frame.dominant_intent or ""),
             "escalation_reason": str(decision.escalation_reason or ""),
-            "intent_candidates": [item.model_dump() for item in decision.candidates],
+            "intent_candidates": [dump_model(item) for item in decision.candidates],
             "intent_margin": float(decision.margin),
             "frame_dominant_intent": str(frame.dominant_intent or ""),
             "route_verified": False,
@@ -918,11 +919,12 @@ class PolicyRouter:
         try:
             normalized["task_control"] = TaskControl.model_validate(
                 normalized.get("task_control") or fallback.get("task_control") or {}
-            ).model_dump()
+            )
+            normalized["task_control"] = dump_model(normalized["task_control"])
         except Exception:
-            normalized["task_control"] = TaskControl().model_dump()
+            normalized["task_control"] = dump_model(TaskControl())
         active_task = coerce_active_task(normalized.get("active_task") or fallback.get("active_task"))
-        normalized["active_task"] = active_task.model_dump() if active_task is not None else None
+        normalized["active_task"] = dump_model(active_task) if active_task is not None else None
         normalized["active_task_kind"] = str(
             normalized.get("active_task_kind")
             or (active_task.task_kind if active_task is not None else "")

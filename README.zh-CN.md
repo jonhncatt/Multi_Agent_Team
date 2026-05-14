@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.2-blue)
+![Version](https://img.shields.io/badge/version-v2.9.3-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.2`
+当前稳定版本：`v2.9.3`
 
 ## Stable Runtime
 
-v2.9.2 是一个小型实用性 polish 版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.3 是一个小型稳定性 hardening 版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.2 只补充实用 tool UX、Python 执行指引和失败信息展示。
+OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.3 只补充 allowlist 兼容性、序列化防御和 Python 版本说明。
 
 ## Max Output Tokens
 
@@ -38,9 +38,13 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 运行项目 Python 命令时，如果项目根目录存在 `./.venv/bin/python`，优先使用它执行测试、脚本和 `-m` 模块命令。Windows 上对应优先使用 `.venv\Scripts\python.exe`。如果没有项目虚拟环境，再使用可用的宿主 `python`；只有 `python` 不可用时才退回 `py`。不要默认假定 `python3` 一定存在。
 
+## Python Version
+
+稳定的 v2.9.x 运行时推荐使用 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等原生 wheel 依赖在不同平台上可能出现兼容性问题。
+
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.2 起允许 `printf` 用于小型格式化输出和轻量文件创建；高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist。v2.9.3 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
 ## 这是什么
 

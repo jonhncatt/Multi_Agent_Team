@@ -25,6 +25,7 @@ from app.models import (
 from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
+from app.serialization import dump_model
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
 from app.tool_trace_summary import (
     build_tool_argument_audit,
@@ -1686,12 +1687,12 @@ class VintageProgrammerRuntime:
         )
         if progress_cb is not None:
             progress_cb(
-                {
-                    "event": "tool",
-                    "item": event.model_dump(),
-                    "status": event.status,
-                    "summary": event.summary,
-                    "source_refs": list(event.source_refs),
+                    {
+                        "event": "tool",
+                        "item": dump_model(event),
+                        "status": event.status,
+                        "summary": event.summary,
+                        "source_refs": list(event.source_refs),
                     "tool_round": round_idx,
                     "tool_index": call_idx,
                     "group": event.group,
@@ -2535,7 +2536,7 @@ class VintageProgrammerRuntime:
         guard_result: ToolGuardResult,
         runnable_tools: list[str],
     ) -> dict[str, Any]:
-        guard_payload = guard_result.model_dump()
+        guard_payload = dump_model(guard_result)
         tool_name = str(guard_result.tool_name or guard_result.raw_tool_name or "")
         allowed_tools = [str(item) for item in list(runnable_tools or []) if str(item or "").strip()]
         message = str(guard_result.reason or "").strip()
@@ -2639,7 +2640,7 @@ class VintageProgrammerRuntime:
         execution_trace: list[dict[str, Any]],
         entry: ExecutionTraceEntry,
     ) -> list[dict[str, Any]]:
-        next_trace = [*list(execution_trace or []), entry.model_dump()]
+        next_trace = [*list(execution_trace or []), dump_model(entry)]
         return next_trace[-24:]
 
     @staticmethod
@@ -3133,16 +3134,16 @@ class VintageProgrammerRuntime:
         )
         return {
             "clean_text": cleaned_text,
-            "high_level_proposal": proposal.model_dump(),
-            "validated_next_step": validated_next_step.model_dump(),
+            "high_level_proposal": dump_model(proposal),
+            "validated_next_step": dump_model(validated_next_step),
             "proposal_diagnostics": {
                 **dict(block_meta or {}),
                 "schema_validation": dict(proposal_validation or {}),
             },
             "runtime_hint": dict(runtime_hint or {}),
             "activity_context": self._activity_context_from_step(
-                proposal.model_dump(),
-                validated_next_step.model_dump(),
+                dump_model(proposal),
+                dump_model(validated_next_step),
                 runtime_hint,
             ),
         }
@@ -4482,11 +4483,11 @@ class VintageProgrammerRuntime:
                     emit_runtime_activity(
                         "activity.done" if round_idx == 0 else "activity.delta",
                         "execution",
-                        self._execution_activity_detail(locale, execution_entry.model_dump()),
+                        self._execution_activity_detail(locale, dump_model(execution_entry)),
                         status="success" if step_accepted else "blocked",
                         payload={
                             "execution_trace": list(execution_trace),
-                            "execution_trace_entry": execution_entry.model_dump(),
+                            "execution_trace_entry": dump_model(execution_entry),
                             "validated_next_step": dict(validated_next_step),
                             "high_level_proposal": dict(high_level_proposal),
                             "runtime_hint": dict(runtime_hint),
@@ -4570,7 +4571,7 @@ class VintageProgrammerRuntime:
                         attachments=attachment_metas,
                         locale=locale,
                     )
-                    guard_payload = guard_result.model_dump()
+                    guard_payload = dump_model(guard_result)
                     name = str(guard_result.tool_name or preview_name or raw_name).strip()
                     arguments = dict(guard_result.normalized_arguments or {})
                     if raw_name and raw_name != name:
@@ -4670,7 +4671,7 @@ class VintageProgrammerRuntime:
                             progress_cb(
                                 {
                                     "event": "tool",
-                                    "item": event.model_dump(),
+                                    "item": dump_model(event),
                                     "status": event.status,
                                     "summary": event.summary,
                                     "source_refs": list(event.source_refs),
@@ -4736,7 +4737,7 @@ class VintageProgrammerRuntime:
                         tracker=progress_tracker,
                         action_fingerprint=action_fingerprint,
                     )
-                    progress_signal_payload = progress_signal.model_dump()
+                    progress_signal_payload = dump_model(progress_signal)
                     round_progress_signals.append(progress_signal_payload)
                     progress_signals = [*progress_signals, progress_signal_payload][-48:]
                     round_has_progress = round_has_progress or bool(progress_signal.has_progress)
@@ -4889,11 +4890,11 @@ class VintageProgrammerRuntime:
                     emit_runtime_activity(
                         "activity.delta",
                         "execution",
-                        self._execution_activity_detail(locale, execution_entry.model_dump()),
+                        self._execution_activity_detail(locale, dump_model(execution_entry)),
                         status="blocked" if turn_status in {"blocked", "needs_user_input"} else ("success" if round_success else "failed"),
                         payload={
                             "execution_trace": list(execution_trace),
-                            "execution_trace_entry": execution_entry.model_dump(),
+                            "execution_trace_entry": dump_model(execution_entry),
                             "validated_next_step": dict(validated_next_step),
                             "high_level_proposal": dict(high_level_proposal),
                             "runtime_hint": dict(runtime_hint),
@@ -5288,7 +5289,7 @@ class VintageProgrammerRuntime:
                 "cwd": effective_cwd,
                 "phase_timings": dict(phase_timings),
             },
-            "tool_timeline": [item.model_dump() for item in tool_events],
+            "tool_timeline": [dump_model(item) for item in tool_events],
             "trace_events": [dict(item) for item in trace_events],
             "evidence": {
                 "status": evidence_status,
@@ -5386,7 +5387,7 @@ class VintageProgrammerRuntime:
             },
             "compaction_status": dict(live_compaction_status),
             "answer_stream": dict(answer_stream),
-            "tool_events": [item.model_dump() for item in tool_events],
+            "tool_events": [dump_model(item) for item in tool_events],
             "token_usage": usage_total,
             "inspector": inspector,
             "answer_bundle": answer_bundle,

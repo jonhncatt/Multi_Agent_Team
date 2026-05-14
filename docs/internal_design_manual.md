@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.2）
+# 内部设计手册（v2.9.3）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -638,7 +638,15 @@ This release makes three practical improvements:
 - Python execution guidance now prefers the project `.venv` interpreter when available and avoids assuming `python3`.
 - Failed tool cards show useful failure details such as error, stderr, return code, and cwd by default.
 
-## 17. v2.9.0 Stability Decision
+## 17. v2.9.3 Allowlist and Serialization Compatibility Notes
+
+v2.9.3 keeps the v2.9.x stable LangChain runtime policy.
+This release makes two practical hardening improvements:
+
+- The recommended safe `VP_ALLOWED_COMMANDS` full list now includes both `printf` and `dir`.
+- Frontend/API-facing serialization paths use a defensive `dump_model()` helper so mixed model-like objects do not fail only because they do not implement Pydantic v2 `model_dump()`.
+
+## 18. v2.9.0 Stability Decision
 
 v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
 The v2.8.x series experimented with OpenAI native SDK, streaming, detailed diagnostics, and tool-call canonicalization. These experiments improved low-level visibility but introduced regressions in task continuity, image_read behavior, tool-call stability, CPU usage, and latency.
@@ -651,7 +659,7 @@ The stable runtime must preserve:
 - predictable LangChain tool calling
 - lightweight timing display
 
-## 18. Runtime Backend Policy
+## 19. Runtime Backend Policy
 
 The stable backend for v2.9.0 is the LangChain-based runtime.
 OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
@@ -663,7 +671,7 @@ OpenAI native SDK and Responses API support are future adapter work. They must n
 - tool result continuation
 - final deliverable completion
 
-## 19. Streaming Policy
+## 20. Streaming Policy
 
 Streaming is postponed for v2.9.0.
 Any future streaming implementation must preserve the existing Codex-style loop:
@@ -674,7 +682,7 @@ Any future streaming implementation must preserve the existing Codex-style loop:
 4. the runtime must not stop on intermediate plan-like text;
 5. long tasks must continue until final deliverable.
 
-## 20. Max Output Token Policy
+## 21. Max Output Token Policy
 
 v2.9.0 uses a conservative default output cap.
 Default:
@@ -695,7 +703,7 @@ Future dynamic policy may use:
 - long report: 8192
 - hard upper limit: 12000
 
-## 21. Context Turns
+## 22. Context Turns
 
 `Context Turns` 对应 `max_context_turns`。
 它表示在构建当前模型上下文时，最多可能纳入多少历史 user/assistant turn（历史用户/助手轮次）的上限。
@@ -707,10 +715,10 @@ Future dynamic policy may use:
 - Context Turns: `2000`
 - 在 token budget（token 预算）和 compaction（上下文压缩）继续生效之前，runtime 最多考虑最近或最相关的 `2000` 个历史 turn
 
-## 22. Python Command Handling
+## 23. Python Command Handling
 
 当 runtime 需要执行 Python 项目命令时，不应假定 `python3` 一定存在。
-v2.9.2 的稳定策略是：
+v2.9.x 的稳定策略是：
 
 - 如果项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先使用它执行项目测试、脚本和模块命令
 - 如果没有项目 `.venv`，优先使用 runtime 检测到的 `python_command`
@@ -732,13 +740,20 @@ python -m pytest
 python -m compileall app packages tests
 ```
 
-## 23. Shell Command Allowlist
+## 24. Python Version Recommendation
+
+稳定的 v2.9.x 运行时推荐使用 Python `3.11`。
+Python `3.12` 也可接受。
+Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同平台上可能出现 native wheel 兼容性问题。
+
+## 25. Shell Command Allowlist
 
 `exec_command` 继续使用保守 allowlist。
-v2.9.2 起允许 `printf`，用于小型格式化输出和轻量文件创建。
-高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` 仍保持阻止。
+从 v2.9.3 开始，推荐的完整安全 `VP_ALLOWED_COMMANDS` 列表包含 `printf` 和 `dir`。
+需要注意：`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；如果自定义它，应包含完整安全列表。
+高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
-## 24. 源码依据与待确认点
+## 26. 源码依据与待确认点
 
 ### 本手册主要依据的源码
 

@@ -1,13 +1,17 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.9.2`。
+当前稳定版本：`v2.9.3`。
 
 ## Stable Runtime
 
-v2.9.2 是小型实用性 polish 版本，继续默认使用 LangChain-based stable runtime。
-v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.2 只补充实用 tool UX、Python 执行指引和失败信息展示。
+v2.9.3 是小型稳定性 hardening 版本，继续默认使用 LangChain-based stable runtime。
+v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.3 只补充 allowlist 兼容性、序列化防御和 Python 版本说明。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
+
+## Python Version
+
+稳定的 v2.9.x 运行时推荐 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同机器上可能出现兼容性差异。
 
 ## Max Output Tokens
 
@@ -23,7 +27,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。v2.9.2 起允许 `printf` 用于小型格式化输出和轻量文件创建；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。v2.9.3 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
 
 ## 运行
 
@@ -112,7 +116,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.9.2`
+- 在发布提交上打 annotated tag，例如 `v2.9.3`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。
