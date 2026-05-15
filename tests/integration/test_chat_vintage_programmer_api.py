@@ -17,7 +17,8 @@ from app.workbench import WorkbenchStore
 
 
 class _FakeVintageRuntime:
-    def descriptor(self) -> dict[str, object]:
+    def descriptor(self, locale: str | None = None, *, refresh: bool = False) -> dict[str, object]:
+        _ = (locale, refresh)
         return {
             "agent_id": "vintage_programmer",
             "title": "Vintage Programmer",
@@ -133,6 +134,9 @@ class _FakeVintageRuntime:
             ],
             "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
         }
+
+    def invalidate_descriptor_cache(self) -> None:
+        return None
 
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings, context)
@@ -714,6 +718,7 @@ def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
         "auth_summary",
         lambda self: {"available": True, "reason": "", "mode": "test", "provider": "test"},
     )
+    main_app._invalidate_provider_payload_cache()
 
 
 def _parse_sse_events(raw: str) -> list[tuple[str, dict[str, object]]]:
@@ -737,36 +742,35 @@ def _parse_sse_events(raw: str) -> list[tuple[str, dict[str, object]]]:
     return events
 
 
-def test_health_endpoint_exposes_single_agent_descriptor(monkeypatch, tmp_path: Path) -> None:
+def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
+    monkeypatch.setattr(
+        main_app,
+        "_bootstrap_response_payload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("health should not build bootstrap payload")),
+    )
+    monkeypatch.setattr(
+        main_app,
+        "_runtime_status_response_payload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("health should not build runtime status payload")),
+    )
 
     response = client.get("/api/health")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["app_title"] == "Vintage Programmer"
-    assert payload["app_version"] == "2.9.3"
-    assert payload["agent"]["agent_id"] == "vintage_programmer"
-    assert payload["runtime_status"]["workspace_label"]
-    assert "rapidocr_available" in payload["ocr_status"]
-    assert "default_engine" in payload["ocr_status"]
-    assert payload["default_project_id"]
-    assert payload["projects"][0]["project_id"]
-    assert payload["allow_custom_model"] is True
-    assert payload["provider_options"]
-    assert payload["llm_provider"] in [item["provider"] for item in payload["provider_options"]]
-    assert payload["default_model"] in payload["model_options"]
-    assert payload["default_locale"] == main_app.config.default_locale
-    assert payload["default_locale"] in payload["supported_locales"]
-    assert payload["default_max_output_tokens"] == main_app.config.max_output_tokens
-    assert payload["context_meter"]["auto_compact_token_limit"] > 0
-    assert payload["compaction_status"]["mode"] == "token_budget"
-    assert "used_percent" in payload["context_meter"]
-    assert "control_panel_topology" not in payload
+    assert payload == {
+        "ok": True,
+        "app_version": "2.9.4",
+        "build_version": main_app.BUILD_VERSION,
+        "uptime_sec": payload["uptime_sec"],
+    }
+    assert isinstance(payload["uptime_sec"], int)
+    assert payload["uptime_sec"] >= 0
 
 
-def test_health_endpoint_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_status_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
     live_project = {
@@ -782,16 +786,14 @@ def test_health_endpoint_uses_live_project_branch_instead_of_startup_constant(mo
         "git_branch": "feature/live-branch",
         "is_worktree": False,
     }
-    monkeypatch.setattr(main_app, "GIT_BRANCH", "stale-startup-branch", raising=False)
     monkeypatch.setattr(main_app.project_store, "ensure_default_project", lambda: dict(live_project))
     monkeypatch.setattr(main_app.project_store, "list_projects", lambda: [dict(live_project)])
 
-    response = client.get("/api/health")
+    response = client.get("/api/runtime-status")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["runtime_status"]["git_branch"] == "feature/live-branch"
-    assert payload["runtime_status"]["git_branch"] != "stale-startup-branch"
 
 
 def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_path: Path) -> None:
@@ -802,7 +804,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.9.3"
+    assert bootstrap_payload["app_version"] == "2.9.4"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -818,8 +820,11 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert runtime_payload["runtime_status"]["loop_safeguards"]["max_turn_seconds"] > 0
     assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_total_ms"] >= 0
     assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_runtime_meta_ms"] >= 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_provider_cache_ms"] >= 0
     assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_provider_options_ms"] >= 0
     assert runtime_payload["runtime_status"]["provider_diagnostics"]["runtime_status_auth_summary_ms"] >= 0
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["provider_payload_cached"] is True
+    assert runtime_payload["runtime_status"]["provider_diagnostics"]["provider_cache_generation"] >= 1
     assert runtime_payload["context_meter"]["auto_compact_token_limit"] > 0
     assert runtime_payload["compaction_status"]["mode"] == "token_budget"
 
@@ -848,6 +853,79 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
 
     detail_after_delete = client.get(f"/api/thread/{thread_id}")
     assert detail_after_delete.status_code == 404
+
+
+def test_runtime_status_uses_cached_provider_payload(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    main_app._invalidate_provider_payload_cache()
+    monkeypatch.setattr(
+        main_app,
+        "list_provider_profiles",
+        lambda cfg: [
+            {
+                "provider": cfg.llm_provider,
+                "label": cfg.llm_provider,
+                "default_model": cfg.default_model,
+                "model_options": [cfg.default_model],
+            }
+        ],
+    )
+    calls = {"auth_summary": 0}
+
+    def counting_auth_summary(self):
+        calls["auth_summary"] += 1
+        return {"available": True, "reason": "", "mode": "test", "provider": "test"}
+
+    monkeypatch.setattr(main_app.OpenAIAuthManager, "auth_summary", counting_auth_summary)
+
+    first = client.get("/api/runtime-status")
+    second = client.get("/api/runtime-status")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls["auth_summary"] == 1
+
+
+def test_runtime_status_does_not_require_descriptor(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    monkeypatch.setattr(
+        main_app.vintage_programmer_runtime,
+        "descriptor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("runtime-status should not need descriptor")),
+    )
+
+    response = client.get("/api/runtime-status")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_workbench_writes_invalidate_descriptor_cache(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    class _CountingRuntime(_FakeVintageRuntime):
+        def __init__(self) -> None:
+            self.invalidations = 0
+
+        def invalidate_descriptor_cache(self) -> None:
+            self.invalidations += 1
+
+    runtime = _CountingRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+
+    create_response = client.post(
+        "/api/workbench/skills",
+        json={
+            "content": "---\nid: new_skill\ntitle: New Skill\nenabled: true\nbind_to:\n  - vintage_programmer\nsummary: cache invalidation test\n---\n\n# Skill\n"
+        },
+    )
+    assert create_response.status_code == 200
+    spec_response = client.put("/api/workbench/specs/agent.md", json={"content": "---\nid: vintage_programmer\n---\nupdated"}, params={"locale": main_app.config.default_locale})
+    assert spec_response.status_code == 200
+    assert runtime.invalidations == 2
 
 
 def test_thread_detail_uses_lightweight_pagination_and_stable_turn_ids(monkeypatch, tmp_path: Path) -> None:
@@ -1503,7 +1581,7 @@ def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Pa
     assert list_a_after_delete.json()["sessions"] == []
     assert all(item["project_id"] == project_b for item in list_b_after_delete.json()["sessions"])
 
-    default_project_id = client.get("/api/health").json()["default_project_id"]
+    default_project_id = client.get("/api/bootstrap").json()["default_project_id"]
     delete_default = client.delete(f"/api/projects/{default_project_id}")
     assert delete_default.status_code == 400
 

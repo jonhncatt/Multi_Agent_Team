@@ -508,6 +508,44 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "Execution must happen through tool calls." not in prompt
 
 
+def test_descriptor_uses_cache_until_explicit_invalidation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+
+    load_calls = {"spec": 0, "skills": 0}
+    original_load_spec = runtime._load_spec
+    original_enabled_skills = runtime._enabled_skills
+
+    def counting_load_spec(*args: Any, **kwargs: Any):
+        load_calls["spec"] += 1
+        return original_load_spec(*args, **kwargs)
+
+    def counting_enabled_skills(agent_id: str):
+        load_calls["skills"] += 1
+        return original_enabled_skills(agent_id)
+
+    monkeypatch.setattr(runtime, "_load_spec", counting_load_spec)
+    monkeypatch.setattr(runtime, "_enabled_skills", counting_enabled_skills)
+
+    first = runtime.descriptor()
+    second = runtime.descriptor()
+
+    assert first == second
+    assert load_calls == {"spec": 1, "skills": 1}
+
+    runtime.invalidate_descriptor_cache()
+    third = runtime.descriptor()
+
+    assert third == first
+    assert load_calls == {"spec": 2, "skills": 2}
+
+
 def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

@@ -24,6 +24,7 @@ from app.config import AppConfig, build_provider_config, list_provider_profiles,
 from app.context_meter import (
     build_compaction_status,
     build_context_meter,
+    build_context_meter_from_status,
     build_runtime_context_payload,
     ensure_compaction_state,
     maybe_auto_compact_session,
@@ -105,11 +106,14 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.3"
+APP_VERSION = "2.9.4"
+APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 _provider_runtime_lock = threading.Lock()
 _provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
+_provider_payload_lock = threading.Lock()
+_provider_payload_cache: dict[str, Any] = {}
 _active_chat_runs_lock = threading.Lock()
 _active_chat_runs: dict[str, dict[str, Any]] = {}
 
@@ -288,15 +292,21 @@ def _unregister_active_chat_run(run_id: str) -> None:
         _active_chat_runs.pop(str(run_id or "").strip(), None)
 
 
-def _provider_options_payload() -> list[dict[str, object]]:
-    options: list[dict[str, object]] = []
+def _build_provider_payload_uncached() -> dict[str, Any]:
+    provider_options: list[dict[str, object]] = []
+    auth_summaries: dict[str, dict[str, Any]] = {}
+    provider_options_started = time.perf_counter()
+    auth_summary_ms_total = 0
     for item in list_provider_profiles(config):
         provider = str(item.get("provider") or "").strip()
         if not provider:
             continue
         provider_config = build_provider_config(config, provider)
+        auth_started = time.perf_counter()
         auth_summary = OpenAIAuthManager(provider_config).auth_summary()
-        options.append(
+        auth_summary_ms_total += int((time.perf_counter() - auth_started) * 1000)
+        auth_summaries[provider] = dict(auth_summary)
+        provider_options.append(
             {
                 "provider": provider,
                 "label": str(item.get("label") or provider),
@@ -306,7 +316,87 @@ def _provider_options_payload() -> list[dict[str, object]]:
                 "auth_mode": str(auth_summary.get("mode") or ""),
             }
         )
-    return options
+    provider_options_ms = int((time.perf_counter() - provider_options_started) * 1000)
+    active_provider = next(
+        (
+            item
+            for item in provider_options
+            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
+        ),
+        provider_options[0] if provider_options else None,
+    )
+    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
+    active_provider_config = build_provider_config(config, active_provider_name)
+    return {
+        "provider_options": provider_options,
+        "active_provider": dict(active_provider or {}),
+        "active_provider_name": active_provider_name,
+        "active_provider_config": active_provider_config,
+        "auth_summary": dict(auth_summaries.get(active_provider_name) or {}),
+        "created_at": time.monotonic(),
+        "diagnostics": {
+            "runtime_status_provider_options_ms": max(0, provider_options_ms),
+            "runtime_status_auth_summary_ms": max(0, auth_summary_ms_total),
+        },
+    }
+
+
+def _get_provider_payload(*, refresh: bool = False) -> dict[str, Any]:
+    with _provider_payload_lock:
+        cached = _provider_payload_cache if _provider_payload_cache else None
+        if refresh or not isinstance(cached, dict) or not cached:
+            next_generation = int((_provider_payload_cache or {}).get("generation") or 0) + 1
+            rebuilt = _build_provider_payload_uncached()
+            rebuilt["generation"] = next_generation
+            _provider_payload_cache.clear()
+            _provider_payload_cache.update(rebuilt)
+            cached = _provider_payload_cache
+        return {
+            "provider_options": [dict(item) for item in list(cached.get("provider_options") or []) if isinstance(item, dict)],
+            "active_provider": dict(cached.get("active_provider") or {}),
+            "active_provider_name": str(cached.get("active_provider_name") or ""),
+            "active_provider_config": cached.get("active_provider_config"),
+            "auth_summary": dict(cached.get("auth_summary") or {}),
+            "created_at": float(cached.get("created_at") or 0.0),
+            "generation": int(cached.get("generation") or 0),
+            "diagnostics": dict(cached.get("diagnostics") or {}),
+        }
+
+
+def _invalidate_provider_payload_cache() -> None:
+    with _provider_payload_lock:
+        _provider_payload_cache.clear()
+
+
+def _provider_options_payload(*, refresh: bool = False) -> list[dict[str, object]]:
+    return list(_get_provider_payload(refresh=refresh).get("provider_options") or [])
+
+
+def _runtime_descriptor(*, locale: str | None = None, refresh: bool = False) -> dict[str, object]:
+    runtime = get_vintage_programmer_runtime()
+    if refresh and hasattr(runtime, "invalidate_descriptor_cache"):
+        try:
+            runtime.invalidate_descriptor_cache()
+        except Exception:
+            pass
+    try:
+        return runtime.descriptor(locale=locale, refresh=refresh)
+    except TypeError:
+        if locale is None:
+            return runtime.descriptor()
+        return runtime.descriptor(locale)
+
+
+def _invalidate_runtime_descriptor_caches() -> None:
+    runtimes: list[Any] = [get_vintage_programmer_runtime()]
+    with _provider_runtime_lock:
+        runtimes.extend(_provider_runtime_cache.values())
+    for runtime in runtimes:
+        if hasattr(runtime, "invalidate_descriptor_cache"):
+            try:
+                runtime.invalidate_descriptor_cache()
+            except Exception:
+                continue
 
 
 def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntime]:
@@ -327,9 +417,10 @@ def _provider_runtime(provider: str) -> tuple[AppConfig, VintageProgrammerRuntim
 
 def _resolve_requested_provider(req: ChatRequest) -> str:
     requested = normalize_llm_provider_name((req.settings.provider or "").strip() or config.llm_provider)
+    provider_payload = _get_provider_payload()
     available = {
         str(item.get("provider") or "").strip()
-        for item in _provider_options_payload()
+        for item in list(provider_payload.get("provider_options") or [])
         if str(item.get("provider") or "").strip()
     }
     if not available:
@@ -384,6 +475,24 @@ def _build_context_meter_for_session(
     )
 
 
+def _context_bundle_for_session(
+    *,
+    session: dict[str, Any] | None = None,
+    model: str | None,
+    max_output_tokens: int | None = None,
+    pending_message: str = "",
+    last_compacted_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    compaction_status = _build_compaction_status_for_session(
+        session=session,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        pending_message=pending_message,
+        last_compacted_at=last_compacted_at,
+    )
+    return build_context_meter_from_status(compaction_status), compaction_status
+
+
 def get_workbench_store() -> WorkbenchStore:
     return workbench_store
 
@@ -420,45 +529,20 @@ def index() -> FileResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    bootstrap = _bootstrap_response_payload()
-    runtime_status = _runtime_status_response_payload()
-    projects = get_project_store().list_projects()
     return HealthResponse(
         ok=True,
-        app_title=bootstrap.app_title,
-        app_version=bootstrap.app_version,
-        build_version=bootstrap.build_version,
-        default_locale=bootstrap.default_locale,
-        supported_locales=bootstrap.supported_locales,
-        default_model=bootstrap.default_model,
-        model_options=bootstrap.model_options,
-        allow_custom_model=bootstrap.allow_custom_model,
-        llm_provider=bootstrap.llm_provider,
-        provider_options=bootstrap.provider_options,
-        auth_mode=bootstrap.auth_mode,
-        execution_mode_default=bootstrap.execution_mode_default,
-        docker_available=bootstrap.docker_available,
-        docker_message=bootstrap.docker_message,
-        platform_name=bootstrap.platform_name,
-        workspace_root=bootstrap.workspace_root,
-        allowed_roots=bootstrap.allowed_roots,
-        default_max_output_tokens=bootstrap.default_max_output_tokens,
-        max_upload_mb=bootstrap.max_upload_mb,
-        web_allow_all_domains=bootstrap.web_allow_all_domains,
-        web_allowed_domains=bootstrap.web_allowed_domains,
-        default_project_id=bootstrap.default_project_id,
-        projects=[ProjectDescriptor(**item) for item in projects if isinstance(item, dict)],
-        runtime_status=runtime_status.runtime_status,
-        ocr_status=runtime_status.ocr_status,
-        context_meter=runtime_status.context_meter,
-        compaction_status=runtime_status.compaction_status,
-        agent=bootstrap.agent,
+        app_version=APP_VERSION,
+        build_version=BUILD_VERSION,
+        uptime_sec=max(0, int(time.monotonic() - APP_STARTED_AT)),
     )
 
 
 @app.get("/api/bootstrap", response_model=BootstrapResponse)
-def bootstrap() -> BootstrapResponse:
-    return _bootstrap_response_payload()
+def bootstrap(refresh_provider: bool = False, refresh_descriptor: bool = False) -> BootstrapResponse:
+    return _bootstrap_response_payload(
+        refresh_provider=refresh_provider,
+        refresh_descriptor=refresh_descriptor,
+    )
 
 
 @app.get("/api/runtime-status", response_model=RuntimeStatusResponse)
@@ -547,29 +631,35 @@ def workbench_skill_detail(skill_id: str) -> SkillDescriptor:
 @app.post("/api/workbench/skills", response_model=SkillDescriptor)
 def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
     try:
-        return SkillDescriptor(**get_workbench_store().create_skill(req.content))
+        created = SkillDescriptor(**get_workbench_store().create_skill(req.content))
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_runtime_descriptor_caches()
+    return created
 
 
 @app.put("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
 def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
     try:
-        return SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
+        updated = SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_runtime_descriptor_caches()
+    return updated
 
 
 @app.post("/api/workbench/skills/{skill_id}/toggle", response_model=SkillDescriptor)
 def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
     try:
-        return SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
+        updated = SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_runtime_descriptor_caches()
+    return updated
 
 
 @app.delete("/api/workbench/skills/{skill_id}", response_model=SkillDeleteResponse)
@@ -580,6 +670,7 @@ def workbench_delete_skill(skill_id: str) -> SkillDeleteResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_runtime_descriptor_caches()
     return SkillDeleteResponse(ok=True, skill_id=skill_id)
 
 
@@ -602,11 +693,13 @@ def workbench_spec_detail(name: str, locale: str | None = None) -> SpecDescripto
 @app.put("/api/workbench/specs/{name}", response_model=SpecDescriptor)
 def workbench_write_spec(name: str, req: SpecUpsertRequest, locale: str | None = None) -> SpecDescriptor:
     try:
-        return SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content, locale=locale))
+        updated = SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content, locale=locale))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_runtime_descriptor_caches()
+    return updated
 
 
 def _default_project() -> dict[str, Any]:
@@ -633,8 +726,10 @@ def _resolve_project_for_thread_create(project_id: str | None) -> dict[str, Any]
     return project
 
 
-def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str, Any, dict[str, Any], dict[str, Any], dict[str, int]]:
+def _runtime_provider_payload(*, include_runtime: bool = True, refresh_provider: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
     timer = PhaseTimer()
+    with timer.measure("runtime_status_provider_cache_ms"):
+        provider_payload = _get_provider_payload(refresh=refresh_provider)
     with timer.measure("runtime_status_runtime_meta_ms"):
         runtime_meta = (
             get_chat_product_runtime().runtime_meta()
@@ -645,29 +740,13 @@ def _runtime_provider_payload(*, include_runtime: bool = True) -> tuple[list[dic
                 "ocr_status": {},
             }
         )
-    with timer.measure("runtime_status_provider_options_ms"):
-        provider_options = _provider_options_payload()
-    active_provider = next(
-        (
-            item
-            for item in provider_options
-            if str(item.get("provider") or "").strip() == str(config.llm_provider or "").strip()
-        ),
-        provider_options[0] if provider_options else None,
-    )
-    active_provider_name = str((active_provider or {}).get("provider") or config.llm_provider or "")
-    active_provider_config = build_provider_config(config, active_provider_name)
-    with timer.measure("runtime_status_auth_summary_ms"):
-        auth_summary = OpenAIAuthManager(active_provider_config).auth_summary()
-    return (
-        provider_options,
-        active_provider or {},
-        active_provider_name,
-        active_provider_config,
-        auth_summary,
-        runtime_meta,
-        timer.snapshot(total_key="runtime_status_total_ms"),
-    )
+    diagnostics = timer.snapshot(total_key="runtime_status_total_ms")
+    created_at = float(provider_payload.get("created_at") or 0.0)
+    diagnostics["provider_cache_generation"] = int(provider_payload.get("generation") or 0)
+    diagnostics["provider_cache_age_ms"] = max(0, int((time.monotonic() - created_at) * 1000)) if created_at > 0 else 0
+    diagnostics["provider_payload_cached"] = True
+    diagnostics.update(dict(provider_payload.get("diagnostics") or {}))
+    return provider_payload, runtime_meta, diagnostics
 
 
 def _effective_allowed_roots(projects: list[dict[str, Any]]) -> list[str]:
@@ -738,19 +817,29 @@ def _thread_list_item_for_session_id(session_id: str) -> ThreadListItem | None:
     return _thread_list_item_from_session_row(hit)
 
 
-def _bootstrap_response_payload() -> BootstrapResponse:
-    (
-        provider_options,
-        active_provider,
-        active_provider_name,
-        active_provider_config,
-        auth_summary,
-        runtime_meta,
-        _provider_diagnostics,
-    ) = _runtime_provider_payload(include_runtime=False)
+def _bootstrap_response_payload(
+    *,
+    refresh_provider: bool = False,
+    refresh_descriptor: bool = False,
+) -> BootstrapResponse:
+    provider_payload, runtime_meta, _provider_diagnostics = _runtime_provider_payload(
+        include_runtime=False,
+        refresh_provider=refresh_provider,
+    )
+    provider_options = list(provider_payload.get("provider_options") or [])
+    active_provider = dict(provider_payload.get("active_provider") or {})
+    active_provider_name = str(provider_payload.get("active_provider_name") or config.llm_provider or "")
+    active_provider_config = provider_payload.get("active_provider_config") or build_provider_config(config, active_provider_name)
+    auth_summary = dict(provider_payload.get("auth_summary") or {})
     default_project = get_project_store().ensure_default_project()
-    agent_descriptor = get_vintage_programmer_runtime().descriptor()
-    active_model = str((active_provider or {}).get("default_model") or active_provider_config.default_model or agent_descriptor.get("default_model") or "")
+    agent_descriptor = _runtime_descriptor(refresh=refresh_descriptor)
+    active_model = str(
+        (active_provider or {}).get("default_model")
+        or active_provider_config.default_model
+        or agent_descriptor.get("default_model")
+        or config.default_model
+        or ""
+    )
     effective_roots = _effective_allowed_roots([default_project])
     return BootstrapResponse(
         ok=True,
@@ -786,23 +875,17 @@ def _runtime_status_response_payload(
     model: str | None = None,
     max_output_tokens: int = DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
 ) -> RuntimeStatusResponse:
-    (
-        provider_options,
-        active_provider,
-        active_provider_name,
-        active_provider_config,
-        auth_summary,
-        runtime_meta,
-        provider_diagnostics,
-    ) = _runtime_provider_payload()
-    _ = provider_options
-    agent_descriptor = get_vintage_programmer_runtime().descriptor()
+    provider_payload, runtime_meta, provider_diagnostics = _runtime_provider_payload()
+    active_provider = dict(provider_payload.get("active_provider") or {})
+    active_provider_name = str(provider_payload.get("active_provider_name") or config.llm_provider or "")
+    active_provider_config = provider_payload.get("active_provider_config") or build_provider_config(config, active_provider_name)
+    auth_summary = dict(provider_payload.get("auth_summary") or {})
     selected_project = _resolve_project_or_default(project_id)
     active_model = str(
         model
         or (active_provider or {}).get("default_model")
         or active_provider_config.default_model
-        or agent_descriptor.get("default_model")
+        or config.default_model
         or ""
     ).strip()
     projects = get_project_store().list_projects()
@@ -821,11 +904,7 @@ def _runtime_status_response_payload(
         "loop_safeguards": default_loop_safeguards(),
         "provider_diagnostics": dict(provider_diagnostics),
     }
-    context_meter = _build_context_meter_for_session(
-        model=active_model,
-        max_output_tokens=max_output_tokens,
-    )
-    compaction_status = _build_compaction_status_for_session(
+    context_meter, compaction_status = _context_bundle_for_session(
         model=active_model,
         max_output_tokens=max_output_tokens,
     )
@@ -869,13 +948,7 @@ def _thread_detail_response_payload(
         raise HTTPException(status_code=404, detail="Session not found")
     agent_state = dict(loaded.get("agent_state") or {})
     selected_model = str(agent_state.get("last_model") or config.default_model or "").strip()
-    context_meter = _build_context_meter_for_session(
-        session=loaded,
-        model=selected_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
-    )
-    compaction_status = _build_compaction_status_for_session(
+    context_meter, compaction_status = _context_bundle_for_session(
         session=loaded,
         model=selected_model,
         max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
@@ -1700,6 +1773,12 @@ def _process_chat_request(
                     message=translate(locale, "chat.focus_shift"),
                     run_id=run_id,
                 )
+            session_ready_context_meter, session_ready_compaction_status = _context_bundle_for_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+            )
             _emit_progress(
                 progress_cb,
                 "stage",
@@ -1718,18 +1797,8 @@ def _process_chat_request(
                     collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
-                    context_meter=_build_context_meter_for_session(
-                        session=session,
-                        model=requested_model,
-                        max_output_tokens=req.settings.max_output_tokens,
-                        pending_message=req.message,
-                    ),
-                    compaction_status=_build_compaction_status_for_session(
-                        session=session,
-                        model=requested_model,
-                        max_output_tokens=req.settings.max_output_tokens,
-                        pending_message=req.message,
-                    ),
+                    context_meter=session_ready_context_meter,
+                    compaction_status=session_ready_compaction_status,
                 ),
             )
             request_phase_timer.record_offset_ms("session_ready_ms")
@@ -1747,6 +1816,12 @@ def _process_chat_request(
         summarized = bool(compaction_result.get("compacted"))
         if summarized:
             compaction_after = dict(compaction_result.get("status_after") or {})
+            compacted_context_meter, compacted_context_status = _context_bundle_for_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+            )
             _emit_progress(
                 progress_cb,
                 "trace",
@@ -1763,18 +1838,8 @@ def _process_chat_request(
                     collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
-                    context_meter=_build_context_meter_for_session(
-                        session=session,
-                        model=requested_model,
-                        max_output_tokens=req.settings.max_output_tokens,
-                        pending_message=req.message,
-                    ),
-                    compaction_status=_build_compaction_status_for_session(
-                        session=session,
-                        model=requested_model,
-                        max_output_tokens=req.settings.max_output_tokens,
-                        pending_message=req.message,
-                    ),
+                    context_meter=compacted_context_meter,
+                    compaction_status=compacted_context_status,
                 ),
             )
         session_context_impl.sync_session_memory_state(session)
@@ -1802,6 +1867,12 @@ def _process_chat_request(
         with request_phase_timer.measure("attachment_load_ms"):
             attachments = upload_store.get_many(effective_attachment_ids)
         attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
+        attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(
+            session=session,
+            model=requested_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            pending_message=req.message,
+        )
         _emit_progress(
             progress_cb,
             "stage",
@@ -1823,18 +1894,8 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
-                context_meter=_build_context_meter_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                ),
-                compaction_status=_build_compaction_status_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                ),
+                context_meter=attachments_context_meter,
+                compaction_status=attachments_compaction_status,
             ),
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
@@ -1885,6 +1946,7 @@ def _process_chat_request(
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message=req.message,
             )
+            context_meter_for_runtime = build_context_meter_from_status(compaction_status_for_runtime)
             recalled_context = copy.deepcopy({
                 "recalled_task": attachment_context.get("recalled_task") or {},
                 "recalled_artifacts": attachment_context.get("recalled_artifacts") or [],
@@ -1909,12 +1971,7 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
-                context_meter=_build_context_meter_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                ),
+                context_meter=context_meter_for_runtime,
                 compaction_status=compaction_status_for_runtime,
             ),
         )
@@ -1929,12 +1986,7 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
-                context_meter=_build_context_meter_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                ),
+                context_meter=context_meter_for_runtime,
                 compaction_status=compaction_status_for_runtime,
             ),
         )
@@ -1951,12 +2003,7 @@ def _process_chat_request(
                 collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
-                context_meter=_build_context_meter_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                ),
+                context_meter=context_meter_for_runtime,
                 compaction_status=compaction_status_for_runtime,
             ),
         )
@@ -2063,6 +2110,13 @@ def _process_chat_request(
             "session_id": session_id,
             "thread_id": session_id,
         }
+        agent_run_done_context_meter, agent_run_done_compaction_status = _context_bundle_for_session(
+            session=session,
+            model=selected_model,
+            max_output_tokens=req.settings.max_output_tokens,
+            pending_message=req.message,
+            last_compacted_at=_session_last_compacted_at(session),
+        )
 
         _emit_progress(
             progress_cb,
@@ -2086,20 +2140,8 @@ def _process_chat_request(
                 pending_user_input=pending_user_input,
                 tool_count=len(tool_events),
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
-                context_meter=_build_context_meter_for_session(
-                    session=session,
-                    model=selected_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                    last_compacted_at=_session_last_compacted_at(session),
-                ),
-                compaction_status=_build_compaction_status_for_session(
-                    session=session,
-                    model=selected_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                    last_compacted_at=_session_last_compacted_at(session),
-                ),
+                context_meter=agent_run_done_context_meter,
+                compaction_status=agent_run_done_compaction_status,
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
@@ -2204,13 +2246,7 @@ def _process_chat_request(
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = session_context_impl.get_artifact_memory_preview(session)
         current_task_focus = session_context_impl.get_current_task_focus(session)
-        context_meter = _build_context_meter_for_session(
-            session=session,
-            model=selected_model,
-            max_output_tokens=req.settings.max_output_tokens,
-            last_compacted_at=last_compacted_at,
-        )
-        compaction_status = _build_compaction_status_for_session(
+        context_meter, compaction_status = _context_bundle_for_session(
             session=session,
             model=selected_model,
             max_output_tokens=req.settings.max_output_tokens,

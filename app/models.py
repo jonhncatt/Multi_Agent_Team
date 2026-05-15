@@ -554,34 +554,9 @@ class SpecUpsertRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
-    app_title: str = ""
     app_version: str = ""
     build_version: str = ""
-    default_locale: str = "ja-JP"
-    supported_locales: list[str] = Field(default_factory=list)
-    default_model: str = ""
-    model_options: list[str] = Field(default_factory=list)
-    allow_custom_model: bool = True
-    llm_provider: str = ""
-    provider_options: list[dict[str, object]] = Field(default_factory=list)
-    auth_mode: str = ""
-    execution_mode_default: Literal["host", "docker"] = "host"
-    docker_available: bool = False
-    docker_message: str | None = None
-    platform_name: str = ""
-    workspace_root: str = ""
-    allowed_roots: list[str] = Field(default_factory=list)
-    default_max_output_tokens: int = 4096
-    max_upload_mb: int = 0
-    web_allow_all_domains: bool = True
-    web_allowed_domains: list[str] = Field(default_factory=list)
-    default_project_id: str = ""
-    projects: list[ProjectDescriptor] = Field(default_factory=list)
-    runtime_status: dict[str, object] = Field(default_factory=dict)
-    ocr_status: dict[str, object] = Field(default_factory=dict)
-    context_meter: ContextMeter = Field(default_factory=ContextMeter)
-    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
-    agent: dict[str, object] = Field(default_factory=dict)
+    uptime_sec: int = 0
 
 
 class BootstrapResponse(BaseModel):

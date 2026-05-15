@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.9.3`。
+当前稳定版本：`v2.9.4`。
 
 ## Stable Runtime
 
-v2.9.3 是小型稳定性 hardening 版本，继续默认使用 LangChain-based stable runtime。
-v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.3 只补充 allowlist 兼容性、序列化防御和 Python 版本说明。
+v2.9.4 是小型性能清理版本，继续默认使用 LangChain-based stable runtime。
+v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.4 只清理 `/api/runtime-status` 的重复 provider/auth/descriptor/context meter 计算，不改变稳定 runtime 行为。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
@@ -27,7 +27,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。v2.9.3 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。v2.9.4 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
 
 ## 运行
 
@@ -116,7 +116,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.9.3`
+- 在发布提交上打 annotated tag，例如 `v2.9.4`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。

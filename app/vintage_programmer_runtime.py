@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import hashlib
 import inspect
 import json
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Callable
 import uuid
@@ -542,6 +544,9 @@ class VintageProgrammerRuntime:
         self._tool_descriptors = build_tool_descriptors(self._tool_specs)
         self._tool_descriptors_by_name = tool_descriptor_by_name(self._tool_specs)
         self._workbench = WorkbenchStore(config=config, agent_dir=self._agent_dir)
+        self._descriptor_lock = threading.Lock()
+        self._descriptor_cache: dict[str, dict[str, object]] = {}
+        self._descriptor_cache_generation = 0
 
     def _build_tool_spec_index(self) -> dict[str, dict[str, Any]]:
         by_name: dict[str, dict[str, Any]] = {}
@@ -644,7 +649,18 @@ class VintageProgrammerRuntime:
     def _enabled_skills(self, agent_id: str) -> list[dict[str, Any]]:
         return self._workbench.enabled_skills_for_agent(agent_id)
 
-    def descriptor(self, locale: str | None = None) -> dict[str, object]:
+    def invalidate_descriptor_cache(self) -> None:
+        with self._descriptor_lock:
+            self._descriptor_cache.clear()
+            self._descriptor_cache_generation += 1
+
+    def descriptor(self, locale: str | None = None, *, refresh: bool = False) -> dict[str, object]:
+        cache_key = normalize_locale(locale, self._config.default_locale)
+        if not refresh:
+            with self._descriptor_lock:
+                cached = self._descriptor_cache.get(cache_key)
+                if isinstance(cached, dict):
+                    return copy.deepcopy(cached)
         spec = self._load_spec(locale=locale)
         loaded_skills = self._enabled_skills(spec.agent_id)
         payload = spec.descriptor()
@@ -666,7 +682,9 @@ class VintageProgrammerRuntime:
             }
             for item in loaded_skills
         ]
-        return payload
+        with self._descriptor_lock:
+            self._descriptor_cache[cache_key] = copy.deepcopy(payload)
+        return copy.deepcopy(payload)
 
     def _render_system_prompt(
         self,

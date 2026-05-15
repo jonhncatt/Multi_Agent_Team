@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from app.context_meter import (
+    build_compaction_status,
     build_context_meter,
+    build_context_meter_from_status,
     build_runtime_context_payload,
     maybe_auto_compact_session,
     resolve_context_window,
@@ -61,6 +63,33 @@ def test_build_context_meter_uses_fallback_budget_for_unknown_models() -> None:
     assert meter["threshold_source"] == "fallback_budget"
     assert meter["warning"]
     assert 0 <= meter["used_percent"] <= 100
+
+
+def test_build_context_meter_from_status_reuses_existing_compaction_status() -> None:
+    session = {
+        "summary": "old summary",
+        "turns": [
+            {"role": "user", "text": "请帮我分析这个仓库"},
+            {"role": "assistant", "text": "我先检查目录和关键入口。"},
+        ],
+        "thread_memory": {"summary": "recent thread summary"},
+        "current_task_focus": {"task_id": "task-1", "goal": "inspect repo"},
+        "artifact_memory": [],
+        "route_state": {"task_type": "code"},
+    }
+
+    status = build_compaction_status(
+        session=session,
+        model="unknown/free-model",
+        max_output_tokens=4096,
+        pending_message="继续解释刚才的代码结构",
+    )
+    meter = build_context_meter_from_status(status)
+
+    assert meter["estimated_tokens"] == status["estimated_context_tokens"]
+    assert meter["estimated_payload_tokens"] == status["estimated_payload_tokens"]
+    assert meter["auto_compact_token_limit"] == status["auto_compact_token_limit"]
+    assert meter["context_window"] == status["effective_context_window"]
 
 
 def test_maybe_auto_compact_session_writes_replacement_history_state() -> None:

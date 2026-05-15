@@ -328,9 +328,14 @@ def build_context_meter(
         pending_message=pending_message,
         last_compacted_at=last_compacted_at,
     )
-    estimated_tokens = int(status.get("estimated_context_tokens") or 0)
-    estimated_payload_tokens = int(status.get("estimated_payload_tokens") or 0)
-    auto_compact_token_limit = int(status.get("auto_compact_token_limit") or 0)
+    return build_context_meter_from_status(status)
+
+
+def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, Any]:
+    status_payload = dict(status or {})
+    estimated_tokens = int(status_payload.get("estimated_context_tokens") or 0)
+    estimated_payload_tokens = int(status_payload.get("estimated_payload_tokens") or 0)
+    auto_compact_token_limit = int(status_payload.get("auto_compact_token_limit") or 0)
     used_ratio = 0.0
     if auto_compact_token_limit > 0:
         used_ratio = min(1.0, float(estimated_tokens) / float(auto_compact_token_limit))
@@ -339,17 +344,17 @@ def build_context_meter(
         "estimated_tokens": estimated_tokens,
         "estimated_payload_tokens": estimated_payload_tokens,
         "overhead_tokens": int(_STATIC_OVERHEAD_TOKENS),
-        "context_window": int(status.get("effective_context_window") or 0),
+        "context_window": int(status_payload.get("effective_context_window") or 0),
         "auto_compact_token_limit": auto_compact_token_limit,
         "used_ratio": round(used_ratio, 6),
         "remaining_ratio": round(remaining_ratio, 6),
         "used_percent": int(round(used_ratio * 100)),
         "remaining_percent": int(round(remaining_ratio * 100)),
-        "threshold_source": str(status.get("threshold_source") or ""),
-        "context_window_known": bool(status.get("context_window_known")),
-        "compaction_enabled": bool(status.get("enabled")),
-        "last_compacted_at": str(status.get("last_compacted_at") or ""),
-        "warning": str(status.get("warning") or ""),
+        "threshold_source": str(status_payload.get("threshold_source") or ""),
+        "context_window_known": bool(status_payload.get("context_window_known")),
+        "compaction_enabled": bool(status_payload.get("enabled")),
+        "last_compacted_at": str(status_payload.get("last_compacted_at") or ""),
+        "warning": str(status_payload.get("warning") or ""),
     }
 
 
