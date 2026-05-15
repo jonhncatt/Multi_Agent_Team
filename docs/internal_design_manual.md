@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.4）
+# 内部设计手册（v2.9.5）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -656,7 +656,16 @@ This release is a request-time performance cleanup only and does not change agen
 - `/api/runtime-status` reuses cached provider payload and cached agent descriptor metadata instead of rebuilding them on every poll.
 - Context meter and compaction status reuse the same computed status payload instead of counting tokens twice for the same response.
 
-## 19. v2.9.0 Stability Decision
+## 19. v2.9.5 Safe Serialization Fix Notes
+
+v2.9.5 keeps the v2.9.x stable LangChain runtime policy.
+This release is a narrow bugfix only and does not change prompt behavior, routing logic, tool execution behavior, or streaming behavior.
+
+- The stable runtime still wraps `office_agent_runtime` under `VintageProgrammerRuntime`, so office/runtime payload construction must use defensive serialization.
+- Residual direct `.model_dump()` calls in `packages/office_modules/office_agent_runtime.py` are replaced with `dump_model(...)`.
+- This prevents intermittent office-style crashes such as `NoneType object has no attribute model_dump` and `dict object has no attribute model_dump`, especially in meeting-minutes and related task paths.
+
+## 20. v2.9.0 Stability Decision
 
 v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
 The v2.8.x series experimented with OpenAI native SDK, streaming, detailed diagnostics, and tool-call canonicalization. These experiments improved low-level visibility but introduced regressions in task continuity, image_read behavior, tool-call stability, CPU usage, and latency.
@@ -669,7 +678,7 @@ The stable runtime must preserve:
 - predictable LangChain tool calling
 - lightweight timing display
 
-## 20. Runtime Backend Policy
+## 21. Runtime Backend Policy
 
 The stable backend for v2.9.0 is the LangChain-based runtime.
 OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
@@ -681,7 +690,7 @@ OpenAI native SDK and Responses API support are future adapter work. They must n
 - tool result continuation
 - final deliverable completion
 
-## 21. Streaming Policy
+## 22. Streaming Policy
 
 Streaming is postponed for v2.9.0.
 Any future streaming implementation must preserve the existing Codex-style loop:

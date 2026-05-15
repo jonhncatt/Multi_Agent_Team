@@ -8,6 +8,7 @@ from packages.office_modules.execution_runtime import (
     normalize_legacy_run_chat_result,
 )
 from packages.office_modules.execution_engine import OfficeExecutionEngine
+from packages.office_modules.office_agent_runtime import OfficeAgent
 
 
 def _make_legacy_tuple(**overrides: Any) -> tuple[Any, ...]:
@@ -144,3 +145,39 @@ def test_office_execution_engine_forwards_blackboard_compatibility_kwarg() -> No
 
     assert result.text == "engine with blackboard"
     assert backend.calls[-1]["kwargs"]["blackboard"] is marker
+
+
+def test_build_session_route_state_serializes_none_active_task_safely() -> None:
+    runtime = object.__new__(OfficeAgent)
+    runtime._normalize_primary_intent = lambda value, *, task_type="": str(value or "").strip().lower() or "standard"
+    runtime._task_type_to_execution_policy = lambda task_type: "default_policy"
+
+    payload = runtime.build_session_route_state({"task_type": "meeting_minutes", "active_task": None})
+
+    assert payload["active_task"] is None
+
+
+def test_build_session_route_state_serializes_dict_active_task_safely() -> None:
+    runtime = object.__new__(OfficeAgent)
+    runtime._normalize_primary_intent = lambda value, *, task_type="": str(value or "").strip().lower() or "standard"
+    runtime._task_type_to_execution_policy = lambda task_type: "default_policy"
+
+    payload = runtime.build_session_route_state(
+        {
+            "task_type": "meeting_minutes",
+            "active_task": {
+                "task_id": "task-1",
+                "task_kind": "meeting_minutes",
+                "target_type": "thread",
+                "target_id": "thread-1",
+                "goal": "整理会议纪要",
+                "mode": "summary",
+                "started": True,
+            },
+        }
+    )
+
+    assert payload["active_task"]["task_id"] == "task-1"
+    assert payload["active_task"]["task_kind"] == "meeting_minutes"
+    assert payload["active_task"]["target_id"] == "thread-1"
+    assert payload["active_task"]["started"] is True

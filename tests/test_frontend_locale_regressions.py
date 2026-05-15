@@ -439,10 +439,11 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.4）")
+    assert manual.startswith("# 内部设计手册（v2.9.5）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
+    assert "## 19. v2.9.5 Safe Serialization Fix Notes" in manual
     assert "## 23. Context Turns" in manual
     assert "## 24. Python Command Handling" in manual
     assert "## 25. Python Version Recommendation" in manual

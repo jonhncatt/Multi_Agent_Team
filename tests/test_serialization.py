@@ -12,10 +12,12 @@ from app.serialization import dump_model
 @dataclass
 class DemoDataclass:
     name: str
+    value: int = 0
 
 
 class DemoModel(BaseModel):
     name: str
+    value: int = 0
 
 
 class LegacyModel:
@@ -33,6 +35,7 @@ def test_dump_model_handles_primitives() -> None:
 
 def test_dump_model_handles_dicts_and_sequences() -> None:
     assert dump_model({"a": 1}) == {"a": 1}
+    assert dump_model({"a": None}) == {"a": None}
     assert dump_model(["a", 1]) == ["a", 1]
     assert dump_model(("a", 1)) == ["a", 1]
     assert sorted(dump_model({"a", "b"})) == ["a", "b"]
@@ -45,26 +48,39 @@ def test_dump_model_handles_path_and_temporal_values() -> None:
 
 
 def test_dump_model_handles_dataclass() -> None:
-    assert dump_model(DemoDataclass(name="demo")) == {"name": "demo"}
+    assert dump_model(DemoDataclass(name="demo", value=1)) == {"name": "demo", "value": 1}
 
 
 def test_dump_model_handles_pydantic_v2_model() -> None:
-    assert dump_model(DemoModel(name="demo")) == {"name": "demo"}
+    assert dump_model(DemoModel(name="demo", value=1)) == {"name": "demo", "value": 1}
 
 
 def test_dump_model_handles_legacy_dict_objects() -> None:
     assert dump_model(LegacyModel()) == {"legacy": True}
 
 
+class PlainObject:
+    def __str__(self) -> str:
+        return "plain-object"
+
+
+def test_dump_model_handles_plain_object_fallback() -> None:
+    assert dump_model(PlainObject()) == "plain-object"
+
+
 def test_dump_model_handles_nested_mixed_values() -> None:
     payload = {
+        "none": None,
         "path": Path("/tmp/a"),
-        "items": [DemoModel(name="x")],
+        "items": [None, {"x": 1}, DemoModel(name="x", value=2)],
         "legacy": LegacyModel(),
+        "data": DemoDataclass(name="d", value=3),
     }
 
     assert dump_model(payload) == {
+        "none": None,
         "path": "/tmp/a",
-        "items": [{"name": "x"}],
+        "items": [None, {"x": 1}, {"name": "x", "value": 2}],
         "legacy": {"legacy": True},
+        "data": {"name": "d", "value": 3},
     }

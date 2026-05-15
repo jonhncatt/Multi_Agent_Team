@@ -105,6 +105,7 @@ from app.policy_router import PolicyRouter
 from app.route_trace import build_route_trace, route_trace_payload
 from app.route_verifier import RouteVerifier
 from app.models import AgentPanel, ChatSettings, ToolEvent
+from app.serialization import dump_model
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.pipeline_hooks import (
     PIPELINE_HOOK_HANDLERS,
@@ -1344,7 +1345,7 @@ class OfficeAgent:
             tool_events.append(event)
             if blackboard is not None:
                 blackboard.record_tool_event(event)
-            emit_progress("tool_event", item=event.model_dump())
+            emit_progress("tool_event", item=dump_model(event))
 
         def sync_blackboard_state(*, reason: str = "") -> None:
             if blackboard is None:
@@ -1485,7 +1486,7 @@ class OfficeAgent:
                 summary=self._shorten(summary_text, 500 if not debug_raw else 4000),
                 bullets=self._normalize_string_list(bullets or [], limit=8, item_limit=220),
             )
-            payload = panel.model_dump()
+            payload = dump_model(panel)
             _upsert_role_state(role_key, status=role_states.get(role_key, {}).get("status", "seen"))
             for idx, existing in enumerate(agent_panels):
                 if str(existing.get("role") or "") == role_key:
@@ -6588,7 +6589,7 @@ class OfficeAgent:
             "last_route_policy": execution_policy,
             "last_answer_shape": str(route.get("task_type") or ""),
             "task_control": dict(task_control) if isinstance(task_control, dict) else {},
-            "active_task": active_task.model_dump() if active_task is not None else None,
+            "active_task": dump_model(active_task),
         }
 
     def build_session_route_state(self, route: dict[str, Any]) -> dict[str, Any]:
