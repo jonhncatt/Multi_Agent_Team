@@ -39,12 +39,8 @@ from app.tool_trace_summary import (
 )
 from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
-from packages.office_modules.intent_support import (
-    has_image_attachments as has_image_attachments_helper,
-    looks_like_image_capability_denial as looks_like_image_capability_denial_helper,
-)
+from packages.office_modules.intent_support import has_image_attachments as has_image_attachments_helper
 from packages.office_modules.office_agent_runtime import create_office_runtime_backend
-from packages.office_modules.request_analysis import looks_like_permission_gate_text
 
 
 _READ_ONLY_TOOL_NAMES = {
@@ -340,24 +336,6 @@ _WRITE_TOOL_NAMES = {
 def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
     lowered = str(text or "").lower()
     return any(str(item).lower() in lowered for item in hints)
-
-
-def _looks_like_explicit_tool_request(text: str) -> bool:
-    raw = str(text or "").strip()
-    lowered = raw.lower()
-    if not raw:
-        return False
-    if _contains_any(lowered, _EXPLICIT_NETWORK_HINTS):
-        return True
-    if _contains_any(lowered, _EXPLICIT_WORKSPACE_HINTS):
-        return True
-    if re.search(r"(^|[\s`])(?:rg|grep|find|ls|cat|sed|head|tail|git|python|pytest|npm|pnpm|yarn)\s", lowered):
-        return True
-    if re.search(r"(?:^|[\s(])(?:[A-Za-z]:\\|/)[^\s]+", raw):
-        return True
-    if re.search(r"\b[\w./-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|txt|html|css|sh|ps1)\b", lowered):
-        return True
-    return False
 
 
 def _looks_like_inline_code_payload(text: str) -> bool:
@@ -874,6 +852,11 @@ class VintageProgrammerRuntime:
         recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
         compaction_status = dict(context.get("compaction_status") or {})
+        compaction_payload = dict(compaction_status)
+        if "phase" not in compaction_payload and compaction_payload.get("last_compaction_phase"):
+            compaction_payload["phase"] = str(compaction_payload.get("last_compaction_phase") or "")
+        if "reason" not in compaction_payload and compaction_payload.get("last_compaction_reason"):
+            compaction_payload["reason"] = str(compaction_payload.get("last_compaction_reason") or "")
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
         boundary_payload = dump_model(
@@ -889,30 +872,41 @@ class VintageProgrammerRuntime:
             boundary_payload["note"] = "RuntimeBoundary is a logical validation boundary, not an OS/container sandbox."
         context_pack = {
             "current_turn": {
-                "user_message": str(message or "").strip(),
+                **current_turn,
+                "user_message": str(current_turn.get("user_message") or message or "").strip(),
                 "attachments": attachments,
+                "attachment_evidence": list(context.get("attachment_evidence_pack") or [])[:8],
+                "user_input_response": dict(context.get("user_input_response") or {}),
                 "current_files": list(context.get("current_files") or [])[:12],
                 "note": "Current user message has highest priority.",
-                **current_turn,
             },
-            "task_memory": {
-                "short_task_memory": {
-                    "recent_goal": str(current_task_focus.get("goal") or current_turn.get("goal") or "")[:1200],
-                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+            "turn_memory": {
+                "short_memory": {
+                    "current_goal": str(current_task_focus.get("goal") or current_turn.get("goal") or "")[:1200],
+                    "current_task_focus": current_task_focus,
                     "recent_tool_results": list(context.get("recent_tool_results") or [])[:8],
                     "recent_errors": list(context.get("recent_errors") or [])[:8],
                 },
-                "long_task_memory": {
-                    "summary": str(thread_memory.get("summary") or context.get("summary") or "")[:4000],
+                "long_memory": {
+                    "summary": str(context.get("summary") or thread_memory.get("summary") or "")[:4000],
+                    "thread_summary": str(thread_memory.get("summary") or "")[:4000],
                     "recent_tasks": recent_tasks[:8],
+                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+                    "artifact_memory_preview": artifact_memory_preview[:8],
+                    "recalled_context": dict(context.get("recalled_context") or {}),
                 },
-                "current_task_focus": current_task_focus,
+            },
+            "conversation_window": {
+                "recent_turns": recent_history,
             },
             "route_hints": {
                 "route_state": route_state,
                 "active_task_focus": active_task_focus,
                 "priority": "weak",
-                "note": "These are weak historical hints. Do not treat them as final task decisions.",
+                "note": "Weak historical hints only. Do not treat as final task decisions.",
+            },
+            "compaction": {
+                "status": compaction_payload,
             },
             "runtime_boundary": boundary_payload,
         }
@@ -923,34 +917,11 @@ class VintageProgrammerRuntime:
             "python_command_source": str(self._config.python_command_source or ""),
             "context_priority": {
                 "current_turn": "highest",
-                "task_memory": "continuity",
+                "turn_memory": "continuity",
                 "route_hints": "weak",
                 "runtime_boundary": "harness_validation",
             },
             "context_pack": context_pack,
-            "legacy_context": {
-                "summary": str(context.get("summary") or "")[:4000],
-                "thread_memory": {
-                    "summary": str(thread_memory.get("summary") or "")[:4000],
-                    "recent_tasks": recent_tasks[:8],
-                    "recent_cwds": list(thread_memory.get("recent_cwds") or [])[:6],
-                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
-                },
-                "recent_user_messages": list(context.get("recent_user_messages") or [])[:8],
-                "recent_tasks": recent_tasks[:8],
-                "artifact_memory_preview": artifact_memory_preview[:8],
-                "compaction_status": {
-                    "generation": int(compaction_status.get("generation") or 0),
-                    "retained_turn_count": int(compaction_status.get("retained_turn_count") or 0),
-                    "last_compacted_at": str(compaction_status.get("last_compacted_at") or ""),
-                    "last_compaction_phase": str(compaction_status.get("last_compaction_phase") or ""),
-                    "replacement_history_mode": bool(compaction_status.get("replacement_history_mode")),
-                },
-                "recalled_context": dict(context.get("recalled_context") or {}),
-                "user_input_response": dict(context.get("user_input_response") or {}),
-                "attachment_evidence_pack": list(context.get("attachment_evidence_pack") or [])[:8],
-                "history_turns": recent_history,
-            },
         }
         return "\n".join(
             [
@@ -2682,32 +2653,6 @@ class VintageProgrammerRuntime:
             ],
         }
 
-    def _looks_like_plan_only_response(self, text: str) -> bool:
-        normalized = " ".join(str(text or "").split()).lower()
-        if not normalized:
-            return False
-        markers = (
-            "i'll",
-            "i will",
-            "plan",
-            "next i",
-            "接下来",
-            "我会先",
-            "计划是",
-            "方案如下",
-        )
-        action_markers = (
-            "done",
-            "changed",
-            "updated",
-            "applied",
-            "执行了",
-            "已修改",
-            "已完成",
-            "已更新",
-        )
-        return any(marker in normalized for marker in markers) and not any(marker in normalized for marker in action_markers)
-
     @staticmethod
     def _write_authorization_state(message: str, *, collaboration_mode: str, project_root: str) -> dict[str, Any]:
         normalized = " ".join(str(message or "").split()).lower()
@@ -2733,73 +2678,6 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
-    def _has_write_tool_event(tool_events: list[ToolEvent]) -> bool:
-        for item in tool_events:
-            if str(getattr(item, "name", "") or "").strip() in _WRITE_TOOL_NAMES and str(getattr(item, "status", "") or "") == "ok":
-                return True
-        return False
-
-    @staticmethod
-    def _looks_like_invalid_permission_gate(text: str, *, request_requires_tools: bool) -> bool:
-        normalized = " ".join(str(text or "").split()).strip()
-        if not normalized:
-            return False
-        if looks_like_permission_gate_text(normalized, request_requires_tools=request_requires_tools):
-            return True
-        lowered = normalized.lower()
-        extra_markers = (
-            "要不要我",
-            "是否需要我",
-            "请确认",
-            "你确认",
-            "回一句",
-            "回复“补”",
-            "回复\"补\"",
-            "我再 patch",
-            "我再修改",
-            "shall i",
-            "should i apply",
-            "confirm before",
-            "reply yes",
-            "please confirm",
-            "確認してください",
-            "確認して",
-            "実行してよいですか",
-        )
-        return any(marker.lower() in lowered for marker in extra_markers)
-
-    def _build_invalid_final_steer(
-        self,
-        *,
-        locale: str,
-        write_authorization_state: dict[str, Any],
-        attachment_evidence_pack: list[dict[str, Any]],
-    ) -> str:
-        lines = [
-            translate(locale, "runtime.invalid_final_guard.steer"),
-            f"write_authorization_state: {json.dumps(write_authorization_state, ensure_ascii=False)}",
-            "Required behavior: call apply_patch/exec_command/read_file/list_dir/glob_file_search/search_codebase or another appropriate tool now; do not ask for confirmation in prose.",
-        ]
-        if attachment_evidence_pack:
-            lines.append(
-                "attachment_evidence_pack_available: "
-                + json.dumps(
-                    [
-                        {
-                            "id": str(item.get("id") or ""),
-                            "name": str(item.get("name") or ""),
-                            "kind": str(item.get("kind") or ""),
-                            "summary": str(item.get("summary") or "")[:240],
-                        }
-                        for item in attachment_evidence_pack[:4]
-                        if isinstance(item, dict)
-                    ],
-                    ensure_ascii=False,
-                )
-            )
-        return "\n".join(lines)
-
-    @staticmethod
     def _attachment_paths(attachments: list[dict[str, Any]], *, kind: str | None = None) -> list[str]:
         wanted_kind = str(kind or "").strip().lower()
         paths: list[str] = []
@@ -2813,21 +2691,6 @@ class VintageProgrammerRuntime:
             if path:
                 paths.append(path)
         return paths
-
-    @staticmethod
-    def _attachments_require_tools(attachments: list[dict[str, Any]]) -> bool:
-        for meta in attachments:
-            if not isinstance(meta, dict):
-                continue
-            path = str(meta.get("path") or "").strip()
-            name = str(meta.get("name") or "").strip()
-            kind = str(meta.get("kind") or "").strip().lower()
-            mime = str(meta.get("mime") or "").strip().lower()
-            if kind in {"image", "document"} and (path or name):
-                return True
-            if path and (kind == "other" or mime.startswith("application/")):
-                return True
-        return False
 
     def _build_attachment_tool_guidance(self, attachments: list[dict[str, Any]], *, locale: str) -> str:
         if not attachments:
@@ -2850,20 +2713,6 @@ class VintageProgrammerRuntime:
         if document_paths:
             lines.append(translate(locale, "runtime.attachment_guidance.document"))
             lines.append(translate(locale, "runtime.attachment_guidance.msg"))
-        return "\n".join(lines)
-
-    def _build_act_now_steer(self, attachments: list[dict[str, Any]], *, locale: str) -> str:
-        lines = [translate(locale, "runtime.act_now.default")]
-        image_paths = self._attachment_paths(attachments, kind="image")
-        if image_paths:
-            lines.append(translate(locale, "runtime.act_now.image"))
-            lines.append(
-                translate(
-                    locale,
-                    "runtime.act_now.image_paths",
-                    paths=json.dumps(image_paths[:2], ensure_ascii=False),
-                )
-            )
         return "\n".join(lines)
 
     @staticmethod
@@ -2891,20 +2740,6 @@ class VintageProgrammerRuntime:
             if any(hint in lowered for hint in _IMAGE_READ_ACTION_HINTS):
                 return "image_read"
         return raw
-
-    @staticmethod
-    def _looks_like_missing_context_response(text: str) -> bool:
-        normalized = " ".join(str(text or "").split()).lower()
-        if not normalized:
-            return False
-        return any(hint.lower() in normalized for hint in _MISSING_CONTEXT_RESPONSE_HINTS)
-
-    @staticmethod
-    def _looks_like_generic_image_read_request(message: str) -> bool:
-        normalized = " ".join(str(message or "").split()).lower()
-        if not normalized:
-            return False
-        return any(hint.lower() in normalized for hint in _GENERIC_IMAGE_READ_REQUEST_HINTS)
 
     @staticmethod
     def _first_attachment_path(
@@ -3037,130 +2872,6 @@ class VintageProgrammerRuntime:
         elif tool_name == "mail_extract_attachments" and "msg_path" in normalized:
             normalized["msg_path"] = self._resolve_attachment_argument_path(normalized.get("msg_path"), attachments)
         return normalized
-
-    def _auto_rescue_image_read(
-        self,
-        *,
-        attachments: list[dict[str, Any]],
-        tool_events: list[ToolEvent],
-        trace_events: list[dict[str, Any]],
-        messages: list[Any],
-        runner: Any,
-        effective_model: str,
-        settings: ChatSettings,
-        progress_cb: Callable[[dict[str, Any]], None] | None,
-        spec: VintageProgrammerSpec,
-        round_idx: int,
-        run_id: str,
-        locale: str,
-        current_goal: str,
-        current_task_focus: dict[str, Any],
-        collaboration_mode: str,
-        turn_status: str,
-        plan_state: list[dict[str, Any]],
-        pending_user_input: dict[str, Any],
-        effective_cwd: str,
-        event_cb: Callable[[dict[str, Any]], None] | None = None,
-    ) -> tuple[Any, Any, str, bool, list[str]]:
-        image_path = self._first_attachment_path(attachments, kind="image")
-        if not image_path:
-            return runner, effective_model, "", False, []
-
-        arguments = {"path": image_path}
-        result, _event = self._execute_tool_with_trace(
-            name="image_read",
-            arguments=arguments,
-            raw_tool_call={"id": "auto_image_read_rescue", "name": "image_read", "arguments": safe_preview(arguments, limit=4000)},
-            validation_result={
-                "allowed": True,
-                "code": "allowed",
-                "message": "Auto image rescue executed image_read directly.",
-                "tool_name": "image_read",
-                "raw_tool_name": "image_read",
-                "normalized_arguments": safe_preview(arguments, limit=4000),
-                "normalization_notes": [],
-                "checks": {
-                    "json": "passed",
-                    "tool_exists": "passed",
-                    "schema": "missing",
-                    "policy": "passed",
-                    "permission": "passed",
-                },
-                "severity": "info",
-            },
-            raw_arguments=arguments,
-            run_id=run_id,
-            locale=locale,
-            progress_cb=progress_cb,
-            trace_events=trace_events,
-            tool_events=tool_events,
-            current_goal=current_goal,
-            current_task_focus=current_task_focus,
-            collaboration_mode=collaboration_mode,
-            turn_status=turn_status,
-            plan_state=plan_state,
-            pending_user_input=pending_user_input,
-            effective_cwd=effective_cwd,
-            spec=spec,
-            round_idx=round_idx,
-            call_idx=1,
-        )
-        result_json = json.dumps(result, ensure_ascii=False)
-        messages.append(
-            self._backend._SystemMessage(
-                content=(
-                    "Runtime fallback executed image_read(path=...) on the attached image because the model "
-                    "did not use the required image tool correctly. Use the tool result below and answer the user.\n\n"
-                    f"image_read_result_json:\n{self._backend._shorten(result_json, 60000)}"
-                )
-            )
-        )
-        ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
-            self._backend._invoke_with_runner_recovery,
-            runner=runner,
-            messages=messages,
-            model=effective_model,
-            max_output_tokens=int(settings.max_output_tokens),
-            enable_tools=True,
-            tool_names=list(spec.allowed_tools),
-            event_cb=event_cb,
-        )
-        return ai_msg, runner, effective_model, bool(result.get("ok")), invoke_notes
-
-    @staticmethod
-    def _build_image_read_fallback_answer(result: dict[str, Any], *, locale: str) -> str:
-        payload = dict(result or {})
-        visible_text = str(payload.get("visible_text") or "").strip()
-        analysis = str(payload.get("analysis") or "").strip()
-        warning = str(payload.get("warning") or "").strip()
-        width = payload.get("width")
-        height = payload.get("height")
-        mime = str(payload.get("mime") or "").strip()
-        has_meaningful_content = bool(visible_text or analysis or warning)
-        if not has_meaningful_content:
-            return ""
-
-        lines: list[str] = [translate(locale, "runtime.image_read.intro")]
-        if visible_text:
-            lines.append(translate(locale, "runtime.image_read.visible_text"))
-            lines.append("")
-            lines.append("```text")
-            lines.append(visible_text)
-            lines.append("```")
-        if analysis and analysis.lower() != "extracted visible text from the image using local ocr.":
-            lines.append(translate(locale, "runtime.image_read.analysis", analysis=analysis))
-        elif not visible_text and analysis:
-            lines.append(translate(locale, "runtime.image_read.analysis", analysis=analysis))
-        meta_bits = [str(item) for item in (width, height) if item not in (None, "")]
-        if mime or meta_bits:
-            detail = " · ".join(
-                [item for item in [mime.upper() if mime else "", "x".join(meta_bits) if len(meta_bits) == 2 else ""] if item]
-            )
-            if detail:
-                lines.append(translate(locale, "runtime.image_read.basic_info", detail=detail))
-        if warning:
-            lines.append(translate(locale, "runtime.image_read.warning", warning=warning))
-        return "\n".join(item for item in lines if item is not None).strip()
 
     @staticmethod
     def _cancel_requested(context: dict[str, Any]) -> bool:
@@ -3332,28 +3043,17 @@ class VintageProgrammerRuntime:
         progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
         same_action_repeat_guard_enabled = bool(loop_safeguards.get("same_action_repeat_guard"))
         inline_document = _looks_like_inline_document_payload(prompt_message)
-        attachment_requires_tools = self._attachments_require_tools(attachment_metas)
         attachment_evidence_pack = [
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
             if isinstance(item, dict)
         ]
-        requires_tools_hint = bool(
-            _looks_like_explicit_tool_request(prompt_message)
-            or attachment_requires_tools
-            or bool(attachment_evidence_pack)
-        )
         runtime_contract = build_full_auto_runtime_contract(
             settings=settings,
             config=self._config,
             context=context_payload,
-            requires_tools_hint=requires_tools_hint,
         )
-        expects_tools = (
-            collaboration_mode in {"default", "execute"}
-            and bool(runnable_tools)
-            and not inline_document
-            and (_looks_like_explicit_tool_request(prompt_message) or attachment_requires_tools or bool(attachment_evidence_pack))
-        )
+        tools_available = bool(runnable_tools)
+        tool_count = len(runnable_tools)
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
@@ -3397,12 +3097,6 @@ class VintageProgrammerRuntime:
             project_root=project_root,
         )
         write_authorized = bool(write_authorization_state.get("authorized"))
-        invalid_final_guard = {
-            "enabled": bool(write_authorized and collaboration_mode in {"default", "execute"} and bool(runnable_tools)),
-            "triggered": False,
-            "attempts": 0,
-            "reason": "",
-        }
         blocked_reason = ""
         project_contract_text = self._load_project_contract_text(project_root)
 
@@ -3436,8 +3130,6 @@ class VintageProgrammerRuntime:
         ]
         if inline_document:
             notes.append("inline_document_context")
-        if attachment_requires_tools:
-            notes.append("attachment_tooling_expected")
         if attachment_evidence_pack:
             notes.append("attachment_evidence_pack_ready")
         if write_authorized:
@@ -3453,7 +3145,6 @@ class VintageProgrammerRuntime:
         pending_user_input: dict[str, Any] = {}
         turn_status = "running"
         forced_text = ""
-        last_image_read_result: dict[str, Any] | None = None
         model_action: dict[str, Any] = {}
         execution_trace: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
@@ -3510,9 +3201,10 @@ class VintageProgrammerRuntime:
             "Inspecting the request, restored task focus, attachment context, and runtime contract.",
             payload={
                 "attachments": len(attachment_metas),
-                "expects_tools": expects_tools,
+                "tools_available": tools_available,
+                "tool_count": tool_count,
                 "collaboration_mode": collaboration_mode,
-                "context_pack": "current_turn/task_memory/route_hints/runtime_boundary",
+                "context_pack": "current_turn/turn_memory/conversation_window/route_hints/compaction/runtime_boundary",
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
@@ -3540,7 +3232,8 @@ class VintageProgrammerRuntime:
             status="success",
             payload={
                 "attachments": len(attachment_metas),
-                "expects_tools": expects_tools,
+                "tools_available": tools_available,
+                "tool_count": tool_count,
                 "collaboration_mode": collaboration_mode,
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
@@ -3551,8 +3244,8 @@ class VintageProgrammerRuntime:
             "model_action",
             "Waiting for the model to choose the next action.",
             payload={
-                "tool_count": len(runnable_tools),
-                "expects_tools": expects_tools,
+                "tools_available": tools_available,
+                "tool_count": tool_count,
                 "inline_document": inline_document,
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
@@ -3660,9 +3353,6 @@ class VintageProgrammerRuntime:
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
             refresh_model_step(ai_msg, event_type="activity.done")
 
-            act_now_budget = 1 if collaboration_mode in {"default", "execute"} and bool(runnable_tools) else 0
-            invalid_final_guard_budget = 1 if bool(invalid_final_guard.get("enabled")) else 0
-            auto_image_rescue_budget = 1 if has_image_attachments and "image_read" in runnable_tools else 0
             halt_for_user_input = False
             turn_started_at = time.monotonic()
             round_idx = 0
@@ -3715,226 +3405,7 @@ class VintageProgrammerRuntime:
                 step_action_type = str(model_action.get("action_type") or "").strip() or "empty"
                 step_accepted = bool(model_action.get("accepted"))
                 if not tool_calls:
-                    invalid_permission_gate = (
-                        bool(invalid_final_guard.get("enabled"))
-                        and not self._has_write_tool_event(tool_events)
-                        and self._looks_like_invalid_permission_gate(
-                            ai_text,
-                            request_requires_tools=bool(expects_tools or write_authorized or tool_events),
-                        )
-                    )
-                    if invalid_permission_gate:
-                        invalid_final_guard["triggered"] = True
-                        invalid_final_guard["attempts"] = int(invalid_final_guard.get("attempts") or 0) + 1
-                        invalid_final_guard["reason"] = "natural_language_confirmation_after_write_authorization"
-                        if invalid_final_guard_budget > 0:
-                            invalid_final_guard_budget -= 1
-                            self._emit_trace(
-                                progress_cb,
-                                run_id=run_id,
-                                type="repair.started",
-                                title=self._trace_label(locale, "repair.started"),
-                                detail="invalid_final_guard",
-                                status="running",
-                                trace_events=trace_events,
-                            )
-                            messages.append(ai_msg)
-                            messages.append(
-                                self._backend._SystemMessage(
-                                    content=self._build_invalid_final_steer(
-                                        locale=locale,
-                                        write_authorization_state=write_authorization_state,
-                                        attachment_evidence_pack=attachment_evidence_pack,
-                                    )
-                                )
-                            )
-                            notes.append("invalid_final_guard_steer")
-                            phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
-                            ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
-                                self._backend._invoke_with_runner_recovery,
-                                runner=runner,
-                                messages=messages,
-                                model=effective_model,
-                                max_output_tokens=int(settings.max_output_tokens),
-                                enable_tools=True,
-                                tool_names=runnable_tools,
-                                event_cb=self._make_model_stream_observer(
-                                    progress_cb=progress_cb,
-                                    run_id=run_id,
-                                    thread_id=session_id,
-                                    locale=locale,
-                                    trace_events=trace_events,
-                                    answer_stream_state=answer_stream_state,
-                                    stage="repair_invalid_final_guard",
-                                    model=effective_model,
-                                    tool_round=round_idx,
-                                    answer_context=turn_activity_context,
-                                    phase_timer=phase_timer,
-                                ),
-                            )
-                            self._set_tools_runtime_context(
-                                execution_mode=settings.execution_mode,
-                                session_id=str(context_payload.get("session_id") or ""),
-                                project_id=project_id,
-                                project_root=project_root,
-                                cwd=effective_cwd,
-                                model=effective_model,
-                                locale=locale,
-                            )
-                            notes.extend(invoke_notes)
-                            usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                            refresh_model_step(ai_msg, event_type="activity.delta")
-                            self._emit_trace(
-                                progress_cb,
-                                run_id=run_id,
-                                type="repair.finished",
-                                title=self._trace_label(locale, "repair.finished"),
-                                detail="invalid_final_guard",
-                                status="success",
-                                trace_events=trace_events,
-                            )
-                            continue
-                        turn_status = "blocked"
-                        blocked_reason = "model_refused_to_act_after_authorization"
-                        forced_text = translate(locale, "runtime.invalid_final_guard.blocked")
-                        notes.append(blocked_reason)
-                        break
-                    should_steer = (
-                        act_now_budget > 0
-                        and not tool_events
-                        and collaboration_mode in {"default", "execute"}
-                        and (
-                            (not step_accepted)
-                            or expects_tools
-                            or self._looks_like_plan_only_response(ai_text)
-                            or (has_image_attachments and looks_like_image_capability_denial_helper(ai_text))
-                        )
-                    )
-                    if should_steer:
-                        act_now_budget -= 1
-                        messages.append(ai_msg)
-                        messages.append(
-                            self._backend._SystemMessage(
-                                content=self._build_act_now_steer(attachment_metas, locale=locale)
-                            )
-                        )
-                        notes.append("strict_agentic_act_now_steer")
-                        phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
-                        ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
-                            self._backend._invoke_with_runner_recovery,
-                            runner=runner,
-                            messages=messages,
-                            model=effective_model,
-                            max_output_tokens=int(settings.max_output_tokens),
-                            enable_tools=True,
-                            tool_names=runnable_tools,
-                            event_cb=self._make_model_stream_observer(
-                                progress_cb=progress_cb,
-                                run_id=run_id,
-                                thread_id=session_id,
-                                locale=locale,
-                                trace_events=trace_events,
-                                answer_stream_state=answer_stream_state,
-                                stage="repair_act_now",
-                                model=effective_model,
-                                tool_round=round_idx,
-                                answer_context=turn_activity_context,
-                                phase_timer=phase_timer,
-                            ),
-                        )
-                        self._set_tools_runtime_context(
-                            execution_mode=settings.execution_mode,
-                            session_id=str(context_payload.get("session_id") or ""),
-                            project_id=project_id,
-                            project_root=project_root,
-                            cwd=effective_cwd,
-                            model=effective_model,
-                            locale=locale,
-                        )
-                        notes.extend(invoke_notes)
-                        usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                        refresh_model_step(ai_msg, event_type="activity.delta")
-                        continue
-                    should_auto_rescue_image = (
-                        auto_image_rescue_budget > 0
-                        and collaboration_mode in {"default", "execute"}
-                        and has_image_attachments
-                        and not any(item.name == "image_read" and item.status == "ok" for item in tool_events)
-                        and (
-                            looks_like_image_capability_denial_helper(ai_text)
-                            or self._looks_like_missing_context_response(ai_text)
-                        )
-                    )
-                    if should_auto_rescue_image:
-                        auto_image_rescue_budget -= 1
-                        messages.append(ai_msg)
-                        notes.append("auto_image_read_rescue")
-                        ai_msg, runner, effective_model, rescue_ok, rescue_notes = self._auto_rescue_image_read(
-                            attachments=attachment_metas,
-                            tool_events=tool_events,
-                            trace_events=trace_events,
-                            messages=messages,
-                            runner=runner,
-                            effective_model=effective_model,
-                            settings=settings,
-                            progress_cb=progress_cb,
-                            spec=spec,
-                            round_idx=round_idx + 1,
-                            run_id=run_id,
-                            locale=locale,
-                            current_goal=current_goal,
-                            current_task_focus=current_task_focus,
-                            collaboration_mode=collaboration_mode,
-                            turn_status=turn_status,
-                            plan_state=plan_state,
-                            pending_user_input=pending_user_input,
-                            effective_cwd=effective_cwd,
-                            event_cb=self._make_model_stream_observer(
-                                progress_cb=progress_cb,
-                                run_id=run_id,
-                                thread_id=session_id,
-                                locale=locale,
-                                trace_events=trace_events,
-                                answer_stream_state=answer_stream_state,
-                                stage="image_rescue_response",
-                                model=effective_model,
-                                tool_round=round_idx + 1,
-                                answer_context=turn_activity_context,
-                                phase_timer=phase_timer,
-                            ),
-                        )
-                        self._set_tools_runtime_context(
-                            execution_mode=settings.execution_mode,
-                            session_id=str(context_payload.get("session_id") or ""),
-                            project_id=project_id,
-                            project_root=project_root,
-                            cwd=effective_cwd,
-                            model=effective_model,
-                            locale=locale,
-                        )
-                        notes.extend(rescue_notes)
-                        usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-                        refresh_model_step(ai_msg, event_type="activity.delta")
-                        tool_call_count += 1
-                        rescue_path = ""
-                        for meta in attachment_metas:
-                            candidate = str(meta.get("path") or "").strip()
-                            if candidate:
-                                rescue_path = candidate
-                                break
-                        rescue_fingerprint = self._action_fingerprint("image_read", {"path": rescue_path})
-                        if last_action_fingerprint == rescue_fingerprint:
-                            same_action_repeat_count += 1
-                        else:
-                            last_action_fingerprint = rescue_fingerprint
-                            same_action_repeat_count = 1
-                        if rescue_ok:
-                            no_progress_cycles = 0
-                            post_replan_no_progress_cycles = 0
-                        continue
-                    no_tool_response_kind = "direct_answer" if ai_text else "empty_response"
-                    if self._looks_like_plan_only_response(ai_text):
-                        no_tool_response_kind = "plan_only"
+                    no_tool_response_kind = "final_answer" if step_accepted and ai_text else "empty_response"
                     if not step_accepted:
                         blocked_reason = blocked_reason or "model_action_empty"
                     execution_entry = ExecutionTraceEntry(
@@ -4208,8 +3679,6 @@ class VintageProgrammerRuntime:
                                 forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
                                 notes.append("tool_validation_rejections_exceeded")
                             stop_after_tools = True
-                    if name == "image_read" and bool(result.get("ok")):
-                        last_image_read_result = dict(result)
                     current_task_focus = self._task_checkpoint_from_tool(
                         checkpoint=current_task_focus,
                         tool_name=name,
@@ -4333,37 +3802,17 @@ class VintageProgrammerRuntime:
                         and max_same_action_repeats
                         and same_action_repeat_count > max_same_action_repeats
                     ):
-                        if name == "image_read" and last_image_read_result:
-                            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result, locale=locale)
-                            if fallback_answer:
-                                turn_status = "completed"
-                                forced_text = fallback_answer
-                                notes.append("image_read_repeat_fallback_answer")
-                                stop_after_tools = True
-                            else:
-                                if automatic_replan_enabled and replan_attempt_count == 0:
-                                    needs_replan = True
-                                    replan_trigger = "same_action_repeat"
-                                    replan_detail = action_fingerprint
-                                    notes.append("turn_budget_same_action_repeat_replan_requested")
-                                else:
-                                    turn_status = "blocked"
-                                    blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
-                                    forced_text = translate(locale, "runtime.budget.same_action_repeat")
-                                    notes.append("turn_budget_same_action_repeats_exceeded")
-                                stop_after_tools = True
+                        if automatic_replan_enabled and replan_attempt_count == 0:
+                            needs_replan = True
+                            replan_trigger = "same_action_repeat"
+                            replan_detail = action_fingerprint
+                            notes.append("turn_budget_same_action_repeat_replan_requested")
                         else:
-                            if automatic_replan_enabled and replan_attempt_count == 0:
-                                needs_replan = True
-                                replan_trigger = "same_action_repeat"
-                                replan_detail = action_fingerprint
-                                notes.append("turn_budget_same_action_repeat_replan_requested")
-                            else:
-                                turn_status = "blocked"
-                                blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
-                                forced_text = translate(locale, "runtime.budget.same_action_repeat")
-                                notes.append("turn_budget_same_action_repeats_exceeded")
-                            stop_after_tools = True
+                            turn_status = "blocked"
+                            blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
+                            forced_text = translate(locale, "runtime.budget.same_action_repeat")
+                            notes.append("turn_budget_same_action_repeats_exceeded")
+                        stop_after_tools = True
                         if stop_after_tools:
                             break
 
@@ -4521,10 +3970,44 @@ class VintageProgrammerRuntime:
                     live_compaction_status["estimated_context_tokens"] = int(live_estimated_tokens)
                 if compacted:
                     notes.append("turn_context_compacted")
+                    before_tokens = int(live_estimated_tokens or 0)
+                    after_tokens = 0
+                    try:
+                        after_tokens = count_tokens(
+                            "\n".join(
+                                self._backend._shorten(str(getattr(item, "content", getattr(item, "text", item))), 3000)
+                                for item in list(messages)
+                            ),
+                            effective_model,
+                        )
+                    except Exception:
+                        after_tokens = 0
                     live_compaction_status["last_compaction_phase"] = "mid_turn"
+                    live_compaction_status["phase"] = "mid_turn"
                     live_compaction_status["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     live_compaction_status["last_compaction_reason"] = (
-                        f"mid_turn_context_budget_exceeded:{int(live_estimated_tokens or 0)}/{int(auto_compact_token_limit or 0)}"
+                        f"context_limit:{before_tokens}/{int(auto_compact_token_limit or 0)}"
+                    )
+                    live_compaction_status["reason"] = "context_limit"
+                    live_compaction_status["before_tokens"] = before_tokens
+                    live_compaction_status["after_tokens"] = after_tokens
+                    live_compaction_status["retained_turn_count"] = len(messages)
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="context.compacted",
+                        title="Context compacted",
+                        detail=translate(locale, "runtime.compaction.mid_turn"),
+                        status="success",
+                        payload={
+                            "phase": "mid_turn",
+                            "reason": "context_limit",
+                            "before_tokens": before_tokens,
+                            "after_tokens": after_tokens,
+                            "retained_turn_count": len(messages),
+                            "summary_tokens": 0,
+                        },
+                        trace_events=trace_events,
                     )
                     if progress_cb is not None:
                         progress_cb(
@@ -4601,38 +4084,12 @@ class VintageProgrammerRuntime:
                 if pending_user_input
                 else translate(locale, "runtime.empty_response.default")
             )
-        if (
-            has_image_attachments
-            and last_image_read_result
-            and self._looks_like_generic_image_read_request(prompt_message)
-        ):
-            fallback_answer = self._build_image_read_fallback_answer(last_image_read_result, locale=locale)
-            if fallback_answer:
-                raw_text = fallback_answer
-                if turn_status not in {"cancelled", "blocked"}:
-                    turn_status = "completed"
-                notes.append("image_read_result_forced_summary")
         has_successful_tool = any(item.status == "ok" for item in tool_events)
-        evidence_status = "not_needed"
-        if expects_tools or (collaboration_mode == "plan" and tool_events):
-            evidence_status = "collected" if has_successful_tool else "needs_evidence_review"
-            if (expects_tools or tool_events) and not has_successful_tool:
-                notes.append("tool_expectation_not_met")
+        evidence_status = "collected" if has_successful_tool else ("needs_evidence_review" if tool_events else "not_needed")
         if turn_status in {"cancelled", "blocked"}:
             pass
         elif pending_user_input:
             turn_status = "needs_user_input"
-        elif collaboration_mode in {"default", "execute"} and expects_tools and not tool_events:
-            turn_status = "blocked"
-            blocked_reason = blocked_reason or "required_tooling_not_used"
-            if has_image_attachments and looks_like_image_capability_denial_helper(raw_text):
-                notes.append("image_attachment_tooling_not_used")
-            else:
-                notes.append("strict_agentic_blocked_without_required_tools")
-        elif collaboration_mode in {"default", "execute"} and not tool_events and self._looks_like_plan_only_response(raw_text):
-            turn_status = "blocked"
-            blocked_reason = blocked_reason or "plan_only_response_after_steer"
-            notes.append("strict_agentic_blocked_after_steer")
         else:
             turn_status = "completed"
         revision_summary = self._build_revision_summary(
@@ -4760,7 +4217,6 @@ class VintageProgrammerRuntime:
                 "pending_user_input": pending_user_input,
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
-                "invalid_final_guard": dict(invalid_final_guard),
                 "blocked_reason": blocked_reason,
                 "loop_safeguards": dict(loop_safeguards),
                 "attachment_evidence_pack_preview": [
@@ -4773,7 +4229,8 @@ class VintageProgrammerRuntime:
                     for item in attachment_evidence_pack[:6]
                     if isinstance(item, dict)
                 ],
-                "requires_tools": expects_tools,
+                "tools_available": tools_available,
+                "tool_count": tool_count,
                 "runtime_contract": runtime_contract.as_payload(),
                 "network_mode": spec.network_mode,
                 "inline_document": inline_document,
@@ -4801,7 +4258,6 @@ class VintageProgrammerRuntime:
             "trace_events": [dict(item) for item in trace_events],
             "evidence": {
                 "status": evidence_status,
-                "required": expects_tools,
                 "warning": answer_bundle["warnings"][0] if answer_bundle["warnings"] else "",
                 "source_refs": [ref for item in tool_events for ref in item.source_refs][:12],
                 "tool_count": len(tool_events),
@@ -4854,7 +4310,6 @@ class VintageProgrammerRuntime:
             "pending_user_input": pending_user_input,
             "pending_approval": {},
             "write_authorization_state": dict(write_authorization_state),
-            "invalid_final_guard": dict(invalid_final_guard),
             "blocked_reason": blocked_reason,
             "attachment_evidence_pack_preview": [
                 {

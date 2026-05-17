@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.7-blue)
+![Version](https://img.shields.io/badge/version-v2.9.8-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.7`
+当前稳定版本：`v2.9.8`
 
 ## Stable Runtime
 
-v2.9.7 是一个 runtime 架构清理版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.8 是一个 runtime context 与 compaction 架构清理版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.7 移除旧 proposal 执行链路，将工具调用明确视为模型行动，由 harness 统一验证 RuntimeBoundary、schema 和权限；无效工具调用会作为观察结果返回给模型自我修正。
+OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.8 移除并行的 `legacy_context` 上下文路径，把当前轮、任务记忆、弱 route hints、compaction 状态和 RuntimeBoundary 统一放入 ContextPack；最终回答和工具调用仍由模型决定，harness 只验证具体工具调用边界。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.7 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist。v2.9.8 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
 ## 这是什么
 

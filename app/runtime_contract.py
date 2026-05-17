@@ -18,7 +18,6 @@ class RuntimeContract:
     sandbox_scope: str = "workspace"
     approval_policy: str = "avoid_unnecessary_confirmation"
     reason: str = "codex_style_full_auto"
-    requires_tools_hint: bool = False
     hint_source: str = ""
 
     def as_payload(self) -> dict[str, Any]:
@@ -30,7 +29,6 @@ def build_full_auto_runtime_contract(
     settings: ChatSettings,
     config: AppConfig,
     context: dict[str, Any] | None = None,
-    requires_tools_hint: bool = False,
 ) -> RuntimeContract:
     _ = context
     tools_available = bool(getattr(settings, "enable_tools", False))
@@ -41,8 +39,7 @@ def build_full_auto_runtime_contract(
             workspace_write_allowed=False,
             shell_allowed=False,
             network_allowed=False,
-            requires_tools_hint=bool(requires_tools_hint),
-            hint_source="request_likely_requires_tools",
+            hint_source="",
         )
     return RuntimeContract(
         tool_policy="use_when_needed",
@@ -50,6 +47,5 @@ def build_full_auto_runtime_contract(
         workspace_write_allowed=True,
         shell_allowed=True,
         network_allowed=bool(getattr(config, "web_allow_all_domains", False) or getattr(config, "web_allowed_domains", [])),
-        requires_tools_hint=bool(requires_tools_hint),
-        hint_source="request_likely_requires_tools",
+        hint_source="",
     )

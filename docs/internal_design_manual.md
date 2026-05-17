@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.7）
+# 内部设计手册（v2.9.8）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -680,7 +680,9 @@ Core rule:
 The new `ContextPack` separates:
 
 - `current_turn`: current user message and attachments, highest priority
-- `task_memory`: short/long task continuity context
+- `turn_memory`: short/long task continuity context
+- `conversation_window`: recent retained turns after token budget and compaction
+- `compaction`: compaction status, phase, and reason
 - `route_hints`: weak historical route hints
 - `runtime_boundary`: logical validation boundary, not a real OS/container sandbox
 
@@ -697,6 +699,16 @@ It removes the remaining proposal/validated-next-step/guard layering from the ex
 - Invalid tool calls become observations; valid tool calls execute and their results are returned as observations.
 - UI activity focuses on model action, boundary validation, tool execution, observation, and final answer.
 - No semantic ToolUseAdvisor, inline-content challenge, meeting-minutes exception, or secondary LLM judge is introduced.
+
+## 20.2 v2.9.8 ContextPack and Compaction Cleanup Notes
+
+v2.9.8 keeps the same model-led action loop and removes the parallel `legacy_context` path from the model payload.
+
+- `ContextPack` is the only structured context envelope sent to the model.
+- Useful legacy fields now live under `current_turn`, `turn_memory`, `conversation_window`, `route_hints`, `compaction`, and `runtime_boundary`.
+- `route_state` is exposed only as weak `route_hints`; it must not decide whether tools are required or whether a final answer is acceptable.
+- Semantic repair loops such as act-now steering, invalid-final guarding, required-tool blocking, and image auto-rescue are removed from the stable runtime path.
+- Compaction remains first-class and exposes `phase` and `reason` fields so pre-turn and mid-turn context management can be tracked without becoming route logic.
 
 ## 21. v2.9.0 Stability Decision
 

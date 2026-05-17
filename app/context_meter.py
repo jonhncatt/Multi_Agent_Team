@@ -141,6 +141,10 @@ def _default_compaction_state() -> dict[str, Any]:
         "last_compacted_at": "",
         "last_compaction_reason": "",
         "last_compaction_phase": "",
+        "phase": "",
+        "reason": "",
+        "before_tokens": 0,
+        "after_tokens": 0,
         "estimated_context_tokens": 0,
         "effective_context_window": 0,
         "auto_compact_token_limit": 0,
@@ -165,6 +169,10 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
         "last_compacted_at": str(payload.get("last_compacted_at") or ""),
         "last_compaction_reason": str(payload.get("last_compaction_reason") or ""),
         "last_compaction_phase": str(payload.get("last_compaction_phase") or ""),
+        "phase": str(payload.get("phase") or payload.get("last_compaction_phase") or ""),
+        "reason": str(payload.get("reason") or ""),
+        "before_tokens": max(0, int(payload.get("before_tokens") or 0)),
+        "after_tokens": max(0, int(payload.get("after_tokens") or 0)),
         "estimated_context_tokens": max(0, int(payload.get("estimated_context_tokens") or 0)),
         "effective_context_window": max(0, int(payload.get("effective_context_window") or 0)),
         "auto_compact_token_limit": max(0, int(payload.get("auto_compact_token_limit") or 0)),
@@ -204,6 +212,10 @@ def _build_runtime_context_view(
         if str(item.get("id") or "").strip()
     ]
     effective_summary = str(compaction_state.get("compacted_history") or payload.get("summary") or "")
+    phase = str(compaction_state.get("phase") or compaction_state.get("last_compaction_phase") or "")
+    reason = str(compaction_state.get("reason") or "")
+    if not reason and str(compaction_state.get("last_compaction_reason") or "").startswith("context_limit:"):
+        reason = "context_limit"
     return {
         "summary": effective_summary,
         "history_turns": retained_turns,
@@ -273,6 +285,10 @@ def build_compaction_status(
     if not context_window_known:
         warning = "当前模型未提供稳定 context window，以下为基于保守预算的估算。"
     retained_ids = list(runtime_view.get("retained_turn_ids") or [])
+    phase = str(compaction_state.get("phase") or compaction_state.get("last_compaction_phase") or "")
+    reason = str(compaction_state.get("reason") or "")
+    if not reason and str(compaction_state.get("last_compaction_reason") or "").startswith("context_limit:"):
+        reason = "context_limit"
     return {
         "enabled": True,
         "mode": "token_budget",
@@ -292,6 +308,10 @@ def build_compaction_status(
         "last_compacted_at": str(last_compacted_at or compaction_state.get("last_compacted_at") or ""),
         "last_compaction_reason": str(compaction_state.get("last_compaction_reason") or ""),
         "last_compaction_phase": str(compaction_state.get("last_compaction_phase") or ""),
+        "phase": phase,
+        "reason": reason,
+        "before_tokens": int(compaction_state.get("before_tokens") or 0),
+        "after_tokens": int(compaction_state.get("after_tokens") or 0),
         "warning": warning,
     }
 
@@ -528,10 +548,13 @@ def maybe_auto_compact_session(
             "retained_turn_ids": [str(item.get("id") or "").strip() for item in retained_turns if str(item.get("id") or "").strip()],
             "last_compacted_at": _now_iso(),
             "last_compaction_reason": (
-                f"context_budget_exceeded:{int(status_before.get('estimated_context_tokens') or 0)}/"
+                f"context_limit:{int(status_before.get('estimated_context_tokens') or 0)}/"
                 f"{int(status_before.get('auto_compact_token_limit') or 0)}"
             ),
             "last_compaction_phase": str(phase or "pre_turn"),
+            "phase": str(phase or "pre_turn"),
+            "reason": "context_limit",
+            "before_tokens": int(status_before.get("estimated_context_tokens") or 0),
             "mode": "token_budget",
         }
     )
@@ -546,6 +569,9 @@ def maybe_auto_compact_session(
         retained_raw_turns=retained_raw_turns,
     )
     _persist_compaction_estimates(session, status=status_after)
+    state["after_tokens"] = int(status_after.get("estimated_context_tokens") or 0)
+    if isinstance(session, dict):
+        session["compaction_state"] = dict(state)
     return {
         "compacted": True,
         "status_before": status_before,

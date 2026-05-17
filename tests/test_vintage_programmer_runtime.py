@@ -566,7 +566,10 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
     assert payload["context_pack"]["route_hints"]["priority"] == "weak"
     assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
     assert payload["context_pack"]["runtime_boundary"]["tool_policy"] == "use_when_needed"
-    history_turns = payload["legacy_context"]["history_turns"]
+    assert "legacy_context" not in payload
+    assert "route_state" not in payload
+    assert payload["context_pack"]["turn_memory"]["short_memory"]["current_task_focus"]["goal"] == "帮我写个请假邮件"
+    history_turns = payload["context_pack"]["conversation_window"]["recent_turns"]
     assert [item["text"] for item in history_turns[:2]] == ["turn-4", "turn-5"]
     assert history_turns[-1]["text"] == "turn-19"
 
@@ -1014,7 +1017,7 @@ def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
     assert "Project contract: model-led turn planning only." in system_prompt
 
 
-def test_invalid_final_guard_steers_authorized_write_into_tool_call(tmp_path: Path) -> None:
+def test_authorized_write_final_answer_is_not_runtime_steered(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -1022,8 +1025,6 @@ def test_invalid_final_guard_steers_authorized_write_into_tool_call(tmp_path: Pa
     backend = _FakeBackend(
         [
             _FakeMessage(content="如果你确认要我修改，我可以给你补丁。请回一句补。"),
-            _FakeMessage(content="", tool_calls=[{"id": "tc-patch", "name": "apply_patch", "args": {"patch": "*** Begin Patch\n*** End Patch\n"}}]),
-            _FakeMessage(content="已经补齐。"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -1049,13 +1050,14 @@ def test_invalid_final_guard_steers_authorized_write_into_tool_call(tmp_path: Pa
         },
     )
 
-    assert backend.tools.calls and backend.tools.calls[0][0] == "apply_patch"
-    assert result["invalid_final_guard"]["triggered"] is True
-    assert "invalid_final_guard_steer" in result["inspector"]["notes"]
+    assert backend.tools.calls == []
+    assert result["text"] == "如果你确认要我修改，我可以给你补丁。请回一句补。"
+    assert "invalid_final_guard" not in result
+    assert "invalid_final_guard_steer" not in result["inspector"]["notes"]
     assert result["turn_status"] == "completed"
 
 
-def test_invalid_final_guard_blocks_repeated_confirmation_after_authorization(tmp_path: Path) -> None:
+def test_repeated_confirmation_text_is_model_final_answer_not_runtime_block(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -1063,7 +1065,6 @@ def test_invalid_final_guard_blocks_repeated_confirmation_after_authorization(tm
     backend = _FakeBackend(
         [
             _FakeMessage(content="请确认，我再 apply_patch。"),
-            _FakeMessage(content="需要你再回一句补，我才能修改。"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -1090,9 +1091,9 @@ def test_invalid_final_guard_blocks_repeated_confirmation_after_authorization(tm
     )
 
     assert backend.tools.calls == []
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "model_refused_to_act_after_authorization"
-    assert result["invalid_final_guard"]["attempts"] == 2
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert "invalid_final_guard" not in result
 
 
 def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: Path) -> None:
@@ -1133,7 +1134,7 @@ def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: P
 
     first_messages = backend.invocations[0]["messages"]
     human_payload = str(first_messages[-1].content)
-    assert "attachment_evidence_pack" in human_payload
+    assert "attachment_evidence" in human_payload
     assert "missing export button" in human_payload
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
@@ -1423,7 +1424,7 @@ def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:
     assert "run_cancelled_by_user" in result["inspector"]["notes"]
 
 
-def test_runtime_steers_image_attachment_requests_into_image_read(tmp_path: Path) -> None:
+def test_runtime_accepts_image_attachment_final_answer_without_auto_tool_steer(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -1431,8 +1432,6 @@ def test_runtime_steers_image_attachment_requests_into_image_read(tmp_path: Path
     backend = _FakeBackend(
         [
             _FakeMessage(content="由于当前环境未配置图像文字识别（OCR）功能，我无法直接提取图片中的可见文字。"),
-            _FakeMessage(content="", tool_calls=[{"id": "tc-image", "name": "image_read", "args": {"path": str(image_path)}}]),
-            _FakeMessage(content="图片里写着 hello world"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -1466,12 +1465,11 @@ def test_runtime_steers_image_attachment_requests_into_image_read(tmp_path: Path
         },
     )
 
-    assert result["text"] == "图片里写着 hello world"
-    assert result["inspector"]["run_state"]["requires_tools"] is True
+    assert result["text"] == "由于当前环境未配置图像文字识别（OCR）功能，我无法直接提取图片中的可见文字。"
+    assert result["inspector"]["run_state"]["tools_available"] is True
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
-    assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
-    assert result["tool_events"][0]["name"] == "image_read"
-    assert "attachment_tooling_expected" in result["inspector"]["notes"]
+    assert backend.tools.calls == []
+    assert result["tool_events"] == []
     assert "image_attachment_context" in result["inspector"]["notes"]
 
 
@@ -1614,7 +1612,7 @@ def test_runtime_aliases_image_tool_name_and_uses_single_attached_image(tmp_path
     assert "tool_alias:image_tool->image_read" in result["inspector"]["notes"]
 
 
-def test_runtime_auto_rescues_missing_context_reply_for_image_attachments(tmp_path: Path) -> None:
+def test_runtime_does_not_auto_rescue_missing_context_reply_for_image_attachments(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -1652,14 +1650,14 @@ def test_runtime_auto_rescues_missing_context_reply_for_image_attachments(tmp_pa
         },
     )
 
-    assert result["text"] == "图片里显示的是 Vintage Programmer 的首页。"
-    assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
-    assert result["tool_events"][0]["name"] == "image_read"
-    assert "strict_agentic_act_now_steer" in result["inspector"]["notes"]
-    assert "auto_image_read_rescue" in result["inspector"]["notes"]
+    assert result["text"] == "我需要更多上下文后才能操作这张图片。"
+    assert backend.tools.calls == []
+    assert result["tool_events"] == []
+    assert result["turn_status"] == "completed"
+    assert "auto_image_read_rescue" not in result["inspector"]["notes"]
 
 
-def test_runtime_finishes_with_image_read_fallback_after_repeat_loop(tmp_path: Path) -> None:
+def test_runtime_repeated_image_read_uses_loop_safeguard_without_fallback_answer(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -1700,17 +1698,13 @@ def test_runtime_finishes_with_image_read_fallback_after_repeat_loop(tmp_path: P
         },
     )
 
-    assert result["turn_status"] == "completed"
-    assert "Vintage" in result["text"]
-    assert "new_validation_agent" in result["text"]
-    assert len(result["tool_events"]) == 5
-    assert any(
-        note in {"image_read_repeat_fallback_answer", "image_read_result_forced_summary"}
-        for note in result["inspector"]["notes"]
-    )
+    assert result["turn_status"] in {"blocked", "completed"}
+    assert len(result["tool_events"]) >= 3
+    assert "image_read_repeat_fallback_answer" not in result["inspector"]["notes"]
+    assert "image_read_result_forced_summary" not in result["inspector"]["notes"]
 
 
-def test_runtime_forces_tool_based_summary_for_generic_image_read_requests(tmp_path: Path) -> None:
+def test_runtime_does_not_override_model_answer_after_image_read(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -1748,10 +1742,8 @@ def test_runtime_forces_tool_based_summary_for_generic_image_read_requests(tmp_p
         },
     )
 
-    assert "MetaPixel" not in result["text"]
-    assert "Vintage" in result["text"]
-    assert "new_validation_agent" in result["text"]
-    assert "image_read_result_forced_summary" in result["inspector"]["notes"]
+    assert result["text"] == "产品名称是 MetaPixel，Logo 也是 MetaPixel。"
+    assert "image_read_result_forced_summary" not in result["inspector"]["notes"]
     assert result["tool_events"][0]["diagnostics"]["ocr_engine"] == "rapidocr"
     assert "Vintage" in result["tool_events"][0]["diagnostics"]["visible_text_preview"]
 
@@ -1877,7 +1869,7 @@ def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: P
     }
 
 
-def test_runtime_auto_rescues_image_attachment_turn_when_model_refuses_to_use_tools(tmp_path: Path) -> None:
+def test_runtime_does_not_auto_rescue_image_attachment_turn_when_model_refuses_to_use_tools(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -1885,8 +1877,6 @@ def test_runtime_auto_rescues_image_attachment_turn_when_model_refuses_to_use_to
     backend = _FakeBackend(
         [
             _FakeMessage(content="由于当前环境未配置图像文字识别（OCR）功能，我无法直接提取图片中的可见文字。"),
-            _FakeMessage(content="我还是无法直接对图像执行 OCR。"),
-            _FakeMessage(content="我已经根据工具结果读取了这张截图。"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -1915,12 +1905,11 @@ def test_runtime_auto_rescues_image_attachment_turn_when_model_refuses_to_use_to
         },
     )
 
-    assert [item["name"] for item in result["tool_events"]] == ["image_read"]
-    assert result["inspector"]["run_state"]["requires_tools"] is True
+    assert result["text"] == "由于当前环境未配置图像文字识别（OCR）功能，我无法直接提取图片中的可见文字。"
+    assert result["tool_events"] == []
+    assert result["inspector"]["run_state"]["tools_available"] is True
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
-    assert result["inspector"]["evidence"]["status"] == "collected"
-    assert "strict_agentic_act_now_steer" in result["inspector"]["notes"]
-    assert "auto_image_read_rescue" in result["inspector"]["notes"]
+    assert result["inspector"]["evidence"]["status"] == "not_needed"
 
 
 def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(tmp_path: Path) -> None:
@@ -1958,7 +1947,7 @@ def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(
 
     assert result["text"] == "inline analysis complete"
     assert result["inspector"]["run_state"]["inline_document"] is True
-    assert result["inspector"]["run_state"]["requires_tools"] is False
+    assert result["tool_events"] == []
     assert result["inspector"]["loaded_skills"][0]["id"] == "inline_helper"
 
 
@@ -1981,4 +1970,5 @@ def test_runtime_treats_short_pasted_code_as_direct_context_even_with_fix_langua
     )
 
     assert result["text"] == "直接分析短代码"
-    assert result["inspector"]["run_state"]["requires_tools"] is False
+    assert result["tool_events"] == []
+    assert result["turn_status"] == "completed"
