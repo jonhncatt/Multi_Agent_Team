@@ -68,8 +68,11 @@ def test_compaction_status_feeds_context_pack_without_legacy_context(tmp_path: P
     context_pack = payload["context_pack"]
 
     assert "legacy_context" not in payload
-    assert context_pack["turn_memory"]["long_memory"]["summary"] == "long summary"
+    assert context_pack["turn_memory"]["summary"] == "long summary"
     assert context_pack["conversation_window"]["recent_turns"][0]["text"] == "recent observation"
-    assert context_pack["compaction"]["status"]["phase"] == "mid_turn"
-    assert context_pack["compaction"]["status"]["reason"] == "context_limit"
+    assert context_pack["compaction"]["phase"] == "mid_turn"
+    assert context_pack["compaction"]["reason"] == "context_limit"
+    assert context_pack["compaction"]["summary_available"] is True
     assert context_pack["runtime_boundary"]["project_root"] == str(tmp_path.resolve())
+    assert "legacy_context" not in context_pack
+    assert "route_hints" not in context_pack

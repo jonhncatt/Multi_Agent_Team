@@ -558,19 +558,27 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
 
     assert payload["python_command"] == runtime._config.python_command
     assert payload["python_command_source"] == runtime._config.python_command_source
-    assert payload["context_pack"]["current_turn"]["followup_type"] == "subject_request"
-    assert payload["context_pack"]["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
-    assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
-    assert payload["context_priority"]["current_turn"] == "highest"
-    assert payload["context_pack"]["current_turn"]["note"] == "Current user message has highest priority."
-    assert payload["context_pack"]["route_hints"]["priority"] == "weak"
-    assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
-    assert payload["context_pack"]["runtime_boundary"]["tool_policy"] == "use_when_needed"
+    assert set(payload["context_pack"]) == {
+        "current_turn",
+        "conversation_window",
+        "turn_memory",
+        "plan_state",
+        "compaction",
+        "runtime_boundary",
+    }
+    assert payload["context_pack"]["current_turn"]["user_message_preview"] == "题目"
+    assert "user_message" not in payload["context_pack"]["current_turn"]
+    assert "followup_type" not in payload["context_pack"]["current_turn"]
+    assert "goal" not in payload["context_pack"]["current_turn"]
+    assert "context_priority" not in payload
+    assert "route_hints" not in payload["context_pack"]
+    assert "allowed_roots" not in payload["context_pack"]["runtime_boundary"]
+    assert payload["context_pack"]["runtime_boundary"]["cwd"]
     assert "legacy_context" not in payload
     assert "route_state" not in payload
-    assert payload["context_pack"]["turn_memory"]["short_memory"]["current_task_focus"]["goal"] == "帮我写个请假邮件"
+    assert payload["context_pack"]["turn_memory"]["active_task"]["goal"] == "帮我写个请假邮件"
     history_turns = payload["context_pack"]["conversation_window"]["recent_turns"]
-    assert [item["text"] for item in history_turns[:2]] == ["turn-4", "turn-5"]
+    assert [item["text"] for item in history_turns[:2]] == ["turn-8", "turn-9"]
     assert history_turns[-1]["text"] == "turn-19"
 
 

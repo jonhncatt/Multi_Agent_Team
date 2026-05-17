@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.8）
+# 内部设计手册（v2.9.9）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -709,6 +709,18 @@ v2.9.8 keeps the same model-led action loop and removes the parallel `legacy_con
 - `route_state` is exposed only as weak `route_hints`; it must not decide whether tools are required or whether a final answer is acceptable.
 - Semantic repair loops such as act-now steering, invalid-final guarding, required-tool blocking, and image auto-rescue are removed from the stable runtime path.
 - Compaction remains first-class and exposes `phase` and `reason` fields so pre-turn and mid-turn context management can be tracked without becoming route logic.
+
+## 20.3 v2.9.9 Minimal ContextPack and TurnMemory Notes
+
+v2.9.9 keeps the same model-led action loop and makes ContextPack smaller and non-duplicative.
+
+- ContextPack now contains only `current_turn`, `conversation_window`, `turn_memory`, `plan_state`, `compaction`, and `runtime_boundary`.
+- `current_turn` carries a bounded `user_message_preview` instead of duplicating the full active user message.
+- `conversation_window` holds recent raw turns; `turn_memory` holds concise task state, compacted summary, and recent observation summaries.
+- `plan_state` is a first-class field sourced from valid `update_plan` state, not inferred from natural language.
+- `compaction` exposes only minimal model-facing status: active, phase, reason, and summary availability.
+- The model-facing RuntimeBoundary view is concise and does not include full `allowed_roots` or `writable_roots`; the full boundary remains internal for ActionValidator.
+- `route_hints`, `route_state`, `legacy_context`, `context_injections`, and route-derived memory fields are not sent to the model ContextPack.
 
 ## 21. v2.9.0 Stability Decision
 

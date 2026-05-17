@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.8-blue)
+![Version](https://img.shields.io/badge/version-v2.9.9-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.8`
+現在の安定版: `v2.9.9`
 
 ## Stable Runtime
 
-v2.9.8 は runtime context と compaction アーキテクチャを整理するリリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.9 は最小 ContextPack と TurnMemory を整理するリリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.8 では並行していた `legacy_context` を削除し、current turn、task memory、弱い route hints、compaction status、RuntimeBoundary を 1 つの ContextPack に統合します。final answer と tool call は引き続きモデル主導で、harness は具体的な tool call の境界だけを検証します。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.9 では ContextPack を current-turn preview、recent conversation window、TurnMemory、PlanState、最小 compaction status、簡潔な RuntimeBoundary model view に絞ります。final answer と tool call は引き続きモデル主導で、harness は具体的な tool call の境界だけを検証します。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.8 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.9 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
 
 ## これは何か
 

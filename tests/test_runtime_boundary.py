@@ -38,6 +38,15 @@ def test_turn_runtime_boundary_includes_project_and_attachment_roots(tmp_path: P
     assert str(attachment_dir.resolve()) in boundary.allowed_roots
     assert boundary.writable_roots == []
     assert boundary.shell_allowed is False
+    assert boundary.to_model_view() == {
+        "workspace_read_allowed": True,
+        "workspace_write_allowed": False,
+        "shell_allowed": False,
+        "network_allowed": False,
+        "approval_policy": "avoid_unnecessary_confirmation",
+        "cwd": str(tmp_path.resolve()),
+        "project_root": str(tmp_path.resolve()),
+    }
 
 
 def test_context_pack_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
@@ -64,5 +73,7 @@ def test_context_pack_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
     )
     runtime_context_json = payload_text.split("runtime_context_json:\n", 1)[1]
 
-    assert dump_model(boundary)["cwd"] in runtime_context_json
+    assert dump_model(boundary.to_model_view())["cwd"] in runtime_context_json
     assert '"runtime_boundary"' in runtime_context_json
+    assert '"allowed_roots"' not in runtime_context_json
+    assert '"writable_roots"' not in runtime_context_json

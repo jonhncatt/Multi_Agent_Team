@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.8-blue)
+![Version](https://img.shields.io/badge/version-v2.9.9-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.8`
+Current stable release: `v2.9.9`
 
 ## Stable Runtime
 
-v2.9.8 is a runtime context and compaction architecture cleanup release that keeps the v2.9.0 recovery policy intact.
+v2.9.9 is a minimal ContextPack and TurnMemory cleanup release that keeps the v2.9.0 recovery policy intact.
 The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.8 removes the parallel `legacy_context` path and puts the current turn, task memory, weak route hints, compaction status, and RuntimeBoundary into one ContextPack. Final answers and tool calls remain model-led; the harness validates only concrete tool-call boundaries.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.9 narrows ContextPack to current-turn preview, recent conversation window, TurnMemory, PlanState, minimal compaction status, and a concise RuntimeBoundary model view. Final answers and tool calls remain model-led; the harness validates only concrete tool-call boundaries.
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ For the stable v2.9.x runtime, Python `3.11` is recommended. Python `3.12` is al
 
 ## Command Safety
 
-`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.8 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
+`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.9 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
 
 ## What it is
 

@@ -14,6 +14,7 @@ import uuid
 
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.config import AppConfig
+from app.context_pack import build_context_pack
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.models import (
@@ -753,7 +754,7 @@ class VintageProgrammerRuntime:
             "[context_priority]\n"
             "- The current user message has highest priority.\n"
             "- Task memory helps maintain long-running work.\n"
-            "- route_hints are weak historical hints, not final task decisions.\n"
+            "- ContextPack contains recent conversation, task memory, plan state, compaction status, and runtime boundary.\n"
             "- runtime_boundary describes what the harness will enforce.\n"
         )
 
@@ -816,112 +817,27 @@ class VintageProgrammerRuntime:
         context: dict[str, Any],
         runtime_boundary: RuntimeBoundary | None = None,
     ) -> str:
-        history_turns = list(context.get("history_turns") or [])
-        recent_history = [
-            {
-                "role": str(item.get("role") or ""),
-                "text": str(item.get("text") or "")[:1200],
-            }
-            for item in history_turns[-16:]
-            if isinstance(item, dict)
-        ]
-        attachments = [
-            {
-                "name": str(item.get("name") or item.get("original_name") or ""),
-                "mime": str(item.get("mime") or ""),
-                "kind": str(item.get("kind") or ""),
-                "path": str(item.get("path") or ""),
-            }
-            for item in list(context.get("attachments") or [])
-            if isinstance(item, dict)
-        ]
-        route_state = dict(context.get("route_state") or {})
-        current_task_focus = normalize_current_task_focus(
-            context.get("current_task_focus")
-            or route_state.get("current_task_focus")
-            or route_state.get("task_checkpoint")
-        )
-        active_task_focus = normalize_current_task_focus(
-            context.get("active_task_focus")
-            or context.get("current_task_focus")
-            or route_state.get("current_task_focus")
-            or route_state.get("task_checkpoint")
-        )
-        current_turn = dict(context.get("current_turn") or {})
-        thread_memory = dict(context.get("thread_memory") or {})
-        recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
-        artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
-        compaction_status = dict(context.get("compaction_status") or {})
-        compaction_payload = dict(compaction_status)
-        if "phase" not in compaction_payload and compaction_payload.get("last_compaction_phase"):
-            compaction_payload["phase"] = str(compaction_payload.get("last_compaction_phase") or "")
-        if "reason" not in compaction_payload and compaction_payload.get("last_compaction_reason"):
-            compaction_payload["reason"] = str(compaction_payload.get("last_compaction_reason") or "")
+        current_task_focus = normalize_current_task_focus(context.get("current_task_focus"))
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
-        boundary_payload = dump_model(
-            runtime_boundary
-            or build_turn_runtime_boundary(
-                config=self._config,
-                project_root=project_root,
-                cwd=str(project_payload.get("cwd") or project_root or ""),
-                attachments=attachments,
-            )
+        boundary = runtime_boundary or build_turn_runtime_boundary(
+            config=self._config,
+            project_root=project_root,
+            cwd=str(project_payload.get("cwd") or project_root or ""),
+            attachments=list(context.get("attachments") or []),
         )
-        if isinstance(boundary_payload, dict):
-            boundary_payload["note"] = "RuntimeBoundary is a logical validation boundary, not an OS/container sandbox."
-        context_pack = {
-            "current_turn": {
-                **current_turn,
-                "user_message": str(current_turn.get("user_message") or message or "").strip(),
-                "attachments": attachments,
-                "attachment_evidence": list(context.get("attachment_evidence_pack") or [])[:8],
-                "user_input_response": dict(context.get("user_input_response") or {}),
-                "current_files": list(context.get("current_files") or [])[:12],
-                "note": "Current user message has highest priority.",
-            },
-            "turn_memory": {
-                "short_memory": {
-                    "current_goal": str(current_task_focus.get("goal") or current_turn.get("goal") or "")[:1200],
-                    "current_task_focus": current_task_focus,
-                    "recent_tool_results": list(context.get("recent_tool_results") or [])[:8],
-                    "recent_errors": list(context.get("recent_errors") or [])[:8],
-                },
-                "long_memory": {
-                    "summary": str(context.get("summary") or thread_memory.get("summary") or "")[:4000],
-                    "thread_summary": str(thread_memory.get("summary") or "")[:4000],
-                    "recent_tasks": recent_tasks[:8],
-                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
-                    "artifact_memory_preview": artifact_memory_preview[:8],
-                    "recalled_context": dict(context.get("recalled_context") or {}),
-                },
-            },
-            "conversation_window": {
-                "recent_turns": recent_history,
-            },
-            "route_hints": {
-                "route_state": route_state,
-                "active_task_focus": active_task_focus,
-                "priority": "weak",
-                "note": "Weak historical hints only. Do not treat as final task decisions.",
-            },
-            "compaction": {
-                "status": compaction_payload,
-            },
-            "runtime_boundary": boundary_payload,
-        }
+        context_pack = build_context_pack(
+            message=message,
+            context=context,
+            current_task_focus=current_task_focus,
+            runtime_boundary_model_view=boundary.to_model_view(),
+        )
         payload = {
             "session_id": str(context.get("session_id") or ""),
             "project": project_payload,
             "python_command": str(self._config.python_command or "python"),
             "python_command_source": str(self._config.python_command_source or ""),
-            "context_priority": {
-                "current_turn": "highest",
-                "turn_memory": "continuity",
-                "route_hints": "weak",
-                "runtime_boundary": "harness_validation",
-            },
-            "context_pack": context_pack,
+            "context_pack": dump_model(context_pack),
         }
         return "\n".join(
             [
@@ -3204,7 +3120,7 @@ class VintageProgrammerRuntime:
                 "tools_available": tools_available,
                 "tool_count": tool_count,
                 "collaboration_mode": collaboration_mode,
-                "context_pack": "current_turn/turn_memory/conversation_window/route_hints/compaction/runtime_boundary",
+                "context_pack": "current_turn/conversation_window/turn_memory/plan_state/compaction/runtime_boundary",
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
@@ -4360,7 +4276,7 @@ class VintageProgrammerRuntime:
                 "tool_count": len(tool_events),
                 "loaded_skill_ids": [str(item.get("id") or "") for item in loaded_skills],
                 "inline_document": inline_document,
-                "route_hints": dict(route_state_input),
+                "route_state_input": dict(route_state_input),
                 "model_action": dict(model_action),
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),

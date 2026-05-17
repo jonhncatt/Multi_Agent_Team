@@ -25,6 +25,22 @@ class RuntimeBoundary(BaseModel):
     max_output_tokens: int = 4096
     timeout_sec: int = 120
 
+    def to_model_view(self) -> dict[str, Any]:
+        """Return the concise boundary view sent to the model.
+
+        The complete boundary, including root lists and limits, stays internal for
+        ActionValidator. The model only needs broad capability and location data.
+        """
+        return {
+            "workspace_read_allowed": bool(self.workspace_read_allowed),
+            "workspace_write_allowed": bool(self.workspace_write_allowed),
+            "shell_allowed": bool(self.shell_allowed),
+            "network_allowed": bool(self.network_allowed),
+            "approval_policy": str(self.approval_policy or ""),
+            "cwd": str(self.cwd or ""),
+            "project_root": str(self.project_root or ""),
+        }
+
 
 def _dedup_paths(paths: list[Path]) -> list[Path]:
     out: list[Path] = []
