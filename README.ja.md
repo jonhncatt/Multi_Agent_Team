@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.5-blue)
+![Version](https://img.shields.io/badge/version-v2.9.6-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -11,18 +11,18 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 **Vintage Programmer** は、最終回答だけを返す通常のチャット UI ではありません。  
 1 回の turn の中で Agent が何を提案し、runtime が何を検証し、どの tool が実行され、どのような観測結果が返ったのかを見えるようにすることを目的としています。
-**ユーザー要求 -> モデル提案 -> harness 検証 -> tool 実行 -> 観測結果 -> 最終回答**
+**ユーザー要求 -> モデル行動 -> harness 検証 -> tool 実行 -> 観測結果 -> 最終回答**
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.5`
+現在の安定版: `v2.9.6`
 
 ## Stable Runtime
 
-v2.9.5 は小さな bugfix リリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.6 は runtime 挙動を Codex 風に整理するリリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.5 では stable office/runtime path に残っていた直接 `.model_dump()` 呼び出しだけを安全な `dump_model()` に置き換え、会議メモや office 系リクエストで断続的に起きていた `NoneType object has no attribute model_dump` / `dict object has no attribute model_dump` を防ぎつつ、安定 LangChain runtime の挙動は変更しません。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.6 では具体的な tool call をモデル行動として扱い、harness が RuntimeBoundary、schema、permission を検証します。無効な tool call は observation としてモデルに返され、強制的な proposal flow ではなくモデル自身が修正します。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.5 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.6 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
 
 ## これは何か
 
@@ -114,7 +114,7 @@ Vintage Programmer は、その途中の execution path も見せます。
 ```mermaid
 flowchart LR
     U["ユーザー要求"] --> R["Runtime"]
-    R --> M["モデル提案"]
+    R --> M["モデル行動"]
     M --> H["Harness 検証"]
     H -->|accepted| T["Tool 実行"]
     H -->|rejected| E["Tool Error"]

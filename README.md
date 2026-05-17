@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.5-blue)
+![Version](https://img.shields.io/badge/version-v2.9.6-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -11,18 +11,18 @@
 
 **Vintage Programmer** 不是普通聊天 UI。  
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
-**用户请求 -> 模型提案 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
+**用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.5`
+当前稳定版本：`v2.9.6`
 
 ## Stable Runtime
 
-v2.9.5 是一个小型 bugfix 版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.6 是一个 runtime 行为对齐版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.5 只修复稳定 office/runtime 路径里残留的直接 `.model_dump()` 序列化调用，避免会议纪要等 office 类请求偶发出现 `NoneType object has no attribute model_dump` / `dict object has no attribute model_dump`，不改变稳定 LangChain runtime 的行为。
+OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.6 将工具调用明确视为模型行动，由 harness 统一验证 RuntimeBoundary、schema 和权限；无效工具调用会作为观察结果返回给模型自我修正，而不是依赖强制 proposal 流程。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.5 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist。v2.9.6 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
 ## 这是什么
 
@@ -114,7 +114,7 @@ Vintage Programmer 更关注 Agent 的执行过程可见性。
 ```mermaid
 flowchart LR
     U["用户请求"] --> R["Runtime"]
-    R --> M["模型提案"]
+    R --> M["模型行动"]
     M --> H["Harness 验证"]
     H -->|通过| T["工具执行"]
     H -->|拒绝| E["工具错误"]

@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable
 import uuid
 
+from app.action_validator import ActionValidator, build_runtime_boundary
 from app.config import AppConfig
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
@@ -766,16 +767,15 @@ class VintageProgrammerRuntime:
     @staticmethod
     def _build_model_proposal_prompt() -> str:
         return (
-            "[tool_loop_protocol]\n"
-            "- Treat runtime_context_json.route_state and other harness hints as weak hints, not as the final task decision.\n"
-            "- You may answer directly when the current context is sufficient.\n"
-            "- When tools are needed, issue the current tool call directly instead of inventing a heavy upfront plan.\n"
-            "- Tool results and tool-call errors will be returned to you. Use them to decide the next move and continue the turn.\n"
-            "- Do not enumerate a full future tool list up front. Focus on the current objective and the immediate next action.\n"
-            "- If it helps clarify the current objective, you may emit one concise operational proposal block in this exact wrapper format before the current step:\n"
-            "  <model_proposal>{...json...}</model_proposal>\n"
-            "- If you emit that block, keep it short and include: intent, task_type, current_goal, expects_tools, response_mode, user_stage, summary, next_step_hint, change_summary_requested.\n"
-            "- This proposal is an operational note, not hidden chain-of-thought. Keep it concise, factual, and revisable.\n"
+            "[model_led_action_protocol]\n"
+            "- Decide the next action yourself: answer directly or call one appropriate tool.\n"
+            "- The concrete tool call is the action proposal. Do not wait for a separate proposal ceremony before calling a tool.\n"
+            "- Tool calls are validated by the harness for schema, permissions, runtime boundaries, and safety.\n"
+            "- If a tool call is rejected, read the validation observation and choose a corrected next action.\n"
+            "- Do not repeat the same invalid tool call.\n"
+            "- If current context is sufficient, answer directly.\n"
+            "- Use update_plan only when you need to track a multi-step execution task and can provide a valid plan payload.\n"
+            "- Optional debug note only: you may emit <model_proposal>{...json...}</model_proposal>, but it is not required, not authoritative, and must not block tool execution.\n"
         )
 
     @staticmethod
@@ -799,7 +799,7 @@ class VintageProgrammerRuntime:
             "- Do not force tools for self-contained text tasks such as plain chat, explanation, translation, rewriting, meeting minutes, or summarization of text already provided by the user.\n"
             "- Use tools when the request requires external context, workspace inspection, file reading, code search, file modification, testing, command execution, or long-running task progress.\n"
             "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
-            "- Use update_plan for multi-step workspace tasks, debugging, code changes, release work, or long-running operations. Do not use update_plan for simple chat, translation, rewriting, meeting minutes, or summarizing text already provided by the user.\n"
+            "- Use update_plan only when a valid checklist helps a multi-step execution task. If planning is unnecessary, answer directly or call the concrete tool needed now.\n"
             f"- When running Python commands, prefer the project virtual environment when available (for example ./.venv/bin/python on macOS/Linux or .venv\\Scripts\\python.exe on Windows). Otherwise use the detected interpreter command ({detected_python}). Do not assume python3 exists. Prefer project-level module execution via the selected interpreter with -m ...\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
             "- After each tool result, continue the turn until the task is complete, needs structured user input, is blocked by a concrete policy, is cancelled, or a runtime budget is exhausted.\n"
@@ -867,11 +867,63 @@ class VintageProgrammerRuntime:
         recent_tasks = list(context.get("recent_tasks") or thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = list(context.get("artifact_memory_preview") or [])
         compaction_status = dict(context.get("compaction_status") or {})
+        project_payload = dict(context.get("project") or {})
+        project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
+        allowed_roots = [str(path) for path in list(getattr(self._config, "allowed_roots", []) or []) if str(path or "").strip()]
+        if project_root and project_root not in allowed_roots:
+            allowed_roots.insert(0, project_root)
+        runtime_boundary = {
+            "tool_policy": "use_when_needed",
+            "workspace_read_allowed": True,
+            "workspace_write_allowed": True,
+            "shell_allowed": True,
+            "network_allowed": bool(getattr(self._config, "web_allow_all_domains", False) or getattr(self._config, "web_allowed_domains", [])),
+            "approval_policy": "avoid_unnecessary_confirmation",
+            "allowed_roots": allowed_roots[:12],
+            "writable_roots": [project_root] if project_root else [],
+            "note": "RuntimeBoundary is a logical validation boundary, not an OS/container sandbox.",
+        }
+        context_pack = {
+            "current_turn": {
+                "user_message": str(message or "").strip(),
+                "attachments": attachments,
+                "current_files": list(context.get("current_files") or [])[:12],
+                "note": "Current user message has highest priority.",
+                **current_turn,
+            },
+            "task_memory": {
+                "short_task_memory": {
+                    "recent_goal": str(current_task_focus.get("goal") or current_turn.get("goal") or "")[:1200],
+                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+                    "recent_tool_results": list(context.get("recent_tool_results") or [])[:8],
+                    "recent_errors": list(context.get("recent_errors") or [])[:8],
+                },
+                "long_task_memory": {
+                    "summary": str(thread_memory.get("summary") or context.get("summary") or "")[:4000],
+                    "recent_tasks": recent_tasks[:8],
+                },
+                "current_task_focus": current_task_focus,
+            },
+            "route_hints": {
+                "route_state": route_state,
+                "active_task_focus": active_task_focus,
+                "priority": "weak",
+                "note": "These are weak historical hints. Do not treat them as final task decisions.",
+            },
+            "runtime_boundary": runtime_boundary,
+        }
         payload = {
             "session_id": str(context.get("session_id") or ""),
-            "project": dict(context.get("project") or {}),
+            "project": project_payload,
             "python_command": str(self._config.python_command or "python"),
             "python_command_source": str(self._config.python_command_source or ""),
+            "context_priority": {
+                "current_turn": "highest",
+                "task_memory": "continuity",
+                "route_hints": "weak",
+                "runtime_boundary": "harness_validation",
+            },
+            "context_pack": context_pack,
             "summary": str(context.get("summary") or "")[:4000],
             "thread_memory": {
                 "summary": str(thread_memory.get("summary") or "")[:4000],
@@ -1001,11 +1053,17 @@ class VintageProgrammerRuntime:
                 "runtime_contract.detail": "工具策略：需要时使用",
                 "llm.started": "模型开始分析",
                 "llm.finished": "模型分析完成",
+                "action.detected": "检测到模型行动：{tool}",
+                "action.validating": "验证行动边界：{tool}",
+                "action.allowed": "行动通过验证：{tool}",
+                "action.blocked": "行动被边界拦截：{tool}",
                 "tool.call_detected": "检测到工具调用：{tool}",
                 "tool.guard": "工具检查：{tool}",
                 "tool.started": "调用工具：{tool}",
                 "tool.finished": "工具完成：{tool}",
                 "tool.failed": "工具失败：{tool}",
+                "observation.returned": "已将观察结果返回模型：{tool}",
+                "loop.safeguard": "循环保护触发",
                 "approval.required": "需要确认",
                 "approval.resolved": "确认已处理",
                 "repair.started": "开始修复执行偏差",
@@ -1028,11 +1086,17 @@ class VintageProgrammerRuntime:
                 "runtime_contract.detail": "ツール方針：必要なときのみ使用",
                 "llm.started": "モデルが解析を開始",
                 "llm.finished": "モデル解析が完了",
+                "action.detected": "モデル行動を検出: {tool}",
+                "action.validating": "行動境界を検証: {tool}",
+                "action.allowed": "行動が検証を通過: {tool}",
+                "action.blocked": "行動が境界でブロック: {tool}",
                 "tool.call_detected": "ツール呼び出しを検出: {tool}",
                 "tool.guard": "ツール検査: {tool}",
                 "tool.started": "ツール呼び出し: {tool}",
                 "tool.finished": "ツール完了: {tool}",
                 "tool.failed": "ツール失敗: {tool}",
+                "observation.returned": "観察結果をモデルへ返却: {tool}",
+                "loop.safeguard": "ループ保護が発動",
                 "approval.required": "確認が必要",
                 "approval.resolved": "確認が処理されました",
                 "repair.started": "実行修復を開始",
@@ -1055,11 +1119,17 @@ class VintageProgrammerRuntime:
                 "runtime_contract.detail": "Tool policy: use when needed",
                 "llm.started": "Model analysis started",
                 "llm.finished": "Model analysis finished",
+                "action.detected": "Model action detected: {tool}",
+                "action.validating": "Validating action boundary: {tool}",
+                "action.allowed": "Action validation passed: {tool}",
+                "action.blocked": "Action blocked by boundary: {tool}",
                 "tool.call_detected": "Tool call detected: {tool}",
                 "tool.guard": "Tool guard: {tool}",
                 "tool.started": "Calling tool: {tool}",
                 "tool.finished": "Tool finished: {tool}",
                 "tool.failed": "Tool failed: {tool}",
+                "observation.returned": "Observation returned to model: {tool}",
+                "loop.safeguard": "Loop safeguard triggered",
                 "approval.required": "Needs confirmation",
                 "approval.resolved": "Confirmation resolved",
                 "repair.started": "Repairing execution flow",
@@ -2388,132 +2458,59 @@ class VintageProgrammerRuntime:
         locale: str,
     ) -> ToolGuardResult:
         raw_tool_name = str(call.get("raw_name") or call.get("name") or "").strip()
-        tool_name = self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
-        raw_arguments = call.get("raw_args")
-        if raw_arguments is None:
-            raw_arguments = call.get("args")
-        checks = {
-            "json": "passed" if isinstance(raw_arguments, dict) else "failed",
-            "tool_exists": "pending",
-            "schema": "pending",
-            "policy": "pending",
-            "permission": "pending",
-        }
-        if not isinstance(raw_arguments, dict):
-            invalid_args_message = translate(locale, "runtime.tool.guard.arguments_not_object")
-            checks.update(
-                {
-                    "tool_exists": "skipped",
-                    "schema": "failed",
-                    "policy": "skipped",
-                    "permission": "skipped",
-                }
-            )
-            return ToolGuardResult(
-                status="rejected",
-                call_id=str(call.get("id") or ""),
-                raw_tool_name=raw_tool_name,
-                tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
-                normalized_arguments={},
-                normalization_notes=[],
-                checks=checks,
-                schema_validation={
-                    "status": "invalid",
-                    "checked": False,
-                    "summary": invalid_args_message,
-                    "errors": [invalid_args_message],
-                },
-                reason=invalid_args_message,
-            )
-
-        tool_exists = bool(tool_name and tool_name in self._tool_specs_by_name)
-        checks["tool_exists"] = "passed" if tool_exists else "failed"
-        if not tool_exists:
-            checks.update({"schema": "skipped", "policy": "failed", "permission": "failed"})
-            allowed_preview = ", ".join(runnable_tools[:8])
+        boundary = build_runtime_boundary(config=self._config, project_root=self._config.workspace_root)
+        attachment_roots: list[str] = []
+        for item in list(attachments or []):
+            if not isinstance(item, dict):
+                continue
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                attachment_roots.append(str(Path(raw_path).expanduser().resolve().parent))
+            except Exception:
+                continue
+        if attachment_roots:
+            boundary.allowed_roots = [*boundary.allowed_roots, *attachment_roots]
+        validator = ActionValidator(
+            tool_specs=self._tool_specs,
+            allowed_tools=runnable_tools,
+            boundary=boundary,
+            locale=locale,
+            normalize_tool_name=self._normalize_tool_name,
+            argument_rewriter=lambda tool_name, arguments: self._rewrite_attachment_tool_arguments(
+                name=tool_name,
+                arguments=arguments,
+                attachments=attachments,
+            ),
+        )
+        validation = validator.validate_tool_call(call)
+        tool_name = validation.tool_name or self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
+        normalization_notes = list(validation.normalization_notes or [])
+        if raw_tool_name and raw_tool_name != tool_name:
+            normalization_notes.append(f"{raw_tool_name}->{tool_name}")
+        if not validation.allowed:
+            reason = str(validation.message or "")
+            if validation.code == "unknown_tool":
+                allowed_preview = ", ".join(runnable_tools[:8])
+                reason = (
+                    translate(locale, "runtime.tool.guard.unknown_tool", tool=raw_tool_name or tool_name or "(empty)", allowed_tools=allowed_preview)
+                    if allowed_preview
+                    else translate(locale, "runtime.tool.guard.rejected_call", tool=raw_tool_name or tool_name or "(empty)")
+                )
+            elif validation.code == "tool_not_allowed":
+                reason = translate(locale, "runtime.tool.guard.outside_boundary", tool=tool_name or raw_tool_name or "(empty)")
             return ToolGuardResult(
                 status="rejected",
                 call_id=str(call.get("id") or ""),
                 raw_tool_name=raw_tool_name,
                 tool_name=tool_name or raw_tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
-                normalized_arguments={},
-                normalization_notes=[],
-                checks=checks,
-                schema_validation={
-                    "status": "missing",
-                    "checked": False,
-                    "summary": translate(locale, "runtime.tool.validation.tool_unavailable"),
-                    "errors": [],
-                },
-                reason=(
-                    translate(
-                        locale,
-                        "runtime.tool.guard.unknown_tool",
-                        tool=raw_tool_name or tool_name or "(empty)",
-                        allowed_tools=allowed_preview,
-                    )
-                    if allowed_preview
-                    else translate(locale, "runtime.tool.guard.rejected_call", tool=raw_tool_name or tool_name or "(empty)")
-                ),
-            )
-
-        tool_schema = dict((self._tool_specs_by_name.get(tool_name) or {}).get("parameters") or {})
-        normalization = normalize_tool_arguments(tool_name, raw_arguments, tool_schema)
-        normalized_arguments = dict(normalization.get("arguments") or {})
-        rewrite_arguments = self._rewrite_attachment_tool_arguments(
-            name=tool_name,
-            arguments=normalized_arguments,
-            attachments=attachments,
-        )
-        normalization_notes = [str(item) for item in list(normalization.get("notes") or []) if str(item or "")]
-        if rewrite_arguments != normalized_arguments:
-            normalization_notes.append("attachment_ref_resolved")
-        normalized_arguments = rewrite_arguments
-
-        tool_allowed = bool(tool_name and tool_name in runnable_tools)
-        checks["policy"] = "passed" if tool_allowed else "failed"
-        checks["permission"] = "passed" if tool_allowed else "failed"
-        schema_validation = validate_tool_arguments(normalized_arguments, tool_schema, locale=locale)
-        schema_status = str(schema_validation.get("status") or "")
-        if schema_status == "valid":
-            checks["schema"] = "normalized" if normalization_notes else "passed"
-        elif schema_status == "missing":
-            checks["schema"] = "missing"
-        else:
-            checks["schema"] = "failed"
-
-        if not tool_allowed:
-            return ToolGuardResult(
-                status="rejected",
-                call_id=str(call.get("id") or ""),
-                raw_tool_name=raw_tool_name,
-                tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
-                normalized_arguments=normalized_arguments,
+                raw_arguments=validation.raw_arguments,
+                normalized_arguments=dict(validation.normalized_arguments or {}),
                 normalization_notes=normalization_notes,
-                checks=checks,
-                schema_validation=schema_validation,
-                reason=translate(
-                    locale,
-                    "runtime.tool.guard.outside_boundary",
-                    tool=tool_name or raw_tool_name or "(empty)",
-                ),
-            )
-
-        if schema_status not in {"valid", "missing"}:
-            return ToolGuardResult(
-                status="rejected",
-                call_id=str(call.get("id") or ""),
-                raw_tool_name=raw_tool_name,
-                tool_name=tool_name,
-                raw_arguments=safe_preview(raw_arguments, limit=4000),
-                normalized_arguments=normalized_arguments,
-                normalization_notes=normalization_notes,
-                checks=checks,
-                schema_validation=schema_validation,
-                reason=str(schema_validation.get("summary") or translate(locale, "runtime.tool.guard.arguments_invalid")),
+                checks=dict(validation.checks or {}),
+                schema_validation=dict(validation.schema_validation or {}),
+                reason=reason or translate(locale, "runtime.tool.guard.arguments_invalid"),
             )
 
         guard_status = "normalized" if normalization_notes or raw_tool_name != tool_name else "accepted"
@@ -2526,11 +2523,11 @@ class VintageProgrammerRuntime:
             call_id=str(call.get("id") or ""),
             raw_tool_name=raw_tool_name,
             tool_name=tool_name,
-            raw_arguments=safe_preview(raw_arguments, limit=4000),
-            normalized_arguments=normalized_arguments,
+            raw_arguments=validation.raw_arguments,
+            normalized_arguments=dict(validation.normalized_arguments or {}),
             normalization_notes=normalization_notes,
-            checks=checks,
-            schema_validation=schema_validation,
+            checks=dict(validation.checks or {}),
+            schema_validation=dict(validation.schema_validation or {}),
             reason=reason,
         )
 
@@ -4569,6 +4566,21 @@ class VintageProgrammerRuntime:
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
+                        type="action.detected",
+                        title=self._trace_label(locale, "action.detected", tool=preview_name or raw_name or "tool"),
+                        detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(preview_name or raw_name, preview_args)),
+                        status="running",
+                        payload={
+                            "model_action": "tool_call",
+                            "tool_name": preview_name or raw_name,
+                            "raw_tool_call": raw_tool_call_payload,
+                            **tool_audit,
+                        },
+                        trace_events=trace_events,
+                    )
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
                         type="tool.call_detected",
                         title=self._trace_label(locale, "tool.call_detected", tool=preview_name or raw_name or "tool"),
                         detail=str(
@@ -4580,6 +4592,20 @@ class VintageProgrammerRuntime:
                             "tool_name": preview_name or raw_name,
                             "raw_tool_call": raw_tool_call_payload,
                             **tool_audit,
+                        },
+                        trace_events=trace_events,
+                    )
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="action.validating",
+                        title=self._trace_label(locale, "action.validating", tool=preview_name or raw_name or "tool"),
+                        detail="RuntimeBoundary",
+                        status="running",
+                        payload={
+                            "model_action": "tool_call",
+                            "tool_name": preview_name or raw_name,
+                            "raw_tool_call": raw_tool_call_payload,
                         },
                         trace_events=trace_events,
                     )
@@ -4596,6 +4622,26 @@ class VintageProgrammerRuntime:
                         notes.append(f"tool_alias:{raw_name}->{name}")
                     if guard_result.normalization_notes:
                         notes.extend(f"tool_guard_normalized:{item}" for item in guard_result.normalization_notes)
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="action.allowed" if guard_result.status in {"accepted", "normalized"} else "action.blocked",
+                        title=self._trace_label(
+                            locale,
+                            "action.allowed" if guard_result.status in {"accepted", "normalized"} else "action.blocked",
+                            tool=name or raw_name or "tool",
+                        ),
+                        detail=self._tool_guard_activity_detail(locale, guard_payload),
+                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
+                        payload={
+                            "model_action": "tool_call",
+                            "tool_name": name or raw_name,
+                            "raw_tool_call": raw_tool_call_payload,
+                            "guard_result": guard_payload,
+                            "normalized_arguments": safe_preview(arguments, limit=4000),
+                        },
+                        trace_events=trace_events,
+                    )
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
@@ -4682,6 +4728,21 @@ class VintageProgrammerRuntime:
                                 "normalized_arguments": safe_preview(arguments, limit=4000),
                                 **tool_audit,
                                 "result_preview": safe_preview(result),
+                            },
+                            trace_events=trace_events,
+                        )
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="observation.returned",
+                            title=self._trace_label(locale, "observation.returned", tool=name or raw_name or "tool"),
+                            detail=str(result.get("summary") or result.get("message") or guard_result.reason or "")[:280],
+                            status="success",
+                            payload={
+                                "model_action": "tool_call",
+                                "tool_name": name or raw_name,
+                                "observation": safe_preview(result, limit=4000),
+                                "guard_result": guard_payload,
                             },
                             trace_events=trace_events,
                         )

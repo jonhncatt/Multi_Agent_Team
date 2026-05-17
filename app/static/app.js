@@ -1577,9 +1577,16 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   const normalized = String(type || "").trim();
   if (!normalized) return fallback;
   if (normalized.startsWith("activity.")) return "thinking";
-  if (normalized === "tool.started" || normalized === "tool.call_detected") return "tooling";
+  if (
+    normalized === "tool.started" ||
+    normalized === "tool.call_detected" ||
+    normalized === "action.detected" ||
+    normalized === "action.validating" ||
+    normalized === "action.allowed" ||
+    normalized === "observation.returned"
+  ) return "tooling";
   if (normalized === "answer.started" || normalized === "answer.finished" || normalized === "answer.done" || normalized === "answer.delta") return "answering";
-  if (normalized === "approval.required" || normalized === "blocked") return "blocked";
+  if (normalized === "approval.required" || normalized === "blocked" || normalized === "action.blocked" || normalized === "loop.safeguard") return "blocked";
   if (normalized === "run.finished") return "completed";
   if (normalized === "run.failed") return "failed";
   if (normalized === "cancelled") return "cancelled";

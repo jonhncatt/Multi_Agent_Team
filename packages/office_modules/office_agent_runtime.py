@@ -133,6 +133,7 @@ from packages.office_modules.router_hints import (
     text_has_any,
 )
 from app.router_signals import RouterSignalExtractor
+from app.action_validator import ActionValidator, build_runtime_boundary, validation_observation
 
 if TYPE_CHECKING:
     from packages.runtime_core.blackboard import Blackboard
@@ -1330,12 +1331,27 @@ class OfficeAgent:
                 str(getattr(meta, "group", "") or "").strip(),
             )
 
-        def build_tool_event(name: str, arguments: dict[str, Any] | None, output_preview: str) -> ToolEvent:
+        def build_tool_event(
+            name: str,
+            arguments: dict[str, Any] | None,
+            output_preview: str,
+            *,
+            status: str = "ok",
+            result_preview: Any = None,
+            guard_result: dict[str, Any] | None = None,
+        ) -> ToolEvent:
             module_id, module_title, module_group = _tool_dispatch_meta(name)
             return ToolEvent(
                 name=str(name or ""),
                 input=arguments,
+                normalized_arguments=dict(arguments or {}),
+                guard_result=dict(guard_result or {}),
                 output_preview=output_preview,
+                result_preview=result_preview,
+                status=str(status or "ok"),
+                summary=self._shorten(str((result_preview or {}).get("summary") or (result_preview or {}).get("message") or output_preview), 320)
+                if isinstance(result_preview, dict)
+                else str(output_preview or "")[:320],
                 module_id=module_id,
                 module_title=module_title,
                 module_group=module_group,
@@ -2376,6 +2392,8 @@ class OfficeAgent:
         ) -> None:
             nonlocal worker_citation_candidates
             result_json = json.dumps(result, ensure_ascii=False)
+            observation_type = str(result.get("type") or "") if isinstance(result, dict) else ""
+            is_validation_observation = observation_type in {"validation_error", "boundary_denied", "loop_safeguard"}
             if synthetic:
                 set_role_activity(
                     "coordinator",
@@ -2411,13 +2429,15 @@ class OfficeAgent:
                     "coordinator",
                     "worker",
                     current="worker",
-                    phase="工具请求",
-                    detail=f"调用 {name}",
+                    phase="边界观察" if is_validation_observation else "工具请求",
+                    detail=f"{name} 被拦截" if is_validation_observation else f"调用 {name}",
                 )
-                add_trace(f"执行工具: {name}")
+                add_trace(f"已将观察结果返回模型: {name}" if is_validation_observation else f"执行工具: {name}")
                 add_debug(
                     stage="llm_to_backend",
-                    title=f"Worker -> Coordinator（请求工具 {name}）",
+                    title=f"Coordinator -> Worker（验证观察 {name}）"
+                    if is_validation_observation
+                    else f"Worker -> Coordinator（请求工具 {name}）",
                     detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
                 )
 
@@ -2426,10 +2446,13 @@ class OfficeAgent:
                     name,
                     arguments,
                     result_json[:1200],
+                    status="ok" if bool(result.get("ok", True)) else "error",
+                    result_preview=result,
+                    guard_result=dict((result.get("validation_result") or {}) if isinstance(result, dict) else {}),
                 )
             )
             add_run_event(
-                "tool_executed",
+                "observation_returned" if is_validation_observation else "tool_executed",
                 tool=name,
                 ok=bool(result.get("ok")) if isinstance(result, dict) else False,
                 synthetic=bool(synthetic),
@@ -2982,13 +3005,54 @@ class OfficeAgent:
             executed_tool_branch_ids: list[str] = []
             branch_failures = 0
             branch_count = 0
+            action_validator = ActionValidator(
+                tool_specs=self.tools.tool_specs,
+                allowed_tools=list(self._lc_tool_map.keys()),
+                boundary=build_runtime_boundary(
+                    config=self.config,
+                    project_root=self.config.workspace_root,
+                    cwd=self.config.workspace_root,
+                ),
+                locale=str(getattr(settings, "locale", "") or "en"),
+                normalize_tool_name=self._resolve_tool_name,
+            )
             for call_index, call in enumerate(tool_calls, start=1):
-                name = self._resolve_tool_name(call.get("name") or "unknown")
-                arguments = call.get("args") or {}
-                if not isinstance(arguments, dict):
-                    arguments = {}
                 call_id = call.get("id") or f"call_{len(tool_events)}"
+                raw_name = str(call.get("name") or "unknown")
+                raw_arguments = call.get("args") if "args" in call else call.get("arguments")
+                validation = action_validator.validate_tool_call(
+                    {
+                        "id": call_id,
+                        "name": raw_name,
+                        "args": raw_arguments,
+                    }
+                )
+                name = validation.tool_name or self._resolve_tool_name(raw_name or "unknown")
+                arguments = dict(validation.normalized_arguments or {})
                 tool_branch_node_id = ""
+                add_trace(f"检测到模型行动: 调用 {name}")
+                add_trace(f"验证行动边界: {name}")
+                if not validation.allowed:
+                    branch_count += 1
+                    result = validation_observation(validation, tool=name)
+                    add_trace(f"行动被边界拦截: {name} ({validation.code}) {validation.message}")
+                    add_run_event(
+                        "action_validation_rejected",
+                        tool=name,
+                        call_id=call_id,
+                        code=validation.code,
+                        message=validation.message,
+                    )
+                    append_tool_result_message(
+                        name=name,
+                        arguments=arguments,
+                        result=result,
+                        call_id=call_id,
+                    )
+                    branch_failures += 1
+                    add_trace(f"已将观察结果返回模型: {name}")
+                    continue
+                add_trace(f"行动通过验证: {name}")
                 if run_state is not None and latest_worker_node_id:
                     tool_branch_node_id = self._role_runtime_controller.begin_task_node(
                         run_state=run_state,

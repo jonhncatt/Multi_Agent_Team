@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.5-blue)
+![Version](https://img.shields.io/badge/version-v2.9.6-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -11,18 +11,18 @@ A local-first AI agent workbench with Codex-style activity tracing, editable age
 
 **Vintage Programmer** is built for people who want observable AI execution, not just a final answer.  
 Instead of hiding the process, it exposes the loop:
-**user request -> model proposal -> harness validation -> tool execution -> observation -> final answer**
+**user request -> model action -> harness validation -> tool execution -> observation -> final answer**
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.5`
+Current stable release: `v2.9.6`
 
 ## Stable Runtime
 
-v2.9.5 is a small bugfix release that keeps the v2.9.0 recovery policy intact.
+v2.9.6 is a runtime behavior alignment release that keeps the v2.9.0 recovery policy intact.
 The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.5 only replaces residual direct `.model_dump()` calls in the stable office/runtime path so meeting-minutes and other office-style requests no longer fail intermittently with `NoneType object has no attribute model_dump` or `dict object has no attribute model_dump`, while keeping stable LangChain runtime behavior unchanged.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.6 treats a concrete tool call as the model action, while the harness validates RuntimeBoundary, schema, and permissions. Invalid tool calls become observations returned to the model for self-correction instead of relying on a mandatory proposal flow.
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ For the stable v2.9.x runtime, Python `3.11` is recommended. Python `3.12` is al
 
 ## Command Safety
 
-`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.5 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
+`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.6 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
 
 ## What it is
 
@@ -112,7 +112,7 @@ It is built for AI agent development, debugging, and demonstrations, not only fo
 ```mermaid
 flowchart LR
     U["User Request"] --> R["Runtime"]
-    R --> M["Model Proposal"]
+    R --> M["Model Action"]
     M --> H["Harness Validation"]
     H -->|accepted| T["Tool Execution"]
     H -->|rejected| E["Tool Error"]

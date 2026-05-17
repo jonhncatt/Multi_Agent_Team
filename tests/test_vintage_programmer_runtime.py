@@ -584,6 +584,11 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
     assert payload["current_turn"]["followup_type"] == "subject_request"
     assert payload["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
     assert payload["active_task_focus"]["goal"] == "帮我写个请假邮件"
+    assert payload["context_priority"]["current_turn"] == "highest"
+    assert payload["context_pack"]["current_turn"]["note"] == "Current user message has highest priority."
+    assert payload["context_pack"]["route_hints"]["priority"] == "weak"
+    assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
+    assert payload["context_pack"]["runtime_boundary"]["tool_policy"] == "use_when_needed"
     assert [item["text"] for item in payload["history_turns"][:2]] == ["turn-4", "turn-5"]
     assert payload["history_turns"][-1]["text"] == "turn-19"
 
