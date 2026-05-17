@@ -40,7 +40,7 @@ class ToolEvent(BaseModel):
     raw_tool_call: dict[str, Any] = Field(default_factory=dict)
     raw_arguments: Any = None
     normalized_arguments: dict[str, Any] = Field(default_factory=dict)
-    guard_result: dict[str, Any] = Field(default_factory=dict)
+    validation_result: dict[str, Any] = Field(default_factory=dict)
     arguments_preview: str = ""
     preview_error: str = ""
     schema_validation: dict[str, Any] = Field(default_factory=dict)
@@ -57,52 +57,6 @@ class ToolEvent(BaseModel):
     module_id: str = ""
     module_title: str = ""
     module_group: str = ""
-
-
-class HighLevelProposal(BaseModel):
-    intent: str = ""
-    task_type: str = "standard"
-    current_goal: str = ""
-    expects_tools: bool = False
-    response_mode: str = "direct_answer"
-    user_stage: str = ""
-    summary: str = ""
-    next_step_hint: str = ""
-    change_summary_requested: bool = False
-    source: str = "model"
-
-
-class ToolGuardResult(BaseModel):
-    status: Literal["accepted", "normalized", "rejected"] = "accepted"
-    call_id: str = ""
-    raw_tool_name: str = ""
-    tool_name: str = ""
-    raw_arguments: Any = None
-    normalized_arguments: dict[str, Any] = Field(default_factory=dict)
-    normalization_notes: list[str] = Field(default_factory=list)
-    checks: dict[str, Any] = Field(default_factory=dict)
-    schema_validation: dict[str, Any] = Field(default_factory=dict)
-    reason: str = ""
-    source: str = "tool_call_guard"
-
-
-class ValidatedNextStep(BaseModel):
-    step_index: int = 0
-    action_type: str = "direct_answer"
-    tool_name: str = ""
-    tool_args: dict[str, Any] = Field(default_factory=dict)
-    tool_names: list[str] = Field(default_factory=list)
-    approved_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-    blocked_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-    accepted: bool = True
-    normalization: str = ""
-    validation: dict[str, Any] = Field(default_factory=dict)
-    reason: str = ""
-    response_mode: str = "direct_answer"
-    task_type: str = "standard"
-    current_goal: str = ""
-    change_summary_requested: bool = False
-    source: str = "harness"
 
 
 class ExecutionTraceEntry(BaseModel):

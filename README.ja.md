@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.6-blue)
+![Version](https://img.shields.io/badge/version-v2.9.7-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.6`
+現在の安定版: `v2.9.7`
 
 ## Stable Runtime
 
-v2.9.6 は runtime 挙動を Codex 風に整理するリリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.7 は runtime アーキテクチャを Codex 風に整理するリリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.6 では具体的な tool call をモデル行動として扱い、harness が RuntimeBoundary、schema、permission を検証します。無効な tool call は observation としてモデルに返され、強制的な proposal flow ではなくモデル自身が修正します。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.7 では古い proposal 実行パイプラインを外し、具体的な tool call をモデル行動として扱い、harness が RuntimeBoundary、schema、permission を検証します。無効な tool call は observation としてモデルに返されます。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.6 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.7 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
 
 ## これは何か
 

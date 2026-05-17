@@ -9,27 +9,9 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from app.config import AppConfig, get_access_roots
-from app.runtime_contract import RuntimeContract
+from app.runtime_boundary import RuntimeBoundary, build_runtime_boundary
 from app.serialization import dump_model
 from app.tool_trace_summary import normalize_tool_arguments, safe_error_message, safe_preview, validate_tool_arguments
-
-
-class RuntimeBoundary(BaseModel):
-    """Logical runtime boundary for deterministic action validation."""
-
-    tool_policy: str = "use_when_needed"
-    workspace_read_allowed: bool = True
-    workspace_write_allowed: bool = True
-    shell_allowed: bool = True
-    network_allowed: bool = False
-    approval_policy: str = "avoid_unnecessary_confirmation"
-    allowed_roots: list[str] = Field(default_factory=list)
-    writable_roots: list[str] = Field(default_factory=list)
-    cwd: str = "."
-    project_root: str = "."
-    max_output_tokens: int = 4096
-    timeout_sec: int = 120
 
 
 class ValidationResult(BaseModel):
@@ -111,39 +93,6 @@ def _resolved_roots(values: list[str]) -> list[Path]:
         seen.add(key)
         roots.append(path)
     return roots
-
-
-def build_runtime_boundary(
-    *,
-    config: AppConfig,
-    runtime_contract: RuntimeContract | None = None,
-    project_root: str | Path | None = None,
-    cwd: str | Path | None = None,
-) -> RuntimeBoundary:
-    contract = runtime_contract or RuntimeContract(
-        network_allowed=bool(getattr(config, "web_allow_all_domains", False) or getattr(config, "web_allowed_domains", [])),
-    )
-    root = Path(project_root or config.workspace_root).expanduser().resolve()
-    try:
-        access_roots = [path.expanduser().resolve() for path in get_access_roots(config)]
-    except Exception:
-        access_roots = [root]
-    if root not in access_roots:
-        access_roots.insert(0, root)
-    writable_roots = list(access_roots) if bool(contract.workspace_write_allowed) else []
-    return RuntimeBoundary(
-        tool_policy=str(contract.tool_policy or "use_when_needed"),
-        workspace_read_allowed=True,
-        workspace_write_allowed=bool(contract.workspace_write_allowed),
-        shell_allowed=bool(contract.shell_allowed),
-        network_allowed=bool(contract.network_allowed),
-        approval_policy=str(contract.approval_policy or "avoid_unnecessary_confirmation"),
-        allowed_roots=[str(path) for path in access_roots],
-        writable_roots=[str(path) for path in writable_roots],
-        cwd=str(cwd or root),
-        project_root=str(root),
-        max_output_tokens=int(getattr(config, "max_output_tokens", 4096) or 4096),
-    )
 
 
 class ActionValidator:

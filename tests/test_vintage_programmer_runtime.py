@@ -18,13 +18,6 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.activity.summary.japanese_cleanup_requested",
     "runtime.activity.summary.rewrite_requested",
     "runtime.activity.summary.direct_answer_path",
-    "runtime.activity.proposal.current_understanding_recorded",
-    "runtime.activity.validation.rejected_current_step",
-    "runtime.activity.validation.tool_call_queued",
-    "runtime.activity.validation.tool_call_queued_named",
-    "runtime.activity.validation.direct_answer",
-    "runtime.activity.validation.user_input_step",
-    "runtime.activity.validation.current_step_accepted",
     "runtime.activity.execution.recorded",
     "runtime.activity.execution.direct_answer_prepared",
     "runtime.activity.execution.tool_output_collected",
@@ -89,22 +82,6 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.replan.failed_actions_intro",
     "runtime.replan.required_next_move",
 )
-
-
-def _proposal_block(**overrides: Any) -> str:
-    payload = {
-        "intent": "transform",
-        "task_type": "rewrite_review",
-        "current_goal": "Answer directly from the provided context.",
-        "expects_tools": False,
-        "response_mode": "direct_answer",
-        "user_stage": "Direct answer generation",
-        "summary": "Answer directly from the provided context.",
-        "next_step_hint": "Prepare the user-facing answer directly.",
-        "change_summary_requested": False,
-    }
-    payload.update(overrides)
-    return f"<model_proposal>{json.dumps(payload, ensure_ascii=False)}</model_proposal>"
 
 
 class _FakeMessage:
@@ -581,16 +558,17 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
 
     assert payload["python_command"] == runtime._config.python_command
     assert payload["python_command_source"] == runtime._config.python_command_source
-    assert payload["current_turn"]["followup_type"] == "subject_request"
-    assert payload["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
-    assert payload["active_task_focus"]["goal"] == "帮我写个请假邮件"
+    assert payload["context_pack"]["current_turn"]["followup_type"] == "subject_request"
+    assert payload["context_pack"]["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
+    assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
     assert payload["context_priority"]["current_turn"] == "highest"
     assert payload["context_pack"]["current_turn"]["note"] == "Current user message has highest priority."
     assert payload["context_pack"]["route_hints"]["priority"] == "weak"
     assert payload["context_pack"]["route_hints"]["active_task_focus"]["goal"] == "帮我写个请假邮件"
     assert payload["context_pack"]["runtime_boundary"]["tool_policy"] == "use_when_needed"
-    assert [item["text"] for item in payload["history_turns"][:2]] == ["turn-4", "turn-5"]
-    assert payload["history_turns"][-1]["text"] == "turn-19"
+    history_turns = payload["legacy_context"]["history_turns"]
+    assert [item["text"] for item in history_turns[:2]] == ["turn-4", "turn-5"]
+    assert history_turns[-1]["text"] == "turn-19"
 
 
 def test_runtime_activity_copy_has_locale_parity() -> None:
@@ -614,16 +592,16 @@ def test_agent_docs_prefer_project_venv_python() -> None:
 def test_runtime_activity_helpers_use_requested_locale() -> None:
     assert VintageProgrammerRuntime._validation_activity_detail(
         "zh-CN",
-        {"accepted": True, "action_type": "direct_answer"},
-    ) == translate("zh-CN", "runtime.activity.validation.direct_answer")
+        {"allowed": True, "tool_name": "read_file"},
+    ) == translate("zh-CN", "runtime.activity.guard.normalized_continued", tool="read_file", suffix="")
     assert VintageProgrammerRuntime._execution_activity_detail("ja-JP", {}) == translate(
         "ja-JP",
         "runtime.activity.execution.recorded",
     )
-    assert VintageProgrammerRuntime._tool_guard_activity_detail(
+    assert VintageProgrammerRuntime._validation_activity_detail(
         "en",
-        {"status": "accepted", "tool_name": "read_file"},
-    ) == translate("en", "runtime.activity.guard.accepted_execution", tool="read_file")
+        {"allowed": False, "tool_name": "read_file", "message": "blocked"},
+    ) == "blocked"
 
 
 def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_path: Path) -> None:
@@ -684,12 +662,8 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _StreamingBackend(
-        [_FakeMessage(content=f"{_proposal_block(summary='Polish the sentence directly.')}streamed answer")],
-        deltas=[
-            _proposal_block(summary="Polish the sentence directly."),
-            "streamed ",
-            "answer",
-        ],
+        [_FakeMessage(content="streamed answer")],
+        deltas=["streamed ", "answer"],
     )
     runtime = VintageProgrammerRuntime(
         config=load_config(),
@@ -732,18 +706,7 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
 def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    backend = _StreamingBackend(
-        [
-            _FakeMessage(
-                content=_proposal_block(summary="Polish the sentence directly.") + "streamed answer",
-            )
-        ],
-        deltas=[
-            _proposal_block(summary="Polish the sentence directly."),
-            "streamed ",
-            "answer",
-        ],
-    )
+    backend = _StreamingBackend([_FakeMessage(content="streamed answer")], deltas=["streamed ", "answer"])
     runtime = VintageProgrammerRuntime(
         config=load_config(),
         kernel_runtime=object(),
@@ -778,25 +741,8 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _StreamingBackend(
-        [
-            _FakeMessage(
-                content=(
-                    _proposal_block(
-                        intent="transform",
-                        task_type="japanese_grammar_review",
-                        current_goal="Polish the Japanese sentence and produce the revised version.",
-                        expects_tools=False,
-                        response_mode="revision_with_change_summary",
-                        user_stage="Japanese grammar cleanup",
-                        summary="Polish the Japanese sentence directly and include a short change summary.",
-                        next_step_hint="Return the revised sentence directly.",
-                        change_summary_requested=True,
-                    )
-                    + "今日は駅へ行きます。"
-                )
-            )
-        ],
-        deltas=[_proposal_block(summary="Polish the Japanese sentence directly and include a short change summary."), "今日は駅へ", "行きます。"],
+        [_FakeMessage(content="今日は駅へ行きます。")],
+        deltas=["今日は駅へ", "行きます。"],
     )
     runtime = VintageProgrammerRuntime(
         config=load_config(),
@@ -826,17 +772,11 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     )
 
     trace_payloads = [dict(item.get("trace") or {}) for item in progress_events if str(item.get("event") or "") == "trace_event"]
-    proposal_done = next(
+    model_action_done = next(
         item
         for item in trace_payloads
         if str(item.get("type") or "") == "activity.done"
-        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "high_level_proposal"
-    )
-    step_validation_done = next(
-        item
-        for item in trace_payloads
-        if str(item.get("type") or "") == "activity.done"
-        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "step_validation"
+        and str(((item.get("payload") or {}).get("activity") or {}).get("stage") or "") == "model_action"
     )
     execution_done = next(
         item
@@ -847,23 +787,19 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     answer_done = next(item for item in trace_payloads if str(item.get("type") or "") == "answer.done")
     revision_summary = dict((answer_done.get("payload") or {}).get("revision_summary") or {})
     summary_items = list(revision_summary.get("items") or [])
-    proposal_payload = dict((proposal_done.get("payload") or {}).get("high_level_proposal") or {})
-    validated_payload = dict((step_validation_done.get("payload") or {}).get("validated_next_step") or {})
+    model_action_payload = dict((model_action_done.get("payload") or {}).get("model_action") or {})
     execution_payload = dict((execution_done.get("payload") or {}).get("execution_trace_entry") or {})
 
-    assert proposal_payload["task_type"] == "japanese_grammar_review"
-    assert proposal_payload["response_mode"] == "revision_with_change_summary"
-    assert validated_payload["action_type"] == "direct_answer"
-    assert validated_payload["accepted"] is True
+    assert model_action_payload["action_type"] == "final_answer"
+    assert model_action_payload["accepted"] is True
     assert revision_summary["task_type"] == "japanese_grammar_review"
     assert summary_items
     assert summary_items[0]["original_excerpt"] == "今日は駅に行きます。"
     assert "今日は駅へ行きます。" in summary_items[0]["result_excerpt"]
-    assert execution_payload["action_type"] == "direct_answer"
-    assert result["high_level_proposal"]["task_type"] == "japanese_grammar_review"
-    assert result["validated_next_step"]["action_type"] == "direct_answer"
+    assert execution_payload["action_type"] == "final_answer"
+    assert result["model_action"]["action_type"] == "final_answer"
     assert result["execution_trace"]
-    assert result["execution_trace"][-1]["action_type"] == "direct_answer"
+    assert result["execution_trace"][-1]["action_type"] == "final_answer"
 
 
 def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
@@ -872,16 +808,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     backend = _FakeBackend(
         [
             _FakeMessage(
-                content=_proposal_block(
-                    intent="research",
-                    task_type="web_research",
-                    current_goal="Use web search to gather the latest evidence before answering.",
-                    expects_tools=True,
-                    response_mode="direct_answer",
-                    user_stage="Gather evidence with web tools",
-                    summary="Use web search before answering.",
-                    next_step_hint="Run web search and revise the next proposal from the result.",
-                ),
+                content="",
                 tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": "latest"}}],
             ),
             _FakeMessage(content="final answer"),
@@ -924,15 +851,14 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)
     assert result["tool_events"][0]["project_root"] == str(tmp_path)
-    assert result["high_level_proposal"]["task_type"] == "web_research"
-    assert result["validated_next_step"]["action_type"] == "direct_answer"
-    assert result["validated_next_step"]["accepted"] is True
+    assert result["model_action"]["action_type"] == "final_answer"
+    assert result["model_action"]["accepted"] is True
     assert result["execution_trace"]
     assert result["execution_trace"][0]["action_type"] == "tool_call"
-    assert result["execution_trace"][-1]["action_type"] == "direct_answer"
+    assert result["execution_trace"][-1]["action_type"] == "final_answer"
     assert result["tool_events"][0]["arguments_preview"] == "query=latest"
     assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
-    assert result["tool_events"][0]["guard_result"]["status"] == "accepted"
+    assert result["tool_events"][0]["validation_result"]["allowed"] is True
     tool_progress = next(item for item in progress_events if str(item.get("event") or "") == "tool")
     assert tool_progress["item"]["raw_arguments"]["query"] == "latest"
     assert tool_progress["item"]["normalized_arguments"]["query"] == "latest"
@@ -946,8 +872,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert "tool.started" in trace_types
     assert "tool.finished" in trace_types
     assert "run.finished" in trace_types
-    assert result["model_proposal"]["task_type"] == result["high_level_proposal"]["task_type"]
-    assert result["validated_plan"]["action_type"] == result["validated_next_step"]["action_type"]
+    assert result["inspector"]["run_state"]["model_action"]["action_type"] == result["model_action"]["action_type"]
 
 
 def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Path) -> None:
@@ -982,8 +907,8 @@ def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Pa
     assert result["tool_events"][0]["raw_tool_call"]["name"] == "web_search"
     assert result["tool_events"][0]["raw_arguments"]["q"] == "PLAN.md"
     assert result["tool_events"][0]["normalized_arguments"]["query"] == "PLAN.md"
-    assert result["tool_events"][0]["guard_result"]["status"] == "normalized"
-    assert "q->query" in result["tool_events"][0]["guard_result"]["normalization_notes"]
+    assert result["tool_events"][0]["validation_result"]["allowed"] is True
+    assert "q->query" in result["tool_events"][0]["validation_result"]["normalization_notes"]
 
 
 def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_to_model(tmp_path: Path) -> None:
@@ -1015,13 +940,13 @@ def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_t
 
     assert result["text"] == "I revised the tool choice after the guard rejection."
     assert backend.tools.calls == []
-    assert result["tool_events"][0]["guard_result"]["status"] == "rejected"
+    assert result["tool_events"][0]["validation_result"]["allowed"] is False
     assert result["tool_events"][0]["status"] == "error"
     assert result["tool_events"][0]["raw_tool_call"]["name"] == "read"
     assert len(backend.invocations) == 2
     followup_messages = backend.invocations[1]["messages"]
     tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc1")
-    assert "\"kind\": \"tool_call_rejected\"" in str(tool_message.content)
+    assert "\"type\": \"validation_error\"" in str(tool_message.content) or "\"type\": \"boundary_denied\"" in str(tool_message.content)
     assert "\"tool\": \"read\"" in str(tool_message.content)
 
 
@@ -1056,16 +981,16 @@ def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_too
     assert result["text"] == "retry succeeded"
     assert backend.tools.calls == [("web_search", {"query": "PLAN.md"})]
     assert len(result["tool_events"]) == 2
-    assert result["tool_events"][0]["guard_result"]["status"] == "rejected"
+    assert result["tool_events"][0]["validation_result"]["allowed"] is False
     assert result["tool_events"][0]["schema_validation"]["status"] == "invalid"
-    assert result["tool_events"][1]["guard_result"]["status"] == "accepted"
+    assert result["tool_events"][1]["validation_result"]["allowed"] is True
 
 
 def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     (tmp_path / "AGENTS.md").write_text("Project contract: model-led turn planning only.", encoding="utf-8")
-    backend = _FakeBackend([_FakeMessage(content=f"{_proposal_block()}done")])
+    backend = _FakeBackend([_FakeMessage(content="done")])
     runtime = VintageProgrammerRuntime(
         config=load_config(),
         kernel_runtime=object(),

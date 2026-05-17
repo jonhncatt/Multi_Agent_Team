@@ -1338,14 +1338,14 @@ class OfficeAgent:
             *,
             status: str = "ok",
             result_preview: Any = None,
-            guard_result: dict[str, Any] | None = None,
+            validation_result: dict[str, Any] | None = None,
         ) -> ToolEvent:
             module_id, module_title, module_group = _tool_dispatch_meta(name)
             return ToolEvent(
                 name=str(name or ""),
                 input=arguments,
                 normalized_arguments=dict(arguments or {}),
-                guard_result=dict(guard_result or {}),
+                validation_result=dict(validation_result or {}),
                 output_preview=output_preview,
                 result_preview=result_preview,
                 status=str(status or "ok"),
@@ -2448,7 +2448,7 @@ class OfficeAgent:
                     result_json[:1200],
                     status="ok" if bool(result.get("ok", True)) else "error",
                     result_preview=result,
-                    guard_result=dict((result.get("validation_result") or {}) if isinstance(result, dict) else {}),
+                    validation_result=dict((result.get("validation_result") or {}) if isinstance(result, dict) else {}),
                 )
             )
             add_run_event(

@@ -43,16 +43,12 @@ REQUIRED_CORE_KEYS = (
     "activity.progress_title",
     "activity.debug_details",
     "activity.raw_events",
-    "activity.high_level_proposal",
-    "activity.validated_next_step",
+    "activity.model_action",
     "activity.execution_trace",
-    "activity.runtime_hint",
-    "activity.model_proposal",
-    "activity.validated_plan",
-    "activity.runtime_guess",
+    "activity.runtime_boundary",
     "activity.raw_tool_call",
     "activity.normalized_arguments",
-    "activity.guard_result",
+    "activity.validation_result",
     "activity.revision_summary",
     "activity.observation_summary",
     "activity.original_excerpt",
@@ -73,11 +69,11 @@ REQUIRED_CORE_KEYS = (
     "activity.progress.execute_command",
     "activity.progress.apply_patch",
     "activity.progress.use_tool",
-    "activity.stage.high_level_proposal",
-    "activity.stage.step_validation",
+    "activity.stage.model_action",
+    "activity.stage.action_validation",
     "activity.stage.execution",
     "activity.stage.request_analysis",
-    "activity.stage.model_proposal",
+    "activity.stage.loop.safeguard",
     "activity.stage.harness_validation",
     "activity.stage.tool_decision",
     "activity.stage.answer_generation",
@@ -236,13 +232,11 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "loop_safeguards",
         "activity.status.request_understood",
         "activity.status.tool_guard_pending",
-        "high_level_proposal",
-        "validated_next_step",
+        "model_action",
         "execution_trace",
         "raw_tool_call",
-        "guard_result",
+        "validation_result",
         "normalized_arguments",
-        "runtime_hint",
         'className="activity-progress"',
         'className="activity-debug-drawer"',
     )
@@ -439,12 +433,13 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.6）")
+    assert manual.startswith("# 内部设计手册（v2.9.7）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
     assert "## 19. v2.9.5 Safe Serialization Fix Notes" in manual
     assert "## 20. v2.9.6 Codex-like Action Runtime Notes" in manual
+    assert "## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual

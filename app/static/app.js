@@ -543,7 +543,7 @@ function normalizePlanChecklist(raw) {
 function normalizeActivityToolItem(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
-  const guardResult = item.guard_result && typeof item.guard_result === "object" ? item.guard_result : {};
+  const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
   const normalizedArguments =
     item.normalized_arguments && typeof item.normalized_arguments === "object" ? item.normalized_arguments : {};
   const schemaValidation =
@@ -551,7 +551,7 @@ function normalizeActivityToolItem(raw) {
   const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
   const resolvedId = String(
     rawToolCall.id
-    || guardResult.call_id
+    || validationResult.call_id
     || item.id
     || item.tool_call_id
     || item.call_id
@@ -566,7 +566,7 @@ function normalizeActivityToolItem(raw) {
     status: String(item.status || "").trim(),
     summary: String(item.summary || "").trim(),
     raw_tool_call: rawToolCall,
-    guard_result: guardResult,
+    validation_result: validationResult,
     normalized_arguments: normalizedArguments,
     schema_validation: schemaValidation,
     diagnostics,
@@ -754,7 +754,7 @@ function activityStageKeyFromTrace(trace, options = {}) {
   const activity = payload.activity && typeof payload.activity === "object" ? payload.activity : {};
   const stage = String(activity.stage || "").trim();
   const allowLegacy = Boolean(options.allowLegacy);
-  const canonicalStages = new Set(["high_level_proposal", "step_validation", "execution"]);
+  const canonicalStages = new Set(["model_action", "action_validation", "execution", "loop.safeguard"]);
   if (canonicalStages.has(stage)) return stage;
   if (allowLegacy && stage) return stage;
   const type = String(item.type || "").trim();
@@ -789,30 +789,31 @@ function buildActivityFlowStages(activity, locale) {
   const labelForTrace = (trace, stageKey) => {
     const entry = trace && typeof trace === "object" ? trace : {};
     const payload = entry.payload && typeof entry.payload === "object" ? entry.payload : {};
-    const validatedNextStep = payload.validated_next_step && typeof payload.validated_next_step === "object"
-      ? payload.validated_next_step
+    const modelAction = payload.model_action && typeof payload.model_action === "object"
+      ? payload.model_action
       : {};
     const executionEntry = payload.execution_trace_entry && typeof payload.execution_trace_entry === "object"
       ? payload.execution_trace_entry
       : {};
-    const guardResult = payload.guard_result && typeof payload.guard_result === "object" ? payload.guard_result : {};
+    const validationResult = payload.validation_result && typeof payload.validation_result === "object" ? payload.validation_result : {};
     const actionType = String(
       executionEntry.action_type
-      || validatedNextStep.action_type
+      || modelAction.action_type
       || "",
     ).trim();
-    const guardStatus = String(guardResult.status || "").trim();
+    const validationAllowed = Boolean(validationResult.allowed);
+    const validationCode = String(validationResult.code || "").trim();
     const type = String(entry.type || "").trim();
     const stageStatus = activityStageStatusFromTrace(entry);
-    if (stageKey === "high_level_proposal") {
+    if (stageKey === "model_action") {
+      if (actionType === "tool_call") return translateUi(locale, "activity.status.tool_guard_pending");
+      if (actionType === "final_answer") return translateUi(locale, "activity.status.direct_answer_no_tool");
       return translateUi(locale, "activity.status.request_understood");
     }
-    if (stageKey === "step_validation") {
-      if (guardStatus === "normalized") return translateUi(locale, "activity.status.tool_guard_normalized");
-      if (guardStatus === "rejected" || stageStatus === "blocked") return translateUi(locale, "activity.status.tool_guard_rejected");
+    if (stageKey === "action_validation") {
+      if (validationAllowed && validationCode === "allowed") return translateUi(locale, "activity.status.tool_guard_normalized");
+      if (!validationAllowed || stageStatus === "blocked") return translateUi(locale, "activity.status.tool_guard_rejected");
       if (actionType === "tool_call") return translateUi(locale, "activity.status.tool_guard_pending");
-      if (actionType === "direct_answer") return translateUi(locale, "activity.status.direct_answer_no_tool");
-      if (actionType === "ask_user") return translateUi(locale, "labels.pending_input");
     }
     if (stageKey === "execution") {
       if (type === "answer.delta") return translateUi(locale, "activity.status.answer_streaming");
@@ -932,10 +933,10 @@ function shortenActivityTarget(value, limit = 52) {
 function toolCallIdentityFromSource(source, fallback = "") {
   const item = source && typeof source === "object" ? source : {};
   const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
-  const guardResult = item.guard_result && typeof item.guard_result === "object" ? item.guard_result : {};
+  const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
   const resolved = String(
     rawToolCall.id
-    || guardResult.call_id
+    || validationResult.call_id
     || item.tool_call_id
     || item.call_id
     || item.id
@@ -1030,7 +1031,7 @@ function buildToolProgressGroups(activity) {
         raw_arguments: sourceItem.raw_arguments,
         normalized_arguments:
           sourceItem.normalized_arguments && typeof sourceItem.normalized_arguments === "object" ? sourceItem.normalized_arguments : {},
-        guard_result: sourceItem.guard_result && typeof sourceItem.guard_result === "object" ? sourceItem.guard_result : {},
+        validation_result: sourceItem.validation_result && typeof sourceItem.validation_result === "object" ? sourceItem.validation_result : {},
         schema_validation:
           sourceItem.schema_validation && typeof sourceItem.schema_validation === "object" ? sourceItem.schema_validation : {},
         arguments_preview: String(sourceItem.arguments_preview || "").trim(),
@@ -1057,8 +1058,8 @@ function buildToolProgressGroups(activity) {
     if (!Object.keys(group.normalized_arguments).length && payload.normalized_arguments && typeof payload.normalized_arguments === "object") {
       group.normalized_arguments = payload.normalized_arguments;
     }
-    if (!Object.keys(group.guard_result).length && payload.guard_result && typeof payload.guard_result === "object") {
-      group.guard_result = payload.guard_result;
+    if (!Object.keys(group.validation_result).length && payload.validation_result && typeof payload.validation_result === "object") {
+      group.validation_result = payload.validation_result;
     }
     if (!Object.keys(group.schema_validation).length && payload.schema_validation && typeof payload.schema_validation === "object") {
       group.schema_validation = payload.schema_validation;
@@ -1073,9 +1074,8 @@ function buildToolProgressGroups(activity) {
       group.status = "failed";
     } else if (type === "tool.finished" && group.status !== "failed") {
       group.status = "completed";
-    } else if (type === "tool.guard") {
-      const guardStatus = String(((payload.guard_result || {}).status) || "").trim();
-      if (guardStatus === "rejected") {
+    } else if (type === "action.blocked") {
+      if (payload.validation_result && payload.validation_result.allowed === false) {
         group.status = "blocked";
       } else if (group.status !== "completed" && group.status !== "failed") {
         group.status = "running";
@@ -1093,7 +1093,7 @@ function buildToolProgressGroups(activity) {
       group.raw_arguments = toolItem.raw_arguments;
     }
     if (!Object.keys(group.normalized_arguments).length) group.normalized_arguments = toolItem.normalized_arguments || {};
-    if (!Object.keys(group.guard_result).length) group.guard_result = toolItem.guard_result || {};
+    if (!Object.keys(group.validation_result).length) group.validation_result = toolItem.validation_result || {};
     if (!Object.keys(group.schema_validation).length) group.schema_validation = toolItem.schema_validation || {};
     if (!group.arguments_preview) group.arguments_preview = String(toolItem.arguments_preview || "").trim();
     if (!hasDisplayValue(group.result_preview) && Object.prototype.hasOwnProperty.call(toolItem, "result_preview")) {
@@ -1218,9 +1218,7 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
     trace_events: item.trace_events,
     tool_groups: buildToolProgressGroups(item),
     tool_items: item.tool_items,
-    high_level_proposal: latestActivityPayloadValue(item, ["high_level_proposal", "model_proposal"]),
-    validated_next_step: latestActivityPayloadValue(item, ["validated_next_step", "validated_plan"]),
-    runtime_hint: latestActivityPayloadValue(item, ["runtime_hint", "runtime_guess"]),
+    model_action: latestActivityPayloadValue(item, ["model_action"]),
     execution_trace: latestExecutionTrace(item),
   };
 }
@@ -1363,10 +1361,12 @@ function runtimeToolTimelineForStats({ hasLiveRunState, liveToolTimeline, inspec
 function normalizeRuntimeToolOutcome(item) {
   const entry = item && typeof item === "object" ? item : {};
   const rawStatus = String(entry.status || "").trim().toLowerCase();
-  const guardStatus = String(((entry.guard_result || {}).status) || "").trim().toLowerCase();
+  const validation = entry.validation_result && typeof entry.validation_result === "object" ? entry.validation_result : {};
+  const validationAllowed = validation.allowed === true;
   const resultPreview = entry.result_preview && typeof entry.result_preview === "object" ? entry.result_preview : {};
   const errorKind = String((((resultPreview.error || {}).kind) || "")).trim().toLowerCase();
-  if (guardStatus === "rejected" || errorKind === "tool_call_rejected") return "rejected";
+  if (validation.allowed === false || errorKind === "tool_call_rejected") return "rejected";
+  if (validationAllowed && rawStatus === "blocked") return "rejected";
   if (["ok", "completed", "success"].includes(rawStatus)) return "succeeded";
   if (["error", "failed", "blocked"].includes(rawStatus)) return "failed";
   return "unknown";
@@ -1550,13 +1550,13 @@ function compactFailureText(value, limit = 240) {
 
 function toolFailureSummary(item, locale) {
   const result = item.result_preview && typeof item.result_preview === "object" ? item.result_preview : {};
-  const guardResult = item.guard_result && typeof item.guard_result === "object" ? item.guard_result : {};
+  const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
   const returncode = result.returncode ?? item.returncode ?? null;
   const errorText = compactFailureText(
     result.error
     || item.error
     || item.preview_error
-    || guardResult.reason
+    || validationResult.message
     || item.summary,
   );
   const stderrText = compactFailureText(result.stderr || item.stderr || "");
@@ -4312,7 +4312,7 @@ function App() {
       renderDetailBlock(t("activity.raw_tool_call"), item.raw_tool_call),
       renderDetailBlock(t("activity.raw_arguments"), rawArguments),
       renderDetailBlock(t("activity.normalized_arguments"), normalizedArguments),
-      renderDetailBlock(t("activity.guard_result"), item.guard_result),
+      renderDetailBlock(t("activity.validation_result"), item.validation_result),
       renderDetailBlock(t("activity.arguments_preview"), item.arguments_preview),
       renderDetailBlock(t("activity.preview_error"), item.preview_error),
       renderDetailBlock(
@@ -4436,9 +4436,7 @@ function App() {
   const renderActivityPayload = (trace, options = {}) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
     const rawOnly = Boolean(options.rawOnly);
-    const highLevelProposal = payload.high_level_proposal || payload.model_proposal;
-    const validatedNextStep = payload.validated_next_step || payload.validated_plan;
-    const runtimeHint = payload.runtime_hint || payload.runtime_guess;
+    const modelAction = payload.model_action;
     const executionTrace = Array.isArray(payload.execution_trace)
       ? payload.execution_trace
       : (payload.execution_trace_entry ? [payload.execution_trace_entry] : []);
@@ -4447,12 +4445,11 @@ function App() {
           renderToolAuditDetails(payload),
         ].filter(Boolean)
       : [
-          renderPlanDetails(t("activity.high_level_proposal"), highLevelProposal),
-          renderPlanDetails(t("activity.validated_next_step"), validatedNextStep),
+          renderPlanDetails(t("activity.model_action"), modelAction),
           renderExecutionTraceDetails(executionTrace),
           renderRevisionSummaryDetails(payload.revision_summary),
           renderToolAuditDetails(payload),
-          renderPlanDetails(t("activity.runtime_hint"), runtimeHint),
+          renderPlanDetails(t("activity.runtime_boundary"), payload.runtime_boundary),
         ].filter(Boolean);
     const payloadText = stringifyCompactJson(payload);
     const hasPayloadText = Boolean(payloadText && payloadText !== "{}");
@@ -4543,11 +4540,9 @@ function App() {
             plan: item.plan,
           })
         : null,
-      renderPlanDetails(t("activity.high_level_proposal"), projection.high_level_proposal),
-      renderPlanDetails(t("activity.validated_next_step"), projection.validated_next_step),
+      renderPlanDetails(t("activity.model_action"), projection.model_action),
       renderExecutionTraceDetails(projection.execution_trace),
       renderRevisionSummaryDetails(projection.revision_summary),
-      renderPlanDetails(t("activity.runtime_hint"), projection.runtime_hint),
     ].filter(Boolean);
     const toolDebugDetails = toolItems.length
       ? html`

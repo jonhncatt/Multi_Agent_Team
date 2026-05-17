@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.action_validator import ActionValidator, RuntimeBoundary, ValidationResult, validation_observation
+from app.action_validator import ActionValidator, ValidationResult, validation_observation
+from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
 
 

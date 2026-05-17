@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.6）
+# 内部设计手册（v2.9.7）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -685,6 +685,18 @@ The new `ContextPack` separates:
 - `runtime_boundary`: logical validation boundary, not a real OS/container sandbox
 
 v2.9.6 does not add a semantic ToolUseAdvisor, meeting-minutes no-tool rule, translation no-tool rule, or another LLM judge.
+
+## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes
+
+v2.9.7 is a cleanup release on the same stable LangChain runtime line.
+It removes the remaining proposal/validated-next-step/guard layering from the execution path.
+
+- The only model actions are `final_answer` and `tool_call`.
+- `RuntimeBoundary` is built once per turn and reused by both `ContextPack` and `ActionValidator`.
+- `ValidationResult` is the single validation result object for concrete tool calls.
+- Invalid tool calls become observations; valid tool calls execute and their results are returned as observations.
+- UI activity focuses on model action, boundary validation, tool execution, observation, and final answer.
+- No semantic ToolUseAdvisor, inline-content challenge, meeting-minutes exception, or secondary LLM judge is introduced.
 
 ## 21. v2.9.0 Stability Decision
 

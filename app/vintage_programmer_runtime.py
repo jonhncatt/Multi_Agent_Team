@@ -12,21 +12,19 @@ import time
 from typing import Any, Callable
 import uuid
 
-from app.action_validator import ActionValidator, build_runtime_boundary
+from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.config import AppConfig
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.models import (
     ChatSettings,
     ExecutionTraceEntry,
-    HighLevelProposal,
     ProgressSignal,
     ToolEvent,
-    ToolGuardResult,
-    ValidatedNextStep,
 )
 from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
+from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.serialization import dump_model
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
@@ -169,8 +167,6 @@ _JAPANESE_REQUEST_HINTS = (
 )
 
 _JAPANESE_KANA_RE = re.compile(r"[ぁ-んァ-ヶ]")
-_MODEL_PROPOSAL_OPEN_TAG = "<model_proposal>"
-_MODEL_PROPOSAL_CLOSE_TAG = "</model_proposal>"
 
 _TOOL_NAME_ALIASES = {
     "analyze_image": "image_read",
@@ -765,17 +761,22 @@ class VintageProgrammerRuntime:
         )
 
     @staticmethod
-    def _build_model_proposal_prompt() -> str:
+    def _build_model_led_action_prompt() -> str:
         return (
             "[model_led_action_protocol]\n"
             "- Decide the next action yourself: answer directly or call one appropriate tool.\n"
-            "- The concrete tool call is the action proposal. Do not wait for a separate proposal ceremony before calling a tool.\n"
+            "- A concrete tool call is the action.\n"
+            "- Do not wait for or emit a separate proposal before acting.\n"
             "- Tool calls are validated by the harness for schema, permissions, runtime boundaries, and safety.\n"
             "- If a tool call is rejected, read the validation observation and choose a corrected next action.\n"
             "- Do not repeat the same invalid tool call.\n"
             "- If current context is sufficient, answer directly.\n"
             "- Use update_plan only when you need to track a multi-step execution task and can provide a valid plan payload.\n"
-            "- Optional debug note only: you may emit <model_proposal>{...json...}</model_proposal>, but it is not required, not authoritative, and must not block tool execution.\n"
+            "[context_priority]\n"
+            "- The current user message has highest priority.\n"
+            "- Task memory helps maintain long-running work.\n"
+            "- route_hints are weak historical hints, not final task decisions.\n"
+            "- runtime_boundary describes what the harness will enforce.\n"
         )
 
     @staticmethod
@@ -820,7 +821,7 @@ class VintageProgrammerRuntime:
             [
                 cls._build_runtime_contract_prompt(runtime_contract=contract),
                 cls._build_anti_permission_gate_prompt(),
-                cls._build_model_proposal_prompt(),
+                cls._build_model_led_action_prompt(),
                 cls._build_full_auto_tool_policy_prompt(
                     locale=locale,
                     runtime_contract=contract,
@@ -830,7 +831,13 @@ class VintageProgrammerRuntime:
             ]
         )
 
-    def _build_human_payload(self, *, message: str, context: dict[str, Any]) -> str:
+    def _build_human_payload(
+        self,
+        *,
+        message: str,
+        context: dict[str, Any],
+        runtime_boundary: RuntimeBoundary | None = None,
+    ) -> str:
         history_turns = list(context.get("history_turns") or [])
         recent_history = [
             {
@@ -869,20 +876,17 @@ class VintageProgrammerRuntime:
         compaction_status = dict(context.get("compaction_status") or {})
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
-        allowed_roots = [str(path) for path in list(getattr(self._config, "allowed_roots", []) or []) if str(path or "").strip()]
-        if project_root and project_root not in allowed_roots:
-            allowed_roots.insert(0, project_root)
-        runtime_boundary = {
-            "tool_policy": "use_when_needed",
-            "workspace_read_allowed": True,
-            "workspace_write_allowed": True,
-            "shell_allowed": True,
-            "network_allowed": bool(getattr(self._config, "web_allow_all_domains", False) or getattr(self._config, "web_allowed_domains", [])),
-            "approval_policy": "avoid_unnecessary_confirmation",
-            "allowed_roots": allowed_roots[:12],
-            "writable_roots": [project_root] if project_root else [],
-            "note": "RuntimeBoundary is a logical validation boundary, not an OS/container sandbox.",
-        }
+        boundary_payload = dump_model(
+            runtime_boundary
+            or build_turn_runtime_boundary(
+                config=self._config,
+                project_root=project_root,
+                cwd=str(project_payload.get("cwd") or project_root or ""),
+                attachments=attachments,
+            )
+        )
+        if isinstance(boundary_payload, dict):
+            boundary_payload["note"] = "RuntimeBoundary is a logical validation boundary, not an OS/container sandbox."
         context_pack = {
             "current_turn": {
                 "user_message": str(message or "").strip(),
@@ -910,7 +914,7 @@ class VintageProgrammerRuntime:
                 "priority": "weak",
                 "note": "These are weak historical hints. Do not treat them as final task decisions.",
             },
-            "runtime_boundary": runtime_boundary,
+            "runtime_boundary": boundary_payload,
         }
         payload = {
             "session_id": str(context.get("session_id") or ""),
@@ -924,32 +928,29 @@ class VintageProgrammerRuntime:
                 "runtime_boundary": "harness_validation",
             },
             "context_pack": context_pack,
-            "summary": str(context.get("summary") or "")[:4000],
-            "thread_memory": {
-                "summary": str(thread_memory.get("summary") or "")[:4000],
+            "legacy_context": {
+                "summary": str(context.get("summary") or "")[:4000],
+                "thread_memory": {
+                    "summary": str(thread_memory.get("summary") or "")[:4000],
+                    "recent_tasks": recent_tasks[:8],
+                    "recent_cwds": list(thread_memory.get("recent_cwds") or [])[:6],
+                    "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+                },
+                "recent_user_messages": list(context.get("recent_user_messages") or [])[:8],
                 "recent_tasks": recent_tasks[:8],
-                "recent_cwds": list(thread_memory.get("recent_cwds") or [])[:6],
-                "recent_files": list(thread_memory.get("recent_files") or [])[:8],
+                "artifact_memory_preview": artifact_memory_preview[:8],
+                "compaction_status": {
+                    "generation": int(compaction_status.get("generation") or 0),
+                    "retained_turn_count": int(compaction_status.get("retained_turn_count") or 0),
+                    "last_compacted_at": str(compaction_status.get("last_compacted_at") or ""),
+                    "last_compaction_phase": str(compaction_status.get("last_compaction_phase") or ""),
+                    "replacement_history_mode": bool(compaction_status.get("replacement_history_mode")),
+                },
+                "recalled_context": dict(context.get("recalled_context") or {}),
+                "user_input_response": dict(context.get("user_input_response") or {}),
+                "attachment_evidence_pack": list(context.get("attachment_evidence_pack") or [])[:8],
+                "history_turns": recent_history,
             },
-            "current_turn": current_turn,
-            "route_state": route_state,
-            "active_task_focus": active_task_focus,
-            "current_task_focus": current_task_focus,
-            "recent_user_messages": list(context.get("recent_user_messages") or [])[:8],
-            "recent_tasks": recent_tasks[:8],
-            "artifact_memory_preview": artifact_memory_preview[:8],
-            "compaction_status": {
-                "generation": int(compaction_status.get("generation") or 0),
-                "retained_turn_count": int(compaction_status.get("retained_turn_count") or 0),
-                "last_compacted_at": str(compaction_status.get("last_compacted_at") or ""),
-                "last_compaction_phase": str(compaction_status.get("last_compaction_phase") or ""),
-                "replacement_history_mode": bool(compaction_status.get("replacement_history_mode")),
-            },
-            "recalled_context": dict(context.get("recalled_context") or {}),
-            "user_input_response": dict(context.get("user_input_response") or {}),
-            "attachments": attachments,
-            "attachment_evidence_pack": list(context.get("attachment_evidence_pack") or [])[:8],
-            "history_turns": recent_history,
         }
         return "\n".join(
             [
@@ -1277,9 +1278,6 @@ class VintageProgrammerRuntime:
             "calls": [],
             "started_at": 0.0,
             "finished_at": 0.0,
-            "proposal_filter_buffer": "",
-            "proposal_filter_done": False,
-            "proposal_text": "",
         }
 
     @staticmethod
@@ -1308,34 +1306,7 @@ class VintageProgrammerRuntime:
 
     @staticmethod
     def _consume_stream_delta_for_display(state: dict[str, Any], delta: str) -> str:
-        if state.get("proposal_filter_done"):
-            return delta
-        buffer = f"{str(state.get('proposal_filter_buffer') or '')}{str(delta or '')}"
-        state["proposal_filter_buffer"] = buffer
-        stripped = buffer.lstrip()
-        if stripped and not stripped.startswith("<"):
-            state["proposal_filter_done"] = True
-            state["proposal_filter_buffer"] = ""
-            return buffer
-        if stripped.startswith(_MODEL_PROPOSAL_OPEN_TAG):
-            open_idx = buffer.find(_MODEL_PROPOSAL_OPEN_TAG)
-            close_idx = buffer.find(_MODEL_PROPOSAL_CLOSE_TAG, open_idx + len(_MODEL_PROPOSAL_OPEN_TAG))
-            if close_idx < 0:
-                if len(buffer) > 4096:
-                    state["proposal_filter_done"] = True
-                    state["proposal_filter_buffer"] = ""
-                    return buffer
-                return ""
-            state["proposal_text"] = buffer[open_idx + len(_MODEL_PROPOSAL_OPEN_TAG) : close_idx].strip()
-            tail = buffer[close_idx + len(_MODEL_PROPOSAL_CLOSE_TAG):]
-            state["proposal_filter_done"] = True
-            state["proposal_filter_buffer"] = ""
-            return tail
-        if len(stripped) >= 32 or "\n" in stripped:
-            state["proposal_filter_done"] = True
-            state["proposal_filter_buffer"] = ""
-            return buffer
-        return ""
+        return str(delta or "")
 
     def _make_model_stream_observer(
         self,
@@ -1633,7 +1604,7 @@ class VintageProgrammerRuntime:
         result: dict[str, Any],
         locale: str,
         raw_tool_call: dict[str, Any] | None = None,
-        guard_result: dict[str, Any] | None = None,
+        validation_result: dict[str, Any] | None = None,
         raw_arguments: Any = None,
     ) -> ToolEvent:
         result_json = json.dumps(result, ensure_ascii=False)
@@ -1658,13 +1629,14 @@ class VintageProgrammerRuntime:
         descriptor = dict(self._tool_descriptors_by_name.get(name) or {})
         group = str(descriptor.get("group") or "")
         source = str(descriptor.get("source") or "")
+        validation_payload = dict(validation_result or {})
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
             raw_tool_call=safe_preview(raw_call_payload, limit=4000) if raw_call_payload else {},
             raw_arguments=safe_preview(raw_argument_payload, limit=4000),
             normalized_arguments=safe_preview(arguments, limit=4000) if isinstance(arguments, dict) else {},
-            guard_result=dict(guard_result or {}),
+            validation_result=validation_payload,
             arguments_preview=str(tool_audit.get("arguments_preview") or ""),
             preview_error=str(tool_audit.get("preview_error") or ""),
             schema_validation=dict(tool_audit.get("schema_validation") or {}),
@@ -1700,7 +1672,7 @@ class VintageProgrammerRuntime:
         name: str,
         arguments: dict[str, Any],
         raw_tool_call: dict[str, Any] | None,
-        guard_result: dict[str, Any] | None,
+        validation_result: dict[str, Any] | None,
         raw_arguments: Any = None,
         run_id: str,
         locale: str,
@@ -1731,7 +1703,7 @@ class VintageProgrammerRuntime:
                 "tool_name": name,
                 "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
                 "normalized_arguments": safe_preview(arguments, limit=4000),
-                "guard_result": dict(guard_result or {}),
+                "validation_result": dict(validation_result or {}),
                 **tool_audit,
             },
             trace_events=trace_events,
@@ -1748,7 +1720,7 @@ class VintageProgrammerRuntime:
             result=result,
             locale=locale,
             raw_tool_call=raw_tool_call,
-            guard_result=guard_result,
+            validation_result=validation_result,
             raw_arguments=raw_arguments,
         )
         tool_events.append(event)
@@ -1766,7 +1738,7 @@ class VintageProgrammerRuntime:
                 "tool_name": name,
                 "raw_tool_call": safe_preview(raw_tool_call, limit=4000),
                 "normalized_arguments": safe_preview(arguments, limit=4000),
-                "guard_result": dict(guard_result or {}),
+                "validation_result": dict(validation_result or {}),
                 **tool_audit,
                 "result_preview": safe_preview(result),
             },
@@ -2064,313 +2036,8 @@ class VintageProgrammerRuntime:
             return ""
         return str(safe_preview(" / ".join(candidates[:2]), limit=220) or "")
 
-    @staticmethod
-    def _high_level_proposal_schema() -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string"},
-                "task_type": {"type": "string"},
-                "current_goal": {"type": "string"},
-                "expects_tools": {"type": "boolean"},
-                "response_mode": {"type": "string"},
-                "user_stage": {"type": "string"},
-                "summary": {"type": "string"},
-                "next_step_hint": {"type": "string"},
-                "change_summary_requested": {"type": "boolean"},
-                # Backward-compatible fields from the earlier turn-level proposal schema.
-                "output_mode": {"type": "string"},
-                "tool_decision": {"type": "string"},
-                "needs_tools": {"type": "boolean"},
-                "response_kind": {"type": "string"},
-                "proposed_tools": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "intent",
-                "task_type",
-                "current_goal",
-                "expects_tools",
-                "response_mode",
-                "user_stage",
-                "summary",
-                "next_step_hint",
-                "change_summary_requested",
-            ],
-            "additionalProperties": False,
-        }
-
-    @staticmethod
-    def _string_list(raw_value: Any, *, limit: int = 8) -> list[str]:
-        values = list(raw_value or []) if isinstance(raw_value, (list, tuple)) else []
-        normalized: list[str] = []
-        for item in values:
-            text = str(item or "").strip()
-            if text and text not in normalized:
-                normalized.append(text)
-            if len(normalized) >= limit:
-                break
-        return normalized
-
-    def _build_runtime_guess(
-        self,
-        *,
-        prompt_message: str,
-        route_state: dict[str, Any],
-        locale: str,
-        current_turn: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        route = dict(route_state or {})
-        turn = dict(current_turn or {})
-        task_checkpoint = dict(route.get("task_checkpoint") or route.get("current_task_focus") or {})
-        route_task_type = str(route.get("task_type") or "").strip().lower()
-        route_primary_intent = str(route.get("primary_intent") or "").strip().lower()
-        execution_policy = str(route.get("execution_policy") or "").strip().lower()
-        current_turn_followup_type = str(turn.get("followup_type") or "").strip().lower()
-        current_goal_hint = str(turn.get("goal") or "").strip() or str(task_checkpoint.get("goal") or route.get("goal") or "").strip()
-        next_action_hint = str(task_checkpoint.get("next_action") or "").strip()
-        revision_requested = self._looks_like_revision_request(prompt_message, route_state=route)
-        japanese_review = self._looks_like_japanese_review_request(prompt_message, route_state=route)
-        if current_turn_followup_type == "subject_request":
-            task_type = "followup_transform"
-        elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
-            task_type = "simple_understanding"
-        elif japanese_review:
-            task_type = "japanese_grammar_review"
-        elif revision_requested and route_task_type in {"", "standard", "simple_understanding", "simple_qa", "followup_transform"}:
-            task_type = "rewrite_review"
-        else:
-            task_type = route_task_type or "standard"
-        if current_turn_followup_type == "subject_request":
-            primary_intent = "transform"
-        elif current_turn_followup_type in {"recent_user_message_recall", "recent_user_messages_list"}:
-            primary_intent = "understanding"
-        elif route_primary_intent:
-            primary_intent = route_primary_intent
-        elif revision_requested:
-            primary_intent = "transform"
-        elif task_type in {"simple_understanding", "simple_qa", "understanding"}:
-            primary_intent = "understanding"
-        else:
-            primary_intent = "standard"
-        output_mode = "revision_with_change_summary" if revision_requested else "direct_answer"
-        summary_reason = (
-            translate(locale, "runtime.activity.summary.japanese_cleanup_requested")
-            if japanese_review
-            else (
-                translate(locale, "runtime.activity.summary.rewrite_requested")
-                if revision_requested
-                else translate(locale, "runtime.activity.summary.direct_answer_path")
-            )
-        )
-        return {
-            "task_type": task_type,
-            "route_task_type": route_task_type or "",
-            "primary_intent": primary_intent,
-            "execution_policy": execution_policy,
-            "output_mode": output_mode,
-            "prefer_change_summary": revision_requested,
-            "summary_reason": summary_reason,
-            "current_goal_hint": current_goal_hint,
-            "next_action_hint": next_action_hint,
-            "current_turn_followup_type": current_turn_followup_type,
-            "current_turn_goal_source": str(turn.get("source") or "").strip(),
-            "source": "runtime_guess",
-        }
-
-    @staticmethod
-    def _extract_model_proposal_block(text: str) -> tuple[dict[str, Any], str, dict[str, Any]]:
-        raw = str(text or "")
-        open_idx = raw.find(_MODEL_PROPOSAL_OPEN_TAG)
-        if open_idx < 0:
-            return (
-                {},
-                raw.strip(),
-                {
-                    "status": "missing",
-                    "checked": False,
-                    "summary": "proposal block missing",
-                    "errors": [],
-                },
-            )
-        close_idx = raw.find(_MODEL_PROPOSAL_CLOSE_TAG, open_idx + len(_MODEL_PROPOSAL_OPEN_TAG))
-        if close_idx < 0:
-            return (
-                {},
-                raw.replace(_MODEL_PROPOSAL_OPEN_TAG, "").strip(),
-                {
-                    "status": "invalid",
-                    "checked": False,
-                    "summary": "proposal block not closed",
-                    "errors": ["proposal block not closed"],
-                },
-            )
-        proposal_text = raw[open_idx + len(_MODEL_PROPOSAL_OPEN_TAG) : close_idx].strip()
-        cleaned_text = f"{raw[:open_idx]}{raw[close_idx + len(_MODEL_PROPOSAL_CLOSE_TAG):]}".strip()
-        try:
-            payload = json.loads(proposal_text) if proposal_text else {}
-        except Exception as exc:
-            message = safe_error_message(exc)
-            return (
-                {},
-                cleaned_text,
-                {
-                    "status": "invalid",
-                    "checked": False,
-                    "summary": message,
-                    "errors": [message],
-                },
-            )
-        if not isinstance(payload, dict):
-            return (
-                {},
-                cleaned_text,
-                {
-                    "status": "invalid",
-                    "checked": False,
-                    "summary": "proposal block must decode to a JSON object",
-                    "errors": ["proposal block must decode to a JSON object"],
-                },
-            )
-        return (
-            dict(payload),
-            cleaned_text,
-            {
-                "status": "parsed",
-                "checked": True,
-                "summary": "proposal block parsed",
-                "errors": [],
-            },
-        )
-
-    def _fallback_high_level_proposal(
-        self,
-        *,
-        prompt_message: str,
-        runtime_hint: dict[str, Any],
-        previous_proposal: dict[str, Any] | None,
-        tool_calls: list[dict[str, Any]],
-        expects_tools: bool,
-    ) -> HighLevelProposal:
-        previous = dict(previous_proposal or {})
-        has_tool_calls = bool(tool_calls)
-        needs_tools = bool(has_tool_calls or expects_tools)
-        response_mode = str(previous.get("response_mode") or runtime_hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
-        hinted_goal = str(runtime_hint.get("current_goal_hint") or "").strip()
-        current_goal = hinted_goal or str(previous.get("current_goal") or "").strip() or safe_preview(prompt_message, limit=280) or (
-            "Gather the required tool evidence before answering." if needs_tools else "Answer the user directly."
-        )
-        summary = str(previous.get("summary") or runtime_hint.get("summary_reason") or "").strip() or (
-            "Use the next observed tool result to continue." if needs_tools else "Answer directly from the provided context."
-        )
-        next_step_hint = str(runtime_hint.get("next_action_hint") or previous.get("next_step_hint") or "").strip() or (
-            "Use the returned tool result to revise the next proposal."
-            if needs_tools
-            else "Prepare the user-facing answer directly."
-        )
-        return HighLevelProposal(
-            intent=str(previous.get("intent") or runtime_hint.get("primary_intent") or "standard"),
-            task_type=str(previous.get("task_type") or runtime_hint.get("task_type") or "standard"),
-            current_goal=current_goal,
-            expects_tools=needs_tools,
-            response_mode=response_mode,
-            user_stage=str(previous.get("user_stage") or "").strip()
-            or ("Direct answer generation" if not needs_tools else "Gather evidence for the current step"),
-            summary=summary,
-            next_step_hint=next_step_hint,
-            change_summary_requested=bool(previous.get("change_summary_requested"))
-            or bool(runtime_hint.get("prefer_change_summary")),
-            source="proposal_carry_forward" if previous else "runtime_fallback",
-        )
-
-    def _normalize_high_level_proposal(
-        self,
-        *,
-        raw_proposal: dict[str, Any],
-        prompt_message: str,
-        runtime_hint: dict[str, Any],
-        previous_proposal: dict[str, Any] | None,
-        tool_calls: list[dict[str, Any]],
-        expects_tools: bool,
-    ) -> tuple[HighLevelProposal, dict[str, Any]]:
-        if not raw_proposal:
-            fallback = self._fallback_high_level_proposal(
-                prompt_message=prompt_message,
-                runtime_hint=runtime_hint,
-                previous_proposal=previous_proposal,
-                tool_calls=tool_calls,
-                expects_tools=expects_tools,
-            )
-            return fallback, {
-                "status": "missing",
-                "checked": False,
-                "summary": "proposal block missing",
-                "errors": [],
-            }
-        validation = validate_tool_arguments(raw_proposal, self._high_level_proposal_schema())
-        fallback = self._fallback_high_level_proposal(
-            prompt_message=prompt_message,
-            runtime_hint=runtime_hint,
-            previous_proposal=previous_proposal,
-            tool_calls=tool_calls,
-            expects_tools=expects_tools,
-        )
-        legacy_tool_decision = str(raw_proposal.get("tool_decision") or "").strip().lower()
-        expects_tools_value = raw_proposal.get("expects_tools")
-        if expects_tools_value is None:
-            expects_tools_value = raw_proposal.get("needs_tools")
-        proposal_expects_tools = bool(expects_tools_value)
-        if tool_calls:
-            proposal_expects_tools = True
-        elif not proposal_expects_tools and legacy_tool_decision in {"tool_loop", "tool_if_needed", "use_tools", "tools", "needs_tools"}:
-            proposal_expects_tools = True
-        elif not proposal_expects_tools and expects_tools:
-            proposal_expects_tools = True
-        response_mode = str(
-            raw_proposal.get("response_mode")
-            or raw_proposal.get("output_mode")
-            or fallback.response_mode
-        ).strip() or fallback.response_mode
-        current_goal = str(raw_proposal.get("current_goal") or "").strip() or fallback.current_goal
-        summary = str(raw_proposal.get("summary") or "").strip() or fallback.summary
-        next_step_hint = str(raw_proposal.get("next_step_hint") or "").strip()
-        if not next_step_hint:
-            next_step_hint = (
-                "Use the current tool result to decide the next move."
-                if proposal_expects_tools
-                else "Prepare the user-facing answer directly."
-            )
-        return (
-            HighLevelProposal(
-                intent=str(raw_proposal.get("intent") or fallback.intent).strip() or fallback.intent,
-                task_type=str(raw_proposal.get("task_type") or fallback.task_type).strip() or fallback.task_type,
-                current_goal=current_goal,
-                expects_tools=proposal_expects_tools,
-                response_mode=response_mode,
-                user_stage=str(raw_proposal.get("user_stage") or fallback.user_stage).strip() or fallback.user_stage,
-                summary=summary,
-                next_step_hint=next_step_hint,
-                change_summary_requested=bool(raw_proposal.get("change_summary_requested"))
-                or response_mode == "revision_with_change_summary",
-                source="model",
-            ),
-            validation,
-        )
-
-    def _validate_next_step(
-        self,
-        *,
-        proposal: HighLevelProposal,
-        proposal_validation: dict[str, Any],
-        runtime_hint: dict[str, Any],
-        runnable_tools: list[str],
-        tool_calls: list[dict[str, Any]],
-        ai_text: str,
-        expects_tools: bool,
-        observed_tool_output: bool,
-        step_index: int,
-    ) -> ValidatedNextStep:
+    def _normalize_model_tool_calls(self, tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         proposed_tool_calls: list[dict[str, Any]] = []
-        normalized_tool_names: list[str] = []
         normalization_notes: list[str] = []
         for call in tool_calls[:8]:
             if not isinstance(call, dict):
@@ -2386,234 +2053,96 @@ class VintageProgrammerRuntime:
                 "args": dict(arguments),
                 "raw_args": raw_arguments,
             }
-            if name:
-                normalized_tool_names.append(name)
             if raw_name and raw_name != name:
                 normalization_notes.append(f"{raw_name}->{name}")
             proposed_tool_calls.append(normalized_call)
+        return proposed_tool_calls, normalization_notes
 
-        action_type = "inspect_context"
-        accepted = True
-        reason = ""
+    def _resolve_model_action(
+        self,
+        *,
+        ai_text: str,
+        tool_calls: list[dict[str, Any]],
+        step_index: int,
+    ) -> dict[str, Any]:
+        proposed_tool_calls, normalization_notes = self._normalize_model_tool_calls(tool_calls)
         if proposed_tool_calls:
             action_type = "tool_call"
-            accepted = True
             reason = (
-                f"Model proposed {len(proposed_tool_calls)} tool call(s); guard will validate each call before execution."
+                f"Model requested {len(proposed_tool_calls)} tool call(s); ActionValidator will validate each call before execution."
                 if len(proposed_tool_calls) > 1
-                else f"Model proposed {proposed_tool_calls[0].get('name') or proposed_tool_calls[0].get('raw_name') or 'a tool'}; guard will validate it before execution."
+                else f"Model requested {proposed_tool_calls[0].get('name') or proposed_tool_calls[0].get('raw_name') or 'a tool'}; ActionValidator will validate it before execution."
             )
-        elif ai_text:
-            action_type = "direct_answer"
-            accepted = True
+        elif str(ai_text or "").strip():
+            action_type = "final_answer"
             reason = "Answer directly from the available context."
         else:
-            action_type = "inspect_context"
-            accepted = False
+            action_type = "empty"
             reason = "The model did not emit an executable current step."
-
-        validation = {
-            "proposal_schema": str(proposal_validation.get("status") or "missing"),
-            "permission": "allowed" if accepted else "needs_revision",
-            "mode": "compatible",
-            "expects_tools": bool(expects_tools or proposal.expects_tools),
-            "proposed_tool_count": len(proposed_tool_calls),
-            "guarded_at_execution": bool(proposed_tool_calls),
-            "tool_count": len(proposed_tool_calls),
+        tool_names = [
+            str(item.get("name") or item.get("raw_name") or "")
+            for item in proposed_tool_calls
+            if str(item.get("name") or item.get("raw_name") or "").strip()
+        ]
+        return {
+            "step_index": max(1, int(step_index)),
+            "action_type": action_type,
+            "tool_name": tool_names[0] if tool_names else "",
+            "tool_names": tool_names,
+            "tool_calls": proposed_tool_calls,
+            "accepted": action_type != "empty",
+            "reason": reason,
+            "normalization_notes": normalization_notes,
+            "text_chars": len(str(ai_text or "")),
+            "source": "model_action",
         }
-        normalization = " · ".join(normalization_notes[:6])
-        return ValidatedNextStep(
-            step_index=max(1, int(step_index)),
-            action_type=action_type,
-            tool_name=(
-                str(proposed_tool_calls[0].get("name") or proposed_tool_calls[0].get("raw_name") or "")
-                if proposed_tool_calls
-                else ""
-            ),
-            tool_args=(
-                dict(proposed_tool_calls[0].get("args") or {})
-                if proposed_tool_calls
-                else {}
-            ),
-            tool_names=normalized_tool_names,
-            approved_tool_calls=proposed_tool_calls,
-            blocked_tool_calls=[],
-            accepted=accepted,
-            normalization=normalization,
-            validation=validation,
-            reason=reason,
-            response_mode=proposal.response_mode or str(runtime_hint.get("output_mode") or "direct_answer"),
-            task_type=proposal.task_type or str(runtime_hint.get("task_type") or "standard"),
-            current_goal=proposal.current_goal,
-            change_summary_requested=bool(proposal.change_summary_requested),
-            source="harness",
-        )
 
-    def _guard_tool_call(
+    def _validate_model_tool_call(
         self,
         *,
         call: dict[str, Any],
         runnable_tools: list[str],
-        attachments: list[dict[str, Any]],
         locale: str,
-    ) -> ToolGuardResult:
+        runtime_boundary: RuntimeBoundary,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> ValidationResult:
         raw_tool_name = str(call.get("raw_name") or call.get("name") or "").strip()
-        boundary = build_runtime_boundary(config=self._config, project_root=self._config.workspace_root)
-        attachment_roots: list[str] = []
-        for item in list(attachments or []):
-            if not isinstance(item, dict):
-                continue
-            raw_path = str(item.get("path") or "").strip()
-            if not raw_path:
-                continue
-            try:
-                attachment_roots.append(str(Path(raw_path).expanduser().resolve().parent))
-            except Exception:
-                continue
-        if attachment_roots:
-            boundary.allowed_roots = [*boundary.allowed_roots, *attachment_roots]
         validator = ActionValidator(
             tool_specs=self._tool_specs,
             allowed_tools=runnable_tools,
-            boundary=boundary,
+            boundary=runtime_boundary,
             locale=locale,
             normalize_tool_name=self._normalize_tool_name,
             argument_rewriter=lambda tool_name, arguments: self._rewrite_attachment_tool_arguments(
                 name=tool_name,
                 arguments=arguments,
-                attachments=attachments,
+                attachments=list(attachments or []),
             ),
         )
         validation = validator.validate_tool_call(call)
         tool_name = validation.tool_name or self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
-        normalization_notes = list(validation.normalization_notes or [])
         if raw_tool_name and raw_tool_name != tool_name:
-            normalization_notes.append(f"{raw_tool_name}->{tool_name}")
-        if not validation.allowed:
-            reason = str(validation.message or "")
-            if validation.code == "unknown_tool":
-                allowed_preview = ", ".join(runnable_tools[:8])
-                reason = (
-                    translate(locale, "runtime.tool.guard.unknown_tool", tool=raw_tool_name or tool_name or "(empty)", allowed_tools=allowed_preview)
-                    if allowed_preview
-                    else translate(locale, "runtime.tool.guard.rejected_call", tool=raw_tool_name or tool_name or "(empty)")
-                )
-            elif validation.code == "tool_not_allowed":
-                reason = translate(locale, "runtime.tool.guard.outside_boundary", tool=tool_name or raw_tool_name or "(empty)")
-            return ToolGuardResult(
-                status="rejected",
-                call_id=str(call.get("id") or ""),
-                raw_tool_name=raw_tool_name,
-                tool_name=tool_name or raw_tool_name,
-                raw_arguments=validation.raw_arguments,
-                normalized_arguments=dict(validation.normalized_arguments or {}),
-                normalization_notes=normalization_notes,
-                checks=dict(validation.checks or {}),
-                schema_validation=dict(validation.schema_validation or {}),
-                reason=reason or translate(locale, "runtime.tool.guard.arguments_invalid"),
+            validation.normalization_notes = [*list(validation.normalization_notes or []), f"{raw_tool_name}->{tool_name}"]
+        if validation.code == "unknown_tool":
+            allowed_preview = ", ".join(runnable_tools[:8])
+            validation.message = (
+                translate(locale, "runtime.tool.guard.unknown_tool", tool=raw_tool_name or tool_name or "(empty)", allowed_tools=allowed_preview)
+                if allowed_preview
+                else translate(locale, "runtime.tool.guard.rejected_call", tool=raw_tool_name or tool_name or "(empty)")
             )
-
-        guard_status = "normalized" if normalization_notes or raw_tool_name != tool_name else "accepted"
-        if guard_status == "normalized":
-            reason = translate(locale, "runtime.activity.guard.normalized_approved", tool=tool_name or "tool")
-        else:
-            reason = translate(locale, "runtime.activity.guard.accepted", tool=tool_name or "tool")
-        return ToolGuardResult(
-            status=guard_status,
-            call_id=str(call.get("id") or ""),
-            raw_tool_name=raw_tool_name,
-            tool_name=tool_name,
-            raw_arguments=validation.raw_arguments,
-            normalized_arguments=dict(validation.normalized_arguments or {}),
-            normalization_notes=normalization_notes,
-            checks=dict(validation.checks or {}),
-            schema_validation=dict(validation.schema_validation or {}),
-            reason=reason,
-        )
+        elif validation.code == "tool_not_allowed":
+            validation.message = translate(locale, "runtime.tool.guard.outside_boundary", tool=tool_name or raw_tool_name or "(empty)")
+        return validation
 
     @staticmethod
-    def _tool_guard_activity_detail(locale: str, guard_result: dict[str, Any]) -> str:
-        guard = dict(guard_result or {})
-        status = str(guard.get("status") or "").strip()
-        tool_name = str(guard.get("tool_name") or guard.get("raw_tool_name") or "tool").strip() or "tool"
-        if status == "normalized":
-            notes = [str(item) for item in list(guard.get("normalization_notes") or []) if str(item or "")]
+    def _validation_activity_detail(locale: str, validation_result: dict[str, Any]) -> str:
+        validation = dict(validation_result or {})
+        tool_name = str(validation.get("tool_name") or validation.get("raw_tool_name") or "tool").strip() or "tool"
+        if bool(validation.get("allowed")):
+            notes = [str(item) for item in list(validation.get("normalization_notes") or []) if str(item or "")]
             suffix = f" ({', '.join(notes[:3])})" if notes else ""
             return translate(locale, "runtime.activity.guard.normalized_continued", tool=tool_name, suffix=suffix)
-        if status == "rejected":
-            return str(guard.get("reason") or translate(locale, "runtime.activity.guard.rejected", tool=tool_name))[:280]
-        return translate(locale, "runtime.activity.guard.accepted_execution", tool=tool_name)
-
-    @staticmethod
-    def _structured_tool_guard_rejection_result(
-        *,
-        locale: str,
-        guard_result: ToolGuardResult,
-        runnable_tools: list[str],
-    ) -> dict[str, Any]:
-        guard_payload = dump_model(guard_result)
-        tool_name = str(guard_result.tool_name or guard_result.raw_tool_name or "")
-        allowed_tools = [str(item) for item in list(runnable_tools or []) if str(item or "").strip()]
-        message = str(guard_result.reason or "").strip()
-        if not message:
-            message = translate(locale, "runtime.tool.guard.rejected_call", tool=tool_name or "(empty)")
-        if str((guard_result.checks or {}).get("tool_exists") or "") == "failed":
-            allowed_preview = ", ".join(allowed_tools[:8])
-            if allowed_preview:
-                message = translate(
-                    locale,
-                    "runtime.tool.guard.unknown_tool",
-                    tool=tool_name or "(empty)",
-                    allowed_tools=allowed_preview,
-                )
-        elif str((guard_result.checks or {}).get("policy") or "") == "failed":
-            message = translate(locale, "runtime.tool.guard.policy_blocked", tool=tool_name or "(empty)")
-        elif str((guard_result.checks or {}).get("schema") or "") == "failed":
-            schema_summary = str((guard_result.schema_validation or {}).get("summary") or "").strip()
-            if schema_summary:
-                message = translate(
-                    locale,
-                    "runtime.tool.guard.schema_invalid",
-                    tool=tool_name or "(empty)",
-                    summary=schema_summary,
-                )
-        return {
-            "ok": False,
-            "error": {
-                "kind": "tool_call_rejected",
-                "tool": tool_name,
-                "message": message,
-                "guard_status": str(guard_result.status or ""),
-            },
-            "guard_result": guard_payload,
-            "allowed_tools": allowed_tools,
-            "summary": message,
-        }
-
-    @staticmethod
-    def _proposal_activity_detail(locale: str, proposal: dict[str, Any]) -> str:
-        summary = str((proposal or {}).get("summary") or "").strip()
-        if summary:
-            return summary
-        return str((proposal or {}).get("current_goal") or "").strip() or translate(locale, "runtime.activity.proposal.current_understanding_recorded")
-
-    @staticmethod
-    def _validation_activity_detail(locale: str, validated_next_step: dict[str, Any]) -> str:
-        step = dict(validated_next_step or {})
-        action_type = str(step.get("action_type") or "").strip()
-        accepted = bool(step.get("accepted"))
-        if not accepted:
-            return str(step.get("reason") or translate(locale, "runtime.activity.validation.rejected_current_step"))[:280]
-        if action_type == "tool_call":
-            tool_names = VintageProgrammerRuntime._string_list(step.get("tool_names"), limit=4)
-            if tool_names:
-                return translate(locale, "runtime.activity.validation.tool_call_queued_named", tools=", ".join(tool_names))
-            return translate(locale, "runtime.activity.validation.tool_call_queued")
-        if action_type == "direct_answer":
-            return translate(locale, "runtime.activity.validation.direct_answer")
-        if action_type == "ask_user":
-            return translate(locale, "runtime.activity.validation.user_input_step")
-        return translate(locale, "runtime.activity.validation.current_step_accepted")
+        return str(validation.get("message") or translate(locale, "runtime.activity.guard.rejected", tool=tool_name))[:280]
 
     @staticmethod
     def _execution_activity_detail(locale: str, entry: dict[str, Any]) -> str:
@@ -2624,30 +2153,18 @@ class VintageProgrammerRuntime:
         return str(item.get("result_summary") or "").strip() or translate(locale, "runtime.activity.execution.recorded")
 
     @staticmethod
-    def _activity_context_from_step(
-        proposal: dict[str, Any],
-        validated_next_step: dict[str, Any],
-        runtime_hint: dict[str, Any],
-    ) -> dict[str, Any]:
-        step = dict(validated_next_step or {})
-        hint = dict(runtime_hint or {})
-        item = dict(proposal or {})
-        response_mode = str(step.get("response_mode") or item.get("response_mode") or hint.get("output_mode") or "direct_answer").strip() or "direct_answer"
+    def _activity_context_from_action(model_action: dict[str, Any]) -> dict[str, Any]:
+        action = dict(model_action or {})
+        action_type = str(action.get("action_type") or "empty").strip() or "empty"
+        response_mode = "tool_call" if action_type == "tool_call" else ("final_answer" if action_type == "final_answer" else "empty")
         return {
-            "task_type": str(step.get("task_type") or item.get("task_type") or hint.get("task_type") or "standard").strip() or "standard",
-            "route_task_type": str(hint.get("route_task_type") or ""),
-            "primary_intent": str(item.get("intent") or hint.get("primary_intent") or "standard").strip() or "standard",
-            "execution_policy": str(hint.get("execution_policy") or ""),
+            "task_type": "model_action",
+            "primary_intent": action_type,
             "output_mode": response_mode,
-            "prefer_change_summary": bool(step.get("change_summary_requested"))
-            or response_mode == "revision_with_change_summary"
-            or bool(hint.get("prefer_change_summary")),
-            "summary_reason": str(item.get("summary") or hint.get("summary_reason") or "").strip(),
             "response_mode": response_mode,
-            "current_goal": str(item.get("current_goal") or ""),
-            "action_type": str(step.get("action_type") or ""),
-            "user_stage": str(item.get("user_stage") or ""),
-            "source": str(item.get("source") or hint.get("source") or ""),
+            "action_type": action_type,
+            "tool_names": list(action.get("tool_names") or []),
+            "source": "model_action",
         }
 
     @staticmethod
@@ -3114,63 +2631,24 @@ class VintageProgrammerRuntime:
         lines.append(translate(locale, "runtime.replan.required_next_move"))
         return "\n".join(item for item in lines if item).strip()
 
-    def _resolve_step_state(
+    def _resolve_model_step(
         self,
         *,
-        prompt_message: str,
         ai_text: str,
-        runtime_hint: dict[str, Any],
-        previous_proposal: dict[str, Any] | None,
-        runnable_tools: list[str],
         tool_calls: list[dict[str, Any]],
-        expects_tools: bool,
-        observed_tool_output: bool,
         step_index: int,
     ) -> dict[str, Any]:
-        raw_proposal, cleaned_text, block_meta = self._extract_model_proposal_block(ai_text)
-        proposal, proposal_validation = self._normalize_high_level_proposal(
-            raw_proposal=raw_proposal,
-            prompt_message=prompt_message,
-            runtime_hint=runtime_hint,
-            previous_proposal=previous_proposal,
-            tool_calls=tool_calls,
-            expects_tools=expects_tools,
-        )
-        validated_next_step = self._validate_next_step(
-            proposal=proposal,
-            proposal_validation=proposal_validation,
-            runtime_hint=runtime_hint,
-            runnable_tools=runnable_tools,
-            tool_calls=tool_calls,
+        cleaned_text = str(ai_text or "").strip()
+        model_action = self._resolve_model_action(
             ai_text=cleaned_text,
-            expects_tools=expects_tools,
-            observed_tool_output=observed_tool_output,
+            tool_calls=tool_calls,
             step_index=step_index,
         )
         return {
             "clean_text": cleaned_text,
-            "high_level_proposal": dump_model(proposal),
-            "validated_next_step": dump_model(validated_next_step),
-            "proposal_diagnostics": {
-                **dict(block_meta or {}),
-                "schema_validation": dict(proposal_validation or {}),
-            },
-            "runtime_hint": dict(runtime_hint or {}),
-            "activity_context": self._activity_context_from_step(
-                dump_model(proposal),
-                dump_model(validated_next_step),
-                runtime_hint,
-            ),
+            "model_action": dict(model_action),
+            "activity_context": self._activity_context_from_action(model_action),
         }
-
-    def _strip_model_proposal_from_message(self, ai_msg: Any) -> dict[str, Any]:
-        raw_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
-        _proposal, cleaned_text, block_meta = self._extract_model_proposal_block(raw_text)
-        try:
-            ai_msg.content = cleaned_text
-        except Exception:
-            pass
-        return dict(block_meta or {})
 
     def _build_revision_summary(
         self,
@@ -3593,8 +3071,10 @@ class VintageProgrammerRuntime:
             name="image_read",
             arguments=arguments,
             raw_tool_call={"id": "auto_image_read_rescue", "name": "image_read", "arguments": safe_preview(arguments, limit=4000)},
-            guard_result={
-                "status": "accepted",
+            validation_result={
+                "allowed": True,
+                "code": "allowed",
+                "message": "Auto image rescue executed image_read directly.",
                 "tool_name": "image_read",
                 "raw_tool_name": "image_read",
                 "normalized_arguments": safe_preview(arguments, limit=4000),
@@ -3606,7 +3086,7 @@ class VintageProgrammerRuntime:
                     "policy": "passed",
                     "permission": "passed",
                 },
-                "reason": "Auto image rescue executed image_read directly.",
+                "severity": "info",
             },
             raw_arguments=arguments,
             run_id=run_id,
@@ -3884,17 +3364,13 @@ class VintageProgrammerRuntime:
         live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
         current_turn_context = dict(context_payload.get("current_turn") or {})
+        revision_requested = self._looks_like_revision_request(prompt_message, route_state=route_state_input)
+        japanese_review_requested = self._looks_like_japanese_review_request(prompt_message, route_state=route_state_input)
         active_task_focus = self._normalize_task_checkpoint(
             context_payload.get("active_task_focus")
             or context_payload.get("current_task_focus")
             or route_state_input.get("current_task_focus")
             or route_state_input.get("task_checkpoint")
-        )
-        runtime_hint = self._build_runtime_guess(
-            prompt_message=prompt_message,
-            route_state=route_state_input,
-            locale=locale,
-            current_turn=current_turn_context,
         )
         current_task_focus = self._initial_task_checkpoint(
             route_state=route_state_input,
@@ -3902,12 +3378,19 @@ class VintageProgrammerRuntime:
             cwd=effective_cwd,
             goal=str(current_turn_context.get("goal") or _truncate_goal(prompt_message)),
             attachments=attachment_metas,
-            prefer_goal=True,
+            prefer_goal=bool(str(current_turn_context.get("goal") or "").strip()),
         )
         current_goal = str(current_task_focus.get("goal") or current_turn_context.get("goal") or _truncate_goal(prompt_message))
         current_task_focus["goal"] = current_goal
         if current_task_focus.get("cwd"):
             effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
+        turn_runtime_boundary = build_turn_runtime_boundary(
+            config=self._config,
+            runtime_contract=runtime_contract,
+            project_root=project_root or self._config.workspace_root,
+            cwd=effective_cwd or project_root or self._config.workspace_root,
+            attachments=attachment_metas,
+        )
         write_authorization_state = self._write_authorization_state(
             prompt_message,
             collaboration_mode=collaboration_mode,
@@ -3935,7 +3418,15 @@ class VintageProgrammerRuntime:
         ]
         if attachment_guidance:
             messages.append(self._backend._SystemMessage(content=attachment_guidance))
-        messages.append(self._backend._HumanMessage(content=self._build_human_payload(message=prompt_message, context=context_payload)))
+        messages.append(
+            self._backend._HumanMessage(
+                content=self._build_human_payload(
+                    message=prompt_message,
+                    context=context_payload,
+                    runtime_boundary=turn_runtime_boundary,
+                )
+            )
+        )
 
         usage_total = self._backend._empty_usage()
         notes: list[str] = [
@@ -3963,14 +3454,19 @@ class VintageProgrammerRuntime:
         turn_status = "running"
         forced_text = ""
         last_image_read_result: dict[str, Any] | None = None
-        high_level_proposal: dict[str, Any] = {}
-        validated_next_step: dict[str, Any] = {}
+        model_action: dict[str, Any] = {}
         execution_trace: list[dict[str, Any]] = []
-        proposal_diagnostics: dict[str, Any] = {}
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
-        turn_activity_context = dict(runtime_hint)
+        turn_activity_context = {
+            "task_type": "model_action",
+            "primary_intent": "pending",
+            "output_mode": "pending",
+            "response_mode": "pending",
+            "action_type": "pending",
+            "source": "model_action",
+        }
         activity_sequence = 0
         current_step_index = 0
 
@@ -4016,8 +3512,8 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "expects_tools": expects_tools,
                 "collaboration_mode": collaboration_mode,
-                "runtime_hint": dict(runtime_hint),
-                "runtime_guess": dict(runtime_hint),
+                "context_pack": "current_turn/task_memory/route_hints/runtime_boundary",
+                "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
         )
@@ -4046,89 +3542,53 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "expects_tools": expects_tools,
                 "collaboration_mode": collaboration_mode,
-                "runtime_hint": dict(runtime_hint),
-                "runtime_guess": dict(runtime_hint),
+                "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
         )
         emit_runtime_activity(
             "activity.started",
-            "high_level_proposal",
-            "Requesting the current objective and next move from the model.",
+            "model_action",
+            "Waiting for the model to choose the next action.",
             payload={
                 "tool_count": len(runnable_tools),
                 "expects_tools": expects_tools,
                 "inline_document": inline_document,
-                "runtime_hint": dict(runtime_hint),
-                "runtime_guess": dict(runtime_hint),
+                "runtime_boundary": dump_model(turn_runtime_boundary),
             },
         )
 
         def refresh_model_step(ai_msg: Any, *, event_type: str = "activity.done") -> None:
             nonlocal current_step_index
-            nonlocal high_level_proposal
-            nonlocal validated_next_step
-            nonlocal proposal_diagnostics
+            nonlocal model_action
             nonlocal turn_activity_context
-            nonlocal current_goal
-            nonlocal current_task_focus
             nonlocal notes
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
             current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
-            step_state = self._resolve_step_state(
-                prompt_message=prompt_message,
+            step_state = self._resolve_model_step(
                 ai_text=raw_ai_text,
-                runtime_hint=runtime_hint,
-                previous_proposal=high_level_proposal,
-                runnable_tools=runnable_tools,
                 tool_calls=current_tool_calls,
-                expects_tools=expects_tools,
-                observed_tool_output=any(item.status == "ok" for item in tool_events),
                 step_index=current_step_index,
             )
             cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
-            high_level_proposal = dict(step_state.get("high_level_proposal") or {})
-            validated_next_step = dict(step_state.get("validated_next_step") or {})
-            proposal_diagnostics = dict(step_state.get("proposal_diagnostics") or {})
-            turn_activity_context = dict(step_state.get("activity_context") or runtime_hint)
-            proposal_goal = str(high_level_proposal.get("current_goal") or "").strip()
-            if proposal_goal:
-                current_goal = proposal_goal
-                current_task_focus["goal"] = current_goal
+            model_action = dict(step_state.get("model_action") or {})
+            turn_activity_context = dict(step_state.get("activity_context") or self._activity_context_from_action(model_action))
             try:
                 ai_msg.content = cleaned_text
             except Exception:
                 pass
-            if cleaned_text != raw_ai_text:
-                notes.append("model_turn_proposal_stripped_from_answer_text")
-            if str(((proposal_diagnostics.get("schema_validation") or {}).get("status")) or "") not in {"", "valid"}:
-                notes.append("high_level_proposal_schema_adjusted")
+            if model_action.get("normalization_notes"):
+                notes.extend(f"model_action_normalized:{item}" for item in list(model_action.get("normalization_notes") or []))
             emit_runtime_activity(
                 event_type,
-                "high_level_proposal",
-                self._proposal_activity_detail(locale, high_level_proposal),
-                status="success",
+                "model_action",
+                str(model_action.get("reason") or "Model action resolved."),
+                status="success" if bool(model_action.get("accepted")) else "blocked",
                 payload={
-                    "high_level_proposal": dict(high_level_proposal),
-                    "runtime_hint": dict(runtime_hint),
-                    "runtime_guess": dict(runtime_hint),
-                    "proposal_diagnostics": dict(proposal_diagnostics),
+                    "model_action": dict(model_action),
                     "revision_index": int(current_step_index),
-                },
-            )
-            emit_runtime_activity(
-                event_type,
-                "step_validation",
-                self._validation_activity_detail(locale, validated_next_step),
-                status="success" if bool(validated_next_step.get("accepted")) else "blocked",
-                payload={
-                    "validated_next_step": dict(validated_next_step),
-                    "high_level_proposal": dict(high_level_proposal),
-                    "runtime_hint": dict(runtime_hint),
-                    "runtime_guess": dict(runtime_hint),
-                    "proposal_diagnostics": dict(proposal_diagnostics),
-                    "revision_index": int(current_step_index),
+                    "runtime_boundary": dump_model(turn_runtime_boundary),
                 },
             )
 
@@ -4251,9 +3711,9 @@ class VintageProgrammerRuntime:
                     break
 
                 ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
-                tool_calls = list(validated_next_step.get("approved_tool_calls") or [])
-                step_action_type = str(validated_next_step.get("action_type") or "").strip() or "inspect_context"
-                step_accepted = bool(validated_next_step.get("accepted"))
+                tool_calls = list(model_action.get("tool_calls") or [])
+                step_action_type = str(model_action.get("action_type") or "").strip() or "empty"
+                step_accepted = bool(model_action.get("accepted"))
                 if not tool_calls:
                     invalid_permission_gate = (
                         bool(invalid_final_guard.get("enabled"))
@@ -4476,9 +3936,9 @@ class VintageProgrammerRuntime:
                     if self._looks_like_plan_only_response(ai_text):
                         no_tool_response_kind = "plan_only"
                     if not step_accepted:
-                        blocked_reason = blocked_reason or "validated_next_step_rejected"
+                        blocked_reason = blocked_reason or "model_action_empty"
                     execution_entry = ExecutionTraceEntry(
-                        step_index=int(validated_next_step.get("step_index") or current_step_index),
+                        step_index=int(model_action.get("step_index") or current_step_index),
                         action_type=step_action_type,
                         status="completed" if step_accepted else "blocked",
                         title=translate(locale, "runtime.activity.execution_title.direct_answer"),
@@ -4486,11 +3946,11 @@ class VintageProgrammerRuntime:
                         observation_summary=(
                             translate(locale, "runtime.activity.execution.direct_answer_prepared")
                             if step_accepted
-                            else str(validated_next_step.get("reason") or translate(locale, "runtime.activity.validation.rejected_current_step"))
+                            else str(model_action.get("reason") or "Model produced no executable action.")
                         ),
-                        detail=str(validated_next_step.get("reason") or ""),
+                        detail=str(model_action.get("reason") or ""),
                         payload={
-                            "validated_next_step": dict(validated_next_step),
+                            "model_action": dict(model_action),
                             "response_kind": no_tool_response_kind,
                         },
                     )
@@ -4503,10 +3963,7 @@ class VintageProgrammerRuntime:
                         payload={
                             "execution_trace": list(execution_trace),
                             "execution_trace_entry": dump_model(execution_entry),
-                            "validated_next_step": dict(validated_next_step),
-                            "high_level_proposal": dict(high_level_proposal),
-                            "runtime_hint": dict(runtime_hint),
-                            "runtime_guess": dict(runtime_hint),
+                            "model_action": dict(model_action),
                             **turn_activity_context,
                         },
                     )
@@ -4529,10 +3986,7 @@ class VintageProgrammerRuntime:
                     payload={
                         "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
                         "tool_count": len(tool_calls[:8]),
-                        "validated_next_step": dict(validated_next_step),
-                        "high_level_proposal": dict(high_level_proposal),
-                        "runtime_hint": dict(runtime_hint),
-                        "runtime_guess": dict(runtime_hint),
+                        "model_action": dict(model_action),
                         **turn_activity_context,
                     },
                 )
@@ -4609,77 +4063,62 @@ class VintageProgrammerRuntime:
                         },
                         trace_events=trace_events,
                     )
-                    guard_result = self._guard_tool_call(
+                    validation = self._validate_model_tool_call(
                         call=call,
                         runnable_tools=runnable_tools,
-                        attachments=attachment_metas,
                         locale=locale,
+                        runtime_boundary=turn_runtime_boundary,
+                        attachments=attachment_metas,
                     )
-                    guard_payload = dump_model(guard_result)
-                    name = str(guard_result.tool_name or preview_name or raw_name).strip()
-                    arguments = dict(guard_result.normalized_arguments or {})
+                    validation_payload = dump_model(validation)
+                    name = str(validation.tool_name or preview_name or raw_name).strip()
+                    arguments = dict(validation.normalized_arguments or {})
                     if raw_name and raw_name != name:
                         notes.append(f"tool_alias:{raw_name}->{name}")
-                    if guard_result.normalization_notes:
-                        notes.extend(f"tool_guard_normalized:{item}" for item in guard_result.normalization_notes)
+                    if validation.normalization_notes:
+                        notes.extend(f"tool_validation_normalized:{item}" for item in validation.normalization_notes)
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
-                        type="action.allowed" if guard_result.status in {"accepted", "normalized"} else "action.blocked",
+                        type="action.allowed" if validation.allowed else "action.blocked",
                         title=self._trace_label(
                             locale,
-                            "action.allowed" if guard_result.status in {"accepted", "normalized"} else "action.blocked",
+                            "action.allowed" if validation.allowed else "action.blocked",
                             tool=name or raw_name or "tool",
                         ),
-                        detail=self._tool_guard_activity_detail(locale, guard_payload),
-                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
+                        detail=self._validation_activity_detail(locale, validation_payload),
+                        status="success" if validation.allowed else "blocked",
                         payload={
                             "model_action": "tool_call",
                             "tool_name": name or raw_name,
                             "raw_tool_call": raw_tool_call_payload,
-                            "guard_result": guard_payload,
+                            "validation_result": validation_payload,
                             "normalized_arguments": safe_preview(arguments, limit=4000),
-                        },
-                        trace_events=trace_events,
-                    )
-                    self._emit_trace(
-                        progress_cb,
-                        run_id=run_id,
-                        type="tool.guard",
-                        title=self._trace_label(locale, "tool.guard", tool=name or raw_name or "tool"),
-                        detail=self._tool_guard_activity_detail(locale, guard_payload),
-                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
-                        payload={
-                            "tool_name": name or raw_name,
-                            "raw_tool_call": raw_tool_call_payload,
-                            "guard_result": guard_payload,
-                            "normalized_arguments": safe_preview(arguments, limit=4000),
+                            "runtime_boundary": dump_model(turn_runtime_boundary),
                         },
                         trace_events=trace_events,
                     )
                     emit_runtime_activity(
                         "activity.delta",
-                        "step_validation",
-                        self._tool_guard_activity_detail(locale, guard_payload),
-                        status="success" if guard_result.status in {"accepted", "normalized"} else "blocked",
+                        "action_validation",
+                        self._validation_activity_detail(locale, validation_payload),
+                        status="success" if validation.allowed else "blocked",
                         payload={
-                            "validated_next_step": dict(validated_next_step),
-                            "high_level_proposal": dict(high_level_proposal),
-                            "runtime_hint": dict(runtime_hint),
-                            "runtime_guess": dict(runtime_hint),
-                            "guard_result": guard_payload,
+                            "model_action": dict(model_action),
+                            "validation_result": validation_payload,
                             "raw_tool_call": raw_tool_call_payload,
                             "normalized_arguments": safe_preview(arguments, limit=4000),
+                            "runtime_boundary": dump_model(turn_runtime_boundary),
                             **turn_activity_context,
                         },
                     )
                     plan_state_before = [dict(item) for item in list(plan_state or []) if isinstance(item, dict)]
-                    if guard_result.status in {"accepted", "normalized"}:
+                    if validation.allowed:
                         result, event = self._execute_tool_with_trace(
                             name=name,
                             arguments=arguments,
                             raw_tool_call=raw_tool_call_payload,
-                            guard_result=guard_payload,
+                            validation_result=validation_payload,
                             raw_arguments=raw_arguments,
                             run_id=run_id,
                             locale=locale,
@@ -4699,18 +4138,14 @@ class VintageProgrammerRuntime:
                         )
                     else:
                         guard_rejection_count += 1
-                        result = self._structured_tool_guard_rejection_result(
-                            locale=locale,
-                            guard_result=guard_result,
-                            runnable_tools=runnable_tools,
-                        )
+                        result = validation_observation(validation, tool=name or raw_name)
                         event = self._build_tool_event(
                             name=name or raw_name,
                             arguments=arguments,
                             result=result,
                             locale=locale,
                             raw_tool_call=raw_tool_call_payload,
-                            guard_result=guard_payload,
+                            validation_result=validation_payload,
                             raw_arguments=raw_arguments,
                         )
                         tool_events.append(event)
@@ -4724,7 +4159,7 @@ class VintageProgrammerRuntime:
                             payload={
                                 "tool_name": name or raw_name,
                                 "raw_tool_call": raw_tool_call_payload,
-                                "guard_result": guard_payload,
+                                "validation_result": validation_payload,
                                 "normalized_arguments": safe_preview(arguments, limit=4000),
                                 **tool_audit,
                                 "result_preview": safe_preview(result),
@@ -4736,13 +4171,13 @@ class VintageProgrammerRuntime:
                             run_id=run_id,
                             type="observation.returned",
                             title=self._trace_label(locale, "observation.returned", tool=name or raw_name or "tool"),
-                            detail=str(result.get("summary") or result.get("message") or guard_result.reason or "")[:280],
+                            detail=str(result.get("summary") or result.get("message") or validation.message or "")[:280],
                             status="success",
                             payload={
                                 "model_action": "tool_call",
                                 "tool_name": name or raw_name,
                                 "observation": safe_preview(result, limit=4000),
-                                "guard_result": guard_payload,
+                                "validation_result": validation_payload,
                             },
                             trace_events=trace_events,
                         )
@@ -4760,18 +4195,18 @@ class VintageProgrammerRuntime:
                                     "agent_id": spec.agent_id,
                                 }
                             )
-                        notes.append("tool_guard_rejected")
+                        notes.append("tool_validation_rejected")
                         if max_guard_rejections and guard_rejection_count > max_guard_rejections:
                             if automatic_replan_enabled and replan_attempt_count == 0:
                                 needs_replan = True
-                                replan_trigger = "guard_rejection_limit"
+                                replan_trigger = "validation_rejection_limit"
                                 replan_detail = str(result.get("summary") or "")
-                                notes.append("tool_guard_rejection_replan_requested")
+                                notes.append("tool_validation_rejection_replan_requested")
                             else:
                                 turn_status = "blocked"
-                                blocked_reason = blocked_reason or "tool_guard_rejections_exceeded"
+                                blocked_reason = blocked_reason or "tool_validation_rejections_exceeded"
                                 forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
-                                notes.append("tool_guard_rejections_exceeded")
+                                notes.append("tool_validation_rejections_exceeded")
                             stop_after_tools = True
                     if name == "image_read" and bool(result.get("ok")):
                         last_image_read_result = dict(result)
@@ -4934,7 +4369,7 @@ class VintageProgrammerRuntime:
 
                 if round_signature_parts:
                     execution_entry = ExecutionTraceEntry(
-                        step_index=int(validated_next_step.get("step_index") or current_step_index),
+                        step_index=int(model_action.get("step_index") or current_step_index),
                         action_type="tool_call",
                         status=(
                             "blocked"
@@ -4942,7 +4377,7 @@ class VintageProgrammerRuntime:
                             else ("completed" if round_success else "failed")
                         ),
                         title=translate(locale, "runtime.activity.execution_title.tool_execution"),
-                        tool_name=str((validated_next_step.get("tool_name") or "")),
+                        tool_name=str((model_action.get("tool_name") or "")),
                         tool_names=[str(item.get("name") or "") for item in round_signature_parts if str(item.get("name") or "")],
                         result_summary="; ".join(
                             f"{str(item.get('name') or '')}:{str(item.get('status') or '')}"
@@ -4957,9 +4392,9 @@ class VintageProgrammerRuntime:
                                 else translate(locale, "runtime.activity.execution.tool_result_returned")
                             )
                         ),
-                        detail=str(validated_next_step.get("reason") or ""),
+                        detail=str(model_action.get("reason") or ""),
                         payload={
-                            "validated_next_step": dict(validated_next_step),
+                            "model_action": dict(model_action),
                             "completed_tool_calls": len(round_signature_parts),
                             "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
                             "progress_signals": list(round_progress_signals),
@@ -4974,10 +4409,7 @@ class VintageProgrammerRuntime:
                         payload={
                             "execution_trace": list(execution_trace),
                             "execution_trace_entry": dump_model(execution_entry),
-                            "validated_next_step": dict(validated_next_step),
-                            "high_level_proposal": dict(high_level_proposal),
-                            "runtime_hint": dict(runtime_hint),
-                            "runtime_guess": dict(runtime_hint),
+                            "model_action": dict(model_action),
                             "progress_signals": list(round_progress_signals),
                             **turn_activity_context,
                         },
@@ -5038,13 +4470,10 @@ class VintageProgrammerRuntime:
                     messages.append(self._backend._SystemMessage(content=replan_prompt))
                     emit_runtime_activity(
                         "activity.delta",
-                        "step_validation",
+                        "loop.safeguard",
                         translate(locale, "runtime.replan.requested", trigger=replan_trigger or "no_progress"),
                         payload={
-                            "validated_next_step": dict(validated_next_step),
-                            "high_level_proposal": dict(high_level_proposal),
-                            "runtime_hint": dict(runtime_hint),
-                            "runtime_guess": dict(runtime_hint),
+                            "model_action": dict(model_action),
                             "progress_signals": list(progress_signals),
                             "replan_history": list(replan_history),
                             **turn_activity_context,
@@ -5071,10 +4500,7 @@ class VintageProgrammerRuntime:
                         "execution_trace": list(execution_trace),
                         "completed_tool_calls": len(round_signature_parts),
                         "successful_tool_calls": sum(1 for item in round_signature_parts if str(item.get("status") or "") == "ok"),
-                        "validated_next_step": dict(validated_next_step),
-                        "high_level_proposal": dict(high_level_proposal),
-                        "runtime_hint": dict(runtime_hint),
-                        "runtime_guess": dict(runtime_hint),
+                        "model_action": dict(model_action),
                         "progress_signals": list(progress_signals),
                         "replan_history": list(replan_history),
                         **turn_activity_context,
@@ -5212,7 +4638,15 @@ class VintageProgrammerRuntime:
         revision_summary = self._build_revision_summary(
             prompt_message=prompt_message,
             raw_text=raw_text,
-            activity_context=turn_activity_context,
+            activity_context={
+                **turn_activity_context,
+                "prefer_change_summary": bool(revision_requested or japanese_review_requested),
+                "task_type": (
+                    "japanese_grammar_review"
+                    if japanese_review_requested
+                    else ("rewrite_review" if revision_requested else str(turn_activity_context.get("task_type") or ""))
+                ),
+            },
         )
         answer_stream = self._answer_stream_diagnostics(answer_stream_state)
         if raw_text and (turn_status not in {"blocked", "cancelled"} or answer_stream_state.get("item_started")):
@@ -5292,24 +4726,24 @@ class VintageProgrammerRuntime:
         if answer_bundle["warnings"]:
             notes.extend(answer_bundle["warnings"])
         if (
-            validated_next_step
+            model_action
             and turn_status in {"blocked", "cancelled"}
             and (
                 not execution_trace
-                or int((execution_trace[-1] or {}).get("step_index") or 0) != int(validated_next_step.get("step_index") or 0)
+                or int((execution_trace[-1] or {}).get("step_index") or 0) != int(model_action.get("step_index") or 0)
             )
         ):
             final_execution_entry = ExecutionTraceEntry(
-                step_index=int(validated_next_step.get("step_index") or current_step_index),
-                action_type=str(validated_next_step.get("action_type") or "inspect_context"),
+                step_index=int(model_action.get("step_index") or current_step_index),
+                action_type=str(model_action.get("action_type") or "empty"),
                 status=turn_status,
                 title="Final execution state",
-                tool_name=str(validated_next_step.get("tool_name") or ""),
-                tool_names=[str(item) for item in list(validated_next_step.get("tool_names") or []) if str(item or "")],
+                tool_name=str(model_action.get("tool_name") or ""),
+                tool_names=[str(item) for item in list(model_action.get("tool_names") or []) if str(item or "")],
                 result_summary=safe_preview(raw_text, limit=240),
                 observation_summary=str(blocked_reason or raw_text or ""),
-                detail=str(validated_next_step.get("reason") or ""),
-                payload={"validated_next_step": dict(validated_next_step)},
+                detail=str(model_action.get("reason") or ""),
+                payload={"model_action": dict(model_action)},
             )
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
@@ -5348,19 +4782,14 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "answer_stream": dict(answer_stream),
-                "runtime_hint": dict(runtime_hint),
-                "runtime_guess": dict(runtime_hint),
+                "runtime_boundary": dump_model(turn_runtime_boundary),
                 "current_turn": dict(current_turn_context),
                 "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
                 "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
-                "high_level_proposal": dict(high_level_proposal),
-                "model_proposal": dict(high_level_proposal),
-                "validated_next_step": dict(validated_next_step),
-                "validated_plan": dict(validated_next_step),
+                "model_action": dict(model_action),
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
-                "proposal_diagnostics": dict(proposal_diagnostics),
                 "project_contract_loaded": bool(project_contract_text),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
@@ -5439,16 +4868,11 @@ class VintageProgrammerRuntime:
             ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
-            "runtime_hint": dict(runtime_hint),
-            "runtime_guess": dict(runtime_hint),
-            "high_level_proposal": dict(high_level_proposal),
-            "model_proposal": dict(high_level_proposal),
-            "validated_next_step": dict(validated_next_step),
-            "validated_plan": dict(validated_next_step),
+            "runtime_boundary": dump_model(turn_runtime_boundary),
+            "model_action": dict(model_action),
             "execution_trace": list(execution_trace),
             "progress_signals": list(progress_signals),
             "replan_history": list(replan_history),
-            "proposal_diagnostics": dict(proposal_diagnostics),
             "activity": {
                 "run_id": run_id,
                 "status": turn_status,
@@ -5457,8 +4881,8 @@ class VintageProgrammerRuntime:
                 "run_duration_ms": run_duration_ms,
                 "activity_summary": activity_summary,
                 "current_turn_goal": current_goal,
-                "current_turn_followup_type": str(current_turn_context.get("followup_type") or runtime_hint.get("current_turn_followup_type") or ""),
-                "current_turn_goal_source": str(current_turn_context.get("source") or runtime_hint.get("current_turn_goal_source") or ""),
+                "current_turn_followup_type": str(current_turn_context.get("followup_type") or ""),
+                "current_turn_goal_source": str(current_turn_context.get("source") or ""),
                 "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
                 "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
                 "phase_timings": dict(phase_timings),
@@ -5481,11 +4905,8 @@ class VintageProgrammerRuntime:
                 "tool_count": len(tool_events),
                 "loaded_skill_ids": [str(item.get("id") or "") for item in loaded_skills],
                 "inline_document": inline_document,
-                "runtime_hint": dict(runtime_hint),
-                "model_proposal": dict(high_level_proposal),
-                "high_level_proposal": dict(high_level_proposal),
-                "validated_plan": dict(validated_next_step),
-                "validated_next_step": dict(validated_next_step),
+                "route_hints": dict(route_state_input),
+                "model_action": dict(model_action),
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),

@@ -181,36 +181,15 @@ class _FakeVintageRuntime:
             "tool_events": [{"name": "web_search", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "group": "web_context", "source": "local_hosted", "summary": "searched", "source_refs": ["https://example.com"]}],
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
-            "runtime_hint": {"task_type": "workspace_inspection", "primary_intent": "inspect", "output_mode": "direct_answer"},
-            "high_level_proposal": {
-                "intent": "inspect",
-                "task_type": "workspace_inspection",
-                "current_goal": "Inspect the workspace and summarize the result.",
-                "expects_tools": True,
-                "response_mode": "direct_answer",
-                "user_stage": "Inspect workspace",
-                "summary": "Check the workspace before answering.",
-                "next_step_hint": "Run a web search step and use the result.",
-                "change_summary_requested": False,
-                "source": "model",
-            },
-            "validated_next_step": {
+            "model_action": {
                 "step_index": 1,
                 "action_type": "tool_call",
                 "tool_name": "web_search",
-                "tool_args": {"query": "x"},
                 "tool_names": ["web_search"],
-                "approved_tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
-                "blocked_tool_calls": [],
+                "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
                 "accepted": True,
-                "normalization": "",
-                "validation": {"proposal_schema": "valid", "permission": "allowed", "mode": "compatible"},
-                "reason": "Execute web_search as the current validated step.",
-                "response_mode": "direct_answer",
-                "task_type": "workspace_inspection",
-                "current_goal": "Inspect the workspace and summarize the result.",
-                "change_summary_requested": False,
-                "source": "harness",
+                "reason": "Model requested web_search.",
+                "source": "model_action",
             },
             "execution_trace": [
                 {
@@ -232,36 +211,15 @@ class _FakeVintageRuntime:
                 "phase": "completed",
                 "evidence_status": "collected",
                 "loaded_skill_ids": ["example_refactor_helper"],
-                "runtime_hint": {"task_type": "workspace_inspection", "primary_intent": "inspect", "output_mode": "direct_answer"},
-                "high_level_proposal": {
-                    "intent": "inspect",
-                    "task_type": "workspace_inspection",
-                    "current_goal": "Inspect the workspace and summarize the result.",
-                    "expects_tools": True,
-                    "response_mode": "direct_answer",
-                    "user_stage": "Inspect workspace",
-                    "summary": "Check the workspace before answering.",
-                    "next_step_hint": "Run a web search step and use the result.",
-                    "change_summary_requested": False,
-                    "source": "model",
-                },
-                "validated_next_step": {
+                "model_action": {
                     "step_index": 1,
                     "action_type": "tool_call",
                     "tool_name": "web_search",
-                    "tool_args": {"query": "x"},
                     "tool_names": ["web_search"],
-                    "approved_tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
-                    "blocked_tool_calls": [],
+                    "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
                     "accepted": True,
-                    "normalization": "",
-                    "validation": {"proposal_schema": "valid", "permission": "allowed", "mode": "compatible"},
-                    "reason": "Execute web_search as the current validated step.",
-                    "response_mode": "direct_answer",
-                    "task_type": "workspace_inspection",
-                    "current_goal": "Inspect the workspace and summarize the result.",
-                    "change_summary_requested": False,
-                    "source": "harness",
+                    "reason": "Model requested web_search.",
+                    "source": "model_action",
                 },
                 "execution_trace": [
                     {
@@ -314,36 +272,15 @@ class _FakeVintageRuntime:
                     "plan": [{"step": "Inspect workspace", "status": "completed"}],
                     "pending_user_input": {},
                     "inline_document": False,
-                    "runtime_hint": {"task_type": "workspace_inspection", "primary_intent": "inspect", "output_mode": "direct_answer"},
-                    "high_level_proposal": {
-                        "intent": "inspect",
-                        "task_type": "workspace_inspection",
-                        "current_goal": "Inspect the workspace and summarize the result.",
-                        "expects_tools": True,
-                        "response_mode": "direct_answer",
-                        "user_stage": "Inspect workspace",
-                        "summary": "Check the workspace before answering.",
-                        "next_step_hint": "Run a web search step and use the result.",
-                        "change_summary_requested": False,
-                        "source": "model",
-                    },
-                    "validated_next_step": {
+                    "model_action": {
                         "step_index": 1,
                         "action_type": "tool_call",
                         "tool_name": "web_search",
-                        "tool_args": {"query": "x"},
                         "tool_names": ["web_search"],
-                        "approved_tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
-                        "blocked_tool_calls": [],
+                        "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
                         "accepted": True,
-                        "normalization": "",
-                        "validation": {"proposal_schema": "valid", "permission": "allowed", "mode": "compatible"},
-                        "reason": "Execute web_search as the current validated step.",
-                        "response_mode": "direct_answer",
-                        "task_type": "workspace_inspection",
-                        "current_goal": "Inspect the workspace and summarize the result.",
-                        "change_summary_requested": False,
-                        "source": "harness",
+                        "reason": "Model requested web_search.",
+                        "source": "model_action",
                     },
                     "execution_trace": [
                         {
@@ -527,8 +464,10 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
             "raw_tool_call": {"id": "tc-1", "name": "web_search", "arguments": {"q": "PLAN.md"}},
             "raw_arguments": {"query": "PLAN.md"},
             "normalized_arguments": {"query": "PLAN.md"},
-            "guard_result": {
-                "status": "normalized",
+            "validation_result": {
+                "allowed": True,
+                "code": "allowed",
+                "message": "Action allowed: web_search",
                 "tool_name": "web_search",
                 "raw_tool_name": "web_search",
                 "normalization_notes": ["q->query"],
@@ -762,7 +701,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "2.9.6",
+        "app_version": "2.9.7",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -804,7 +743,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.9.6"
+    assert bootstrap_payload["app_version"] == "2.9.7"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1036,8 +975,7 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["inspector"]["run_state"]["turn_status"] == "completed"
     assert payload["inspector"]["run_state"]["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["inspector"]["run_state"]["compaction_status"]["mode"] == "token_budget"
-    assert payload["inspector"]["run_state"]["high_level_proposal"]["task_type"] == "workspace_inspection"
-    assert payload["inspector"]["run_state"]["validated_next_step"]["action_type"] == "tool_call"
+    assert payload["inspector"]["run_state"]["model_action"]["action_type"] == "tool_call"
     assert payload["inspector"]["run_state"]["execution_trace"][0]["action_type"] == "tool_call"
     assert "execution_trace" not in payload
 
@@ -1189,7 +1127,7 @@ def test_chat_stream_surfaces_tool_audit_fields_on_live_items(monkeypatch, tmp_p
     assert completed_tool["raw_arguments"]["query"] == "PLAN.md"
     assert completed_tool["raw_tool_call"]["arguments"]["q"] == "PLAN.md"
     assert completed_tool["normalized_arguments"]["query"] == "PLAN.md"
-    assert completed_tool["guard_result"]["status"] == "normalized"
+    assert completed_tool["validation_result"]["allowed"] is True
     assert completed_tool["arguments_preview"] == "query=PLAN.md"
     assert completed_tool["schema_validation"]["status"] == "valid"
 
