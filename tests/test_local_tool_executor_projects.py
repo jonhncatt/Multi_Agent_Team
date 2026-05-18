@@ -48,7 +48,8 @@ def test_local_tools_resolve_relative_paths_inside_selected_project(tmp_path: Pa
     assert write_result["ok"] is True
     assert Path(write_result["path"]) == project_root / "notes.txt"
     assert list_result["ok"] is True
-    assert Path(list_result["path"]) == project_root
+    assert list_result["path"] == "."
+    assert Path(list_result["resolved_path"]) == project_root
     assert any(item["name"] == "notes.txt" for item in list_result["entries"])
 
 

@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.10-blue)
+![Version](https://img.shields.io/badge/version-v2.9.11-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.10`
+当前稳定版本：`v2.9.11`
 
 ## Stable Runtime
 
-v2.9.10 是一个 Codex-style tool drain 紧急修复版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.11 是一个 Codex-style path portability 与 large-folder search safety 修复版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.10 修复模型一次返回多个 tool calls 时的协议闭合问题：harness 会 drain 所有工具调用，并为每个 `tool_call_id` 写入且只写入一个 ToolMessage 后，才允许下一次模型请求。
+OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.11 继续保留 v2.9.10 的 Codex-style all-tool drain 语义，并让模型可见的文件路径优先使用项目相对路径；大型目录的宽泛 glob 搜索会返回收窄建议，避免大量绝对路径污染模型上下文。
 
 ## Max Output Tokens
 
@@ -44,7 +44,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.10 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist。v2.9.11 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
 ## 这是什么
 

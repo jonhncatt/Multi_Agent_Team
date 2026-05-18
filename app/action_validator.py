@@ -35,7 +35,7 @@ _READ_PATH_FIELDS: dict[str, tuple[str, ...]] = {
     "read_file": ("path",),
     "read_text_file": ("path",),
     "glob_file_search": ("path",),
-    "search_codebase": ("path",),
+    "search_codebase": ("path", "root"),
     "search_contents_in_file": ("path",),
     "search_contents_in_file_multi": ("path",),
     "read_section": ("path",),
@@ -71,6 +71,23 @@ _DANGEROUS_COMMAND_PATTERNS = (
     re.compile(r"powershell\b[^\n]*(invoke-expression|iex)\b", re.IGNORECASE),
 )
 
+_REDACTION_PLACEHOLDER_FIELDS: dict[str, tuple[str, ...]] = {
+    "glob_file_search": ("pattern", "path"),
+    "search_codebase": ("query", "file_glob", "root"),
+    "search_contents_in_file": ("query", "path"),
+    "search_contents_in_file_multi": ("queries", "path"),
+    "read_file": ("path",),
+    "list_dir": ("path",),
+    "read_section": ("path", "heading"),
+    "table_extract": ("path",),
+    "fact_check_file": ("path",),
+}
+
+_REDACTION_PLACEHOLDER_MESSAGE = (
+    "*** is a UI redaction placeholder, not a real file name, path, glob pattern, function name, or search query. "
+    "Use a concrete relative path or inspect the directory again with list_dir/glob_file_search using a narrower pattern."
+)
+
 
 def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
@@ -93,6 +110,21 @@ def _resolved_roots(values: list[str]) -> list[Path]:
         seen.add(key)
         roots.append(path)
     return roots
+
+
+def _contains_redaction_placeholder(value: Any) -> bool:
+    if isinstance(value, str):
+        text = value.strip()
+        if text == "***":
+            return True
+        normalized = text.replace("\\", "/")
+        parts = [part for part in normalized.split("/") if part]
+        return "***" in parts
+    if isinstance(value, list):
+        return any(_contains_redaction_placeholder(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_redaction_placeholder(item) for item in value.values())
+    return False
 
 
 class ActionValidator:
@@ -221,6 +253,22 @@ class ActionValidator:
                 schema_validation=schema_validation,
             )
 
+        redaction_field = self._redaction_placeholder_field(tool_name, normalized_arguments)
+        if redaction_field:
+            checks.update({"policy": "passed", "permission": "failed", "boundary": "skipped"})
+            return self._result(
+                allowed=False,
+                code="redaction_placeholder_used",
+                message=_REDACTION_PLACEHOLDER_MESSAGE,
+                tool_name=tool_name,
+                raw_tool_name=raw_tool_name,
+                raw_arguments=raw_arguments,
+                normalized_arguments=normalized_arguments,
+                normalization_notes=[*notes, f"redaction_placeholder_field:{redaction_field}"],
+                checks=checks,
+                schema_validation=schema_validation,
+            )
+
         boundary_error = self._validate_boundary(tool_name, normalized_arguments)
         if boundary_error is not None:
             code, message = boundary_error
@@ -252,6 +300,13 @@ class ActionValidator:
             schema_validation=schema_validation,
             severity="info",
         )
+
+    @staticmethod
+    def _redaction_placeholder_field(tool_name: str, arguments: dict[str, Any]) -> str:
+        for field in _REDACTION_PLACEHOLDER_FIELDS.get(tool_name, ()):
+            if field in arguments and _contains_redaction_placeholder(arguments.get(field)):
+                return field
+        return ""
 
     @staticmethod
     def _raw_arguments(call: dict[str, Any]) -> Any:

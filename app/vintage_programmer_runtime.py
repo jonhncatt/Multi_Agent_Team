@@ -2965,8 +2965,48 @@ class VintageProgrammerRuntime:
             pass
         return ensured
 
+    @staticmethod
+    def _compact_tool_result_for_model(result: dict[str, Any], *, tool_name: str) -> dict[str, Any]:
+        payload = dump_model(result)
+        if not isinstance(payload, dict):
+            return {"ok": False, "summary": str(payload or "")}
+        compact = dict(payload)
+        normalized_tool = str(tool_name or compact.get("tool_name") or compact.get("name") or "").strip()
+
+        def strip_debug_paths(value: Any) -> Any:
+            if isinstance(value, dict):
+                cleaned: dict[str, Any] = {}
+                has_model_path = bool(str(value.get("path") or value.get("display_path") or "").strip())
+                for key, item in value.items():
+                    if key in {"resolved_path", "resolved_root", "project_root", "cwd"} and has_model_path:
+                        continue
+                    cleaned[str(key)] = strip_debug_paths(item)
+                return cleaned
+            if isinstance(value, list):
+                return [strip_debug_paths(item) for item in value]
+            return value
+
+        compact = strip_debug_paths(compact)
+        if not isinstance(compact, dict):
+            return {"ok": False, "summary": str(compact or "")}
+
+        if normalized_tool == "glob_file_search":
+            matches = list(compact.get("matches") or [])
+            if len(matches) > 100:
+                compact["matches"] = matches[:100]
+                compact["truncated"] = True
+                compact["model_note"] = "Only the first 100 matches are shown. Use a narrower pattern."
+        elif normalized_tool in {"list_dir", "list_directory"}:
+            entries = list(compact.get("entries") or [])
+            if len(entries) > 120:
+                compact["entries"] = entries[:120]
+                compact["truncated"] = True
+                compact["model_note"] = "Only the first 120 directory entries are shown. Use a narrower path or search."
+        return compact
+
     def _tool_message_for_result(self, *, result: dict[str, Any], call_id: str, name: str) -> Any:
-        result_json = json.dumps(result, ensure_ascii=False)
+        model_result = self._compact_tool_result_for_model(result, tool_name=name)
+        result_json = json.dumps(model_result, ensure_ascii=False)
         return self._backend._ToolMessage(
             content=self._backend._shorten(result_json, 60000),
             tool_call_id=str(call_id or ""),

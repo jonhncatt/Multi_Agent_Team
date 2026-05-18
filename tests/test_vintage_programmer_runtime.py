@@ -1102,6 +1102,101 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
     assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
 
 
+def test_runtime_rejects_redaction_placeholder_as_glob_pattern(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-redacted-glob", "name": "glob_file_search", "args": {"pattern": "***", "path": "."}}],
+            ),
+            _FakeMessage(content="recovered"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="找一下文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-redacted-glob",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "recovered"
+    assert backend.tools.calls == []
+    followup_messages = backend.invocations[1]["messages"]
+    tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc-redacted-glob")
+    assert "redaction_placeholder_used" in str(tool_message.content)
+    assert "*** is a UI redaction placeholder" in str(tool_message.content)
+    assert runtime._messages_at_tool_boundary(followup_messages)
+
+
+def test_runtime_rejects_redaction_placeholder_as_search_query(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-redacted-search", "name": "search_codebase", "args": {"query": "***"}}],
+            ),
+            _FakeMessage(content="recovered"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="搜一下代码",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-redacted-search",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "recovered"
+    assert backend.tools.calls == []
+    followup_messages = backend.invocations[1]["messages"]
+    tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc-redacted-search")
+    assert "redaction_placeholder_used" in str(tool_message.content)
+    assert runtime._messages_at_tool_boundary(followup_messages)
+
+
+def test_tool_message_compaction_keeps_actionable_paths() -> None:
+    long_asset_path = "dist/assets/index-0123456789abcdef0123456789abcdef.js"
+    result = {
+        "ok": True,
+        "tool_name": "glob_file_search",
+        "path": "dist/assets",
+        "root_ref": "project_root",
+        "resolved_path": "/tmp/project/dist/assets",
+        "matches": [long_asset_path],
+    }
+
+    compact = VintageProgrammerRuntime._compact_tool_result_for_model(result, tool_name="glob_file_search")
+
+    assert compact["matches"] == [long_asset_path]
+    assert "***" not in json.dumps(compact, ensure_ascii=False)
+    assert "resolved_path" not in compact
+
+
 def test_runtime_cancel_during_tool_drain_closes_remaining_call_ids(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

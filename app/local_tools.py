@@ -55,6 +55,58 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+_BROAD_GLOB_GUIDANCE_THRESHOLD = 300
+
+
+def _project_relative_or_absolute(path: Path, project_root: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(project_root.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path.resolve())
+
+
+def _display_model_path(path: Path, *, project_root: Path, cwd: Path | None = None) -> str:
+    resolved = path.resolve()
+    root = project_root.resolve()
+    try:
+        return str(resolved.relative_to(root)).replace("\\", "/")
+    except Exception:
+        pass
+    if cwd is not None:
+        try:
+            return str(resolved.relative_to(cwd.resolve())).replace("\\", "/")
+        except Exception:
+            pass
+    return str(resolved)
+
+
+def _path_payload(path: Path, *, project_root: Path, cwd: Path | None = None) -> dict[str, Any]:
+    resolved = path.resolve()
+    model_path = _display_model_path(resolved, project_root=project_root, cwd=cwd)
+    root_ref = "absolute"
+    try:
+        resolved.relative_to(project_root.resolve())
+        root_ref = "project_root"
+    except Exception:
+        if cwd is not None:
+            try:
+                resolved.relative_to(cwd.resolve())
+                root_ref = "cwd"
+            except Exception:
+                root_ref = "absolute"
+    return {
+        "path": model_path,
+        "display_path": model_path,
+        "root_ref": root_ref,
+        "resolved_path": str(resolved),
+    }
+
+
+def _is_broad_glob_pattern(pattern: str) -> bool:
+    normalized = str(pattern or "").strip().replace("\\", "/")
+    return normalized in {"*", "*.*", "**", "**/*", "./**/*", "**/*.*"}
+
+
 _UPLOAD_META_SAFE_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
 
 
@@ -2817,6 +2869,7 @@ class LocalToolExecutor:
             )
             if isinstance(result, dict) and bool(result.get("ok")):
                 payload = dict(result)
+                payload.update(_path_payload(real_path, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint())))
                 payload.setdefault("kind", "file")
                 payload.setdefault("tool_name", "read_file")
                 return payload
@@ -2852,15 +2905,42 @@ class LocalToolExecutor:
             if not real_root.is_dir():
                 return {"ok": False, "error": f"Not a directory: {path}"}
             limit = max(1, min(500, int(max_results)))
+            root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+            if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
+                return {
+                    "ok": False,
+                    "tool_name": "glob_file_search",
+                    "error": {
+                        "kind": "broad_glob_on_large_directory",
+                        "message": "The glob pattern is too broad for this directory. Use list_dir to inspect subdirectories or use a narrower filename pattern.",
+                    },
+                    "path": root_payload["path"],
+                    "root": root_payload["path"],
+                    "root_ref": root_payload["root_ref"],
+                    "resolved_root": str(real_root.resolve()),
+                    "pattern": normalized_pattern,
+                    "total_matches": len(all_matches),
+                    "max_results": limit,
+                    "truncated": True,
+                    "suggested_next_steps": [
+                        "Use list_dir on the current root to identify likely subdirectories.",
+                        "Use a narrower glob such as '*runner*', '*.py', or '*target_name*'.",
+                        "Use search_codebase with a concrete function, class, or filename keyword.",
+                    ],
+                    "summary": "glob pattern too broad for large directory",
+                }
             matches: list[str] = []
             for candidate in all_matches[:limit]:
-                matches.append(str(candidate.resolve()))
+                matches.append(_display_model_path(candidate, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint())))
             truncated = len(all_matches) > limit
             return {
                 "ok": True,
                 "tool_name": "glob_file_search",
-                "path": str(real_root),
+                "path": root_payload["path"],
+                "root": root_payload["path"],
+                "root_ref": root_payload["root_ref"],
+                "resolved_root": str(real_root.resolve()),
                 "pattern": normalized_pattern,
                 "count": len(matches),
                 "matches": matches,
@@ -3337,18 +3417,24 @@ class LocalToolExecutor:
             ordered = sorted(real_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
             entries = []
             for child in ordered[:limit]:
+                child_path = _display_model_path(child, project_root=self._current_project_root(), cwd=real_path)
                 entries.append(
                     {
                         "name": child.name,
+                        "path": child_path,
                         "type": "symlink" if child.is_symlink() else ("directory" if child.is_dir() else "file"),
+                        "kind": "symlink" if child.is_symlink() else ("directory" if child.is_dir() else "file"),
                         "is_dir": child.is_dir(),
                         "size": child.stat().st_size if child.is_file() else None,
                     }
                 )
             truncated = len(ordered) > limit
+            path_payload = _path_payload(real_path, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             return {
                 "ok": True,
-                "path": str(real_path),
+                "path": path_payload["path"],
+                "root_ref": path_payload["root_ref"],
+                "resolved_path": path_payload["resolved_path"],
                 "entries": entries,
                 "entry_count": len(entries),
                 "total_entries": len(ordered),
@@ -4319,6 +4405,9 @@ class LocalToolExecutor:
                         file_path = str(path_block.get("text") or "").strip()
                         if not file_path:
                             continue
+                        resolved_file = Path(file_path)
+                        if not resolved_file.is_absolute():
+                            resolved_file = (real_root / resolved_file).resolve()
                         try:
                             line_no = int(data.get("line_number") or 0)
                         except Exception:
@@ -4326,7 +4415,8 @@ class LocalToolExecutor:
                         text_line = str(lines_block.get("text") or "").rstrip("\r\n")
                         matches.append(
                             {
-                                "path": file_path,
+                                "path": _display_model_path(resolved_file, project_root=self._current_project_root(), cwd=real_root),
+                                "resolved_path": str(resolved_file.resolve()),
                                 "line": line_no,
                                 "text": text_line.strip(),
                             }
@@ -4343,9 +4433,13 @@ class LocalToolExecutor:
                             line_no = int(line_no_raw)
                         except Exception:
                             line_no = 0
+                        resolved_file = Path(file_path)
+                        if not resolved_file.is_absolute():
+                            resolved_file = (real_root / resolved_file).resolve()
                         matches.append(
                             {
-                                "path": file_path,
+                                "path": _display_model_path(resolved_file, project_root=self._current_project_root(), cwd=real_root),
+                                "resolved_path": str(resolved_file.resolve()),
                                 "line": line_no,
                                 "text": text_line.strip(),
                             }
@@ -4381,7 +4475,8 @@ class LocalToolExecutor:
                             continue
                         matches.append(
                             {
-                                "path": str(file_path),
+                                "path": _display_model_path(file_path, project_root=self._current_project_root(), cwd=real_root),
+                                "resolved_path": str(file_path.resolve()),
                                 "line": idx,
                                 "text": line.strip(),
                             }
@@ -4391,7 +4486,11 @@ class LocalToolExecutor:
                     if len(matches) >= limit:
                         break
 
-            existing_paths = {str(item.get("path") or "").strip() for item in matches if str(item.get("path") or "").strip()}
+            existing_paths = {
+                str(item.get("resolved_path") or item.get("path") or "").strip()
+                for item in matches
+                if str(item.get("resolved_path") or item.get("path") or "").strip()
+            }
             path_match_count = 0
             if len(matches) < limit:
                 query_for_path = cleaned_query if case_sensitive else cleaned_query.lower()
@@ -4456,15 +4555,19 @@ class LocalToolExecutor:
                     path_match_count += 1
                     matches.append(
                         {
-                            "path": candidate_path,
+                            "path": _display_model_path(candidate, project_root=self._current_project_root(), cwd=real_root),
+                            "resolved_path": str(candidate.resolve()),
                             "line": 0,
                             "text": "[filename match]",
                             "match_type": "path",
                         }
                     )
+            root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             return {
                 "ok": True,
-                "root": str(real_root),
+                "root": root_payload["path"],
+                "root_ref": root_payload["root_ref"],
+                "resolved_root": str(real_root.resolve()),
                 "query": cleaned_query,
                 "match_count": len(matches),
                 "matches": matches,

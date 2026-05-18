@@ -120,3 +120,45 @@ def test_compaction_view_is_minimal_and_summary_backed() -> None:
         "reason": "context_limit",
         "summary_available": True,
     }
+
+
+def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
+    boundary = RuntimeBoundary(cwd="/new/root", project_root="/new/root", allowed_roots=["/new/root"])
+    pack = dump_model(
+        build_context_pack(
+            message="继续",
+            context={
+                "project": {
+                    "project_root": "/new/root",
+                    "previous_project_roots": ["/old/root"],
+                },
+                "summary": "Reviewed /old/root/app/local_tools.py and /new/root/app/action_validator.py",
+                "history_turns": [
+                    {
+                        "role": "tool",
+                        "tool": "read_file",
+                        "text": "Read /old/root/app/local_tools.py",
+                    }
+                ],
+                "recent_tool_results": [
+                    {
+                        "tool": "read_file",
+                        "target": "/old/root/app/local_tools.py",
+                        "summary": "Found path payload in /new/root/app/local_tools.py",
+                    }
+                ],
+            },
+            current_task_focus={
+                "cwd": "/new/root",
+                "active_files": ["/old/root/app/local_tools.py", "/new/root/app/action_validator.py"],
+            },
+            runtime_boundary_model_view=boundary.to_model_view(),
+        )
+    )
+
+    encoded = dump_model(pack)
+    payload_text = str(encoded)
+    assert "/old/root" not in payload_text
+    assert "/new/root/app" not in payload_text
+    assert "app/local_tools.py" in payload_text
+    assert "app/action_validator.py" in payload_text

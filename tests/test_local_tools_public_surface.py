@@ -364,7 +364,7 @@ def test_list_dir_lists_children_and_glob_file_search_finds_matches(tmp_path: Pa
     assert {item["type"] for item in list_result["entries"]} >= {"directory", "file"}
     assert glob_result["ok"] is True
     assert glob_result["tool_name"] == "glob_file_search"
-    assert any(path.endswith("/src/main.py") for path in glob_result["matches"])
+    assert "src/main.py" in glob_result["matches"]
 
 
 def test_list_dir_rejects_non_directory_and_glob_file_search_handles_no_matches(tmp_path: Path) -> None:
@@ -406,6 +406,105 @@ def test_read_file_rejects_directory_path(tmp_path: Path) -> None:
 
     assert result["ok"] is False
     assert "Use list_dir instead" in str(result["error"])
+
+
+def test_glob_file_search_returns_project_relative_paths(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(exist_ok=True)
+    (app_dir / "local_tools.py").write_text("x = 1\n", encoding="utf-8")
+    (app_dir / "runtime.py").write_text("y = 2\n", encoding="utf-8")
+
+    result = executor.glob_file_search(pattern="*.py", path="app")
+
+    assert result["ok"] is True
+    assert "app/local_tools.py" in result["matches"]
+    assert "app/runtime.py" in result["matches"]
+    assert not any(str(tmp_path) in item for item in result["matches"])
+    assert result["root_ref"] == "project_root"
+
+
+def test_list_dir_returns_project_relative_entry_paths(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(exist_ok=True)
+    (app_dir / "local_tools.py").write_text("x = 1\n", encoding="utf-8")
+
+    result = executor.list_dir(path="app")
+
+    assert result["ok"] is True
+    assert result["path"] == "app"
+    assert result["root_ref"] == "project_root"
+    entry_paths = {str(item.get("path") or "") for item in result["entries"]}
+    assert "app/local_tools.py" in entry_paths
+    assert not any(str(tmp_path) in path for path in entry_paths)
+
+
+def test_read_file_returns_project_relative_path(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(exist_ok=True)
+    (app_dir / "local_tools.py").write_text("hello\n", encoding="utf-8")
+
+    result = executor.read_file(path="app/local_tools.py")
+
+    assert result["ok"] is True
+    assert result["path"] == "app/local_tools.py"
+    assert result["root_ref"] == "project_root"
+    assert result["resolved_path"] == str((app_dir / "local_tools.py").resolve())
+
+
+def test_search_codebase_returns_project_relative_paths(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(exist_ok=True)
+    target = app_dir / "runtime.py"
+    target.write_text("def target_function():\n    return 1\n", encoding="utf-8")
+
+    result = executor.search_codebase(query="target_function", root=".")
+
+    assert result["ok"] is True
+    assert result["matches"]
+    assert result["matches"][0]["path"] == "app/runtime.py"
+    assert str(tmp_path) not in result["matches"][0]["path"]
+
+
+def test_broad_glob_in_large_directory_returns_guidance(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    for index in range(600):
+        (tmp_path / f"file_{index}.txt").write_text(str(index), encoding="utf-8")
+
+    result = executor.glob_file_search(pattern="**/*", path=".")
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "broad_glob_on_large_directory"
+    assert result["total_matches"] >= 600
+    assert "suggested_next_steps" in result
+    assert len(json.dumps(result, ensure_ascii=False)) < 20000
+
+
+def test_broad_glob_in_small_directory_still_works(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    for index in range(5):
+        (tmp_path / f"file_{index}.txt").write_text(str(index), encoding="utf-8")
+
+    result = executor.glob_file_search(pattern="**/*", path=".")
+
+    assert result["ok"] is True
+    for index in range(5):
+        assert f"file_{index}.txt" in result["matches"]
 
 
 def test_read_file_returns_email_meta_and_attachment_list(tmp_path: Path, monkeypatch) -> None:

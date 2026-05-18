@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Any, Literal
 
@@ -87,6 +88,69 @@ def normalize_user_message_preview(message: Any, *, limit: int = 80) -> str:
 
 def _truncate(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _candidate_root_strings(root: Any) -> list[str]:
+    raw = str(root or "").strip()
+    if not raw:
+        return []
+    candidates = {raw.rstrip("/\\")}
+    try:
+        candidates.add(str(Path(raw).expanduser().resolve()).rstrip("/\\"))
+    except Exception:
+        pass
+    return [item for item in candidates if item and len(item) > 1]
+
+
+def _rebase_text_paths_for_model(
+    text: str,
+    *,
+    project_root: Path | str,
+    previous_roots: list[Path | str] | None = None,
+) -> str:
+    """Convert known project-root absolute paths in historical text to portable model paths."""
+
+    value = str(text or "")
+    roots: list[str] = []
+    for raw_root in [project_root, *(previous_roots or [])]:
+        roots.extend(_candidate_root_strings(raw_root))
+    for root in sorted(set(roots), key=len, reverse=True):
+        if value == root:
+            return "."
+        value = value.replace(root + "/", "")
+        value = value.replace(root + "\\", "")
+    return value
+
+
+def _rebase_value_paths_for_model(
+    value: Any,
+    *,
+    project_root: Path | str,
+    previous_roots: list[Path | str] | None = None,
+) -> Any:
+    if isinstance(value, str):
+        return _rebase_text_paths_for_model(value, project_root=project_root, previous_roots=previous_roots)
+    if isinstance(value, list):
+        return [
+            _rebase_value_paths_for_model(item, project_root=project_root, previous_roots=previous_roots)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _rebase_value_paths_for_model(item, project_root=project_root, previous_roots=previous_roots)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _known_previous_project_roots(context: dict[str, Any]) -> list[str]:
+    roots: list[str] = []
+    for key in ("previous_project_roots", "previous_roots"):
+        roots.extend(str(item) for item in list(context.get(key) or []) if str(item or "").strip())
+    project = context.get("project")
+    if isinstance(project, dict):
+        roots.extend(str(item) for item in list(project.get("previous_project_roots") or []) if str(item or "").strip())
+    return roots
 
 
 def _unique_strings(values: Any, *, limit: int, max_chars: int = 240) -> list[str]:
@@ -257,6 +321,25 @@ def build_context_pack(
     current_task_focus: dict[str, Any],
     runtime_boundary_model_view: dict[str, Any],
 ) -> ContextPack:
+    project_payload = dict(context.get("project") or {})
+    project_root = (
+        runtime_boundary_model_view.get("project_root")
+        or project_payload.get("project_root")
+        or project_payload.get("root")
+        or ""
+    )
+    previous_roots = _known_previous_project_roots(context)
+    if project_root:
+        context = _rebase_value_paths_for_model(
+            context,
+            project_root=project_root,
+            previous_roots=previous_roots,
+        )
+        current_task_focus = _rebase_value_paths_for_model(
+            current_task_focus,
+            project_root=project_root,
+            previous_roots=previous_roots,
+        )
     thread_memory = dict(context.get("thread_memory") or {})
     compaction_status = dict(context.get("compaction_status") or {})
     summary = _truncate(context.get("summary") or thread_memory.get("summary") or compaction_status.get("summary"), 2000)

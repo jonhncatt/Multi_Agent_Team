@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.10）
+# 内部设计手册（v2.9.11）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -731,6 +731,17 @@ v2.9.10 fixes a protocol-level tool-call transaction bug in the stable LangChain
 - Execution no longer slices normal tool execution to a preview-sized subset and no hard emergency tool-call count cap blocks call-id closure.
 - Compaction only runs at clean assistant/tool transaction boundaries and refuses compacted history that would split a tool-call transaction.
 - LLM follow-up failures preserve trace, inspector, and tool event context so the frontend can still inspect partial progress.
+
+## 20.5 v2.9.11 Path Portability and Search Safety Notes
+
+v2.9.11 keeps the v2.9.10 Codex-style all-tool drain behavior and improves model-visible path portability.
+
+- File/path tool outputs prefer project-relative paths such as `app/local_tools.py`; absolute paths remain available as `resolved_path` / `resolved_root` for debug and trace use.
+- `list_dir`, `read_file`, `glob_file_search`, and `search_codebase` return model-actionable paths that are easier to reuse after a project folder is moved.
+- Broad glob patterns such as `**/*` return guidance on large folders instead of flooding the model context with hundreds or thousands of absolute paths.
+- `***` is treated as a UI redaction placeholder, not a real path, glob pattern, filename, function name, or search query. The ActionValidator rejects it with a validation observation, preserving tool-call closure.
+- ToolMessage content is compacted for model use without replacing actionable paths with redaction placeholders.
+- ContextPack rebases known old/current project-root absolute paths in historical context into portable relative paths before sending them to the model.
 
 ## 21. v2.9.0 Stability Decision
 
