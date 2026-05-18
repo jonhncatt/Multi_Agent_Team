@@ -214,6 +214,12 @@ class _FakeToolsWithoutModel(_FakeTools):
         self.last_runtime_context = dict(payload)
 
 
+class _FailingTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        raise RuntimeError("boom")
+
+
 class _FakeBackend:
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         self.tools = _FakeTools()
@@ -382,6 +388,22 @@ class _FakeBackendWithTools(_FakeBackend):
         self.tools = tools
 
 
+class _FailingFollowupBackend(_FakeBackend):
+    def _invoke_with_runner_recovery(
+        self,
+        *,
+        runner: Any,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (runner, max_output_tokens, enable_tools, tool_names)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "followup"})
+        raise RuntimeError("azure rejected broken history")
+
+
 def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: bool = True) -> None:
     agent_dir.mkdir(parents=True, exist_ok=True)
     if include_soul:
@@ -475,7 +497,7 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
     assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
     assert "max_tool_rounds" not in descriptor
-    assert descriptor["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
+    assert "emergency_max_tool_calls_per_turn" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "Use tools when needed." in prompt
     assert "Do not assume python3 exists." in prompt
@@ -959,6 +981,200 @@ def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_t
     tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc1")
     assert "\"type\": \"validation_error\"" in str(tool_message.content) or "\"type\": \"boundary_denied\"" in str(tool_message.content)
     assert "\"tool\": \"read\"" in str(tool_message.content)
+    assert runtime._messages_at_tool_boundary(followup_messages)
+    assert len([item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc1"]) == 1
+
+
+def test_runtime_drains_all_model_tool_calls_without_cap(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    tool_calls = [
+        {"id": f"tc{index}", "name": "web_search", "args": {"query": f"query-{index}"}}
+        for index in range(12)
+    ]
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=tool_calls),
+            _FakeMessage(content="final after all tools"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="分析当前文件夹里的工具实现",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-drain-all-tools",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "final after all tools"
+    assert len(backend.tools.calls) == 12
+    assert len(result["tool_events"]) == 12
+    followup_messages = backend.invocations[1]["messages"]
+    tool_messages = [
+        item
+        for item in followup_messages
+        if str(item.kwargs.get("tool_call_id") or "").startswith("tc")
+    ]
+    assert len(tool_messages) == 12
+    assert {item.kwargs["tool_call_id"] for item in tool_messages} == {f"tc{index}" for index in range(12)}
+    assert runtime._messages_at_tool_boundary(followup_messages)
+
+
+def test_runtime_tool_failure_still_closes_call_id(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    tools = _FailingTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-fail", "name": "web_search", "args": {"query": "x"}}]),
+            _FakeMessage(content="recovered"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-tool-failure-closes-id",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "recovered"
+    followup_messages = backend.invocations[1]["messages"]
+    tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc-fail")
+    assert '"ok": false' in str(tool_message.content)
+    assert "tool_execution_error" in str(tool_message.content)
+    assert "boom" in str(tool_message.content)
+    assert runtime._messages_at_tool_boundary(followup_messages)
+
+
+def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FailingFollowupBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-debug", "name": "web_search", "args": {"query": "x"}}]),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-followup-failure-debug",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "llm_request_error"
+    assert "azure rejected broken history" in result["text"]
+    assert len(result["tool_events"]) == 1
+    assert any(item.get("type") == "llm.failed" for item in result["activity"]["trace_events"])
+    assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
+
+
+def test_runtime_cancel_during_tool_drain_closes_remaining_call_ids(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    cancel_event = threading.Event()
+    tools = _CancellingTools(cancel_event, cancel_after_calls=1)
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {"id": "tc1", "name": "web_search", "args": {"query": "one"}},
+                    {"id": "tc2", "name": "web_search", "args": {"query": "two"}},
+                    {"id": "tc3", "name": "web_search", "args": {"query": "three"}},
+                ],
+            ),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查三个东西",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-cancel-drain",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "cancel_event": cancel_event,
+        },
+    )
+
+    assert result["turn_status"] == "cancelled"
+    assert len(result["tool_events"]) == 3
+    assert {item["raw_tool_call"]["id"] for item in result["tool_events"]} == {"tc1", "tc2", "tc3"}
+    assert any("tool_cancelled" in str(item["output_preview"]) for item in result["tool_events"])
+
+
+def test_runtime_messages_at_tool_boundary_detects_missing_tool_output(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="ok")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    ai = backend._AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "tc1", "name": "web_search", "args": {"query": "one"}},
+            {"id": "tc2", "name": "web_search", "args": {"query": "two"}},
+        ],
+    ) if hasattr(backend, "_AIMessage") else _FakeMessage(
+        content="",
+        tool_calls=[
+            {"id": "tc1", "name": "web_search", "args": {"query": "one"}},
+            {"id": "tc2", "name": "web_search", "args": {"query": "two"}},
+        ],
+    )
+    tool1 = backend._ToolMessage(content="{}", tool_call_id="tc1", name="web_search")
+
+    assert runtime._messages_at_tool_boundary([ai, tool1]) is False
+
+    tool2 = backend._ToolMessage(content="{}", tool_call_id="tc2", name="web_search")
+    assert runtime._messages_at_tool_boundary([ai, tool1, tool2]) is True
 
 
 def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_tool(tmp_path: Path) -> None:
@@ -1189,7 +1405,7 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
     ]
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
     assert "tool_round_limit" not in result["inspector"]["run_state"]
-    assert result["inspector"]["run_state"]["loop_safeguards"]["emergency_max_tool_calls_per_turn"] >= 500
+    assert "emergency_max_tool_calls_per_turn" not in result["inspector"]["run_state"]["loop_safeguards"]
     assert "max_total_tool_calls_per_turn" not in result["inspector"]["run_state"]["loop_safeguards"]
 
 
@@ -1229,7 +1445,7 @@ def test_runtime_can_continue_past_old_24_tool_calls_when_progress_continues(tmp
     assert "turn_budget_emergency_tool_calls_exceeded" not in result["inspector"]["notes"]
 
 
-def test_runtime_emergency_tool_call_cap_is_only_a_high_fail_safe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_runtime_ignores_legacy_emergency_tool_call_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import app.vintage_programmer_runtime as runtime_module
 
     base_safeguards = runtime_module.default_loop_safeguards()
@@ -1270,10 +1486,11 @@ def test_runtime_emergency_tool_call_cap_is_only_a_high_fail_safe(monkeypatch: p
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "turn_budget_emergency_tool_calls_exceeded"
-    assert "turn_budget_emergency_tool_calls_exceeded" in result["inspector"]["notes"]
-    assert "should not reach" not in result["text"]
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert result["text"] == "should not reach"
+    assert len(result["tool_events"]) == 3
+    assert "turn_budget_emergency_tool_calls_exceeded" not in result["inspector"]["notes"]
 
 
 def test_runtime_blocks_when_same_action_repeats_after_replan(tmp_path: Path) -> None:

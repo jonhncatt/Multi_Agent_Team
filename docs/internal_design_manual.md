@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.9）
+# 内部设计手册（v2.9.10）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -721,6 +721,16 @@ v2.9.9 keeps the same model-led action loop and makes ContextPack smaller and no
 - `compaction` exposes only minimal model-facing status: active, phase, reason, and summary availability.
 - The model-facing RuntimeBoundary view is concise and does not include full `allowed_roots` or `writable_roots`; the full boundary remains internal for ActionValidator.
 - `route_hints`, `route_state`, `legacy_context`, `context_injections`, and route-derived memory fields are not sent to the model ContextPack.
+
+## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes
+
+v2.9.10 fixes a protocol-level tool-call transaction bug in the stable LangChain runtime path.
+
+- When a model message contains multiple tool calls, the harness drains every call before the next model request.
+- Every assistant `tool_call_id` receives exactly one corresponding ToolMessage, including validation rejection, tool execution failure, skipped calls, and cancellation.
+- Execution no longer slices normal tool execution to a preview-sized subset and no hard emergency tool-call count cap blocks call-id closure.
+- Compaction only runs at clean assistant/tool transaction boundaries and refuses compacted history that would split a tool-call transaction.
+- LLM follow-up failures preserve trace, inspector, and tool event context so the frontend can still inspect partial progress.
 
 ## 21. v2.9.0 Stability Decision
 

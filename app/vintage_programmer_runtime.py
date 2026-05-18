@@ -213,7 +213,6 @@ _IMAGE_READ_ACTION_HINTS = (
 
 def default_loop_safeguards() -> dict[str, Any]:
     return {
-        "emergency_max_tool_calls_per_turn": int(_DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN),
         "max_same_action_repeats": int(_DEFAULT_MAX_SAME_ACTION_REPEATS),
         "no_progress_threshold_before_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN),
         "no_progress_threshold_after_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN),
@@ -1926,7 +1925,7 @@ class VintageProgrammerRuntime:
     def _normalize_model_tool_calls(self, tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         proposed_tool_calls: list[dict[str, Any]] = []
         normalization_notes: list[str] = []
-        for call in tool_calls[:8]:
+        for call in tool_calls:
             if not isinstance(call, dict):
                 continue
             raw_name = str(call.get("name") or "").strip()
@@ -2794,6 +2793,186 @@ class VintageProgrammerRuntime:
         event = context.get("cancel_event")
         return bool(event and hasattr(event, "is_set") and event.is_set())
 
+    @staticmethod
+    def _tool_cancelled_result(tool_name: str, call_id: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": {
+                "kind": "tool_cancelled",
+                "tool": str(tool_name or ""),
+                "tool_call_id": str(call_id or ""),
+                "message": "Tool execution was cancelled before this call was run.",
+            },
+            "summary": "cancelled",
+        }
+
+    @staticmethod
+    def _tool_skipped_result(tool_name: str, call_id: str, *, reason: str) -> dict[str, Any]:
+        reason_text = str(reason or "Tool execution was skipped after the turn reached a terminal state.")
+        return {
+            "ok": False,
+            "error": {
+                "kind": "tool_skipped",
+                "tool": str(tool_name or ""),
+                "tool_call_id": str(call_id or ""),
+                "message": reason_text,
+            },
+            "summary": reason_text,
+        }
+
+    @staticmethod
+    def _message_role(msg: Any) -> str:
+        kwargs = getattr(msg, "kwargs", None)
+        if isinstance(kwargs, dict) and str(kwargs.get("tool_call_id") or "").strip():
+            return "tool"
+        if str(getattr(msg, "tool_call_id", "") or "").strip():
+            return "tool"
+        role = str(getattr(msg, "type", "") or getattr(msg, "role", "") or "").strip().lower()
+        if role:
+            if role == "assistant":
+                return "ai"
+            if role == "user":
+                return "human"
+            return role
+        class_name = msg.__class__.__name__.lower()
+        if "tool" in class_name:
+            return "tool"
+        if "ai" in class_name or "assistant" in class_name:
+            return "ai"
+        if "human" in class_name or "user" in class_name:
+            return "human"
+        if "system" in class_name:
+            return "system"
+        if list(getattr(msg, "tool_calls", None) or []):
+            return "ai"
+        return ""
+
+    @staticmethod
+    def _tool_call_ids_from_ai_message(msg: Any) -> list[str]:
+        ids: list[str] = []
+        for call in list(getattr(msg, "tool_calls", None) or []):
+            if isinstance(call, dict):
+                call_id = str(call.get("id") or "").strip()
+                if call_id:
+                    ids.append(call_id)
+        return ids
+
+    @staticmethod
+    def _tool_message_call_id(msg: Any) -> str:
+        kwargs = getattr(msg, "kwargs", None)
+        if isinstance(kwargs, dict):
+            value = str(kwargs.get("tool_call_id") or "").strip()
+            if value:
+                return value
+        return str(getattr(msg, "tool_call_id", "") or "").strip()
+
+    def _messages_at_tool_boundary(self, messages: list[Any]) -> bool:
+        pending: list[str] = []
+        for msg in list(messages or []):
+            role = self._message_role(msg)
+            if pending:
+                if role != "tool":
+                    return False
+                tool_call_id = self._tool_message_call_id(msg)
+                if tool_call_id not in pending:
+                    return False
+                pending.remove(tool_call_id)
+                continue
+            if role == "tool":
+                return False
+            if role in {"ai", "assistant"}:
+                pending.extend(self._tool_call_ids_from_ai_message(msg))
+        return not pending
+
+    def _tool_boundary_diagnostics(self, messages: list[Any]) -> dict[str, Any]:
+        pending: list[str] = []
+        orphan_tool_message_ids: list[str] = []
+        first_error = ""
+        for index, msg in enumerate(list(messages or [])):
+            role = self._message_role(msg)
+            if pending:
+                if role != "tool":
+                    first_error = first_error or f"non_tool_message_before_pending_closed:{index}:{role}"
+                    break
+                tool_call_id = self._tool_message_call_id(msg)
+                if tool_call_id not in pending:
+                    orphan_tool_message_ids.append(tool_call_id)
+                    first_error = first_error or f"unexpected_tool_call_id:{tool_call_id}"
+                    break
+                pending.remove(tool_call_id)
+                continue
+            if role == "tool":
+                orphan_tool_message_ids.append(self._tool_message_call_id(msg))
+                first_error = first_error or f"orphan_tool_message:{index}"
+                break
+            if role in {"ai", "assistant"}:
+                pending.extend(self._tool_call_ids_from_ai_message(msg))
+        return {
+            "ok": not pending and not orphan_tool_message_ids and not first_error,
+            "pending_tool_call_ids": list(pending),
+            "orphan_tool_message_ids": list(orphan_tool_message_ids),
+            "message_count": len(list(messages or [])),
+            "error": first_error,
+        }
+
+    def _assert_tool_message_invariants(
+        self,
+        messages: list[Any],
+        *,
+        phase: str,
+        trace_events: list[dict[str, Any]] | None = None,
+        progress_cb: Callable[[dict[str, Any]], None] | None = None,
+        run_id: str = "",
+        locale: str = "",
+    ) -> None:
+        if self._messages_at_tool_boundary(messages):
+            return
+        diagnostics = self._tool_boundary_diagnostics(messages)
+        self._emit_trace(
+            progress_cb,
+            run_id=run_id,
+            type="tool_invariant.failed",
+            title="Tool message invariant failed",
+            detail=str(diagnostics.get("error") or phase),
+            status="failed",
+            payload={"phase": phase, **diagnostics},
+            trace_events=trace_events,
+        )
+        _ = locale
+        raise RuntimeError(f"tool message invariant failed at {phase}: {diagnostics}")
+
+    @staticmethod
+    def _ensure_model_tool_call_ids(
+        ai_msg: Any,
+        tool_calls: list[dict[str, Any]],
+        *,
+        agent_id: str,
+        round_idx: int,
+    ) -> list[dict[str, Any]]:
+        ensured: list[dict[str, Any]] = []
+        raw_ai_calls = list(getattr(ai_msg, "tool_calls", None) or [])
+        for index, call in enumerate(list(tool_calls or []), start=1):
+            if not isinstance(call, dict):
+                continue
+            call_id = str(call.get("id") or "").strip() or f"{agent_id}_{round_idx}_{index}"
+            call["id"] = call_id
+            if index <= len(raw_ai_calls) and isinstance(raw_ai_calls[index - 1], dict):
+                raw_ai_calls[index - 1]["id"] = call_id
+            ensured.append(call)
+        try:
+            ai_msg.tool_calls = raw_ai_calls if raw_ai_calls else ensured
+        except Exception:
+            pass
+        return ensured
+
+    def _tool_message_for_result(self, *, result: dict[str, Any], call_id: str, name: str) -> Any:
+        result_json = json.dumps(result, ensure_ascii=False)
+        return self._backend._ToolMessage(
+            content=self._backend._shorten(result_json, 60000),
+            tool_call_id=str(call_id or ""),
+            name=name or "unknown_tool",
+        )
+
     def _build_live_compaction_summary(
         self,
         *,
@@ -2834,6 +3013,8 @@ class VintageProgrammerRuntime:
         auto_compact_token_limit: int,
         context_window_known: bool,
     ) -> tuple[list[Any], int, bool, int]:
+        if not self._messages_at_tool_boundary(messages):
+            return messages, compacted_until, False, 0
         estimated_tokens = 0
         try:
             estimated_tokens = count_tokens(
@@ -2878,6 +3059,8 @@ class VintageProgrammerRuntime:
             self._backend._SystemMessage(content=summary),
             *tail_messages,
         ]
+        if not self._messages_at_tool_boundary(compacted_messages):
+            return messages, compacted_until, False, estimated_tokens
         return compacted_messages, end_index, True, estimated_tokens
 
     @staticmethod
@@ -2948,7 +3131,6 @@ class VintageProgrammerRuntime:
                 if name in _READ_ONLY_TOOL_NAMES and name != "update_plan"
             ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
-        emergency_max_tool_calls_per_turn = int(loop_safeguards.get("emergency_max_tool_calls_per_turn") or 0)
         runnable_tools = list(selected_tools if selected_tools else ())
         max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
         max_same_action_repeats = int(loop_safeguards.get("max_same_action_repeats") or 0)
@@ -3213,6 +3395,14 @@ class VintageProgrammerRuntime:
 
         ai_msg: Any = None
         try:
+            self._assert_tool_message_invariants(
+                messages,
+                phase="before_initial_llm",
+                trace_events=trace_events,
+                progress_cb=progress_cb,
+                run_id=run_id,
+                locale=locale,
+            )
             self._emit_trace(
                 progress_cb,
                 run_id=run_id,
@@ -3356,8 +3546,14 @@ class VintageProgrammerRuntime:
                     )
                     break
 
-                messages.append(ai_msg)
                 round_idx += 1
+                tool_calls = self._ensure_model_tool_call_ids(
+                    ai_msg,
+                    tool_calls,
+                    agent_id=spec.agent_id,
+                    round_idx=round_idx,
+                )
+                messages.append(ai_msg)
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
                 round_progress_signals: list[dict[str, Any]] = []
@@ -3369,38 +3565,42 @@ class VintageProgrammerRuntime:
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
-                    translate(locale, "runtime.activity.execution.processing_tool_calls", count=len(tool_calls[:8])),
+                    translate(locale, "runtime.activity.execution.processing_tool_calls", count=len(tool_calls)),
                     payload={
                         "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
-                        "tool_count": len(tool_calls[:8]),
+                        "tool_count": len(tool_calls),
+                        "tool_count_total": len(tool_calls),
+                        "tool_drain_mode": "codex_style_all_calls",
                         "model_action": dict(model_action),
                         **turn_activity_context,
                     },
                 )
-                for call_idx, call in enumerate(tool_calls[:8], start=1):
-                    if self._cancel_requested(context_payload):
-                        turn_status = "cancelled"
-                        forced_text = translate(locale, "runtime.cancelled.text")
-                        notes.append("run_cancelled_by_user")
-                        stop_after_tools = True
-                        break
-                    if emergency_max_tool_calls_per_turn and tool_call_count >= emergency_max_tool_calls_per_turn:
-                        turn_status = "blocked"
-                        blocked_reason = blocked_reason or "turn_budget_emergency_tool_calls_exceeded"
-                        forced_text = translate(locale, "runtime.budget.emergency_tool_calls")
-                        notes.append("turn_budget_emergency_tool_calls_exceeded")
-                        stop_after_tools = True
-                        break
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="tool_drain.started",
+                    title="Tool drain started",
+                    detail=f"Draining {len(tool_calls)} model tool call(s).",
+                    status="running",
+                    payload={
+                        "tool_count_total": len(tool_calls),
+                        "tool_drain_mode": "codex_style_all_calls",
+                        "tool_boundary_clean": self._messages_at_tool_boundary(messages),
+                    },
+                    trace_events=trace_events,
+                )
+                for call_idx, call in enumerate(tool_calls, start=1):
                     raw_name = str(call.get("raw_name") or call.get("name") or "").strip()
                     raw_arguments = call.get("raw_args")
                     if raw_arguments is None:
                         raw_arguments = call.get("args")
+                    call_id = str(call.get("id") or f"{spec.agent_id}_{round_idx}_{call_idx}")
                     preview_name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
                     preview_args = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
                     preview_schema = dict((self._tool_specs_by_name.get(preview_name) or {}).get("parameters") or {})
                     tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema, locale=locale)
                     raw_tool_call_payload = {
-                        "id": str(call.get("id") or ""),
+                        "id": call_id,
                         "name": raw_name or str(call.get("name") or ""),
                         "arguments": safe_preview(raw_arguments, limit=4000),
                     }
@@ -3419,6 +3619,103 @@ class VintageProgrammerRuntime:
                         },
                         trace_events=trace_events,
                     )
+                    skip_reason = ""
+                    skip_kind = ""
+                    if self._cancel_requested(context_payload):
+                        turn_status = "cancelled"
+                        forced_text = translate(locale, "runtime.cancelled.text")
+                        if "run_cancelled_by_user" not in notes:
+                            notes.append("run_cancelled_by_user")
+                        stop_after_tools = True
+                        skip_kind = "cancelled"
+                        skip_reason = "Tool execution was cancelled before this call was run."
+                    elif halt_for_user_input:
+                        skip_kind = "skipped"
+                        skip_reason = "Tool execution skipped because structured user input is required."
+                    elif stop_after_tools:
+                        skip_kind = "skipped"
+                        skip_reason = str(blocked_reason or "Tool execution skipped after the turn reached a stop condition.")
+                    if skip_kind:
+                        name = preview_name or raw_name or "unknown_tool"
+                        arguments = preview_args
+                        validation_payload = {
+                            "allowed": False,
+                            "code": "tool_cancelled" if skip_kind == "cancelled" else "tool_skipped",
+                            "message": skip_reason,
+                            "normalized_arguments": arguments,
+                            "severity": "blocked",
+                        }
+                        result = (
+                            self._tool_cancelled_result(name, call_id)
+                            if skip_kind == "cancelled"
+                            else self._tool_skipped_result(name, call_id, reason=skip_reason)
+                        )
+                        event = self._build_tool_event(
+                            name=name,
+                            arguments=arguments,
+                            result=result,
+                            locale=locale,
+                            raw_tool_call=raw_tool_call_payload,
+                            validation_result=validation_payload,
+                            raw_arguments=raw_arguments,
+                        )
+                        tool_events.append(event)
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="tool.failed",
+                            title=self._trace_label(locale, "tool.failed", tool=name),
+                            detail=summarize_tool_result(name, result, locale=locale),
+                            status="cancelled" if skip_kind == "cancelled" else "blocked",
+                            payload={
+                                "tool_name": name,
+                                "raw_tool_call": raw_tool_call_payload,
+                                "validation_result": validation_payload,
+                                "result_preview": safe_preview(result),
+                            },
+                            trace_events=trace_events,
+                        )
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="observation.returned",
+                            title=self._trace_label(locale, "observation.returned", tool=name),
+                            detail=str(result.get("summary") or skip_reason)[:280],
+                            status="success",
+                            payload={
+                                "model_action": "tool_call",
+                                "tool_name": name,
+                                "observation": safe_preview(result, limit=4000),
+                                "validation_result": validation_payload,
+                            },
+                            trace_events=trace_events,
+                        )
+                        if progress_cb is not None:
+                            progress_cb(
+                                {
+                                    "event": "tool",
+                                    "item": dump_model(event),
+                                    "status": event.status,
+                                    "summary": event.summary,
+                                    "source_refs": list(event.source_refs),
+                                    "tool_round": round_idx,
+                                    "tool_index": call_idx,
+                                    "group": event.group,
+                                    "agent_id": spec.agent_id,
+                                }
+                            )
+                        messages.append(self._tool_message_for_result(result=result, call_id=call_id, name=name))
+                        tool_call_count += 1
+                        action_fingerprint = self._action_fingerprint(name, arguments)
+                        round_signature_parts.append(
+                            {
+                                "name": name,
+                                "input": arguments,
+                                "status": event.status,
+                                "action_fingerprint": action_fingerprint,
+                            }
+                        )
+                        continue
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
@@ -3705,14 +4002,7 @@ class VintageProgrammerRuntime:
                                     ),
                                 }
                             )
-                    result_json = json.dumps(result, ensure_ascii=False)
-                    messages.append(
-                        self._backend._ToolMessage(
-                            content=self._backend._shorten(result_json, 60000),
-                            tool_call_id=str(call.get("id") or f"{spec.agent_id}_{round_idx}_{call_idx}"),
-                            name=name or "unknown_tool",
-                        )
-                    )
+                    messages.append(self._tool_message_for_result(result=result, call_id=call_id, name=name or "unknown_tool"))
                     if (
                         same_action_repeat_guard_enabled
                         and max_same_action_repeats
@@ -3729,8 +4019,31 @@ class VintageProgrammerRuntime:
                             forced_text = translate(locale, "runtime.budget.same_action_repeat")
                             notes.append("turn_budget_same_action_repeats_exceeded")
                         stop_after_tools = True
-                        if stop_after_tools:
-                            break
+
+                tool_boundary_clean = self._messages_at_tool_boundary(messages)
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="tool_drain.finished" if tool_boundary_clean else "tool_invariant.failed",
+                    title="Tool drain finished" if tool_boundary_clean else "Tool drain invariant failed",
+                    detail=f"Drained {len(round_signature_parts)} of {len(tool_calls)} model tool call(s).",
+                    status="success" if tool_boundary_clean else "failed",
+                    payload={
+                        "tool_count_total": len(tool_calls),
+                        "tool_count_drained": len(round_signature_parts),
+                        "tool_drain_mode": "codex_style_all_calls",
+                        "tool_boundary_clean": tool_boundary_clean,
+                    },
+                    trace_events=trace_events,
+                )
+                self._assert_tool_message_invariants(
+                    messages,
+                    phase="after_tool_drain",
+                    trace_events=trace_events,
+                    progress_cb=progress_cb,
+                    run_id=run_id,
+                    locale=locale,
+                )
 
                 if round_signature_parts:
                     execution_entry = ExecutionTraceEntry(
@@ -3872,16 +4185,21 @@ class VintageProgrammerRuntime:
                     },
                 )
 
-                messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
-                    messages=messages,
-                    base_message_count=base_message_count,
-                    tool_events=tool_events,
-                    compacted_until=compacted_tool_events,
-                    plan_state=plan_state,
-                    model=effective_model,
-                    auto_compact_token_limit=auto_compact_token_limit,
-                    context_window_known=context_window_known,
-                )
+                if not self._messages_at_tool_boundary(messages):
+                    notes.append("compaction_skipped_not_at_tool_boundary")
+                    compacted = False
+                    live_estimated_tokens = 0
+                else:
+                    messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
+                        messages=messages,
+                        base_message_count=base_message_count,
+                        tool_events=tool_events,
+                        compacted_until=compacted_tool_events,
+                        plan_state=plan_state,
+                        model=effective_model,
+                        auto_compact_token_limit=auto_compact_token_limit,
+                        context_window_known=context_window_known,
+                    )
                 if live_estimated_tokens and auto_compact_token_limit > 0:
                     live_compaction_status["estimated_context_tokens"] = int(live_estimated_tokens)
                 if compacted:
@@ -3946,28 +4264,58 @@ class VintageProgrammerRuntime:
                     trace_events=trace_events,
                 )
                 phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
-                ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
-                    self._backend._invoke_with_runner_recovery,
-                    runner=runner,
-                    messages=messages,
-                    model=effective_model,
-                    max_output_tokens=int(settings.max_output_tokens),
-                    enable_tools=True,
-                    tool_names=runnable_tools,
-                    event_cb=self._make_model_stream_observer(
-                        progress_cb=progress_cb,
-                        run_id=run_id,
-                        thread_id=session_id,
-                        locale=locale,
-                        trace_events=trace_events,
-                        answer_stream_state=answer_stream_state,
-                        stage="post_tool_response",
-                        model=effective_model,
-                        tool_round=round_idx,
-                        answer_context=turn_activity_context,
-                        phase_timer=phase_timer,
-                    ),
+                self._assert_tool_message_invariants(
+                    messages,
+                    phase="before_followup_llm",
+                    trace_events=trace_events,
+                    progress_cb=progress_cb,
+                    run_id=run_id,
+                    locale=locale,
                 )
+                try:
+                    ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                        self._backend._invoke_with_runner_recovery,
+                        runner=runner,
+                        messages=messages,
+                        model=effective_model,
+                        max_output_tokens=int(settings.max_output_tokens),
+                        enable_tools=True,
+                        tool_names=runnable_tools,
+                        event_cb=self._make_model_stream_observer(
+                            progress_cb=progress_cb,
+                            run_id=run_id,
+                            thread_id=session_id,
+                            locale=locale,
+                            trace_events=trace_events,
+                            answer_stream_state=answer_stream_state,
+                            stage="post_tool_response",
+                            model=effective_model,
+                            tool_round=round_idx,
+                            answer_context=turn_activity_context,
+                            phase_timer=phase_timer,
+                        ),
+                    )
+                except Exception as exc:
+                    error_message = safe_error_message(exc)
+                    turn_status = "blocked"
+                    blocked_reason = blocked_reason or "llm_request_error"
+                    forced_text = error_message
+                    notes.append("llm_request_error")
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="llm.failed",
+                        title="LLM request failed",
+                        detail=error_message,
+                        status="failed",
+                        payload={
+                            "kind": "llm_request_error",
+                            "message": error_message,
+                            "tool_boundary_clean": self._messages_at_tool_boundary(messages),
+                        },
+                        trace_events=trace_events,
+                    )
+                    break
                 self._emit_trace(
                     progress_cb,
                     run_id=run_id,

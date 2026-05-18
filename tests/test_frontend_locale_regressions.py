@@ -329,7 +329,6 @@ def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
         "refreshProjectsIfStale({ minAgeMs: PROJECTS_REFRESH_STALE_MS })",
         "currentRuntimeStatus.loop_safeguards",
         "currentRuntimeStatus.provider_diagnostics",
-        "emergency_max_tool_calls_per_turn",
         'translateUi(locale, "context_meter.compact_usage"',
         'translateUi(locale, "context_meter.compact_tokens"',
         'translateUi(locale, "context_meter.compact_elapsed_tools"',
@@ -433,7 +432,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.9）")
+    assert manual.startswith("# 内部设计手册（v2.9.10）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -442,6 +441,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes" in manual
     assert "## 20.2 v2.9.8 ContextPack and Compaction Cleanup Notes" in manual
     assert "## 20.3 v2.9.9 Minimal ContextPack and TurnMemory Notes" in manual
+    assert "## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual
