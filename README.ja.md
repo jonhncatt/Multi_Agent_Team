@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.12-blue)
+![Version](https://img.shields.io/badge/version-v2.9.13-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.12`
+現在の安定版: `v2.9.13`
 
 ## Stable Runtime
 
-v2.9.12 は live agent timeline、structured debug details、LLM None-safe diagnostics の修正リリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.13 は Codex-style workspace と permission profile の整理リリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.12 は v2.9.10 の Codex-style all-tool drain semantics と v2.9.11 の path portability rules を維持します。このリリースではメイン assistant card に live work を直接表示し、LLM request failure 時の diagnostics を強化します。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.13 は v2.9.10 の Codex-style all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline を維持します。このリリースでは現在の project root を既定 workspace とし、Chat / Code / Full Dev の権限境界を追加します。
 
 ## Max Output Tokens
 
@@ -44,7 +44,11 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.12 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.13 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。既定ではコマンド実行は現在の project root に制限され、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+
+## Permission Profiles
+
+既定の permission profile は `Code` です。現在のプロジェクトと imported files を読み取り、現在のプロジェクト内に書き込み、現在のプロジェクト内で安全なコマンドを実行できます。network は既定で off です。`Chat` は読み取り専用で、ファイル書き込みと shell 実行は無効です。`Full Dev` は明示設定された extra roots を読み取り、global config に従って network を有効化できますが、path boundary、command allowlist、危険コマンドブロックは維持されます。
 
 ## これは何か
 

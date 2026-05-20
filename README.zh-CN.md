@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.12-blue)
+![Version](https://img.shields.io/badge/version-v2.9.13-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.12`
+当前稳定版本：`v2.9.13`
 
 ## Stable Runtime
 
-v2.9.12 是一个 live agent timeline、structured debug details 与 LLM None-safe diagnostics 修复版本，延续 v2.9.0 的稳定恢复策略。
+v2.9.13 是一个 Codex-style workspace 与 permission profile 清理版本，延续 v2.9.0 的稳定恢复策略。
 v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.12 继续保留 v2.9.10 的 Codex-style all-tool drain 语义和 v2.9.11 的 path portability 规则；本版本让主消息卡直接显示实时运行时间线，并在 LLM 请求失败时保留更完整的调试诊断。
+OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.13 继续保留 v2.9.10 的 Codex-style all-tool drain 语义、v2.9.11 的 path portability 规则和 v2.9.12 的 live timeline；本版本将当前 project root 作为默认 workspace，并新增 Chat / Code / Full Dev 权限边界。
 
 ## Max Output Tokens
 
@@ -44,7 +44,11 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.12 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist。v2.9.13 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数；高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+
+## Permission Profiles
+
+默认权限 profile 是 `Code`：可读当前项目和导入文件、可写当前项目、可在当前项目内运行安全命令，网络默认关闭。`Chat` 是只读分析模式，不写文件也不运行 shell；`Full Dev` 可读取显式配置的额外根，并按全局网络配置启用网络，但仍受路径边界、命令 allowlist 和危险命令拦截约束。
 
 ## 这是什么
 

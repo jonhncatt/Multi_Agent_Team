@@ -359,6 +359,7 @@ class AppConfig:
     extra_allowed_roots_source: str
     platform_name: str
     allow_any_path: bool
+    permission_profile: str
     web_allowed_domains: list[str]
     web_allow_all_domains: bool
     web_fetch_timeout_sec: int
@@ -417,6 +418,24 @@ class AppConfig:
 
 def normalize_llm_provider_name(raw: str | None) -> str:
     return _normalize_llm_provider(raw)
+
+
+def normalize_permission_profile(raw: str | None) -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    aliases = {
+        "readonly": "chat",
+        "read_only": "chat",
+        "read only": "chat",
+        "coding": "code",
+        "full": "full_dev",
+        "dev": "full_dev",
+        "fulldev": "full_dev",
+        "full dev": "full_dev",
+    }
+    normalized = aliases.get(value, value)
+    if normalized not in {"chat", "code", "full_dev"}:
+        return "code"
+    return normalized
 
 
 def provider_display_name(provider: str) -> str:
@@ -657,13 +676,7 @@ def _load_linux_user_dirs(home: Path) -> dict[str, Path]:
 def _default_extra_allowed_roots_for_platform(home: Path) -> tuple[str, list[Path]]:
     system = (py_platform.system() or "").strip()
     normalized = system.lower()
-    desktop_dir = (home / "Desktop").resolve()
-    downloads_dir = (home / "Downloads").resolve()
-
     if normalized == "linux":
-        xdg_dirs = _load_linux_user_dirs(home)
-        desktop_dir = xdg_dirs.get("XDG_DESKTOP_DIR", desktop_dir)
-        downloads_dir = xdg_dirs.get("XDG_DOWNLOAD_DIR", downloads_dir)
         platform_name = "Linux"
     elif normalized == "darwin":
         platform_name = "macOS"
@@ -671,20 +684,7 @@ def _default_extra_allowed_roots_for_platform(home: Path) -> tuple[str, list[Pat
         platform_name = "Windows"
     else:
         platform_name = system or "Unknown"
-
-    roots = [
-        (desktop_dir / "workbench").resolve(),
-        downloads_dir.resolve(),
-    ]
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(root)
-    return platform_name, deduped
+    return platform_name, []
 
 
 def resolve_python_command(
@@ -994,9 +994,9 @@ def load_config() -> AppConfig:
     sibling_access_raw = (
         _env(
             "VP_ALLOW_WORKSPACE_SIBLING_ACCESS",
-            default="true",
+            default="false",
         )
-        or "true"
+        or "false"
     ).strip().lower()
     allow_workspace_sibling_access = sibling_access_raw in {"1", "true", "yes", "on"}
     workspace_sibling_root: Path | None = None
@@ -1017,11 +1017,12 @@ def load_config() -> AppConfig:
     extra_allowed_roots_raw = (
         _env(
             "VP_EXTRA_ALLOWED_ROOTS",
-            default=os.pathsep.join(default_extra_roots),
+            default="",
         )
         or ""
     ).strip()
     extra_allowed_roots = [Path(item).resolve() for item in _split_paths(extra_allowed_roots_raw)]
+    permission_profile = normalize_permission_profile(_env("VP_PERMISSION_PROFILE", default="code"))
 
     web_domains_raw = (_env("VP_WEB_ALLOWED_DOMAINS", default="") or "").strip()
     web_allowed_domains = _split_csv(web_domains_raw)
@@ -1188,6 +1189,7 @@ def load_config() -> AppConfig:
         extra_allowed_roots_source=extra_allowed_roots_source,
         platform_name=platform_name,
         allow_any_path=allow_any_path,
+        permission_profile=permission_profile,
         web_allowed_domains=web_allowed_domains,
         web_allow_all_domains=web_allow_all_domains,
         web_fetch_timeout_sec=max(3, min(30, web_fetch_timeout_sec)),

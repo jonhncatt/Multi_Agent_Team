@@ -720,6 +720,7 @@ class VintageProgrammerRuntime:
             "workspace_write_allowed",
             "shell_allowed",
             "network_allowed",
+            "permission_profile",
             "sandbox_scope",
             "approval_policy",
             "reason",
@@ -2738,6 +2739,8 @@ class VintageProgrammerRuntime:
         cwd: str,
         model: str,
         locale: str,
+        permission_profile: str = "code",
+        runtime_boundary: RuntimeBoundary | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -2754,6 +2757,10 @@ class VintageProgrammerRuntime:
             kwargs["model"] = model
         if self._callable_accepts_kwarg(setter, "locale"):
             kwargs["locale"] = locale
+        if self._callable_accepts_kwarg(setter, "permission_profile"):
+            kwargs["permission_profile"] = permission_profile
+        if runtime_boundary is not None and self._callable_accepts_kwarg(setter, "runtime_boundary"):
+            kwargs["runtime_boundary"] = dump_model(runtime_boundary)
         setter(**kwargs)
 
     def _resolve_attachment_argument_path(
@@ -3521,6 +3528,8 @@ class VintageProgrammerRuntime:
             cwd=effective_cwd,
             model=requested_model,
             locale=locale,
+            permission_profile=turn_runtime_boundary.permission_profile,
+            runtime_boundary=turn_runtime_boundary,
         )
 
         ai_msg: Any = None
@@ -3590,6 +3599,8 @@ class VintageProgrammerRuntime:
                 cwd=effective_cwd,
                 model=effective_model,
                 locale=locale,
+                permission_profile=turn_runtime_boundary.permission_profile,
+                runtime_boundary=turn_runtime_boundary,
             )
             notes.extend(invoke_notes)
             usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -4047,6 +4058,8 @@ class VintageProgrammerRuntime:
                         cwd=effective_cwd,
                         model=effective_model,
                         locale=locale,
+                        permission_profile=turn_runtime_boundary.permission_profile,
+                        runtime_boundary=turn_runtime_boundary,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -4570,6 +4583,8 @@ class VintageProgrammerRuntime:
                     cwd=effective_cwd,
                     model=effective_model,
                     locale=locale,
+                    permission_profile=turn_runtime_boundary.permission_profile,
+                    runtime_boundary=turn_runtime_boundary,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -4806,6 +4821,7 @@ class VintageProgrammerRuntime:
             "text": raw_text,
             "effective_model": effective_model or requested_model,
             "collaboration_mode": collaboration_mode,
+            "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
             "turn_status": turn_status,
             "plan": plan_state,
             "pending_user_input": pending_user_input,

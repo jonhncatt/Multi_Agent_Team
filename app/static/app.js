@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS = {
   max_context_turns: 2000,
   enable_tools: true,
   collaboration_mode: "default",
+  permission_profile: "code",
   response_style: "normal",
 };
 
@@ -1699,6 +1700,12 @@ function buildRuntimeStatsSummary({
   const providerDiagnostics = (currentRuntimeStatus.provider_diagnostics && typeof currentRuntimeStatus.provider_diagnostics === "object")
     ? currentRuntimeStatus.provider_diagnostics
     : {};
+  const workspaceBoundary = (currentRuntimeStatus.workspace_boundary && typeof currentRuntimeStatus.workspace_boundary === "object")
+    ? currentRuntimeStatus.workspace_boundary
+    : {};
+  const boundaryModelView = (workspaceBoundary.model_view && typeof workspaceBoundary.model_view === "object")
+    ? workspaceBoundary.model_view
+    : {};
   const activity = latestAssistantActivity(messages);
   const toolTimeline = runtimeToolTimelineForStats({
     hasLiveRunState,
@@ -1760,6 +1767,11 @@ function buildRuntimeStatsSummary({
       { key: "model", label: translateUi(locale, "context_meter.field.model"), value: activeModel || "-" },
       { key: "elapsed", label: translateUi(locale, "context_meter.field.elapsed"), value: elapsedValue },
       { key: "runtime_mode", label: translateUi(locale, "context_meter.field.runtime_mode"), value: formatRuntimeModeLabel(locale, currentRuntimeStatus.execution_mode) },
+      { key: "permission_profile", label: translateUi(locale, "context_meter.field.permission_profile"), value: translateUi(locale, `settings.permission_profile.${currentRuntimeStatus.permission_profile || workspaceBoundary.permission_profile || "code"}`) },
+      { key: "file_read_scope", label: translateUi(locale, "context_meter.field.file_read_scope"), value: boundaryModelView.file_read_scope || "-" },
+      { key: "file_write_scope", label: translateUi(locale, "context_meter.field.file_write_scope"), value: boundaryModelView.file_write_scope || "-" },
+      { key: "command_scope", label: translateUi(locale, "context_meter.field.command_scope"), value: boundaryModelView.command_scope || "-" },
+      { key: "network", label: translateUi(locale, "context_meter.field.network"), value: formatRuntimeToggle(locale, Boolean(workspaceBoundary.network_allowed)) },
     ],
     tools: [
       { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(toolTimeline.length) },
@@ -2536,6 +2548,17 @@ function App() {
     setChatSettings((prev) => (
       Number(prev.max_output_tokens || 0) === Number(DEFAULT_SETTINGS.max_output_tokens || 0)
         ? { ...prev, max_output_tokens: serverDefault }
+        : prev
+    ));
+  }, [health]);
+
+  useEffect(() => {
+    if (!health) return;
+    const serverProfile = String(health.default_permission_profile || "").trim();
+    if (!["chat", "code", "full_dev"].includes(serverProfile)) return;
+    setChatSettings((prev) => (
+      !prev.permission_profile || prev.permission_profile === DEFAULT_SETTINGS.permission_profile
+        ? { ...prev, permission_profile: serverProfile }
         : prev
     ));
   }, [health]);
@@ -5797,6 +5820,23 @@ function App() {
                       <option value="plan">plan</option>
                       <option value="execute">execute</option>
                     </select>
+                  </label>
+                  <label className="form-field">
+                    <span>${t("settings.permission_profile")}</span>
+                    <select
+                      className="drawer-input"
+                      value=${chatSettings.permission_profile || "code"}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = target ? target.value : "code";
+                        setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
+                      }}
+                    >
+                      <option value="chat">${t("settings.permission_profile.chat")}</option>
+                      <option value="code">${t("settings.permission_profile.code")}</option>
+                      <option value="full_dev">${t("settings.permission_profile.full_dev")}</option>
+                    </select>
+                    <span className="field-hint">${t(`settings.permission_profile.${chatSettings.permission_profile || "code"}.help`)}</span>
                   </label>
                   <label className="form-field">
                     <span>${t("settings.response_style")}</span>

@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.12-blue)
+![Version](https://img.shields.io/badge/version-v2.9.13-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.12`
+Current stable release: `v2.9.13`
 
 ## Stable Runtime
 
-v2.9.12 is a live agent timeline, structured debug details, and LLM None-safe diagnostics release that keeps the v2.9.0 recovery policy intact.
+v2.9.13 is a Codex-style workspace and permission profile cleanup release that keeps the v2.9.0 recovery policy intact.
 The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.12 keeps the v2.9.10 Codex-style all-tool drain semantics and the v2.9.11 path portability rules; this release makes the main assistant card show live work and preserves richer diagnostics when LLM requests fail.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.13 keeps the v2.9.10 Codex-style all-tool drain semantics, the v2.9.11 path portability rules, and the v2.9.12 live timeline; this release makes the current project root the default workspace and adds Chat / Code / Full Dev permission boundaries.
 
 ## Max Output Tokens
 
@@ -44,7 +44,11 @@ For the stable v2.9.x runtime, Python `3.11` is recommended. Python `3.12` is al
 
 ## Command Safety
 
-`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.12 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
+`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.13 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited to the current project root by default, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
+
+## Permission Profiles
+
+The default permission profile is `Code`: read the current project and imported files, write inside the current project, run safe commands inside the current project, and keep network access off by default. `Chat` is read-only analysis with no file writes or shell commands. `Full Dev` can read explicitly configured extra roots and can enable network according to global config, but it is still bounded by path checks, the command allowlist, and dangerous-command blocking.
 
 ## What it is
 

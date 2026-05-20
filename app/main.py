@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.attachment_evidence import build_attachment_evidence_pack
 from app.chat_product_runtime import ChatProductRuntime
-from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name
+from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name, normalize_permission_profile
 from app.context_meter import (
     build_compaction_status,
     build_context_meter,
@@ -35,6 +35,7 @@ from app.models import (
     BootstrapResponse,
     ChatRequest,
     ChatResponse,
+    ChatSettings,
     ClearStatsResponse,
     DeleteThreadResponse,
     DeleteSessionResponse,
@@ -81,6 +82,8 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.pricing import estimate_usage_cost
 from app.serialization import dump_model
+from app.runtime_boundary import build_turn_runtime_boundary
+from app.runtime_contract import build_full_auto_runtime_contract
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
@@ -106,7 +109,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.12"
+APP_VERSION = "2.9.13"
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
@@ -860,6 +863,7 @@ def _bootstrap_response_payload(
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
         allowed_roots=effective_roots,
+        default_permission_profile=normalize_permission_profile(getattr(config, "permission_profile", "code")),
         default_max_output_tokens=int(config.max_output_tokens),
         max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
@@ -890,11 +894,35 @@ def _runtime_status_response_payload(
     ).strip()
     projects = get_project_store().list_projects()
     effective_roots = _effective_allowed_roots(projects)
+    permission_profile = normalize_permission_profile(getattr(config, "permission_profile", "code"))
+    status_settings = ChatSettings(permission_profile=permission_profile, enable_tools=True)
+    status_contract = build_full_auto_runtime_contract(settings=status_settings, config=config)
+    status_boundary = build_turn_runtime_boundary(
+        config=config,
+        runtime_contract=status_contract,
+        project_root=str(selected_project.get("root_path") or config.workspace_root),
+        cwd=str(selected_project.get("root_path") or config.workspace_root),
+        attachments=[],
+    )
+    workspace_boundary = {
+        "permission_profile": permission_profile,
+        "project_root": status_boundary.project_root,
+        "cwd": status_boundary.cwd,
+        "readable_roots": list(status_boundary.allowed_roots),
+        "writable_roots": list(status_boundary.writable_roots),
+        "command_allowed_roots": list(status_boundary.command_allowed_roots),
+        "network_allowed": bool(status_boundary.network_allowed),
+        "shell_allowed": bool(status_boundary.shell_allowed),
+        "workspace_write_allowed": bool(status_boundary.workspace_write_allowed),
+        "model_view": status_boundary.to_model_view(),
+    }
     runtime_status = {
         "execution_mode": config.execution_mode,
         "auth_ready": bool(auth_summary.get("available")),
         "auth_mode": str(auth_summary.get("mode") or ""),
         "provider": active_provider_name,
+        "permission_profile": permission_profile,
+        "workspace_boundary": workspace_boundary,
         "permission_summary": _permission_summary_for_roots(effective_roots),
         "workspace_label": str(selected_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
         "project_root": str(selected_project.get("root_path") or config.workspace_root),
@@ -1578,6 +1606,9 @@ def _process_chat_request(
     req.settings.provider = requested_provider
     if req.mode_override:
         req.settings.collaboration_mode = req.mode_override
+    req.settings.permission_profile = normalize_permission_profile(
+        getattr(req.settings, "permission_profile", "") or getattr(config, "permission_profile", "code")
+    )
     requested_model = str(req.settings.model or provider_config.default_model or "").strip() or provider_config.default_model
     with request_phase_timer.measure("provider_auth_summary_ms"):
         auth_summary = OpenAIAuthManager(provider_config).auth_summary()
@@ -1622,6 +1653,7 @@ def _process_chat_request(
         seed_session["agent_state"] = {
             "goal": fallback_goal,
             "collaboration_mode": str(req.settings.collaboration_mode or "default"),
+            "permission_profile": str(req.settings.permission_profile or "code"),
             "turn_status": "blocked",
             "plan": [],
             "pending_user_input": {},
@@ -1652,6 +1684,7 @@ def _process_chat_request(
             text=fallback_text,
             tool_events=[],
             collaboration_mode=str(req.settings.collaboration_mode or "default"),
+            permission_profile=str(req.settings.permission_profile or "code"),
             turn_status="blocked",
             plan=[],
             pending_user_input={},
@@ -1665,6 +1698,7 @@ def _process_chat_request(
                     "phase": "report",
                     "goal": fallback_goal,
                     "collaboration_mode": str(req.settings.collaboration_mode or "default"),
+                    "permission_profile": str(req.settings.permission_profile or "code"),
                     "turn_status": "blocked",
                     "plan": [],
                     "pending_user_input": {},
@@ -2073,6 +2107,9 @@ def _process_chat_request(
         effective_model = str(runtime_result.get("effective_model") or "")
         selected_model = effective_model or req.settings.model or provider_config.default_model
         collaboration_mode = str(runtime_result.get("collaboration_mode") or req.settings.collaboration_mode or "default")
+        permission_profile = normalize_permission_profile(
+            runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "code")
+        )
         turn_status = str(runtime_result.get("turn_status") or "completed")
         plan = list(runtime_result.get("plan") or [])
         pending_user_input = (
@@ -2206,6 +2243,7 @@ def _process_chat_request(
             "goal": str(inspector_run_state.get("goal") or req.message[:140]),
             "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
             "collaboration_mode": str(inspector_run_state.get("collaboration_mode") or collaboration_mode),
+            "permission_profile": permission_profile,
             "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
             "plan": list(inspector_run_state.get("plan") or plan),
             "pending_user_input": dict(inspector_run_state.get("pending_user_input") or pending_user_input),
@@ -2463,6 +2501,7 @@ def _process_chat_request(
             missing_attachment_ids=missing_attachment_ids,
             attachment_context_key=resolved_attachment_context_key,
             collaboration_mode=collaboration_mode,
+            permission_profile=permission_profile,
             turn_status=turn_status,
             plan=plan,
             pending_user_input=pending_user_input,
