@@ -748,7 +748,20 @@ function liveRunItemFromTrace(trace) {
     });
   }
   if (type === "tool.started" || type === "tool.finished" || type === "tool.failed") {
-    return null;
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `tool-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: type === "tool.failed" ? "failed" : (type === "tool.finished" ? "completed" : "running"),
+      label: "",
+      label_key: type === "tool.finished" ? "activity.live.tool_finished" : "activity.live.tool_running",
+      detail: target || item.detail || String(payload.summary || ""),
+      started_at: type === "tool.started" ? item.timestamp : 0,
+      completed_at: type === "tool.finished" || type === "tool.failed" ? item.timestamp : 0,
+      raw: item,
+    });
   }
   return null;
 }
@@ -840,9 +853,16 @@ function sessionTitleFromList(sessions, sessionId, locale) {
   return hit ? hit.title || translateUi(locale, "labels.new_thread") : translateUi(locale, "labels.start_building");
 }
 
-function translateUiOrFallback(locale, key, fallback) {
-  const translated = translateUi(locale, key);
-  return translated === key ? fallback : translated;
+function translateUiOrFallback(locale, key, fallback, replacements = null) {
+  const translated = translateUi(locale, key, replacements);
+  const text = String(translated || "").trim();
+  if (text && text !== key) return translated;
+  if (replacements && typeof replacements === "object") {
+    return String(fallback || "").replace(/\{([^}]+)\}/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(replacements, name) ? String(replacements[name]) : match
+    ));
+  }
+  return fallback;
 }
 
 function workbenchSpecUrl(specName, locale) {
@@ -966,6 +986,7 @@ function buildActivityFlowStages(activity, locale) {
     const validationCode = String(validationResult.code || "").trim();
     const type = String(entry.type || "").trim();
     const stageStatus = activityStageStatusFromTrace(entry);
+    const guardStatus = validationResult.allowed === false ? "rejected" : (validationAllowed ? "allowed" : "");
     if (stageKey === "model_action") {
       if (actionType === "tool_call") return translateUi(locale, "activity.status.tool_guard_pending");
       if (actionType === "final_answer") return translateUi(locale, "activity.status.direct_answer_no_tool");
@@ -1115,27 +1136,60 @@ function toolCallTargetFromSource(source) {
     item.normalized_arguments && typeof item.normalized_arguments === "object" ? item.normalized_arguments : {};
   const candidates = [
     normalizedArguments.path,
+    normalizedArguments.file,
     normalizedArguments.query,
+    normalizedArguments.q,
     normalizedArguments.url,
     normalizedArguments.command,
+    normalizedArguments.cmd,
+    normalizedArguments.cwd,
+    normalizedArguments.root,
+    normalizedArguments.pattern,
+    normalizedArguments.glob,
     normalizedArguments.patch,
     normalizedArguments.text,
     rawArguments.path,
+    rawArguments.file,
     rawArguments.query,
     rawArguments.q,
     rawArguments.url,
     rawArguments.command,
+    rawArguments.cmd,
+    rawArguments.cwd,
+    rawArguments.root,
+    rawArguments.pattern,
+    rawArguments.glob,
     rawCallArguments.path,
+    rawCallArguments.file,
     rawCallArguments.query,
     rawCallArguments.q,
     rawCallArguments.url,
     rawCallArguments.command,
+    rawCallArguments.cmd,
+    rawCallArguments.cwd,
+    rawCallArguments.root,
+    rawCallArguments.pattern,
+    rawCallArguments.glob,
+    item.arguments_preview,
+    item.detail,
+    item.summary,
   ];
   for (const candidate of candidates) {
     const text = shortenActivityTarget(candidate);
     if (text) return text;
   }
   return "";
+}
+
+function formatToolTitle(locale, toolName) {
+  const normalized = String(toolName || "").trim();
+  if (!normalized) return translateUiOrFallback(locale, "activity.tool_title.use_tool", "调用工具");
+  return translateUiOrFallback(
+    locale,
+    `activity.tool_title.${normalized}`,
+    translateUiOrFallback(locale, "activity.tool_title.use_tool_named", `调用工具 ${normalized}`, { tool: normalized }),
+    { tool: normalized },
+  );
 }
 
 function formatToolProgressLabel(locale, group) {
@@ -1146,9 +1200,9 @@ function formatToolProgressLabel(locale, group) {
   const readTools = new Set(["read_file", "read_section", "image_read", "image_inspect", "table_extract"]);
   const listTools = new Set(["list_dir"]);
   const globTools = new Set(["glob_file_search"]);
-  const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "fact_check_file", "web_search"]);
-  const commandTools = new Set(["exec_command", "run_command", "shell", "bash"]);
-  const patchTools = new Set(["apply_patch"]);
+  const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "fact_check_file", "web_search", "web_fetch", "web_download"]);
+  const commandTools = new Set(["exec_command", "run_shell", "run_command", "shell", "bash"]);
+  const patchTools = new Set(["apply_patch", "write_skill", "read_skill", "list_skills"]);
   if (readTools.has(toolName)) return translateUi(locale, "activity.progress.read", { target: labelValue });
   if (listTools.has(toolName)) return translateUi(locale, "activity.progress.list_dir", { target: labelValue });
   if (globTools.has(toolName)) return translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
@@ -1289,11 +1343,20 @@ function buildLiveAgentTimelineItems(activity, locale) {
   if (isActivityTerminalStatus(item.status)) return [];
   return item.live_items.map((liveItem) => {
     const tool = String(liveItem.tool || "").trim();
+    const target = shortenActivityTarget(liveItem.detail || "");
+    const toolLabel = tool
+      ? formatToolProgressLabel(locale, {
+          tool_name: tool,
+          normalized_arguments: target ? { query: target } : {},
+          arguments_preview: target,
+          detail: target,
+        })
+      : "";
     const fallbackLabel = tool
-      ? translateUi(locale, "activity.live.tool_running", { tool })
+      ? toolLabel
       : String(liveItem.type || "activity");
     const label = liveItem.label
-      || (liveItem.label_key ? translateUi(locale, liveItem.label_key, { tool }) : "")
+      || (toolLabel || (liveItem.label_key ? translateUi(locale, liveItem.label_key, { tool }) : ""))
       || fallbackLabel;
     return {
       id: `live-${liveItem.id}`,
@@ -1400,38 +1463,55 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
     const status = normalizeProgressStatus(entry.status);
     const toolGroup = entry.tool_group && typeof entry.tool_group === "object" ? entry.tool_group : {};
     const trace = traceItems[index] && typeof traceItems[index] === "object" ? traceItems[index] : {};
+    const tool = String(entry.tool || toolGroup.tool_name || trace.tool_name || "").trim();
+    const target = String(
+      entry.target
+      || toolCallTargetFromSource(toolGroup)
+      || toolGroup.summary
+      || toolGroup.arguments_preview
+      || "",
+    ).trim();
+    const title = String(entry.label || entry.title || trace.title || (tool ? formatToolTitle(locale, tool) : "") || "").trim()
+      || translateUiOrFallback(locale, "activity.tool_title.use_tool", "调用工具");
+    const detail = String(entry.detail || trace.detail || target || "").trim()
+      || translateUiOrFallback(locale, "activity.detail.recorded_arguments", "参数已记录");
     return {
       id: String(entry.id || trace.id || `main-live-${index}`),
-      title: String(entry.label || trace.title || "").trim(),
+      title,
+      label: title,
       status,
-      detail: String(entry.detail || trace.detail || "").trim(),
-      tool: String(entry.tool || toolGroup.tool_name || trace.tool_name || "").trim(),
-      target: String(toolGroup.summary || toolGroup.arguments_preview || "").trim(),
+      detail,
+      tool,
+      target,
       durationMs: Number(trace.duration_ms || 0) || 0,
       collapsible: true,
       rawRef: entry,
     };
   }).filter((entry, index, collection) => (
-    entry.title && collection.findIndex((candidate) => candidate.id === entry.id) === index
+    collection.findIndex((candidate) => candidate.id === entry.id) === index
   ));
 }
 
-function buildMainCompletionSummary(activity, toolEvents = [], finalAnswer = "", locale = "zh-CN") {
+function buildMainCompletionSummary(activity, liveCards = [], toolEvents = [], locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const sourceTools = Array.isArray(toolEvents) && toolEvents.length ? toolEvents : item.tool_items;
   const toolNames = sourceTools.map((tool) => String((tool && (tool.name || tool.tool || tool.tool_name)) || "").trim()).filter(Boolean);
-  const searchCount = toolNames.filter((name) => /search|glob|grep|rg/i.test(name)).length;
-  const readCount = toolNames.filter((name) => /read|list|section|extract/i.test(name)).length;
-  const commandCount = toolNames.filter((name) => /exec|shell|command|pytest|apply_patch/i.test(name)).length;
-  const failedCount = sourceTools.filter((tool) => ["failed", "error", "blocked"].includes(normalizeProgressStatus((tool && tool.status) || ""))).length;
+  const cardTools = (Array.isArray(liveCards) ? liveCards : [])
+    .map((card) => String((card && card.tool) || "").trim())
+    .filter(Boolean);
+  const allToolNames = toolNames.length ? toolNames : cardTools;
+  const searchCount = allToolNames.filter((name) => /search|glob|grep|rg|web/i.test(name)).length;
+  const readCount = allToolNames.filter((name) => /read|list|section|extract/i.test(name)).length;
+  const commandCount = allToolNames.filter((name) => /exec|shell|command|pytest|apply_patch|patch/i.test(name)).length;
+  const failedCount = sourceTools.filter((tool) => ["failed", "error", "blocked"].includes(normalizeProgressStatus((tool && tool.status) || ""))).length
+    + (sourceTools.length ? 0 : (Array.isArray(liveCards) ? liveCards : []).filter((card) => ["failed", "blocked"].includes(normalizeProgressStatus((card && card.status) || ""))).length);
   return {
-    tool_count: toolNames.length,
+    tool_count: allToolNames.length,
     search_count: searchCount,
     read_count: readCount,
     command_count: commandCount,
     failed_count: failedCount,
-    has_final_answer: Boolean(String(finalAnswer || "").trim()),
-    label: translateUi(locale, "activity.execution_summary_counts", {
+    label: translateUiOrFallback(locale, "activity.execution_summary_counts", "执行摘要：搜索 {search} 次，读取 {read} 个文件，运行 {command} 个命令，{failed} 个失败", {
       search: searchCount,
       read: readCount,
       command: commandCount,
@@ -1448,10 +1528,11 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
     : buildFallbackProgressItems(item, locale, nowMs);
   const executionTrace = latestExecutionTrace(item);
   const toolGroups = buildToolProgressGroups(item);
+  const mainLiveCards = buildMainLiveCards(item, progressItems, executionTrace, locale, nowMs);
   return {
     progress_items: progressItems,
-    main_live_cards: buildMainLiveCards(item, progressItems, executionTrace, locale, nowMs),
-    completion_summary: buildMainCompletionSummary(item, item.tool_items, "", locale),
+    main_live_cards: mainLiveCards,
+    completion_summary: buildMainCompletionSummary(item, mainLiveCards, item.tool_items, locale),
     revision_summary: revisionSummary,
     revision_badge: formatRevisionSummaryBadge(locale, revisionSummary),
     plan: item.plan,
@@ -1537,6 +1618,18 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   const sentToModel = inspectorRunState.model_context && typeof inspectorRunState.model_context === "object"
     ? inspectorRunState.model_context
     : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
+  const runtimeBoundary = inspectorRunState.runtime_boundary && typeof inspectorRunState.runtime_boundary === "object"
+    ? inspectorRunState.runtime_boundary
+    : {};
+  const explicitBoundaryModelView = inspectorRunState.runtime_boundary_model_view && typeof inspectorRunState.runtime_boundary_model_view === "object"
+    ? inspectorRunState.runtime_boundary_model_view
+    : {};
+  const boundaryModelView = Object.keys(explicitBoundaryModelView).length
+    ? explicitBoundaryModelView
+    : ((runtimeBoundary.model_view && typeof runtimeBoundary.model_view === "object") ? runtimeBoundary.model_view : runtimeBoundary);
+  const modelPermissions = sentToModel.permissions && typeof sentToModel.permissions === "object"
+    ? sentToModel.permissions
+    : {};
   return {
     sent_to_model: sentToModel,
     user_context: {
@@ -1564,6 +1657,17 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       trace_types: group.trace_types,
     })),
     harness: {
+      permission_profile:
+        latestHarness.permission_profile
+        || inspectorRunState.permission_profile
+        || modelPermissions.profile
+        || boundaryModelView.permission_profile
+        || "",
+      file_read_scope: boundaryModelView.file_read_scope || modelPermissions.read || "",
+      file_write_scope: boundaryModelView.file_write_scope || modelPermissions.write || "",
+      command_scope: boundaryModelView.command_scope || modelPermissions.shell || "",
+      network_allowed: boundaryModelView.network_allowed,
+      network_reason: boundaryModelView.network_reason || "",
       tool_boundary_clean: latestHarness.tool_boundary_clean,
       compaction_happened: traces.some((trace) => String(trace.type || "") === "context.compacted"),
       retry_happened: traces.some((trace) => String(trace.type || "").startsWith("llm.retry")),
@@ -1753,6 +1857,8 @@ function buildRuntimeStatsSummary({
   contextMeter,
   maxOutputTokens,
   tokenUsage,
+  permissionProfile,
+  boundaryModelView: boundaryModelViewOverride,
 }) {
   const currentRuntimeStatus = runtimeStatus && typeof runtimeStatus === "object" ? runtimeStatus : {};
   const safeguards = (currentRuntimeStatus.loop_safeguards && typeof currentRuntimeStatus.loop_safeguards === "object")
@@ -1764,9 +1870,10 @@ function buildRuntimeStatsSummary({
   const workspaceBoundary = (currentRuntimeStatus.workspace_boundary && typeof currentRuntimeStatus.workspace_boundary === "object")
     ? currentRuntimeStatus.workspace_boundary
     : {};
-  const boundaryModelView = (workspaceBoundary.model_view && typeof workspaceBoundary.model_view === "object")
-    ? workspaceBoundary.model_view
-    : {};
+  const boundaryViewOverride = boundaryModelViewOverride && typeof boundaryModelViewOverride === "object" ? boundaryModelViewOverride : {};
+  const boundaryModelView = Object.keys(boundaryViewOverride).length
+    ? boundaryViewOverride
+    : ((workspaceBoundary.model_view && typeof workspaceBoundary.model_view === "object") ? workspaceBoundary.model_view : {});
   const activity = latestAssistantActivity(messages);
   const toolTimeline = runtimeToolTimelineForStats({
     hasLiveRunState,
@@ -1815,6 +1922,20 @@ function buildRuntimeStatsSummary({
     : translateUi(locale, "context_meter.compact_tokens_unknown");
   const elapsedValue = formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown");
   const autoCompactionEnabled = Boolean(safeContextMeter.compaction_enabled || safeguards.context_compaction);
+  const effectivePermissionProfile = String(
+    permissionProfile
+    || currentRuntimeStatus.permission_profile
+    || workspaceBoundary.permission_profile
+    || boundaryModelView.permission_profile
+    || "code",
+  ).trim();
+  const networkReason = String(boundaryModelView.network_reason || workspaceBoundary.network_reason || "").trim();
+  const networkAllowed = Object.prototype.hasOwnProperty.call(boundaryModelView, "network_allowed")
+    ? Boolean(boundaryModelView.network_allowed)
+    : Boolean(workspaceBoundary.network_allowed);
+  const networkValue = networkAllowed
+    ? translateUi(locale, "context_meter.network.enabled")
+    : translateUiOrFallback(locale, `context_meter.network.${networkReason || "disabled"}`, formatRuntimeToggle(locale, false));
   return {
     compact: [
       { key: "usage", text: compactUsage },
@@ -1828,11 +1949,11 @@ function buildRuntimeStatsSummary({
       { key: "model", label: translateUi(locale, "context_meter.field.model"), value: activeModel || "-" },
       { key: "elapsed", label: translateUi(locale, "context_meter.field.elapsed"), value: elapsedValue },
       { key: "runtime_mode", label: translateUi(locale, "context_meter.field.runtime_mode"), value: formatRuntimeModeLabel(locale, currentRuntimeStatus.execution_mode) },
-      { key: "permission_profile", label: translateUi(locale, "context_meter.field.permission_profile"), value: translateUi(locale, `settings.permission_profile.${currentRuntimeStatus.permission_profile || workspaceBoundary.permission_profile || "code"}`) },
+      { key: "permission_profile", label: translateUi(locale, "context_meter.field.permission_profile"), value: translateUi(locale, `settings.permission_profile.${effectivePermissionProfile}`) },
       { key: "file_read_scope", label: translateUi(locale, "context_meter.field.file_read_scope"), value: boundaryModelView.file_read_scope || "-" },
       { key: "file_write_scope", label: translateUi(locale, "context_meter.field.file_write_scope"), value: boundaryModelView.file_write_scope || "-" },
       { key: "command_scope", label: translateUi(locale, "context_meter.field.command_scope"), value: boundaryModelView.command_scope || "-" },
-      { key: "network", label: translateUi(locale, "context_meter.field.network"), value: formatRuntimeToggle(locale, Boolean(workspaceBoundary.network_allowed)) },
+      { key: "network", label: translateUi(locale, "context_meter.field.network"), value: networkValue },
     ],
     tools: [
       { key: "total", label: translateUi(locale, "context_meter.field.tool_total"), value: String(toolTimeline.length) },
@@ -4585,7 +4706,17 @@ function App() {
           ? sessionAgentState.current_task_focus
           : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
-  const activePermissionProfile = String(runState.permission_profile || sessionAgentState.permission_profile || chatSettings.permission_profile || "code");
+  const selectedPermissionProfile = String(chatSettings.permission_profile || "code");
+  const activePermissionProfile = String(
+    (hasLiveRunState ? runState.permission_profile : "")
+    || selectedPermissionProfile
+    || "code",
+  );
+  const activeBoundaryModelView = (
+    runState.runtime_boundary_model_view && typeof runState.runtime_boundary_model_view === "object"
+  )
+    ? runState.runtime_boundary_model_view
+    : {};
   const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
@@ -4672,6 +4803,8 @@ function App() {
     contextMeter: activeContextMeter,
     maxOutputTokens: chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens,
     tokenUsage: (lastResponse && lastResponse.token_usage) || {},
+    permissionProfile: activePermissionProfile,
+    boundaryModelView: activeBoundaryModelView,
   }), [
     uiLocale,
     workspaceLabel,
@@ -4686,6 +4819,8 @@ function App() {
     toolTimeline,
     activeContextMeter,
     chatSettings.max_output_tokens,
+    activePermissionProfile,
+    activeBoundaryModelView,
     lastResponse,
   ]);
 
@@ -4735,51 +4870,6 @@ function App() {
     const item = source && typeof source === "object" ? source : {};
     if (!Object.keys(item).length) return null;
     return renderDetailBlock(label, item);
-  };
-
-  const renderPhaseTimingDetails = (source) => {
-    const timings = source && typeof source === "object" ? source : {};
-    const preferredOrder = [
-      "frontend_submit_to_backend_ms",
-      "provider_profile_resolve_ms",
-      "provider_auth_summary_ms",
-      "project_resolve_ms",
-      "session_seed_ms",
-      "queue_wait_ms",
-      "session_load_ms",
-      "session_ready_ms",
-      "pre_turn_compaction_ms",
-      "attachment_context_ms",
-      "attachment_load_ms",
-      "runtime_context_ms",
-      "runtime_context_ready_ms",
-      "runtime_run_ms",
-      "runtime_auth_summary_ms",
-      "agent_spec_load_ms",
-      "skills_load_ms",
-      "model_request_start_ms",
-      "model_first_event_ms",
-      "model_first_text_delta_ms",
-      "answer_ready_ms",
-      "runtime_total_ms",
-      "total_ms",
-    ];
-    const entries = Object.entries(timings)
-      .filter(([, value]) => Number.isFinite(Number(value)))
-      .sort((left, right) => {
-        const leftIndex = preferredOrder.indexOf(left[0]);
-        const rightIndex = preferredOrder.indexOf(right[0]);
-        const safeLeft = leftIndex >= 0 ? leftIndex : preferredOrder.length + 1;
-        const safeRight = rightIndex >= 0 ? rightIndex : preferredOrder.length + 1;
-        return safeLeft - safeRight || left[0].localeCompare(right[0]);
-      });
-    if (!entries.length) return null;
-    return html`
-      <details className="activity-payload">
-        <summary>${t("activity.phase_timings")}</summary>
-        <pre>${entries.map(([key, value]) => `${formatPhaseTimingLabel(uiLocale, key)}: ${formatPhaseTimingMs(value)}`).join("\n")}</pre>
-      </details>
-    `;
   };
 
   const renderRevisionSummaryDetails = (source) => {
@@ -4919,12 +5009,15 @@ function App() {
                 ${visibleItems.map((entry) => {
                   const status = normalizeProgressStatus(entry.status);
                   const tone = activityToneClass(status);
+                  const title = String(entry.label || entry.title || "").trim()
+                    || translateUiOrFallback(uiLocale, "activity.tool_title.use_tool", "调用工具");
+                  const detail = String(entry.detail || entry.target || "").trim();
                   return html`
                     <div key=${entry.id} className=${`activity-progress-item tone-${tone} status-${status}`}>
                       <span className="activity-progress-marker" aria-hidden="true">${markerForStatus(status)}</span>
                       <div className="activity-progress-copy">
-                        <div className="activity-progress-label">${entry.label}</div>
-                        ${entry.detail ? html`<div className="activity-progress-detail">${entry.detail}</div>` : null}
+                        <div className="activity-progress-label">${title}</div>
+                        ${detail ? html`<div className="activity-progress-detail">${detail}</div>` : null}
                       </div>
                     </div>
                   `;
@@ -5000,10 +5093,7 @@ function App() {
           </details>
         `
       : null;
-    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), {
-      ...structured.harness,
-      phase_timings: item.phase_timings || {},
-    }, { open: true });
+    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true });
     const finalStatusDetails = renderDetailBlock(t("activity.debug.final_status"), structured.final_status);
     const modelOutputDetails = modelRoundDetails || modelOutputSections.length || finalStatusDetails
       ? html`
@@ -5339,6 +5429,27 @@ function App() {
             <div className="composer-toolbar-left">
               <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
               <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
+              <label
+                className="composer-permission-profile"
+                title=${t(`settings.permission_profile.${chatSettings.permission_profile || "code"}.help`)}
+              >
+                <span>${t("settings.permission_profile")}</span>
+                <select
+                  className="composer-profile-select"
+                  value=${chatSettings.permission_profile || "code"}
+                  onChange=${(event) => {
+                    const target = event.currentTarget;
+                    const nextValue = target ? target.value : "code";
+                    setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
+                  }}
+                  disabled=${sending}
+                  aria-label=${t("settings.permission_profile")}
+                >
+                  <option value="chat">${t("settings.permission_profile.chat")}</option>
+                  <option value="code">${t("settings.permission_profile.code")}</option>
+                  <option value="full_dev">${t("settings.permission_profile.full_dev")}</option>
+                </select>
+              </label>
             </div>
             <div className="composer-toolbar-right">
               ${sending && activeRunId
@@ -5872,23 +5983,6 @@ function App() {
                       value=${chatSettings.model}
                       onInput=${(event) => updateModelSelection(event.currentTarget.value)}
                     />
-                  </label>
-                  <label className="form-field">
-                    <span>${t("settings.permission_profile")}</span>
-                    <select
-                      className="drawer-input"
-                      value=${chatSettings.permission_profile || "code"}
-                      onChange=${(event) => {
-                        const target = event.currentTarget;
-                        const nextValue = target ? target.value : "code";
-                        setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
-                      }}
-                    >
-                      <option value="chat">${t("settings.permission_profile.chat")}</option>
-                      <option value="code">${t("settings.permission_profile.code")}</option>
-                      <option value="full_dev">${t("settings.permission_profile.full_dev")}</option>
-                    </select>
-                    <span className="field-hint">${t(`settings.permission_profile.${chatSettings.permission_profile || "code"}.help`)}</span>
                   </label>
                   <label className="form-field">
                     <span>${t("settings.response_style")}</span>

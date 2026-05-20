@@ -1136,6 +1136,18 @@ button {
   flex-wrap: wrap;
 }
 
+.composer-permission-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.composer-profile-select {
+  min-width: 108px;
+}
+
 .toolbar-model-preset,
 .toolbar-model,
 .composer-toolbar select,

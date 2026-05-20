@@ -110,7 +110,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.15"
+APP_VERSION = "2.9.16"
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
@@ -913,6 +913,7 @@ def _runtime_status_response_payload(
         "writable_roots": list(status_boundary.writable_roots),
         "command_allowed_roots": list(status_boundary.command_allowed_roots),
         "network_allowed": bool(status_boundary.network_allowed),
+        "network_reason": status_boundary.network_reason(),
         "shell_allowed": bool(status_boundary.shell_allowed),
         "workspace_write_allowed": bool(status_boundary.workspace_write_allowed),
         "model_view": status_boundary.to_model_view(),

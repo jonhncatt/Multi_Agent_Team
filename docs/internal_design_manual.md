@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.15）
+# 内部设计手册（v2.9.16）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -785,6 +785,18 @@ v2.9.15 keeps the ModelContext-first runtime and cleans the product surface.
 - Phase timings and raw payloads stay in Runtime or Advanced Raw rather than becoming separate primary debug sections.
 - The old mode control is removed. Chat, Code, and Full Dev permission profiles are the only user-facing runtime mode control.
 - Agent specs no longer declare default/plan/execute workflow modes.
+
+## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes
+
+v2.9.16 is a focused UI/runtime-display hotfix.
+
+- Main card live projection treats `tool.started`, `tool.finished`, and `tool.failed` as visible execution cards.
+- Tool cards use stable tool-name mapping and target extraction from common fields such as `path`, `query`, `command`, `root`, and `pattern`.
+- Main card cards must have non-empty titles and fallback details, so missing locale keys or partial trace payloads do not produce blank cards.
+- The active Chat / Code / Full Dev permission profile selector moved from Settings to the composer next to the attachment button.
+- The selected permission profile is included in the next chat request immediately.
+- Runtime status and Debug Runtime expose `network_reason` so Full Dev can distinguish global network disablement from profile-level network disablement.
+- Debug Detail keeps the five-section structure and no longer surfaces `phase_timings` as a normal runtime section.
 
 ## 21. v2.9.0 Stability Decision
 

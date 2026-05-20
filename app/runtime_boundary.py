@@ -39,6 +39,7 @@ class RuntimeBoundary(BaseModel):
             "workspace_write_allowed": bool(self.workspace_write_allowed),
             "shell_allowed": bool(self.shell_allowed),
             "network_allowed": bool(self.network_allowed),
+            "network_reason": self.network_reason(),
             "approval_policy": str(self.approval_policy or ""),
             "cwd": str(self.cwd or ""),
             "project_root": str(self.project_root or ""),
@@ -54,6 +55,13 @@ class RuntimeBoundary(BaseModel):
         if len(roots) == 1:
             return "current project"
         return "current project + imported files"
+
+    def network_reason(self) -> str:
+        if self.network_allowed:
+            return "enabled"
+        if normalize_permission_profile(self.permission_profile) in {"chat", "code"}:
+            return "profile_disabled"
+        return "global_disabled"
 
 
 def _dedup_paths(paths: list[Path]) -> list[Path]:

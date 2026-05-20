@@ -700,7 +700,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "2.9.15",
+        "app_version": "2.9.16",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -742,7 +742,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.9.15"
+    assert bootstrap_payload["app_version"] == "2.9.16"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -753,6 +753,8 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert runtime_payload["ok"] is True
     assert runtime_payload["project_id"] == bootstrap_payload["default_project_id"]
     assert runtime_payload["runtime_status"]["workspace_label"]
+    assert runtime_payload["runtime_status"]["workspace_boundary"]["model_view"]["permission_profile"] == "code"
+    assert runtime_payload["runtime_status"]["workspace_boundary"]["model_view"]["network_reason"] == "profile_disabled"
     assert "emergency_max_tool_calls_per_turn" not in runtime_payload["runtime_status"]["loop_safeguards"]
     assert "max_total_tool_calls_per_turn" not in runtime_payload["runtime_status"]["loop_safeguards"]
     assert runtime_payload["runtime_status"]["loop_safeguards"]["max_turn_seconds"] > 0

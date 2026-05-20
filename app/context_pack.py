@@ -514,7 +514,11 @@ def _permissions_from_boundary(runtime_boundary_model_view: dict[str, Any], *, p
             enabled="current project",
             disabled="none",
         )),
-        network="enabled" if bool(runtime_boundary_model_view.get("network_allowed")) else "disabled",
+        network=(
+            "enabled"
+            if bool(runtime_boundary_model_view.get("network_allowed"))
+            else str(runtime_boundary_model_view.get("network_reason") or "disabled")
+        ),
     )
 
 

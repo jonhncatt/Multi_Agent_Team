@@ -60,6 +60,24 @@ REQUIRED_CORE_KEYS = (
     "activity.live.waiting_next_model",
     "activity.live.answer_streaming",
     "activity.live.answer_done",
+    "activity.tool_title.read_file",
+    "activity.tool_title.list_dir",
+    "activity.tool_title.glob_file_search",
+    "activity.tool_title.search_contents_in_file",
+    "activity.tool_title.search_contents_in_file_multi",
+    "activity.tool_title.search_codebase",
+    "activity.tool_title.exec_command",
+    "activity.tool_title.run_shell",
+    "activity.tool_title.write_skill",
+    "activity.tool_title.read_skill",
+    "activity.tool_title.list_skills",
+    "activity.tool_title.apply_patch",
+    "activity.tool_title.web_search",
+    "activity.tool_title.web_fetch",
+    "activity.tool_title.web_download",
+    "activity.tool_title.use_tool",
+    "activity.tool_title.use_tool_named",
+    "activity.detail.recorded_arguments",
     "activity.model_action",
     "activity.execution_trace",
     "activity.runtime_boundary",
@@ -130,6 +148,15 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.model",
     "context_meter.field.elapsed",
     "context_meter.field.runtime_mode",
+    "context_meter.field.permission_profile",
+    "context_meter.field.file_read_scope",
+    "context_meter.field.file_write_scope",
+    "context_meter.field.command_scope",
+    "context_meter.field.network",
+    "context_meter.network.enabled",
+    "context_meter.network.disabled",
+    "context_meter.network.global_disabled",
+    "context_meter.network.profile_disabled",
     "context_meter.field.tool_total",
     "context_meter.field.tool_succeeded",
     "context_meter.field.tool_failed",
@@ -241,6 +268,7 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "function buildMainLiveCards(",
         "function buildMainCompletionSummary(",
         "function buildLiveAgentTimelineItems(",
+        "function formatToolTitle(",
         "function buildStructuredDebugView(",
         "function buildRuntimeStatsSummary(",
         "function buildToolProgressGroups(",
@@ -261,6 +289,8 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         'className="activity-progress"',
         'className="activity-debug-drawer"',
         "MAIN_LIVE_CARD_LIMIT",
+        "composer-profile-select",
+        "composer-permission-profile",
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -274,6 +304,8 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         ".activity-flow-stages",
         ".activity-flow-stage",
         ".activity-flow-note",
+        ".composer-profile-select",
+        ".composer-permission-profile",
     )
     for token in required_style_tokens:
         assert token in styles, token
@@ -328,6 +360,8 @@ def test_live_agent_timeline_items_are_wired_into_activity_projection() -> None:
         "if (!hasLiveItems && !toolGroups.length",
         "activity.live.model_thinking",
         "activity.live.answer_streaming",
+        'type === "tool.started" || type === "tool.finished" || type === "tool.failed"',
+        "toolCallTargetFromSource(payload)",
     )
     for token in required_tokens:
         assert token in script, token
@@ -380,6 +414,27 @@ def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
     assert '"search_contents_in_file_multi"' in script
     assert '"search_file"' not in script
     assert '"search_file_multi"' not in script
+
+
+def test_main_cards_project_tool_traces_with_non_blank_fallbacks() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'type === "tool.started" || type === "tool.finished" || type === "tool.failed"' in script
+    assert "formatToolTitle(locale, tool)" in script
+    assert 'translateUiOrFallback(locale, "activity.tool_title.use_tool", "调用工具")' in script
+    assert 'translateUiOrFallback(locale, "activity.detail.recorded_arguments", "参数已记录")' in script
+    assert "entry.label && collection.findIndex" not in script
+    assert "entry.title && collection.findIndex" not in script
+    assert 'const title = String(entry.label || entry.title || trace.title || (tool ? formatToolTitle(locale, tool) : "") || "").trim()' in script
+
+
+def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'className="composer-permission-profile"' in script
+    assert 'className="composer-profile-select"' in script
+    assert "settings: {\n            ...chatSettings," in script
+    assert 'className="drawer-input"\n                      value=${chatSettings.permission_profile || "code"}' not in script
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
@@ -499,7 +554,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.15）")
+    assert manual.startswith("# 内部设计手册（v2.9.16）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -514,6 +569,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.7 v2.9.13 Workspace and Permission Profiles Notes" in manual
     assert "## 20.8 v2.9.14 ModelContext-first Context System Notes" in manual
     assert "## 20.9 v2.9.15 Main Card and Debug Cleanup Notes" in manual
+    assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual
@@ -592,18 +648,16 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
     assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' in script
     assert 'renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true })' in script
-    assert 'renderDetailBlock(t("activity.debug.runtime"), {' in script
-    assert "phase_timings: item.phase_timings || {}" in script
+    assert 'renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true })' in script
+    assert "phase_timings: item.phase_timings || {}" not in script
 
 
-def test_activity_debug_drawer_surfaces_phase_timings() -> None:
+def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "const renderPhaseTimingDetails = (source) => {" in script
-    assert 'summary>${t("activity.phase_timings")}</summary>' in script
-    assert 'formatPhaseTimingLabel(uiLocale, key)' in script
-    assert 'formatPhaseTimingMs(value)' in script
-    assert "item.phase_timings" in script
+    debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
+    assert "phase_timings" not in debug_block
+    assert "renderPhaseTimingDetails(" not in debug_block
 
 
 def test_handle_send_includes_client_submission_timestamp() -> None:
