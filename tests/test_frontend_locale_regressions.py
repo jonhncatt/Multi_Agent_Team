@@ -91,12 +91,6 @@ REQUIRED_CORE_KEYS = (
     "activity.reason",
     "activity.triggering_user_message",
     "activity.triggering_user_turn_id",
-    "activity.current_turn_goal",
-    "activity.current_turn_followup_type",
-    "activity.current_turn_goal_source",
-    "activity.active_task_focus",
-    "activity.recent_user_messages",
-    "activity.phase_timings",
     "activity.progress.read",
     "activity.progress.list_dir",
     "activity.progress.glob_file_search",
@@ -126,6 +120,18 @@ REQUIRED_CORE_KEYS = (
     "activity.status.answer_generating",
     "activity.status.answer_streaming",
     "activity.status.answer_ready",
+    "update.button",
+    "update.running",
+    "update.success",
+    "update.failed",
+    "update.restart_hint",
+    "update.discards_local_changes",
+    "update.details",
+    "update.command",
+    "update.exit_code",
+    "update.stdout",
+    "update.stderr",
+    "update.branch",
     "activity.revision_summary_count",
     "validation.valid",
     "validation.invalid",
@@ -574,7 +580,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.17）")
+    assert manual.startswith("# 内部设计手册（v2.9.19）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -591,6 +597,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.9 v2.9.15 Main Card and Debug Cleanup Notes" in manual
     assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
     assert "## 20.11 v2.9.17 Permission Selector UI Polish Notes" in manual
+    assert "## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual
@@ -667,10 +674,27 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
 
     assert "triggering_user_message" in script
     assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
-    assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' in script
+    assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' not in script
     assert 'renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true })' in script
     assert 'renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true })' in script
     assert "phase_timings: item.phase_timings || {}" not in script
+
+
+def test_manual_update_button_is_click_only_and_reports_results() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'fetchJson("/api/app/update", { method: "POST" })' in script
+    assert 'onClick=${handleAppUpdate}' in script
+    assert 'appUpdateRunning ? t("update.running") : t("update.button")' in script
+    assert 'title=${t("update.discards_local_changes")}' in script
+    assert 'className=${`rail-update-result status-${appUpdateState.status}`}' in script
+    assert 'setInterval' in script
+    assert "/api/app/update" not in script.split("function handleAppUpdate", 1)[0]
+    assert "autoUpdate" not in script
+    assert "update check" not in script.lower()
+    assert ".rail-update-result" in styles
+    assert ".rail-update-details" in styles
 
 
 def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:

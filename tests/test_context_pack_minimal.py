@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-from app.context_pack import build_context_pack
+from app.context_pack import build_model_context
 from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
 
 
-def test_context_pack_compat_returns_model_context_top_level_keys() -> None:
+def _pack(*, message: str, context: dict, current_task_focus: dict, boundary: RuntimeBoundary) -> dict:
+    return dump_model(
+        build_model_context(
+            user_request=message,
+            context=context,
+            current_task_focus=current_task_focus,
+            runtime_boundary_model_view=boundary.to_model_view(),
+            permission_profile=str(boundary.permission_profile or ""),
+        )
+    )
+
+
+def test_model_context_returns_only_current_top_level_keys() -> None:
     boundary = RuntimeBoundary(cwd="/tmp/project", project_root="/tmp/project", allowed_roots=["/tmp/project"])
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message="hello",
             context={},
             current_task_focus={},
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     assert set(pack) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
@@ -25,13 +35,11 @@ def test_context_pack_compat_returns_model_context_top_level_keys() -> None:
 def test_full_user_message_lives_only_in_task_user_request() -> None:
     message = "第一行\n第二行 " + ("内容" * 80)
     boundary = RuntimeBoundary()
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message=message,
             context={"history_turns": [{"role": "user", "text": message}, {"role": "assistant", "text": "ok"}]},
             current_task_focus={},
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     assert pack["task"]["user_request"] == message.replace("\n", " ")
@@ -41,8 +49,7 @@ def test_full_user_message_lives_only_in_task_user_request() -> None:
 
 def test_plan_state_maps_to_model_context_plan() -> None:
     boundary = RuntimeBoundary()
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message="继续",
             context={
                 "plan_state": {
@@ -54,8 +61,7 @@ def test_plan_state_maps_to_model_context_plan() -> None:
                 }
             },
             current_task_focus={},
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     assert [item["status"] for item in pack["plan"]["items"]] == ["completed", "in_progress"]
@@ -69,13 +75,11 @@ def test_permissions_view_excludes_internal_roots() -> None:
         writable_roots=["/tmp/project"],
         max_output_tokens=8192,
     )
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message="hello",
             context={},
             current_task_focus={},
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     assert pack["workspace"]["cwd"] == "/tmp/project"
@@ -86,8 +90,7 @@ def test_permissions_view_excludes_internal_roots() -> None:
 
 def test_compaction_summary_feeds_clean_memory() -> None:
     boundary = RuntimeBoundary()
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message="继续",
             context={
                 "summary": "Older context summary",
@@ -99,8 +102,7 @@ def test_compaction_summary_feeds_clean_memory() -> None:
                 },
             },
             current_task_focus={},
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     assert pack["memory"]["clean_summary"] == "Older context summary"
@@ -109,8 +111,7 @@ def test_compaction_summary_feeds_clean_memory() -> None:
 
 def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
     boundary = RuntimeBoundary(cwd="/new/root", project_root="/new/root", allowed_roots=["/new/root"])
-    pack = dump_model(
-        build_context_pack(
+    pack = _pack(
             message="继续",
             context={
                 "project": {
@@ -136,8 +137,7 @@ def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
                 "cwd": "/new/root",
                 "active_files": ["/old/root/app/local_tools.py", "/new/root/app/action_validator.py"],
             },
-            runtime_boundary_model_view=boundary.to_model_view(),
-        )
+            boundary=boundary,
     )
 
     payload_text = str(pack)

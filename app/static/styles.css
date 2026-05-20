@@ -205,6 +205,53 @@ button {
   font-size: 12px;
 }
 
+.rail-update-result {
+  margin: 0 12px 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-soft);
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.rail-update-result.status-success {
+  border-color: rgba(31, 136, 61, 0.28);
+  background: rgba(31, 136, 61, 0.08);
+}
+
+.rail-update-result.status-failed {
+  border-color: rgba(180, 35, 24, 0.22);
+  background: var(--danger-soft);
+}
+
+.rail-update-title {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.rail-update-line,
+.rail-update-hint {
+  margin-top: 4px;
+}
+
+.rail-update-details {
+  margin-top: 8px;
+}
+
+.rail-update-command {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.rail-update-command pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .solid-btn:hover,
 .ghost-btn:hover,
 .mini-btn:hover,

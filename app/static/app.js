@@ -802,20 +802,6 @@ function normalizeMessageActivity(raw) {
     activity_summary: String(item.activity_summary || ""),
     triggering_user_message: String(item.triggering_user_message || item.triggeringUserMessage || ""),
     triggering_user_turn_id: String(item.triggering_user_turn_id || item.triggeringUserTurnId || ""),
-    current_turn_goal: String(item.current_turn_goal || item.currentTurnGoal || ""),
-    current_turn_followup_type: String(item.current_turn_followup_type || item.currentTurnFollowupType || ""),
-    current_turn_goal_source: String(item.current_turn_goal_source || item.currentTurnGoalSource || ""),
-    active_task_focus:
-      item.active_task_focus && typeof item.active_task_focus === "object"
-        ? item.active_task_focus
-        : (item.activeTaskFocus && typeof item.activeTaskFocus === "object" ? item.activeTaskFocus : {}),
-    recent_user_messages: Array.isArray(item.recent_user_messages)
-      ? item.recent_user_messages.map((entry) => String(entry || "")).filter(Boolean)
-      : [],
-    phase_timings:
-      item.phase_timings && typeof item.phase_timings === "object"
-        ? item.phase_timings
-        : (item.phaseTimings && typeof item.phaseTimings === "object" ? item.phaseTimings : {}),
     session_id: String(item.session_id || item.sessionId || ""),
     thread_id: String(item.thread_id || item.threadId || ""),
     plan: normalizePlanChecklist(item.plan),
@@ -2008,10 +1994,6 @@ function mergeRunSnapshot(prev, snapshot) {
   return {
     ...prev,
     ...next,
-    current_task_focus:
-      next.current_task_focus && typeof next.current_task_focus === "object"
-        ? next.current_task_focus
-        : (prev.current_task_focus || {}),
     plan: Array.isArray(next.plan) ? next.plan : (Array.isArray(prev.plan) ? prev.plan : []),
     pending_user_input:
       next.pending_user_input && typeof next.pending_user_input === "object"
@@ -2142,10 +2124,6 @@ function mergeActivityState(previous, patch = {}) {
     run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
-    phase_timings:
-      nextPatch.phase_timings && typeof nextPatch.phase_timings === "object"
-        ? nextPatch.phase_timings
-        : prev.phase_timings,
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
     tool_items: nextToolItems,
@@ -2273,7 +2251,7 @@ function createInitialAppState() {
     threadIndex: {
       threads: [],
       currentThreadId: "",
-      agentState: {},
+      sessionRunState: {},
       loading: false,
     },
     items: {
@@ -2479,7 +2457,7 @@ function App() {
   const projectId = appState.projectIndex.currentProjectId;
   const sessions = appState.threadIndex.threads;
   const sessionId = appState.threadIndex.currentThreadId;
-  const sessionAgentState = appState.threadIndex.agentState;
+  const sessionRunState = appState.threadIndex.sessionRunState;
   const messages = appState.items.messages;
   const [draft, setDraft] = useState("");
   const sending = Boolean(appState.activeTurn.sending);
@@ -2518,6 +2496,7 @@ function App() {
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
   const [creatingThread, setCreatingThread] = useState(false);
+  const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
@@ -2560,7 +2539,7 @@ function App() {
     if (typeof value !== "function") activeSessionIdRef.current = String(value || "");
     dispatch({ type: "update", path: ["threadIndex", "currentThreadId"], value });
   };
-  const setSessionAgentState = (value) => dispatch({ type: "update", path: ["threadIndex", "agentState"], value });
+  const setSessionRunState = (value) => dispatch({ type: "update", path: ["threadIndex", "sessionRunState"], value });
   const setMessages = (value) => dispatch({ type: "update", path: ["items", "messages"], value });
   const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
   const setLoadingSession = (value) => dispatch({ type: "update", path: ["threadIndex", "loading"], value });
@@ -3062,6 +3041,25 @@ function App() {
     return mergeHealthSlices(null, bootstrapData, runtimeData);
   }
 
+  async function handleAppUpdate() {
+    if (appUpdateState.status === "running") return;
+    setAppUpdateState({ status: "running", result: null, error: null });
+    try {
+      const data = await fetchJson("/api/app/update", { method: "POST" });
+      setAppUpdateState({ status: data && data.ok ? "success" : "failed", result: data, error: null });
+      pushLogWithLimit(
+        setLogs,
+        data && data.ok ? "system" : "error",
+        data && data.ok ? t("update.success") : `${t("update.failed")}: ${String((data && data.message) || "")}`,
+      );
+      if (data && data.ok) clearUiError();
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("update.failed"));
+      setAppUpdateState({ status: "failed", result: null, error: nextError });
+      pushLogWithLimit(setLogs, "error", `${t("update.failed")}: ${nextError.summary}`);
+    }
+  }
+
   function setSkillSelectionState(skillId, content, options = {}) {
     const nextSkillId = String(skillId || "").trim();
     selectedSkillIdRef.current = nextSkillId;
@@ -3131,7 +3129,7 @@ function App() {
     return {
       detail,
       messages: extractSessionMessages(detail),
-      agentState: (detail && detail.agent_state) || {},
+      sessionRunState: (detail && detail.agent_state) || {},
       cachedAt: Date.now(),
     };
   }
@@ -3154,7 +3152,7 @@ function App() {
     const key = threadCacheKey(threadId);
     resetItemDomain();
     setMessages(snapshot.messages || []);
-    setSessionAgentState(snapshot.agentState || {});
+    setSessionRunState(snapshot.sessionRunState || {});
     if (snapshot.detail) {
       updateThreadStatus(key, String(snapshot.detail.status || "idle"));
     }
@@ -3421,7 +3419,7 @@ function App() {
     setProjectId(targetProjectId);
     setSessionId("");
     resetItemDomain();
-    setSessionAgentState({});
+    setSessionRunState({});
     clearLiveRunUi();
     setStageTimeline([]);
     setMobileThreadsOpen(false);
@@ -3545,7 +3543,7 @@ function App() {
     const previousSnapshot = {
       sessionId,
       messages,
-      agentState: sessionAgentState,
+      sessionRunState,
     };
     const projectRecord = projects.find((item) => String(item.project_id || "") === resolvedTargetProjectId) || currentProject || null;
     const nowIso = new Date().toISOString();
@@ -3562,7 +3560,7 @@ function App() {
     setSessionId(tempId);
     resetItemDomain();
     setMessages([]);
-    setSessionAgentState({});
+    setSessionRunState({});
     clearLiveRunUi();
     clearUiError();
     closeProjectMenu();
@@ -3621,7 +3619,7 @@ function App() {
         if (activeSessionIdRef.current === tempId && options.restoreOnFailure !== false) {
           setSessionId(previousSnapshot.sessionId || "");
           setMessages(previousSnapshot.messages || []);
-          setSessionAgentState(previousSnapshot.agentState || {});
+          setSessionRunState(previousSnapshot.sessionRunState || {});
         }
         throw err;
       } finally {
@@ -3656,7 +3654,7 @@ function App() {
     } else {
       resetItemDomain();
       setMessages([]);
-      setSessionAgentState({});
+      setSessionRunState({});
     }
     try {
       const data = normalizeThreadDetailPayload(await fetchJson(
@@ -3711,7 +3709,7 @@ function App() {
         threadDetailCacheRef.current.set(sid, {
           detail: data,
           messages: merged,
-          agentState: (data && data.agent_state) || sessionAgentState || {},
+          sessionRunState: (data && data.agent_state) || sessionRunState || {},
           cachedAt: Date.now(),
         });
         while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
@@ -3720,7 +3718,7 @@ function App() {
         }
         return merged;
       });
-      setSessionAgentState((data && data.agent_state) || sessionAgentState || {});
+      setSessionRunState((data && data.agent_state) || sessionRunState || {});
       updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
     } catch (err) {
       const nextError = applyUiError(err, t("errors.load_thread_failed"));
@@ -3766,7 +3764,7 @@ function App() {
           window.localStorage.removeItem(storageKey);
           setSessionId("");
           resetItemDomain();
-          setSessionAgentState({});
+          setSessionRunState({});
           clearLiveRunUi();
         }
       } else {
@@ -3810,7 +3808,7 @@ function App() {
         window.localStorage.removeItem(PROJECT_STORAGE_KEY);
         setSessionId("");
         resetItemDomain();
-        setSessionAgentState({});
+        setSessionRunState({});
         setLogs([]);
         clearLiveRunUi();
         const nextProjectId =
@@ -4050,7 +4048,6 @@ function App() {
         goal: messageText,
         permission_profile: chatSettings.permission_profile || "code",
         turn_status: "running",
-        current_task_focus: {},
         plan: [],
         pending_user_input: {},
       });
@@ -4164,7 +4161,7 @@ function App() {
               ? { ...prev, context_meter: snapshot.context_meter }
               : prev
           ));
-          setSessionAgentState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
+          setSessionRunState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
         }
         if (snapshot.compaction_status && typeof snapshot.compaction_status === "object") {
           setHealth((prev) => (
@@ -4172,7 +4169,7 @@ function App() {
               ? { ...prev, compaction_status: snapshot.compaction_status }
               : prev
           ));
-          setSessionAgentState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
+          setSessionRunState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
         }
       };
       const recordToolItem = (item) => {
@@ -4208,7 +4205,6 @@ function App() {
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
-        current_task_focus: latestRunSnapshot.current_task_focus || {},
         activity: latestActivity,
         context_meter: latestRunSnapshot.context_meter || {},
         compaction_status: latestRunSnapshot.compaction_status || {},
@@ -4319,7 +4315,7 @@ function App() {
             } else if (event === "turn/plan/updated") {
               const nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
               applySnapshot({ plan: nextPlan });
-              setSessionAgentState((prev) => ({
+              setSessionRunState((prev) => ({
                 ...(prev || {}),
                 permission_profile: String((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "code"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
@@ -4404,7 +4400,7 @@ function App() {
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 });
-                setSessionAgentState((prev) => ({
+                setSessionRunState((prev) => ({
                   ...(prev || {}),
                   permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
                   turn_status: "needs_user_input",
@@ -4470,7 +4466,6 @@ function App() {
         permission_profile: String(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "code"),
         turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
         context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-        current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
         pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
       }));
@@ -4490,7 +4485,7 @@ function App() {
             }
           : prev
       ));
-      setSessionAgentState({
+      setSessionRunState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
         ...(finalPayload.inspector || {}).session,
@@ -4506,16 +4501,9 @@ function App() {
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-          current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
-          thread_memory: (((finalPayload.inspector || {}).run_state || {}).thread_memory) || (((finalPayload.inspector || {}).session || {}).thread_memory) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
-          recent_tasks: Array.isArray(finalPayload.recent_tasks)
-            ? finalPayload.recent_tasks
-            : (((finalPayload.inspector || {}).session || {}).recent_tasks || []),
-          artifact_memory_preview: (((finalPayload.inspector || {}).session || {}).artifact_memory_preview) || [],
-          task_checkpoint: (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
             ? finalPayload.inspector.loaded_skills.map((item) => item.id)
             : [],
@@ -4697,14 +4685,21 @@ function App() {
   const hasLiveRunState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
   const runState = hasLiveRunState ? liveTurnState : completedRunState;
   const evidence = hasLiveRunState ? liveEvidence : completedEvidence;
-  const activeTaskCheckpoint =
-    (runState.current_task_focus && typeof runState.current_task_focus === "object")
-      ? runState.current_task_focus
-      : ((runState.task_checkpoint && typeof runState.task_checkpoint === "object")
-        ? runState.task_checkpoint
-        : ((sessionAgentState.current_task_focus && typeof sessionAgentState.current_task_focus === "object")
-          ? sessionAgentState.current_task_focus
-          : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
+  const modelContextForRun = (
+    runState.model_context && typeof runState.model_context === "object"
+  )
+    ? runState.model_context
+    : ((lastInspector.sent_to_model && typeof lastInspector.sent_to_model === "object") ? lastInspector.sent_to_model : {});
+  const modelContextTask = modelContextForRun.task && typeof modelContextForRun.task === "object" ? modelContextForRun.task : {};
+  const modelContextWorkspace = modelContextForRun.workspace && typeof modelContextForRun.workspace === "object" ? modelContextForRun.workspace : {};
+  const modelContextMemory = modelContextForRun.memory && typeof modelContextForRun.memory === "object" ? modelContextForRun.memory : {};
+  const activeTaskCheckpoint = {
+    goal: String(modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRunState.goal || ""),
+    cwd: String(modelContextWorkspace.cwd || runState.cwd || sessionRunState.cwd || ""),
+    next_action: String(modelContextTask.next_action || modelContextTask.current_step || ""),
+    active_files: Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : [],
+    active_attachments: [],
+  };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedPermissionProfile = String(chatSettings.permission_profile || "code");
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
@@ -4720,14 +4715,14 @@ function App() {
   )
     ? runState.runtime_boundary_model_view
     : {};
-  const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
+  const activeTurnStatus = String(runState.turn_status || sessionRunState.turn_status || "idle");
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
-    : (Array.isArray(sessionAgentState.plan) ? sessionAgentState.plan : []);
+    : (Array.isArray(sessionRunState.plan) ? sessionRunState.plan : []);
   const activePendingInput =
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
-      : ((sessionAgentState.pending_user_input && typeof sessionAgentState.pending_user_input === "object") ? sessionAgentState.pending_user_input : {});
+      : ((sessionRunState.pending_user_input && typeof sessionRunState.pending_user_input === "object") ? sessionRunState.pending_user_input : {});
   const activeToolTimeline = hasLiveRunState
     ? liveToolTimeline
     : (Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
@@ -4754,14 +4749,14 @@ function App() {
   const activeContextMeter = normalizeContextMeter(
     (runState && runState.context_meter) ||
     (lastResponse && lastResponse.context_meter) ||
-    (sessionAgentState && sessionAgentState.context_meter) ||
+    (sessionRunState && sessionRunState.context_meter) ||
     (health && health.context_meter) ||
     {},
   );
   const activeCompactionStatus = normalizeCompactionStatus(
     (runState && runState.compaction_status) ||
     (lastResponse && lastResponse.compaction_status) ||
-    (sessionAgentState && sessionAgentState.compaction_status) ||
+    (sessionRunState && sessionRunState.compaction_status) ||
     (health && health.compaction_status) ||
     {},
   );
@@ -4772,6 +4767,10 @@ function App() {
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
   const displayVersion = normalizeReleaseVersion((health && health.app_version) || "");
+  const appUpdateRunning = appUpdateState.status === "running";
+  const appUpdateResult = appUpdateState.result && typeof appUpdateState.result === "object" ? appUpdateState.result : null;
+  const appUpdateCommands = Array.isArray(appUpdateResult && appUpdateResult.commands) ? appUpdateResult.commands : [];
+  const appUpdateErrorText = appUpdateState.error ? String(appUpdateState.error.detail || appUpdateState.error.summary || "") : "";
   const currentThread = sessions.find((item) => String(item.session_id || item.thread_id || "") === String(sessionId || "")) || null;
   const totalTurnsForCurrentThread = Math.max(0, Number((currentThread && currentThread.turn_count) || 0) || 0);
   const canLoadEarlierTurns = Boolean(
@@ -5043,7 +5042,6 @@ function App() {
     const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
     const modelOutputSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
-      renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal),
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,
@@ -5195,8 +5193,49 @@ function App() {
 
         <div className="rail-actions">
           <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${creatingThread || sending}>${t("buttons.new_thread")}</button>
-          <button className="ghost-btn" type="button" onClick=${() => refreshSessions(projectId)} disabled=${sending}>${t("buttons.refresh")}</button>
+          <button
+            className="ghost-btn"
+            type="button"
+            onClick=${handleAppUpdate}
+            disabled=${sending || appUpdateRunning}
+            title=${t("update.discards_local_changes")}
+          >
+            ${appUpdateRunning ? t("update.running") : t("update.button")}
+          </button>
         </div>
+
+        ${appUpdateState.status !== "idle"
+          ? html`
+              <section className=${`rail-update-result status-${appUpdateState.status}`}>
+                <div className="rail-update-title">
+                  ${appUpdateRunning ? t("update.running") : (appUpdateResult && appUpdateResult.ok ? t("update.success") : t("update.failed"))}
+                </div>
+                ${appUpdateResult
+                  ? html`
+                      <div className="rail-update-line">${String(appUpdateResult.before || "-")} → ${String(appUpdateResult.after || "-")}</div>
+                      <div className="rail-update-line">${t("update.branch")}: ${String(appUpdateResult.branch || "-")}</div>
+                      <div className="rail-update-hint">${appUpdateResult.ok ? t("update.restart_hint") : String(appUpdateResult.message || "")}</div>
+                    `
+                  : null}
+                ${appUpdateErrorText ? html`<div className="rail-update-hint">${appUpdateErrorText}</div>` : null}
+                ${appUpdateCommands.length
+                  ? html`
+                      <details className="rail-update-details">
+                        <summary>${t("update.details")}</summary>
+                        ${appUpdateCommands.map((item, index) => html`
+                          <div key=${`${item.command || "cmd"}-${index}`} className="rail-update-command">
+                            <div>${t("update.command")}: ${String(item.command || "")}</div>
+                            <div>${t("update.exit_code")}: ${String(item.exit_code ?? "")}</div>
+                            ${item.stdout ? html`<pre>${t("update.stdout")}: ${String(item.stdout).slice(0, 4000)}</pre>` : null}
+                            ${item.stderr ? html`<pre>${t("update.stderr")}: ${String(item.stderr).slice(0, 4000)}</pre>` : null}
+                          </div>
+                        `)}
+                      </details>
+                    `
+                  : null}
+              </section>
+            `
+          : null}
 
         <section className="rail-section" id="projectSection">
           <div className="section-head">
@@ -5635,10 +5674,10 @@ function App() {
               <div className="workbench-scroll">
                 <section className="panel-card">
                   <div className="panel-title">${t("run.title")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionRunState.goal || sessionRunState.current_goal || "-"}</div>
                   <div className="meta-line">${t("settings.permission_profile")}: ${t(`settings.permission_profile.${activePermissionProfile}`)}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "turn_status")}: ${formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionAgentState.evidence_status || "not_needed", "not_needed")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionRunState.evidence_status || "not_needed", "not_needed")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "inline_document")}: ${formatRunBoolean(uiLocale, runState.inline_document)}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "ocr")}: ${formatRunEnum(uiLocale, "ocr_engine", ocrStatus.default_engine || "unavailable", "unavailable")}</div>
                   <div className="meta-line">
@@ -5666,8 +5705,8 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">${t("run.current_focus")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "task_id")}: ${activeTaskCheckpoint.task_id || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionAgentState.goal || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionAgentState.cwd || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionRunState.goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRunState.cwd || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`

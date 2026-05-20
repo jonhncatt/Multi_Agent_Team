@@ -700,7 +700,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "2.9.17",
+        "app_version": "2.9.19",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -742,7 +742,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.9.17"
+    assert bootstrap_payload["app_version"] == "2.9.19"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -793,6 +793,94 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
 
     detail_after_delete = client.get(f"/api/thread/{thread_id}")
     assert detail_after_delete.status_code == 404
+
+
+def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    calls: list[str] = []
+
+    class FakeUpdateManager:
+        def status(self) -> dict[str, object]:
+            calls.append("status")
+            return {
+                "ok": True,
+                "version": "v2.9.19-test",
+                "commit": "def5678",
+                "branch": "main",
+                "repo_root": str(tmp_path),
+                "is_git_repo": True,
+            }
+
+        def update(self) -> dict[str, object]:
+            calls.append("update")
+            return {
+                "ok": True,
+                "repo_root": str(tmp_path),
+                "branch": "main",
+                "before": "abc1234",
+                "after": "def5678",
+                "dirty_before_update": True,
+                "commands": [
+                    {"command": "git fetch --tags origin", "exit_code": 0, "stdout": "ok", "stderr": ""},
+                    {"command": "git reset --hard origin/main", "exit_code": 0, "stdout": "ok", "stderr": ""},
+                    {"command": "git pull --ff-only", "exit_code": 0, "stdout": "ok", "stderr": ""},
+                ],
+                "message": "Update completed. Restart the app to use the latest code.",
+            }
+
+    monkeypatch.setattr(main_app, "app_update_manager", FakeUpdateManager())
+
+    status_response = client.get("/api/app/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["commit"] == "def5678"
+
+    update_response = client.post("/api/app/update", json={"command": "rm -rf /"})
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["ok"] is True
+    assert payload["before"] == "abc1234"
+    assert payload["after"] == "def5678"
+    assert [item["command"] for item in payload["commands"]] == [
+        "git fetch --tags origin",
+        "git reset --hard origin/main",
+        "git pull --ff-only",
+    ]
+    assert calls == ["status", "update"]
+
+
+def test_app_update_endpoint_returns_failure_detail(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    class FakeUpdateManager:
+        def update(self) -> dict[str, object]:
+            return {
+                "ok": False,
+                "repo_root": str(tmp_path),
+                "branch": "main",
+                "before": "abc1234",
+                "after": "abc1234",
+                "dirty_before_update": False,
+                "commands": [
+                    {"command": "git reset --hard origin/main", "exit_code": 128, "stdout": "", "stderr": "boom"},
+                ],
+                "failed_command": "git reset --hard origin/main",
+                "exit_code": 128,
+                "stdout": "",
+                "stderr": "boom",
+                "message": "Update failed.",
+            }
+
+    monkeypatch.setattr(main_app, "app_update_manager", FakeUpdateManager())
+
+    response = client.post("/api/app/update")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["failed_command"] == "git reset --hard origin/main"
+    assert payload["stderr"] == "boom"
 
 
 def test_runtime_status_uses_cached_provider_payload(monkeypatch, tmp_path: Path) -> None:
@@ -1060,11 +1148,13 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert response_payload["permission_profile"] == "code"
     assert response_payload["turn_status"] == "completed"
     assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
-    assert response_payload["activity"]["phase_timings"]["provider_auth_summary_ms"] >= 0
-    assert response_payload["activity"]["phase_timings"]["session_load_ms"] >= 0
-    assert response_payload["activity"]["phase_timings"]["runtime_context_ms"] >= 0
-    assert response_payload["activity"]["phase_timings"]["runtime_run_ms"] >= 0
-    assert response_payload["activity"]["phase_timings"]["total_ms"] >= 0
+    assert "phase_timings" not in response_payload["activity"]
+    phase_timings = response_payload["inspector"]["run_state"]["phase_timings"]
+    assert phase_timings["provider_auth_summary_ms"] >= 0
+    assert phase_timings["session_load_ms"] >= 0
+    assert phase_timings["runtime_context_ms"] >= 0
+    assert phase_timings["runtime_run_ms"] >= 0
+    assert phase_timings["total_ms"] >= 0
 
 
 def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:
@@ -1423,10 +1513,11 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     assert runtime.calls[3]["message"] == "我刚才问你的所有问题，罗列一下"
     subject_assistant_turn = turns[-5]
     assert subject_assistant_turn["role"] == "assistant"
-    assert subject_assistant_turn["activity"]["current_turn_goal"] == "Provide only a subject/title for the previous email or draft."
-    assert subject_assistant_turn["activity"]["current_turn_followup_type"] == "subject_request"
-    assert subject_assistant_turn["activity"]["active_task_focus"]["goal"]
-    assert subject_assistant_turn["activity"]["recent_user_messages"] == ["日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"]
+    assert subject_assistant_turn["activity"]["triggering_user_message"] == "题目"
+    assert "current_turn_goal" not in subject_assistant_turn["activity"]
+    assert "current_turn_followup_type" not in subject_assistant_turn["activity"]
+    assert "active_task_focus" not in subject_assistant_turn["activity"]
+    assert "recent_user_messages" not in subject_assistant_turn["activity"]
 
 
 def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_path: Path) -> None:
@@ -1452,9 +1543,9 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     payload = response.json()
     assert payload["activity"]["triggering_user_message"] == "题目"
     assert payload["activity"]["triggering_user_turn_id"]
-    assert payload["activity"]["current_turn_goal"] == "题目"
-    assert payload["activity"]["active_task_focus"]["goal"] == ""
-    assert payload["activity"]["recent_user_messages"] == []
+    assert "current_turn_goal" not in payload["activity"]
+    assert "active_task_focus" not in payload["activity"]
+    assert "recent_user_messages" not in payload["activity"]
 
     detail_response = client.get(f"/api/thread/{payload['session_id']}")
     assert detail_response.status_code == 200
@@ -1462,7 +1553,7 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     assert assistant_turn["role"] == "assistant"
     assert assistant_turn["activity"]["triggering_user_message"] == "题目"
     assert assistant_turn["activity"]["triggering_user_turn_id"]
-    assert assistant_turn["activity"]["current_turn_goal"] == "题目"
+    assert "current_turn_goal" not in assistant_turn["activity"]
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:

@@ -106,12 +106,6 @@ class MessageActivity(BaseModel):
     activity_summary: str = ""
     triggering_user_message: str = ""
     triggering_user_turn_id: str = ""
-    current_turn_goal: str = ""
-    current_turn_followup_type: str = ""
-    current_turn_goal_source: str = ""
-    active_task_focus: dict[str, Any] = Field(default_factory=dict)
-    recent_user_messages: list[str] = Field(default_factory=list)
-    phase_timings: dict[str, Any] = Field(default_factory=dict)
     session_id: str = ""
     thread_id: str = ""
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
@@ -551,6 +545,40 @@ class RuntimeStatusResponse(BaseModel):
     ocr_status: dict[str, object] = Field(default_factory=dict)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
+
+
+class AppUpdateCommandResult(BaseModel):
+    command: str = ""
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+
+
+class AppUpdateResponse(BaseModel):
+    ok: bool
+    repo_root: str = ""
+    branch: str = ""
+    before: str = ""
+    after: str = ""
+    dirty_before_update: bool = False
+    commands: list[AppUpdateCommandResult] = Field(default_factory=list)
+    failed_command: str = ""
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    message: str = ""
+
+
+class AppStatusResponse(BaseModel):
+    ok: bool
+    version: str = ""
+    commit: str = ""
+    branch: str = ""
+    repo_root: str = ""
+    is_git_repo: bool = False
+    message: str = ""
+    diagnostic: dict[str, Any] = Field(default_factory=dict)
 
 
 class KernelManifestUpdateRequest(BaseModel):

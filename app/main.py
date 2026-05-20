@@ -33,6 +33,8 @@ from app.context_pack import ContextManager, classify_assistant_output
 from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
+    AppStatusResponse,
+    AppUpdateResponse,
     BootstrapResponse,
     ChatRequest,
     ChatResponse,
@@ -88,6 +90,7 @@ from app.runtime_contract import build_full_auto_runtime_contract
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
 
@@ -110,7 +113,8 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.17"
+APP_VERSION = "2.9.19"
+app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
@@ -556,6 +560,16 @@ def runtime_status(project_id: str | None = None, model: str | None = None, max_
         model=model,
         max_output_tokens=max_output_tokens,
     )
+
+
+@app.get("/api/app/status", response_model=AppStatusResponse)
+def app_status() -> AppStatusResponse:
+    return AppStatusResponse(**app_update_manager.status())
+
+
+@app.post("/api/app/update", response_model=AppUpdateResponse)
+def app_update() -> AppUpdateResponse:
+    return AppUpdateResponse(**app_update_manager.update())
 
 
 @app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)
@@ -2106,7 +2120,8 @@ def _process_chat_request(
             else {}
         )
         activity = dict(runtime_result.get("activity") or {})
-        runtime_phase_timings = dict(activity.get("phase_timings") or {})
+        inspector = dict(runtime_result.get("inspector") or {})
+        runtime_phase_timings = dict(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("phase_timings") or {})
         combined_phase_timings = _merge_phase_timings(
             request_phase_timer.snapshot(total_key="total_ms"),
             runtime_phase_timings,
@@ -2117,21 +2132,10 @@ def _process_chat_request(
             if isinstance(runtime_result.get("route_state"), dict)
             else dict(route_state_input or {})
         )
-        inspector = dict(runtime_result.get("inspector") or {})
         activity = {
             **activity,
             "triggering_user_message": user_text,
             "triggering_user_turn_id": user_turn_id,
-            "current_turn_goal": str(
-                ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal")
-                or current_turn_context.get("goal")
-                or user_text
-            ),
-            "current_turn_followup_type": str(current_turn_context.get("followup_type") or ""),
-            "current_turn_goal_source": str(current_turn_context.get("source") or ""),
-            "active_task_focus": dict(active_task_focus_for_runtime),
-            "recent_user_messages": list(recent_user_messages_for_runtime),
-            "phase_timings": dict(combined_phase_timings),
             "session_id": session_id,
             "thread_id": session_id,
         }

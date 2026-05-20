@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.17）
+# 内部设计手册（v2.9.19）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -807,6 +807,18 @@ v2.9.17 is a focused permission selector UI polish release.
 - The selector uses subtle profile-specific styling: neutral for Chat, blue for Code, and a stronger orange accent for Full Dev.
 - The selector exposes a short hover/title description for the currently selected permission profile.
 - Runtime permission semantics, `RuntimeBoundary`, `ModelContext.permissions`, and Debug Runtime behavior are unchanged.
+
+## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes
+
+v2.9.19 combines a scoped hard cleanup with a manual-only self-update button.
+
+- Normal `MessageActivity` and frontend activity projection no longer carry old `current_turn_goal`, `active_task_focus`, `recent_user_messages`, or `phase_timings` fields.
+- The run panel derives current task display from `ModelContext.task`, `ModelContext.workspace`, and `ModelContext.memory` instead of old task-focus fields.
+- The sidebar Update button calls `/api/app/update` only when clicked; there is no background update polling, startup fetch, scheduler, or watcher.
+- The backend update manager targets the Vintage Programmer application git repository, not the selected project root.
+- The update command sequence is fixed: `git fetch --tags origin`, `git reset --hard origin/<branch>`, and `git pull --ff-only`.
+- The endpoint does not accept arbitrary frontend-provided command strings.
+- Cache/generated files remain ignored and are not part of the application architecture.
 
 ## 21. v2.9.0 Stability Decision
 
