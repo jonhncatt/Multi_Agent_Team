@@ -599,32 +599,20 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
         },
     )
 
-    runtime_context_json = payload_text.split("runtime_context_json:\n", 1)[1]
-    payload = json.loads(runtime_context_json)
+    model_context_json = payload_text.split("model_context_json:\n", 1)[1]
+    payload = json.loads(model_context_json)["model_context"]
 
-    assert payload["python_command"] == runtime._config.python_command
-    assert payload["python_command_source"] == runtime._config.python_command_source
-    assert set(payload["context_pack"]) == {
-        "current_turn",
-        "conversation_window",
-        "turn_memory",
-        "plan_state",
-        "compaction",
-        "runtime_boundary",
-    }
-    assert payload["context_pack"]["current_turn"]["user_message_preview"] == "题目"
-    assert "user_message" not in payload["context_pack"]["current_turn"]
-    assert "followup_type" not in payload["context_pack"]["current_turn"]
-    assert "goal" not in payload["context_pack"]["current_turn"]
+    assert set(payload) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
+    assert payload["task"]["user_request"] == "题目"
+    assert payload["task"]["goal"] == "帮我写个请假邮件"
     assert "context_priority" not in payload
-    assert "route_hints" not in payload["context_pack"]
-    assert "allowed_roots" not in payload["context_pack"]["runtime_boundary"]
-    assert payload["context_pack"]["runtime_boundary"]["cwd"]
+    assert "route_hints" not in payload
     assert "legacy_context" not in payload
     assert "route_state" not in payload
-    assert payload["context_pack"]["turn_memory"]["active_task"]["goal"] == "帮我写个请假邮件"
-    history_turns = payload["context_pack"]["conversation_window"]["recent_turns"]
-    assert [item["text"] for item in history_turns[:2]] == ["turn-8", "turn-9"]
+    assert "allowed_roots" not in payload["permissions"]
+    assert payload["workspace"]["cwd"]
+    history_turns = payload["conversation"]["recent_turns"]
+    assert [item["text"] for item in history_turns[:2]] == ["turn-12", "turn-13"]
     assert history_turns[-1]["text"] == "turn-19"
 
 

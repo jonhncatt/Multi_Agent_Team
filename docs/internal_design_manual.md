@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.13）
+# 内部设计手册（v2.9.14）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -754,6 +754,27 @@ v2.9.12 keeps the v2.9.10 Codex-style all-tool drain behavior and the v2.9.11 pa
 - `None` stream events are recorded as `llm.stream_event.none` warnings instead of crashing the run.
 - Clean-boundary follow-up LLM failures matching transient patterns such as `NoneType`, `model_dump`, timeout, connection reset, or 5xx errors retry once; retry success/failure is recorded with `llm.retrying`, `llm.retry_succeeded`, and `llm.retry_failed`.
 - Final LLM failures preserve exception type, module, traceback tail, message count, last message roles, phase, model, and tool-boundary diagnostics so local logs remain useful when company logs cannot be shared.
+
+## 20.7 v2.9.13 Workspace and Permission Profiles Notes
+
+v2.9.13 keeps the v2.9.10 Codex-style all-tool drain behavior and makes the workspace boundary easier to explain.
+
+- The current `project_root` is the default workspace.
+- File reads default to the current project and explicitly imported files; file writes default to the current project.
+- Command execution defaults to the current project and validates path arguments such as `rg /etc`, `git -C /tmp`, and `python /tmp/a.py`.
+- Downloads, Desktop/workbench, and workspace sibling roots are no longer default accessible scopes.
+- Chat, Code, and Full Dev permission profiles separate collaboration style from actual runtime permissions.
+
+## 20.8 v2.9.14 ModelContext-first Context System Notes
+
+v2.9.14 keeps the same model-led tool loop and makes model-facing context explicit.
+
+- `ModelContext` is the only normal structure rendered into the model-facing HumanMessage.
+- `ModelContext` has six sections: `task`, `workspace`, `memory`, `plan`, `permissions`, and `conversation`.
+- `ContextManager` owns clean materials: `clean_summary`, `clean_turns`, `recent_observations`, `active_files`, `plan`, and `context_version`.
+- Compaction updates `memory.clean_summary` and trims clean turns; it does not persist raw trace, raw tool output, or model draft.
+- Runtime trace remains debug data. Only short factual observation summaries may flow from runtime trace into clean memory.
+- Model draft can be shown in UI/debug, but it is not saved as a clean assistant turn or compacted memory.
 
 ## 21. v2.9.0 Stability Decision
 

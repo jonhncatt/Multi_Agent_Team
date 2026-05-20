@@ -55,6 +55,16 @@ class SessionStore:
             "updated_at": now_iso(),
         }
 
+    def _default_context_manager(self) -> dict[str, Any]:
+        return {
+            "clean_summary": "",
+            "clean_turns": [],
+            "recent_observations": [],
+            "active_files": [],
+            "plan": [],
+            "context_version": 0,
+        }
+
     def _path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
 
@@ -100,6 +110,14 @@ class SessionStore:
         if not isinstance(payload.get("compaction_state"), dict):
             payload["compaction_state"] = {}
             changed = True
+        if not isinstance(payload.get("context_manager"), dict):
+            payload["context_manager"] = self._default_context_manager()
+            changed = True
+        else:
+            context_manager = {**self._default_context_manager(), **dict(payload.get("context_manager") or {})}
+            if context_manager != payload.get("context_manager"):
+                payload["context_manager"] = context_manager
+                changed = True
         agent_state = payload.get("agent_state")
         if not isinstance(agent_state, dict):
             payload["agent_state"] = self._default_agent_state()
@@ -164,6 +182,7 @@ class SessionStore:
             "thread_memory": {},
             "artifact_memory": [],
             "compaction_state": {},
+            "context_manager": self._default_context_manager(),
         }
         self.save(session)
         return session

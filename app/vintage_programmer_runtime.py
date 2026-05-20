@@ -15,7 +15,7 @@ import uuid
 
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.config import AppConfig
-from app.context_pack import build_context_pack
+from app.context_pack import ModelContext, build_model_context, render_model_context
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.models import (
@@ -755,7 +755,7 @@ class VintageProgrammerRuntime:
             "[context_priority]\n"
             "- The current user message has highest priority.\n"
             "- Task memory helps maintain long-running work.\n"
-            "- ContextPack contains recent conversation, task memory, plan state, compaction status, and runtime boundary.\n"
+            "- ModelContext contains the current task, workspace, clean memory, plan, permissions, and clean conversation.\n"
             "- runtime_boundary describes what the harness will enforce.\n"
         )
 
@@ -811,13 +811,13 @@ class VintageProgrammerRuntime:
             ]
         )
 
-    def _build_human_payload(
+    def _build_model_context(
         self,
         *,
         message: str,
         context: dict[str, Any],
         runtime_boundary: RuntimeBoundary | None = None,
-    ) -> str:
+    ) -> ModelContext:
         current_task_focus = normalize_current_task_focus(context.get("current_task_focus"))
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
@@ -827,28 +827,29 @@ class VintageProgrammerRuntime:
             cwd=str(project_payload.get("cwd") or project_root or ""),
             attachments=list(context.get("attachments") or []),
         )
-        context_pack = build_context_pack(
-            message=message,
+        return build_model_context(
+            user_request=message,
             context=context,
             current_task_focus=current_task_focus,
             runtime_boundary_model_view=boundary.to_model_view(),
+            permission_profile=str(boundary.permission_profile or ""),
+            project_root=boundary.project_root,
+            cwd=boundary.cwd,
         )
-        payload = {
-            "session_id": str(context.get("session_id") or ""),
-            "project": project_payload,
-            "python_command": str(self._config.python_command or "python"),
-            "python_command_source": str(self._config.python_command_source or ""),
-            "context_pack": dump_model(context_pack),
-        }
-        return "\n".join(
-            [
-                "user_message:",
-                str(message or "").strip(),
-                "",
-                "runtime_context_json:",
-                json.dumps(payload, ensure_ascii=False),
-            ]
+
+    def _build_human_payload(
+        self,
+        *,
+        message: str,
+        context: dict[str, Any],
+        runtime_boundary: RuntimeBoundary | None = None,
+    ) -> str:
+        model_context = self._build_model_context(
+            message=message,
+            context=context,
+            runtime_boundary=runtime_boundary,
         )
+        return render_model_context(model_context)
 
     @staticmethod
     def _load_project_contract_text(project_root: str) -> str:
@@ -3334,6 +3335,11 @@ class VintageProgrammerRuntime:
         write_authorized = bool(write_authorization_state.get("authorized"))
         blocked_reason = ""
         project_contract_text = self._load_project_contract_text(project_root)
+        turn_model_context = self._build_model_context(
+            message=prompt_message,
+            context=context_payload,
+            runtime_boundary=turn_runtime_boundary,
+        )
 
         messages: list[Any] = [
             self._backend._SystemMessage(
@@ -3349,11 +3355,7 @@ class VintageProgrammerRuntime:
             messages.append(self._backend._SystemMessage(content=attachment_guidance))
         messages.append(
             self._backend._HumanMessage(
-                content=self._build_human_payload(
-                    message=prompt_message,
-                    context=context_payload,
-                    runtime_boundary=turn_runtime_boundary,
-                )
+                content=render_model_context(turn_model_context)
             )
         )
 
@@ -3439,7 +3441,8 @@ class VintageProgrammerRuntime:
                 "tools_available": tools_available,
                 "tool_count": tool_count,
                 "collaboration_mode": collaboration_mode,
-                "context_pack": "current_turn/conversation_window/turn_memory/plan_state/compaction/runtime_boundary",
+                "model_context": "task/workspace/memory/plan/permissions/conversation",
+                "sent_to_model": dump_model(turn_model_context),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
@@ -4755,6 +4758,7 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "answer_stream": dict(answer_stream),
+                "model_context": dump_model(turn_model_context),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
                 "current_turn": dict(current_turn_context),
                 "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
@@ -4772,6 +4776,7 @@ class VintageProgrammerRuntime:
             },
             "tool_timeline": [dump_model(item) for item in tool_events],
             "trace_events": [dict(item) for item in trace_events],
+            "sent_to_model": dump_model(turn_model_context),
             "evidence": {
                 "status": evidence_status,
                 "warning": answer_bundle["warnings"][0] if answer_bundle["warnings"] else "",
@@ -4841,6 +4846,7 @@ class VintageProgrammerRuntime:
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_boundary": dump_model(turn_runtime_boundary),
+            "model_context": dump_model(turn_model_context),
             "model_action": dict(model_action),
             "execution_trace": list(execution_trace),
             "progress_signals": list(progress_signals),

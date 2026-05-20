@@ -5,7 +5,7 @@ from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
 
 
-def test_context_pack_has_only_approved_top_level_keys() -> None:
+def test_context_pack_compat_returns_model_context_top_level_keys() -> None:
     boundary = RuntimeBoundary(cwd="/tmp/project", project_root="/tmp/project", allowed_roots=["/tmp/project"])
     pack = dump_model(
         build_context_pack(
@@ -16,20 +16,13 @@ def test_context_pack_has_only_approved_top_level_keys() -> None:
         )
     )
 
-    assert set(pack) == {
-        "current_turn",
-        "conversation_window",
-        "turn_memory",
-        "plan_state",
-        "compaction",
-        "runtime_boundary",
-    }
+    assert set(pack) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
     assert "legacy_context" not in pack
     assert "route_hints" not in pack
     assert "route_state" not in pack
 
 
-def test_user_message_preview_is_bounded_and_not_full_message() -> None:
+def test_full_user_message_lives_only_in_task_user_request() -> None:
     message = "第一行\n第二行 " + ("内容" * 80)
     boundary = RuntimeBoundary()
     pack = dump_model(
@@ -41,13 +34,12 @@ def test_user_message_preview_is_bounded_and_not_full_message() -> None:
         )
     )
 
-    assert len(pack["current_turn"]["user_message_preview"]) <= 80
-    assert "\n" not in pack["current_turn"]["user_message_preview"]
-    assert "user_message" not in pack["current_turn"]
-    assert pack["conversation_window"]["recent_turns"] == [{"role": "assistant", "text": "ok"}]
+    assert pack["task"]["user_request"] == message.replace("\n", " ")
+    assert pack["conversation"]["recent_turns"] == [{"role": "assistant", "text": "ok"}]
+    assert "current_turn" not in pack
 
 
-def test_plan_state_is_first_class_and_active_when_unfinished() -> None:
+def test_plan_state_maps_to_model_context_plan() -> None:
     boundary = RuntimeBoundary()
     pack = dump_model(
         build_context_pack(
@@ -66,12 +58,10 @@ def test_plan_state_is_first_class_and_active_when_unfinished() -> None:
         )
     )
 
-    assert pack["plan_state"]["active"] is True
-    assert pack["plan_state"]["updated_at_turn"] == "turn-9"
-    assert [item["status"] for item in pack["plan_state"]["items"]] == ["completed", "in_progress"]
+    assert [item["status"] for item in pack["plan"]["items"]] == ["completed", "in_progress"]
 
 
-def test_runtime_boundary_model_view_excludes_internal_roots() -> None:
+def test_permissions_view_excludes_internal_roots() -> None:
     boundary = RuntimeBoundary(
         cwd="/tmp/project",
         project_root="/tmp/project",
@@ -88,13 +78,13 @@ def test_runtime_boundary_model_view_excludes_internal_roots() -> None:
         )
     )
 
-    assert pack["runtime_boundary"]["cwd"] == "/tmp/project"
-    assert "allowed_roots" not in pack["runtime_boundary"]
-    assert "writable_roots" not in pack["runtime_boundary"]
-    assert "max_output_tokens" not in pack["runtime_boundary"]
+    assert pack["workspace"]["cwd"] == "/tmp/project"
+    assert "allowed_roots" not in pack["permissions"]
+    assert "writable_roots" not in pack["permissions"]
+    assert "max_output_tokens" not in pack["permissions"]
 
 
-def test_compaction_view_is_minimal_and_summary_backed() -> None:
+def test_compaction_summary_feeds_clean_memory() -> None:
     boundary = RuntimeBoundary()
     pack = dump_model(
         build_context_pack(
@@ -113,13 +103,8 @@ def test_compaction_view_is_minimal_and_summary_backed() -> None:
         )
     )
 
-    assert pack["turn_memory"]["summary"] == "Older context summary"
-    assert pack["compaction"] == {
-        "active": True,
-        "phase": "mid_turn",
-        "reason": "context_limit",
-        "summary_available": True,
-    }
+    assert pack["memory"]["clean_summary"] == "Older context summary"
+    assert "compaction" not in pack
 
 
 def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
@@ -135,8 +120,7 @@ def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
                 "summary": "Reviewed /old/root/app/local_tools.py and /new/root/app/action_validator.py",
                 "history_turns": [
                     {
-                        "role": "tool",
-                        "tool": "read_file",
+                        "role": "assistant",
                         "text": "Read /old/root/app/local_tools.py",
                     }
                 ],
@@ -156,8 +140,7 @@ def test_context_pack_rebases_known_absolute_paths_for_model() -> None:
         )
     )
 
-    encoded = dump_model(pack)
-    payload_text = str(encoded)
+    payload_text = str(pack)
     assert "/old/root" not in payload_text
     assert "/new/root/app" not in payload_text
     assert "app/local_tools.py" in payload_text

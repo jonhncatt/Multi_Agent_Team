@@ -29,6 +29,7 @@ from app.context_meter import (
     ensure_compaction_state,
     maybe_auto_compact_session,
 )
+from app.context_pack import ContextManager, classify_assistant_output
 from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
@@ -109,7 +110,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.13"
+APP_VERSION = "2.9.14"
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
@@ -2074,6 +2075,7 @@ def _process_chat_request(
                         "is_worktree": bool(session_project.get("is_worktree")),
                     },
                     "summary": summary_for_runtime,
+                    "context_manager": copy.deepcopy(session.get("context_manager") or {}),
                     "thread_memory": thread_memory_for_runtime,
                     "current_turn": current_turn_context,
                     "recent_user_messages": recent_user_messages_for_runtime,
@@ -2279,6 +2281,18 @@ def _process_chat_request(
             tool_events=tool_events,
             answer_bundle=answer_bundle,
         )
+        context_manager = ContextManager.from_payload(
+            session.get("context_manager") if isinstance(session.get("context_manager"), dict) else {}
+        )
+        clean_final_answer = text if classify_assistant_output(text) == "final_answer" else None
+        context_manager.update_after_turn(
+            user_request=req.message,
+            clean_final_answer=clean_final_answer,
+            runtime_trace={"tool_events": tool_events, "trace_events": list((activity or {}).get("trace_events") or [])},
+            plan_updates=plan,
+        )
+        context_manager.compact_if_needed()
+        session["context_manager"] = context_manager.to_session_payload()
         session["cwd"] = str(session["agent_state"].get("cwd") or session.get("project_root") or "")
         thread_memory = session_context_impl.get_thread_memory(session)
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
@@ -2312,6 +2326,7 @@ def _process_chat_request(
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
+        inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
         inspector_run_state["phase_timings"] = dict(combined_phase_timings)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
@@ -2325,6 +2340,7 @@ def _process_chat_request(
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
         inspector_session["context_meter"] = dict(context_meter)
         inspector_session["compaction_status"] = dict(compaction_status)
+        inspector_session["context_manager"] = dict(session.get("context_manager") or {})
         inspector_session["phase_timings"] = dict(combined_phase_timings)
         inspector["session"] = inspector_session
         session_context_impl.store_scoped_route_state(

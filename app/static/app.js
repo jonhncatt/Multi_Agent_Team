@@ -1478,7 +1478,14 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   const latestHarness = latestHarnessPayload && latestHarnessPayload.payload && typeof latestHarnessPayload.payload === "object"
     ? latestHarnessPayload.payload
     : {};
+  const inspectorRunState = inspector && inspector.run_state && typeof inspector.run_state === "object"
+    ? inspector.run_state
+    : {};
+  const sentToModel = inspectorRunState.model_context && typeof inspectorRunState.model_context === "object"
+    ? inspectorRunState.model_context
+    : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
   return {
+    sent_to_model: sentToModel,
     user_context: {
       triggering_user_message: item.triggering_user_message,
       triggering_user_turn_id: item.triggering_user_turn_id,
@@ -1510,6 +1517,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       blocked_reason: latestHarness.blocked_reason || "",
       pending_user_input: latestHarness.pending_user_input || {},
       turn_status: latestHarness.turn_status || item.status,
+      context_version: Number(inspectorRunState.context_version || 0) || 0,
       run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
       token_usage: latestHarness.token_usage || latestHarness.usage || {},
     },
@@ -4870,18 +4878,10 @@ function App() {
     const item = normalizeMessageActivity(activity || {});
     const structured = buildStructuredDebugView(item, lastInspector || {}, uiLocale);
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
-    const userContextSections = [
+    const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
+    const modelOutputSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
-      renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id),
       renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal),
-      renderDetailBlock(t("activity.current_turn_followup_type"), item.current_turn_followup_type),
-      renderDetailBlock(t("activity.current_turn_goal_source"), item.current_turn_goal_source),
-      renderDetailBlock(t("activity.debug.user_context"), structured.user_context),
-    ].filter(Boolean);
-    const legacyContextSections = [
-      renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus),
-      renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages),
-      renderPhaseTimingDetails(item.phase_timings),
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,
@@ -4889,7 +4889,6 @@ function App() {
           })
         : null,
       renderPlanDetails(t("activity.model_action"), projection.model_action),
-      renderExecutionTraceDetails(projection.execution_trace),
       renderRevisionSummaryDetails(projection.revision_summary),
     ].filter(Boolean);
     const modelRoundDetails = structured.model_rounds.length
@@ -4916,7 +4915,7 @@ function App() {
     const toolDebugDetails = structured.tool_groups.length
       ? html`
           <details className="activity-payload">
-            <summary>${t("activity.debug.tools")}</summary>
+            <summary>${t("activity.debug.tool_execution")}</summary>
             <div className="activity-structured-details">
               ${structured.tool_groups.map((toolItem, index) => html`
                 <details key=${toolItem.call_id || `${messageId}-tool-${index}`} className="activity-payload">
@@ -4935,37 +4934,39 @@ function App() {
           </details>
         `
       : null;
-    const harnessDetails = renderDetailBlock(t("activity.debug.harness"), structured.harness, { open: true });
+    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true });
     const finalStatusDetails = renderDetailBlock(t("activity.debug.final_status"), structured.final_status);
+    const phaseTimingDetails = renderPhaseTimingDetails(item.phase_timings);
+    const modelOutputDetails = modelRoundDetails || modelOutputSections.length || finalStatusDetails
+      ? html`
+          <details className="activity-payload" open>
+            <summary>${t("activity.debug.model_output")}</summary>
+            <div className="activity-structured-details">
+              ${modelOutputSections}
+              ${modelRoundDetails}
+              ${finalStatusDetails}
+            </div>
+          </details>
+        `
+      : null;
     const rawTraceList = traces.length
       ? html`
           <details className="activity-payload">
-            <summary>${t("activity.raw_events")}</summary>
+            <summary>${t("activity.debug.advanced_raw")}</summary>
             ${renderDetailBlock(t("activity.debug.raw_json"), structured.raw)}
           </details>
         `
       : null;
-    if (!userContextSections.length && !legacyContextSections.length && !modelRoundDetails && !toolDebugDetails && !harnessDetails && !finalStatusDetails && !rawTraceList) return null;
+    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !phaseTimingDetails && !rawTraceList) return null;
     return html`
       <details className="activity-debug-drawer">
         <summary>${t("activity.debug_details")}</summary>
         <div className="activity-debug-sections">
-          <details className="activity-payload" open>
-            <summary>${t("activity.debug.user_context")}</summary>
-            <div className="activity-structured-details">${userContextSections}</div>
-          </details>
-          ${modelRoundDetails}
+          ${sentToModelDetails}
+          ${modelOutputDetails}
           ${toolDebugDetails}
           ${harnessDetails}
-          ${finalStatusDetails}
-          ${legacyContextSections.length
-            ? html`
-                <details className="activity-payload">
-                  <summary>${t("activity.debug.legacy_details")}</summary>
-                  <div className="activity-structured-details">${legacyContextSections}</div>
-                </details>
-              `
-            : null}
+          ${phaseTimingDetails}
           ${rawTraceList}
         </div>
       </details>

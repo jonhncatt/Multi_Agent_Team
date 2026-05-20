@@ -121,7 +121,7 @@ def test_runtime_contract_profiles_apply_capabilities(tmp_path: Path) -> None:
     assert full.network_allowed is True
 
 
-def test_context_pack_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
+def test_model_context_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
     config = load_config()
     config.workspace_root = tmp_path
     runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
@@ -133,7 +133,7 @@ def test_context_pack_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
         attachments=[],
     )
 
-    payload_text = runtime._build_human_payload(  # noqa: SLF001 - regression test for ContextPack wiring
+    payload_text = runtime._build_human_payload(  # noqa: SLF001 - regression test for ModelContext wiring
         message="hello",
         context={
             "session_id": "s-boundary",
@@ -143,9 +143,9 @@ def test_context_pack_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
         },
         runtime_boundary=boundary,
     )
-    runtime_context_json = payload_text.split("runtime_context_json:\n", 1)[1]
+    model_context_json = payload_text.split("model_context_json:\n", 1)[1]
 
-    assert dump_model(boundary.to_model_view())["cwd"] in runtime_context_json
-    assert '"runtime_boundary"' in runtime_context_json
-    assert '"allowed_roots"' not in runtime_context_json
-    assert '"writable_roots"' not in runtime_context_json
+    assert dump_model(boundary.to_model_view())["cwd"] in model_context_json
+    assert '"permissions"' in model_context_json
+    assert '"allowed_roots"' not in model_context_json
+    assert '"writable_roots"' not in model_context_json
