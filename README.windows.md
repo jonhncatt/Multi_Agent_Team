@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.9.11`。
+当前稳定版本：`v2.9.12`。
 
 ## Stable Runtime
 
-v2.9.11 是 Codex-style path portability 与 large-folder search safety 修复版本，继续默认使用 LangChain-based stable runtime。
-v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.11 继续保留 v2.9.10 的 Codex-style all-tool drain 语义，并让模型可见的文件路径优先使用项目相对路径；大型目录的宽泛 glob 搜索会返回收窄建议，避免大量绝对路径污染模型上下文。
+v2.9.12 是 live agent timeline、structured debug details 与 LLM None-safe diagnostics 修复版本，继续默认使用 LangChain-based stable runtime。
+v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.12 继续保留 v2.9.10 的 Codex-style all-tool drain 语义和 v2.9.11 的 path portability 规则；本版本让主消息卡直接显示实时运行时间线，并在 LLM 请求失败时保留更完整的调试诊断。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
@@ -27,7 +27,7 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。v2.9.11 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。v2.9.12 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
 
 ## 运行
 
@@ -116,7 +116,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 - 在 `codex/*` 候选分支完成改动
 - 回归通过后合到 `main`
-- 在发布提交上打 annotated tag，例如 `v2.9.11`
+- 在发布提交上打 annotated tag，例如 `v2.9.12`
 - 后续新改动从最新 `main` 再切新的 `codex/*` 分支
 
 完整清单见 [RELEASING.md](RELEASING.md)。

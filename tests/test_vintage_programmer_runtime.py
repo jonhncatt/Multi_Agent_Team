@@ -404,6 +404,30 @@ class _FailingFollowupBackend(_FakeBackend):
         raise RuntimeError("azure rejected broken history")
 
 
+class _FlakyNoneTypeFollowupBackend(_FakeBackend):
+    def __init__(self, scripted_messages: list[_FakeMessage], *, fail_times: int) -> None:
+        super().__init__(scripted_messages)
+        self._fail_times = max(0, int(fail_times))
+
+    def _invoke_with_runner_recovery(
+        self,
+        *,
+        runner: Any,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+        event_cb=None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (runner, max_output_tokens, enable_tools, tool_names, event_cb)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "followup"})
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise AttributeError("'NoneType' object has no attribute 'model_dump'")
+        return self._next(), object(), model, []
+
+
 def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: bool = True) -> None:
     agent_dir.mkdir(parents=True, exist_ok=True)
     if include_soul:
@@ -1098,8 +1122,124 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
     assert result["blocked_reason"] == "llm_request_error"
     assert "azure rejected broken history" in result["text"]
     assert len(result["tool_events"]) == 1
-    assert any(item.get("type") == "llm.failed" for item in result["activity"]["trace_events"])
+    failed = next(item for item in result["activity"]["trace_events"] if item.get("type") == "llm.failed")
+    payload = failed["payload"]
+    assert payload["exception_type"] == "RuntimeError"
+    assert payload["exception_module"] == "builtins"
+    assert "traceback_tail" in payload
+    assert payload["tool_boundary_clean"] is True
+    assert payload["message_count"] == len(backend.invocations[1]["messages"])
+    assert payload["phase"] == "before_followup_llm"
+    assert payload["last_message_roles"][-1] == "tool"
     assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
+
+
+def test_runtime_retries_clean_boundary_nonetype_model_dump_failure(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FlakyNoneTypeFollowupBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-retry", "name": "web_search", "args": {"query": "x"}}]),
+            _FakeMessage(content="retry recovered"),
+        ],
+        fail_times=1,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-followup-retry-debug",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "retry recovered"
+    assert result["turn_status"] == "completed"
+    trace_types = [item.get("type") for item in result["activity"]["trace_events"]]
+    assert "llm.retrying" in trace_types
+    assert "llm.retry_succeeded" in trace_types
+    assert "llm.failed" not in trace_types
+    retrying = next(item for item in result["activity"]["trace_events"] if item.get("type") == "llm.retrying")
+    assert retrying["payload"]["tool_boundary_clean"] is True
+    assert retrying["payload"]["exception_type"] == "AttributeError"
+    assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
+    assert runtime._messages_at_tool_boundary(backend.invocations[2]["messages"])
+
+
+def test_runtime_retry_failure_reports_rich_llm_diagnostics(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FlakyNoneTypeFollowupBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-retry-fails", "name": "web_search", "args": {"query": "x"}}]),
+        ],
+        fail_times=2,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-followup-retry-fails",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "llm_request_error"
+    trace_events = result["activity"]["trace_events"]
+    trace_types = [item.get("type") for item in trace_events]
+    assert "llm.retrying" in trace_types
+    assert "llm.retry_failed" in trace_types
+    failed = next(item for item in trace_events if item.get("type") == "llm.failed")
+    assert failed["payload"]["exception_type"] == "AttributeError"
+    assert failed["payload"]["tool_boundary_clean"] is True
+    assert failed["payload"]["retry_attempt"] == 1
+    assert "traceback_tail" in failed["payload"]
+
+
+def test_runtime_model_stream_observer_ignores_none_event(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    trace_events: list[dict[str, Any]] = []
+    observer = runtime._make_model_stream_observer(
+        progress_cb=None,
+        run_id="run-stream-none",
+        thread_id="thread-stream-none",
+        locale="zh-CN",
+        trace_events=trace_events,
+        answer_stream_state=runtime._new_answer_stream_state(run_id="run-stream-none", thread_id="thread-stream-none"),
+        stage="post_tool_response",
+        model="gpt-test",
+        tool_round=1,
+    )
+
+    observer(None)
+
+    assert any(item.get("type") == "llm.stream_event.none" for item in trace_events)
 
 
 def test_runtime_rejects_redaction_placeholder_as_glob_pattern(tmp_path: Path) -> None:

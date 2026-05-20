@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.serialization import dump_model
+from app.serialization import dump_model, safe_model_dump
 
 
 @dataclass
@@ -84,3 +84,19 @@ def test_dump_model_handles_nested_mixed_values() -> None:
         "legacy": {"legacy": True},
         "data": {"name": "d", "value": 3},
     }
+
+
+class BrokenModelDump:
+    def model_dump(self) -> dict[str, str]:
+        raise AttributeError("'NoneType' object has no attribute 'model_dump'")
+
+    def __str__(self) -> str:
+        return "broken-model-dump"
+
+
+def test_safe_model_dump_handles_none() -> None:
+    assert safe_model_dump(None) is None
+
+
+def test_safe_model_dump_falls_back_when_model_dump_raises() -> None:
+    assert safe_model_dump(BrokenModelDump()) == "broken-model-dump"

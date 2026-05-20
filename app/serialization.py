@@ -29,3 +29,20 @@ def dump_model(value: Any) -> Any:
     if callable(legacy_dict):
         return dump_model(legacy_dict())
     return str(value)
+
+
+def safe_model_dump(value: Any) -> Any:
+    """Best-effort JSON-friendly dump for SDK/provider objects.
+
+    This is intentionally more defensive than dump_model() around model_dump()
+    because provider stream events may be None or partially constructed objects.
+    """
+    if value is None:
+        return None
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return dump_model(model_dump())
+        except Exception:
+            return str(value)
+    return dump_model(value)

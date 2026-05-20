@@ -593,6 +593,165 @@ function mergeActivityToolItems(previousItems, nextItems) {
   return order.map((id) => map.get(id)).filter(Boolean).slice(-24);
 }
 
+function normalizeLiveRunItem(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const rawItem = item.raw && typeof item.raw === "object" ? item.raw : {};
+  const callId = String(item.call_id || item.tool_call_id || rawItem.call_id || rawItem.tool_call_id || rawItem.id || "").trim();
+  const tool = String(item.tool || item.name || rawItem.tool || rawItem.name || "").trim();
+  const type = String(item.type || rawItem.type || "").trim();
+  const id = String(
+    item.id
+    || callId
+    || [type, tool, item.startedAt || item.started_at || rawItem.startedAt || rawItem.started_at].filter(Boolean).join(":")
+    || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  ).trim();
+  return {
+    id,
+    type,
+    status: normalizeProgressStatus(item.status || rawItem.status || "running"),
+    label: String(item.label || rawItem.label || rawItem.summary || rawItem.title || "").trim(),
+    label_key: String(item.label_key || item.labelKey || "").trim(),
+    detail: String(item.detail || rawItem.detail || rawItem.summary || "").trim(),
+    tool,
+    call_id: callId,
+    started_at: normalizeActivityTimestamp(item.started_at || item.startedAt || rawItem.started_at || rawItem.startedAt || 0),
+    completed_at: normalizeActivityTimestamp(item.completed_at || item.completedAt || rawItem.completed_at || rawItem.completedAt || 0),
+    raw: item.raw || rawItem || {},
+  };
+}
+
+function normalizeLiveRunItems(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map(normalizeLiveRunItem)
+    .filter((item) => item.id);
+}
+
+function mergeLiveRunItems(previousItems, nextItems) {
+  const order = [];
+  const map = new Map();
+  normalizeLiveRunItems(previousItems).forEach((item) => {
+    order.push(item.id);
+    map.set(item.id, item);
+  });
+  normalizeLiveRunItems(nextItems).forEach((item) => {
+    if (!map.has(item.id)) order.push(item.id);
+    map.set(item.id, { ...(map.get(item.id) || {}), ...item });
+  });
+  return order.map((id) => map.get(id)).filter(Boolean).slice(-32);
+}
+
+function liveRunItemFromStreamItem(streamItem, eventName = "") {
+  const item = streamItem && typeof streamItem === "object" ? streamItem : {};
+  const itemType = String(item.type || "").trim();
+  const isCompleted = String(eventName || "").trim() === "item/completed";
+  const tool = String(item.tool || item.name || "").trim();
+  let labelKey = "";
+  if (itemType === "agentMessage") {
+    labelKey = isCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming";
+  } else if (itemType === "toolCall" || tool) {
+    labelKey = isCompleted ? "activity.live.tool_finished" : "activity.live.tool_running";
+  }
+  return normalizeLiveRunItem({
+    id: String(item.id || item.call_id || item.tool_call_id || "").trim(),
+    type: itemType || "item",
+    tool,
+    status: item.status || (isCompleted ? "completed" : "inProgress"),
+    label: item.summary || item.title || "",
+    label_key: labelKey,
+    detail: item.detail || item.summary || "",
+    started_at: item.started_at || item.startedAt || 0,
+    completed_at: isCompleted ? Date.now() : 0,
+    raw: item,
+  });
+}
+
+function liveRunItemFromTrace(trace) {
+  const item = trace && typeof trace === "object" ? trace : {};
+  const type = String(item.type || "").trim();
+  const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
+  const toolName = String(payload.tool_name || payload.tool || payload.name || ((payload.raw_tool_call || {}).name) || "").trim();
+  const callId = toolCallIdentityFromSource(payload, String(item.id || ""));
+  const traceId = String(item.id || [type, callId, item.timestamp].filter(Boolean).join(":"));
+  const roundKey = String([payload.phase || payload.stream_stage || "llm", payload.tool_round ?? payload.round_idx ?? ""].filter((value) => String(value).trim()).join(":") || traceId);
+  if (type === "llm.started") {
+    return normalizeLiveRunItem({
+      id: `llm-${roundKey}`,
+      type,
+      status: "running",
+      label: item.title || "",
+      label_key: "activity.live.model_thinking",
+      detail: item.detail || String(payload.model || ""),
+      started_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "llm.finished") {
+    return normalizeLiveRunItem({
+      id: `llm-${roundKey}`,
+      type,
+      status: "completed",
+      label: item.title || "",
+      label_key: "activity.live.model_finished",
+      detail: item.detail || String(payload.model || ""),
+      completed_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "llm.failed") {
+    return normalizeLiveRunItem({
+      id: `llm-${roundKey}`,
+      type,
+      status: "failed",
+      label: item.title || "",
+      label_key: "activity.live.model_failed",
+      detail: item.detail || String(payload.message || ""),
+      completed_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "answer.started" || type === "answer.delta") {
+    return normalizeLiveRunItem({
+      id: "answer-streaming",
+      type,
+      status: "running",
+      label: item.title || "",
+      label_key: "activity.live.answer_streaming",
+      detail: item.detail || "",
+      started_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "answer.done" || type === "answer.finished") {
+    return normalizeLiveRunItem({
+      id: "answer-streaming",
+      type,
+      status: "completed",
+      label: item.title || "",
+      label_key: "activity.live.answer_done",
+      detail: item.detail || "",
+      completed_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "tool_drain.started" || type === "tool_drain.progress" || type === "tool_drain.finished") {
+    return normalizeLiveRunItem({
+      id: `tool-drain-${String(payload.round_idx || payload.tool_round || "") || traceId}`,
+      type,
+      status: type === "tool_drain.finished" ? "completed" : "running",
+      label: item.title || "",
+      label_key: type === "tool_drain.finished" ? "activity.live.waiting_next_model" : "activity.live.tool_running",
+      detail: item.detail || "",
+      started_at: item.timestamp,
+      completed_at: type === "tool_drain.finished" ? item.timestamp : 0,
+      raw: item,
+    });
+  }
+  if (type === "tool.started" || type === "tool.finished" || type === "tool.failed") {
+    return null;
+  }
+  return null;
+}
+
 function isActivityTerminalStatus(status) {
   const normalized = String(status || "").trim();
   return normalized === "completed" || normalized === "failed" || normalized === "blocked" || normalized === "cancelled";
@@ -648,6 +807,7 @@ function normalizeMessageActivity(raw) {
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
     tool_items: normalizeActivityToolItems(item.tool_items),
+    live_items: normalizeLiveRunItems(item.live_items),
     trace_events: traceEvents,
   };
 }
@@ -871,7 +1031,7 @@ function normalizeProgressStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return "pending";
   if (["completed", "success", "done", "ok"].includes(normalized)) return "completed";
-  if (["in_progress", "running", "active", "working"].includes(normalized)) return "running";
+  if (["in_progress", "inprogress", "running", "active", "working"].includes(normalized)) return "running";
   if (["failed", "error"].includes(normalized)) return "failed";
   if (["blocked", "needs_user_input"].includes(normalized)) return "blocked";
   if (["cancelled", "canceled"].includes(normalized)) return "cancelled";
@@ -1123,11 +1283,35 @@ function latestTraceTimestampByTypes(traces, types) {
   return 0;
 }
 
+function buildLiveAgentTimelineItems(activity, locale) {
+  const item = normalizeMessageActivity(activity || {});
+  if (isActivityTerminalStatus(item.status)) return [];
+  return item.live_items.map((liveItem) => {
+    const tool = String(liveItem.tool || "").trim();
+    const fallbackLabel = tool
+      ? translateUi(locale, "activity.live.tool_running", { tool })
+      : String(liveItem.type || "activity");
+    const label = liveItem.label
+      || (liveItem.label_key ? translateUi(locale, liveItem.label_key, { tool }) : "")
+      || fallbackLabel;
+    return {
+      id: `live-${liveItem.id}`,
+      label,
+      detail: liveItem.detail,
+      status: normalizeProgressStatus(liveItem.status),
+      source: "live",
+      live_item: liveItem,
+    };
+  });
+}
+
 function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const traces = item.trace_events.filter(Boolean);
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
+  const liveItems = buildLiveAgentTimelineItems(item, locale);
+  const hasLiveItems = Boolean(liveItems.length);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
@@ -1152,14 +1336,17 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
       tool_group: group,
     });
   });
-  if (!toolGroups.length && !llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  liveItems.forEach((entry) => {
+    progressItems.push(entry);
+  });
+  if (!hasLiveItems && !toolGroups.length && !llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "request-understanding",
       label: translateUi(locale, "activity.status.request_understanding"),
       status: "running",
       source: "fallback",
     });
-  } else if (!toolGroups.length && llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  } else if (!hasLiveItems && !toolGroups.length && llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "waiting-model",
       label: translateUi(
@@ -1171,7 +1358,7 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
       status: "running",
       source: "fallback",
     });
-  } else if (!toolGroups.length && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  } else if (!hasLiveItems && !toolGroups.length && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "thinking",
       label: translateUi(locale, "activity.status.thinking"),
@@ -1220,6 +1407,123 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
     tool_items: item.tool_items,
     model_action: latestActivityPayloadValue(item, ["model_action"]),
     execution_trace: latestExecutionTrace(item),
+  };
+}
+
+function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
+  const item = normalizeMessageActivity(activity || {});
+  const traces = item.trace_events.filter(Boolean);
+  const toolGroups = buildToolProgressGroups(item);
+  const modelRounds = [];
+  let currentRound = null;
+  traces.forEach((trace) => {
+    const type = String(trace.type || "").trim();
+    const payload = trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    if (type === "llm.started") {
+      currentRound = {
+        index: modelRounds.length + 1,
+        model: String(payload.model || ""),
+        phase: String(payload.phase || payload.stream_stage || ""),
+        status: "running",
+        decision: "",
+        tool_count_total: 0,
+        events: [trace],
+      };
+      modelRounds.push(currentRound);
+      return;
+    }
+    if (!currentRound && (type.startsWith("llm.") || type === "model_action" || type.startsWith("tool_drain.") || type.startsWith("answer."))) {
+      currentRound = {
+        index: modelRounds.length + 1,
+        model: String(payload.model || ""),
+        phase: String(payload.phase || ""),
+        status: "running",
+        decision: "",
+        tool_count_total: 0,
+        events: [],
+      };
+      modelRounds.push(currentRound);
+    }
+    if (!currentRound) return;
+    currentRound.events.push(trace);
+    if (payload.model && !currentRound.model) currentRound.model = String(payload.model || "");
+    if ((payload.phase || payload.stream_stage) && !currentRound.phase) currentRound.phase = String(payload.phase || payload.stream_stage || "");
+    const modelAction = payload.model_action && typeof payload.model_action === "object" ? payload.model_action : {};
+    if (modelAction.action_type) currentRound.decision = String(modelAction.action_type || "");
+    if (type === "tool_drain.started" || type === "tool_drain.finished") {
+      currentRound.decision = "tool_call";
+      currentRound.tool_count_total = Math.max(
+        Number(currentRound.tool_count_total || 0) || 0,
+        Number(payload.tool_count_total || payload.tool_count_drained || 0) || 0,
+      );
+    }
+    if (type === "answer.started" || type === "answer.delta" || type === "answer.done" || type === "answer.finished") {
+      currentRound.decision = currentRound.decision || "final_answer";
+    }
+    if (type === "llm.finished" || type === "answer.done" || type === "answer.finished") {
+      currentRound.status = "completed";
+    } else if (type === "llm.failed") {
+      currentRound.status = "failed";
+    }
+  });
+  const latestHarnessPayload = [...traces].reverse().find((trace) => {
+    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    return Object.prototype.hasOwnProperty.call(payload, "tool_boundary_clean")
+      || Object.prototype.hasOwnProperty.call(payload, "blocked_reason")
+      || Object.prototype.hasOwnProperty.call(payload, "turn_status")
+      || Object.prototype.hasOwnProperty.call(payload, "usage")
+      || Object.prototype.hasOwnProperty.call(payload, "token_usage");
+  });
+  const latestHarness = latestHarnessPayload && latestHarnessPayload.payload && typeof latestHarnessPayload.payload === "object"
+    ? latestHarnessPayload.payload
+    : {};
+  return {
+    user_context: {
+      triggering_user_message: item.triggering_user_message,
+      triggering_user_turn_id: item.triggering_user_turn_id,
+      session_id: item.session_id,
+      thread_id: item.thread_id,
+      project: (inspector && inspector.project) || {},
+      model: latestHarness.model || "",
+      provider: latestHarness.provider || "",
+      attachments_count: Number(latestHarness.attachments_count || latestHarness.attachment_count || 0) || 0,
+      mode: latestHarness.mode || latestHarness.collaboration_mode || "",
+    },
+    model_rounds: modelRounds,
+    tool_groups: toolGroups.map((group) => ({
+      call_id: group.id,
+      tool: group.tool_name,
+      status: normalizeProgressStatus(group.status),
+      arguments: group.raw_arguments,
+      normalized_arguments: group.normalized_arguments,
+      validation: group.validation_result,
+      schema_validation: group.schema_validation,
+      result_summary: group.summary,
+      result_preview: group.result_preview,
+      trace_types: group.trace_types,
+    })),
+    harness: {
+      tool_boundary_clean: latestHarness.tool_boundary_clean,
+      compaction_happened: traces.some((trace) => String(trace.type || "") === "context.compacted"),
+      retry_happened: traces.some((trace) => String(trace.type || "").startsWith("llm.retry")),
+      blocked_reason: latestHarness.blocked_reason || "",
+      pending_user_input: latestHarness.pending_user_input || {},
+      turn_status: latestHarness.turn_status || item.status,
+      run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
+      token_usage: latestHarness.token_usage || latestHarness.usage || {},
+    },
+    final_status: {
+      status: item.status,
+      activity_summary: item.activity_summary,
+      finished_at: item.finished_at,
+      run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
+    },
+    raw: {
+      activity: item,
+      inspector: inspector || {},
+      trace_events: traces,
+      locale,
+    },
   };
 }
 
@@ -1604,6 +1908,9 @@ function mergeActivityState(previous, patch = {}) {
   const nextToolItems = Object.prototype.hasOwnProperty.call(nextPatch, "tool_items")
     ? mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
     : prev.tool_items;
+  const nextLiveItems = Object.prototype.hasOwnProperty.call(nextPatch, "live_items")
+    ? mergeLiveRunItems(prev.live_items, nextPatch.live_items)
+    : prev.live_items;
   const nextStatus = String(nextPatch.status || prev.status || "");
   const terminalFinishedAt = isActivityTerminalStatus(nextStatus) ? Date.now() : 0;
   const nextStartedAtCandidate = normalizeActivityTimestamp(
@@ -1648,6 +1955,7 @@ function mergeActivityState(previous, patch = {}) {
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
     tool_items: nextToolItems,
+    live_items: nextLiveItems,
     trace_events: nextTraceEvents,
   };
 }
@@ -1656,6 +1964,10 @@ function appendActivityTrace(activity, trace, options = {}) {
   const current = normalizeMessageActivity(activity || {});
   const normalizedTrace = normalizeTraceEvent(trace);
   const nextTraceEvents = [...current.trace_events, normalizedTrace];
+  const nextLiveItem = liveRunItemFromTrace(normalizedTrace);
+  const nextLiveItems = nextLiveItem
+    ? mergeLiveRunItems(current.live_items, [nextLiveItem])
+    : current.live_items;
   const nextStatus = String(
     options.status
     || current.status
@@ -1688,6 +2000,7 @@ function appendActivityTrace(activity, trace, options = {}) {
       )
       : current.run_duration_ms,
     final_elapsed_ms: finalElapsedMs,
+    live_items: nextLiveItems,
     trace_events: nextTraceEvents.slice(-64),
     activity_summary: String(current.activity_summary || ""),
   };
@@ -3830,6 +4143,11 @@ function App() {
             } else if (event === "item/started") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
               if (item.id) {
+                patchPendingActivity((activity) => mergeActivityState(activity, {
+                  live_items: [liveRunItemFromStreamItem(item, event)],
+                }));
+              }
+              if (item.id) {
                 dispatch({
                   type: "items/register",
                   item: {
@@ -3852,6 +4170,11 @@ function App() {
               }
             } else if (event === "item/completed") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
+              if (item.id) {
+                patchPendingActivity((activity) => mergeActivityState(activity, {
+                  live_items: [liveRunItemFromStreamItem(item, event)],
+                }));
+              }
               if (item.id) {
                 dispatch({
                   type: "items/register",
@@ -4522,14 +4845,17 @@ function App() {
 
   const renderActivityDebugDetails = (activity, projection, messageId) => {
     const item = normalizeMessageActivity(activity || {});
+    const structured = buildStructuredDebugView(item, lastInspector || {}, uiLocale);
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
-    const toolItems = Array.isArray((projection && projection.tool_items)) ? projection.tool_items : [];
-    const debugSections = [
+    const userContextSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
       renderDetailBlock(t("activity.triggering_user_turn_id"), item.triggering_user_turn_id),
       renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal),
       renderDetailBlock(t("activity.current_turn_followup_type"), item.current_turn_followup_type),
       renderDetailBlock(t("activity.current_turn_goal_source"), item.current_turn_goal_source),
+      renderDetailBlock(t("activity.debug.user_context"), structured.user_context),
+    ].filter(Boolean);
+    const legacyContextSections = [
       renderDetailBlock(t("activity.active_task_focus"), item.active_task_focus),
       renderDetailBlock(t("activity.recent_user_messages"), item.recent_user_messages),
       renderPhaseTimingDetails(item.phase_timings),
@@ -4543,15 +4869,42 @@ function App() {
       renderExecutionTraceDetails(projection.execution_trace),
       renderRevisionSummaryDetails(projection.revision_summary),
     ].filter(Boolean);
-    const toolDebugDetails = toolItems.length
+    const modelRoundDetails = structured.model_rounds.length
+      ? html`
+          <details className="activity-payload" open>
+            <summary>${t("activity.debug.model_rounds")}</summary>
+            <div className="activity-structured-details">
+              ${structured.model_rounds.map((round) => html`
+                <details key=${`round-${round.index}`} className="activity-payload">
+                  <summary>${t("activity.debug.round_n", { n: round.index })} · ${round.status || "-"}</summary>
+                  ${renderDetailBlock(t("labels.payload"), {
+                    model: round.model,
+                    phase: round.phase,
+                    status: round.status,
+                    decision: round.decision,
+                    tool_count_total: round.tool_count_total,
+                  })}
+                </details>
+              `)}
+            </div>
+          </details>
+        `
+      : null;
+    const toolDebugDetails = structured.tool_groups.length
       ? html`
           <details className="activity-payload">
-            <summary>${t("run.recent_tools")}</summary>
+            <summary>${t("activity.debug.tools")}</summary>
             <div className="activity-structured-details">
-              ${toolItems.map((toolItem, index) => html`
-                <details key=${toolItem.id || `${messageId}-tool-${index}`} className="activity-payload">
-                  <summary>${formatToolProgressLabel(uiLocale, toolItem)}</summary>
-                  ${renderToolAuditDetails(toolItem)}
+              ${structured.tool_groups.map((toolItem, index) => html`
+                <details key=${toolItem.call_id || `${messageId}-tool-${index}`} className="activity-payload">
+                  <summary>${toolItem.tool || "tool"} · ${toolItem.call_id || "-"}</summary>
+                  ${renderToolAuditDetails({
+                    raw_arguments: toolItem.arguments,
+                    normalized_arguments: toolItem.normalized_arguments,
+                    validation_result: toolItem.validation,
+                    schema_validation: toolItem.schema_validation,
+                    result_preview: toolItem.result_preview,
+                  })}
                   ${renderDetailBlock(t("labels.payload"), toolItem)}
                 </details>
               `)}
@@ -4559,35 +4912,37 @@ function App() {
           </details>
         `
       : null;
+    const harnessDetails = renderDetailBlock(t("activity.debug.harness"), structured.harness, { open: true });
+    const finalStatusDetails = renderDetailBlock(t("activity.debug.final_status"), structured.final_status);
     const rawTraceList = traces.length
       ? html`
           <details className="activity-payload">
             <summary>${t("activity.raw_events")}</summary>
-            <div className="activity-list">
-              ${traces.map((trace, index) => html`
-                <div key=${trace.id || `${messageId}-trace-${index}`} className=${`activity-item tone-${activityToneClass(trace.status)}`}>
-                  <div className="activity-item-head">
-                    <span className="activity-dot" aria-hidden="true"></span>
-                    <span className="activity-item-title">${formatActivityTraceTitle(uiLocale, trace)}</span>
-                    ${trace.duration_ms != null
-                      ? html`<span className="activity-item-duration">${formatActivityDuration({ started_at: trace.timestamp, finished_at: trace.timestamp + trace.duration_ms }, trace.timestamp + trace.duration_ms)}</span>`
-                      : null}
-                  </div>
-                  ${trace.detail ? html`<div className="activity-item-detail">${trace.detail}</div>` : null}
-                  ${renderActivityPayload(trace, { rawOnly: true })}
-                </div>
-              `)}
-            </div>
+            ${renderDetailBlock(t("activity.debug.raw_json"), structured.raw)}
           </details>
         `
       : null;
-    if (!debugSections.length && !toolDebugDetails && !rawTraceList) return null;
+    if (!userContextSections.length && !legacyContextSections.length && !modelRoundDetails && !toolDebugDetails && !harnessDetails && !finalStatusDetails && !rawTraceList) return null;
     return html`
       <details className="activity-debug-drawer">
         <summary>${t("activity.debug_details")}</summary>
         <div className="activity-debug-sections">
-          ${debugSections}
+          <details className="activity-payload" open>
+            <summary>${t("activity.debug.user_context")}</summary>
+            <div className="activity-structured-details">${userContextSections}</div>
+          </details>
+          ${modelRoundDetails}
           ${toolDebugDetails}
+          ${harnessDetails}
+          ${finalStatusDetails}
+          ${legacyContextSections.length
+            ? html`
+                <details className="activity-payload">
+                  <summary>${t("activity.debug.legacy_details")}</summary>
+                  <div className="activity-structured-details">${legacyContextSections}</div>
+                </details>
+              `
+            : null}
           ${rawTraceList}
         </div>
       </details>

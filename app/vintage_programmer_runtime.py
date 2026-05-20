@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import threading
 import time
+import traceback
 from typing import Any, Callable
 import uuid
 
@@ -27,7 +28,7 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
-from app.serialization import dump_model
+from app.serialization import dump_model, safe_model_dump
 from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
 from app.tool_trace_summary import (
     build_tool_argument_audit,
@@ -1217,140 +1218,186 @@ class VintageProgrammerRuntime:
         )
         activity_context = dict(answer_context or {})
 
-        def observer(event: dict[str, Any]) -> None:
-            payload = dict(event or {})
-            event_type = str(payload.get("type") or "").strip()
-            timestamp = float(payload.get("timestamp") or time.time())
-            arrival_perf = time.perf_counter()
-            call_state["event_count"] = int(call_state.get("event_count") or 0) + 1
-            if not call_state["first_event_at"]:
-                call_state["first_event_at"] = timestamp
-                if phase_timer is not None:
-                    phase_timer.record_offset_ms("model_first_event_ms", perf_value=arrival_perf, if_missing=True)
-            if (
-                event_type
-                and event_type != "response.completed"
-                and not answer_stream_state.get("trace_started_id")
-            ):
-                answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+        def emit_stream_event_failure(exc: Exception, *, event: Any, event_type: str = "") -> None:
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="llm.stream_event.failed",
+                title="LLM stream event handling failed",
+                detail=safe_error_message(exc),
+                status="warning",
+                payload={
+                    "stage": str(stage or ""),
+                    "model": str(model or ""),
+                    "tool_round": max(0, int(tool_round)),
+                    "event_type": str(event_type or ""),
+                    "event_preview": safe_preview(str(safe_model_dump(event)), limit=1000),
+                    "exception_type": exc.__class__.__name__,
+                    "exception_module": exc.__class__.__module__,
+                    "traceback_tail": traceback.format_exc()[-4000:],
+                },
+                trace_events=trace_events,
+            )
+
+        def observer(event: dict[str, Any] | None) -> None:
+            if event is None:
+                self._emit_trace(
                     progress_cb,
                     run_id=run_id,
-                    locale=locale,
-                    type="answer.started",
-                    stage="answer_generation",
-                    detail=(
-                        self._activity_detail(
-                            task_type=activity_context.get("task_type"),
-                            output_mode=activity_context.get("output_mode"),
-                            stream_stage=stage,
-                        )
-                        or "Waiting for the model to finish generating the answer."
-                    ),
-                    status="running",
+                    type="llm.stream_event.none",
+                    title="LLM stream event missing",
+                    detail="Received an empty stream event from the backend.",
+                    status="warning",
                     payload={
+                        "stage": str(stage or ""),
                         "model": str(model or ""),
-                        "stream_stage": str(stage or ""),
-                        "event_type": event_type,
-                        **activity_context,
+                        "tool_round": max(0, int(tool_round)),
                     },
                     trace_events=trace_events,
-                    sequence=int(answer_stream_state.get("delta_count") or 0),
-                ) or ""
-            if event_type != "response.output_text.delta":
-                if event_type == "response.completed":
-                    diagnostics = dict(payload.get("diagnostics") or {})
-                    for key, value in diagnostics.items():
-                        if value not in ("", None, [], {}):
-                            call_state[key] = value
-                    call_state["completed_at"] = float(diagnostics.get("completed_at") or timestamp or 0.0)
+                )
+                return
+            try:
+                payload = dict(event or {}) if isinstance(event, dict) else dict(safe_model_dump(event) or {})
+            except Exception as exc:
+                emit_stream_event_failure(exc, event=event)
                 return
 
-            raw_delta = str(payload.get("delta") or "")
-            delta = self._consume_stream_delta_for_display(answer_stream_state, raw_delta)
-            if not delta:
-                return
-            if not answer_stream_state.get("item_started"):
+            event_type = ""
+            try:
+                event_type = str(payload.get("type") or "").strip()
+                timestamp = float(payload.get("timestamp") or time.time())
+                arrival_perf = time.perf_counter()
+                call_state["event_count"] = int(call_state.get("event_count") or 0) + 1
+                if not call_state["first_event_at"]:
+                    call_state["first_event_at"] = timestamp
+                    if phase_timer is not None:
+                        phase_timer.record_offset_ms("model_first_event_ms", perf_value=arrival_perf, if_missing=True)
+                if (
+                    event_type
+                    and event_type != "response.completed"
+                    and not answer_stream_state.get("trace_started_id")
+                ):
+                    answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                        type="answer.started",
+                        stage="answer_generation",
+                        detail=(
+                            self._activity_detail(
+                                task_type=activity_context.get("task_type"),
+                                output_mode=activity_context.get("output_mode"),
+                                stream_stage=stage,
+                            )
+                            or "Waiting for the model to finish generating the answer."
+                        ),
+                        status="running",
+                        payload={
+                            "model": str(model or ""),
+                            "stream_stage": str(stage or ""),
+                            "event_type": event_type,
+                            **activity_context,
+                        },
+                        trace_events=trace_events,
+                        sequence=int(answer_stream_state.get("delta_count") or 0),
+                    ) or ""
+                if event_type != "response.output_text.delta":
+                    if event_type == "response.completed":
+                        diagnostics = dict(payload.get("diagnostics") or {})
+                        for key, value in diagnostics.items():
+                            if value not in ("", None, [], {}):
+                                call_state[key] = value
+                        call_state["completed_at"] = float(diagnostics.get("completed_at") or timestamp or 0.0)
+                    return
+
+                raw_delta = str(payload.get("delta") or "")
+                delta = self._consume_stream_delta_for_display(answer_stream_state, raw_delta)
+                if not delta:
+                    return
+                if not answer_stream_state.get("item_started"):
+                    self._emit_message_item_event(
+                        progress_cb,
+                        event="item/started",
+                        thread_id=thread_id,
+                        turn_id=run_id,
+                        item={
+                            "id": str(answer_stream_state.get("item_id") or ""),
+                            "type": "agentMessage",
+                            "text": "",
+                            "status": "inProgress",
+                        },
+                    )
+                    answer_stream_state["item_started"] = True
+                    answer_stream_state["started_at"] = timestamp
+                if not answer_stream_state.get("trace_started_id"):
+                    answer_stream_state["trace_started_id"] = self._emit_activity_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                        type="answer.started",
+                        stage="answer_generation",
+                        detail=(
+                            self._activity_detail(
+                                task_type=activity_context.get("task_type"),
+                                output_mode=activity_context.get("output_mode"),
+                                stream_stage=stage,
+                            )
+                            or "Receiving streamed answer chunks from the model."
+                        ),
+                        status="running",
+                        payload={
+                            "model": str(model or ""),
+                            "stream_stage": str(stage or ""),
+                            **activity_context,
+                        },
+                        trace_events=trace_events,
+                        sequence=int(answer_stream_state.get("delta_count") or 0),
+                    ) or ""
                 self._emit_message_item_event(
                     progress_cb,
-                    event="item/started",
+                    event="item/agentMessage/delta",
                     thread_id=thread_id,
                     turn_id=run_id,
-                    item={
-                        "id": str(answer_stream_state.get("item_id") or ""),
-                        "type": "agentMessage",
-                        "text": "",
-                        "status": "inProgress",
-                    },
+                    item_id=str(answer_stream_state.get("item_id") or ""),
+                    delta=delta,
                 )
-                answer_stream_state["item_started"] = True
-                answer_stream_state["started_at"] = timestamp
-            if not answer_stream_state.get("trace_started_id"):
-                answer_stream_state["trace_started_id"] = self._emit_activity_trace(
-                    progress_cb,
-                    run_id=run_id,
-                    locale=locale,
-                    type="answer.started",
-                    stage="answer_generation",
-                    detail=(
-                        self._activity_detail(
-                            task_type=activity_context.get("task_type"),
-                            output_mode=activity_context.get("output_mode"),
-                            stream_stage=stage,
-                        )
-                        or "Receiving streamed answer chunks from the model."
-                    ),
-                    status="running",
-                    payload={
-                        "model": str(model or ""),
-                        "stream_stage": str(stage or ""),
-                        **activity_context,
-                    },
-                    trace_events=trace_events,
-                    sequence=int(answer_stream_state.get("delta_count") or 0),
-                ) or ""
-            self._emit_message_item_event(
-                progress_cb,
-                event="item/agentMessage/delta",
-                thread_id=thread_id,
-                turn_id=run_id,
-                item_id=str(answer_stream_state.get("item_id") or ""),
-                delta=delta,
-            )
-            answer_stream_state["text"] = f"{str(answer_stream_state.get('text') or '')}{delta}"
-            answer_stream_state["delta_count"] = int(answer_stream_state.get("delta_count") or 0) + 1
-            answer_stream_state["delta_chars"] = int(answer_stream_state.get("delta_chars") or 0) + len(delta)
-            answer_stream_state["finished_at"] = timestamp
-            call_state["text_delta_count"] = int(call_state.get("text_delta_count") or 0) + 1
-            call_state["text_chars"] = int(call_state.get("text_chars") or 0) + len(delta)
-            if not call_state["first_text_delta_at"]:
-                call_state["first_text_delta_at"] = timestamp
-                if phase_timer is not None:
-                    phase_timer.record_offset_ms("model_first_text_delta_ms", perf_value=arrival_perf, if_missing=True)
-            call_state["last_text_delta_at"] = timestamp
-            trace_delta_budget = int(answer_stream_state.get("text_delta_trace_count") or 0)
-            if trace_delta_budget < 4:
-                self._emit_activity_trace(
-                    progress_cb,
-                    run_id=run_id,
-                    locale=locale,
-                    type="answer.delta",
-                    stage="answer_generation",
-                    detail=self._activity_detail(
-                        chunk=int(answer_stream_state.get("delta_count") or 0),
-                        chars=len(delta),
-                    ),
-                    status="running",
-                    payload={
-                        "delta_length": len(delta),
-                        "delta_preview": safe_preview(delta, limit=120),
-                        "model": str(model or ""),
-                        "stream_stage": str(stage or ""),
-                        **activity_context,
-                    },
-                    trace_events=trace_events,
-                    sequence=int(answer_stream_state.get("delta_count") or 0),
-                )
-                answer_stream_state["text_delta_trace_count"] = trace_delta_budget + 1
+                answer_stream_state["text"] = f"{str(answer_stream_state.get('text') or '')}{delta}"
+                answer_stream_state["delta_count"] = int(answer_stream_state.get("delta_count") or 0) + 1
+                answer_stream_state["delta_chars"] = int(answer_stream_state.get("delta_chars") or 0) + len(delta)
+                answer_stream_state["finished_at"] = timestamp
+                call_state["text_delta_count"] = int(call_state.get("text_delta_count") or 0) + 1
+                call_state["text_chars"] = int(call_state.get("text_chars") or 0) + len(delta)
+                if not call_state["first_text_delta_at"]:
+                    call_state["first_text_delta_at"] = timestamp
+                    if phase_timer is not None:
+                        phase_timer.record_offset_ms("model_first_text_delta_ms", perf_value=arrival_perf, if_missing=True)
+                call_state["last_text_delta_at"] = timestamp
+                trace_delta_budget = int(answer_stream_state.get("text_delta_trace_count") or 0)
+                if trace_delta_budget < 4:
+                    self._emit_activity_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                        type="answer.delta",
+                        stage="answer_generation",
+                        detail=self._activity_detail(
+                            chunk=int(answer_stream_state.get("delta_count") or 0),
+                            chars=len(delta),
+                        ),
+                        status="running",
+                        payload={
+                            "delta_length": len(delta),
+                            "delta_preview": safe_preview(delta, limit=120),
+                            "model": str(model or ""),
+                            "stream_stage": str(stage or ""),
+                            **activity_context,
+                        },
+                        trace_events=trace_events,
+                        sequence=int(answer_stream_state.get("delta_count") or 0),
+                    )
+                    answer_stream_state["text_delta_trace_count"] = trace_delta_budget + 1
+            except Exception as exc:
+                emit_stream_event_failure(exc, event=event, event_type=event_type)
 
         return observer
 
@@ -2941,6 +2988,49 @@ class VintageProgrammerRuntime:
         _ = locale
         raise RuntimeError(f"tool message invariant failed at {phase}: {diagnostics}")
 
+    def _llm_failure_payload(
+        self,
+        exc: Exception,
+        *,
+        messages: list[Any],
+        phase: str,
+        model: str,
+        retry_attempt: int = 0,
+    ) -> dict[str, Any]:
+        boundary_diagnostics = self._tool_boundary_diagnostics(messages)
+        tail_messages = list(messages or [])[-8:]
+        return {
+            "kind": "llm_request_error",
+            "message": safe_error_message(exc),
+            "exception_type": exc.__class__.__name__,
+            "exception_module": exc.__class__.__module__,
+            "traceback_tail": traceback.format_exc()[-6000:],
+            "tool_boundary_clean": bool(boundary_diagnostics.get("ok")),
+            "tool_boundary_diagnostics": boundary_diagnostics,
+            "phase": str(phase or ""),
+            "message_count": len(list(messages or [])),
+            "last_message_roles": [self._message_role(item) for item in tail_messages],
+            "model": str(model or ""),
+            "retry_attempt": max(0, int(retry_attempt)),
+        }
+
+    @staticmethod
+    def _is_retryable_llm_failure(message: str) -> bool:
+        text = str(message or "").lower()
+        return any(
+            needle in text
+            for needle in (
+                "nonetype",
+                "model_dump",
+                "stream completed without",
+                "timeout",
+                "connection reset",
+                "502",
+                "503",
+                "504",
+            )
+        )
+
     @staticmethod
     def _ensure_model_tool_call_ids(
         ai_msg: Any,
@@ -3451,6 +3541,8 @@ class VintageProgrammerRuntime:
                 status="running",
                 payload={
                     "model": requested_model,
+                    "phase": "initial_model_response",
+                    "tool_round": 0,
                     "tools_available": bool(runnable_tools),
                 },
                 trace_events=trace_events,
@@ -3483,7 +3575,11 @@ class VintageProgrammerRuntime:
                 type="llm.finished",
                 title=self._trace_label(locale, "llm.finished"),
                 status="success",
-                payload={"model": effective_model or requested_model},
+                payload={
+                    "model": effective_model or requested_model,
+                    "phase": "initial_model_response",
+                    "tool_round": 0,
+                },
                 trace_events=trace_events,
             )
             self._set_tools_runtime_context(
@@ -3508,6 +3604,7 @@ class VintageProgrammerRuntime:
             no_progress_cycles = 0
             post_replan_no_progress_cycles = 0
             guard_rejection_count = 0
+            llm_retry_used = False
             progress_tracker = self._new_progress_tracker()
             progress_signals: list[dict[str, Any]] = []
             replan_history: list[dict[str, Any]] = []
@@ -4300,7 +4397,11 @@ class VintageProgrammerRuntime:
                     type="llm.started",
                     title=self._trace_label(locale, "llm.started"),
                     status="running",
-                    payload={"model": effective_model or requested_model},
+                    payload={
+                        "model": effective_model or requested_model,
+                        "phase": "post_tool_response",
+                        "tool_round": round_idx,
+                    },
                     trace_events=trace_events,
                 )
                 phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
@@ -4337,32 +4438,128 @@ class VintageProgrammerRuntime:
                     )
                 except Exception as exc:
                     error_message = safe_error_message(exc)
-                    turn_status = "blocked"
-                    blocked_reason = blocked_reason or "llm_request_error"
-                    forced_text = error_message
-                    notes.append("llm_request_error")
-                    self._emit_trace(
-                        progress_cb,
-                        run_id=run_id,
-                        type="llm.failed",
-                        title="LLM request failed",
-                        detail=error_message,
-                        status="failed",
-                        payload={
-                            "kind": "llm_request_error",
-                            "message": error_message,
-                            "tool_boundary_clean": self._messages_at_tool_boundary(messages),
-                        },
-                        trace_events=trace_events,
+                    failure_payload = self._llm_failure_payload(
+                        exc,
+                        messages=messages,
+                        phase="before_followup_llm",
+                        model=effective_model or requested_model,
                     )
-                    break
+                    if (
+                        not llm_retry_used
+                        and bool(failure_payload.get("tool_boundary_clean"))
+                        and self._is_retryable_llm_failure(error_message)
+                    ):
+                        llm_retry_used = True
+                        notes.append("llm_retrying")
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="llm.retrying",
+                            title="Retrying LLM request",
+                            detail=error_message,
+                            status="running",
+                            payload={**failure_payload, "retry_attempt": 1},
+                            trace_events=trace_events,
+                        )
+                        try:
+                            ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                                self._backend._invoke_with_runner_recovery,
+                                runner=runner,
+                                messages=messages,
+                                model=effective_model,
+                                max_output_tokens=int(settings.max_output_tokens),
+                                enable_tools=True,
+                                tool_names=runnable_tools,
+                                event_cb=self._make_model_stream_observer(
+                                    progress_cb=progress_cb,
+                                    run_id=run_id,
+                                    thread_id=session_id,
+                                    locale=locale,
+                                    trace_events=trace_events,
+                                    answer_stream_state=answer_stream_state,
+                                    stage="post_tool_response_retry",
+                                    model=effective_model,
+                                    tool_round=round_idx,
+                                    answer_context=turn_activity_context,
+                                    phase_timer=phase_timer,
+                                ),
+                            )
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="llm.retry_succeeded",
+                                title="LLM retry succeeded",
+                                status="success",
+                                payload={
+                                    "model": effective_model or requested_model,
+                                    "phase": "post_tool_response_retry",
+                                    "tool_round": round_idx,
+                                    "tool_boundary_clean": True,
+                                    "retry_attempt": 1,
+                                },
+                                trace_events=trace_events,
+                            )
+                        except Exception as retry_exc:
+                            retry_error_message = safe_error_message(retry_exc)
+                            retry_payload = self._llm_failure_payload(
+                                retry_exc,
+                                messages=messages,
+                                phase="before_followup_llm_retry",
+                                model=effective_model or requested_model,
+                                retry_attempt=1,
+                            )
+                            turn_status = "blocked"
+                            blocked_reason = blocked_reason or "llm_request_error"
+                            forced_text = retry_error_message
+                            notes.append("llm_request_error")
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="llm.retry_failed",
+                                title="LLM retry failed",
+                                detail=retry_error_message,
+                                status="failed",
+                                payload=retry_payload,
+                                trace_events=trace_events,
+                            )
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="llm.failed",
+                                title="LLM request failed",
+                                detail=retry_error_message,
+                                status="failed",
+                                payload=retry_payload,
+                                trace_events=trace_events,
+                            )
+                            break
+                    else:
+                        turn_status = "blocked"
+                        blocked_reason = blocked_reason or "llm_request_error"
+                        forced_text = error_message
+                        notes.append("llm_request_error")
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="llm.failed",
+                            title="LLM request failed",
+                            detail=error_message,
+                            status="failed",
+                            payload=failure_payload,
+                            trace_events=trace_events,
+                        )
+                        break
                 self._emit_trace(
                     progress_cb,
                     run_id=run_id,
                     type="llm.finished",
                     title=self._trace_label(locale, "llm.finished"),
                     status="success",
-                    payload={"model": effective_model or requested_model},
+                    payload={
+                        "model": effective_model or requested_model,
+                        "phase": "post_tool_response",
+                        "tool_round": round_idx,
+                    },
                     trace_events=trace_events,
                 )
                 self._set_tools_runtime_context(

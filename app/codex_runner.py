@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from app.openai_auth import OpenAIAuthManager
+from app.serialization import safe_model_dump
 
 
 def build_codex_input_payload(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -114,9 +115,16 @@ class CodexResponsesRunner:
             "completed_at": 0.0,
         }
         for event in stream:
+            if event is None:
+                stream_diagnostics["none_event_count"] = int(stream_diagnostics.get("none_event_count") or 0) + 1
+                if event_cb is not None:
+                    event_cb(None)
+                continue
             event_type = str(getattr(event, "type", "") or "")
             now = time.time()
             stream_diagnostics["event_count"] = int(stream_diagnostics.get("event_count") or 0) + 1
+            stream_diagnostics["last_event_type"] = event_type
+            stream_diagnostics["last_event_preview"] = str(safe_model_dump(event))[:1000]
             if not stream_diagnostics["first_event_at"]:
                 stream_diagnostics["first_event_at"] = now
             if event_cb is not None and event_type == "response.output_text.delta":
@@ -151,9 +159,10 @@ class CodexResponsesRunner:
                     )
             elif event_type == "response.failed":
                 final_error = getattr(getattr(event, "response", None), "error", None) or getattr(event, "error", None)
+                stream_diagnostics["failed_event"] = safe_model_dump(event)
 
         if final_error is not None:
-            raise RuntimeError(f"Codex response failed: {final_error}")
+            raise RuntimeError(f"Codex response failed: {safe_model_dump(final_error)}")
         if final_response is None:
             raise RuntimeError("Codex response stream completed without a final response.")
         return _response_to_ai_message(self._AIMessage, final_response, stream_diagnostics=stream_diagnostics)

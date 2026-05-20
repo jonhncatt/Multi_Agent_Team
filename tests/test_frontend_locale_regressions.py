@@ -43,6 +43,22 @@ REQUIRED_CORE_KEYS = (
     "activity.progress_title",
     "activity.debug_details",
     "activity.raw_events",
+    "activity.debug.user_context",
+    "activity.debug.model_rounds",
+    "activity.debug.round_n",
+    "activity.debug.tools",
+    "activity.debug.harness",
+    "activity.debug.final_status",
+    "activity.debug.legacy_details",
+    "activity.debug.raw_json",
+    "activity.live.model_thinking",
+    "activity.live.model_finished",
+    "activity.live.model_failed",
+    "activity.live.tool_running",
+    "activity.live.tool_finished",
+    "activity.live.waiting_next_model",
+    "activity.live.answer_streaming",
+    "activity.live.answer_done",
     "activity.model_action",
     "activity.execution_trace",
     "activity.runtime_boundary",
@@ -221,6 +237,8 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "function activityStageKeyFromTrace(",
         "function buildActivityFlowStages(",
         "function buildActivityProjection(",
+        "function buildLiveAgentTimelineItems(",
+        "function buildStructuredDebugView(",
         "function buildRuntimeStatsSummary(",
         "function buildToolProgressGroups(",
         "function toolCallIdentityFromSource(",
@@ -262,10 +280,12 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
 
     required_tokens = (
         'tool_items: [item]',
+        "live_items: [liveRunItemFromStreamItem(item, event)]",
         "plan_explanation: explanation",
         'summary>${t("activity.debug_details")}</summary>',
         'summary>${t("activity.raw_events")}</summary>',
-        'summary>${t("run.recent_tools")}</summary>',
+        'summary>${t("activity.debug.tools")}</summary>',
+        't("activity.debug.raw_json")',
     )
     for token in required_tokens:
         assert token in script, token
@@ -289,6 +309,43 @@ def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> Non
     assert "const llmStartedAt = latestTraceTimestampByTypes(traces, \"llm.started\");" in body
     assert '"answer.started"' in body
     assert "activity.status.direct_answer_no_tool" not in body
+
+
+def test_live_agent_timeline_items_are_wired_into_activity_projection() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "function normalizeLiveRunItem(",
+        "function liveRunItemFromStreamItem(",
+        "function liveRunItemFromTrace(",
+        "function mergeLiveRunItems(",
+        "live_items: normalizeLiveRunItems(item.live_items)",
+        "const liveItems = buildLiveAgentTimelineItems(item, locale);",
+        "if (!hasLiveItems && !toolGroups.length",
+        "activity.live.model_thinking",
+        "activity.live.answer_streaming",
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+
+def test_structured_debug_view_groups_runtime_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "function buildStructuredDebugView(activity, inspector = {}, locale = \"zh-CN\")",
+        "user_context",
+        "model_rounds",
+        "tool_groups",
+        "tool_boundary_clean",
+        "retry_happened",
+        "final_status",
+        "raw: {",
+        'summary>${t("activity.debug.model_rounds")}</summary>',
+        'renderDetailBlock(t("activity.debug.harness")',
+    )
+    for token in required_tokens:
+        assert token in script, token
 
 
 def test_early_activity_copy_and_visibility_are_updated() -> None:
@@ -432,7 +489,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.11）")
+    assert manual.startswith("# 内部设计手册（v2.9.12）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -443,6 +500,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.3 v2.9.9 Minimal ContextPack and TurnMemory Notes" in manual
     assert "## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes" in manual
     assert "## 20.5 v2.9.11 Path Portability and Search Safety Notes" in manual
+    assert "## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual

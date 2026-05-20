@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.11）
+# 内部设计手册（v2.9.12）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -742,6 +742,18 @@ v2.9.11 keeps the v2.9.10 Codex-style all-tool drain behavior and improves model
 - `***` is treated as a UI redaction placeholder, not a real path, glob pattern, filename, function name, or search query. The ActionValidator rejects it with a validation observation, preserving tool-call closure.
 - ToolMessage content is compacted for model use without replacing actionable paths with redaction placeholders.
 - ContextPack rebases known old/current project-root absolute paths in historical context into portable relative paths before sending them to the model.
+
+## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes
+
+v2.9.12 keeps the v2.9.10 Codex-style all-tool drain behavior and the v2.9.11 path portability rules.
+
+- The main assistant card now tracks live run items from SSE `item/started`, `item/completed`, and LLM/answer trace events so users can see model thinking, tool execution, answer generation, and failures without opening debug details.
+- Completed turns still collapse back to a clean activity summary while keeping detailed execution data available behind the debug drawer.
+- Debug details are grouped into user context, model rounds, tool groups, harness status, final status, and raw JSON instead of a flat event dump.
+- Provider/stream event serialization uses `safe_model_dump()` for None-safe diagnostics around partially constructed SDK objects.
+- `None` stream events are recorded as `llm.stream_event.none` warnings instead of crashing the run.
+- Clean-boundary follow-up LLM failures matching transient patterns such as `NoneType`, `model_dump`, timeout, connection reset, or 5xx errors retry once; retry success/failure is recorded with `llm.retrying`, `llm.retry_succeeded`, and `llm.retry_failed`.
+- Final LLM failures preserve exception type, module, traceback tail, message count, last message roles, phase, model, and tool-boundary diagnostics so local logs remain useful when company logs cannot be shared.
 
 ## 21. v2.9.0 Stability Decision
 
