@@ -291,6 +291,9 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "MAIN_LIVE_CARD_LIMIT",
         "composer-profile-select",
         "composer-permission-profile",
+        "selectedPermissionProfileClass",
+        "selectedPermissionDescription",
+        "selectedPermissionAriaLabel",
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -304,8 +307,11 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         ".activity-flow-stages",
         ".activity-flow-stage",
         ".activity-flow-note",
-        ".composer-profile-select",
+        ".composer-toolbar select.composer-profile-select",
         ".composer-permission-profile",
+        ".composer-toolbar select.composer-profile-select.profile-chat",
+        ".composer-toolbar select.composer-profile-select.profile-code",
+        ".composer-toolbar select.composer-profile-select.profile-full-dev",
     )
     for token in required_style_tokens:
         assert token in styles, token
@@ -430,9 +436,23 @@ def test_main_cards_project_tool_traces_with_non_blank_fallbacks() -> None:
 
 def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert 'className="composer-permission-profile"' in script
-    assert 'className="composer-profile-select"' in script
+    assert "composer-profile-select profile-${selectedPermissionProfileClass}" in script
+    assert '<span>${t("settings.permission_profile")}</span>' not in script
+    assert "selectedPermissionProfile.replaceAll(\"_\", \"-\")" in script
+    assert "title=${selectedPermissionDescription}" in script
+    assert 'aria-label=${selectedPermissionAriaLabel}' in script
+    assert '<option value="chat" title=${t("settings.permission_profile.chat.help")}' in script
+    assert '<option value="code" title=${t("settings.permission_profile.code.help")}' in script
+    assert '<option value="full_dev" title=${t("settings.permission_profile.full_dev.help")}' in script
+    assert ".composer-toolbar select.composer-profile-select.profile-chat" in styles
+    assert ".composer-toolbar select.composer-profile-select.profile-code" in styles
+    assert ".composer-toolbar select.composer-profile-select.profile-full-dev" in styles
+    assert '"settings.permission_profile": "权限"' in locales
+    assert '"settings.permission_profile.full_dev.help": "高级权限模式；仍受项目边界和全局网络设置限制。"' in locales
     assert "settings: {\n            ...chatSettings," in script
     assert 'className="drawer-input"\n                      value=${chatSettings.permission_profile || "code"}' not in script
 
@@ -554,7 +574,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.16）")
+    assert manual.startswith("# 内部设计手册（v2.9.17）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -570,6 +590,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.8 v2.9.14 ModelContext-first Context System Notes" in manual
     assert "## 20.9 v2.9.15 Main Card and Debug Cleanup Notes" in manual
     assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
+    assert "## 20.11 v2.9.17 Permission Selector UI Polish Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual

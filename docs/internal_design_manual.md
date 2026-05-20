@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.16）
+# 内部设计手册（v2.9.17）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -797,6 +797,16 @@ v2.9.16 is a focused UI/runtime-display hotfix.
 - The selected permission profile is included in the next chat request immediately.
 - Runtime status and Debug Runtime expose `network_reason` so Full Dev can distinguish global network disablement from profile-level network disablement.
 - Debug Detail keeps the five-section structure and no longer surfaces `phase_timings` as a normal runtime section.
+
+## 20.11 v2.9.17 Permission Selector UI Polish Notes
+
+v2.9.17 is a focused permission selector UI polish release.
+
+- The composer no longer shows the visible engineering label “权限边界”; the selector sits directly next to the attachment button.
+- Chat, Code, and Full Dev remain the only permission profile choices and continue to send the same `settings.permission_profile` payload values.
+- The selector uses subtle profile-specific styling: neutral for Chat, blue for Code, and a stronger orange accent for Full Dev.
+- The selector exposes a short hover/title description for the currently selected permission profile.
+- Runtime permission semantics, `RuntimeBoundary`, `ModelContext.permissions`, and Debug Runtime behavior are unchanged.
 
 ## 21. v2.9.0 Stability Decision
 
