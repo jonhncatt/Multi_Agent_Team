@@ -392,13 +392,6 @@ def _looks_like_inline_document_payload(text: str) -> bool:
     return yaml_key_count >= 5 and len(raw) >= 180
 
 
-def _coerce_string_list(value: Any, *, default: tuple[str, ...] = ()) -> tuple[str, ...]:
-    if isinstance(value, list):
-        cleaned = [str(item or "").strip() for item in value if str(item or "").strip()]
-        return tuple(cleaned) if cleaned else tuple(default)
-    return tuple(default)
-
-
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
     current_key = ""
     sections: dict[str, list[str]] = {}
@@ -437,7 +430,6 @@ class VintageProgrammerSpec:
     network_mode: str
     approval_policy: str
     evidence_policy: str
-    collaboration_modes: tuple[str, ...]
     allowed_tools: tuple[str, ...]
     soul_text: str
     identity_text: str
@@ -457,9 +449,6 @@ class VintageProgrammerSpec:
             ),
         }
         workflow = {
-            "modes": list(self.collaboration_modes),
-            "phases": list(self.collaboration_modes),
-            "default_mode": self.collaboration_modes[0] if self.collaboration_modes else "default",
             "document": self.agent_text,
         }
         policies = {
@@ -589,13 +578,6 @@ class VintageProgrammerRuntime:
         network_mode = str(frontmatter.get("network_mode") or "explicit_tools").strip().lower() or "explicit_tools"
         approval_policy = str(frontmatter.get("approval_policy") or "on_failure_or_high_impact").strip() or "on_failure_or_high_impact"
         evidence_policy = str(frontmatter.get("evidence_policy") or "required_for_external_or_runtime_facts").strip() or "required_for_external_or_runtime_facts"
-        collaboration_modes = _coerce_string_list(
-            frontmatter.get("collaboration_modes") or frontmatter.get("workflow_phases"),
-            default=("default", "plan", "execute"),
-        )
-        collaboration_modes = tuple(
-            item for item in collaboration_modes if item in {"default", "plan", "execute"}
-        ) or ("default", "plan", "execute")
         explicit_tools = []
         if isinstance(frontmatter.get("allowed_tools"), list):
             explicit_tools = [str(item or "").strip() for item in frontmatter["allowed_tools"] if str(item or "").strip()]
@@ -613,7 +595,6 @@ class VintageProgrammerRuntime:
             network_mode=network_mode,
             approval_policy=approval_policy,
             evidence_policy=evidence_policy,
-            collaboration_modes=collaboration_modes,
             allowed_tools=allowed_tools,
             soul_text=soul_text,
             identity_text=identity_text,
@@ -888,7 +869,6 @@ class VintageProgrammerRuntime:
         *,
         goal: str,
         current_task_focus: dict[str, Any],
-        collaboration_mode: str,
         turn_status: str,
         plan_state: list[dict[str, Any]],
         pending_user_input: dict[str, Any],
@@ -898,7 +878,6 @@ class VintageProgrammerRuntime:
     ) -> dict[str, Any]:
         return {
             "goal": str(goal or "").strip(),
-            "collaboration_mode": str(collaboration_mode or "default"),
             "turn_status": str(turn_status or "running"),
             "cwd": str(effective_cwd or current_task_focus.get("cwd") or "").strip(),
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
@@ -1616,7 +1595,6 @@ class VintageProgrammerRuntime:
         tool_events: list[ToolEvent],
         current_goal: str,
         current_task_focus: dict[str, Any],
-        collaboration_mode: str,
         turn_status: str,
         plan_state: list[dict[str, Any]],
         pending_user_input: dict[str, Any],
@@ -1695,7 +1673,6 @@ class VintageProgrammerRuntime:
                     "run_snapshot": self._build_run_snapshot(
                         goal=current_goal,
                         current_task_focus=current_task_focus,
-                        collaboration_mode=collaboration_mode,
                         turn_status=turn_status,
                         plan_state=plan_state,
                         pending_user_input=pending_user_input,
@@ -2618,11 +2595,16 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
-    def _write_authorization_state(message: str, *, collaboration_mode: str, project_root: str) -> dict[str, Any]:
+    def _write_authorization_state(
+        message: str,
+        *,
+        project_root: str,
+        workspace_write_allowed: bool = True,
+    ) -> dict[str, Any]:
         normalized = " ".join(str(message or "").split()).lower()
         has_write_intent = any(hint.lower() in normalized for hint in _WRITE_INTENT_HINTS)
         explicit_authorization = any(hint.lower() in normalized for hint in _EXPLICIT_WRITE_AUTH_HINTS)
-        authorized = collaboration_mode in {"default", "execute"} and has_write_intent
+        authorized = bool(workspace_write_allowed) and has_write_intent
         reasons: list[str] = []
         if has_write_intent:
             reasons.append("write_intent_detected")
@@ -3253,21 +3235,7 @@ class VintageProgrammerRuntime:
         with phase_timer.measure("skills_load_ms"):
             loaded_skills = self._enabled_skills(spec.agent_id)
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
-        requested_mode = str(
-            context_payload.get("mode_override")
-            or getattr(settings, "collaboration_mode", "")
-            or spec.collaboration_modes[0]
-            or "default"
-        ).strip().lower()
-        collaboration_mode = (
-            requested_mode if requested_mode in set(spec.collaboration_modes) else (spec.collaboration_modes[0] if spec.collaboration_modes else "default")
-        )
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
-        if collaboration_mode == "plan":
-            selected_tools = [
-                name for name in selected_tools
-                if name in _READ_ONLY_TOOL_NAMES and name != "update_plan"
-            ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
         runnable_tools = list(selected_tools if selected_tools else ())
         max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
@@ -3329,8 +3297,8 @@ class VintageProgrammerRuntime:
         )
         write_authorization_state = self._write_authorization_state(
             prompt_message,
-            collaboration_mode=collaboration_mode,
             project_root=project_root,
+            workspace_write_allowed=turn_runtime_boundary.workspace_write_allowed,
         )
         write_authorized = bool(write_authorization_state.get("authorized"))
         blocked_reason = ""
@@ -3363,7 +3331,7 @@ class VintageProgrammerRuntime:
         notes: list[str] = [
             f"agent_id:{spec.agent_id}",
             f"tool_policy:{spec.tool_policy}",
-            f"collaboration_mode:{collaboration_mode}",
+            f"permission_profile:{turn_runtime_boundary.permission_profile}",
         ]
         if inline_document:
             notes.append("inline_document_context")
@@ -3429,7 +3397,7 @@ class VintageProgrammerRuntime:
             type="run.started",
             title=self._trace_label(locale, "run.started"),
             status="running",
-            payload={"collaboration_mode": collaboration_mode},
+            payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "code")},
             trace_events=trace_events,
         )
         emit_runtime_activity(
@@ -3440,7 +3408,7 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "tools_available": tools_available,
                 "tool_count": tool_count,
-                "collaboration_mode": collaboration_mode,
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
                 "model_context": "task/workspace/memory/plan/permissions/conversation",
                 "sent_to_model": dump_model(turn_model_context),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
@@ -3472,7 +3440,7 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "tools_available": tools_available,
                 "tool_count": tool_count,
-                "collaboration_mode": collaboration_mode,
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
@@ -3640,7 +3608,6 @@ class VintageProgrammerRuntime:
                         run_snapshot=self._build_run_snapshot(
                             goal=current_goal,
                             current_task_focus=current_task_focus,
-                            collaboration_mode=collaboration_mode,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -3962,7 +3929,6 @@ class VintageProgrammerRuntime:
                             tool_events=tool_events,
                             current_goal=current_goal,
                             current_task_focus=current_task_focus,
-                            collaboration_mode=collaboration_mode,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -4103,12 +4069,10 @@ class VintageProgrammerRuntime:
                                     "event": "plan_update",
                                     "plan": plan_state,
                                     "explanation": str(result.get("explanation") or ""),
-                                    "collaboration_mode": collaboration_mode,
                                     "turn_status": turn_status,
                                     "run_snapshot": self._build_run_snapshot(
                                         goal=current_goal,
                                         current_task_focus=current_task_focus,
-                                        collaboration_mode=collaboration_mode,
                                         turn_status=turn_status,
                                         plan_state=plan_state,
                                         pending_user_input=pending_user_input,
@@ -4140,12 +4104,10 @@ class VintageProgrammerRuntime:
                                 {
                                     "event": "request_user_input",
                                     "pending_user_input": pending_user_input,
-                                    "collaboration_mode": collaboration_mode,
                                     "turn_status": turn_status,
                                     "run_snapshot": self._build_run_snapshot(
                                         goal=current_goal,
                                         current_task_focus=current_task_focus,
-                                        collaboration_mode=collaboration_mode,
                                         turn_status=turn_status,
                                         plan_state=plan_state,
                                         pending_user_input=pending_user_input,
@@ -4723,14 +4685,13 @@ class VintageProgrammerRuntime:
             )
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
-        legacy_phase = collaboration_mode if turn_status == "running" else turn_status
+        runtime_phase = "running" if turn_status == "running" else turn_status
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
                 "goal": current_goal,
-                "phase": legacy_phase,
-                "workflow_phases": list(spec.collaboration_modes),
-                "collaboration_mode": collaboration_mode,
+                "phase": runtime_phase,
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
                 "turn_status": turn_status,
                 "plan": plan_state,
                 "pending_user_input": pending_user_input,
@@ -4825,7 +4786,6 @@ class VintageProgrammerRuntime:
             "agent_title": spec.title,
             "text": raw_text,
             "effective_model": effective_model or requested_model,
-            "collaboration_mode": collaboration_mode,
             "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
             "turn_status": turn_status,
             "plan": plan_state,
@@ -4875,8 +4835,8 @@ class VintageProgrammerRuntime:
             "route_state": {
                 "agent_id": spec.agent_id,
                 "tool_policy": spec.tool_policy,
-                "phase": legacy_phase,
-                "collaboration_mode": collaboration_mode,
+                "phase": runtime_phase,
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
                 "turn_status": turn_status,
                 "network_mode": spec.network_mode,
                 "evidence_status": evidence_status,

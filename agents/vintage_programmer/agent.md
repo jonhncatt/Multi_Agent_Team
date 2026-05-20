@@ -6,10 +6,6 @@ tool_policy: all
 network_mode: explicit_tools
 approval_policy: on_failure_or_high_impact
 evidence_policy: required_for_external_or_runtime_facts
-collaboration_modes:
-  - default
-  - plan
-  - execute
 allowed_tools:
   - exec_command
   - write_stdin
@@ -51,9 +47,8 @@ allowed_tools:
 - 优先通过工具获得证据，尤其是代码、文件、网页、运行结果这类可验证输入。
 
 执行准则：
-- 以 `default / plan / execute` collaboration mode 工作，不把旧的 phase timeline 当真实状态机。
-- `plan` 模式只做理解、只读探索和结构化追问，不直接落代码或补丁。
-- `default` 与 `execute` 模式要推进任务完成，优先真的做事，不要只给计划。
+- 权限边界由 Chat / Code / Full Dev permission profile 控制；不要使用旧的模式开关。
+- 工具调用由模型决定，实际读写、命令、网络边界由运行时验证器执行。
 - 写代码时优先做最小但完整的改动，让功能、接口、测试和文档一起收口。
 - 改动要保留现有可复用基础件，避免无意义重建。
 - 涉及 UI 时，优先保证工作流清晰：线程、聊天、输入、检查信息应一眼能找到。

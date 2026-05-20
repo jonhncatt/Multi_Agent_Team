@@ -44,6 +44,7 @@ const THREAD_DETAIL_PAGE_SIZE = 40;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
+const MAIN_LIVE_CARD_LIMIT = 8;
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
   provider: "",
@@ -52,7 +53,6 @@ const DEFAULT_SETTINGS = {
   max_output_tokens: 4096,
   max_context_turns: 2000,
   enable_tools: true,
-  collaboration_mode: "default",
   permission_profile: "code",
   response_style: "normal",
 };
@@ -1391,23 +1391,76 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   ));
 }
 
+function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale = "zh-CN", nowMs = Date.now()) {
+  const sourceItems = Array.isArray(liveItems) && liveItems.length
+    ? liveItems
+    : buildFallbackProgressItems(activity, locale, nowMs);
+  const traceItems = Array.isArray(runtimeTrace) ? runtimeTrace : [];
+  return sourceItems.map((entry, index) => {
+    const status = normalizeProgressStatus(entry.status);
+    const toolGroup = entry.tool_group && typeof entry.tool_group === "object" ? entry.tool_group : {};
+    const trace = traceItems[index] && typeof traceItems[index] === "object" ? traceItems[index] : {};
+    return {
+      id: String(entry.id || trace.id || `main-live-${index}`),
+      title: String(entry.label || trace.title || "").trim(),
+      status,
+      detail: String(entry.detail || trace.detail || "").trim(),
+      tool: String(entry.tool || toolGroup.tool_name || trace.tool_name || "").trim(),
+      target: String(toolGroup.summary || toolGroup.arguments_preview || "").trim(),
+      durationMs: Number(trace.duration_ms || 0) || 0,
+      collapsible: true,
+      rawRef: entry,
+    };
+  }).filter((entry, index, collection) => (
+    entry.title && collection.findIndex((candidate) => candidate.id === entry.id) === index
+  ));
+}
+
+function buildMainCompletionSummary(activity, toolEvents = [], finalAnswer = "", locale = "zh-CN") {
+  const item = normalizeMessageActivity(activity || {});
+  const sourceTools = Array.isArray(toolEvents) && toolEvents.length ? toolEvents : item.tool_items;
+  const toolNames = sourceTools.map((tool) => String((tool && (tool.name || tool.tool || tool.tool_name)) || "").trim()).filter(Boolean);
+  const searchCount = toolNames.filter((name) => /search|glob|grep|rg/i.test(name)).length;
+  const readCount = toolNames.filter((name) => /read|list|section|extract/i.test(name)).length;
+  const commandCount = toolNames.filter((name) => /exec|shell|command|pytest|apply_patch/i.test(name)).length;
+  const failedCount = sourceTools.filter((tool) => ["failed", "error", "blocked"].includes(normalizeProgressStatus((tool && tool.status) || ""))).length;
+  return {
+    tool_count: toolNames.length,
+    search_count: searchCount,
+    read_count: readCount,
+    command_count: commandCount,
+    failed_count: failedCount,
+    has_final_answer: Boolean(String(finalAnswer || "").trim()),
+    label: translateUi(locale, "activity.execution_summary_counts", {
+      search: searchCount,
+      read: readCount,
+      command: commandCount,
+      failed: failedCount,
+    }),
+  };
+}
+
 function buildActivityProjection(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const revisionSummary = latestRevisionSummary(item);
   const progressItems = item.plan.length
     ? buildPlanChecklistItems(item.plan)
     : buildFallbackProgressItems(item, locale, nowMs);
+  const executionTrace = latestExecutionTrace(item);
+  const toolGroups = buildToolProgressGroups(item);
   return {
     progress_items: progressItems,
+    main_live_cards: buildMainLiveCards(item, progressItems, executionTrace, locale, nowMs),
+    completion_summary: buildMainCompletionSummary(item, item.tool_items, "", locale),
     revision_summary: revisionSummary,
     revision_badge: formatRevisionSummaryBadge(locale, revisionSummary),
     plan: item.plan,
     plan_explanation: item.plan_explanation,
     trace_events: item.trace_events,
-    tool_groups: buildToolProgressGroups(item),
+    tool_groups: toolGroups,
     tool_items: item.tool_items,
     model_action: latestActivityPayloadValue(item, ["model_action"]),
-    execution_trace: latestExecutionTrace(item),
+    execution_trace: executionTrace,
   };
 }
 
@@ -1495,7 +1548,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       model: latestHarness.model || "",
       provider: latestHarness.provider || "",
       attachments_count: Number(latestHarness.attachments_count || latestHarness.attachment_count || 0) || 0,
-      mode: latestHarness.mode || latestHarness.collaboration_mode || "",
+      permission_profile: latestHarness.permission_profile || inspectorRunState.permission_profile || "",
     },
     model_rounds: modelRounds,
     tool_groups: toolGroups.map((group) => ({
@@ -3874,7 +3927,7 @@ function App() {
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
       setLiveTurnState({
         goal: messageText,
-        collaboration_mode: chatSettings.collaboration_mode || "default",
+        permission_profile: chatSettings.permission_profile || "code",
         turn_status: "running",
         current_task_focus: {},
         plan: [],
@@ -3891,7 +3944,6 @@ function App() {
           project_id: projectId,
           message: messageText,
           client_submitted_at_ms: clientSubmittedAtMs,
-          mode_override: chatSettings.collaboration_mode,
           attachment_ids: readyAttachmentIds,
           settings: {
             ...chatSettings,
@@ -4031,7 +4083,7 @@ function App() {
         ).trim(),
         text: assistantText || "",
         tool_events: latestToolEvents,
-        collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+        permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
@@ -4140,7 +4192,7 @@ function App() {
                 updateThreadStatus(latestThreadId, "active");
               }
               applySnapshot({
-                collaboration_mode: String(payload.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                permission_profile: String(payload.permission_profile || chatSettings.permission_profile || "code"),
                 turn_status: "running",
               });
             } else if (event === "turn/plan/updated") {
@@ -4148,7 +4200,7 @@ function App() {
               applySnapshot({ plan: nextPlan });
               setSessionAgentState((prev) => ({
                 ...(prev || {}),
-                collaboration_mode: String((latestRunSnapshot.collaboration_mode) || chatSettings.collaboration_mode || "default"),
+                permission_profile: String((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "code"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
                 plan: nextPlan,
               }));
@@ -4227,13 +4279,13 @@ function App() {
                   questions: Array.isArray(item.questions) ? item.questions : [],
                 };
                 applySnapshot({
-                  collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                  permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 });
                 setSessionAgentState((prev) => ({
                   ...(prev || {}),
-                  collaboration_mode: String(latestRunSnapshot.collaboration_mode || chatSettings.collaboration_mode || "default"),
+                  permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 }));
@@ -4294,7 +4346,7 @@ function App() {
       setActiveRunId(String(finalPayload.run_id || ""));
       setLiveTurnState((prev) => mergeRunSnapshot(prev, {
         ...(((finalPayload.inspector || {}).run_state) || {}),
-        collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+        permission_profile: String(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "code"),
         turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
         context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
         current_task_focus: finalPayload.current_task_focus || (((finalPayload.inspector || {}).run_state || {}).current_task_focus) || (((finalPayload.inspector || {}).run_state || {}).task_checkpoint) || {},
@@ -4325,7 +4377,7 @@ function App() {
           agent_id: finalPayload.agent_id || "vintage_programmer",
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
-          collaboration_mode: String(finalPayload.collaboration_mode || (((finalPayload.inspector || {}).run_state || {}).collaboration_mode) || chatSettings.collaboration_mode || "default"),
+          permission_profile: String(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "code"),
           turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
@@ -4533,7 +4585,7 @@ function App() {
           ? sessionAgentState.current_task_focus
           : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
-  const activeCollaborationMode = String(runState.collaboration_mode || sessionAgentState.collaboration_mode || chatSettings.collaboration_mode || "default");
+  const activePermissionProfile = String(runState.permission_profile || sessionAgentState.permission_profile || chatSettings.permission_profile || "code");
   const activeTurnStatus = String(runState.turn_status || sessionAgentState.turn_status || "idle");
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
@@ -4825,11 +4877,22 @@ function App() {
   const renderActivityProgressList = (projection, activity, options = {}) => {
     const item = normalizeMessageActivity(activity || {});
     const progressItems = Array.isArray(projection && projection.progress_items) ? projection.progress_items : [];
+    const mainLiveCards = Array.isArray(projection && projection.main_live_cards) ? projection.main_live_cards : progressItems;
+    const completionSummary = (projection && projection.completion_summary && typeof projection.completion_summary === "object")
+      ? projection.completion_summary
+      : {};
     const preview = Boolean(options.preview);
-    const visibleItems = preview ? progressItems.slice(0, 5) : progressItems;
+    const isTerminal = isActivityTerminalStatus(item.status);
+    const visibleItems = preview
+      ? (isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
+      : progressItems;
+    const overflowCount = preview && !isTerminal
+      ? Math.max(0, mainLiveCards.length - visibleItems.length)
+      : 0;
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now());
     const note = String(
       (projection && projection.revision_badge)
+      || (isTerminal ? completionSummary.label : "")
       || item.activity_summary
       || "",
     ).trim();
@@ -4868,6 +4931,9 @@ function App() {
                 })}
               </div>
             `
+          : null}
+        ${overflowCount
+          ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: overflowCount })}</div>`
           : null}
         ${note ? html`<div className="activity-flow-note">${note}</div>` : null}
       </div>
@@ -4934,9 +5000,11 @@ function App() {
           </details>
         `
       : null;
-    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true });
+    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), {
+      ...structured.harness,
+      phase_timings: item.phase_timings || {},
+    }, { open: true });
     const finalStatusDetails = renderDetailBlock(t("activity.debug.final_status"), structured.final_status);
-    const phaseTimingDetails = renderPhaseTimingDetails(item.phase_timings);
     const modelOutputDetails = modelRoundDetails || modelOutputSections.length || finalStatusDetails
       ? html`
           <details className="activity-payload" open>
@@ -4957,7 +5025,7 @@ function App() {
           </details>
         `
       : null;
-    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !phaseTimingDetails && !rawTraceList) return null;
+    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !rawTraceList) return null;
     return html`
       <details className="activity-debug-drawer">
         <summary>${t("activity.debug_details")}</summary>
@@ -4966,7 +5034,6 @@ function App() {
           ${modelOutputDetails}
           ${toolDebugDetails}
           ${harnessDetails}
-          ${phaseTimingDetails}
           ${rawTraceList}
         </div>
       </details>
@@ -5455,7 +5522,7 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">${t("run.title")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionAgentState.goal || sessionAgentState.current_goal || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "mode")}: ${formatRunEnum(uiLocale, "mode", activeCollaborationMode, "default")}</div>
+                  <div className="meta-line">${t("settings.permission_profile")}: ${t(`settings.permission_profile.${activePermissionProfile}`)}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "turn_status")}: ${formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionAgentState.evidence_status || "not_needed", "not_needed")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "inline_document")}: ${formatRunBoolean(uiLocale, runState.inline_document)}</div>
@@ -5805,22 +5872,6 @@ function App() {
                       value=${chatSettings.model}
                       onInput=${(event) => updateModelSelection(event.currentTarget.value)}
                     />
-                  </label>
-                  <label className="form-field">
-                    <span>${t("settings.collaboration_mode")}</span>
-                    <select
-                      className="drawer-input"
-                      value=${chatSettings.collaboration_mode}
-                      onChange=${(event) => {
-                        const target = event.currentTarget;
-                        const nextValue = target ? target.value : "";
-                        setChatSettings((prev) => ({ ...prev, collaboration_mode: nextValue }));
-                      }}
-                    >
-                      <option value="default">default</option>
-                      <option value="plan">plan</option>
-                      <option value="execute">execute</option>
-                    </select>
                   </label>
                   <label className="form-field">
                     <span>${t("settings.permission_profile")}</span>

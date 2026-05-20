@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.14）
+# 内部设计手册（v2.9.15）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -775,6 +775,16 @@ v2.9.14 keeps the same model-led tool loop and makes model-facing context explic
 - Compaction updates `memory.clean_summary` and trims clean turns; it does not persist raw trace, raw tool output, or model draft.
 - Runtime trace remains debug data. Only short factual observation summaries may flow from runtime trace into clean memory.
 - Model draft can be shown in UI/debug, but it is not saved as a clean assistant turn or compacted memory.
+
+## 20.9 v2.9.15 Main Card and Debug Cleanup Notes
+
+v2.9.15 keeps the ModelContext-first runtime and cleans the product surface.
+
+- The main assistant card shows live execution cards while a run is active, then folds the details into a concise execution summary after completion.
+- Debug Detail uses five normal top-level sections: Sent to Model, Model Output, Tool Execution, Runtime, and Advanced Raw.
+- Phase timings and raw payloads stay in Runtime or Advanced Raw rather than becoming separate primary debug sections.
+- The old mode control is removed. Chat, Code, and Full Dev permission profiles are the only user-facing runtime mode control.
+- Agent specs no longer declare default/plan/execute workflow modes.
 
 ## 21. v2.9.0 Stability Decision
 

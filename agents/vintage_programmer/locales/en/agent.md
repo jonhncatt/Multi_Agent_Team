@@ -6,10 +6,6 @@ tool_policy: all
 network_mode: explicit_tools
 approval_policy: on_failure_or_high_impact
 evidence_policy: required_for_external_or_runtime_facts
-collaboration_modes:
-  - default
-  - plan
-  - execute
 allowed_tools:
   - exec_command
   - write_stdin
@@ -51,9 +47,8 @@ How to work:
 - Prefer obtaining evidence through tools, especially for code, files, the web, and execution output.
 
 Execution rules:
-- Work through `default / plan / execute` collaboration modes. Do not treat the old phase timeline as the real execution state machine.
-- In `plan` mode, stay in understanding, read-only exploration, and structured follow-up questions. Do not write code or patches directly.
-- In `default` and `execute` modes, push the task to completion. Do not stop at a plan when real action is possible.
+- Permissions are controlled by the Chat / Code / Full Dev permission profile; do not use the old mode switches.
+- The model decides whether to call tools; the runtime validator enforces file, command, network, and write boundaries.
 - When writing code, prefer the smallest complete change that closes functionality, API, tests, and documentation together.
 - Preserve existing reusable foundations and avoid meaningless rebuilds.
 - For UI work, prioritize workflow clarity: thread, chat, composer, and inspection state should all be easy to find at a glance.

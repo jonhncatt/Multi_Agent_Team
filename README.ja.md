@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.14-blue)
+![Version](https://img.shields.io/badge/version-v2.9.15-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.14`
+現在の安定版: `v2.9.15`
 
 ## Stable Runtime
 
-v2.9.14 は ModelContext-first context system の整理リリースであり、v2.9.0 の安定回復方針を維持します。
+v2.9.15 は main card UX、構造化 Debug、mode cleanup のリリースであり、v2.9.0 の安定回復方針を維持します。
 v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.14 は v2.9.10 の Codex-style all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles を維持します。このリリースではモデル向け context を `ModelContext` に統一し、`ContextManager` が clean summary、clean turns、recent observations、active files、plan、context version を管理します。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.15 は v2.9.10 の Codex-style all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles、v2.9.14 の `ModelContext` を維持します。このリリースでは main message card に実行中の live cards を表示し、完了後は簡潔な execution summary に折りたたみ、古い mode control を削除します。
 
 ## Max Output Tokens
 
@@ -44,11 +44,11 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.14 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。既定ではコマンド実行は現在の project root に制限され、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使います。v2.9.15 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。既定ではコマンド実行は現在の project root に制限され、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
 
 ## ModelContext
 
-v2.9.14 では、モデルに送る prompt は `ModelContext` だけを render します。構成は `task`、`workspace`、`memory`、`plan`、`permissions`、`conversation` の 6 セクションです。`RuntimeTrace`、raw tool output、model draft、旧 route/agent state は debug または migration 用であり、通常のモデル context には入りません。
+v2.9.15 でも、モデルに送る prompt は `ModelContext` だけを render します。構成は `task`、`workspace`、`memory`、`plan`、`permissions`、`conversation` の 6 セクションです。`RuntimeTrace`、raw tool output、model draft、旧 route/agent state は debug または migration 用であり、通常のモデル context には入りません。
 
 ## Permission Profiles
 

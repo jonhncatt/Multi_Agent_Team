@@ -18,7 +18,6 @@ class ChatSettings(BaseModel):
     )
     enable_tools: bool = True
     execution_mode: Literal["host", "docker"] | None = None
-    collaboration_mode: Literal["default", "plan", "execute"] = "default"
     permission_profile: Literal["chat", "code", "full_dev"] = "code"
     debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
@@ -30,7 +29,6 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     client_submitted_at_ms: int | None = None
     attachment_ids: list[str] = Field(default_factory=list)
-    mode_override: Literal["default", "plan", "execute"] | None = None
     user_input_response: dict[str, Any] = Field(default_factory=dict)
     settings: ChatSettings = Field(default_factory=ChatSettings)
 
@@ -264,7 +262,6 @@ class ChatResponse(BaseModel):
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     attachment_context_key: str = ""
-    collaboration_mode: Literal["default", "plan", "execute"] = "default"
     permission_profile: Literal["chat", "code", "full_dev"] = "code"
     turn_status: str = "completed"
     plan: list[dict[str, Any]] = Field(default_factory=list)

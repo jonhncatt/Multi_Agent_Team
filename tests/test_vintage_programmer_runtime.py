@@ -445,10 +445,6 @@ def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: b
         "network_mode: explicit_tools\n"
         "approval_policy: on_failure_or_high_impact\n"
         "evidence_policy: required_for_external_or_runtime_facts\n"
-        "collaboration_modes:\n"
-        "  - default\n"
-        "  - plan\n"
-        "  - execute\n"
         "max_tool_rounds: 4\n"
         "---\n"
         "\n"
@@ -519,7 +515,7 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert descriptor["tool_policy"] == "read_only"
     assert descriptor["network"]["mode"] == "explicit_tools"
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
-    assert descriptor["workflow"]["modes"] == ["default", "plan", "execute"]
+    assert "modes" not in descriptor["workflow"]
     assert "max_tool_rounds" not in descriptor
     assert "emergency_max_tool_calls_per_turn" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
@@ -891,7 +887,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert backend.tools.last_runtime_context["project_id"] == "project_demo"
     assert backend.tools.last_runtime_context["model"] == "gpt-test"
     assert result["inspector"]["agent"]["tool_policy"] == "read_only"
-    assert result["inspector"]["run_state"]["collaboration_mode"] == "default"
+    assert result["inspector"]["run_state"]["permission_profile"] == "full_dev"
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)

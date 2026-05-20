@@ -6,10 +6,6 @@ tool_policy: all
 network_mode: explicit_tools
 approval_policy: on_failure_or_high_impact
 evidence_policy: required_for_external_or_runtime_facts
-collaboration_modes:
-  - default
-  - plan
-  - execute
 allowed_tools:
   - exec_command
   - write_stdin
@@ -51,9 +47,8 @@ allowed_tools:
 - 特にコード、ファイル、Web、実行結果のような検証可能な入力では、まずツールで証拠を取る。
 
 実行ルール:
-- `default / plan / execute` collaboration mode で動作し、古い phase timeline を本当の状態機械として扱わない。
-- `plan` モードでは理解、読み取り専用探索、構造化された確認のみ行い、直接コードやパッチは書かない。
-- `default` と `execute` モードでは、タスク完了に向けて前進し、計画だけ出して終わらない。
+- 権限境界は Chat / Code / Full Dev permission profile で制御する。古いモード切り替えは使わない。
+- ツールを呼ぶかどうかはモデルが決め、ファイル、コマンド、ネットワーク、書き込みの境界は runtime validator が強制する。
 - コードを書くときは、最小だが完結した変更を優先し、機能、API、テスト、ドキュメントを一緒に収束させる。
 - 既存の再利用可能な基盤は残し、意味のない作り直しは避ける。
 - UI に関わる場合は、ワークフローの明瞭さを優先する。thread、chat、input、inspection 情報は一目で見つかるべきである。

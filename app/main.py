@@ -110,7 +110,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.14"
+APP_VERSION = "2.9.15"
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
@@ -1437,7 +1437,6 @@ def _build_run_snapshot(
     *,
     goal: str,
     current_task_focus: dict[str, Any] | None,
-    collaboration_mode: str,
     turn_status: str,
     cwd: str,
     plan: list[dict[str, Any]] | None = None,
@@ -1450,7 +1449,6 @@ def _build_run_snapshot(
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
     return {
         "goal": str(goal or "").strip(),
-        "collaboration_mode": str(collaboration_mode or "default"),
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
         "current_task_focus": normalized_focus,
@@ -1605,8 +1603,6 @@ def _process_chat_request(
         requested_provider = _resolve_requested_provider(req)
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
-    if req.mode_override:
-        req.settings.collaboration_mode = req.mode_override
     req.settings.permission_profile = normalize_permission_profile(
         getattr(req.settings, "permission_profile", "") or getattr(config, "permission_profile", "code")
     )
@@ -1653,7 +1649,6 @@ def _process_chat_request(
         )
         seed_session["agent_state"] = {
             "goal": fallback_goal,
-            "collaboration_mode": str(req.settings.collaboration_mode or "default"),
             "permission_profile": str(req.settings.permission_profile or "code"),
             "turn_status": "blocked",
             "plan": [],
@@ -1684,7 +1679,6 @@ def _process_chat_request(
             queue_wait_ms=0,
             text=fallback_text,
             tool_events=[],
-            collaboration_mode=str(req.settings.collaboration_mode or "default"),
             permission_profile=str(req.settings.permission_profile or "code"),
             turn_status="blocked",
             plan=[],
@@ -1698,7 +1692,6 @@ def _process_chat_request(
                 "run_state": {
                     "phase": "report",
                     "goal": fallback_goal,
-                    "collaboration_mode": str(req.settings.collaboration_mode or "default"),
                     "permission_profile": str(req.settings.permission_profile or "code"),
                     "turn_status": "blocked",
                     "plan": [],
@@ -1829,7 +1822,6 @@ def _process_chat_request(
                 run_snapshot=_build_run_snapshot(
                     goal=req.message,
                     current_task_focus=session_context_impl.get_current_task_focus(session),
-                    collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                     context_meter=session_ready_context_meter,
@@ -1870,7 +1862,6 @@ def _process_chat_request(
                 run_snapshot=_build_run_snapshot(
                     goal=req.message,
                     current_task_focus=session_context_impl.get_current_task_focus(session),
-                    collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                     context_meter=compacted_context_meter,
@@ -1926,7 +1917,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=req.message,
                 current_task_focus=session_context_impl.get_current_task_focus(session),
-                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=attachments_context_meter,
@@ -2003,7 +1993,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
-                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -2018,7 +2007,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
-                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -2035,7 +2023,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(current_turn_context.get("goal") or req.message),
                 current_task_focus=current_task_focus_for_runtime,
-                collaboration_mode=req.mode_override or req.settings.collaboration_mode or "default",
                 turn_status="running",
                 cwd=str((current_task_focus_for_runtime or {}).get("cwd") or session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -2063,7 +2050,6 @@ def _process_chat_request(
                     "session_id": session_id,
                     "run_id": run_id,
                     "cancel_event": cancel_event,
-                    "mode_override": req.mode_override or req.settings.collaboration_mode,
                     "user_input_response": dict(req.user_input_response or {}),
                     "phase_timing_base_ms": request_phase_timer.elapsed_ms(),
                     "project": {
@@ -2108,7 +2094,6 @@ def _process_chat_request(
         token_usage = dict(runtime_result.get("token_usage") or {})
         effective_model = str(runtime_result.get("effective_model") or "")
         selected_model = effective_model or req.settings.model or provider_config.default_model
-        collaboration_mode = str(runtime_result.get("collaboration_mode") or req.settings.collaboration_mode or "default")
         permission_profile = normalize_permission_profile(
             runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "code")
         )
@@ -2172,7 +2157,6 @@ def _process_chat_request(
                     ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("current_task_focus")
                     or ((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("task_checkpoint")
                 ),
-                collaboration_mode=collaboration_mode,
                 turn_status=turn_status,
                 cwd=str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
                 plan=plan,
@@ -2244,7 +2228,6 @@ def _process_chat_request(
             "agent_id": "vintage_programmer",
             "goal": str(inspector_run_state.get("goal") or req.message[:140]),
             "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
-            "collaboration_mode": str(inspector_run_state.get("collaboration_mode") or collaboration_mode),
             "permission_profile": permission_profile,
             "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
             "plan": list(inspector_run_state.get("plan") or plan),
@@ -2363,7 +2346,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
-                collaboration_mode=collaboration_mode,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -2516,7 +2498,6 @@ def _process_chat_request(
             auto_linked_attachment_names=auto_linked_attachment_names,
             missing_attachment_ids=missing_attachment_ids,
             attachment_context_key=resolved_attachment_context_key,
-            collaboration_mode=collaboration_mode,
             permission_profile=permission_profile,
             turn_status=turn_status,
             plan=plan,
@@ -2547,7 +2528,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
-                collaboration_mode=collaboration_mode,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -2571,7 +2551,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
-                collaboration_mode=collaboration_mode,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -2593,7 +2572,6 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
                 current_task_focus=current_task_focus,
-                collaboration_mode=collaboration_mode,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,

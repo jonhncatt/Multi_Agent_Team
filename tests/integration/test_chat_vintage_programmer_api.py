@@ -172,7 +172,7 @@ class _FakeVintageRuntime:
         ]
         if progress_cb is not None:
             progress_cb({"event": "stage", "code": "execute", "phase": "execute", "label": "Execute", "status": "running", "detail": "fake runtime running"})
-            progress_cb({"event": "plan_update", "plan": [{"step": "Inspect workspace", "status": "completed"}], "collaboration_mode": "default", "turn_status": "running"})
+            progress_cb({"event": "plan_update", "plan": [{"step": "Inspect workspace", "status": "completed"}], "turn_status": "running"})
             for item in trace_events:
                 progress_cb({"event": "trace_event", "trace": dict(item), "run_id": run_id})
         return {
@@ -247,7 +247,7 @@ class _FakeVintageRuntime:
                     "next_action": "",
                 },
             },
-            "collaboration_mode": "default",
+            "permission_profile": "code",
             "turn_status": "completed",
             "plan": [{"step": "Inspect workspace", "status": "completed"}],
             "pending_user_input": {},
@@ -266,8 +266,7 @@ class _FakeVintageRuntime:
                 "run_state": {
                     "goal": "workspace inspection",
                     "phase": "completed",
-                    "workflow_phases": ["default", "plan", "execute"],
-                    "collaboration_mode": "default",
+                    "permission_profile": "code",
                     "turn_status": "completed",
                     "plan": [{"step": "Inspect workspace", "status": "completed"}],
                     "pending_user_input": {},
@@ -701,7 +700,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "2.9.14",
+        "app_version": "2.9.15",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -743,7 +742,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "2.9.14"
+    assert bootstrap_payload["app_version"] == "2.9.15"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -965,13 +964,13 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["tool_events"][0]["source"] == "local_hosted"
     assert payload["tool_events"][0]["group"] == "web_context"
     assert payload["tool_events"][0]["status"] == "ok"
-    assert payload["collaboration_mode"] == "default"
+    assert payload["permission_profile"] == "code"
     assert payload["turn_status"] == "completed"
     assert payload["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
     assert payload["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["compaction_status"]["mode"] == "token_budget"
     assert payload["inspector"]["agent"]["title"] == "Vintage Programmer"
-    assert payload["inspector"]["run_state"]["collaboration_mode"] == "default"
+    assert payload["inspector"]["run_state"]["permission_profile"] == "code"
     assert payload["inspector"]["run_state"]["turn_status"] == "completed"
     assert payload["inspector"]["run_state"]["context_meter"]["auto_compact_token_limit"] > 0
     assert payload["inspector"]["run_state"]["compaction_status"]["mode"] == "token_budget"
@@ -986,7 +985,7 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["project_id"]
     assert session_payload["project_root"] == str(tmp_path)
     assert session_payload["agent_state"]["phase"] == "completed"
-    assert session_payload["agent_state"]["collaboration_mode"] == "default"
+    assert session_payload["agent_state"]["permission_profile"] == "code"
     assert session_payload["agent_state"]["turn_status"] == "completed"
     assert session_payload["agent_state"]["evidence_status"] == "collected"
     assert session_payload["agent_state"]["enabled_skill_ids"] == ["example_refactor_helper"]
@@ -1056,7 +1055,7 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     response_payload = dict(final_payload.get("response") or {})
     assert response_payload["agent_id"] == "vintage_programmer"
     assert response_payload["text"] == "single-agent response"
-    assert response_payload["collaboration_mode"] == "default"
+    assert response_payload["permission_profile"] == "code"
     assert response_payload["turn_status"] == "completed"
     assert response_payload["activity"]["trace_events"][0]["type"] == "runtime_contract.selected"
     assert response_payload["activity"]["phase_timings"]["provider_auth_summary_ms"] >= 0

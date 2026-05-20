@@ -25,7 +25,6 @@ REQUIRED_CORE_KEYS = (
     "settings.provider",
     "settings.model_preset",
     "settings.model_name",
-    "settings.collaboration_mode",
     "settings.response_style",
     "buttons.save",
     "tabs.settings",
@@ -41,6 +40,8 @@ REQUIRED_CORE_KEYS = (
     "activity.result_preview",
     "activity.stream_diagnostics",
     "activity.progress_title",
+    "activity.execution_summary_counts",
+    "activity.more_steps",
     "activity.debug_details",
     "activity.raw_events",
     "activity.debug.user_context",
@@ -237,6 +238,8 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "function activityStageKeyFromTrace(",
         "function buildActivityFlowStages(",
         "function buildActivityProjection(",
+        "function buildMainLiveCards(",
+        "function buildMainCompletionSummary(",
         "function buildLiveAgentTimelineItems(",
         "function buildStructuredDebugView(",
         "function buildRuntimeStatsSummary(",
@@ -257,6 +260,7 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "normalized_arguments",
         'className="activity-progress"',
         'className="activity-debug-drawer"',
+        "MAIN_LIVE_CARD_LIMIT",
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -294,7 +298,7 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
 def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     match = re.search(
-        r"function buildFallbackProgressItems\(activity, locale, nowMs = Date\.now\(\)\) \{(?P<body>.*?)\n}\n\nfunction buildActivityProjection",
+        r"function buildFallbackProgressItems\(activity, locale, nowMs = Date\.now\(\)\) \{(?P<body>.*?)\n}\n\nfunction buildMainLiveCards",
         script,
         re.S,
     )
@@ -343,9 +347,15 @@ def test_structured_debug_view_groups_runtime_details() -> None:
         "raw: {",
         'summary>${t("activity.debug.model_rounds")}</summary>',
         'renderDetailBlock(t("activity.debug.runtime")',
+        'summary>${t("activity.debug.model_output")}</summary>',
+        'summary>${t("activity.debug.tool_execution")}</summary>',
+        'summary>${t("activity.debug.advanced_raw")}</summary>',
     )
     for token in required_tokens:
         assert token in script, token
+
+    debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
+    assert "phaseTimingDetails" not in debug_block
 
 
 def test_early_activity_copy_and_visibility_are_updated() -> None:
@@ -489,7 +499,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.14）")
+    assert manual.startswith("# 内部设计手册（v2.9.15）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -503,6 +513,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes" in manual
     assert "## 20.7 v2.9.13 Workspace and Permission Profiles Notes" in manual
     assert "## 20.8 v2.9.14 ModelContext-first Context System Notes" in manual
+    assert "## 20.9 v2.9.15 Main Card and Debug Cleanup Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual
@@ -581,7 +592,8 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
     assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' in script
     assert 'renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true })' in script
-    assert 'renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true })' in script
+    assert 'renderDetailBlock(t("activity.debug.runtime"), {' in script
+    assert "phase_timings: item.phase_timings || {}" in script
 
 
 def test_activity_debug_drawer_surfaces_phase_timings() -> None:
