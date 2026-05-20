@@ -4707,6 +4707,9 @@ function App() {
           : ((sessionAgentState.task_checkpoint && typeof sessionAgentState.task_checkpoint === "object") ? sessionAgentState.task_checkpoint : {})));
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedPermissionProfile = String(chatSettings.permission_profile || "code");
+  const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
+  const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
+  const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
   const activePermissionProfile = String(
     (hasLiveRunState ? runState.permission_profile : "")
     || selectedPermissionProfile
@@ -5431,23 +5434,23 @@ function App() {
               <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
               <label
                 className="composer-permission-profile"
-                title=${t(`settings.permission_profile.${chatSettings.permission_profile || "code"}.help`)}
+                title=${selectedPermissionDescription}
               >
-                <span>${t("settings.permission_profile")}</span>
                 <select
-                  className="composer-profile-select"
-                  value=${chatSettings.permission_profile || "code"}
+                  className=${`composer-profile-select profile-${selectedPermissionProfileClass}`}
+                  value=${selectedPermissionProfile}
                   onChange=${(event) => {
                     const target = event.currentTarget;
                     const nextValue = target ? target.value : "code";
                     setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
                   }}
                   disabled=${sending}
-                  aria-label=${t("settings.permission_profile")}
+                  title=${selectedPermissionDescription}
+                  aria-label=${selectedPermissionAriaLabel}
                 >
-                  <option value="chat">${t("settings.permission_profile.chat")}</option>
-                  <option value="code">${t("settings.permission_profile.code")}</option>
-                  <option value="full_dev">${t("settings.permission_profile.full_dev")}</option>
+                  <option value="chat" title=${t("settings.permission_profile.chat.help")}>${t("settings.permission_profile.chat")}</option>
+                  <option value="code" title=${t("settings.permission_profile.code.help")}>${t("settings.permission_profile.code")}</option>
+                  <option value="full_dev" title=${t("settings.permission_profile.full_dev.help")}>${t("settings.permission_profile.full_dev")}</option>
                 </select>
               </label>
             </div>
