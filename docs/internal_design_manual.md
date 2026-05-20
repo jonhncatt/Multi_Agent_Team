@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.12）
+# 内部设计手册（v2.9.13）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -862,7 +862,19 @@ Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF
 需要注意：`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；如果自定义它，应包含完整安全列表。
 高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
 
-## 29. 源码依据与待确认点
+## 29. Workspace and Permission Profiles
+
+v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是当前项目与显式导入/上传文件；默认可写范围是当前项目；默认命令执行范围是当前项目。
+
+权限 profile 分为三类：
+
+- `Chat`：只读分析，不允许文件写入，不允许 shell，network 默认关闭。
+- `Code`：默认 coding 模式，允许读当前项目/导入文件、写当前项目、在当前项目内运行安全命令，network 默认关闭。
+- `Full Dev`：高级模式，可读取显式配置的 extra roots，并按全局网络配置启用 network；但仍受 path boundary、command allowlist 与危险命令拦截约束。
+
+`VP_EXTRA_ALLOWED_ROOTS` 是显式授权入口；Downloads、Desktop/workbench、workspace sibling root 不再作为默认访问范围。命令安全不只检查 `cwd`，也检查路径参数，例如 `rg /etc`、`git -C /tmp status`、`python /tmp/a.py`、`cp app/main.py /tmp/main.py`。
+
+## 30. 源码依据与待确认点
 
 ### 本手册主要依据的源码
 

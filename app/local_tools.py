@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageEnhance, ImageOps
 
+from app.action_validator import validate_command_path_args
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots
 from app.i18n import normalize_locale
@@ -1330,6 +1331,8 @@ class LocalToolExecutor:
         cwd: str | None = None,
         model: str | None = None,
         locale: str | None = None,
+        permission_profile: str | None = None,
+        runtime_boundary: dict[str, Any] | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1342,9 +1345,11 @@ class LocalToolExecutor:
         self._runtime_ctx.cwd = str(cwd or "").strip()
         self._runtime_ctx.model = str(model or "").strip()
         self._runtime_ctx.locale = normalize_locale(locale, self.config.default_locale)
+        self._runtime_ctx.permission_profile = str(permission_profile or getattr(self.config, "permission_profile", "code") or "code").strip()
+        self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "locale"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "locale", "permission_profile", "runtime_boundary"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1675,12 +1680,57 @@ class LocalToolExecutor:
             seen.add(key)
             roots.append(resolved)
 
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict):
+            for raw in list(boundary.get("allowed_roots") or []):
+                try:
+                    add(Path(str(raw)).expanduser())
+                except Exception:
+                    continue
+        if roots:
+            return roots
         add(self._current_project_root())
-        for path in self._project_store.all_project_roots():
-            add(path)
-        for path in get_access_roots(self.config):
-            add(path)
+        try:
+            add(Path(self.config.uploads_dir))
+        except Exception:
+            pass
         return roots
+
+    def _current_command_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[str] = set()
+
+        def add(path: Path | None) -> None:
+            if path is None:
+                return
+            try:
+                resolved = path.resolve()
+            except Exception:
+                return
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict):
+            for raw in list(boundary.get("command_allowed_roots") or []):
+                try:
+                    add(Path(str(raw)).expanduser())
+                except Exception:
+                    continue
+        if roots:
+            return roots
+        add(self._current_project_root())
+        return roots
+
+    def _current_shell_allowed(self) -> bool:
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict) and "shell_allowed" in boundary:
+            return bool(boundary.get("shell_allowed"))
+        profile = str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "code")).strip()
+        return profile != "chat"
 
     def _resolve_path(self, raw_path: str) -> Path:
         return _resolve_workspace_path(
@@ -1773,9 +1823,11 @@ class LocalToolExecutor:
         error: str,
         returncode: int = 126,
         stderr: str | None = None,
+        error_kind: str | None = None,
+        error_detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         cwd_text = str(cwd or self._current_cwd_hint() or self._current_project_root())
-        return {
+        payload = {
             "ok": False,
             "command": str(command or "").strip(),
             "cwd": cwd_text,
@@ -1786,6 +1838,10 @@ class LocalToolExecutor:
             "error": str(error or "").strip(),
             "execution_mode": self._current_execution_mode(),
         }
+        if error_kind:
+            payload["error_kind"] = str(error_kind)
+            payload["error_detail"] = dict(error_detail or {})
+        return payload
 
     def _normalize_python_command_argv(self, argv: list[str], *, execution_mode: str) -> list[str]:
         if not argv:
@@ -1817,6 +1873,48 @@ class LocalToolExecutor:
         if for_session and execution_mode == "docker":
             return [], "Interactive exec_command sessions are only supported in host mode."
         return argv, None
+
+    def _command_path_validation_error(self, argv: list[str], *, cwd: Path) -> dict[str, Any] | None:
+        ok, detail = validate_command_path_args(
+            argv,
+            cwd=cwd.resolve(),
+            command_allowed_roots=self._current_command_roots(),
+            writable_roots=[Path(item) for item in self._current_writable_roots()],
+        )
+        if ok:
+            return None
+        return dict(detail or {})
+
+    def _current_writable_roots(self) -> list[str]:
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict):
+            roots = [str(item) for item in list(boundary.get("writable_roots") or []) if str(item or "").strip()]
+            if roots:
+                return roots
+            if boundary.get("workspace_write_allowed") is False:
+                return []
+        return [str(self._current_project_root())]
+
+    def _current_workspace_write_allowed(self) -> bool:
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict) and "workspace_write_allowed" in boundary:
+            return bool(boundary.get("workspace_write_allowed"))
+        profile = str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "code")).strip()
+        return profile != "chat"
+
+    def _write_path_error(self, path: Path) -> str:
+        if not self._current_workspace_write_allowed():
+            return "Workspace write is not allowed for the active permission profile."
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path.absolute()
+        roots = [Path(item).expanduser().resolve() for item in self._current_writable_roots()]
+        target = resolved if resolved.exists() else resolved.parent
+        if any(_is_within(target, root) for root in roots):
+            return ""
+        allowed = ", ".join(str(root) for root in roots[:6])
+        return f"Write path outside writable roots: {resolved}. Writable roots: {allowed}"
 
     def _spawn_command_reader(self, session_id: int, proc: subprocess.Popen[bytes]) -> None:
         def reader() -> None:
@@ -2530,15 +2628,6 @@ class LocalToolExecutor:
         if name == "read_section_by_heading":
             result = self.read_section_by_heading(**arguments)
             return self._decorate_result(result)
-        if name == "table_extract":
-            result = self.table_extract(**arguments)
-            return self._decorate_result(result)
-        if name == "fact_check_file":
-            result = self.fact_check_file(**arguments)
-            return self._decorate_result(result)
-        if name == "search_codebase":
-            result = self.search_codebase(**arguments)
-            return self._decorate_result(result)
         if name == "copy_file":
             result = self.copy_file(**arguments)
             return self._decorate_result(result)
@@ -2645,6 +2734,8 @@ class LocalToolExecutor:
         max_output_chars: int = 12000,
         tty: bool = False,
     ) -> dict[str, Any]:
+        if not self._current_shell_allowed():
+            return self._command_failure_result(command=cmd, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
         argv, error = self._safe_split_command(cmd, for_session=True)
         if error:
             return self._command_failure_result(command=cmd, cwd=cwd, error=error)
@@ -2654,6 +2745,17 @@ class LocalToolExecutor:
             return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
+        path_error = self._command_path_validation_error(argv, cwd=real_cwd)
+        if path_error:
+            message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
+            return self._command_failure_result(
+                command=cmd,
+                cwd=str(real_cwd),
+                error=message,
+                stderr=message,
+                error_kind="command_path_outside_allowed_roots",
+                error_detail=path_error,
+            )
 
         try:
             proc = subprocess.Popen(
@@ -3318,39 +3420,32 @@ class LocalToolExecutor:
         return payload
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
-        try:
-            argv = shlex.split(command)
-        except Exception as exc:
-            return self._command_failure_result(command=command, cwd=cwd, error=f"Command parse failed: {exc}")
-
-        if not argv:
-            return self._command_failure_result(command=command, cwd=cwd, error="Empty command")
-
-        if any(token in command for token in ["|", "&&", "||", ";", "$(", "`"]):
-            return self._command_failure_result(
-                command=command,
-                cwd=cwd,
-                error="Complex shell operators are blocked for safety. Use a single command only.",
-            )
-
+        if not self._current_shell_allowed():
+            return self._command_failure_result(command=command, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
+        argv, error = self._safe_split_command(command, for_session=False)
+        if error:
+            return self._command_failure_result(command=command, cwd=cwd, error=error)
         execution_mode = self._current_execution_mode()
         session_id = self._current_session_id()
         timeout_val = max(1, min(120, timeout_sec))
-
-        argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
-
-        base_cmd = argv[0]
-        if not self._is_allowed_command(base_cmd):
-            return self._command_failure_result(
-                command=command,
-                cwd=cwd,
-                error=f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}",
-            )
 
         try:
             real_cwd = self._resolve_path(cwd)
         except Exception as exc:
             return self._command_failure_result(command=command, cwd=cwd, error=str(exc), returncode=1)
+        if not real_cwd.exists() or not real_cwd.is_dir():
+            return self._command_failure_result(command=command, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
+        path_error = self._command_path_validation_error(argv, cwd=real_cwd)
+        if path_error:
+            message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
+            return self._command_failure_result(
+                command=command,
+                cwd=str(real_cwd),
+                error=message,
+                stderr=message,
+                error_kind="command_path_outside_allowed_roots",
+                error_detail=path_error,
+            )
 
         timeout_val = max(1, min(120, timeout_sec))
         execution_mode = self._current_execution_mode()
@@ -3408,6 +3503,9 @@ class LocalToolExecutor:
     def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
         try:
             real_path = self._resolve_path(path)
+            write_error = self._write_path_error(real_path)
+            if write_error:
+                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_dir():
@@ -4927,6 +5025,9 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         try:
             real_path = self._resolve_path(path)
+            write_error = self._write_path_error(real_path)
+            if write_error:
+                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
             if real_path.exists() and real_path.is_dir():
                 return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
 
@@ -4948,6 +5049,8 @@ class LocalToolExecutor:
                 "bytes_utf8": len(content.encode("utf-8")),
             }
         except Exception as exc:
+            if "Path out of allowed roots" in str(exc):
+                return {"ok": False, "error": f"write_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
             return {"ok": False, "error": f"write_text_file failed: {exc}"}
 
     def append_text_file(
@@ -4959,6 +5062,9 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         try:
             real_path = self._resolve_path(path)
+            write_error = self._write_path_error(real_path)
+            if write_error:
+                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
             if real_path.exists() and real_path.is_dir():
                 return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
             if not real_path.exists() and not create_if_missing:
@@ -4981,6 +5087,8 @@ class LocalToolExecutor:
                 "bytes_total_utf8": real_path.stat().st_size,
             }
         except Exception as exc:
+            if "Path out of allowed roots" in str(exc):
+                return {"ok": False, "error": f"append_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
             return {"ok": False, "error": f"append_text_file failed: {exc}"}
 
     def replace_in_file(
@@ -5020,6 +5128,8 @@ class LocalToolExecutor:
                 "bytes_utf8": len(updated.encode("utf-8")),
             }
         except Exception as exc:
+            if "Path out of allowed roots" in str(exc):
+                return {"ok": False, "error": f"replace_in_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
             return {"ok": False, "error": f"replace_in_file failed: {exc}"}
 
     def _domain_allowed(self, host: str) -> bool:

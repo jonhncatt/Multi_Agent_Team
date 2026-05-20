@@ -81,6 +81,7 @@ def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
     boundary = RuntimeBoundary(
         allowed_roots=[str(tmp_path)],
         writable_roots=[str(tmp_path / "writable")],
+        command_allowed_roots=[str(tmp_path)],
         cwd=str(tmp_path),
         project_root=str(tmp_path),
         **boundary_overrides,
@@ -192,6 +193,39 @@ def test_dangerous_command_rejected(tmp_path: Path) -> None:
 
     assert not result.allowed
     assert result.code == "dangerous_command"
+
+
+def test_exec_command_path_argument_outside_project_rejected(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "rg foo /etc", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_git_dash_c_outside_project_rejected(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-git"
+    outside.mkdir(exist_ok=True)
+
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": f"git -C {outside} status", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_python_script_outside_project_rejected(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.py"
+    outside.write_text("print('x')", encoding="utf-8")
+
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": f"python {outside}", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_path_outside_allowed_roots"
 
 
 def test_network_tool_rejected_when_network_disabled(tmp_path: Path) -> None:

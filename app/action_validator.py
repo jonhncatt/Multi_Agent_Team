@@ -88,6 +88,28 @@ _REDACTION_PLACEHOLDER_MESSAGE = (
     "Use a concrete relative path or inspect the directory again with list_dir/glob_file_search using a narrower pattern."
 )
 
+_PATH_VALUE_FLAGS = {"-C", "--rootdir", "--prefix", "--cwd", "--config", "-f", "--file"}
+_READ_COMMANDS = {"rg", "find", "ls", "cat", "head", "tail", "wc", "pytest", "node", "python", "python3", "py"}
+_WRITE_COMMANDS = {"cp", "mv", "mkdir", "touch"}
+_COMMON_PATH_SUFFIXES = (
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".json",
+    ".md",
+    ".txt",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".css",
+    ".html",
+    ".sh",
+)
+
 
 def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
@@ -125,6 +147,147 @@ def _contains_redaction_placeholder(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_contains_redaction_placeholder(item) for item in value.values())
     return False
+
+
+def split_command_safely(command: str) -> tuple[list[str], str | None]:
+    raw = str(command or "").strip()
+    if not raw:
+        return [], "Empty command"
+    try:
+        return shlex.split(raw), None
+    except Exception as exc:
+        return [], f"Command parse failed: {safe_error_message(exc)}"
+
+
+def _looks_like_url(value: str) -> bool:
+    return value.startswith(("http://", "https://"))
+
+
+def _is_path_like_token(token: str) -> bool:
+    text = str(token or "").strip()
+    if not text or _looks_like_url(text):
+        return False
+    if text in {".", ".."}:
+        return True
+    if text.startswith(("/", "./", "../", "~")):
+        return True
+    if "\\" in text or "/" in text:
+        return True
+    lowered = text.lower()
+    return any(lowered.endswith(suffix) for suffix in _COMMON_PATH_SUFFIXES)
+
+
+def _command_base(argv0: str) -> str:
+    text = str(argv0 or "").replace("\\", "/").strip()
+    return text.rsplit("/", 1)[-1].lower()
+
+
+def extract_command_path_args(argv: list[str]) -> list[dict[str, Any]]:
+    if not argv:
+        return []
+    base = _command_base(argv[0])
+    items: list[dict[str, Any]] = []
+    skip_next = False
+    positional_count = 0
+    write_indexes: set[int] = set()
+    if base in {"cp", "mv"} and len(argv) >= 3:
+        write_indexes.add(len(argv) - 1)
+    elif base in {"mkdir", "touch"}:
+        write_indexes.update(range(1, len(argv)))
+
+    for index, token in enumerate(argv[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        text = str(token or "").strip()
+        if not text:
+            continue
+        if text in _PATH_VALUE_FLAGS:
+            next_index = index + 1
+            if next_index < len(argv):
+                items.append({"argument": argv[next_index], "index": next_index, "access": "read", "source": text})
+                skip_next = True
+            continue
+        if any(text.startswith(flag + "=") for flag in _PATH_VALUE_FLAGS if flag.startswith("--")):
+            flag, value = text.split("=", 1)
+            items.append({"argument": value, "index": index, "access": "read", "source": flag})
+            continue
+        if text.startswith("-"):
+            continue
+        if base in {"python", "python3", "py"} and text == "-m":
+            skip_next = True
+            continue
+        if base == "npm" and text == "--prefix":
+            next_index = index + 1
+            if next_index < len(argv):
+                items.append({"argument": argv[next_index], "index": next_index, "access": "read", "source": "--prefix"})
+                skip_next = True
+            continue
+        positional_count += 1
+        treat_as_path = _is_path_like_token(text)
+        if not treat_as_path:
+            if base in {"ls", "find", "cat", "head", "tail", "wc", "pytest", "node"}:
+                treat_as_path = True
+            elif base == "rg" and positional_count >= 2:
+                treat_as_path = True
+        if not treat_as_path:
+            continue
+        access = "write" if index in write_indexes else "read"
+        if base in _WRITE_COMMANDS and base not in {"cp", "mv"}:
+            access = "write"
+        items.append({"argument": text, "index": index, "access": access, "source": base})
+    return items
+
+
+def _resolve_command_arg_path(raw: str, *, cwd: Path) -> Path:
+    candidate = Path(str(raw or "")).expanduser()
+    if not candidate.is_absolute():
+        candidate = cwd / candidate
+    try:
+        return candidate.resolve(strict=False)
+    except Exception:
+        return candidate.absolute()
+
+
+def _parent_for_boundary(path: Path) -> Path:
+    if path.exists():
+        return path
+    return path.parent if str(path.parent) else path
+
+
+def validate_command_path_args(
+    argv: list[str],
+    *,
+    cwd: Path,
+    command_allowed_roots: list[Path],
+    writable_roots: list[Path],
+) -> tuple[bool, dict[str, Any]]:
+    command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
+    write_roots = [root.expanduser().resolve() for root in writable_roots if str(root or "").strip()]
+    for item in extract_command_path_args(argv):
+        raw_arg = str(item.get("argument") or "").strip()
+        if not raw_arg:
+            continue
+        resolved = _resolve_command_arg_path(raw_arg, cwd=cwd)
+        boundary_path = _parent_for_boundary(resolved)
+        if not any(_is_within(boundary_path, root) for root in command_roots):
+            return False, {
+                "kind": "command_path_outside_allowed_roots",
+                "message": "Command path argument is outside command allowed roots.",
+                "argument": raw_arg,
+                "resolved_path": str(resolved),
+                "command_allowed_roots": [str(root) for root in command_roots],
+            }
+        if str(item.get("access") or "") == "write" and not any(_is_within(boundary_path, root) for root in write_roots):
+            return False, {
+                "kind": "command_path_outside_allowed_roots",
+                "message": "Command write path argument is outside writable command roots.",
+                "argument": raw_arg,
+                "resolved_path": str(resolved),
+                "command_allowed_roots": [str(root) for root in command_roots],
+                "writable_roots": [str(root) for root in write_roots],
+            }
+    return True, {}
 
 
 class ActionValidator:
@@ -429,12 +592,26 @@ class ActionValidator:
         if tool_name in _SHELL_TOOLS:
             if not self._boundary.shell_allowed:
                 return "shell_not_allowed", f"Shell execution is not allowed for tool: {tool_name}"
-            cwd_error = self._validate_path_value(str(arguments.get("cwd") or "."), roots=self._allowed_roots(), code="path_outside_allowed_roots")
+            command_roots = self._command_roots()
+            cwd_error = self._validate_path_value(str(arguments.get("cwd") or "."), roots=command_roots, code="command_path_outside_allowed_roots")
             if cwd_error is not None:
                 return cwd_error
             command = str(arguments.get("cmd") or arguments.get("command") or "").strip()
             if command and self._is_dangerous_command(command):
                 return "dangerous_command", "Command is blocked by the runtime boundary."
+            if command and tool_name != "write_stdin":
+                argv, split_error = split_command_safely(command)
+                if split_error:
+                    return "invalid_arguments", split_error
+                cwd_path = self._resolve_path_for_validation(str(arguments.get("cwd") or "."))
+                ok, detail = validate_command_path_args(
+                    argv,
+                    cwd=cwd_path,
+                    command_allowed_roots=command_roots,
+                    writable_roots=self._writable_roots(),
+                )
+                if not ok:
+                    return "command_path_outside_allowed_roots", str(detail.get("message") or "Command path argument is outside command allowed roots.")
 
         read_fields = _READ_PATH_FIELDS.get(tool_name, ())
         if read_fields:
@@ -478,6 +655,22 @@ class ActionValidator:
         if roots:
             return roots
         return [Path(self._boundary.project_root or ".").expanduser().resolve()]
+
+    def _command_roots(self) -> list[Path]:
+        roots = _resolved_roots(getattr(self._boundary, "command_allowed_roots", []))
+        if roots:
+            return roots
+        return [Path(self._boundary.project_root or ".").expanduser().resolve()]
+
+    def _resolve_path_for_validation(self, raw_value: Any) -> Path:
+        raw = str(raw_value or ".").strip() or "."
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            base = Path(self._boundary.cwd or self._boundary.project_root or ".").expanduser()
+            if not base.is_absolute():
+                base = Path(self._boundary.project_root or ".").expanduser() / base
+            candidate = base / candidate
+        return candidate.resolve(strict=False)
 
     def _validate_path_value(self, raw_value: Any, *, roots: list[Path], code: str) -> tuple[str, str] | None:
         raw = str(raw_value or ".").strip() or "."
@@ -549,6 +742,7 @@ def validation_observation(result: ValidationResult, *, tool: str | None = None)
         "shell_not_allowed",
         "dangerous_command",
         "tool_not_allowed",
+        "command_path_outside_allowed_roots",
     }:
         observation_type = "boundary_denied"
     if code in {"repeated_invalid_tool_call", "loop_limit_exceeded"}:

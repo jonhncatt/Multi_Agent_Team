@@ -674,7 +674,7 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
 
     result = runtime.run(
         message="解释一下 SSE 是什么",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-direct-answer",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -701,7 +701,7 @@ def test_runtime_answers_simple_greeting_without_tool_calls(tmp_path: Path) -> N
 
     result = runtime.run(
         message="你好",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-greeting",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -732,7 +732,7 @@ def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tm
 
     result = runtime.run(
         message="把这句日语润色一下",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-streaming",
             "run_id": "run-streaming",
@@ -881,7 +881,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
 
     result = runtime.run(
         message="帮我查一下最新情况",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-1",
             "project": {
@@ -950,7 +950,7 @@ def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Pa
 
     result = runtime.run(
         message="查一下 PLAN.md",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-normalized-tool-guard",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1031,7 +1031,7 @@ def test_runtime_drains_all_model_tool_calls_without_cap(tmp_path: Path) -> None
 
     result = runtime.run(
         message="分析当前文件夹里的工具实现",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-drain-all-tools",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1074,7 +1074,7 @@ def test_runtime_tool_failure_still_closes_call_id(tmp_path: Path) -> None:
 
     result = runtime.run(
         message="查一下 x",
-        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-tool-failure-closes-id",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1109,7 +1109,7 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
 
     result = runtime.run(
         message="查一下 x",
-        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-followup-failure-debug",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1153,7 +1153,7 @@ def test_runtime_retries_clean_boundary_nonetype_model_dump_failure(tmp_path: Pa
 
     result = runtime.run(
         message="查一下 x",
-        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-followup-retry-debug",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1193,7 +1193,7 @@ def test_runtime_retry_failure_reports_rich_llm_diagnostics(tmp_path: Path) -> N
 
     result = runtime.run(
         message="查一下 x",
-        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-followup-retry-fails",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1364,7 +1364,7 @@ def test_runtime_cancel_during_tool_drain_closes_remaining_call_ids(tmp_path: Pa
 
     result = runtime.run(
         message="查三个东西",
-        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-cancel-drain",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1431,7 +1431,7 @@ def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_too
 
     result = runtime.run(
         message="查一下 PLAN.md",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-tool-guard-schema-retry",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1620,7 +1620,7 @@ def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(t
 
     result = runtime.run(
         message="继续工作直到完成",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-long-loop",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1665,7 +1665,7 @@ def test_runtime_can_continue_past_old_24_tool_calls_when_progress_continues(tmp
 
     result = runtime.run(
         message="持续检查不同文件直到完成",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-tool-budget-progress",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1712,7 +1712,7 @@ def test_runtime_ignores_legacy_emergency_tool_call_cap(monkeypatch: pytest.Monk
 
     result = runtime.run(
         message="持续读取文件直到结束",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-emergency-tool-cap",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
@@ -1868,7 +1868,7 @@ def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:
 
     result = runtime.run(
         message="先开始，再取消",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-cancelled",
             "cancel_event": cancel_event,
@@ -2310,7 +2310,7 @@ def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: P
 
     result = runtime.run(
         message="帮我查一下最新情况",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
         context={
             "session_id": "s-no-model-kw",
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},

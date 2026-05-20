@@ -123,6 +123,29 @@ def test_vp_allowed_commands_env_is_full_override(monkeypatch, tmp_path) -> None
     assert config.allowed_commands == ["printf", "dir"]
 
 
+def test_permission_safe_defaults_do_not_add_user_folders(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+
+    config = load_config()
+
+    assert config.permission_profile == "code"
+    assert config.default_extra_allowed_roots == []
+    assert config.allow_workspace_sibling_access is False
+    assert config.workspace_sibling_root is None
+    assert config.allowed_roots == [tmp_path.resolve()]
+
+
+def test_permission_profile_aliases(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_PERMISSION_PROFILE", "full")
+
+    config = load_config()
+
+    assert config.permission_profile == "full_dev"
+
+
 def test_chat_settings_max_context_turns_default_remains_2000() -> None:
     assert ChatSettings().max_context_turns == 2000
 
