@@ -1882,7 +1882,7 @@ class VintageProgrammerRuntime:
         if evidence_status == "needs_evidence_review":
             warnings.append("任务涉及外部或运行时事实，但当前轮没有形成完整证据链。")
         return {
-            "summary": raw_text[:500],
+            "summary": "final_answer_available" if str(raw_text or "").strip() else "",
             "claims": [],
             "citations": citations,
             "warnings": warnings,
@@ -4648,7 +4648,7 @@ class VintageProgrammerRuntime:
         if pending_user_input:
             current_task_focus["next_action"] = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
         elif turn_status == "blocked":
-            current_task_focus["next_action"] = raw_text[:240]
+            current_task_focus["next_action"] = "blocked"
         elif turn_status == "cancelled":
             current_task_focus["next_action"] = "cancelled"
         else:
@@ -4820,12 +4820,6 @@ class VintageProgrammerRuntime:
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
                 "activity_summary": activity_summary,
-                "current_turn_goal": current_goal,
-                "current_turn_followup_type": str(current_turn_context.get("followup_type") or ""),
-                "current_turn_goal_source": str(current_turn_context.get("source") or ""),
-                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
-                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
-                "phase_timings": dict(phase_timings),
                 "trace_events": [dict(item) for item in trace_events],
             },
             "compaction_status": dict(live_compaction_status),

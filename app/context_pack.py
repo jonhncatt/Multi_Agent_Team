@@ -80,12 +80,6 @@ class ModelContext(BaseModel):
     permissions: PermissionsContext = Field(default_factory=PermissionsContext)
     conversation: ConversationContext = Field(default_factory=ConversationContext)
 
-
-# Backward-compatible name for older tests/imports. The runtime now treats this
-# object as ModelContext, not as the previous broad ContextPack envelope.
-ContextPack = ModelContext
-
-
 def normalize_user_message_preview(message: Any, *, limit: int = 80) -> str:
     text = re.sub(r"\s+", " ", str(message or "")).strip()
     if len(text) <= limit:
@@ -584,22 +578,6 @@ def build_model_context(
         plan=PlanContext(items=manager.plan[:12]),
         permissions=_permissions_from_boundary(runtime_boundary_model_view, permission_profile=permission_profile),
         conversation=ConversationContext(recent_turns=conversation),
-    )
-
-
-def build_context_pack(
-    *,
-    message: str,
-    context: dict[str, Any],
-    current_task_focus: dict[str, Any],
-    runtime_boundary_model_view: dict[str, Any],
-) -> ModelContext:
-    return build_model_context(
-        user_request=message,
-        context=context,
-        current_task_focus=current_task_focus,
-        runtime_boundary_model_view=runtime_boundary_model_view,
-        permission_profile=str(runtime_boundary_model_view.get("permission_profile") or ""),
     )
 
 
