@@ -354,64 +354,10 @@ class ContextManager(BaseModel):
 
     @classmethod
     def from_context_payload(cls, context: dict[str, Any]) -> "ContextManager":
-        raw_observations: list[Any] = []
-        raw_observations.extend(list(context.get("recent_observations") or []))
-        raw_observations.extend(list(context.get("recent_tool_results") or []))
-        raw_observations.extend(list(context.get("recent_errors") or []))
-        raw_observations.extend(
-            {
-                "source": "attachment_evidence",
-                "tool": str(item.get("tool") or item.get("kind") or ""),
-                "target": str(item.get("name") or item.get("path") or ""),
-                "status": str(item.get("status") or "ready"),
-                "summary": str(item.get("summary") or ""),
-            }
-            for item in list(context.get("attachment_evidence_pack") or [])
-            if isinstance(item, dict)
-        )
         raw_manager = context.get("context_manager")
-        if isinstance(raw_manager, dict) and _has_context_manager_data(raw_manager):
-            manager = cls.from_payload(raw_manager)
-        else:
-            thread_memory = dict(context.get("thread_memory") or {})
-            compaction_status = dict(context.get("compaction_status") or {})
-            manager = cls(
-                clean_summary=_truncate(context.get("summary") or thread_memory.get("summary") or compaction_status.get("summary"), 4000),
-                clean_turns=_normalize_clean_turns(context.get("history_turns"), current_message="", limit=16),
-                recent_observations=_normalize_recent_observations(raw_observations),
-                active_files=_unique_strings((context.get("current_task_focus") or {}).get("active_files"), limit=10, max_chars=500),
-                plan=_normalize_plan_context(context.get("plan_state"), context.get("plan")).items,
-                context_version=0,
-            )
-        if raw_observations:
-            manager.recent_observations = _normalize_recent_observations(
-                [*raw_observations, *[dump_model(item) for item in manager.recent_observations]]
-            )
-
-        project_payload = dict(context.get("project") or {})
-        project_root = str(project_payload.get("project_root") or project_payload.get("root") or "").strip()
-        previous_roots = _known_previous_project_roots(context)
-        if project_root:
-            manager.clean_summary = _rebase_text_paths_for_model(
-                manager.clean_summary,
-                project_root=project_root,
-                previous_roots=previous_roots,
-            )
-            manager.clean_turns = _rebase_value_paths_for_model(
-                manager.clean_turns,
-                project_root=project_root,
-                previous_roots=previous_roots,
-            )
-            manager.recent_observations = [
-                RecentObservation(**_rebase_value_paths_for_model(dump_model(item), project_root=project_root, previous_roots=previous_roots))
-                for item in manager.recent_observations
-            ]
-            manager.active_files = _unique_strings(
-                _rebase_value_paths_for_model(manager.active_files, project_root=project_root, previous_roots=previous_roots),
-                limit=10,
-                max_chars=500,
-            )
-        return manager
+        if not isinstance(raw_manager, dict) or not _has_context_manager_data(raw_manager):
+            return cls()
+        return cls.from_payload(raw_manager)
 
     def to_session_payload(self) -> dict[str, Any]:
         return {
@@ -519,54 +465,43 @@ def _permissions_from_boundary(runtime_boundary_model_view: dict[str, Any], *, p
     )
 
 
+def _current_step_from_context_manager(context_manager: ContextManager) -> str:
+    for item in context_manager.recent_observations:
+        summary = _truncate(item.summary, 500)
+        if summary:
+            return summary
+    return ""
+
+
+def _next_action_from_context_manager(context_manager: ContextManager) -> str:
+    for item in context_manager.plan:
+        if item.status in {"pending", "in_progress"}:
+            step = _truncate(item.step, 500)
+            if step:
+                return step
+    return ""
+
+
 def build_model_context(
     *,
     user_request: str,
-    runtime_boundary_model_view: dict[str, Any],
-    permission_profile: str = "",
+    context_manager: ContextManager,
+    runtime_boundary: Any,
     project_root: Path | str | None = None,
     cwd: Path | str | None = None,
-    context: dict[str, Any] | None = None,
-    current_task_focus: dict[str, Any] | None = None,
 ) -> ModelContext:
-    raw_context = dict(context or {})
-    focus = dict(current_task_focus or raw_context.get("current_task_focus") or {})
-    manager = ContextManager.from_context_payload(raw_context)
-
-    project_payload = dict(raw_context.get("project") or {})
-    resolved_project_root = str(
-        project_root
-        or runtime_boundary_model_view.get("project_root")
-        or project_payload.get("project_root")
-        or project_payload.get("root")
-        or ""
-    )
-    resolved_cwd = str(cwd or runtime_boundary_model_view.get("cwd") or project_payload.get("cwd") or resolved_project_root)
-    previous_roots = _known_previous_project_roots(raw_context)
-    if resolved_project_root:
-        focus = _rebase_value_paths_for_model(focus, project_root=resolved_project_root, previous_roots=previous_roots)
-
-    current_turn = dict(raw_context.get("current_turn") or {})
-    goal = _truncate(focus.get("goal") or current_turn.get("goal") or normalize_user_message_preview(user_request, limit=140), 500)
-    current_step = _truncate(focus.get("last_completed_step") or focus.get("last_observation"), 500)
-    if not current_step and manager.recent_observations:
-        current_step = _truncate(manager.recent_observations[0].summary, 500)
-    next_action = _truncate(focus.get("next_action"), 500)
-
-    active_files = _unique_strings([*manager.active_files, *list(focus.get("active_files") or [])], limit=10, max_chars=500)
-    if resolved_project_root:
-        active_files = _unique_strings(
-            _rebase_value_paths_for_model(active_files, project_root=resolved_project_root, previous_roots=previous_roots),
-            limit=10,
-            max_chars=500,
-        )
-    conversation = _normalize_clean_turns(manager.clean_turns, current_message=user_request, limit=8)
+    boundary_model_view = runtime_boundary.to_model_view() if hasattr(runtime_boundary, "to_model_view") else dict(runtime_boundary or {})
+    resolved_project_root = str(project_root or boundary_model_view.get("project_root") or "")
+    resolved_cwd = str(cwd or boundary_model_view.get("cwd") or resolved_project_root)
+    clean_user_request = _clean_text(user_request, limit=4000)
+    active_files = _unique_strings(context_manager.active_files, limit=10, max_chars=500)
+    conversation = _normalize_clean_turns(context_manager.clean_turns, current_message=clean_user_request, limit=8)
     return ModelContext(
         task=TaskContext(
-            user_request=_clean_text(user_request, limit=4000),
-            goal=goal,
-            current_step=current_step,
-            next_action=next_action,
+            user_request=clean_user_request,
+            goal=_truncate(normalize_user_message_preview(clean_user_request, limit=140), 500),
+            current_step=_current_step_from_context_manager(context_manager),
+            next_action=_next_action_from_context_manager(context_manager),
         ),
         workspace=WorkspaceContext(
             project_root=str(resolved_project_root),
@@ -574,12 +509,15 @@ def build_model_context(
             model_visible_paths=active_files,
         ),
         memory=MemoryContext(
-            clean_summary=_truncate(manager.clean_summary, 2000),
+            clean_summary=_truncate(context_manager.clean_summary, 2000),
             active_files=active_files,
-            recent_observations=manager.recent_observations[:5],
+            recent_observations=context_manager.recent_observations[:5],
         ),
-        plan=PlanContext(items=manager.plan[:12]),
-        permissions=_permissions_from_boundary(runtime_boundary_model_view, permission_profile=permission_profile),
+        plan=PlanContext(items=context_manager.plan[:12]),
+        permissions=_permissions_from_boundary(
+            boundary_model_view,
+            permission_profile=str(getattr(runtime_boundary, "permission_profile", "") or boundary_model_view.get("permission_profile") or ""),
+        ),
         conversation=ConversationContext(recent_turns=conversation),
     )
 

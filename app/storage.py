@@ -12,6 +12,8 @@ from typing import Any
 
 from fastapi import UploadFile
 
+from app.session_migration import CONTEXT_SCHEMA_VERSION, migrate_legacy_session_to_context_manager
+
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -110,6 +112,13 @@ class SessionStore:
         if not isinstance(payload.get("compaction_state"), dict):
             payload["compaction_state"] = {}
             changed = True
+        try:
+            context_schema_version = int(payload.get("context_schema_version") or 0)
+        except Exception:
+            context_schema_version = 0
+        if context_schema_version < 0:
+            payload["context_schema_version"] = 0
+            changed = True
         if not isinstance(payload.get("context_manager"), dict):
             payload["context_manager"] = self._default_context_manager()
             changed = True
@@ -153,6 +162,9 @@ class SessionStore:
 
         if session_context_impl.sync_session_memory_state(payload):
             changed = True
+        payload, migrated = migrate_legacy_session_to_context_manager(payload)
+        if migrated:
+            changed = True
 
         return payload, changed
 
@@ -183,6 +195,7 @@ class SessionStore:
             "artifact_memory": [],
             "compaction_state": {},
             "context_manager": self._default_context_manager(),
+            "context_schema_version": CONTEXT_SCHEMA_VERSION,
         }
         self.save(session)
         return session

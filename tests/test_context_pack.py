@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from app.config import load_config
 from app.context_pack import (
@@ -29,6 +32,33 @@ def _model_context_payload(text: str) -> dict[str, Any]:
     return json.loads(text.split("model_context_json:\n", 1)[1])["model_context"]
 
 
+def test_build_model_context_signature_rejects_legacy_inputs(tmp_path: Path) -> None:
+    signature = inspect.signature(build_model_context)
+
+    assert "context" not in signature.parameters
+    assert "current_task_focus" not in signature.parameters
+
+    with pytest.raises(TypeError):
+        build_model_context(
+            user_request="继续",
+            context_manager=ContextManager(),
+            runtime_boundary=RuntimeBoundary(project_root=str(tmp_path), cwd=str(tmp_path)),
+            project_root=tmp_path,
+            cwd=tmp_path,
+            context={},
+        )
+
+    with pytest.raises(TypeError):
+        build_model_context(
+            user_request="继续",
+            context_manager=ContextManager(),
+            runtime_boundary=RuntimeBoundary(project_root=str(tmp_path), cwd=str(tmp_path)),
+            project_root=tmp_path,
+            cwd=tmp_path,
+            current_task_focus={},
+        )
+
+
 def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
     boundary = build_turn_runtime_boundary(
         config=load_config(),
@@ -37,34 +67,52 @@ def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
         cwd=tmp_path,
         attachments=[],
     )
+    manager = ContextManager.from_payload(
+        {
+            "clean_summary": "已经确认工具入口在 app/local_tools.py。",
+            "clean_turns": [{"role": "assistant", "text": "上一轮已经完成工具入口定位。"}],
+            "recent_observations": [{"tool": "read_file", "target": "app/local_tools.py", "status": "ok", "summary": "找到了 exec_command。"}],
+            "active_files": ["app/local_tools.py"],
+            "plan": [{"step": "检查 ActionValidator", "status": "pending"}],
+            "context_version": 3,
+        }
+    )
 
     model_context = build_model_context(
         user_request="分析当前工具实现",
-        context={
-            "context_manager": {
-                "clean_summary": "已经确认工具入口在 app/local_tools.py。",
-                "clean_turns": [{"role": "assistant", "text": "上一轮已经完成工具入口定位。"}],
-                "recent_observations": [{"tool": "read_file", "target": "app/local_tools.py", "status": "ok", "summary": "找到了 exec_command。"}],
-                "active_files": ["app/local_tools.py"],
-                "plan": [{"step": "检查 ActionValidator", "status": "pending"}],
-                "context_version": 3,
-            },
-            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
-        },
-        current_task_focus={"last_completed_step": "已读取 local_tools", "next_action": "继续检查 validator"},
-        runtime_boundary_model_view=boundary.to_model_view(),
-        permission_profile="auto",
+        context_manager=manager,
+        runtime_boundary=boundary,
+        project_root=tmp_path,
+        cwd=tmp_path,
     )
     payload = dump_model(model_context)
 
     assert set(payload) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
     assert payload["task"]["user_request"] == "分析当前工具实现"
+    assert payload["task"]["goal"] == "分析当前工具实现"
+    assert payload["task"]["current_step"] == "找到了 exec_command。"
+    assert payload["task"]["next_action"] == "检查 ActionValidator"
     assert payload["workspace"]["project_root"] == str(tmp_path.resolve())
-    assert payload["memory"]["clean_summary"]
-    assert payload["task"]["current_step"] == "已读取 local_tools"
+    assert payload["workspace"]["model_visible_paths"] == ["app/local_tools.py"]
+    assert payload["memory"]["clean_summary"] == "已经确认工具入口在 app/local_tools.py。"
     assert payload["plan"]["items"][0]["step"] == "检查 ActionValidator"
     assert payload["permissions"]["profile"] == "auto"
     assert payload["permissions"]["label"] == "Auto"
+    assert payload["conversation"]["recent_turns"] == [{"role": "assistant", "text": "上一轮已经完成工具入口定位。"}]
+
+
+def test_context_manager_from_context_payload_reads_only_context_manager() -> None:
+    manager = ContextManager.from_context_payload(
+        {
+            "summary": "legacy summary",
+            "thread_memory": {"summary": "legacy thread memory"},
+            "history_turns": [{"role": "assistant", "text": "legacy turn"}],
+            "current_task_focus": {"active_files": ["app/main.py"]},
+            "plan_state": {"items": [{"step": "legacy plan", "status": "pending"}]},
+        }
+    )
+
+    assert dump_model(manager) == dump_model(ContextManager())
 
 
 def test_human_message_is_rendered_only_from_model_context(tmp_path: Path) -> None:
@@ -97,31 +145,6 @@ def test_human_message_is_rendered_only_from_model_context(tmp_path: Path) -> No
     assert "execution_trace" not in encoded
     assert "route-derived goal" not in encoded
     assert "agent-derived goal" not in encoded
-
-
-def test_empty_context_manager_falls_back_to_legacy_clean_fields(tmp_path: Path) -> None:
-    model_context = build_model_context(
-        user_request="继续",
-        context={
-            "context_manager": {
-                "clean_summary": "",
-                "clean_turns": [],
-                "recent_observations": [],
-                "active_files": [],
-                "plan": [],
-                "context_version": 0,
-            },
-            "summary": "旧 session 的干净摘要",
-            "history_turns": [{"role": "assistant", "text": "上一轮完成了文件定位。"}],
-            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
-        },
-        current_task_focus={},
-        runtime_boundary_model_view=RuntimeBoundary(project_root=str(tmp_path), cwd=str(tmp_path)).to_model_view(),
-    )
-    payload = dump_model(model_context)
-
-    assert payload["memory"]["clean_summary"] == "旧 session 的干净摘要"
-    assert payload["conversation"]["recent_turns"][0]["text"] == "上一轮完成了文件定位。"
 
 
 def test_model_draft_is_excluded_from_clean_context() -> None:
@@ -182,13 +205,14 @@ def test_context_manager_compacts_clean_history_without_raw_trace() -> None:
     assert manager.plan[0].step == "继续"
 
 
-def test_runtime_trace_only_contributes_summarized_observation() -> None:
+def test_runtime_trace_only_contributes_summarized_observation(tmp_path: Path) -> None:
     manager = ContextManager()
     manager.update_after_turn(
         user_request="读文件",
         clean_final_answer="已读取文件。",
         runtime_trace={
             "model_draft": "We need to inspect raw files.",
+            "provider_payload": {"raw": "secret"},
             "tool_events": [
                 {
                     "name": "read_file",
@@ -203,23 +227,26 @@ def test_runtime_trace_only_contributes_summarized_observation() -> None:
     )
     model_context = build_model_context(
         user_request="继续",
-        context={"context_manager": manager.to_session_payload()},
-        current_task_focus={},
-        runtime_boundary_model_view=RuntimeBoundary().to_model_view(),
+        context_manager=manager,
+        runtime_boundary=RuntimeBoundary(project_root=str(tmp_path), cwd=str(tmp_path)),
+        project_root=tmp_path,
+        cwd=tmp_path,
     )
     encoded = json.dumps(dump_model(model_context), ensure_ascii=False)
 
     assert "读取 app/main.py" in encoded
     assert "RAW FILE CONTENT" not in encoded
     assert "We need to inspect" not in encoded
+    assert "provider_payload" not in encoded
 
 
-def test_render_model_context_outputs_single_model_context_envelope() -> None:
+def test_render_model_context_outputs_single_model_context_envelope(tmp_path: Path) -> None:
     model_context = build_model_context(
         user_request="hello",
-        context={},
-        current_task_focus={},
-        runtime_boundary_model_view=RuntimeBoundary().to_model_view(),
+        context_manager=ContextManager(),
+        runtime_boundary=RuntimeBoundary(project_root=str(tmp_path), cwd=str(tmp_path)),
+        project_root=tmp_path,
+        cwd=tmp_path,
     )
     rendered = render_model_context(model_context)
     payload = json.loads(rendered.split("model_context_json:\n", 1)[1])

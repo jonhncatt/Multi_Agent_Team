@@ -15,7 +15,7 @@ import uuid
 
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.config import AppConfig
-from app.context_pack import ModelContext, build_model_context, render_model_context
+from app.context_pack import ContextManager, ModelContext, build_model_context, render_model_context
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.models import (
@@ -29,7 +29,7 @@ from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.serialization import dump_model, safe_model_dump
-from app.session_context import compat_task_checkpoint_from_focus, normalize_current_task_focus
+from app.session_context import compat_task_checkpoint_from_focus
 from app.tool_trace_summary import (
     build_tool_argument_audit,
     normalize_tool_arguments,
@@ -799,7 +799,9 @@ class VintageProgrammerRuntime:
         context: dict[str, Any],
         runtime_boundary: RuntimeBoundary | None = None,
     ) -> ModelContext:
-        current_task_focus = normalize_current_task_focus(context.get("current_task_focus"))
+        context_manager = ContextManager.from_payload(
+            context.get("context_manager") if isinstance(context.get("context_manager"), dict) else {}
+        )
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
         boundary = runtime_boundary or build_turn_runtime_boundary(
@@ -810,10 +812,8 @@ class VintageProgrammerRuntime:
         )
         return build_model_context(
             user_request=message,
-            context=context,
-            current_task_focus=current_task_focus,
-            runtime_boundary_model_view=boundary.to_model_view(),
-            permission_profile=str(boundary.permission_profile or ""),
+            context_manager=context_manager,
+            runtime_boundary=boundary,
             project_root=boundary.project_root,
             cwd=boundary.cwd,
         )

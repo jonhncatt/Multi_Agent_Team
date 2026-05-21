@@ -60,6 +60,14 @@ def test_compaction_status_feeds_context_pack_without_legacy_context(tmp_path: P
                 "session_id": "s-compact",
                 "summary": "long summary",
                 "history_turns": [{"role": "tool", "text": "recent observation"}],
+                "context_manager": {
+                    "clean_summary": "clean summary from migrated context manager",
+                    "clean_turns": [{"role": "assistant", "text": "上一轮已完成 clean memory 更新。"}],
+                    "recent_observations": [{"tool": "read_file", "summary": "确认了 compaction 状态。", "status": "ok"}],
+                    "active_files": ["app/context_pack.py"],
+                    "plan": [{"step": "继续验证上下文隔离", "status": "pending"}],
+                    "context_version": 4,
+                },
                 "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
                 "compaction_status": compaction_status,
             },
@@ -68,8 +76,29 @@ def test_compaction_status_feeds_context_pack_without_legacy_context(tmp_path: P
     model_context = payload
 
     assert set(model_context) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
-    assert model_context["memory"]["clean_summary"] == "long summary"
-    assert model_context["conversation"]["recent_turns"] == []
+    assert model_context["memory"]["clean_summary"] == "clean summary from migrated context manager"
+    assert model_context["conversation"]["recent_turns"] == [{"role": "assistant", "text": "上一轮已完成 clean memory 更新。"}]
     assert model_context["workspace"]["project_root"] == str(tmp_path.resolve())
     assert "legacy_context" not in model_context
     assert "route_hints" not in model_context
+
+
+def test_runtime_model_context_does_not_fallback_to_legacy_summary_or_history(tmp_path: Path) -> None:
+    config = load_config()
+    config.workspace_root = tmp_path
+    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+
+    payload = _payload_from_human_message(
+        runtime._build_human_payload(  # noqa: SLF001
+            message="继续",
+            context={
+                "session_id": "s-no-migration",
+                "summary": "legacy summary should not be read",
+                "history_turns": [{"role": "assistant", "text": "legacy turn should not be read"}],
+                "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            },
+        )
+    )
+
+    assert payload["memory"]["clean_summary"] == ""
+    assert payload["conversation"]["recent_turns"] == []

@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.20）
+# 内部设计手册（v3.0.0）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -831,6 +831,18 @@ v2.9.20 renames the product permission model to Codex-style trust levels: `Defau
 - `Full Access` is the maximum-trust mode: broader configured read/write/command scope and network enabled, while dangerous-command protection remains active.
 - The composer selector uses neutral box styling with only subtle text color differences by mode.
 - The selector remains lightweight: no background polling, no backend hover calls, and no approval prompt system.
+
+## 20.14 v3.0.0 ModelContext Minimal Core Refactor Notes
+
+v3.0.0 keeps the Codex-style tool drain semantics and permission selector UI, but reduces the model-facing core to one explicit path.
+
+- `ModelContext` remains the only model-facing context envelope.
+- Normal `build_model_context()` now accepts only `user_request`, `ContextManager`, `RuntimeBoundary`, `project_root`, and `cwd`.
+- `ContextManager` remains limited to `clean_summary`, `clean_turns`, `recent_observations`, `active_files`, `plan`, and `context_version`.
+- Normal `ContextManager` loading no longer falls back to `thread_memory`, `current_task_focus`, `plan_state`, `history_turns`, `current_turn`, or similar legacy fields.
+- Legacy session compatibility now happens once through session migration into `context_manager`, with `context_schema_version = 3`.
+- `RuntimeTrace` stays UI/debug only; only summarized observations may flow into clean memory.
+- `render_model_context()` remains a thin serializer with no legacy extraction, permission derivation, or debug formatting logic.
 
 ## 21. v2.9.0 Stability Decision
 

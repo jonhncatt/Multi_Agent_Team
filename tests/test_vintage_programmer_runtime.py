@@ -580,6 +580,10 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
         context={
             "session_id": "s-1",
             "project": {"project_root": str(tmp_path)},
+            "context_manager": {
+                "clean_turns": [{"role": "user", "text": f"turn-{index}"} for index in range(20)],
+                "context_version": 2,
+            },
             "route_state": {"task_checkpoint": {"task_id": "task-old", "goal": "帮我写个请假邮件"}},
             "current_task_focus": {"task_id": "task-old", "goal": "帮我写个请假邮件"},
             "active_task_focus": {"task_id": "task-old", "goal": "帮我写个请假邮件"},
@@ -600,7 +604,7 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
 
     assert set(payload) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
     assert payload["task"]["user_request"] == "题目"
-    assert payload["task"]["goal"] == "帮我写个请假邮件"
+    assert payload["task"]["goal"] == "题目"
     assert "context_priority" not in payload
     assert "route_hints" not in payload
     assert "legacy_context" not in payload
@@ -1577,8 +1581,8 @@ def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: P
 
     first_messages = backend.invocations[0]["messages"]
     human_payload = str(first_messages[-1].content)
-    assert "attachment_evidence" in human_payload
-    assert "missing export button" in human_payload
+    assert "attachment_evidence" not in human_payload
+    assert "missing export button" not in human_payload
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
 
