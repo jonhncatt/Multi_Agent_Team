@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.20-blue)
+![Version](https://img.shields.io/badge/version-v3.1.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,14 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v2.9.20`
+当前稳定版本：`v3.1.0`
 
 ## Stable Runtime
 
-v2.9.20 是一个 Codex 风格权限模式与选择器视觉打磨版本，延续 v2.9.0 的稳定恢复策略。
+v3.1.0 是一个 session migration 与 runtime slimming 版本，在 v3.0.0 的 ModelContext 最小核心之上继续清理运行时分层。
 v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v2.9.20 继续保留 v2.9.10 的 Codex-style all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.14 的 `ModelContext`、v2.9.19 的手动更新按钮，并将权限 profile 产品文案统一为 `Default / Auto / Full Access`。旧的 `Chat / Code / Full Dev` 值仍作为兼容 alias 接受，但正常 UI 和运行时 canonical 值使用 `default / auto / full_access`。
+OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v3.1.0 继续保留 Codex-style all-tool drain 语义、`ModelContext` 六段结构、`Default / Auto / Full Access` 权限模式、手动更新按钮和主卡片 live cards，同时增加一次性 legacy session migration，并把 trace label、tool alias、attachment rewrite、runtime hints、answer stream state 从主 runtime orchestration 中拆出。
 
 ## Max Output Tokens
 

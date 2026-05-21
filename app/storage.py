@@ -162,8 +162,9 @@ class SessionStore:
 
         if session_context_impl.sync_session_memory_state(payload):
             changed = True
+        payload_before_migration = dict(payload)
         payload, migrated = migrate_legacy_session_to_context_manager(payload)
-        if migrated:
+        if migrated or payload != payload_before_migration:
             changed = True
 
         return payload, changed

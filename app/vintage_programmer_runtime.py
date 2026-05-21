@@ -14,6 +14,16 @@ from typing import Any, Callable
 import uuid
 
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
+from app.answer_stream_state import (
+    answer_stream_diagnostics,
+    consume_stream_delta_for_display,
+    new_answer_stream_state,
+    start_answer_stream_call,
+)
+from app.attachment_argument_rewriter import (
+    build_attachment_tool_guidance,
+    rewrite_attachment_tool_arguments,
+)
 from app.config import AppConfig
 from app.context_pack import ContextManager, ModelContext, build_model_context, render_model_context
 from app.context_meter import count_tokens
@@ -28,8 +38,16 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
+from app.runtime_hints import (
+    extract_activity_excerpt,
+    looks_like_inline_document_payload,
+    looks_like_japanese_review_request,
+    looks_like_revision_request,
+)
+from app.runtime_trace_labels import trace_label
 from app.serialization import dump_model, safe_model_dump
 from app.session_context import compat_task_checkpoint_from_focus
+from app.tool_name_normalizer import normalize_tool_name
 from app.tool_trace_summary import (
     build_tool_argument_audit,
     normalize_tool_arguments,
@@ -71,122 +89,6 @@ _READ_ONLY_TOOL_NAMES = {
     "request_user_input",
 }
 
-_EXPLICIT_NETWORK_HINTS = (
-    "最新",
-    "news",
-    "today",
-    "网页",
-    "web",
-    "search",
-    "搜索",
-    "检索",
-    "截图",
-    "screenshot",
-    "浏览器",
-    "playwright",
-    "image",
-    "http://",
-    "https://",
-    "www.",
-)
-
-_EXPLICIT_WORKSPACE_HINTS = (
-    "当前工作区",
-    "整个仓库",
-    "整个代码库",
-    "这个仓库",
-    "这个 repo",
-    "repo",
-    "codebase",
-    "目录",
-    "文件树",
-    "读取文件",
-    "打开文件",
-    "查看文件",
-    "修改文件",
-    "补丁",
-    "patch",
-    "skill",
-    "skills",
-    "soul.md",
-    "identity.md",
-    "agent.md",
-    "tools.md",
-    "终端",
-    "shell",
-    "命令行",
-    "命令",
-    "run shell",
-    "执行命令",
-)
-
-_INLINE_DOC_CODE_FENCE_HINTS = (
-    "```xml",
-    "```html",
-    "```json",
-    "```yaml",
-    "```yml",
-    "```rss",
-    "```atom",
-    "```python",
-    "```py",
-    "```ts",
-    "```tsx",
-    "```js",
-    "```jsx",
-)
-
-_REVISION_REQUEST_HINTS = (
-    "润色",
-    "改写",
-    "改成",
-    "重写",
-    "校对",
-    "语法",
-    "文法",
-    "proofread",
-    "grammar",
-    "rewrite",
-    "rephrase",
-    "polish",
-    "revise",
-    "edit",
-    "more natural",
-)
-
-_JAPANESE_REQUEST_HINTS = (
-    "日语",
-    "日文",
-    "日本语",
-    "日本語",
-    "japanese",
-    "敬语",
-    "敬語",
-)
-
-_JAPANESE_KANA_RE = re.compile(r"[ぁ-んァ-ヶ]")
-
-_TOOL_NAME_ALIASES = {
-    "analyze_image": "image_read",
-    "download_web_file": "web_download",
-    "extract_msg_attachments": "mail_extract_attachments",
-    "extract_zip": "archive_extract",
-    "fetch_web": "web_fetch",
-    "image_analysis": "image_read",
-    "image_analyze": "image_read",
-    "image_ocr": "image_read",
-    "image_reader": "image_read",
-    "image_to_text": "image_read",
-    "image_tool": "image_read",
-    "list_sessions": "sessions_list",
-    "ocr_image": "image_read",
-    "read_image": "image_read",
-    "read_section_by_heading": "read_section",
-    "read_session_history": "sessions_history",
-    "search_web": "web_search",
-    "view_image": "image_inspect",
-}
-
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
 _DEFAULT_MAX_TURN_SECONDS = 1800
 _DEFAULT_MAX_SAME_ACTION_REPEATS = 4
@@ -195,21 +97,6 @@ _DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
 _DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
-_IMAGE_READ_TOOL_HINTS = (
-    "image",
-    "screenshot",
-    "picture",
-    "photo",
-    "vision",
-)
-_IMAGE_READ_ACTION_HINTS = (
-    "read",
-    "ocr",
-    "analy",
-    "describe",
-    "caption",
-    "tool",
-)
 
 
 def default_loop_safeguards() -> dict[str, Any]:
@@ -227,47 +114,6 @@ def default_loop_safeguards() -> dict[str, Any]:
         "supports_user_cancel": True,
         "context_compaction": True,
     }
-_IMAGE_INSPECT_ACTION_HINTS = (
-    "inspect",
-    "meta",
-    "info",
-    "size",
-    "dimension",
-)
-_MISSING_CONTEXT_RESPONSE_HINTS = (
-    "没有提供任何任务",
-    "没有提供任何上下文",
-    "没有提供任何需要我处理的具体任务",
-    "请告诉我你需要我做什么",
-    "请您告诉我",
-    "you have not provided any task",
-    "you haven't provided any task",
-    "you have not provided any context",
-    "you haven't provided any context",
-    "please tell me what you need me to do",
-)
-_GENERIC_IMAGE_READ_REQUEST_HINTS = (
-    "看看图片内容",
-    "解释图片内容",
-    "看图",
-    "读图",
-    "读取图片",
-    "读取截图",
-    "识别图片",
-    "识别截图",
-    "提取图片文字",
-    "提取截图文字",
-    "图片里写了什么",
-    "截图里写了什么",
-    "查看附件内容",
-    "read this image",
-    "describe this image",
-    "what is in this image",
-    "what's in this image",
-    "read image",
-    "analyze image",
-    "ocr this image",
-)
 
 _WRITE_INTENT_HINTS = (
     "直接补",
@@ -332,65 +178,6 @@ _WRITE_TOOL_NAMES = {
     "archive_extract",
     "mail_extract_attachments",
 }
-
-
-def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
-    lowered = str(text or "").lower()
-    return any(str(item).lower() in lowered for item in hints)
-
-
-def _looks_like_inline_code_payload(text: str) -> bool:
-    raw = str(text or "").strip()
-    if len(raw) < 60:
-        return False
-    fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\n([\s\S]{80,}?)```", raw)
-    code_markers = (
-        "def ",
-        "class ",
-        "return ",
-        "import ",
-        "from ",
-        "const ",
-        "let ",
-        "function ",
-        "public ",
-        "private ",
-        "if (",
-        "=>",
-        "</",
-        "{",
-        "};",
-    )
-    if any(any(marker in block for marker in code_markers) for block in fenced_blocks[:3]):
-        return True
-    lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
-    if len(lines) < 6:
-        return False
-    marker_hits = sum(1 for line in lines[:40] if any(marker in line for marker in code_markers))
-    punctuation_hits = sum(1 for line in lines[:40] if line.count("{") + line.count("}") + line.count(";") >= 1)
-    return marker_hits >= 4 or (marker_hits >= 2 and punctuation_hits >= 4)
-
-
-def _looks_like_inline_document_payload(text: str) -> bool:
-    raw = str(text or "").strip()
-    lowered = raw.lower()
-    if any(marker in lowered for marker in _INLINE_DOC_CODE_FENCE_HINTS):
-        return True
-    if len(raw) < 60:
-        return False
-    if "<?xml" in lowered:
-        return True
-    if _looks_like_inline_code_payload(raw):
-        return True
-    xml_tag_matches = re.findall(r"</?[a-zA-Z_][\w:.-]*(?:\s[^<>]{0,200})?>", raw)
-    if len(xml_tag_matches) >= 6 and ("\n" in raw or len(raw) >= 240):
-        return True
-    json_key_count = len(re.findall(r'"[^"\n]{1,80}"\s*:', raw))
-    if json_key_count >= 4 and len(raw) >= 180:
-        return True
-    yaml_key_count = len(re.findall(r"(?m)^[A-Za-z0-9_.-]{1,60}:\s+\S", raw))
-    return yaml_key_count >= 5 and len(raw) >= 180
-
 
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
     current_key = ""
@@ -911,116 +698,6 @@ class VintageProgrammerRuntime:
             payload["run_snapshot"] = dict(run_snapshot)
         progress_cb(payload)
 
-    @staticmethod
-    def _trace_label(locale: str, key: str, **replacements: Any) -> str:
-        catalog = {
-            "zh-CN": {
-                "run.started": "开始处理请求",
-                "run.finished": "完成",
-                "run.failed": "执行失败",
-                "runtime_contract.selected": "Full Auto runtime 已启用",
-                "runtime_contract.detail": "工具策略：需要时使用",
-                "llm.started": "模型开始分析",
-                "llm.finished": "模型分析完成",
-                "action.detected": "检测到模型行动：{tool}",
-                "action.validating": "验证行动边界：{tool}",
-                "action.allowed": "行动通过验证：{tool}",
-                "action.blocked": "行动被边界拦截：{tool}",
-                "tool.call_detected": "检测到工具调用：{tool}",
-                "tool.guard": "工具检查：{tool}",
-                "tool.started": "调用工具：{tool}",
-                "tool.finished": "工具完成：{tool}",
-                "tool.failed": "工具失败：{tool}",
-                "observation.returned": "已将观察结果返回模型：{tool}",
-                "loop.safeguard": "循环保护触发",
-                "approval.required": "需要确认",
-                "approval.resolved": "确认已处理",
-                "repair.started": "开始修复执行偏差",
-                "repair.finished": "执行偏差修复完成",
-                "activity.started": "开始分析请求",
-                "activity.delta": "处理中",
-                "activity.done": "已确定回答路径",
-                "answer.started": "开始生成回答",
-                "answer.delta": "正在流式生成回答",
-                "answer.done": "生成回答完成",
-                "answer.finished": "生成回答完成",
-                "blocked": "已阻塞",
-                "cancelled": "已取消",
-            },
-            "ja-JP": {
-                "run.started": "リクエストの処理を開始",
-                "run.finished": "完了",
-                "run.failed": "実行失敗",
-                "runtime_contract.selected": "Full Auto runtime を有効化",
-                "runtime_contract.detail": "ツール方針：必要なときのみ使用",
-                "llm.started": "モデルが解析を開始",
-                "llm.finished": "モデル解析が完了",
-                "action.detected": "モデル行動を検出: {tool}",
-                "action.validating": "行動境界を検証: {tool}",
-                "action.allowed": "行動が検証を通過: {tool}",
-                "action.blocked": "行動が境界でブロック: {tool}",
-                "tool.call_detected": "ツール呼び出しを検出: {tool}",
-                "tool.guard": "ツール検査: {tool}",
-                "tool.started": "ツール呼び出し: {tool}",
-                "tool.finished": "ツール完了: {tool}",
-                "tool.failed": "ツール失敗: {tool}",
-                "observation.returned": "観察結果をモデルへ返却: {tool}",
-                "loop.safeguard": "ループ保護が発動",
-                "approval.required": "確認が必要",
-                "approval.resolved": "確認が処理されました",
-                "repair.started": "実行修復を開始",
-                "repair.finished": "実行修復が完了",
-                "activity.started": "リクエスト分析を開始",
-                "activity.delta": "処理中",
-                "activity.done": "回答方針を確定",
-                "answer.started": "回答の生成を開始",
-                "answer.delta": "回答をストリーミング中",
-                "answer.done": "回答の生成が完了",
-                "answer.finished": "回答の生成が完了",
-                "blocked": "停止",
-                "cancelled": "キャンセル済み",
-            },
-            "en": {
-                "run.started": "Started processing request",
-                "run.finished": "Completed",
-                "run.failed": "Run failed",
-                "runtime_contract.selected": "Full Auto runtime enabled",
-                "runtime_contract.detail": "Tool policy: use when needed",
-                "llm.started": "Model analysis started",
-                "llm.finished": "Model analysis finished",
-                "action.detected": "Model action detected: {tool}",
-                "action.validating": "Validating action boundary: {tool}",
-                "action.allowed": "Action validation passed: {tool}",
-                "action.blocked": "Action blocked by boundary: {tool}",
-                "tool.call_detected": "Tool call detected: {tool}",
-                "tool.guard": "Tool guard: {tool}",
-                "tool.started": "Calling tool: {tool}",
-                "tool.finished": "Tool finished: {tool}",
-                "tool.failed": "Tool failed: {tool}",
-                "observation.returned": "Observation returned to model: {tool}",
-                "loop.safeguard": "Loop safeguard triggered",
-                "approval.required": "Needs confirmation",
-                "approval.resolved": "Confirmation resolved",
-                "repair.started": "Repairing execution flow",
-                "repair.finished": "Execution flow repaired",
-                "activity.started": "Analyzing request",
-                "activity.delta": "Working",
-                "activity.done": "Answer path selected",
-                "answer.started": "Generating answer",
-                "answer.delta": "Streaming answer",
-                "answer.done": "Answer generation finished",
-                "answer.finished": "Answer generation finished",
-                "blocked": "Blocked",
-                "cancelled": "Cancelled",
-            },
-        }
-        table = catalog.get(normalize_locale(locale), catalog["en"])
-        template = table.get(key, key)
-        try:
-            return template.format(**replacements)
-        except Exception:
-            return template
-
     def _emit_trace(
         self,
         progress_cb: Callable[[dict[str, Any]], None] | None,
@@ -1080,7 +757,7 @@ class VintageProgrammerRuntime:
         trace = make_activity_event(
             run_id=run_id,
             type=type,
-            title=self._trace_label(locale, type),
+            title=trace_label(locale, type),
             stage=stage,
             detail=detail,
             status=status,
@@ -1129,53 +806,6 @@ class VintageProgrammerRuntime:
             payload["delta"] = str(delta)
         progress_cb(payload)
 
-    @staticmethod
-    def _new_answer_stream_state(*, run_id: str, thread_id: str) -> dict[str, Any]:
-        return {
-            "thread_id": str(thread_id or ""),
-            "turn_id": str(run_id or ""),
-            "item_id": f"{str(run_id or 'turn')}:agent_message",
-            "item_started": False,
-            "item_completed": False,
-            "trace_started_id": "",
-            "trace_done_id": "",
-            "text": "",
-            "delta_count": 0,
-            "delta_chars": 0,
-            "text_delta_trace_count": 0,
-            "calls": [],
-            "started_at": 0.0,
-            "finished_at": 0.0,
-        }
-
-    @staticmethod
-    def _start_answer_stream_call(
-        state: dict[str, Any],
-        *,
-        model: str,
-        phase: str,
-        tool_round: int,
-    ) -> dict[str, Any]:
-        call_state = {
-            "index": len(list(state.get("calls") or [])) + 1,
-            "model": str(model or ""),
-            "phase": str(phase or ""),
-            "tool_round": max(0, int(tool_round)),
-            "event_count": 0,
-            "text_delta_count": 0,
-            "text_chars": 0,
-            "first_event_at": 0.0,
-            "first_text_delta_at": 0.0,
-            "last_text_delta_at": 0.0,
-            "completed_at": 0.0,
-        }
-        state.setdefault("calls", []).append(call_state)
-        return call_state
-
-    @staticmethod
-    def _consume_stream_delta_for_display(state: dict[str, Any], delta: str) -> str:
-        return str(delta or "")
-
     def _make_model_stream_observer(
         self,
         *,
@@ -1191,7 +821,7 @@ class VintageProgrammerRuntime:
         answer_context: dict[str, Any] | None = None,
         phase_timer: PhaseTimer | None = None,
     ) -> Callable[[dict[str, Any]], None]:
-        call_state = self._start_answer_stream_call(
+        call_state = start_answer_stream_call(
             answer_stream_state,
             model=model,
             phase=stage,
@@ -1292,7 +922,7 @@ class VintageProgrammerRuntime:
                     return
 
                 raw_delta = str(payload.get("delta") or "")
-                delta = self._consume_stream_delta_for_display(answer_stream_state, raw_delta)
+                delta = consume_stream_delta_for_display(answer_stream_state, raw_delta)
                 if not delta:
                     return
                 if not answer_stream_state.get("item_started"):
@@ -1382,22 +1012,6 @@ class VintageProgrammerRuntime:
 
         return observer
 
-    def _answer_stream_diagnostics(self, state: dict[str, Any]) -> dict[str, Any]:
-        calls = [dict(item) for item in list(state.get("calls") or []) if isinstance(item, dict)]
-        total_delta_count = int(state.get("delta_count") or 0)
-        total_chars = int(state.get("delta_chars") or 0)
-        upstream_progressive = total_delta_count > 1
-        summary = "received streamed answer deltas" if total_delta_count else "no streamed answer deltas observed"
-        return {
-            "streamed": bool(total_delta_count),
-            "upstream_progressive": upstream_progressive,
-            "delta_count": total_delta_count,
-            "text_chars": total_chars,
-            "call_count": len(calls),
-            "summary": summary,
-            "calls": calls,
-        }
-
     def _finalize_answer_stream(
         self,
         progress_cb: Callable[[dict[str, Any]], None] | None,
@@ -1446,7 +1060,7 @@ class VintageProgrammerRuntime:
         if phase_timer is not None and final_text_value:
             phase_timer.record_offset_ms("answer_ready_ms", if_missing=True)
 
-        diagnostics = self._answer_stream_diagnostics(answer_stream_state)
+        diagnostics = answer_stream_diagnostics(answer_stream_state)
         if not answer_stream_state.get("trace_started_id") and final_text_value:
             answer_stream_state["trace_started_id"] = self._emit_activity_trace(
                 progress_cb,
@@ -1609,7 +1223,7 @@ class VintageProgrammerRuntime:
             progress_cb,
             run_id=run_id,
             type="tool.started",
-            title=self._trace_label(locale, "tool.started", tool=name or "tool"),
+            title=trace_label(locale, "tool.started", tool=name or "tool"),
             detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(name, arguments)),
             status="running",
             payload={
@@ -1643,7 +1257,7 @@ class VintageProgrammerRuntime:
             progress_cb,
             run_id=run_id,
             type=trace_type,
-            title=self._trace_label(locale, trace_type, tool=name or "tool"),
+            title=trace_label(locale, trace_type, tool=name or "tool"),
             detail=summarize_tool_result(name, result, locale=locale),
             status=trace_status,
             duration_ms=duration_ms,
@@ -1903,51 +1517,6 @@ class VintageProgrammerRuntime:
             parts.append(f"{key}={normalized}")
         return " · ".join(parts)
 
-    @staticmethod
-    def _looks_like_revision_request(text: str, *, route_state: dict[str, Any] | None = None) -> bool:
-        route = dict(route_state or {})
-        if bool(route.get("use_revision")):
-            return True
-        raw = str(text or "")
-        lowered = raw.lower()
-        return any(token in raw for token in _REVISION_REQUEST_HINTS) or any(token in lowered for token in _REVISION_REQUEST_HINTS)
-
-    @classmethod
-    def _looks_like_japanese_review_request(cls, text: str, *, route_state: dict[str, Any] | None = None) -> bool:
-        raw = str(text or "")
-        lowered = raw.lower()
-        route = dict(route_state or {})
-        route_task_type = str(route.get("task_type") or "").strip().lower()
-        if route_task_type == "translation_session":
-            return False
-        has_japanese_hint = any(token in raw for token in _JAPANESE_REQUEST_HINTS) or any(token in lowered for token in _JAPANESE_REQUEST_HINTS)
-        has_kana = bool(_JAPANESE_KANA_RE.search(raw))
-        return cls._looks_like_revision_request(raw, route_state=route) and (has_japanese_hint or has_kana)
-
-    @staticmethod
-    def _extract_activity_excerpt(text: str, *, prefer_japanese: bool = False) -> str:
-        lines: list[str] = []
-        for raw_line in str(text or "").splitlines():
-            line = " ".join(str(raw_line or "").split())
-            if not line:
-                continue
-            for separator in ("：", ":"):
-                if separator in line:
-                    prefix, suffix = line.split(separator, 1)
-                    candidate = suffix.strip()
-                    if candidate and (bool(_JAPANESE_KANA_RE.search(candidate)) or len(candidate) >= len(prefix.strip())):
-                        line = candidate
-                        break
-            lines.append(line)
-        if prefer_japanese:
-            japanese_lines = [line for line in lines if _JAPANESE_KANA_RE.search(line)]
-            if japanese_lines:
-                return str(safe_preview(" / ".join(japanese_lines[:2]), limit=220) or "")
-        candidates = [line for line in lines if len(line) >= 8] or lines
-        if not candidates:
-            return ""
-        return str(safe_preview(" / ".join(candidates[:2]), limit=220) or "")
-
     def _normalize_model_tool_calls(self, tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         proposed_tool_calls: list[dict[str, Any]] = []
         normalization_notes: list[str] = []
@@ -1955,7 +1524,7 @@ class VintageProgrammerRuntime:
             if not isinstance(call, dict):
                 continue
             raw_name = str(call.get("name") or "").strip()
-            name = self._normalize_tool_name(raw_name)
+            name = normalize_tool_name(raw_name)
             raw_arguments = call.get("args")
             arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
             normalized_call = {
@@ -2024,15 +1593,15 @@ class VintageProgrammerRuntime:
             allowed_tools=runnable_tools,
             boundary=runtime_boundary,
             locale=locale,
-            normalize_tool_name=self._normalize_tool_name,
-            argument_rewriter=lambda tool_name, arguments: self._rewrite_attachment_tool_arguments(
+            normalize_tool_name=normalize_tool_name,
+            argument_rewriter=lambda tool_name, arguments: rewrite_attachment_tool_arguments(
                 name=tool_name,
                 arguments=arguments,
                 attachments=list(attachments or []),
             ),
         )
         validation = validator.validate_tool_call(call)
-        tool_name = validation.tool_name or self._normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
+        tool_name = validation.tool_name or normalize_tool_name(str(call.get("name") or raw_tool_name).strip())
         if raw_tool_name and raw_tool_name != tool_name:
             validation.normalization_notes = [*list(validation.normalization_notes or []), f"{raw_tool_name}->{tool_name}"]
         if validation.code == "unknown_tool":
@@ -2574,10 +2143,10 @@ class VintageProgrammerRuntime:
             return {}
         task_type = str(context.get("task_type") or "").strip()
         prefer_japanese = task_type == "japanese_grammar_review"
-        original_excerpt = self._extract_activity_excerpt(prompt_message, prefer_japanese=prefer_japanese)
-        result_excerpt = self._extract_activity_excerpt(raw_text, prefer_japanese=prefer_japanese)
+        original_excerpt = extract_activity_excerpt(prompt_message, prefer_japanese=prefer_japanese)
+        result_excerpt = extract_activity_excerpt(raw_text, prefer_japanese=prefer_japanese)
         if prefer_japanese and result_excerpt == original_excerpt:
-            fallback_excerpt = self._extract_activity_excerpt(raw_text, prefer_japanese=False)
+            fallback_excerpt = extract_activity_excerpt(raw_text, prefer_japanese=False)
             if fallback_excerpt:
                 result_excerpt = fallback_excerpt
         if not original_excerpt or not result_excerpt:
@@ -2622,79 +2191,6 @@ class VintageProgrammerRuntime:
             ],
             "reason": ",".join(reasons),
         }
-
-    @staticmethod
-    def _attachment_paths(attachments: list[dict[str, Any]], *, kind: str | None = None) -> list[str]:
-        wanted_kind = str(kind or "").strip().lower()
-        paths: list[str] = []
-        for meta in attachments:
-            if not isinstance(meta, dict):
-                continue
-            meta_kind = str(meta.get("kind") or "").strip().lower()
-            if wanted_kind and meta_kind != wanted_kind:
-                continue
-            path = str(meta.get("path") or "").strip()
-            if path:
-                paths.append(path)
-        return paths
-
-    def _build_attachment_tool_guidance(self, attachments: list[dict[str, Any]], *, locale: str) -> str:
-        if not attachments:
-            return ""
-        lines: list[str] = [
-            translate(locale, "runtime.attachment_guidance.intro"),
-            translate(locale, "runtime.attachment_guidance.no_guess"),
-        ]
-        image_paths = self._attachment_paths(attachments, kind="image")
-        if image_paths:
-            lines.append(translate(locale, "runtime.attachment_guidance.image"))
-            lines.append(
-                translate(
-                    locale,
-                    "runtime.attachment_guidance.image_paths",
-                    paths=json.dumps(image_paths[:2], ensure_ascii=False),
-                )
-            )
-        document_paths = self._attachment_paths(attachments, kind="document")
-        if document_paths:
-            lines.append(translate(locale, "runtime.attachment_guidance.document"))
-            lines.append(translate(locale, "runtime.attachment_guidance.msg"))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _path_exists(raw_path: str) -> bool:
-        value = str(raw_path or "").strip()
-        if not value:
-            return False
-        try:
-            return Path(value).expanduser().exists()
-        except Exception:
-            return False
-
-    @staticmethod
-    def _normalize_tool_name(name: str) -> str:
-        raw = str(name or "").strip()
-        if not raw:
-            return raw
-        lowered = raw.lower()
-        alias = _TOOL_NAME_ALIASES.get(lowered)
-        if alias:
-            return alias
-        if any(hint in lowered for hint in _IMAGE_READ_TOOL_HINTS):
-            if any(hint in lowered for hint in _IMAGE_INSPECT_ACTION_HINTS):
-                return "image_inspect"
-            if any(hint in lowered for hint in _IMAGE_READ_ACTION_HINTS):
-                return "image_read"
-        return raw
-
-    @staticmethod
-    def _first_attachment_path(
-        attachments: list[dict[str, Any]],
-        *,
-        kind: str = "",
-    ) -> str:
-        paths = VintageProgrammerRuntime._attachment_paths(attachments, kind=kind or None)
-        return paths[0] if len(paths) == 1 else ""
 
     @staticmethod
     def _callable_accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
@@ -2745,85 +2241,6 @@ class VintageProgrammerRuntime:
         if runtime_boundary is not None and self._callable_accepts_kwarg(setter, "runtime_boundary"):
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
         setter(**kwargs)
-
-    def _resolve_attachment_argument_path(
-        self,
-        raw_value: Any,
-        attachments: list[dict[str, Any]],
-        *,
-        preferred_kind: str = "",
-    ) -> str:
-        raw = str(raw_value or "").strip()
-        if not raw:
-            return raw
-        if self._path_exists(raw):
-            return raw
-
-        wanted_kind = str(preferred_kind or "").strip().lower()
-        candidate_paths: list[str] = []
-        raw_basename = Path(raw).name.strip() if raw else ""
-        for meta in attachments:
-            if not isinstance(meta, dict):
-                continue
-            meta_kind = str(meta.get("kind") or "").strip().lower()
-            if wanted_kind and meta_kind != wanted_kind:
-                continue
-            meta_path = str(meta.get("path") or "").strip()
-            meta_id = str(meta.get("id") or "").strip()
-            meta_name = str(meta.get("name") or meta.get("original_name") or "").strip()
-            meta_basename = Path(meta_path).name.strip() if meta_path else ""
-            candidate_keys = {meta_path, meta_id, meta_name, meta_basename}
-            if raw in candidate_keys or (raw_basename and raw_basename in candidate_keys):
-                return meta_path or raw
-            if meta_path:
-                candidate_paths.append(meta_path)
-
-        if wanted_kind and len(candidate_paths) == 1:
-            return candidate_paths[0]
-        return raw
-
-    def _rewrite_attachment_tool_arguments(
-        self,
-        *,
-        name: str,
-        arguments: dict[str, Any],
-        attachments: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        normalized = dict(arguments or {})
-        tool_name = str(name or "").strip()
-        if tool_name in {"image_read", "image_inspect"}:
-            for legacy_key in ("image_path", "file_path", "filepath", "file", "image", "attachment", "attachment_id"):
-                if "path" not in normalized and legacy_key in normalized:
-                    normalized["path"] = normalized.pop(legacy_key)
-        if tool_name in {"image_read", "image_inspect"} and "path" not in normalized and "image_path" in normalized:
-            normalized["path"] = normalized.pop("image_path")
-
-        if tool_name in {"image_read", "image_inspect"} and "path" in normalized:
-            normalized["path"] = self._resolve_attachment_argument_path(
-                normalized.get("path"),
-                attachments,
-                preferred_kind="image",
-            )
-        elif tool_name in {"image_read", "image_inspect"}:
-            fallback_path = self._first_attachment_path(attachments, kind="image")
-            if fallback_path:
-                normalized["path"] = fallback_path
-        elif tool_name in {
-            "read_file",
-            "list_dir",
-            "glob_file_search",
-            "search_contents_in_file",
-            "search_contents_in_file_multi",
-            "read_section",
-            "table_extract",
-            "fact_check_file",
-        } and "path" in normalized:
-            normalized["path"] = self._resolve_attachment_argument_path(normalized.get("path"), attachments)
-        elif tool_name == "archive_extract" and "zip_path" in normalized:
-            normalized["zip_path"] = self._resolve_attachment_argument_path(normalized.get("zip_path"), attachments)
-        elif tool_name == "mail_extract_attachments" and "msg_path" in normalized:
-            normalized["msg_path"] = self._resolve_attachment_argument_path(normalized.get("msg_path"), attachments)
-        return normalized
 
     @staticmethod
     def _cancel_requested(context: dict[str, Any]) -> bool:
@@ -3228,7 +2645,7 @@ class VintageProgrammerRuntime:
             item for item in list(context_payload.get("attachments") or [])
             if isinstance(item, dict)
         ]
-        attachment_guidance = self._build_attachment_tool_guidance(attachment_metas, locale=locale)
+        attachment_guidance = build_attachment_tool_guidance(attachment_metas, locale=locale)
         has_image_attachments = has_image_attachments_helper(attachment_metas)
         with phase_timer.measure("agent_spec_load_ms"):
             spec = self._load_spec(locale=locale)
@@ -3246,7 +2663,7 @@ class VintageProgrammerRuntime:
         automatic_replan_enabled = bool(loop_safeguards.get("automatic_replan"))
         progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
         same_action_repeat_guard_enabled = bool(loop_safeguards.get("same_action_repeat_guard"))
-        inline_document = _looks_like_inline_document_payload(prompt_message)
+        inline_document = looks_like_inline_document_payload(prompt_message)
         attachment_evidence_pack = [
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
             if isinstance(item, dict)
@@ -3268,8 +2685,8 @@ class VintageProgrammerRuntime:
         live_compaction_status = dict(compaction_status)
         route_state_input = dict(context_payload.get("route_state") or {})
         current_turn_context = dict(context_payload.get("current_turn") or {})
-        revision_requested = self._looks_like_revision_request(prompt_message, route_state=route_state_input)
-        japanese_review_requested = self._looks_like_japanese_review_request(prompt_message, route_state=route_state_input)
+        revision_requested = looks_like_revision_request(prompt_message, route_state=route_state_input)
+        japanese_review_requested = looks_like_japanese_review_request(prompt_message, route_state=route_state_input)
         active_task_focus = self._normalize_task_checkpoint(
             context_payload.get("active_task_focus")
             or context_payload.get("current_task_focus")
@@ -3354,7 +2771,7 @@ class VintageProgrammerRuntime:
         execution_trace: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
-        answer_stream_state = self._new_answer_stream_state(run_id=run_id, thread_id=session_id)
+        answer_stream_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
         turn_activity_context = {
             "task_type": "model_action",
             "primary_intent": "pending",
@@ -3395,7 +2812,7 @@ class VintageProgrammerRuntime:
             progress_cb,
             run_id=run_id,
             type="run.started",
-            title=self._trace_label(locale, "run.started"),
+            title=trace_label(locale, "run.started"),
             status="running",
             payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "auto")},
             trace_events=trace_events,
@@ -3419,8 +2836,8 @@ class VintageProgrammerRuntime:
             progress_cb,
             run_id=run_id,
             type="runtime_contract.selected",
-            title=self._trace_label(locale, "runtime_contract.selected"),
-            detail=self._trace_label(locale, "runtime_contract.detail"),
+            title=trace_label(locale, "runtime_contract.selected"),
+            detail=trace_label(locale, "runtime_contract.detail"),
             status="success",
             payload=runtime_contract.as_payload(),
             visible=False,
@@ -3517,7 +2934,7 @@ class VintageProgrammerRuntime:
                 progress_cb,
                 run_id=run_id,
                 type="llm.started",
-                title=self._trace_label(locale, "llm.started"),
+                title=trace_label(locale, "llm.started"),
                 status="running",
                 payload={
                     "model": requested_model,
@@ -3553,7 +2970,7 @@ class VintageProgrammerRuntime:
                 progress_cb,
                 run_id=run_id,
                 type="llm.finished",
-                title=self._trace_label(locale, "llm.finished"),
+                title=trace_label(locale, "llm.finished"),
                 status="success",
                 payload={
                     "model": effective_model or requested_model,
@@ -3713,7 +3130,7 @@ class VintageProgrammerRuntime:
                     if raw_arguments is None:
                         raw_arguments = call.get("args")
                     call_id = str(call.get("id") or f"{spec.agent_id}_{round_idx}_{call_idx}")
-                    preview_name = self._normalize_tool_name(str(call.get("name") or raw_name).strip())
+                    preview_name = normalize_tool_name(str(call.get("name") or raw_name).strip())
                     preview_args = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
                     preview_schema = dict((self._tool_specs_by_name.get(preview_name) or {}).get("parameters") or {})
                     tool_audit = build_tool_argument_audit(preview_name or raw_name, preview_args, preview_schema, locale=locale)
@@ -3726,7 +3143,7 @@ class VintageProgrammerRuntime:
                         progress_cb,
                         run_id=run_id,
                         type="action.detected",
-                        title=self._trace_label(locale, "action.detected", tool=preview_name or raw_name or "tool"),
+                        title=trace_label(locale, "action.detected", tool=preview_name or raw_name or "tool"),
                         detail=str(tool_audit.get("arguments_preview") or summarize_tool_args(preview_name or raw_name, preview_args)),
                         status="running",
                         payload={
@@ -3782,7 +3199,7 @@ class VintageProgrammerRuntime:
                             progress_cb,
                             run_id=run_id,
                             type="tool.failed",
-                            title=self._trace_label(locale, "tool.failed", tool=name),
+                            title=trace_label(locale, "tool.failed", tool=name),
                             detail=summarize_tool_result(name, result, locale=locale),
                             status="cancelled" if skip_kind == "cancelled" else "blocked",
                             payload={
@@ -3797,7 +3214,7 @@ class VintageProgrammerRuntime:
                             progress_cb,
                             run_id=run_id,
                             type="observation.returned",
-                            title=self._trace_label(locale, "observation.returned", tool=name),
+                            title=trace_label(locale, "observation.returned", tool=name),
                             detail=str(result.get("summary") or skip_reason)[:280],
                             status="success",
                             payload={
@@ -3838,7 +3255,7 @@ class VintageProgrammerRuntime:
                         progress_cb,
                         run_id=run_id,
                         type="tool.call_detected",
-                        title=self._trace_label(locale, "tool.call_detected", tool=preview_name or raw_name or "tool"),
+                        title=trace_label(locale, "tool.call_detected", tool=preview_name or raw_name or "tool"),
                         detail=str(
                             tool_audit.get("arguments_preview")
                             or summarize_tool_args(preview_name or raw_name, preview_args)
@@ -3855,7 +3272,7 @@ class VintageProgrammerRuntime:
                         progress_cb,
                         run_id=run_id,
                         type="action.validating",
-                        title=self._trace_label(locale, "action.validating", tool=preview_name or raw_name or "tool"),
+                        title=trace_label(locale, "action.validating", tool=preview_name or raw_name or "tool"),
                         detail="RuntimeBoundary",
                         status="running",
                         payload={
@@ -3883,7 +3300,7 @@ class VintageProgrammerRuntime:
                         progress_cb,
                         run_id=run_id,
                         type="action.allowed" if validation.allowed else "action.blocked",
-                        title=self._trace_label(
+                        title=trace_label(
                             locale,
                             "action.allowed" if validation.allowed else "action.blocked",
                             tool=name or raw_name or "tool",
@@ -3954,7 +3371,7 @@ class VintageProgrammerRuntime:
                             progress_cb,
                             run_id=run_id,
                             type="tool.failed",
-                            title=self._trace_label(locale, "tool.failed", tool=name or raw_name or "tool"),
+                            title=trace_label(locale, "tool.failed", tool=name or raw_name or "tool"),
                             detail=summarize_tool_result(name or raw_name, result, locale=locale),
                             status="blocked",
                             payload={
@@ -3971,7 +3388,7 @@ class VintageProgrammerRuntime:
                             progress_cb,
                             run_id=run_id,
                             type="observation.returned",
-                            title=self._trace_label(locale, "observation.returned", tool=name or raw_name or "tool"),
+                            title=trace_label(locale, "observation.returned", tool=name or raw_name or "tool"),
                             detail=str(result.get("summary") or result.get("message") or validation.message or "")[:280],
                             status="success",
                             payload={
@@ -4093,7 +3510,7 @@ class VintageProgrammerRuntime:
                             progress_cb,
                             run_id=run_id,
                             type="approval.required",
-                            title=self._trace_label(locale, "approval.required"),
+                            title=trace_label(locale, "approval.required"),
                             detail=str(pending_user_input.get("summary") or ""),
                             status="blocked",
                             payload={"questions": safe_preview(pending_user_input.get("questions") or [])},
@@ -4373,7 +3790,7 @@ class VintageProgrammerRuntime:
                     progress_cb,
                     run_id=run_id,
                     type="llm.started",
-                    title=self._trace_label(locale, "llm.started"),
+                    title=trace_label(locale, "llm.started"),
                     status="running",
                     payload={
                         "model": effective_model or requested_model,
@@ -4531,7 +3948,7 @@ class VintageProgrammerRuntime:
                     progress_cb,
                     run_id=run_id,
                     type="llm.finished",
-                    title=self._trace_label(locale, "llm.finished"),
+                    title=trace_label(locale, "llm.finished"),
                     status="success",
                     payload={
                         "model": effective_model or requested_model,
@@ -4586,7 +4003,7 @@ class VintageProgrammerRuntime:
                 ),
             },
         )
-        answer_stream = self._answer_stream_diagnostics(answer_stream_state)
+        answer_stream = answer_stream_diagnostics(answer_stream_state)
         if raw_text and (turn_status not in {"blocked", "cancelled"} or answer_stream_state.get("item_started")):
             answer_stream = self._finalize_answer_stream(
                 progress_cb,
@@ -4609,7 +4026,7 @@ class VintageProgrammerRuntime:
                 progress_cb,
                 run_id=run_id,
                 type="blocked",
-                title=self._trace_label(locale, "blocked"),
+                title=trace_label(locale, "blocked"),
                 detail=str(blocked_reason or raw_text or ""),
                 status="blocked",
                 trace_events=trace_events,
@@ -4619,7 +4036,7 @@ class VintageProgrammerRuntime:
                 progress_cb,
                 run_id=run_id,
                 type="cancelled",
-                title=self._trace_label(locale, "cancelled"),
+                title=trace_label(locale, "cancelled"),
                 detail=str(raw_text or ""),
                 status="cancelled",
                 trace_events=trace_events,
@@ -4635,7 +4052,7 @@ class VintageProgrammerRuntime:
             progress_cb,
             run_id=run_id,
             type="run.finished",
-            title=self._trace_label(locale, "run.finished"),
+            title=trace_label(locale, "run.finished"),
             detail=str(turn_status or "completed"),
             status=run_trace_status,
             duration_ms=run_duration_ms,

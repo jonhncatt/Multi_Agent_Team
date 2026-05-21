@@ -10,6 +10,7 @@ import pytest
 from app.config import load_config
 from app.i18n import translate
 from app.models import ChatSettings
+from app.answer_stream_state import new_answer_stream_state
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -1219,7 +1220,7 @@ def test_runtime_model_stream_observer_ignores_none_event(tmp_path: Path) -> Non
         thread_id="thread-stream-none",
         locale="zh-CN",
         trace_events=trace_events,
-        answer_stream_state=runtime._new_answer_stream_state(run_id="run-stream-none", thread_id="thread-stream-none"),
+        answer_stream_state=new_answer_stream_state(run_id="run-stream-none", thread_id="thread-stream-none"),
         stage="post_tool_response",
         model="gpt-test",
         tool_round=1,
