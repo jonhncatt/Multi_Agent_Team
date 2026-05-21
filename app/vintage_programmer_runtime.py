@@ -38,6 +38,7 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
+from app.runtime_errors import classify_llm_exception, runtime_error_user_text
 from app.runtime_hints import (
     extract_activity_excerpt,
     looks_like_inline_document_payload,
@@ -662,8 +663,11 @@ class VintageProgrammerRuntime:
         effective_cwd: str,
         evidence_status: str,
         tool_events: list[ToolEvent],
+        model_draft: str = "",
+        final_answer: str = "",
+        runtime_error: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "goal": str(goal or "").strip(),
             "turn_status": str(turn_status or "running"),
             "cwd": str(effective_cwd or current_task_focus.get("cwd") or "").strip(),
@@ -673,6 +677,13 @@ class VintageProgrammerRuntime:
             "tool_count": len(tool_events),
             "evidence_status": str(evidence_status or "not_needed"),
         }
+        if str(model_draft or "").strip():
+            payload["model_draft"] = str(model_draft or "")
+        if str(final_answer or "").strip():
+            payload["final_answer"] = str(final_answer or "")
+        if isinstance(runtime_error, dict) and runtime_error:
+            payload["runtime_error"] = dict(runtime_error)
+        return payload
 
     def _emit_stage(
         self,
@@ -2406,18 +2417,15 @@ class VintageProgrammerRuntime:
     ) -> dict[str, Any]:
         boundary_diagnostics = self._tool_boundary_diagnostics(messages)
         tail_messages = list(messages or [])[-8:]
+        classified = classify_llm_exception(exc, phase=phase, model=model)
         return {
-            "kind": "llm_request_error",
-            "message": safe_error_message(exc),
-            "exception_type": exc.__class__.__name__,
+            **classified,
             "exception_module": exc.__class__.__module__,
             "traceback_tail": traceback.format_exc()[-6000:],
             "tool_boundary_clean": bool(boundary_diagnostics.get("ok")),
             "tool_boundary_diagnostics": boundary_diagnostics,
-            "phase": str(phase or ""),
             "message_count": len(list(messages or [])),
             "last_message_roles": [self._message_role(item) for item in tail_messages],
-            "model": str(model or ""),
             "retry_attempt": max(0, int(retry_attempt)),
         }
 
@@ -2772,6 +2780,10 @@ class VintageProgrammerRuntime:
         trace_events: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
+        model_draft = ""
+        final_answer = ""
+        runtime_error: dict[str, Any] = {}
+        last_successful_round = 0
         turn_activity_context = {
             "task_type": "model_action",
             "primary_intent": "pending",
@@ -2879,6 +2891,7 @@ class VintageProgrammerRuntime:
             nonlocal model_action
             nonlocal turn_activity_context
             nonlocal notes
+            nonlocal model_draft
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
             current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
@@ -2890,6 +2903,8 @@ class VintageProgrammerRuntime:
             cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
             model_action = dict(step_state.get("model_action") or {})
             turn_activity_context = dict(step_state.get("activity_context") or self._activity_context_from_action(model_action))
+            if current_tool_calls and cleaned_text:
+                model_draft = cleaned_text
             try:
                 ai_msg.content = cleaned_text
             except Exception:
@@ -2903,6 +2918,7 @@ class VintageProgrammerRuntime:
                 status="success" if bool(model_action.get("accepted")) else "blocked",
                 payload={
                     "model_action": dict(model_action),
+                    "model_draft": model_draft,
                     "revision_index": int(current_step_index),
                     "runtime_boundary": dump_model(turn_runtime_boundary),
                 },
@@ -2945,54 +2961,82 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
             phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
-            ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
-                self._backend._invoke_chat_with_runner,
-                messages=messages,
-                model=requested_model,
-                max_output_tokens=int(settings.max_output_tokens),
-                enable_tools=bool(runnable_tools),
-                tool_names=runnable_tools if runnable_tools else None,
-                event_cb=self._make_model_stream_observer(
-                    progress_cb=progress_cb,
-                    run_id=run_id,
-                    thread_id=session_id,
-                    locale=locale,
-                    trace_events=trace_events,
-                    answer_stream_state=answer_stream_state,
-                    stage="initial_model_response",
+            initial_invoke_ok = False
+            try:
+                ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                    self._backend._invoke_chat_with_runner,
+                    messages=messages,
                     model=requested_model,
-                    tool_round=0,
-                    answer_context=turn_activity_context,
-                    phase_timer=phase_timer,
-                ),
-            )
-            self._emit_trace(
-                progress_cb,
-                run_id=run_id,
-                type="llm.finished",
-                title=trace_label(locale, "llm.finished"),
-                status="success",
-                payload={
-                    "model": effective_model or requested_model,
-                    "phase": "initial_model_response",
-                    "tool_round": 0,
-                },
-                trace_events=trace_events,
-            )
-            self._set_tools_runtime_context(
-                execution_mode=settings.execution_mode,
-                session_id=str(context_payload.get("session_id") or ""),
-                project_id=project_id,
-                project_root=project_root,
-                cwd=effective_cwd,
-                model=effective_model,
-                locale=locale,
-                permission_profile=turn_runtime_boundary.permission_profile,
-                runtime_boundary=turn_runtime_boundary,
-            )
-            notes.extend(invoke_notes)
-            usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
-            refresh_model_step(ai_msg, event_type="activity.done")
+                    max_output_tokens=int(settings.max_output_tokens),
+                    enable_tools=bool(runnable_tools),
+                    tool_names=runnable_tools if runnable_tools else None,
+                    event_cb=self._make_model_stream_observer(
+                        progress_cb=progress_cb,
+                        run_id=run_id,
+                        thread_id=session_id,
+                        locale=locale,
+                        trace_events=trace_events,
+                        answer_stream_state=answer_stream_state,
+                        stage="initial_model_response",
+                        model=requested_model,
+                        tool_round=0,
+                        answer_context=turn_activity_context,
+                        phase_timer=phase_timer,
+                    ),
+                )
+                initial_invoke_ok = True
+            except Exception as exc:
+                runtime_error = self._llm_failure_payload(
+                    exc,
+                    messages=messages,
+                    phase="initial_model_response",
+                    model=requested_model,
+                )
+                turn_status = "failed"
+                notes.append(str(runtime_error.get("kind") or "llm_request_error"))
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="llm.failed",
+                    title=trace_label(locale, "llm.failed"),
+                    detail=str(runtime_error.get("message") or safe_error_message(exc)),
+                    status="failed",
+                    payload={
+                        **runtime_error,
+                        "last_successful_round": 0,
+                        "failed_round": 0,
+                        "tool_count_total": 0,
+                    },
+                    trace_events=trace_events,
+                )
+            if initial_invoke_ok:
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="llm.finished",
+                    title=trace_label(locale, "llm.finished"),
+                    status="success",
+                    payload={
+                        "model": effective_model or requested_model,
+                        "phase": "initial_model_response",
+                        "tool_round": 0,
+                    },
+                    trace_events=trace_events,
+                )
+                self._set_tools_runtime_context(
+                    execution_mode=settings.execution_mode,
+                    session_id=str(context_payload.get("session_id") or ""),
+                    project_id=project_id,
+                    project_root=project_root,
+                    cwd=effective_cwd,
+                    model=effective_model,
+                    locale=locale,
+                    permission_profile=turn_runtime_boundary.permission_profile,
+                    runtime_boundary=turn_runtime_boundary,
+                )
+                notes.extend(invoke_notes)
+                usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                refresh_model_step(ai_msg, event_type="activity.done")
 
             halt_for_user_input = False
             turn_started_at = time.monotonic()
@@ -3011,7 +3055,7 @@ class VintageProgrammerRuntime:
             compacted_tool_events = 0
             base_message_count = len(messages)
 
-            while True:
+            while initial_invoke_ok:
                 if self._cancel_requested(context_payload):
                     turn_status = "cancelled"
                     forced_text = translate(locale, "runtime.cancelled.text")
@@ -3047,6 +3091,8 @@ class VintageProgrammerRuntime:
                 step_accepted = bool(model_action.get("accepted"))
                 if not tool_calls:
                     no_tool_response_kind = "final_answer" if step_accepted and ai_text else "empty_response"
+                    if step_accepted and ai_text:
+                        final_answer = ai_text
                     if not step_accepted:
                         blocked_reason = blocked_reason or "model_action_empty"
                     execution_entry = ExecutionTraceEntry(
@@ -3895,7 +3941,6 @@ class VintageProgrammerRuntime:
                                 trace_events=trace_events,
                             )
                         except Exception as retry_exc:
-                            retry_error_message = safe_error_message(retry_exc)
                             retry_payload = self._llm_failure_payload(
                                 retry_exc,
                                 messages=messages,
@@ -3903,16 +3948,15 @@ class VintageProgrammerRuntime:
                                 model=effective_model or requested_model,
                                 retry_attempt=1,
                             )
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "llm_request_error"
-                            forced_text = retry_error_message
-                            notes.append("llm_request_error")
+                            runtime_error = retry_payload
+                            turn_status = "failed"
+                            notes.append(str(retry_payload.get("kind") or "llm_request_error"))
                             self._emit_trace(
                                 progress_cb,
                                 run_id=run_id,
                                 type="llm.retry_failed",
                                 title="LLM retry failed",
-                                detail=retry_error_message,
+                                detail=str(retry_payload.get("message") or safe_error_message(retry_exc)),
                                 status="failed",
                                 payload=retry_payload,
                                 trace_events=trace_events,
@@ -3921,26 +3965,35 @@ class VintageProgrammerRuntime:
                                 progress_cb,
                                 run_id=run_id,
                                 type="llm.failed",
-                                title="LLM request failed",
-                                detail=retry_error_message,
+                                title=trace_label(locale, "llm.failed"),
+                                detail=str(retry_payload.get("message") or safe_error_message(retry_exc)),
                                 status="failed",
-                                payload=retry_payload,
+                                payload={
+                                    **retry_payload,
+                                    "last_successful_round": last_successful_round,
+                                    "failed_round": round_idx,
+                                    "tool_count_total": len(round_signature_parts),
+                                },
                                 trace_events=trace_events,
                             )
                             break
                     else:
-                        turn_status = "blocked"
-                        blocked_reason = blocked_reason or "llm_request_error"
-                        forced_text = error_message
-                        notes.append("llm_request_error")
+                        runtime_error = failure_payload
+                        turn_status = "failed"
+                        notes.append(str(failure_payload.get("kind") or "llm_request_error"))
                         self._emit_trace(
                             progress_cb,
                             run_id=run_id,
                             type="llm.failed",
-                            title="LLM request failed",
-                            detail=error_message,
+                            title=trace_label(locale, "llm.failed"),
+                            detail=str(failure_payload.get("message") or error_message),
                             status="failed",
-                            payload=failure_payload,
+                            payload={
+                                **failure_payload,
+                                "last_successful_round": last_successful_round,
+                                "failed_round": round_idx,
+                                "tool_count_total": len(round_signature_parts),
+                            },
                             trace_events=trace_events,
                         )
                         break
@@ -3971,28 +4024,44 @@ class VintageProgrammerRuntime:
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
                 refresh_model_step(ai_msg, event_type="activity.delta")
+                last_successful_round = round_idx
         finally:
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
 
-        raw_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
-        if not raw_text:
-            raw_text = (
-                translate(locale, "runtime.empty_response.pending_user_input")
-                if pending_user_input
-                else translate(locale, "runtime.empty_response.default")
-            )
+        raw_assistant_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
+        if not model_draft and str(answer_stream_state.get("text") or "").strip():
+            model_draft = str(answer_stream_state.get("text") or "").strip()
+        if not model_draft and str(model_action.get("action_type") or "") == "tool_call" and raw_assistant_text:
+            model_draft = raw_assistant_text
         has_successful_tool = any(item.status == "ok" for item in tool_events)
         evidence_status = "collected" if has_successful_tool else ("needs_evidence_review" if tool_events else "not_needed")
-        if turn_status in {"cancelled", "blocked"}:
+        if runtime_error:
+            turn_status = "failed"
+        elif turn_status in {"cancelled", "blocked"}:
             pass
         elif pending_user_input:
             turn_status = "needs_user_input"
         else:
             turn_status = "completed"
+        if turn_status == "completed":
+            final_answer = str(final_answer or raw_assistant_text).strip()
+        else:
+            final_answer = ""
+        display_text = final_answer
+        if turn_status == "failed":
+            display_text = runtime_error_user_text(runtime_error, locale=locale)
+        elif turn_status == "cancelled":
+            display_text = raw_assistant_text or translate(locale, "runtime.cancelled.text")
+        elif turn_status == "needs_user_input":
+            display_text = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
+        elif turn_status == "blocked":
+            display_text = raw_assistant_text or blocked_reason or translate(locale, "runtime.empty_response.default")
+        elif not display_text:
+            display_text = translate(locale, "runtime.empty_response.default")
         revision_summary = self._build_revision_summary(
             prompt_message=prompt_message,
-            raw_text=raw_text,
+            raw_text=final_answer or display_text,
             activity_context={
                 **turn_activity_context,
                 "prefer_change_summary": bool(revision_requested or japanese_review_requested),
@@ -4004,7 +4073,7 @@ class VintageProgrammerRuntime:
             },
         )
         answer_stream = answer_stream_diagnostics(answer_stream_state)
-        if raw_text and (turn_status not in {"blocked", "cancelled"} or answer_stream_state.get("item_started")):
+        if final_answer and turn_status == "completed":
             answer_stream = self._finalize_answer_stream(
                 progress_cb,
                 run_id=run_id,
@@ -4012,14 +4081,14 @@ class VintageProgrammerRuntime:
                 locale=locale,
                 trace_events=trace_events,
                 answer_stream_state=answer_stream_state,
-                final_text=raw_text,
+                final_text=final_answer,
                 answer_context=turn_activity_context,
                 revision_summary=revision_summary,
                 phase_timer=phase_timer,
             )
         if answer_stream.get("streamed"):
             notes.append(f"answer_stream_deltas:{int(answer_stream.get('delta_count') or 0)}")
-        elif raw_text and turn_status not in {"blocked", "cancelled"}:
+        elif final_answer and turn_status == "completed":
             notes.append("answer_stream_not_observed")
         if turn_status == "blocked":
             self._emit_trace(
@@ -4027,8 +4096,19 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 type="blocked",
                 title=trace_label(locale, "blocked"),
-                detail=str(blocked_reason or raw_text or ""),
+                detail=str(blocked_reason or display_text or ""),
                 status="blocked",
+                trace_events=trace_events,
+            )
+        elif turn_status == "failed":
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="run.failed",
+                title=trace_label(locale, "run.failed"),
+                detail=str((runtime_error or {}).get("message") or display_text or ""),
+                status="failed",
+                payload=dict(runtime_error or {}),
                 trace_events=trace_events,
             )
         elif turn_status == "cancelled":
@@ -4037,7 +4117,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 type="cancelled",
                 title=trace_label(locale, "cancelled"),
-                detail=str(raw_text or ""),
+                detail=str(display_text or ""),
                 status="cancelled",
                 trace_events=trace_events,
             )
@@ -4046,6 +4126,8 @@ class VintageProgrammerRuntime:
         run_trace_status = "success"
         if turn_status == "blocked":
             run_trace_status = "blocked"
+        elif turn_status == "failed":
+            run_trace_status = "failed"
         elif turn_status == "cancelled":
             run_trace_status = "cancelled"
         self._emit_trace(
@@ -4066,6 +4148,8 @@ class VintageProgrammerRuntime:
             current_task_focus["next_action"] = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
         elif turn_status == "blocked":
             current_task_focus["next_action"] = "blocked"
+        elif turn_status == "failed":
+            current_task_focus["next_action"] = "failed"
         elif turn_status == "cancelled":
             current_task_focus["next_action"] = "cancelled"
         else:
@@ -4074,7 +4158,7 @@ class VintageProgrammerRuntime:
             last_tool = tool_events[-1]
             current_task_focus["last_completed_step"] = f"{last_tool.name}: {last_tool.summary or last_tool.output_preview[:120]}"[:240]
         answer_bundle = self._build_answer_bundle(
-            raw_text=raw_text,
+            raw_text=final_answer,
             tool_events=tool_events,
             evidence_status=evidence_status,
         )
@@ -4082,7 +4166,7 @@ class VintageProgrammerRuntime:
             notes.extend(answer_bundle["warnings"])
         if (
             model_action
-            and turn_status in {"blocked", "cancelled"}
+            and turn_status in {"blocked", "cancelled", "failed"}
             and (
                 not execution_trace
                 or int((execution_trace[-1] or {}).get("step_index") or 0) != int(model_action.get("step_index") or 0)
@@ -4095,8 +4179,8 @@ class VintageProgrammerRuntime:
                 title="Final execution state",
                 tool_name=str(model_action.get("tool_name") or ""),
                 tool_names=[str(item) for item in list(model_action.get("tool_names") or []) if str(item or "")],
-                result_summary=safe_preview(raw_text, limit=240),
-                observation_summary=str(blocked_reason or raw_text or ""),
+                result_summary=safe_preview(final_answer or display_text, limit=240),
+                observation_summary=str((runtime_error or {}).get("message") or blocked_reason or display_text or ""),
                 detail=str(model_action.get("reason") or ""),
                 payload={"model_action": dict(model_action)},
             )
@@ -4136,6 +4220,14 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "answer_stream": dict(answer_stream),
+                "model_draft": model_draft,
+                "final_answer": final_answer,
+                "runtime_error": dict(runtime_error),
+                "tool_boundary_clean": (
+                    runtime_error.get("tool_boundary_clean")
+                    if isinstance(runtime_error.get("tool_boundary_clean"), bool)
+                    else None
+                ),
                 "model_context": dump_model(turn_model_context),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
                 "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),
@@ -4202,7 +4294,10 @@ class VintageProgrammerRuntime:
             "ok": True,
             "agent_id": spec.agent_id,
             "agent_title": spec.title,
-            "text": raw_text,
+            "text": display_text,
+            "final_answer": final_answer,
+            "model_draft": model_draft,
+            "runtime_error": dict(runtime_error),
             "effective_model": effective_model or requested_model,
             "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
             "turn_status": turn_status,
@@ -4237,8 +4332,21 @@ class VintageProgrammerRuntime:
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
                 "activity_summary": activity_summary,
+                "model_draft": model_draft,
+                "final_answer": final_answer,
+                "runtime_error": dict(runtime_error),
+                "tool_boundary_clean": (
+                    runtime_error.get("tool_boundary_clean")
+                    if isinstance(runtime_error.get("tool_boundary_clean"), bool)
+                    else None
+                ),
                 "trace_events": [dict(item) for item in trace_events],
             },
+            "tool_boundary_clean": (
+                runtime_error.get("tool_boundary_clean")
+                if isinstance(runtime_error.get("tool_boundary_clean"), bool)
+                else None
+            ),
             "compaction_status": dict(live_compaction_status),
             "answer_stream": dict(answer_stream),
             "tool_events": [dump_model(item) for item in tool_events],
@@ -4261,6 +4369,9 @@ class VintageProgrammerRuntime:
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
+                "model_draft": model_draft,
+                "final_answer": final_answer,
+                "runtime_error": dict(runtime_error),
                 "project_id": project_id,
                 "project_root": project_root,
                 "cwd": effective_cwd,

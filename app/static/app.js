@@ -831,6 +831,13 @@ function normalizeMessageActivity(raw) {
     triggering_user_turn_id: String(item.triggering_user_turn_id || item.triggeringUserTurnId || ""),
     session_id: String(item.session_id || item.sessionId || ""),
     thread_id: String(item.thread_id || item.threadId || ""),
+    model_draft: String(item.model_draft || item.modelDraft || ""),
+    final_answer: String(item.final_answer || item.finalAnswer || ""),
+    runtime_error: normalizeRuntimeErrorPayload(item.runtime_error),
+    tool_boundary_clean:
+      typeof item.tool_boundary_clean === "boolean"
+        ? item.tool_boundary_clean
+        : null,
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
     tool_items: normalizeActivityToolItems(item.tool_items),
@@ -922,6 +929,27 @@ function displayValueText(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return stringifyCompactJson(value);
+}
+
+function normalizeRuntimeErrorPayload(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  return {
+    kind: String(item.kind || "").trim(),
+    layer: String(item.layer || "").trim(),
+    phase: String(item.phase || "").trim(),
+    model: String(item.model || "").trim(),
+    message: String(item.message || "").trim(),
+    exception_type: String(item.exception_type || item.exceptionType || "").trim(),
+    raw_message: String(item.raw_message || item.rawMessage || "").trim(),
+    traceback_tail: String(item.traceback_tail || item.tracebackTail || "").trim(),
+    tool_boundary_clean:
+      typeof item.tool_boundary_clean === "boolean"
+        ? item.tool_boundary_clean
+        : null,
+    last_successful_round: Math.max(0, Number(item.last_successful_round || 0) || 0),
+    failed_round: Math.max(0, Number(item.failed_round || 0) || 0),
+    tool_count_total: Math.max(0, Number(item.tool_count_total || 0) || 0),
+  };
 }
 
 function formatValidationStatus(locale, status) {
@@ -1468,11 +1496,12 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
 }
 
 function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale = "zh-CN", nowMs = Date.now()) {
+  const item = normalizeMessageActivity(activity || {});
   const sourceItems = Array.isArray(liveItems) && liveItems.length
     ? liveItems
-    : buildFallbackProgressItems(activity, locale, nowMs);
+    : buildFallbackProgressItems(item, locale, nowMs);
   const traceItems = Array.isArray(runtimeTrace) ? runtimeTrace : [];
-  return sourceItems.map((entry, index) => {
+  const cards = sourceItems.map((entry, index) => {
     const status = normalizeProgressStatus(entry.status);
     const toolGroup = entry.tool_group && typeof entry.tool_group === "object" ? entry.tool_group : {};
     const trace = traceItems[index] && typeof traceItems[index] === "object" ? traceItems[index] : {};
@@ -1500,7 +1529,45 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
       collapsible: true,
       rawRef: entry,
     };
-  }).filter((entry, index, collection) => (
+  });
+  if (String(item.model_draft || "").trim() && ["running", "failed"].includes(normalizeProgressStatus(item.status))) {
+    cards.unshift({
+      id: "model-draft",
+      title: translateUi(locale, "runtime.model_draft.title"),
+      label: translateUi(locale, "runtime.model_draft.title"),
+      status: normalizeProgressStatus(item.status) === "failed" ? "failed" : "running",
+      detail: String(item.model_draft || "").trim() || translateUi(locale, "runtime.model_draft.empty"),
+      tool: "",
+      target: "",
+      durationMs: 0,
+      collapsible: true,
+      rawRef: item,
+    });
+  }
+  if (String(item.runtime_error.kind || item.runtime_error.message || "").trim()) {
+    const errorMessage = item.runtime_error.kind === "llm_empty_response"
+      ? translateUi(locale, "runtime.error.llm_empty_response")
+      : (String(item.runtime_error.message || "").trim() || translateUi(locale, "runtime.error.llm_request_failed"));
+    const detailLines = [
+      `${translateUi(locale, "runtime.error.phase")}：${String(item.runtime_error.phase || "-").trim() || "-"}`,
+      `${translateUi(locale, "runtime.error.kind")}：${String(item.runtime_error.kind || "-").trim() || "-"}`,
+      errorMessage,
+      translateUi(locale, "runtime.error.debug_hint"),
+    ].filter(Boolean);
+    cards.push({
+      id: "runtime-error",
+      title: translateUi(locale, "runtime.error.title"),
+      label: translateUi(locale, "runtime.error.title"),
+      status: "failed",
+      detail: detailLines.join("\n"),
+      tool: "",
+      target: "",
+      durationMs: 0,
+      collapsible: true,
+      rawRef: item.runtime_error,
+    });
+  }
+  return cards.filter((entry, index, collection) => (
     collection.findIndex((candidate) => candidate.id === entry.id) === index
   ));
 }
@@ -1628,6 +1695,12 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   const inspectorRunState = inspector && inspector.run_state && typeof inspector.run_state === "object"
     ? inspector.run_state
     : {};
+  const runtimeError = Object.keys(item.runtime_error || {}).some((key) => {
+    const value = item.runtime_error[key];
+    return value !== "" && value !== null && value !== 0;
+  })
+    ? item.runtime_error
+    : normalizeRuntimeErrorPayload(inspectorRunState.runtime_error);
   const sentToModel = inspectorRunState.model_context && typeof inspectorRunState.model_context === "object"
     ? inspectorRunState.model_context
     : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
@@ -1685,17 +1758,25 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       compaction_happened: traces.some((trace) => String(trace.type || "") === "context.compacted"),
       retry_happened: traces.some((trace) => String(trace.type || "").startsWith("llm.retry")),
       blocked_reason: latestHarness.blocked_reason || "",
+      runtime_error_kind: runtimeError.kind || "",
+      runtime_error_phase: runtimeError.phase || "",
+      runtime_error_message: runtimeError.message || "",
       pending_user_input: latestHarness.pending_user_input || {},
       turn_status: latestHarness.turn_status || item.status,
+      last_successful_round: Number(runtimeError.last_successful_round || 0) || 0,
+      failed_round: Number(runtimeError.failed_round || 0) || 0,
       context_version: Number(inspectorRunState.context_version || 0) || 0,
       run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
       token_usage: latestHarness.token_usage || latestHarness.usage || {},
     },
+    runtime_error: runtimeError,
     final_status: {
       status: item.status,
       activity_summary: item.activity_summary,
       finished_at: item.finished_at,
       run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
+      model_draft: item.model_draft,
+      final_answer: item.final_answer,
     },
     raw: {
       activity: item,
@@ -2094,6 +2175,7 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   if (normalized === "answer.started" || normalized === "answer.finished" || normalized === "answer.done" || normalized === "answer.delta") return "answering";
   if (normalized === "approval.required" || normalized === "blocked" || normalized === "action.blocked" || normalized === "loop.safeguard") return "blocked";
   if (normalized === "run.finished") return "completed";
+  if (normalized === "llm.failed") return "failed";
   if (normalized === "run.failed") return "failed";
   if (normalized === "cancelled") return "cancelled";
   return fallback;
@@ -2102,6 +2184,8 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
 function mergeActivityState(previous, patch = {}) {
   const prev = normalizeMessageActivity(previous || {});
   const nextPatch = patch && typeof patch === "object" ? patch : {};
+  const nextRuntimeError = normalizeRuntimeErrorPayload(nextPatch.runtime_error);
+  const nextRuntimeErrorDefined = Object.values(nextRuntimeError).some((value) => value !== "" && value !== null && value !== 0);
   const nextTraceEvents = Array.isArray(nextPatch.trace_events)
     ? nextPatch.trace_events.map(normalizeTraceEvent)
     : prev.trace_events;
@@ -2151,6 +2235,13 @@ function mergeActivityState(previous, patch = {}) {
     run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
+    model_draft: String(nextPatch.model_draft || prev.model_draft || ""),
+    final_answer: String(nextPatch.final_answer || prev.final_answer || ""),
+    runtime_error: nextRuntimeErrorDefined ? nextRuntimeError : prev.runtime_error,
+    tool_boundary_clean:
+      typeof nextPatch.tool_boundary_clean === "boolean"
+        ? nextPatch.tool_boundary_clean
+        : prev.tool_boundary_clean,
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
     tool_items: nextToolItems,
@@ -4227,6 +4318,13 @@ function App() {
           "",
         ).trim(),
         text: assistantText || "",
+        final_answer: String(latestRunSnapshot.final_answer || ""),
+        model_draft: String(latestRunSnapshot.model_draft || (latestRunSnapshot.turn_status === "completed" ? "" : assistantText || "")),
+        runtime_error: latestRunSnapshot.runtime_error || {},
+        tool_boundary_clean:
+          typeof latestRunSnapshot.tool_boundary_clean === "boolean"
+            ? latestRunSnapshot.tool_boundary_clean
+            : null,
         tool_events: latestToolEvents,
         permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
@@ -4394,6 +4492,9 @@ function App() {
                 assistantText += delta;
                 dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
                 replacePendingText(assistantText);
+                patchPendingActivity((activity) => mergeActivityState(activity, {
+                  model_draft: assistantText,
+                }));
               }
             } else if (event === "item/completed") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
@@ -4416,6 +4517,9 @@ function App() {
               if (itemType === "agentMessage") {
                 assistantMessageStarted = true;
                 assistantText = String(item.text || assistantText || "");
+                patchPendingActivity((activity) => mergeActivityState(activity, {
+                  final_answer: assistantText,
+                }));
                 if (assistantText) completePendingText(assistantText);
               } else if (itemType === "userInputRequest") {
                 const nextPending = {
@@ -4492,6 +4596,9 @@ function App() {
         ...(((finalPayload.inspector || {}).run_state) || {}),
         permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
         turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+        model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
+        final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),
+        runtime_error: finalPayload.runtime_error || (((finalPayload.inspector || {}).run_state || {}).runtime_error) || {},
         context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
         pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
@@ -4522,6 +4629,9 @@ function App() {
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
           turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+          model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
+          final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),
+          runtime_error: finalPayload.runtime_error || (((finalPayload.inspector || {}).run_state || {}).runtime_error) || {},
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
@@ -5069,6 +5179,16 @@ function App() {
     const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
     const modelOutputSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
+      renderDetailBlock(
+        t("runtime.model_draft.title"),
+        String(item.model_draft || "").trim() || t("runtime.model_draft.empty"),
+      ),
+      Object.keys(structured.runtime_error || {}).some((key) => {
+        const value = structured.runtime_error[key];
+        return value !== "" && value !== null && value !== 0;
+      })
+        ? renderDetailBlock(t("runtime.error.llm_request_failed"), structured.runtime_error)
+        : null,
       item.plan.length
         ? renderDetailBlock(t("run.checklist"), {
             explanation: item.plan_explanation,

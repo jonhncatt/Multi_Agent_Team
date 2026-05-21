@@ -334,6 +334,189 @@ class _FailingVintageRuntime(_FakeVintageRuntime):
         )
 
 
+class _FailedResultVintageRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings)
+        project = dict(context.get("project") or {})
+        run_id = str(context.get("run_id") or "run-failed")
+        trace_events = [
+            {
+                "id": "trace-runtime",
+                "run_id": run_id,
+                "type": "runtime_contract.selected",
+                "title": "Full Auto runtime enabled",
+                "detail": "Tool policy: use when needed",
+                "status": "success",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {"mode": "full_auto", "tool_policy": "use_when_needed"},
+                "parent_id": None,
+                "visible": True,
+            },
+            {
+                "id": "trace-llm-failed",
+                "run_id": run_id,
+                "type": "llm.failed",
+                "title": "LLM request failed",
+                "detail": "LLM provider returned empty response before ChatResult creation.",
+                "status": "failed",
+                "timestamp": time.time(),
+                "duration_ms": 0,
+                "payload": {
+                    "kind": "llm_empty_response",
+                    "phase": "post_tool_response",
+                    "model": "gpt-test",
+                    "exception_type": "AttributeError",
+                    "message": "LLM provider returned empty response before ChatResult creation.",
+                    "raw_message": "'NoneType' object has no attribute 'model_dump'",
+                    "tool_boundary_clean": True,
+                    "last_successful_round": 1,
+                    "failed_round": 2,
+                    "tool_count_total": 0,
+                    "traceback_tail": "AttributeError: 'NoneType' object has no attribute 'model_dump'",
+                },
+                "parent_id": None,
+                "visible": True,
+            },
+        ]
+        return {
+            "text": "実行失敗：LLM リクエストに失敗しました。Debug Detail を展開して詳細を確認できます。",
+            "final_answer": "",
+            "model_draft": "I already inspected the skill files and was preparing the summary.",
+            "runtime_error": {
+                "kind": "llm_empty_response",
+                "phase": "post_tool_response",
+                "model": "gpt-test",
+                "exception_type": "AttributeError",
+                "message": "LLM provider returned empty response before ChatResult creation.",
+                "raw_message": "'NoneType' object has no attribute 'model_dump'",
+                "tool_boundary_clean": True,
+                "last_successful_round": 1,
+                "failed_round": 2,
+                "tool_count_total": 0,
+                "traceback_tail": "AttributeError: 'NoneType' object has no attribute 'model_dump'",
+            },
+            "tool_boundary_clean": True,
+            "effective_model": "gpt-test",
+            "tool_events": [],
+            "token_usage": {"input_tokens": 11, "output_tokens": 0, "total_tokens": 11, "llm_calls": 2},
+            "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
+            "model_action": {
+                "step_index": 2,
+                "action_type": "tool_call",
+                "tool_name": "web_search",
+                "tool_names": ["web_search"],
+                "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
+                "accepted": True,
+                "reason": "Model requested web_search.",
+                "source": "model_action",
+            },
+            "execution_trace": [
+                {
+                    "step_index": 2,
+                    "action_type": "tool_call",
+                    "status": "failed",
+                    "title": "Tool execution step",
+                    "tool_name": "web_search",
+                    "tool_names": ["web_search"],
+                    "result_summary": "web_search:ok",
+                    "observation_summary": "LLM provider returned empty response before ChatResult creation.",
+                    "error": "",
+                    "detail": "",
+                    "payload": {"completed_tool_calls": 1},
+                }
+            ],
+            "route_state": {
+                "agent_id": "vintage_programmer",
+                "phase": "failed",
+                "evidence_status": "collected",
+                "loaded_skill_ids": ["example_refactor_helper"],
+                "model_draft": "I already inspected the skill files and was preparing the summary.",
+                "runtime_error": {
+                    "kind": "llm_empty_response",
+                    "phase": "post_tool_response",
+                },
+                "task_checkpoint": {
+                    "task_id": "task-failed-1",
+                    "goal": str(message or ""),
+                    "project_root": str(project.get("project_root") or ""),
+                    "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+                    "active_files": [],
+                    "active_attachments": [],
+                    "last_completed_step": "web_search: searched",
+                    "next_action": "failed",
+                },
+            },
+            "permission_profile": "auto",
+            "turn_status": "failed",
+            "plan": [{"step": "Inspect workspace", "status": "completed"}],
+            "pending_user_input": {},
+            "activity": {
+                "run_id": run_id,
+                "status": "failed",
+                "started_at": trace_events[0]["timestamp"],
+                "finished_at": trace_events[-1]["timestamp"],
+                "run_duration_ms": 0,
+                "activity_summary": "Full Auto runtime enabled · LLM request failed",
+                "model_draft": "I already inspected the skill files and was preparing the summary.",
+                "final_answer": "",
+                "runtime_error": {
+                    "kind": "llm_empty_response",
+                    "phase": "post_tool_response",
+                    "message": "LLM provider returned empty response before ChatResult creation.",
+                    "exception_type": "AttributeError",
+                    "tool_boundary_clean": True,
+                },
+                "tool_boundary_clean": True,
+                "trace_events": trace_events,
+            },
+            "inspector": {
+                "agent": self.descriptor(),
+                "notes": ["fake failed runtime note"],
+                "run_state": {
+                    "goal": str(message or ""),
+                    "phase": "failed",
+                    "permission_profile": "auto",
+                    "turn_status": "failed",
+                    "plan": [{"step": "Inspect workspace", "status": "completed"}],
+                    "pending_user_input": {},
+                    "model_draft": "I already inspected the skill files and was preparing the summary.",
+                    "final_answer": "",
+                    "runtime_error": {
+                        "kind": "llm_empty_response",
+                        "phase": "post_tool_response",
+                        "message": "LLM provider returned empty response before ChatResult creation.",
+                        "exception_type": "AttributeError",
+                        "tool_boundary_clean": True,
+                    },
+                    "task_checkpoint": {
+                        "task_id": "task-failed-1",
+                        "goal": str(message or ""),
+                        "project_root": str(project.get("project_root") or ""),
+                        "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+                        "active_files": [],
+                        "active_attachments": [],
+                        "last_completed_step": "web_search: searched",
+                        "next_action": "failed",
+                    },
+                },
+                "tool_timeline": [],
+                "evidence": {"status": "collected", "required": True, "warning": "", "source_refs": []},
+                "session": {
+                    "session_id": str(context.get("session_id") or ""),
+                    "project_id": str(project.get("project_id") or ""),
+                    "project_title": str(project.get("project_title") or ""),
+                    "project_root": str(project.get("project_root") or ""),
+                    "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+                    "history_turn_count": 0,
+                    "attachment_count": 0,
+                },
+                "token_usage": {"total_tokens": 11},
+                "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
+            },
+        }
+
+
 class _ContextCapturingRuntime(_FakeVintageRuntime):
     def __init__(self) -> None:
         self.seen_contexts: list[dict[str, object]] = []
@@ -700,7 +883,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "3.1.0",
+            "app_version": "3.1.2",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -742,7 +925,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.0"
+    assert bootstrap_payload["app_version"] == "3.1.2"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1307,6 +1490,47 @@ def test_chat_stream_emits_structured_error_payload(monkeypatch, tmp_path: Path)
     assert error_payload["summary"] == translate("ja-JP", "error.rate_limit")
     assert error_payload["provider"] == "Google AI Studio"
     assert error_payload["retryable"] is True
+
+
+def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnostics(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    runtime = _FailedResultVintageRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "继续处理这个任务",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["turn_status"] == "failed"
+    assert payload["final_answer"] == ""
+    assert payload["model_draft"] == "I already inspected the skill files and was preparing the summary."
+    assert payload["runtime_error"]["kind"] == "llm_empty_response"
+    assert "model_dump" not in payload["text"]
+
+    session_id = payload["session_id"]
+    session = main_app.session_store.load(session_id, default_project=main_app.project_store.ensure_default_project())
+    assert session is not None
+    last_turn = session["turns"][-1]
+    assert last_turn["role"] == "assistant"
+    assert last_turn["text"] == payload["text"]
+    assert last_turn["activity"]["runtime_error"]["kind"] == "llm_empty_response"
+    assert last_turn["activity"]["model_draft"] == payload["model_draft"]
+
+    clean_turns = list(((session.get("context_manager") or {}).get("clean_turns")) or [])
+    assert all("model_dump" not in str((turn or {}).get("text") or "") for turn in clean_turns)
 
 
 def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:

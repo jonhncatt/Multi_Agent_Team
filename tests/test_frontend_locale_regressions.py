@@ -60,6 +60,14 @@ REQUIRED_CORE_KEYS = (
     "activity.live.waiting_next_model",
     "activity.live.answer_streaming",
     "activity.live.answer_done",
+    "runtime.error.title",
+    "runtime.error.llm_request_failed",
+    "runtime.error.llm_empty_response",
+    "runtime.error.phase",
+    "runtime.error.kind",
+    "runtime.error.debug_hint",
+    "runtime.model_draft.title",
+    "runtime.model_draft.empty",
     "activity.tool_title.read_file",
     "activity.tool_title.list_dir",
     "activity.tool_title.glob_file_search",
@@ -194,6 +202,7 @@ REQUIRED_CORE_KEYS = (
     "context_meter.mode.docker",
     "context_meter.token_usage_value",
     "context_meter.unknown",
+    "run.value.turn_status.failed",
 )
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 

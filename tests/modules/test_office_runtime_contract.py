@@ -8,7 +8,7 @@ from packages.office_modules.execution_runtime import (
     normalize_legacy_run_chat_result,
 )
 from packages.office_modules.execution_engine import OfficeExecutionEngine
-from packages.office_modules.office_agent_runtime import OfficeAgent
+from packages.office_modules.office_agent_runtime import OfficeAgent, classify_office_llm_exception
 
 
 def _make_legacy_tuple(**overrides: Any) -> tuple[Any, ...]:
@@ -181,3 +181,16 @@ def test_build_session_route_state_serializes_dict_active_task_safely() -> None:
     assert payload["active_task"]["task_kind"] == "meeting_minutes"
     assert payload["active_task"]["target_id"] == "thread-1"
     assert payload["active_task"]["started"] is True
+
+
+def test_classify_office_llm_exception_detects_empty_langchain_response() -> None:
+    payload = classify_office_llm_exception(
+        AttributeError("'NoneType' object has no attribute 'model_dump'"),
+        phase="post_tool_response",
+        model="gpt-test",
+    )
+
+    assert payload["kind"] == "llm_empty_response"
+    assert payload["layer"] == "langchain"
+    assert payload["phase"] == "post_tool_response"
+    assert payload["model"] == "gpt-test"

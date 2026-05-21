@@ -1107,9 +1107,12 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "llm_request_error"
-    assert "azure rejected broken history" in result["text"]
+    assert result["turn_status"] == "failed"
+    assert result["final_answer"] == ""
+    assert result["runtime_error"]["kind"] == "llm_request_error"
+    assert result["runtime_error"]["phase"] == "before_followup_llm"
+    assert result["runtime_error"]["message"] == "azure rejected broken history"
+    assert "azure rejected broken history" not in result["text"]
     assert len(result["tool_events"]) == 1
     failed = next(item for item in result["activity"]["trace_events"] if item.get("type") == "llm.failed")
     payload = failed["payload"]
@@ -1119,6 +1122,8 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
     assert payload["tool_boundary_clean"] is True
     assert payload["message_count"] == len(backend.invocations[1]["messages"])
     assert payload["phase"] == "before_followup_llm"
+    assert payload["last_successful_round"] == 0
+    assert payload["failed_round"] == 1
     assert payload["last_message_roles"][-1] == "tool"
     assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
 
@@ -1191,17 +1196,55 @@ def test_runtime_retry_failure_reports_rich_llm_diagnostics(tmp_path: Path) -> N
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "llm_request_error"
+    assert result["turn_status"] == "failed"
+    assert result["final_answer"] == ""
+    assert result["runtime_error"]["kind"] == "llm_empty_response"
+    assert result["runtime_error"]["phase"] == "before_followup_llm_retry"
     trace_events = result["activity"]["trace_events"]
     trace_types = [item.get("type") for item in trace_events]
     assert "llm.retrying" in trace_types
     assert "llm.retry_failed" in trace_types
     failed = next(item for item in trace_events if item.get("type") == "llm.failed")
     assert failed["payload"]["exception_type"] == "AttributeError"
+    assert failed["payload"]["kind"] == "llm_empty_response"
     assert failed["payload"]["tool_boundary_clean"] is True
     assert failed["payload"]["retry_attempt"] == 1
+    assert failed["payload"]["failed_round"] == 1
     assert "traceback_tail" in failed["payload"]
+
+
+def test_runtime_tool_call_content_uses_model_draft_until_completed(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="I will inspect the folder.", tool_calls=[{"id": "tc-draft", "name": "web_search", "args": {"query": "x"}}]),
+            _FakeMessage(content="Done."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-model-draft",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["final_answer"] == "Done."
+    assert result["model_draft"] == "I will inspect the folder."
+    assert result["runtime_error"] == {}
+    assert result["text"] == "Done."
 
 
 def test_runtime_model_stream_observer_ignores_none_event(tmp_path: Path) -> None:

@@ -113,7 +113,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.2"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -1460,9 +1460,12 @@ def _build_run_snapshot(
     evidence_status: str = "not_needed",
     context_meter: dict[str, Any] | None = None,
     compaction_status: dict[str, Any] | None = None,
+    model_draft: str = "",
+    final_answer: str = "",
+    runtime_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
-    return {
+    payload = {
         "goal": str(goal or "").strip(),
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
@@ -1474,6 +1477,13 @@ def _build_run_snapshot(
         "context_meter": dict(context_meter or {}),
         "compaction_status": dict(compaction_status or {}),
     }
+    if str(model_draft or "").strip():
+        payload["model_draft"] = str(model_draft or "")
+    if str(final_answer or "").strip():
+        payload["final_answer"] = str(final_answer or "")
+    if isinstance(runtime_error, dict) and runtime_error:
+        payload["runtime_error"] = dict(runtime_error)
+    return payload
 
 
 def _stringify_error_detail(detail: Any) -> str:
@@ -2104,6 +2114,14 @@ def _process_chat_request(
                 progress_cb=progress_cb,
             )
         text = str(runtime_result.get("text") or "")
+        final_answer = str(runtime_result.get("final_answer") or "")
+        model_draft = str(runtime_result.get("model_draft") or "")
+        runtime_error = (
+            dict(runtime_result.get("runtime_error") or {})
+            if isinstance(runtime_result.get("runtime_error"), dict)
+            else {}
+        )
+        tool_boundary_clean = runtime_result.get("tool_boundary_clean")
         tool_events = list(runtime_result.get("tool_events") or [])
         answer_bundle = runtime_result.get("answer_bundle") or {}
         token_usage = dict(runtime_result.get("token_usage") or {})
@@ -2138,6 +2156,10 @@ def _process_chat_request(
             "triggering_user_turn_id": user_turn_id,
             "session_id": session_id,
             "thread_id": session_id,
+            "model_draft": model_draft,
+            "final_answer": final_answer,
+            "runtime_error": runtime_error,
+            "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
         agent_run_done_context_meter, agent_run_done_compaction_status = _context_bundle_for_session(
             session=session,
@@ -2170,6 +2192,9 @@ def _process_chat_request(
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
                 context_meter=agent_run_done_context_meter,
                 compaction_status=agent_run_done_compaction_status,
+                model_draft=model_draft,
+                final_answer=final_answer,
+                runtime_error=runtime_error,
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
@@ -2241,6 +2266,9 @@ def _process_chat_request(
             "last_run_id": run_id,
             "last_provider": requested_provider,
             "last_model": selected_model,
+            "model_draft": model_draft,
+            "final_answer": final_answer,
+            "runtime_error": dict(runtime_error),
             "last_compacted_at": last_compacted_at,
             "project_id": str(session.get("project_id") or ""),
             "project_root": str(session.get("project_root") or ""),
@@ -2263,7 +2291,7 @@ def _process_chat_request(
         session_context_impl.record_turn_memory(
             session,
             user_message=req.message,
-            assistant_text=text,
+            assistant_text=final_answer or text,
             attachments=attachments,
             route_state=route_state,
             tool_events=tool_events,
@@ -2272,7 +2300,7 @@ def _process_chat_request(
         context_manager = ContextManager.from_payload(
             session.get("context_manager") if isinstance(session.get("context_manager"), dict) else {}
         )
-        clean_final_answer = text if classify_assistant_output(text) == "final_answer" else None
+        clean_final_answer = final_answer if classify_assistant_output(final_answer) == "final_answer" else None
         context_manager.update_after_turn(
             user_request=req.message,
             clean_final_answer=clean_final_answer,
@@ -2316,6 +2344,9 @@ def _process_chat_request(
         inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
         inspector_run_state["phase_timings"] = dict(combined_phase_timings)
+        inspector_run_state["model_draft"] = model_draft
+        inspector_run_state["final_answer"] = final_answer
+        inspector_run_state["runtime_error"] = dict(runtime_error)
         inspector["run_state"] = inspector_run_state
         inspector_session = (inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}
         inspector_session["current_turn"] = dict(current_turn_context)
@@ -2359,6 +2390,9 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                model_draft=model_draft,
+                final_answer=final_answer,
+                runtime_error=runtime_error,
             ),
         )
         updated_thread = _thread_list_item_for_session_id(session["id"])
@@ -2419,7 +2453,7 @@ def _process_chat_request(
             evolution_event = get_evolution_store().record_turn(
                 session_id=session["id"],
                 user_message=req.message,
-                assistant_text=text,
+                assistant_text=final_answer or text,
                 route_state=route_state,
                 answer_bundle=answer_bundle,
                 attachment_context_mode=attachment_context_mode,
@@ -2496,6 +2530,10 @@ def _process_chat_request(
             effective_model=selected_model,
             queue_wait_ms=queue_wait_ms,
             text=text,
+            final_answer=final_answer,
+            model_draft=model_draft,
+            runtime_error=runtime_error,
+            tool_boundary_clean=tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
             tool_events=tool_event_models,
             attachment_context_mode=attachment_context_mode,
             effective_attachment_ids=resolved_attachment_ids,
@@ -2541,6 +2579,9 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                model_draft=model_draft,
+                final_answer=final_answer,
+                runtime_error=runtime_error,
             ),
         )
         _emit_progress(
@@ -2564,6 +2605,9 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                model_draft=model_draft,
+                final_answer=final_answer,
+                runtime_error=runtime_error,
             ),
         )
         _emit_progress(
@@ -2585,6 +2629,9 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                model_draft=model_draft,
+                final_answer=final_answer,
+                runtime_error=runtime_error,
             ),
         )
         _emit_thread_status_changed(progress_cb, thread_id=session_id, status="idle")

@@ -105,6 +105,7 @@ from app.policy_router import PolicyRouter
 from app.route_trace import build_route_trace, route_trace_payload
 from app.route_verifier import RouteVerifier
 from app.models import AgentPanel, ChatSettings, ToolEvent
+from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
 from app.serialization import dump_model
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.pipeline_hooks import (
@@ -8920,3 +8921,7 @@ def create_office_runtime_backend(
         selected_agent_module_id=selected_agent_module_id,
         selected_tool_module_id=selected_tool_module_id,
     )
+
+
+def classify_office_llm_exception(exc: BaseException, *, phase: str, model: str) -> dict[str, Any]:
+    return classify_runtime_llm_exception(exc, phase=phase, model=model)

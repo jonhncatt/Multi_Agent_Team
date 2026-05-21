@@ -108,6 +108,10 @@ class MessageActivity(BaseModel):
     triggering_user_turn_id: str = ""
     session_id: str = ""
     thread_id: str = ""
+    model_draft: str = ""
+    final_answer: str = ""
+    runtime_error: dict[str, Any] = Field(default_factory=dict)
+    tool_boundary_clean: bool | None = None
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
 
 
@@ -249,6 +253,10 @@ class ChatResponse(BaseModel):
     effective_model: str | None = None
     queue_wait_ms: int = 0
     text: str
+    final_answer: str = ""
+    model_draft: str = ""
+    runtime_error: dict[str, Any] = Field(default_factory=dict)
+    tool_boundary_clean: bool | None = None
     tool_events: list[ToolEvent] = Field(default_factory=list)
     attachment_context_mode: Literal["none", "explicit", "auto_linked", "cleared"] = "none"
     effective_attachment_ids: list[str] = Field(default_factory=list)
