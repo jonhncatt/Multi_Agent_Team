@@ -53,9 +53,36 @@ const DEFAULT_SETTINGS = {
   max_output_tokens: 4096,
   max_context_turns: 2000,
   enable_tools: true,
-  permission_profile: "code",
+  permission_profile: "auto",
   response_style: "normal",
 };
+
+function normalizePermissionProfile(raw) {
+  const value = String(raw || "").trim().toLowerCase().replaceAll("-", "_");
+  const aliases = {
+    chat: "default",
+    readonly: "default",
+    read_only: "default",
+    "read only": "default",
+    default: "default",
+    safe: "default",
+    safe_default: "default",
+    code: "auto",
+    coding: "auto",
+    auto: "auto",
+    automatic: "auto",
+    full_dev: "full_access",
+    "full dev": "full_access",
+    fulldev: "full_access",
+    full: "full_access",
+    dev: "full_access",
+    full_access: "full_access",
+    "full access": "full_access",
+    danger_full_access: "full_access",
+  };
+  const normalized = aliases[value] || value;
+  return ["default", "auto", "full_access"].includes(normalized) ? normalized : "auto";
+}
 
 function normalizeLocaleValue(raw, supportedLocales = I18nRuntime.SUPPORTED_LOCALES, fallbackLocale = "ja-JP") {
   return I18nRuntime.normalizeLocale(raw, supportedLocales, fallbackLocale);
@@ -1908,13 +1935,13 @@ function buildRuntimeStatsSummary({
     : translateUi(locale, "context_meter.compact_tokens_unknown");
   const elapsedValue = formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown");
   const autoCompactionEnabled = Boolean(safeContextMeter.compaction_enabled || safeguards.context_compaction);
-  const effectivePermissionProfile = String(
+  const effectivePermissionProfile = normalizePermissionProfile(
     permissionProfile
     || currentRuntimeStatus.permission_profile
     || workspaceBoundary.permission_profile
     || boundaryModelView.permission_profile
-    || "code",
-  ).trim();
+    || "auto",
+  );
   const networkReason = String(boundaryModelView.network_reason || workspaceBoundary.network_reason || "").trim();
   const networkAllowed = Object.prototype.hasOwnProperty.call(boundaryModelView, "network_allowed")
     ? Boolean(boundaryModelView.network_allowed)
@@ -2715,8 +2742,8 @@ function App() {
 
   useEffect(() => {
     if (!health) return;
-    const serverProfile = String(health.default_permission_profile || "").trim();
-    if (!["chat", "code", "full_dev"].includes(serverProfile)) return;
+    const serverProfile = normalizePermissionProfile(health.default_permission_profile || "auto");
+    if (!["default", "auto", "full_access"].includes(serverProfile)) return;
     setChatSettings((prev) => (
       !prev.permission_profile || prev.permission_profile === DEFAULT_SETTINGS.permission_profile
         ? { ...prev, permission_profile: serverProfile }
@@ -4046,7 +4073,7 @@ function App() {
       setMessages((prev) => [...prev, userMessage, pendingMessage]);
       setLiveTurnState({
         goal: messageText,
-        permission_profile: chatSettings.permission_profile || "code",
+        permission_profile: normalizePermissionProfile(chatSettings.permission_profile || "auto"),
         turn_status: "running",
         plan: [],
         pending_user_input: {},
@@ -4201,7 +4228,7 @@ function App() {
         ).trim(),
         text: assistantText || "",
         tool_events: latestToolEvents,
-        permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
+        permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
@@ -4309,7 +4336,7 @@ function App() {
                 updateThreadStatus(latestThreadId, "active");
               }
               applySnapshot({
-                permission_profile: String(payload.permission_profile || chatSettings.permission_profile || "code"),
+                permission_profile: normalizePermissionProfile(payload.permission_profile || chatSettings.permission_profile || "auto"),
                 turn_status: "running",
               });
             } else if (event === "turn/plan/updated") {
@@ -4317,7 +4344,7 @@ function App() {
               applySnapshot({ plan: nextPlan });
               setSessionRunState((prev) => ({
                 ...(prev || {}),
-                permission_profile: String((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "code"),
+                permission_profile: normalizePermissionProfile((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "auto"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
                 plan: nextPlan,
               }));
@@ -4396,13 +4423,13 @@ function App() {
                   questions: Array.isArray(item.questions) ? item.questions : [],
                 };
                 applySnapshot({
-                  permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
+                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 });
                 setSessionRunState((prev) => ({
                   ...(prev || {}),
-                  permission_profile: String(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "code"),
+                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 }));
@@ -4463,7 +4490,7 @@ function App() {
       setActiveRunId(String(finalPayload.run_id || ""));
       setLiveTurnState((prev) => mergeRunSnapshot(prev, {
         ...(((finalPayload.inspector || {}).run_state) || {}),
-        permission_profile: String(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "code"),
+        permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
         turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
         context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
@@ -4493,7 +4520,7 @@ function App() {
           agent_id: finalPayload.agent_id || "vintage_programmer",
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
-          permission_profile: String(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "code"),
+          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
           turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
@@ -4701,14 +4728,14 @@ function App() {
     active_attachments: [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
-  const selectedPermissionProfile = String(chatSettings.permission_profile || "code");
+  const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
-  const activePermissionProfile = String(
+  const activePermissionProfile = normalizePermissionProfile(
     (hasLiveRunState ? runState.permission_profile : "")
     || selectedPermissionProfile
-    || "code",
+    || "auto",
   );
   const activeBoundaryModelView = (
     runState.runtime_boundary_model_view && typeof runState.runtime_boundary_model_view === "object"
@@ -5480,16 +5507,16 @@ function App() {
                   value=${selectedPermissionProfile}
                   onChange=${(event) => {
                     const target = event.currentTarget;
-                    const nextValue = target ? target.value : "code";
+                    const nextValue = normalizePermissionProfile(target ? target.value : "auto");
                     setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
                   }}
                   disabled=${sending}
                   title=${selectedPermissionDescription}
                   aria-label=${selectedPermissionAriaLabel}
                 >
-                  <option value="chat" title=${t("settings.permission_profile.chat.help")}>${t("settings.permission_profile.chat")}</option>
-                  <option value="code" title=${t("settings.permission_profile.code.help")}>${t("settings.permission_profile.code")}</option>
-                  <option value="full_dev" title=${t("settings.permission_profile.full_dev.help")}>${t("settings.permission_profile.full_dev")}</option>
+                  <option value="default" title=${t("settings.permission_profile.default.help")}>${t("settings.permission_profile.default")}</option>
+                  <option value="auto" title=${t("settings.permission_profile.auto.help")}>${t("settings.permission_profile.auto")}</option>
+                  <option value="full_access" title=${t("settings.permission_profile.full_access.help")}>${t("settings.permission_profile.full_access")}</option>
                 </select>
               </label>
             </div>

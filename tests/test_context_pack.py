@@ -32,7 +32,7 @@ def _model_context_payload(text: str) -> dict[str, Any]:
 def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
     boundary = build_turn_runtime_boundary(
         config=load_config(),
-        runtime_contract=RuntimeContract(permission_profile="code", shell_allowed=True),
+        runtime_contract=RuntimeContract(permission_profile="auto", shell_allowed=True),
         project_root=tmp_path,
         cwd=tmp_path,
         attachments=[],
@@ -53,7 +53,7 @@ def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
         },
         current_task_focus={"last_completed_step": "已读取 local_tools", "next_action": "继续检查 validator"},
         runtime_boundary_model_view=boundary.to_model_view(),
-        permission_profile="code",
+        permission_profile="auto",
     )
     payload = dump_model(model_context)
 
@@ -63,7 +63,8 @@ def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
     assert payload["memory"]["clean_summary"]
     assert payload["task"]["current_step"] == "已读取 local_tools"
     assert payload["plan"]["items"][0]["step"] == "检查 ActionValidator"
-    assert payload["permissions"]["profile"] == "code"
+    assert payload["permissions"]["profile"] == "auto"
+    assert payload["permissions"]["label"] == "Auto"
 
 
 def test_human_message_is_rendered_only_from_model_context(tmp_path: Path) -> None:

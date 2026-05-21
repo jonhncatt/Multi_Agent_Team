@@ -18,7 +18,7 @@ class ChatSettings(BaseModel):
     )
     enable_tools: bool = True
     execution_mode: Literal["host", "docker"] | None = None
-    permission_profile: Literal["chat", "code", "full_dev"] = "code"
+    permission_profile: str = "auto"
     debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
 
@@ -256,7 +256,7 @@ class ChatResponse(BaseModel):
     auto_linked_attachment_names: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     attachment_context_key: str = ""
-    permission_profile: Literal["chat", "code", "full_dev"] = "code"
+    permission_profile: str = "auto"
     turn_status: str = "completed"
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
@@ -525,7 +525,7 @@ class BootstrapResponse(BaseModel):
     platform_name: str = ""
     workspace_root: str = ""
     allowed_roots: list[str] = Field(default_factory=list)
-    default_permission_profile: Literal["chat", "code", "full_dev"] = "code"
+    default_permission_profile: str = "auto"
     default_max_output_tokens: int = 4096
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True

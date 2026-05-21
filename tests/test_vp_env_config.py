@@ -129,7 +129,7 @@ def test_permission_safe_defaults_do_not_add_user_folders(monkeypatch, tmp_path)
 
     config = load_config()
 
-    assert config.permission_profile == "code"
+    assert config.permission_profile == "auto"
     assert config.default_extra_allowed_roots == []
     assert config.allow_workspace_sibling_access is False
     assert config.workspace_sibling_root is None
@@ -143,7 +143,40 @@ def test_permission_profile_aliases(monkeypatch, tmp_path) -> None:
 
     config = load_config()
 
-    assert config.permission_profile == "full_dev"
+    assert config.permission_profile == "full_access"
+
+
+def test_permission_profile_alias_normalization(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+
+    cases = {
+        "chat": "default",
+        "readonly": "default",
+        "read_only": "default",
+        "read only": "default",
+        "default": "default",
+        "safe": "default",
+        "safe_default": "default",
+        "code": "auto",
+        "coding": "auto",
+        "auto": "auto",
+        "automatic": "auto",
+        "full_dev": "full_access",
+        "full dev": "full_access",
+        "fulldev": "full_access",
+        "full": "full_access",
+        "dev": "full_access",
+        "full_access": "full_access",
+        "full-access": "full_access",
+        "danger_full_access": "full_access",
+        "danger-full-access": "full_access",
+        "unknown": "auto",
+    }
+
+    for raw, expected in cases.items():
+        monkeypatch.setenv("VP_PERMISSION_PROFILE", raw)
+        assert load_config().permission_profile == expected
 
 
 def test_chat_settings_max_context_turns_default_remains_2000() -> None:
