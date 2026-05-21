@@ -113,7 +113,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "2.9.19"
+APP_VERSION = "2.9.20"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -878,7 +878,7 @@ def _bootstrap_response_payload(
         platform_name=config.platform_name,
         workspace_root=str(config.workspace_root),
         allowed_roots=effective_roots,
-        default_permission_profile=normalize_permission_profile(getattr(config, "permission_profile", "code")),
+        default_permission_profile=normalize_permission_profile(getattr(config, "permission_profile", "auto")),
         default_max_output_tokens=int(config.max_output_tokens),
         max_upload_mb=config.max_upload_mb,
         web_allow_all_domains=config.web_allow_all_domains,
@@ -909,7 +909,7 @@ def _runtime_status_response_payload(
     ).strip()
     projects = get_project_store().list_projects()
     effective_roots = _effective_allowed_roots(projects)
-    permission_profile = normalize_permission_profile(getattr(config, "permission_profile", "code"))
+    permission_profile = normalize_permission_profile(getattr(config, "permission_profile", "auto"))
     status_settings = ChatSettings(permission_profile=permission_profile, enable_tools=True)
     status_contract = build_full_auto_runtime_contract(settings=status_settings, config=config)
     status_boundary = build_turn_runtime_boundary(
@@ -1619,7 +1619,7 @@ def _process_chat_request(
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
     req.settings.permission_profile = normalize_permission_profile(
-        getattr(req.settings, "permission_profile", "") or getattr(config, "permission_profile", "code")
+        getattr(req.settings, "permission_profile", "") or getattr(config, "permission_profile", "auto")
     )
     requested_model = str(req.settings.model or provider_config.default_model or "").strip() or provider_config.default_model
     with request_phase_timer.measure("provider_auth_summary_ms"):
@@ -1664,7 +1664,7 @@ def _process_chat_request(
         )
         seed_session["agent_state"] = {
             "goal": fallback_goal,
-            "permission_profile": str(req.settings.permission_profile or "code"),
+            "permission_profile": str(req.settings.permission_profile or "auto"),
             "turn_status": "blocked",
             "plan": [],
             "pending_user_input": {},
@@ -1694,7 +1694,7 @@ def _process_chat_request(
             queue_wait_ms=0,
             text=fallback_text,
             tool_events=[],
-            permission_profile=str(req.settings.permission_profile or "code"),
+            permission_profile=str(req.settings.permission_profile or "auto"),
             turn_status="blocked",
             plan=[],
             pending_user_input={},
@@ -1707,7 +1707,7 @@ def _process_chat_request(
                 "run_state": {
                     "phase": "report",
                     "goal": fallback_goal,
-                    "permission_profile": str(req.settings.permission_profile or "code"),
+                    "permission_profile": str(req.settings.permission_profile or "auto"),
                     "turn_status": "blocked",
                     "plan": [],
                     "pending_user_input": {},
@@ -2110,7 +2110,7 @@ def _process_chat_request(
         effective_model = str(runtime_result.get("effective_model") or "")
         selected_model = effective_model or req.settings.model or provider_config.default_model
         permission_profile = normalize_permission_profile(
-            runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "code")
+            runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "auto")
         )
         turn_status = str(runtime_result.get("turn_status") or "completed")
         plan = list(runtime_result.get("plan") or [])

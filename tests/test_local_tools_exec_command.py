@@ -24,7 +24,7 @@ def _make_manager(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> LocalToolE
 
 def _runtime_boundary(tmp_path: Path, *, shell_allowed: bool = True, write_allowed: bool = True) -> dict[str, object]:
     return {
-        "permission_profile": "code" if shell_allowed else "chat",
+        "permission_profile": "auto" if shell_allowed else "default",
         "workspace_read_allowed": True,
         "workspace_write_allowed": write_allowed,
         "shell_allowed": shell_allowed,

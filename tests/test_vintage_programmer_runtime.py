@@ -887,7 +887,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert backend.tools.last_runtime_context["project_id"] == "project_demo"
     assert backend.tools.last_runtime_context["model"] == "gpt-test"
     assert result["inspector"]["agent"]["tool_policy"] == "read_only"
-    assert result["inspector"]["run_state"]["permission_profile"] == "full_dev"
+    assert result["inspector"]["run_state"]["permission_profile"] == "full_access"
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
     assert result["inspector"]["evidence"]["status"] == "collected"
     assert result["inspector"]["session"]["project_root"] == str(tmp_path)

@@ -1,4 +1,4 @@
-# 内部设计手册（v2.9.19）
+# 内部设计手册（v2.9.20）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
 
@@ -763,7 +763,7 @@ v2.9.13 keeps the v2.9.10 Codex-style all-tool drain behavior and makes the work
 - File reads default to the current project and explicitly imported files; file writes default to the current project.
 - Command execution defaults to the current project and validates path arguments such as `rg /etc`, `git -C /tmp`, and `python /tmp/a.py`.
 - Downloads, Desktop/workbench, and workspace sibling roots are no longer default accessible scopes.
-- Chat, Code, and Full Dev permission profiles separate collaboration style from actual runtime permissions.
+- Permission profiles separate collaboration style from actual runtime permissions; current product labels are Default, Auto, and Full Access.
 
 ## 20.8 v2.9.14 ModelContext-first Context System Notes
 
@@ -783,7 +783,7 @@ v2.9.15 keeps the ModelContext-first runtime and cleans the product surface.
 - The main assistant card shows live execution cards while a run is active, then folds the details into a concise execution summary after completion.
 - Debug Detail uses five normal top-level sections: Sent to Model, Model Output, Tool Execution, Runtime, and Advanced Raw.
 - Phase timings and raw payloads stay in Runtime or Advanced Raw rather than becoming separate primary debug sections.
-- The old mode control is removed. Chat, Code, and Full Dev permission profiles are the only user-facing runtime mode control.
+- The old mode control is removed. Permission profiles are the only user-facing runtime mode control.
 - Agent specs no longer declare default/plan/execute workflow modes.
 
 ## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes
@@ -793,9 +793,9 @@ v2.9.16 is a focused UI/runtime-display hotfix.
 - Main card live projection treats `tool.started`, `tool.finished`, and `tool.failed` as visible execution cards.
 - Tool cards use stable tool-name mapping and target extraction from common fields such as `path`, `query`, `command`, `root`, and `pattern`.
 - Main card cards must have non-empty titles and fallback details, so missing locale keys or partial trace payloads do not produce blank cards.
-- The active Chat / Code / Full Dev permission profile selector moved from Settings to the composer next to the attachment button.
+- The active permission profile selector moved from Settings to the composer next to the attachment button.
 - The selected permission profile is included in the next chat request immediately.
-- Runtime status and Debug Runtime expose `network_reason` so Full Dev can distinguish global network disablement from profile-level network disablement.
+- Runtime status and Debug Runtime expose `network_reason` so Full Access can distinguish global network disablement from profile-level network disablement.
 - Debug Detail keeps the five-section structure and no longer surfaces `phase_timings` as a normal runtime section.
 
 ## 20.11 v2.9.17 Permission Selector UI Polish Notes
@@ -803,8 +803,8 @@ v2.9.16 is a focused UI/runtime-display hotfix.
 v2.9.17 is a focused permission selector UI polish release.
 
 - The composer no longer shows the visible engineering label “权限边界”; the selector sits directly next to the attachment button.
-- Chat, Code, and Full Dev remain the only permission profile choices and continue to send the same `settings.permission_profile` payload values.
-- The selector uses subtle profile-specific styling: neutral for Chat, blue for Code, and a stronger orange accent for Full Dev.
+- Default, Auto, and Full Access remain the only permission profile choices.
+- The selector uses subtle profile-specific styling: neutral for Default, blue for Auto, and a stronger orange accent for Full Access.
 - The selector exposes a short hover/title description for the currently selected permission profile.
 - Runtime permission semantics, `RuntimeBoundary`, `ModelContext.permissions`, and Debug Runtime behavior are unchanged.
 
@@ -819,6 +819,18 @@ v2.9.19 combines a scoped hard cleanup with a manual-only self-update button.
 - The update command sequence is fixed: `git fetch --tags origin`, `git reset --hard origin/<branch>`, and `git pull --ff-only`.
 - The endpoint does not accept arbitrary frontend-provided command strings.
 - Cache/generated files remain ignored and are not part of the application architecture.
+
+## 20.13 v2.9.20 Codex-style Permission Modes Notes
+
+v2.9.20 renames the product permission model to Codex-style trust levels: `Default / Auto / Full Access`.
+
+- Canonical runtime values are now `default`, `auto`, and `full_access`.
+- Legacy values such as `chat`, `code`, and `full_dev` remain accepted as compatibility aliases.
+- `Default` is current-project read-only: read/search tools only, no shell, no writes, and no network.
+- `Auto` is the normal development mode: current-project read/write, safe commands inside the project, and network enabled.
+- `Full Access` is the maximum-trust mode: broader configured read/write/command scope and network enabled, while dangerous-command protection remains active.
+- The composer selector uses neutral box styling with only subtle text color differences by mode.
+- The selector remains lightweight: no background polling, no backend hover calls, and no approval prompt system.
 
 ## 21. v2.9.0 Stability Decision
 
@@ -933,9 +945,9 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 
 权限 profile 分为三类：
 
-- `Chat`：只读分析，不允许文件写入，不允许 shell，network 默认关闭。
-- `Code`：默认 coding 模式，允许读当前项目/导入文件、写当前项目、在当前项目内运行安全命令，network 默认关闭。
-- `Full Dev`：高级模式，可读取显式配置的 extra roots，并按全局网络配置启用 network；但仍受 path boundary、command allowlist 与危险命令拦截约束。
+- `Default`：只读安全模式，仅允许读取/搜索工具，不允许文件写入，不允许 shell，network 关闭。
+- `Auto`：默认自动开发模式，允许读写当前项目、在当前项目内运行安全命令，network 开启。
+- `Full Access`：最大信任模式，可按系统配置使用更大范围的读写和命令作用域，network 开启；但仍受 path boundary、command allowlist 与危险命令拦截约束。
 
 `VP_EXTRA_ALLOWED_ROOTS` 是显式授权入口；Downloads、Desktop/workbench、workspace sibling root 不再作为默认访问范围。命令安全不只检查 `cwd`，也检查路径参数，例如 `rg /etc`、`git -C /tmp status`、`python /tmp/a.py`、`cp app/main.py /tmp/main.py`。
 

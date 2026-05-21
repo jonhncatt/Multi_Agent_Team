@@ -14,8 +14,8 @@ class RuntimeContract:
     tools_available: bool = True
     workspace_write_allowed: bool = True
     shell_allowed: bool = True
-    network_allowed: bool = False
-    permission_profile: str = "code"
+    network_allowed: bool = True
+    permission_profile: str = "auto"
     sandbox_scope: str = "workspace"
     approval_policy: str = "avoid_unnecessary_confirmation"
     reason: str = "codex_style_full_auto"
@@ -34,7 +34,7 @@ def build_full_auto_runtime_contract(
     _ = context
     tools_available = bool(getattr(settings, "enable_tools", False))
     requested_profile = normalize_permission_profile(
-        getattr(settings, "permission_profile", "") or getattr(config, "permission_profile", "code")
+        getattr(settings, "permission_profile", "") or getattr(config, "permission_profile", "auto")
     )
     if not tools_available:
         return RuntimeContract(
@@ -46,25 +46,24 @@ def build_full_auto_runtime_contract(
             permission_profile=requested_profile,
             hint_source="",
         )
-    network_enabled = bool(getattr(config, "web_allow_all_domains", False) or getattr(config, "web_allowed_domains", []))
-    if requested_profile == "chat":
+    if requested_profile == "default":
         return RuntimeContract(
             tool_policy="use_when_needed",
             tools_available=True,
             workspace_write_allowed=False,
             shell_allowed=False,
             network_allowed=False,
-            permission_profile="chat",
+            permission_profile="default",
             hint_source="",
         )
-    if requested_profile == "full_dev":
+    if requested_profile == "full_access":
         return RuntimeContract(
             tool_policy="use_when_needed",
             tools_available=True,
             workspace_write_allowed=True,
             shell_allowed=True,
-            network_allowed=network_enabled,
-            permission_profile="full_dev",
+            network_allowed=True,
+            permission_profile="full_access",
             hint_source="",
         )
     return RuntimeContract(
@@ -72,7 +71,7 @@ def build_full_auto_runtime_contract(
         tools_available=True,
         workspace_write_allowed=True,
         shell_allowed=True,
-        network_allowed=False,
-        permission_profile="code",
+        network_allowed=True,
+        permission_profile="auto",
         hint_source="",
     )

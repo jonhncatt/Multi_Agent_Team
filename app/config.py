@@ -423,18 +423,29 @@ def normalize_llm_provider_name(raw: str | None) -> str:
 def normalize_permission_profile(raw: str | None) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     aliases = {
-        "readonly": "chat",
-        "read_only": "chat",
-        "read only": "chat",
-        "coding": "code",
-        "full": "full_dev",
-        "dev": "full_dev",
-        "fulldev": "full_dev",
-        "full dev": "full_dev",
+        "chat": "default",
+        "readonly": "default",
+        "read_only": "default",
+        "read only": "default",
+        "default": "default",
+        "safe": "default",
+        "safe_default": "default",
+        "code": "auto",
+        "coding": "auto",
+        "auto": "auto",
+        "automatic": "auto",
+        "full_dev": "full_access",
+        "full dev": "full_access",
+        "fulldev": "full_access",
+        "full": "full_access",
+        "dev": "full_access",
+        "full_access": "full_access",
+        "full access": "full_access",
+        "danger_full_access": "full_access",
     }
     normalized = aliases.get(value, value)
-    if normalized not in {"chat", "code", "full_dev"}:
-        return "code"
+    if normalized not in {"default", "auto", "full_access"}:
+        return "auto"
     return normalized
 
 
@@ -1022,7 +1033,7 @@ def load_config() -> AppConfig:
         or ""
     ).strip()
     extra_allowed_roots = [Path(item).resolve() for item in _split_paths(extra_allowed_roots_raw)]
-    permission_profile = normalize_permission_profile(_env("VP_PERMISSION_PROFILE", default="code"))
+    permission_profile = normalize_permission_profile(_env("VP_PERMISSION_PROFILE", default="auto"))
 
     web_domains_raw = (_env("VP_WEB_ALLOWED_DOMAINS", default="") or "").strip()
     web_allowed_domains = _split_csv(web_domains_raw)

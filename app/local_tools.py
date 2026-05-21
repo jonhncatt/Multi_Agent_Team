@@ -26,7 +26,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 from app.action_validator import validate_command_path_args
 from app.browser_runtime import BrowserToolManager
-from app.config import AppConfig, get_access_roots
+from app.config import AppConfig, get_access_roots, normalize_permission_profile
 from app.i18n import normalize_locale
 from app.document_text import (
     build_pdf_document_index,
@@ -1345,7 +1345,9 @@ class LocalToolExecutor:
         self._runtime_ctx.cwd = str(cwd or "").strip()
         self._runtime_ctx.model = str(model or "").strip()
         self._runtime_ctx.locale = normalize_locale(locale, self.config.default_locale)
-        self._runtime_ctx.permission_profile = str(permission_profile or getattr(self.config, "permission_profile", "code") or "code").strip()
+        self._runtime_ctx.permission_profile = normalize_permission_profile(
+            permission_profile or getattr(self.config, "permission_profile", "auto")
+        )
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
 
     def clear_runtime_context(self) -> None:
@@ -1729,8 +1731,10 @@ class LocalToolExecutor:
         boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
         if isinstance(boundary, dict) and "shell_allowed" in boundary:
             return bool(boundary.get("shell_allowed"))
-        profile = str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "code")).strip()
-        return profile != "chat"
+        profile = normalize_permission_profile(
+            str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "auto"))
+        )
+        return profile != "default"
 
     def _resolve_path(self, raw_path: str) -> Path:
         return _resolve_workspace_path(
@@ -1899,8 +1903,10 @@ class LocalToolExecutor:
         boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
         if isinstance(boundary, dict) and "workspace_write_allowed" in boundary:
             return bool(boundary.get("workspace_write_allowed"))
-        profile = str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "code")).strip()
-        return profile != "chat"
+        profile = normalize_permission_profile(
+            str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "auto"))
+        )
+        return profile != "default"
 
     def _write_path_error(self, path: Path) -> str:
         if not self._current_workspace_write_allowed():

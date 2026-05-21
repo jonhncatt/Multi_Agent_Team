@@ -1190,13 +1190,11 @@ button {
 
 .composer-toolbar select.composer-profile-select {
   min-width: 108px;
-  font-weight: 650;
+  font-weight: 400;
   color: var(--permission-profile-ink, var(--ink));
   border-color: var(--permission-profile-border, var(--line));
-  background:
-    linear-gradient(180deg, var(--permission-profile-bg, var(--panel)), var(--permission-profile-bg, var(--panel))),
-    var(--panel);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  background: var(--panel);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
 }
 
 .composer-toolbar select.composer-profile-select:hover,
@@ -1206,25 +1204,22 @@ button {
   outline: none;
 }
 
-.composer-toolbar select.composer-profile-select.profile-chat {
-  --permission-profile-bg: rgba(92, 102, 120, 0.08);
-  --permission-profile-border: rgba(92, 102, 120, 0.32);
+.composer-toolbar select.composer-profile-select.profile-default {
+  --permission-profile-border: rgba(92, 102, 120, 0.24);
   --permission-profile-border-strong: rgba(92, 102, 120, 0.5);
   --permission-profile-ring: rgba(92, 102, 120, 0.14);
   --permission-profile-ink: var(--ink-soft);
 }
 
-.composer-toolbar select.composer-profile-select.profile-code {
-  --permission-profile-bg: rgba(37, 99, 235, 0.08);
-  --permission-profile-border: rgba(37, 99, 235, 0.38);
+.composer-toolbar select.composer-profile-select.profile-auto {
+  --permission-profile-border: rgba(37, 99, 235, 0.24);
   --permission-profile-border-strong: rgba(37, 99, 235, 0.62);
   --permission-profile-ring: rgba(37, 99, 235, 0.14);
   --permission-profile-ink: #1d4ed8;
 }
 
-.composer-toolbar select.composer-profile-select.profile-full-dev {
-  --permission-profile-bg: rgba(194, 101, 28, 0.1);
-  --permission-profile-border: rgba(194, 101, 28, 0.52);
+.composer-toolbar select.composer-profile-select.profile-full-access {
+  --permission-profile-border: rgba(194, 101, 28, 0.28);
   --permission-profile-border-strong: rgba(194, 101, 28, 0.72);
   --permission-profile-ring: rgba(194, 101, 28, 0.18);
   --permission-profile-ink: #9a4f12;

@@ -16,8 +16,8 @@ class RuntimeBoundary(BaseModel):
     workspace_read_allowed: bool = True
     workspace_write_allowed: bool = True
     shell_allowed: bool = True
-    network_allowed: bool = False
-    permission_profile: str = "code"
+    network_allowed: bool = True
+    permission_profile: str = "auto"
     approval_policy: str = "avoid_unnecessary_confirmation"
     allowed_roots: list[str] = Field(default_factory=list)
     writable_roots: list[str] = Field(default_factory=list)
@@ -34,7 +34,8 @@ class RuntimeBoundary(BaseModel):
         ActionValidator. The model only needs broad capability and location data.
         """
         return {
-            "permission_profile": str(self.permission_profile or "code"),
+            "permission_profile": str(self.permission_profile or "auto"),
+            "permission_label": self.permission_label(),
             "workspace_read_allowed": bool(self.workspace_read_allowed),
             "workspace_write_allowed": bool(self.workspace_write_allowed),
             "shell_allowed": bool(self.shell_allowed),
@@ -43,23 +44,77 @@ class RuntimeBoundary(BaseModel):
             "approval_policy": str(self.approval_policy or ""),
             "cwd": str(self.cwd or ""),
             "project_root": str(self.project_root or ""),
-            "file_read_scope": self._scope_label(self.allowed_roots, default="current project + imported files"),
-            "file_write_scope": self._scope_label(self.writable_roots, default="current project" if self.workspace_write_allowed else "none"),
-            "command_scope": self._scope_label(self.command_allowed_roots, default="current project" if self.shell_allowed else "none"),
+            "file_read_scope": self._model_read_scope(),
+            "file_write_scope": self._model_write_scope(),
+            "command_scope": self._model_command_scope(),
         }
+
+    def permission_label(self) -> str:
+        profile = normalize_permission_profile(self.permission_profile)
+        if profile == "default":
+            return "Default"
+        if profile == "full_access":
+            return "Full Access"
+        return "Auto"
+
+    def _default_read_scope(self) -> str:
+        profile = normalize_permission_profile(self.permission_profile)
+        if profile == "default":
+            return "current project"
+        if profile == "full_access":
+            return "broader access"
+        return "current project + imported files"
+
+    def _default_write_scope(self) -> str:
+        if not self.workspace_write_allowed:
+            return "none"
+        if normalize_permission_profile(self.permission_profile) == "full_access":
+            return "broader access"
+        return "current project"
+
+    def _default_command_scope(self) -> str:
+        if not self.shell_allowed:
+            return "none"
+        if normalize_permission_profile(self.permission_profile) == "full_access":
+            return "broader access"
+        return "current project"
+
+    def _model_read_scope(self) -> str:
+        profile = normalize_permission_profile(self.permission_profile)
+        if profile == "default":
+            return "current project"
+        if profile == "full_access":
+            return "broader access"
+        return self._scope_label(self.allowed_roots, default=self._default_read_scope())
+
+    def _model_write_scope(self) -> str:
+        if not self.workspace_write_allowed:
+            return "none"
+        if normalize_permission_profile(self.permission_profile) == "full_access":
+            return "broader access"
+        return self._scope_label(self.writable_roots, default=self._default_write_scope())
+
+    def _model_command_scope(self) -> str:
+        if not self.shell_allowed:
+            return "none"
+        if normalize_permission_profile(self.permission_profile) == "full_access":
+            return "broader access"
+        return self._scope_label(self.command_allowed_roots, default=self._default_command_scope())
 
     @staticmethod
     def _scope_label(roots: list[str], *, default: str) -> str:
         if not roots:
             return "none" if default == "none" else default
         if len(roots) == 1:
-            return "current project"
+            return default if default == "broader access" else "current project"
+        if default == "broader access":
+            return "broader access"
         return "current project + imported files"
 
     def network_reason(self) -> str:
         if self.network_allowed:
             return "enabled"
-        if normalize_permission_profile(self.permission_profile) in {"chat", "code"}:
+        if normalize_permission_profile(self.permission_profile) == "default":
             return "profile_disabled"
         return "global_disabled"
 
@@ -89,7 +144,7 @@ def build_turn_runtime_boundary(
     attachments: list[dict[str, Any]] | None = None,
 ) -> RuntimeBoundary:
     contract = runtime_contract or RuntimeContract(
-        network_allowed=bool(getattr(config, "web_allow_all_domains", False) or getattr(config, "web_allowed_domains", [])),
+        network_allowed=True,
     )
     root = Path(project_root or config.workspace_root).expanduser().resolve()
     current_cwd = Path(cwd or root).expanduser()
@@ -98,7 +153,7 @@ def build_turn_runtime_boundary(
     current_cwd = current_cwd.resolve()
 
     profile = normalize_permission_profile(
-        getattr(contract, "permission_profile", "") or getattr(config, "permission_profile", "code")
+        getattr(contract, "permission_profile", "") or getattr(config, "permission_profile", "auto")
     )
 
     imported_roots: list[Path] = []
@@ -121,18 +176,26 @@ def build_turn_runtime_boundary(
             continue
 
     extra_roots = []
-    if profile == "full_dev":
+    if profile == "full_access":
         extra_roots = [Path(item).expanduser().resolve() for item in list(getattr(config, "default_extra_allowed_roots", []) or [])]
         extra_roots.extend(Path(item).expanduser().resolve() for item in list(getattr(config, "allowed_roots", []) or []) if Path(item).expanduser().resolve() != root)
         if bool(getattr(config, "allow_workspace_sibling_access", False)) and getattr(config, "workspace_sibling_root", None):
             extra_roots.append(Path(getattr(config, "workspace_sibling_root")).expanduser().resolve())
 
-    allowed_roots = _dedup_paths([root, *imported_roots, *extra_roots])
-    workspace_write_allowed = bool(contract.workspace_write_allowed) and profile in {"code", "full_dev"}
-    shell_allowed = bool(contract.shell_allowed) and profile in {"code", "full_dev"}
-    network_allowed = bool(contract.network_allowed) if profile == "full_dev" else False
-    writable_roots = _dedup_paths([root] if workspace_write_allowed else [])
-    command_roots = _dedup_paths([root] if shell_allowed else [])
+    allow_any_path = bool(getattr(config, "allow_any_path", False)) and profile == "full_access"
+    any_root = Path(root.anchor or Path.cwd().anchor or "/").resolve()
+    allowed_roots = _dedup_paths([any_root] if allow_any_path else [root, *imported_roots, *extra_roots])
+    workspace_write_allowed = bool(contract.workspace_write_allowed) and profile in {"auto", "full_access"}
+    shell_allowed = bool(contract.shell_allowed) and profile in {"auto", "full_access"}
+    network_allowed = bool(contract.network_allowed) and profile in {"auto", "full_access"}
+    if workspace_write_allowed:
+        writable_roots = _dedup_paths([any_root] if allow_any_path else ([root, *extra_roots] if profile == "full_access" else [root]))
+    else:
+        writable_roots = []
+    if shell_allowed:
+        command_roots = _dedup_paths([any_root] if allow_any_path else ([root, *extra_roots] if profile == "full_access" else [root]))
+    else:
+        command_roots = []
     return RuntimeBoundary(
         tool_policy=str(contract.tool_policy or "use_when_needed"),
         workspace_read_allowed=True,

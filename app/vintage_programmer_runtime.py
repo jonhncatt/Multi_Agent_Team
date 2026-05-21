@@ -2722,7 +2722,7 @@ class VintageProgrammerRuntime:
         cwd: str,
         model: str,
         locale: str,
-        permission_profile: str = "code",
+        permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
@@ -3397,7 +3397,7 @@ class VintageProgrammerRuntime:
             type="run.started",
             title=self._trace_label(locale, "run.started"),
             status="running",
-            payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "code")},
+            payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "auto")},
             trace_events=trace_events,
         )
         emit_runtime_activity(
@@ -3408,7 +3408,7 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "tools_available": tools_available,
                 "tool_count": tool_count,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "model_context": "task/workspace/memory/plan/permissions/conversation",
                 "sent_to_model": dump_model(turn_model_context),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
@@ -3440,7 +3440,7 @@ class VintageProgrammerRuntime:
                 "attachments": len(attachment_metas),
                 "tools_available": tools_available,
                 "tool_count": tool_count,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
             },
             visible=False,
@@ -4691,7 +4691,7 @@ class VintageProgrammerRuntime:
             "run_state": {
                 "goal": current_goal,
                 "phase": runtime_phase,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "turn_status": turn_status,
                 "plan": plan_state,
                 "pending_user_input": pending_user_input,
@@ -4787,7 +4787,7 @@ class VintageProgrammerRuntime:
             "agent_title": spec.title,
             "text": raw_text,
             "effective_model": effective_model or requested_model,
-            "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
+            "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
             "turn_status": turn_status,
             "plan": plan_state,
             "pending_user_input": pending_user_input,
@@ -4832,7 +4832,7 @@ class VintageProgrammerRuntime:
                 "agent_id": spec.agent_id,
                 "tool_policy": spec.tool_policy,
                 "phase": runtime_phase,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "code"),
+                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "turn_status": turn_status,
                 "network_mode": spec.network_mode,
                 "evidence_status": evidence_status,

@@ -315,9 +315,9 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         ".activity-flow-note",
         ".composer-toolbar select.composer-profile-select",
         ".composer-permission-profile",
-        ".composer-toolbar select.composer-profile-select.profile-chat",
-        ".composer-toolbar select.composer-profile-select.profile-code",
-        ".composer-toolbar select.composer-profile-select.profile-full-dev",
+        ".composer-toolbar select.composer-profile-select.profile-default",
+        ".composer-toolbar select.composer-profile-select.profile-auto",
+        ".composer-toolbar select.composer-profile-select.profile-full-access",
     )
     for token in required_style_tokens:
         assert token in styles, token
@@ -451,16 +451,30 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert "selectedPermissionProfile.replaceAll(\"_\", \"-\")" in script
     assert "title=${selectedPermissionDescription}" in script
     assert 'aria-label=${selectedPermissionAriaLabel}' in script
-    assert '<option value="chat" title=${t("settings.permission_profile.chat.help")}' in script
-    assert '<option value="code" title=${t("settings.permission_profile.code.help")}' in script
-    assert '<option value="full_dev" title=${t("settings.permission_profile.full_dev.help")}' in script
-    assert ".composer-toolbar select.composer-profile-select.profile-chat" in styles
-    assert ".composer-toolbar select.composer-profile-select.profile-code" in styles
-    assert ".composer-toolbar select.composer-profile-select.profile-full-dev" in styles
+    assert '<option value="default" title=${t("settings.permission_profile.default.help")}' in script
+    assert '<option value="auto" title=${t("settings.permission_profile.auto.help")}' in script
+    assert '<option value="full_access" title=${t("settings.permission_profile.full_access.help")}' in script
+    assert ".composer-toolbar select.composer-profile-select.profile-default" in styles
+    assert ".composer-toolbar select.composer-profile-select.profile-auto" in styles
+    assert ".composer-toolbar select.composer-profile-select.profile-full-access" in styles
     assert '"settings.permission_profile": "权限"' in locales
-    assert '"settings.permission_profile.full_dev.help": "高级权限模式；仍受项目边界和全局网络设置限制。"' in locales
+    assert '"settings.permission_profile.default": "默认"' in locales
+    assert '"settings.permission_profile.auto": "自动"' in locales
+    assert '"settings.permission_profile.full_access": "完全访问"' in locales
+    assert '"settings.permission_profile.full_access.help": "更大范围读写，可执行安全命令，网络开启。请在信任任务时使用。"' in locales
     assert "settings: {\n            ...chatSettings," in script
     assert 'className="drawer-input"\n                      value=${chatSettings.permission_profile || "code"}' not in script
+    assert '|| "code",' not in script
+    selector_styles = re.search(
+        r"\.composer-toolbar select\.composer-profile-select \{(?P<body>.*?)\n\}",
+        styles,
+        re.S,
+    )
+    assert selector_styles, "composer profile selector CSS block not found"
+    body = selector_styles.group("body")
+    assert "font-weight: 400;" in body
+    assert "font-weight: 600" not in body
+    assert "font-weight: 700" not in body
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
@@ -580,7 +594,7 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v2.9.19）")
+    assert manual.startswith("# 内部设计手册（v2.9.20）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -598,6 +612,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
     assert "## 20.11 v2.9.17 Permission Selector UI Polish Notes" in manual
     assert "## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes" in manual
+    assert "## 20.13 v2.9.20 Codex-style Permission Modes Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual

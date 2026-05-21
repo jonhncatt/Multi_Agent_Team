@@ -61,7 +61,8 @@ class PlanContext(BaseModel):
 
 
 class PermissionsContext(BaseModel):
-    profile: str = "code"
+    profile: str = "auto"
+    label: str = "Auto"
     read: str = ""
     write: str = ""
     shell: str = ""
@@ -491,8 +492,10 @@ class ContextManager(BaseModel):
 
 
 def _permissions_from_boundary(runtime_boundary_model_view: dict[str, Any], *, permission_profile: str) -> PermissionsContext:
+    profile = str(permission_profile or runtime_boundary_model_view.get("permission_profile") or "auto")
     return PermissionsContext(
-        profile=str(permission_profile or runtime_boundary_model_view.get("permission_profile") or "code"),
+        profile=profile,
+        label=str(runtime_boundary_model_view.get("permission_label") or profile.replace("_", " ").title()),
         read=str(runtime_boundary_model_view.get("file_read_scope") or _permission_text(
             runtime_boundary_model_view.get("workspace_read_allowed"),
             enabled="current project + imported files",
