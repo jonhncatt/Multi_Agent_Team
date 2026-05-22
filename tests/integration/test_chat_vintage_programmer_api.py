@@ -339,6 +339,63 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
         _ = (message, settings)
         project = dict(context.get("project") or {})
         run_id = str(context.get("run_id") or "run-failed")
+        llm_exchanges = [
+            {
+                "round": 1,
+                "phase": "initial",
+                "model": "gpt-test",
+                "status": "completed",
+                "sent_messages_exact": [
+                    {"index": 0, "class_name": "SystemMessage", "role": "system", "content": "rules", "tool_call_id": "", "name": "", "tool_calls": [], "additional_kwargs": {}, "response_metadata": {}, "truncated": False, "original_chars": 5},
+                    {"index": 1, "class_name": "HumanMessage", "role": "user", "content": "task", "tool_call_id": "", "name": "", "tool_calls": [], "additional_kwargs": {}, "response_metadata": {}, "truncated": False, "original_chars": 4},
+                ],
+                "model_returned_exact": {
+                    "class_name": "AIMessage",
+                    "role": "assistant",
+                    "content": "I already inspected the skill files.",
+                    "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "x"}}],
+                    "invalid_tool_calls": [],
+                    "additional_kwargs": {},
+                    "response_metadata": {},
+                    "usage_metadata": {},
+                    "finish_reason": "tool_calls",
+                    "truncated": False,
+                    "original_chars": 36,
+                },
+                "error": None,
+                "harness_interpretation": {
+                    "has_tool_calls": True,
+                    "tool_count": 1,
+                    "decision": "tool_call",
+                    "final_answer_allowed": False,
+                    "turn_status_after_round": "running",
+                },
+            },
+            {
+                "round": 2,
+                "phase": "post_tool_response",
+                "model": "gpt-test",
+                "status": "failed",
+                "sent_messages_exact": [
+                    {"index": 0, "class_name": "ToolMessage", "role": "tool", "content": "{\"ok\": true}", "tool_call_id": "tc-1", "name": "web_search", "tool_calls": [], "additional_kwargs": {}, "response_metadata": {}, "truncated": False, "original_chars": 12},
+                ],
+                "model_returned_exact": None,
+                "error": {
+                    "kind": "llm_empty_response",
+                    "message": "LLM provider returned empty response before ChatResult creation.",
+                    "exception_type": "AttributeError",
+                    "raw_message": "'NoneType' object has no attribute 'model_dump'",
+                    "traceback_tail": "AttributeError: 'NoneType' object has no attribute 'model_dump'",
+                },
+                "harness_interpretation": {
+                    "has_tool_calls": False,
+                    "tool_count": 0,
+                    "decision": "runtime_error",
+                    "final_answer_allowed": False,
+                    "turn_status_after_round": "failed",
+                },
+            },
+        ]
         trace_events = [
             {
                 "id": "trace-runtime",
@@ -467,6 +524,7 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
                     "exception_type": "AttributeError",
                     "tool_boundary_clean": True,
                 },
+                "llm_exchanges": llm_exchanges,
                 "tool_boundary_clean": True,
                 "trace_events": trace_events,
             },
@@ -489,6 +547,7 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
                         "exception_type": "AttributeError",
                         "tool_boundary_clean": True,
                     },
+                    "llm_exchanges": llm_exchanges,
                     "task_checkpoint": {
                         "task_id": "task-failed-1",
                         "goal": str(message or ""),
@@ -883,7 +942,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.2a",
+            "app_version": "3.1.2b",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -925,7 +984,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.2a"
+    assert bootstrap_payload["app_version"] == "3.1.2b"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1528,9 +1587,13 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     assert last_turn["text"] == payload["text"]
     assert last_turn["activity"]["runtime_error"]["kind"] == "llm_empty_response"
     assert last_turn["activity"]["model_draft"] == payload["model_draft"]
+    assert len(last_turn["activity"]["llm_exchanges"]) == 2
+    assert last_turn["activity"]["llm_exchanges"][-1]["error"]["kind"] == "llm_empty_response"
+    assert payload["inspector"]["run_state"]["llm_exchanges"] == payload["activity"]["llm_exchanges"]
 
     clean_turns = list(((session.get("context_manager") or {}).get("clean_turns")) or [])
     assert all("model_dump" not in str((turn or {}).get("text") or "") for turn in clean_turns)
+    assert all("llm_exchanges" not in str(turn or "") for turn in clean_turns)
 
 
 def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:

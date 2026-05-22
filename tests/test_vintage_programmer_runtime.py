@@ -90,6 +90,20 @@ class _FakeMessage:
         self.content = content
         self.tool_calls = list(tool_calls or [])
         self.kwargs = kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class _FakeSystemMessage(_FakeMessage):
+    pass
+
+
+class _FakeHumanMessage(_FakeMessage):
+    pass
+
+
+class _FakeToolMessage(_FakeMessage):
+    pass
 
 
 class _FakeTools:
@@ -226,9 +240,9 @@ class _FakeBackend:
         self.tools = _FakeTools()
         self._scripted_messages = list(scripted_messages)
         self.invocations: list[dict[str, Any]] = []
-        self._SystemMessage = _FakeMessage
-        self._HumanMessage = _FakeMessage
-        self._ToolMessage = _FakeMessage
+        self._SystemMessage = _FakeSystemMessage
+        self._HumanMessage = _FakeHumanMessage
+        self._ToolMessage = _FakeToolMessage
 
     def _next(self) -> _FakeMessage:
         if self._scripted_messages:
@@ -1081,6 +1095,83 @@ def test_runtime_tool_failure_still_closes_call_id(tmp_path: Path) -> None:
     assert runtime._messages_at_tool_boundary(followup_messages)
 
 
+def test_runtime_records_completed_initial_llm_exchange(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="Done.")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="直接回答",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-llm-exchange-initial",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 1
+    exchange = exchanges[0]
+    assert exchange["phase"] == "initial"
+    assert exchange["status"] == "completed"
+    assert exchange["sent_messages_exact"][0]["role"] == "system"
+    assert exchange["sent_messages_exact"][-1]["role"] == "user"
+    assert exchange["model_returned_exact"]["content"] == "Done."
+    assert exchange["harness_interpretation"]["decision"] == "final_answer"
+    assert exchange["harness_interpretation"]["final_answer_allowed"] is True
+    assert result["inspector"]["run_state"]["llm_exchanges"] == exchanges
+    assert all("llm_exchanges" not in dict(item.get("payload") or {}) for item in result["activity"]["trace_events"])
+
+
+def test_runtime_records_tool_and_followup_llm_exchanges(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="I will inspect the folder.", tool_calls=[{"id": "tc-llm-tool", "name": "web_search", "args": {"query": "x"}}]),
+            _FakeMessage(content="final after tool"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-llm-exchange-followup",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 2
+    initial_exchange, followup_exchange = exchanges
+    assert initial_exchange["model_returned_exact"]["tool_calls"][0]["id"] == "tc-llm-tool"
+    assert initial_exchange["model_returned_exact"]["tool_calls"][0]["name"] == "web_search"
+    assert initial_exchange["harness_interpretation"]["has_tool_calls"] is True
+    assert initial_exchange["harness_interpretation"]["decision"] == "tool_call"
+    tool_messages = [item for item in followup_exchange["sent_messages_exact"] if item["role"] == "tool"]
+    assert tool_messages
+    assert tool_messages[0]["tool_call_id"] == "tc-llm-tool"
+    assert followup_exchange["model_returned_exact"]["content"] == "final after tool"
+    assert followup_exchange["harness_interpretation"]["decision"] == "final_answer"
+
+
 def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -1126,6 +1217,17 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
     assert payload["failed_round"] == 1
     assert payload["last_message_roles"][-1] == "tool"
     assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 2
+    failed_exchange = exchanges[-1]
+    assert failed_exchange["phase"] == "post_tool_response"
+    assert failed_exchange["status"] == "failed"
+    assert failed_exchange["model_returned_exact"] is None
+    assert failed_exchange["error"]["kind"] == "llm_request_error"
+    assert failed_exchange["error"]["message"] == "azure rejected broken history"
+    assert any(item["tool_call_id"] == "tc-debug" for item in failed_exchange["sent_messages_exact"] if item["role"] == "tool")
+    assert failed_exchange["harness_interpretation"]["decision"] == "runtime_error"
+    assert failed_exchange["harness_interpretation"]["turn_status_after_round"] == "failed"
 
 
 def test_runtime_retries_clean_boundary_nonetype_model_dump_failure(tmp_path: Path) -> None:
@@ -1167,6 +1269,12 @@ def test_runtime_retries_clean_boundary_nonetype_model_dump_failure(tmp_path: Pa
     assert retrying["payload"]["exception_type"] == "AttributeError"
     assert runtime._messages_at_tool_boundary(backend.invocations[1]["messages"])
     assert runtime._messages_at_tool_boundary(backend.invocations[2]["messages"])
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 3
+    assert [item["phase"] for item in exchanges] == ["initial", "post_tool_response", "post_tool_response_retry"]
+    assert [item["status"] for item in exchanges] == ["completed", "failed", "completed"]
+    assert exchanges[1]["error"]["kind"] == "llm_empty_response"
+    assert exchanges[2]["model_returned_exact"]["content"] == "retry recovered"
 
 
 def test_runtime_retry_failure_reports_rich_llm_diagnostics(tmp_path: Path) -> None:
@@ -1211,6 +1319,12 @@ def test_runtime_retry_failure_reports_rich_llm_diagnostics(tmp_path: Path) -> N
     assert failed["payload"]["retry_attempt"] == 1
     assert failed["payload"]["failed_round"] == 1
     assert "traceback_tail" in failed["payload"]
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 3
+    assert [item["status"] for item in exchanges] == ["completed", "failed", "failed"]
+    assert exchanges[-1]["phase"] == "post_tool_response_retry"
+    assert exchanges[-1]["error"]["kind"] == "llm_empty_response"
+    assert exchanges[-1]["harness_interpretation"]["decision"] == "runtime_error"
 
 
 def test_runtime_tool_call_content_uses_model_draft_until_completed(tmp_path: Path) -> None:

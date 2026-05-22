@@ -68,6 +68,14 @@ REQUIRED_CORE_KEYS = (
     "runtime.error.debug_hint",
     "runtime.model_draft.title",
     "runtime.model_draft.empty",
+    "runtime.execution_progress.title",
+    "runtime.raw_model_io.title",
+    "runtime.raw_model_io.round",
+    "runtime.raw_model_io.sent_messages_exact",
+    "runtime.raw_model_io.model_returned_exact",
+    "runtime.raw_model_io.error",
+    "runtime.raw_model_io.harness_interpretation",
+    "runtime.raw_model_io.truncated",
     "activity.tool_title.read_file",
     "activity.tool_title.list_dir",
     "activity.tool_title.glob_file_search",
@@ -572,6 +580,7 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "const turnStartedAt = normalizeActivityTimestamp(item.turn_started_at || item.turnStartedAt || startedAt || 0);" in body
     assert "const finalElapsedMs = isActivityTerminalStatus(status)" in body
     assert "item.finished_at || 0" in body
+    assert "llm_exchanges: Array.isArray(item.llm_exchanges) ? item.llm_exchanges : []" in body
     assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
     assert "const turnStartedAt = item.turn_started_at || item.started_at;" in script
     assert "const frozenElapsedMs = Math.max(0, Number(item.final_elapsed_ms || 0) || 0);" in script
@@ -687,6 +696,41 @@ def test_model_draft_live_cards_cover_non_terminal_activity_states() -> None:
     assert 'cards.unshift({' in body
 
 
+def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function resolveLiveSummary\(activity, projection, locale = \"zh-CN\"\) \{(?P<body>.*?)\n}\n\nfunction formatLiveSummaryText",
+        script,
+        re.S,
+    )
+    assert match, "resolveLiveSummary function not found"
+    body = match.group("body")
+
+    assert 'const modelDraftText = String(item.model_draft || "").trim();' in body
+    assert 'const reversedCards = cards.slice().reverse();' in body
+    assert "latestMeaningfulCurrentCard" in body
+    assert "latestMeaningfulNonCompletedCard" in body
+    assert 'title: translateUi(locale, "runtime.execution_progress.title")' in body
+    assert "main_live_cards[0]" not in body
+
+
+def test_pending_assistant_body_uses_live_summary_fallback() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"const messageBodyText = \(item\) => \{(?P<body>.*?)\n  \};\n\n  return html`",
+        script,
+        re.S,
+    )
+    assert match, "messageBodyText helper not found"
+    body = match.group("body")
+
+    assert "const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());" in body
+    assert 'const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, uiLocale));' in body
+    assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
+
+
 def test_append_activity_trace_promotes_model_draft_and_runtime_error_from_trace_payload() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
@@ -703,6 +747,7 @@ def test_append_activity_trace_promotes_model_draft_and_runtime_error_from_trace
     assert 'final_answer: String(payload.final_answer || current.final_answer || ""),' in body
     assert 'normalizeRuntimeErrorPayload(payload.runtime_error)' in body
     assert 'normalizedTrace.type === "llm.failed"' in body
+    assert "llm_exchanges: current.llm_exchanges," in body
 
 
 def test_main_activity_projection_bounds_main_card_trace_work() -> None:
@@ -746,6 +791,13 @@ def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' not in script
     assert 'renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true })' in script
     assert 'renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true })' in script
+    assert 'const exchanges = Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [];' in script
+    assert 'renderRawModelIo(exchanges)' in script
+    assert 't("runtime.raw_model_io.title")' in script
+    assert 't("runtime.raw_model_io.sent_messages_exact")' in script
+    assert 't("runtime.raw_model_io.model_returned_exact")' in script
+    assert 't("runtime.raw_model_io.error")' in script
+    assert 't("runtime.raw_model_io.harness_interpretation")' in script
     assert "phase_timings: item.phase_timings || {}" not in script
 
 

@@ -28,6 +28,12 @@ from app.config import AppConfig
 from app.context_pack import ContextManager, ModelContext, build_model_context, render_model_context
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
+from app.llm_exchange import (
+    MAX_EXCHANGES_PER_TURN,
+    snapshot_ai_message,
+    snapshot_error,
+    snapshot_messages,
+)
 from app.models import (
     ChatSettings,
     ExecutionTraceEntry,
@@ -2430,6 +2436,39 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
+    def _append_llm_exchange(llm_exchanges: list[dict[str, Any]], exchange: dict[str, Any]) -> None:
+        llm_exchanges.append(exchange)
+        if len(llm_exchanges) > MAX_EXCHANGES_PER_TURN:
+            del llm_exchanges[:-MAX_EXCHANGES_PER_TURN]
+
+    @staticmethod
+    def _build_llm_exchange_harness_interpretation(
+        *,
+        model_action: dict[str, Any] | None,
+        assistant_text: str,
+        turn_status_after_round: str,
+        decision: str | None = None,
+    ) -> dict[str, Any]:
+        action = dict(model_action or {})
+        tool_calls = list(action.get("tool_calls") or [])
+        accepted = bool(action.get("accepted"))
+        resolved_decision = str(decision or "").strip()
+        if not resolved_decision:
+            if tool_calls or str(action.get("action_type") or "").strip() == "tool_call":
+                resolved_decision = "tool_call"
+            elif accepted and str(assistant_text or "").strip():
+                resolved_decision = "final_answer"
+            else:
+                resolved_decision = "empty"
+        return {
+            "has_tool_calls": bool(tool_calls),
+            "tool_count": len(tool_calls),
+            "decision": resolved_decision,
+            "final_answer_allowed": resolved_decision == "final_answer",
+            "turn_status_after_round": str(turn_status_after_round or "running"),
+        }
+
+    @staticmethod
     def _is_retryable_llm_failure(message: str) -> bool:
         text = str(message or "").lower()
         return any(
@@ -2778,6 +2817,7 @@ class VintageProgrammerRuntime:
         model_action: dict[str, Any] = {}
         execution_trace: list[dict[str, Any]] = []
         trace_events: list[dict[str, Any]] = []
+        llm_exchanges: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
         model_draft = ""
@@ -2794,6 +2834,7 @@ class VintageProgrammerRuntime:
         }
         activity_sequence = 0
         current_step_index = 0
+        llm_exchange_round = 0
 
         def emit_runtime_activity(
             activity_type: str,
@@ -2819,6 +2860,20 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
                 sequence=activity_sequence,
             )
+
+        def begin_llm_exchange(phase: str, model_name: str, outgoing_messages: list[Any]) -> dict[str, Any]:
+            nonlocal llm_exchange_round
+            llm_exchange_round += 1
+            return {
+                "round": int(llm_exchange_round),
+                "phase": str(phase or ""),
+                "model": str(model_name or ""),
+                "status": "running",
+                "sent_messages_exact": snapshot_messages(outgoing_messages),
+                "model_returned_exact": None,
+                "error": None,
+                "harness_interpretation": {},
+            }
 
         self._emit_trace(
             progress_cb,
@@ -2962,6 +3017,7 @@ class VintageProgrammerRuntime:
             )
             phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
             initial_invoke_ok = False
+            initial_exchange = begin_llm_exchange("initial", requested_model, messages)
             try:
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                     self._backend._invoke_chat_with_runner,
@@ -2992,6 +3048,15 @@ class VintageProgrammerRuntime:
                     phase="initial_model_response",
                     model=requested_model,
                 )
+                initial_exchange["status"] = "failed"
+                initial_exchange["error"] = snapshot_error(exc, classified=runtime_error)
+                initial_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                    model_action={},
+                    assistant_text="",
+                    turn_status_after_round="failed",
+                    decision="runtime_error",
+                )
+                self._append_llm_exchange(llm_exchanges, initial_exchange)
                 turn_status = "failed"
                 notes.append(str(runtime_error.get("kind") or "llm_request_error"))
                 self._emit_trace(
@@ -3036,7 +3101,20 @@ class VintageProgrammerRuntime:
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                initial_exchange["model"] = str(effective_model or requested_model)
+                initial_exchange["status"] = "completed"
+                initial_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
                 refresh_model_step(ai_msg, event_type="activity.done")
+                initial_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                    model_action=model_action,
+                    assistant_text=self._backend._content_to_text(getattr(ai_msg, "content", "")).strip(),
+                    turn_status_after_round=(
+                        "running"
+                        if list(model_action.get("tool_calls") or [])
+                        else ("completed" if bool(model_action.get("accepted")) else "blocked")
+                    ),
+                )
+                self._append_llm_exchange(llm_exchanges, initial_exchange)
 
             halt_for_user_input = False
             turn_started_at = time.monotonic()
@@ -3854,6 +3932,8 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     locale=locale,
                 )
+                followup_exchange = begin_llm_exchange("post_tool_response", effective_model or requested_model, messages)
+                completed_exchange = followup_exchange
                 try:
                     ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                         self._backend._invoke_with_runner_recovery,
@@ -3885,6 +3965,15 @@ class VintageProgrammerRuntime:
                         phase="before_followup_llm",
                         model=effective_model or requested_model,
                     )
+                    followup_exchange["status"] = "failed"
+                    followup_exchange["error"] = snapshot_error(exc, classified=failure_payload)
+                    followup_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                        model_action={},
+                        assistant_text="",
+                        turn_status_after_round="failed",
+                        decision="runtime_error",
+                    )
+                    self._append_llm_exchange(llm_exchanges, followup_exchange)
                     if (
                         not llm_retry_used
                         and bool(failure_payload.get("tool_boundary_clean"))
@@ -3902,6 +3991,7 @@ class VintageProgrammerRuntime:
                             payload={**failure_payload, "retry_attempt": 1},
                             trace_events=trace_events,
                         )
+                        retry_exchange = begin_llm_exchange("post_tool_response_retry", effective_model or requested_model, messages)
                         try:
                             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                                 self._backend._invoke_with_runner_recovery,
@@ -3940,6 +4030,7 @@ class VintageProgrammerRuntime:
                                 },
                                 trace_events=trace_events,
                             )
+                            completed_exchange = retry_exchange
                         except Exception as retry_exc:
                             retry_payload = self._llm_failure_payload(
                                 retry_exc,
@@ -3948,6 +4039,15 @@ class VintageProgrammerRuntime:
                                 model=effective_model or requested_model,
                                 retry_attempt=1,
                             )
+                            retry_exchange["status"] = "failed"
+                            retry_exchange["error"] = snapshot_error(retry_exc, classified=retry_payload)
+                            retry_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                                model_action={},
+                                assistant_text="",
+                                turn_status_after_round="failed",
+                                decision="runtime_error",
+                            )
+                            self._append_llm_exchange(llm_exchanges, retry_exchange)
                             runtime_error = retry_payload
                             turn_status = "failed"
                             notes.append(str(retry_payload.get("kind") or "llm_request_error"))
@@ -4023,7 +4123,20 @@ class VintageProgrammerRuntime:
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                completed_exchange["model"] = str(effective_model or requested_model)
+                completed_exchange["status"] = "completed"
+                completed_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
                 refresh_model_step(ai_msg, event_type="activity.delta")
+                completed_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                    model_action=model_action,
+                    assistant_text=self._backend._content_to_text(getattr(ai_msg, "content", "")).strip(),
+                    turn_status_after_round=(
+                        "running"
+                        if list(model_action.get("tool_calls") or [])
+                        else ("completed" if bool(model_action.get("accepted")) else "blocked")
+                    ),
+                )
+                self._append_llm_exchange(llm_exchanges, completed_exchange)
                 last_successful_round = round_idx
         finally:
             if hasattr(self._backend.tools, "clear_runtime_context"):
@@ -4223,6 +4336,7 @@ class VintageProgrammerRuntime:
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),
+                "llm_exchanges": list(llm_exchanges),
                 "tool_boundary_clean": (
                     runtime_error.get("tool_boundary_clean")
                     if isinstance(runtime_error.get("tool_boundary_clean"), bool)
@@ -4335,6 +4449,7 @@ class VintageProgrammerRuntime:
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),
+                "llm_exchanges": list(llm_exchanges),
                 "tool_boundary_clean": (
                     runtime_error.get("tool_boundary_clean")
                     if isinstance(runtime_error.get("tool_boundary_clean"), bool)

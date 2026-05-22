@@ -112,6 +112,7 @@ class MessageActivity(BaseModel):
     final_answer: str = ""
     runtime_error: dict[str, Any] = Field(default_factory=dict)
     tool_boundary_clean: bool | None = None
+    llm_exchanges: list[dict[str, Any]] = Field(default_factory=list)
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
 
 

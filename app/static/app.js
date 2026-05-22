@@ -841,6 +841,7 @@ function normalizeMessageActivity(raw) {
       typeof item.tool_boundary_clean === "boolean"
         ? item.tool_boundary_clean
         : null,
+    llm_exchanges: Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [],
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
     tool_items: normalizeActivityToolItems(item.tool_items),
@@ -1585,6 +1586,81 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
   ));
 }
 
+function liveCardSummaryText(card) {
+  const item = card && typeof card === "object" ? card : {};
+  const title = String(item.title || item.label || "").trim();
+  const detail = String(item.detail || item.target || "").trim();
+  if (title && detail && detail !== title) return `${title} · ${detail}`;
+  return detail || title;
+}
+
+function resolveLiveSummary(activity, projection, locale = "zh-CN") {
+  const item = normalizeMessageActivity(activity || {});
+  const modelDraftText = String(item.model_draft || "").trim();
+  if (modelDraftText) {
+    return {
+      title: translateUi(locale, "runtime.model_draft.title"),
+      label: translateUi(locale, "runtime.model_draft.title"),
+      text: modelDraftText,
+      source: "model_draft",
+    };
+  }
+  const cards = Array.isArray(projection && projection.main_live_cards) ? projection.main_live_cards : [];
+  const reversedCards = cards.slice().reverse();
+  const meaningful = (card) => Boolean(liveCardSummaryText(card));
+  const latestMeaningfulCurrentCard = reversedCards.find((card) => (
+    meaningful(card) && ["running", "failed"].includes(normalizeProgressStatus(card && card.status))
+  ));
+  const latestMeaningfulNonCompletedCard = reversedCards.find((card) => (
+    meaningful(card) && normalizeProgressStatus(card && card.status) !== "completed"
+  ));
+  const latestMeaningfulCard = reversedCards.find((card) => meaningful(card));
+  const latestCurrentCard = reversedCards.find((card) => ["running", "failed"].includes(normalizeProgressStatus(card && card.status)));
+  const latestNonCompletedCard = reversedCards.find((card) => normalizeProgressStatus(card && card.status) !== "completed");
+  const latestCard = reversedCards[0] || null;
+  const selectedCard = (
+    latestMeaningfulCurrentCard
+    || latestMeaningfulNonCompletedCard
+    || latestMeaningfulCard
+    || latestCurrentCard
+    || latestNonCompletedCard
+    || latestCard
+  );
+  const selectedText = liveCardSummaryText(selectedCard);
+  if (selectedText) {
+    return {
+      title: translateUi(locale, "runtime.execution_progress.title"),
+      label: translateUi(locale, "runtime.execution_progress.title"),
+      text: selectedText,
+      source: "execution_progress",
+    };
+  }
+  const activitySummary = String(item.activity_summary || "").trim();
+  if (activitySummary) {
+    return {
+      title: "",
+      label: "",
+      text: activitySummary,
+      source: "activity_summary",
+    };
+  }
+  return {
+    title: "",
+    label: "",
+    text: "",
+    source: "empty",
+  };
+}
+
+function formatLiveSummaryText(summary) {
+  const item = summary && typeof summary === "object" ? summary : {};
+  const text = String(item.text || "").trim();
+  const title = String(item.title || item.label || "").trim();
+  if (!text) return "";
+  if (!title || item.source === "activity_summary") return text;
+  return `${title} · ${text}`;
+}
+
 function buildMainCompletionSummary(activity, liveCards = [], toolEvents = [], locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const sourceTools = Array.isArray(toolEvents) && toolEvents.length ? toolEvents : item.tool_items;
@@ -2214,6 +2290,9 @@ function mergeActivityState(previous, patch = {}) {
   const nextLiveItems = Object.prototype.hasOwnProperty.call(nextPatch, "live_items")
     ? mergeLiveRunItems(prev.live_items, nextPatch.live_items)
     : prev.live_items;
+  const nextLlmExchanges = Object.prototype.hasOwnProperty.call(nextPatch, "llm_exchanges")
+    ? (Array.isArray(nextPatch.llm_exchanges) ? nextPatch.llm_exchanges : [])
+    : prev.llm_exchanges;
   const nextStatus = String(nextPatch.status || prev.status || "");
   const terminalFinishedAt = isActivityTerminalStatus(nextStatus) ? Date.now() : 0;
   const nextStartedAtCandidate = normalizeActivityTimestamp(
@@ -2258,6 +2337,7 @@ function mergeActivityState(previous, patch = {}) {
       typeof nextPatch.tool_boundary_clean === "boolean"
         ? nextPatch.tool_boundary_clean
         : prev.tool_boundary_clean,
+    llm_exchanges: nextLlmExchanges,
     plan: nextPlan,
     plan_explanation: String(nextPatch.plan_explanation || prev.plan_explanation || ""),
     tool_items: nextToolItems,
@@ -2320,6 +2400,7 @@ function appendActivityTrace(activity, trace, options = {}) {
       typeof payload.tool_boundary_clean === "boolean"
         ? payload.tool_boundary_clean
         : current.tool_boundary_clean,
+    llm_exchanges: current.llm_exchanges,
     live_items: nextLiveItems,
     trace_events: nextTraceEvents.slice(-64),
     activity_summary: String(current.activity_summary || ""),
@@ -5097,6 +5178,47 @@ function App() {
     `;
   };
 
+  const hasTruncatedMarker = (value) => {
+    if (!value || typeof value !== "object") return false;
+    if (!Array.isArray(value) && value.truncated === true) return true;
+    if (Array.isArray(value)) return value.some((entry) => hasTruncatedMarker(entry));
+    return Object.values(value).some((entry) => hasTruncatedMarker(entry));
+  };
+
+  const renderRawModelIo = (exchanges) => {
+    const items = Array.isArray(exchanges) ? exchanges : [];
+    if (!items.length) return null;
+    return html`
+      <details className="activity-payload" open>
+        <summary>${t("runtime.raw_model_io.title")}</summary>
+        <div className="activity-structured-details">
+          ${items.map((entry, index) => {
+            const round = entry && typeof entry === "object" ? entry : {};
+            const phase = String(round.phase || "-").trim() || "-";
+            const status = String(round.status || "-").trim() || "-";
+            const summaryParts = [
+              t("runtime.raw_model_io.round", { n: Number(round.round || index + 1) || (index + 1) }),
+              phase,
+              status,
+            ];
+            if (hasTruncatedMarker(round)) summaryParts.push(t("runtime.raw_model_io.truncated"));
+            return html`
+              <details key=${`raw-model-io-${round.round || index + 1}`} className="activity-payload">
+                <summary>${summaryParts.join(" · ")}</summary>
+                <div className="activity-structured-details">
+                  ${renderDetailBlock(t("runtime.raw_model_io.sent_messages_exact"), round.sent_messages_exact)}
+                  ${renderDetailBlock(t("runtime.raw_model_io.model_returned_exact"), round.model_returned_exact)}
+                  ${renderDetailBlock(t("runtime.raw_model_io.error"), round.error)}
+                  ${renderDetailBlock(t("runtime.raw_model_io.harness_interpretation"), round.harness_interpretation)}
+                </div>
+              </details>
+            `;
+          })}
+        </div>
+      </details>
+    `;
+  };
+
   const renderActivityPayload = (trace, options = {}) => {
     const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
     const rawOnly = Boolean(options.rawOnly);
@@ -5142,6 +5264,7 @@ function App() {
       : {};
     const preview = Boolean(options.preview);
     const isTerminal = isActivityTerminalStatus(item.status);
+    const normalizedStatus = normalizeProgressStatus(item.status);
     const visibleItems = preview
       ? (isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
       : progressItems;
@@ -5149,9 +5272,11 @@ function App() {
       ? Math.max(0, mainLiveCards.length - visibleItems.length)
       : 0;
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now());
+    const liveSummary = resolveLiveSummary(item, projection, uiLocale);
     const note = String(
       (projection && projection.revision_badge)
-      || (isTerminal ? completionSummary.label : "")
+      || (normalizedStatus === "completed" ? completionSummary.label : "")
+      || formatLiveSummaryText(liveSummary)
       || item.activity_summary
       || "",
     ).trim();
@@ -5206,6 +5331,7 @@ function App() {
     const item = normalizeMessageActivity(activity || {});
     const structured = buildStructuredDebugView(item, lastInspector || {}, uiLocale);
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
+    const exchanges = Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [];
     const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
     const modelOutputSections = [
       renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
@@ -5225,6 +5351,7 @@ function App() {
             plan: item.plan,
           })
         : null,
+      renderRawModelIo(exchanges),
       renderPlanDetails(t("activity.model_action"), projection.model_action),
       renderRevisionSummaryDetails(projection.revision_summary),
     ].filter(Boolean);
@@ -5315,6 +5442,7 @@ function App() {
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
+      || activity.llm_exchanges.length
       || activity.turn_started_at
       || activity.started_at
       || activity.status
@@ -5351,6 +5479,16 @@ function App() {
           : null}
       </div>
     `;
+  };
+
+  const messageBodyText = (item) => {
+    if (!item || item.role !== "assistant") return String((item && item.text) || "");
+    const activity = normalizeMessageActivity(item.activity || {});
+    const currentText = String(item.text || "");
+    if (!item.pending || String(activity.final_answer || "").trim()) return currentText;
+    const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());
+    const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, uiLocale));
+    return liveSummaryText || currentText;
   };
 
   return html`
@@ -5554,7 +5692,7 @@ function App() {
                       ${renderMessageActivity(item)}
                       <div
                         className="message-card-body message-markdown"
-                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(item.text, item.id) }}
+                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
                       ></div>
                     </div>
                   </article>
