@@ -45,6 +45,8 @@ const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
 const MAIN_LIVE_CARD_LIMIT = 8;
+const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
+const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
   provider: "",
@@ -800,6 +802,7 @@ function isActivityTerminalStatus(status) {
 
 function normalizeMessageActivity(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
+  if (item[NORMALIZED_ACTIVITY_MARKER]) return item;
   const traceEvents = Array.isArray(item.trace_events) ? item.trace_events.map(normalizeTraceEvent) : [];
   const status = String(item.status || "");
   const startedAt = normalizeActivityTimestamp(item.started_at || (traceEvents[0] && traceEvents[0].timestamp) || 0);
@@ -818,7 +821,7 @@ function normalizeMessageActivity(raw) {
       turnStartedAt && finishedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
     )
     : Math.max(0, Number(item.final_elapsed_ms || 0) || 0);
-  return {
+  const normalizedActivity = {
     run_id: String(item.run_id || ""),
     status,
     started_at: startedAt,
@@ -844,6 +847,11 @@ function normalizeMessageActivity(raw) {
     live_items: normalizeLiveRunItems(item.live_items),
     trace_events: traceEvents,
   };
+  Object.defineProperty(normalizedActivity, NORMALIZED_ACTIVITY_MARKER, {
+    value: true,
+    enumerable: false,
+  });
+  return normalizedActivity;
 }
 
 function defaultSkillTemplate(locale) {
@@ -1530,13 +1538,18 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
       rawRef: entry,
     };
   });
-  if (String(item.model_draft || "").trim() && ["running", "failed"].includes(normalizeProgressStatus(item.status))) {
+  const modelDraftText = String(item.model_draft || "").trim();
+  const showModelDraft = Boolean(modelDraftText) && (
+    !isActivityTerminalStatus(item.status)
+    || normalizeProgressStatus(item.status) === "failed"
+  );
+  if (showModelDraft) {
     cards.unshift({
       id: "model-draft",
       title: translateUi(locale, "runtime.model_draft.title"),
       label: translateUi(locale, "runtime.model_draft.title"),
       status: normalizeProgressStatus(item.status) === "failed" ? "failed" : "running",
-      detail: String(item.model_draft || "").trim() || translateUi(locale, "runtime.model_draft.empty"),
+      detail: modelDraftText || translateUi(locale, "runtime.model_draft.empty"),
       tool: "",
       target: "",
       durationMs: 0,
@@ -1602,13 +1615,16 @@ function buildMainCompletionSummary(activity, liveCards = [], toolEvents = [], l
 
 function buildActivityProjection(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
+  const projectionItem = item.trace_events.length > MAIN_CARD_TRACE_EVENT_LIMIT
+    ? normalizeMessageActivity({ ...item, trace_events: item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT) })
+    : item;
   const revisionSummary = latestRevisionSummary(item);
-  const progressItems = item.plan.length
-    ? buildPlanChecklistItems(item.plan)
-    : buildFallbackProgressItems(item, locale, nowMs);
-  const executionTrace = latestExecutionTrace(item);
-  const toolGroups = buildToolProgressGroups(item);
-  const mainLiveCards = buildMainLiveCards(item, progressItems, executionTrace, locale, nowMs);
+  const progressItems = projectionItem.plan.length
+    ? buildPlanChecklistItems(projectionItem.plan)
+    : buildFallbackProgressItems(projectionItem, locale, nowMs);
+  const executionTrace = latestExecutionTrace(projectionItem);
+  const toolGroups = buildToolProgressGroups(projectionItem);
+  const mainLiveCards = buildMainLiveCards(projectionItem, progressItems, executionTrace, locale, nowMs);
   return {
     progress_items: progressItems,
     main_live_cards: mainLiveCards,
@@ -2253,6 +2269,9 @@ function mergeActivityState(previous, patch = {}) {
 function appendActivityTrace(activity, trace, options = {}) {
   const current = normalizeMessageActivity(activity || {});
   const normalizedTrace = normalizeTraceEvent(trace);
+  const payload = normalizedTrace.payload && typeof normalizedTrace.payload === "object"
+    ? normalizedTrace.payload
+    : {};
   const nextTraceEvents = [...current.trace_events, normalizedTrace];
   const nextLiveItem = liveRunItemFromTrace(normalizedTrace);
   const nextLiveItems = nextLiveItem
@@ -2276,6 +2295,10 @@ function appendActivityTrace(activity, trace, options = {}) {
       finishedAt && turnStartedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
     )
     : Math.max(0, Number(current.final_elapsed_ms || 0) || 0);
+  const payloadRuntimeError = normalizedTrace.type === "llm.failed"
+    ? normalizeRuntimeErrorPayload(payload)
+    : normalizeRuntimeErrorPayload(payload.runtime_error);
+  const payloadRuntimeErrorDefined = Object.values(payloadRuntimeError).some((value) => value !== "" && value !== null && value !== 0);
   return {
     ...current,
     run_id: String(normalizedTrace.run_id || current.run_id || ""),
@@ -2290,6 +2313,13 @@ function appendActivityTrace(activity, trace, options = {}) {
       )
       : current.run_duration_ms,
     final_elapsed_ms: finalElapsedMs,
+    model_draft: String(payload.model_draft || current.model_draft || ""),
+    final_answer: String(payload.final_answer || current.final_answer || ""),
+    runtime_error: payloadRuntimeErrorDefined ? payloadRuntimeError : current.runtime_error,
+    tool_boundary_clean:
+      typeof payload.tool_boundary_clean === "boolean"
+        ? payload.tool_boundary_clean
+        : current.tool_boundary_clean,
     live_items: nextLiveItems,
     trace_events: nextTraceEvents.slice(-64),
     activity_summary: String(current.activity_summary || ""),

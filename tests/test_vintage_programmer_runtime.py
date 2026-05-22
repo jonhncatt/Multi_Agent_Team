@@ -1247,6 +1247,43 @@ def test_runtime_tool_call_content_uses_model_draft_until_completed(tmp_path: Pa
     assert result["text"] == "Done."
 
 
+def test_runtime_failed_followup_preserves_model_draft_in_activity(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FlakyNoneTypeFollowupBackend(
+        [
+            _FakeMessage(
+                content="I will inspect the folder first.",
+                tool_calls=[{"id": "tc-draft-fail", "name": "web_search", "args": {"query": "x"}}],
+            ),
+        ],
+        fail_times=2,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查一下 x",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-model-draft-fail",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "failed"
+    assert result["final_answer"] == ""
+    assert result["model_draft"] == "I will inspect the folder first."
+    assert result["runtime_error"]["kind"] == "llm_empty_response"
+    assert result["activity"]["model_draft"] == "I will inspect the folder first."
+
+
 def test_runtime_model_stream_observer_ignores_none_event(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

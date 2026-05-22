@@ -670,6 +670,50 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     assert "started_at" not in run_started_body
 
 
+def test_model_draft_live_cards_cover_non_terminal_activity_states() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function buildMainLiveCards\(activity, liveItems = \[], runtimeTrace = \[], locale = \"zh-CN\", nowMs = Date\.now\(\)\) \{(?P<body>.*?)\n}\n\nfunction buildMainCompletionSummary",
+        script,
+        re.S,
+    )
+    assert match, "buildMainLiveCards function not found"
+    body = match.group("body")
+
+    assert "const modelDraftText = String(item.model_draft || \"\").trim();" in body
+    assert "!isActivityTerminalStatus(item.status)" in body
+    assert 'normalizeProgressStatus(item.status) === "failed"' in body
+    assert 'cards.unshift({' in body
+
+
+def test_append_activity_trace_promotes_model_draft_and_runtime_error_from_trace_payload() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function appendActivityTrace\(activity, trace, options = \{\}\) \{(?P<body>.*?)\n}\n\nfunction formatActivityDuration",
+        script,
+        re.S,
+    )
+    assert match, "appendActivityTrace function not found"
+    body = match.group("body")
+
+    assert "const payload = normalizedTrace.payload" in body
+    assert 'model_draft: String(payload.model_draft || current.model_draft || ""),' in body
+    assert 'final_answer: String(payload.final_answer || current.final_answer || ""),' in body
+    assert 'normalizeRuntimeErrorPayload(payload.runtime_error)' in body
+    assert 'normalizedTrace.type === "llm.failed"' in body
+
+
+def test_main_activity_projection_bounds_main_card_trace_work() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const MAIN_CARD_TRACE_EVENT_LIMIT = 50;" in script
+    assert "item.trace_events.length > MAIN_CARD_TRACE_EVENT_LIMIT" in script
+    assert "trace_events: item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT)" in script
+    assert "trace_events: item.trace_events," in script
+
+
 def test_timer_visibility_checks_use_turn_level_start_timestamp() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
