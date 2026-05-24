@@ -715,6 +715,25 @@ def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -
     assert "main_live_cards[0]" not in body
 
 
+def test_pending_assistant_fallback_state_prefers_live_summary_without_mutating_message_text() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function pendingAssistantFallbackState\(item, locale = \"zh-CN\", nowMs = Date\.now\(\)\) \{(?P<body>.*?)\n}\n\nfunction buildMainCompletionSummary",
+        script,
+        re.S,
+    )
+    assert match, "pendingAssistantFallbackState function not found"
+    body = match.group("body")
+
+    assert 'const activity = normalizeMessageActivity(item.activity || {});' in body
+    assert 'const currentText = String(item.text || "");' in body
+    assert 'if (!item.pending || String(activity.final_answer || "").trim()) {' in body
+    assert 'const projection = buildActivityProjection(activity, locale, nowMs);' in body
+    assert 'const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, locale));' in body
+    assert 'fromSummaryFallback: true,' in body
+
+
 def test_pending_assistant_body_uses_live_summary_fallback() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
@@ -726,9 +745,41 @@ def test_pending_assistant_body_uses_live_summary_fallback() -> None:
     assert match, "messageBodyText helper not found"
     body = match.group("body")
 
-    assert "const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());" in body
-    assert 'const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, uiLocale));' in body
+    assert 'return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;' in body
     assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
+
+
+def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"const renderActivityProgressList = \(projection, activity, options = \{\}\) => \{(?P<body>.*?)\n  \};\n\n  const renderActivityDebugDetails",
+        script,
+        re.S,
+    )
+    assert match, "renderActivityProgressList function not found"
+    body = match.group("body")
+
+    assert 'const suppressNoteText = String(options.suppressNoteText || "").trim();' in body
+    assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
+    assert 'if (!visibleItems.length && !overflowCount && !showNote) return null;' in body
+    assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
+
+
+def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"const renderMessageActivity = \(item\) => \{(?P<body>.*?)\n  \};\n\n  const messageBodyText",
+        script,
+        re.S,
+    )
+    assert match, "renderMessageActivity function not found"
+    body = match.group("body")
+
+    assert 'const pendingFallback = pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now());' in body
+    assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? pendingFallback.text : "",' in body
+    assert "visibleItems.map((entry) => {" in script
 
 
 def test_append_activity_trace_promotes_model_draft_and_runtime_error_from_trace_payload() -> None:

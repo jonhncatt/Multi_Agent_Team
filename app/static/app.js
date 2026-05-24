@@ -1661,6 +1661,35 @@ function formatLiveSummaryText(summary) {
   return `${title} · ${text}`;
 }
 
+function pendingAssistantFallbackState(item, locale = "zh-CN", nowMs = Date.now()) {
+  if (!item || item.role !== "assistant") {
+    return {
+      text: String((item && item.text) || ""),
+      fromSummaryFallback: false,
+    };
+  }
+  const activity = normalizeMessageActivity(item.activity || {});
+  const currentText = String(item.text || "");
+  if (!item.pending || String(activity.final_answer || "").trim()) {
+    return {
+      text: currentText,
+      fromSummaryFallback: false,
+    };
+  }
+  const projection = buildActivityProjection(activity, locale, nowMs);
+  const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, locale));
+  if (liveSummaryText) {
+    return {
+      text: liveSummaryText,
+      fromSummaryFallback: true,
+    };
+  }
+  return {
+    text: currentText,
+    fromSummaryFallback: false,
+  };
+}
+
 function buildMainCompletionSummary(activity, liveCards = [], toolEvents = [], locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const sourceTools = Array.isArray(toolEvents) && toolEvents.length ? toolEvents : item.tool_items;
@@ -5263,6 +5292,7 @@ function App() {
       ? projection.completion_summary
       : {};
     const preview = Boolean(options.preview);
+    const suppressNoteText = String(options.suppressNoteText || "").trim();
     const isTerminal = isActivityTerminalStatus(item.status);
     const normalizedStatus = normalizeProgressStatus(item.status);
     const visibleItems = preview
@@ -5280,7 +5310,8 @@ function App() {
       || item.activity_summary
       || "",
     ).trim();
-    if (!visibleItems.length && !note) return null;
+    const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);
+    if (!visibleItems.length && !overflowCount && !showNote) return null;
     const markerForStatus = (status) => {
       const normalized = normalizeProgressStatus(status);
       if (normalized === "completed") return "✓";
@@ -5322,7 +5353,7 @@ function App() {
         ${overflowCount
           ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: overflowCount })}</div>`
           : null}
-        ${note ? html`<div className="activity-flow-note">${note}</div>` : null}
+        ${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}
       </div>
     `;
   };
@@ -5453,6 +5484,7 @@ function App() {
     const isOpen = Boolean(activityOpenByMessageId[item.id]);
     const tone = activityToneClass(activity.status);
     const pillLabel = activityPillLabel(uiLocale, activity, activityClockMs || Date.now());
+    const pendingFallback = pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now());
     return html`
       <div className=${`message-activity tone-${tone} ${isOpen ? "open" : ""}`}>
         <button
@@ -5464,7 +5496,12 @@ function App() {
           <span>${pillLabel}</span>
           <span className="activity-pill-arrow">${isOpen ? "−" : ">"}</span>
         </button>
-        ${!isOpen ? renderActivityProgressList(projection, activity, { preview: true }) : null}
+        ${!isOpen
+          ? renderActivityProgressList(projection, activity, {
+              preview: true,
+              suppressNoteText: pendingFallback.fromSummaryFallback ? pendingFallback.text : "",
+            })
+          : null}
         ${isOpen
           ? html`
               <div className="activity-panel">
@@ -5482,13 +5519,7 @@ function App() {
   };
 
   const messageBodyText = (item) => {
-    if (!item || item.role !== "assistant") return String((item && item.text) || "");
-    const activity = normalizeMessageActivity(item.activity || {});
-    const currentText = String(item.text || "");
-    if (!item.pending || String(activity.final_answer || "").trim()) return currentText;
-    const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());
-    const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, uiLocale));
-    return liveSummaryText || currentText;
+    return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;
   };
 
   return html`
