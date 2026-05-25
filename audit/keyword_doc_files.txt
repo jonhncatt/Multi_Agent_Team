@@ -1,0 +1,14 @@
+NOTICE
+README.en.md
+README.ja.md
+README.md
+README.windows.md
+README.zh-CN.md
+RELEASING.md
+agents/vintage_programmer/agent.md
+agents/vintage_programmer/locales/en/agent.md
+agents/vintage_programmer/locales/en/tools.md
+agents/vintage_programmer/locales/ja-JP/agent.md
+agents/vintage_programmer/locales/ja-JP/tools.md
+agents/vintage_programmer/tools.md
+docs/internal_design_manual.md

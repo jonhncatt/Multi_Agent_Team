@@ -9,3 +9,4 @@ These upstream projects remain the property of their respective authors and are 
 - https://github.com/openclaw/openclaw
 
 Where repository code is derived from or closely adapted to upstream implementations, the corresponding upstream license terms apply in addition to this repository's top-level license obligations.
+See THIRD_PARTY_ATTRIBUTIONS.md for file-level attribution details.

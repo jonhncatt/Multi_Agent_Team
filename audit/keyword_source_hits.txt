@@ -1,0 +1,713 @@
+.env.example:14:# Profile B: OpenAI official + Codex auth
+.env.example:16:# VP_CODEX_HOME=/absolute/path/to/.codex
+.env.example:17:# VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+.github/workflows/regression-ci.yml:7:      - "codex/**"
+NOTICE:3:- openai/codex (Apache-2.0): tool naming, collaboration-mode concepts, and patch-tool grammar alignment.
+NOTICE:4:- openclaw/openclaw (MIT): browser-tool fallback grouping and agentic runtime fallback ideas.
+NOTICE:8:- https://github.com/openai/codex
+NOTICE:9:- https://github.com/openclaw/openclaw
+README.en.md:10:A local-first AI agent workbench with Codex-style activity tracing, editable agent specs, local skills, and harness-validated execution.
+README.en.md:23:The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
+README.en.md:25:OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.15 keeps the v2.9.10 Codex-style all-tool drain semantics, the v2.9.11 path portability rules, the v2.9.12 live timeline, the v2.9.13 workspace permission profiles, and the v2.9.14 `ModelContext`; this release shows live execution cards in the main assistant message, folds completed runs into a concise execution summary, and removes the old mode control.
+README.en.md:64:- Codex-style activity and progress tracing
+README.en.md:90:- **Codex-style activity timeline**  
+README.en.md:174:### OpenAI official with Codex auth
+README.en.md:178:VP_CODEX_HOME=/absolute/path/to/.codex
+README.en.md:179:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.en.md:183:If `VP_OPENAI_API_KEY` is absent but `VP_CODEX_AUTH_FILE` exists locally, the app can use Codex auth automatically.
+README.en.md:292:1. Land release-candidate work on a `codex/*` branch.
+README.en.md:298:7. Start the next change from a fresh `codex/*` branch cut from updated `main`.
+README.ja.md:10:Codex 風の activity tracing を備えた、ローカルファーストの AI Agent ワークベンチです。editable agent specs と local skills、そして harness-validated execution を一体で扱えます。
+README.ja.md:23:v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
+README.ja.md:25:OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.15 は v2.9.10 の Codex-style all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles、v2.9.14 の `ModelContext` を維持します。このリリースでは main message card に実行中の live cards を表示し、完了後は簡潔な execution summary に折りたたみ、古い mode control を削除します。
+README.ja.md:64:- Codex 風の activity timeline と progress checklist
+README.ja.md:90:- **Codex 風 activity timeline**  
+README.ja.md:176:### OpenAI 公式 + Codex auth
+README.ja.md:180:VP_CODEX_HOME=/absolute/path/to/.codex
+README.ja.md:181:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.ja.md:185:`VP_OPENAI_API_KEY` がなくても、ローカルに `VP_CODEX_AUTH_FILE` があれば Codex auth を自動利用できます。
+README.ja.md:293:1. `codex/*` ブランチで release candidate の変更を進める。
+README.ja.md:299:7. 次の作業は、更新済み `main` から新しい `codex/*` ブランチを切って始める。
+README.md:10:一个本地优先的 AI Agent 工作台，重点是 Codex 风格的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
+README.md:23:v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+README.md:25:OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v3.1.0 继续保留 Codex-style all-tool drain 语义、`ModelContext` 六段结构、`Default / Auto / Full Access` 权限模式、手动更新按钮和主卡片 live cards，同时增加一次性 legacy session migration，并把 trace label、tool alias、attachment rewrite、runtime hints、answer stream state 从主 runtime orchestration 中拆出。
+README.md:68:- Codex 风格的 activity timeline（执行时间线）和 progress checklist（进度清单）
+README.md:94:- **Codex 风格 activity timeline**  
+README.md:180:### OpenAI 官方 + Codex auth
+README.md:184:VP_CODEX_HOME=/absolute/path/to/.codex
+README.md:185:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.md:189:如果没有填写 `VP_OPENAI_API_KEY`，但本地存在 `VP_CODEX_AUTH_FILE`，程序可以自动使用 Codex auth。
+README.md:297:1. 在 `codex/*` 候选分支完成改动。
+README.md:303:7. 后续新改动从更新后的 `main` 再切新的 `codex/*` 分支。
+README.windows.md:8:v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.15 继续保留 v2.9.10 的 Codex-style all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.13 的 workspace permission profiles 和 v2.9.14 的 `ModelContext`。
+README.windows.md:62:如果你不填 `VP_OPENAI_API_KEY`，但本机存在 `VP_CODEX_AUTH_FILE`，程序会自动切到 Codex auth。
+README.windows.md:121:- 在 `codex/*` 候选分支完成改动
+README.windows.md:124:- 后续新改动从最新 `main` 再切新的 `codex/*` 分支
+README.zh-CN.md:10:一个本地优先的 AI Agent 工作台，重点是 Codex 风格的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
+README.zh-CN.md:23:v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+README.zh-CN.md:25:OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.15 继续保留 v2.9.10 的 Codex-style all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.13 的 workspace permission profiles 和 v2.9.14 的 `ModelContext`；本版本让主消息卡片直接展示运行中的执行卡片，完成后折叠成执行摘要，并移除旧的模式控制。
+README.zh-CN.md:64:- Codex 风格的 activity timeline（执行时间线）和 progress checklist（进度清单）
+README.zh-CN.md:90:- **Codex 风格 activity timeline**  
+README.zh-CN.md:176:### OpenAI 官方 + Codex auth
+README.zh-CN.md:180:VP_CODEX_HOME=/absolute/path/to/.codex
+README.zh-CN.md:181:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.zh-CN.md:185:如果没有填写 `VP_OPENAI_API_KEY`，但本地存在 `VP_CODEX_AUTH_FILE`，程序可以自动使用 Codex auth。
+README.zh-CN.md:293:1. 在 `codex/*` 候选分支完成改动。
+README.zh-CN.md:299:7. 后续新改动从更新后的 `main` 再切新的 `codex/*` 分支。
+RELEASING.md:5:1. Land release-candidate work on a `codex/*` branch.
+RELEASING.md:11:7. Start the next change from a fresh `codex/*` branch cut from updated `main`.
+RELEASING.md:62:git checkout -b codex/<next-topic>
+agents/vintage_programmer/agent.md:12:  - apply_patch
+agents/vintage_programmer/locales/en/agent.md:12:  - apply_patch
+agents/vintage_programmer/locales/en/tools.md:18:- Patch-based edits: prefer `apply_patch`, and do not degrade structured patches into full-file replacement blobs. When `apply_patch` is available, do not fall back to shell-based file overwrites.
+agents/vintage_programmer/locales/ja-JP/agent.md:12:  - apply_patch
+agents/vintage_programmer/locales/ja-JP/tools.md:18:- パッチ型変更: まず `apply_patch` を使い、構造化パッチを巨大なファイル全置換に退化させない。`apply_patch` が使えるときは shell ベースの上書きに退化させない。
+agents/vintage_programmer/tools.md:18:- 补丁式改动：优先 `apply_patch`，不要把结构化补丁退化成大段整文件覆盖；能用 `apply_patch` 时，不要退化成 shell 覆盖写文件。
+app/action_validator.py:636:        if tool_name == "apply_patch":
+app/action_validator.py:638:                return "workspace_write_not_allowed", "Workspace write is not allowed for apply_patch."
+app/codex_runner.py:13:def build_codex_input_payload(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
+app/codex_runner.py:14:    return _messages_to_codex_input(messages)
+app/codex_runner.py:17:class CodexResponsesRunner:
+app/codex_runner.py:35:    def bind_tools(self, tools: list[Any]) -> "CodexResponsesRunner":
+app/codex_runner.py:36:        return CodexResponsesRunner(
+app/codex_runner.py:52:        self._auth_manager.refresh_codex_auth(force=True)
+app/codex_runner.py:67:        self._auth_manager.refresh_codex_auth(force=True)
+app/codex_runner.py:78:        if auth.mode != "codex_auth":
+app/codex_runner.py:79:            raise RuntimeError(f"Codex runner requires codex_auth, got {auth.mode}.")
+app/codex_runner.py:81:            raise RuntimeError("Codex auth requires access_token and account_id.")
+app/codex_runner.py:83:        instructions, input_items = _messages_to_codex_input(messages)
+app/codex_runner.py:87:            default_headers={"chatgpt-account-id": str(auth.account_id)},
+app/codex_runner.py:100:        tool_payloads = _langchain_tools_to_codex_tools(self._tools)
+app/codex_runner.py:104:        stream = client.responses.create(**request_kwargs)
+app/codex_runner.py:108:            "provider": "codex_auth",
+app/codex_runner.py:144:                            "provider": "codex_auth",
+app/codex_runner.py:156:                            "provider": "codex_auth",
+app/codex_runner.py:165:            raise RuntimeError(f"Codex response failed: {safe_model_dump(final_error)}")
+app/codex_runner.py:167:            raise RuntimeError("Codex response stream completed without a final response.")
+app/codex_runner.py:171:def _messages_to_codex_input(messages: list[Any]) -> tuple[str, list[dict[str, Any]]]:
+app/codex_runner.py:230:def _langchain_tools_to_codex_tools(tools: list[Any]) -> list[dict[str, Any]]:
+app/codex_runner.py:313:            "provider": "codex_auth",
+app/config.py:85:        "use_responses_api": False,
+app/config.py:92:        "use_responses_api": False,
+app/config.py:99:        "use_responses_api": False,
+app/config.py:106:        "use_responses_api": False,
+app/config.py:113:        "use_responses_api": False,
+app/config.py:125:        "use_responses_api": False,
+app/config.py:132:        "use_responses_api": False,
+app/config.py:139:        "use_responses_api": False,
+app/config.py:230:def _provider_specific_responses_api_keys(provider: str) -> list[str]:
+app/config.py:232:        "openai": ["VP_OPENAI_USE_RESPONSES_API"],
+app/config.py:233:        "openai_compatible": ["VP_OPENAI_COMPAT_USE_RESPONSES_API"],
+app/config.py:234:        "openrouter": ["VP_OPENROUTER_USE_RESPONSES_API"],
+app/config.py:235:        "deepseek": ["VP_DEEPSEEK_USE_RESPONSES_API"],
+app/config.py:236:        "qwen": ["VP_DASHSCOPE_USE_RESPONSES_API"],
+app/config.py:237:        "moonshot": ["VP_MOONSHOT_USE_RESPONSES_API"],
+app/config.py:238:        "groq": ["VP_GROQ_USE_RESPONSES_API"],
+app/config.py:239:        "ollama": ["VP_OLLAMA_USE_RESPONSES_API"],
+app/config.py:274:def _supports_codex_auth(provider: str, base_url: str | None) -> bool:
+app/config.py:373:    llm_supports_codex_auth: bool
+app/config.py:377:    openai_use_responses_api: bool
+app/config.py:378:    codex_home: Path
+app/config.py:379:    codex_auth_file: Path
+app/config.py:380:    codex_chatgpt_base_url: str
+app/config.py:381:    codex_refresh_url: str
+app/config.py:382:    codex_client_id: str
+app/config.py:383:    codex_refresh_interval_days: int
+app/config.py:486:    llm_supports_codex_auth = _supports_codex_auth(normalized_provider, openai_base_url)
+app/config.py:511:    default_use_responses = "true" if bool(llm_provider_preset.get("use_responses_api")) else "false"
+app/config.py:512:    llm_use_responses_keys = [
+app/config.py:513:        *_provider_specific_responses_api_keys(normalized_provider),
+app/config.py:514:        f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+app/config.py:515:        "VP_LLM_USE_RESPONSES_API",
+app/config.py:516:        "VP_USE_RESPONSES_API",
+app/config.py:518:    use_responses_raw = (
+app/config.py:519:        _env(*llm_use_responses_keys, default=default_use_responses) or default_use_responses
+app/config.py:521:    openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
+app/config.py:556:            *_provider_specific_responses_api_keys(normalized_provider),
+app/config.py:557:            f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+app/config.py:575:        "llm_supports_codex_auth": llm_supports_codex_auth,
+app/config.py:579:        "openai_use_responses_api": openai_use_responses_api,
+app/config.py:631:        llm_supports_codex_auth=bool(resolved.get("llm_supports_codex_auth")),
+app/config.py:635:        openai_use_responses_api=bool(resolved.get("openai_use_responses_api")),
+app/config.py:901:    llm_supports_codex_auth = _supports_codex_auth(llm_provider, openai_base_url)
+app/config.py:902:    codex_home = Path(
+app/config.py:904:            "VP_CODEX_HOME",
+app/config.py:905:            default=str(Path.home() / ".codex"),
+app/config.py:907:        or str(Path.home() / ".codex")
+app/config.py:909:    codex_auth_file = Path(
+app/config.py:911:            "VP_CODEX_AUTH_FILE",
+app/config.py:912:            default=str(codex_home / "auth.json"),
+app/config.py:914:        or str(codex_home / "auth.json")
+app/config.py:916:    codex_chatgpt_base_url = (
+app/config.py:918:            "VP_CODEX_CHATGPT_BASE_URL",
+app/config.py:920:            default="https://chatgpt.com/backend-api/codex",
+app/config.py:922:        or "https://chatgpt.com/backend-api/codex"
+app/config.py:924:    codex_refresh_url = (
+app/config.py:926:            "VP_CODEX_REFRESH_URL",
+app/config.py:927:            default="https://auth.openai.com/oauth/token",
+app/config.py:929:        or "https://auth.openai.com/oauth/token"
+app/config.py:931:    codex_client_id = (
+app/config.py:933:            "VP_CODEX_CLIENT_ID",
+app/config.py:938:    codex_refresh_interval_days = int(
+app/config.py:941:                "VP_CODEX_REFRESH_INTERVAL_DAYS",
+app/config.py:969:    default_use_responses = "true" if bool(llm_provider_preset.get("use_responses_api")) else "false"
+app/config.py:970:    llm_use_responses_keys = [
+app/config.py:971:        *_provider_specific_responses_api_keys(llm_provider),
+app/config.py:972:        f"VP_PROVIDER_{llm_provider_token}_USE_RESPONSES_API",
+app/config.py:973:        "VP_LLM_USE_RESPONSES_API",
+app/config.py:974:        "VP_USE_RESPONSES_API",
+app/config.py:976:    use_responses_raw = (
+app/config.py:977:        _env(*llm_use_responses_keys, default=default_use_responses) or default_use_responses
+app/config.py:979:    openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
+app/config.py:1169:    llm_supports_codex_auth = bool(provider_runtime.get("llm_supports_codex_auth"))
+app/config.py:1173:    openai_use_responses_api = bool(provider_runtime.get("openai_use_responses_api"))
+app/config.py:1214:        llm_supports_codex_auth=llm_supports_codex_auth,
+app/config.py:1218:        openai_use_responses_api=openai_use_responses_api,
+app/config.py:1219:        codex_home=codex_home,
+app/config.py:1220:        codex_auth_file=codex_auth_file,
+app/config.py:1221:        codex_chatgpt_base_url=codex_chatgpt_base_url or "https://chatgpt.com/backend-api/codex",
+app/config.py:1222:        codex_refresh_url=codex_refresh_url or "https://auth.openai.com/oauth/token",
+app/config.py:1223:        codex_client_id=codex_client_id or "app_EMoamEEZ73f0CkXaXp7hrann",
+app/config.py:1224:        codex_refresh_interval_days=max(1, min(30, codex_refresh_interval_days)),
+app/local_tools.py:1202:def _parse_codex_patch(patch_text: str) -> list[dict[str, Any]]:
+app/local_tools.py:2080:                "name": "apply_patch",
+app/local_tools.py:2081:                "description": "Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+app/local_tools.py:2691:        if name == "apply_patch":
+app/local_tools.py:2692:            result = self.apply_patch(**arguments)
+app/local_tools.py:3737:    def apply_patch(self, patch: str, cwd: str = ".", check: bool = False) -> dict[str, Any]:
+app/local_tools.py:3742:            operations = _parse_codex_patch(patch_text)
+app/local_tools.py:3822:            return {"ok": False, "error": f"apply_patch failed: {exc}"}
+app/main.py:18:from fastapi.responses import FileResponse, StreamingResponse
+app/main.py:186:    OpenClaw-style lane queue:
+app/main.py:2695:            elif name == "apply_patch":
+app/openai_auth.py:15:DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+app/openai_auth.py:16:DEFAULT_CODEX_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex"
+app/openai_auth.py:17:DEFAULT_CODEX_REFRESH_URL = "https://auth.openai.com/oauth/token"
+app/openai_auth.py:18:DEFAULT_CODEX_REFRESH_INTERVAL_DAYS = 8
+app/openai_auth.py:24:    if normalized_mode == "codex_auth" and normalized_model.lower().endswith("-chat"):
+app/openai_auth.py:56:    def _llm_supports_codex_auth(self) -> bool:
+app/openai_auth.py:57:        return bool(getattr(self.config, "llm_supports_codex_auth", True))
+app/openai_auth.py:84:        supports_codex_auth = self._llm_supports_codex_auth()
+app/openai_auth.py:87:        codex_auth = self._resolve_codex_auth() if supports_codex_auth else ResolvedOpenAIAuth(
+app/openai_auth.py:88:            mode="codex_auth",
+app/openai_auth.py:91:            reason=f"Provider '{provider}' does not support codex_auth.",
+app/openai_auth.py:96:        if supports_codex_auth and codex_auth.available:
+app/openai_auth.py:97:            return codex_auth
+app/openai_auth.py:102:        if supports_codex_auth:
+app/openai_auth.py:105:                "If VP_LLM_PROVIDER=openai and VP_CODEX_AUTH_FILE exists, the app will use Codex auth automatically."
+app/openai_auth.py:118:        if resolved.mode != "codex_auth" or not allow_refresh:
+app/openai_auth.py:120:        if self._codex_refresh_needed(resolved):
+app/openai_auth.py:121:            return self.refresh_codex_auth(force=False)
+app/openai_auth.py:124:    def refresh_codex_auth(self, *, force: bool = True) -> ResolvedOpenAIAuth:
+app/openai_auth.py:125:        if not self._llm_supports_codex_auth():
+app/openai_auth.py:126:            raise RuntimeError(f"Provider '{self._llm_provider()}' does not support codex_auth.")
+app/openai_auth.py:128:            resolved = self._resolve_codex_auth()
+app/openai_auth.py:130:                raise RuntimeError(resolved.reason or "Codex auth credentials are not available.")
+app/openai_auth.py:131:            if not force and not self._codex_refresh_needed(resolved):
+app/openai_auth.py:135:                raise RuntimeError("Codex refresh token is missing. Please re-run `codex login`.")
+app/openai_auth.py:136:            auth_file_path = resolved.auth_file_path or self.config.codex_auth_file
+app/openai_auth.py:138:                "client_id": resolved.client_id or self.config.codex_client_id,
+app/openai_auth.py:143:                str(resolved.refresh_url or self.config.codex_refresh_url),
+app/openai_auth.py:153:                raise RuntimeError(f"Codex token refresh failed: HTTP {exc.code}: {detail}") from exc
+app/openai_auth.py:155:                raise RuntimeError(f"Codex token refresh failed: {exc}") from exc
+app/openai_auth.py:160:                raise RuntimeError("Codex token refresh returned invalid JSON.") from exc
+app/openai_auth.py:166:                raise RuntimeError("Codex token refresh did not return an access token.")
+app/openai_auth.py:180:            return self._resolve_codex_auth()
+app/openai_auth.py:223:        auth_json = self._read_auth_json(self.config.codex_auth_file)
+app/openai_auth.py:230:                source=f"file:{self.config.codex_auth_file}:{file_key}",
+app/openai_auth.py:233:                auth_file_path=self.config.codex_auth_file,
+app/openai_auth.py:244:    def _resolve_codex_auth(self) -> ResolvedOpenAIAuth:
+app/openai_auth.py:245:        auth_file_path = self.config.codex_auth_file
+app/openai_auth.py:249:                mode="codex_auth",
+app/openai_auth.py:252:                reason=f"Codex auth file not found: {auth_file_path}",
+app/openai_auth.py:254:                chatgpt_base_url=self.config.codex_chatgpt_base_url,
+app/openai_auth.py:255:                refresh_url=self.config.codex_refresh_url,
+app/openai_auth.py:256:                client_id=self.config.codex_client_id,
+app/openai_auth.py:267:            reason = "Codex auth.json is missing access/refresh token or account_id."
+app/openai_auth.py:269:            mode="codex_auth",
+app/openai_auth.py:278:            chatgpt_base_url=self.config.codex_chatgpt_base_url,
+app/openai_auth.py:279:            refresh_url=self.config.codex_refresh_url,
+app/openai_auth.py:280:            client_id=self.config.codex_client_id,
+app/openai_auth.py:284:    def _codex_refresh_needed(self, resolved: ResolvedOpenAIAuth) -> bool:
+app/openai_auth.py:285:        if resolved.mode != "codex_auth":
+app/openai_auth.py:292:        deadline = datetime.now(timezone.utc) - timedelta(days=max(1, int(self.config.codex_refresh_interval_days)))
+app/pricing.py:19:    "gpt-5-codex": _ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
+app/pricing.py:20:    "gpt-5-codex-mini": _ModelPrice(input_per_1m=0.25, output_per_1m=2.00),
+app/pricing.py:28:    ("gpt-5.1-codex-mini", "gpt-5-codex-mini"),
+app/pricing.py:29:    ("gpt-5-codex-mini", "gpt-5-codex-mini"),
+app/pricing.py:30:    ("gpt-5.1-codex", "gpt-5-codex"),
+app/pricing.py:31:    ("gpt-5-codex", "gpt-5-codex"),
+app/runtime_contract.py:21:    reason: str = "codex_style_full_auto"
+app/static/app.js:1255:  const patchTools = new Set(["apply_patch", "write_skill", "read_skill", "list_skills"]);
+app/static/app.js:1261:  if (patchTools.has(toolName)) return translateUi(locale, "activity.progress.apply_patch", { target: labelValue });
+app/static/app.js:1703:  const commandCount = allToolNames.filter((name) => /exec|shell|command|pytest|apply_patch|patch/i.test(name)).length;
+app/static/app.js:5734:                  <div className="empty-kicker">OpenClaw-first Tools · Codex-style Workspace</div>
+app/static/locales.js:24:        "把这个页面继续改得更像 Codex",
+app/static/locales.js:274:      "activity.tool_title.apply_patch": "应用补丁",
+app/static/locales.js:289:      "activity.progress.apply_patch": "修改 {target}",
+app/static/locales.js:380:      "run.value.tool_group.codex_core": "Codex Core",
+app/static/locales.js:386:      "run.value.tool_group.browser_fallback": "浏览器",
+app/static/locales.js:452:        "この画面をさらに Codex に近づけて",
+app/static/locales.js:702:      "activity.tool_title.apply_patch": "パッチ適用",
+app/static/locales.js:717:      "activity.progress.apply_patch": "{target} を修正する",
+app/static/locales.js:808:      "run.value.tool_group.codex_core": "Codex Core",
+app/static/locales.js:814:      "run.value.tool_group.browser_fallback": "ブラウザ",
+app/static/locales.js:880:        "Make this page feel even closer to Codex",
+app/static/locales.js:1130:      "activity.tool_title.apply_patch": "Apply patch",
+app/static/locales.js:1145:      "activity.progress.apply_patch": "Update {target}",
+app/static/locales.js:1236:      "run.value.tool_group.codex_core": "Codex Core",
+app/static/locales.js:1242:      "run.value.tool_group.browser_fallback": "Browser",
+app/static/styles.css:2382:body.theme-openclaw {
+app/static/styles.css:2401:body.theme-openclaw .bg-shape {
+app/static/styles.css:2405:body.theme-openclaw .bg-grid {
+app/static/styles.css:2414:body.theme-openclaw [hidden] {
+app/static/styles.css:2418:body.theme-openclaw .app-shell--openclaw {
+app/static/styles.css:2428:body.theme-openclaw .control-rail {
+app/static/styles.css:2434:body.theme-openclaw .control-rail--openclaw {
+app/static/styles.css:2451:body.theme-openclaw .sidebar-brand {
+app/static/styles.css:2457:body.theme-openclaw .sidebar-brand-logo {
+app/static/styles.css:2467:body.theme-openclaw .sidebar-brand-caption {
+app/static/styles.css:2474:body.theme-openclaw .sidebar-brand-kicker,
+app/static/styles.css:2475:body.theme-openclaw .sidebar-group-label,
+app/static/styles.css:2476:body.theme-openclaw .compact-summary-kicker,
+app/static/styles.css:2477:body.theme-openclaw .workspace-breadcrumb,
+app/static/styles.css:2478:body.theme-openclaw .topbar-chip-label,
+app/static/styles.css:2479:body.theme-openclaw .rail-kicker,
+app/static/styles.css:2480:body.theme-openclaw .summary-metric-label,
+app/static/styles.css:2481:body.theme-openclaw .ops-subtitle,
+app/static/styles.css:2482:body.theme-openclaw .hero-mini-card span,
+app/static/styles.css:2483:body.theme-openclaw .ops-gate-card span {
+app/static/styles.css:2490:body.theme-openclaw .sidebar-nav-meta {
+app/static/styles.css:2494:body.theme-openclaw .sidebar-brand-meta,
+app/static/styles.css:2495:body.theme-openclaw .sidebar-nav-meta,
+app/static/styles.css:2496:body.theme-openclaw .field-hint,
+app/static/styles.css:2497:body.theme-openclaw .workspace-section-note,
+app/static/styles.css:2498:body.theme-openclaw .compact-summary-meta,
+app/static/styles.css:2499:body.theme-openclaw .compact-summary-note,
+app/static/styles.css:2500:body.theme-openclaw .ops-note,
+app/static/styles.css:2501:body.theme-openclaw .dag-legend,
+app/static/styles.css:2502:body.theme-openclaw .execution-log-meta,
+app/static/styles.css:2503:body.theme-openclaw .command-palette-hint,
+app/static/styles.css:2504:body.theme-openclaw .log-entry-detail,
+app/static/styles.css:2505:body.theme-openclaw .role-board-legend,
+app/static/styles.css:2506:body.theme-openclaw .kernel-console-subtitle,
+app/static/styles.css:2507:body.theme-openclaw .kernel-live-meta,
+app/static/styles.css:2508:body.theme-openclaw .log-entry-time,
+app/static/styles.css:2509:body.theme-openclaw .session-history-meta,
+app/static/styles.css:2510:body.theme-openclaw .session-history-preview,
+app/static/styles.css:2511:body.theme-openclaw .ops-entry-path {
+app/static/styles.css:2515:body.theme-openclaw .sidebar-nav {
+app/static/styles.css:2520:body.theme-openclaw .sidebar-nav-item {
+app/static/styles.css:2534:body.theme-openclaw .sidebar-nav-item:hover {
+app/static/styles.css:2540:body.theme-openclaw .sidebar-nav-item.is-active {
+app/static/styles.css:2547:body.theme-openclaw .sidebar-nav-icon {
+app/static/styles.css:2561:body.theme-openclaw .sidebar-nav-item.is-active .sidebar-nav-icon {
+app/static/styles.css:2566:body.theme-openclaw .sidebar-nav-copy {
+app/static/styles.css:2572:body.theme-openclaw .sidebar-nav-title {
+app/static/styles.css:2578:body.theme-openclaw .sidebar-session-shell {
+app/static/styles.css:2587:body.theme-openclaw .sidebar-session-toggle {
+app/static/styles.css:2599:body.theme-openclaw .sidebar-session-toggle:hover {
+app/static/styles.css:2603:body.theme-openclaw .sidebar-session-toggle-copy {
+app/static/styles.css:2608:body.theme-openclaw .sidebar-session-toggle-note {
+app/static/styles.css:2613:body.theme-openclaw .sidebar-session-toggle-icon {
+app/static/styles.css:2625:body.theme-openclaw .sidebar-session-shell.is-open .sidebar-session-toggle {
+app/static/styles.css:2630:body.theme-openclaw .sidebar-session-body {
+app/static/styles.css:2636:body.theme-openclaw .sidebar-session-actions {
+app/static/styles.css:2642:body.theme-openclaw .sidebar-primary-action,
+app/static/styles.css:2643:body.theme-openclaw .topbar-command-button,
+app/static/styles.css:2644:body.theme-openclaw button {
+app/static/styles.css:2650:body.theme-openclaw .sidebar-primary-action {
+app/static/styles.css:2655:body.theme-openclaw button {
+app/static/styles.css:2662:body.theme-openclaw button:hover {
+app/static/styles.css:2667:body.theme-openclaw button.secondary,
+app/static/styles.css:2668:body.theme-openclaw .ops-link-button,
+app/static/styles.css:2669:body.theme-openclaw .session-history-rename {
+app/static/styles.css:2676:body.theme-openclaw button.secondary.preset-active,
+app/static/styles.css:2677:body.theme-openclaw .log-filter-chip.is-active,
+app/static/styles.css:2678:body.theme-openclaw .command-item.is-active {
+app/static/styles.css:2684:body.theme-openclaw button.small {
+app/static/styles.css:2689:body.theme-openclaw .sidebar-primary-action,
+app/static/styles.css:2690:body.theme-openclaw #sendBtn {
+app/static/styles.css:2696:body.theme-openclaw .sidebar-primary-action:hover,
+app/static/styles.css:2697:body.theme-openclaw #sendBtn:hover {
+app/static/styles.css:2702:body.theme-openclaw .session-history-list--sidebar {
+app/static/styles.css:2710:body.theme-openclaw .session-history-list--sidebar .session-history-row {
+app/static/styles.css:2714:body.theme-openclaw .session-history-list--sidebar .session-history-rename {
+app/static/styles.css:2718:body.theme-openclaw .session-history-item {
+app/static/styles.css:2726:body.theme-openclaw .session-history-item:hover {
+app/static/styles.css:2731:body.theme-openclaw .session-history-item.active {
+app/static/styles.css:2736:body.theme-openclaw .session-history-preview {
+app/static/styles.css:2740:body.theme-openclaw .workspace-shell--openclaw {
+app/static/styles.css:2750:body.theme-openclaw .workspace-topbar {
+app/static/styles.css:2764:body.theme-openclaw .workspace-topbar-copy {
+app/static/styles.css:2771:body.theme-openclaw .workspace-topbar #productTitle {
+app/static/styles.css:2775:body.theme-openclaw .workspace-topbar .hint {
+app/static/styles.css:2779:body.theme-openclaw .workspace-breadcrumb {
+app/static/styles.css:2785:body.theme-openclaw .topbar-status-strip {
+app/static/styles.css:2792:body.theme-openclaw .topbar-chip {
+app/static/styles.css:2804:body.theme-openclaw .topbar-chip code,
+app/static/styles.css:2805:body.theme-openclaw .topbar-chip .runtime-head-text,
+app/static/styles.css:2806:body.theme-openclaw .version-badge {
+app/static/styles.css:2810:body.theme-openclaw .topbar-chip--build,
+app/static/styles.css:2811:body.theme-openclaw .topbar-chip--session {
+app/static/styles.css:2815:body.theme-openclaw .topbar-command-button {
+app/static/styles.css:2823:body.theme-openclaw .topbar-actions {
+app/static/styles.css:2830:body.theme-openclaw .topbar-command-button--ghost {
+app/static/styles.css:2834:body.theme-openclaw .topbar-command-button--ghost.is-active {
+app/static/styles.css:2840:body.theme-openclaw .workspace-views {
+app/static/styles.css:2848:body.theme-openclaw .workspace-view {
+app/static/styles.css:2855:body.theme-openclaw .workspace-view--chat {
+app/static/styles.css:2859:body.theme-openclaw .workspace-section-head {
+app/static/styles.css:2867:body.theme-openclaw .workspace-section-title {
+app/static/styles.css:2874:body.theme-openclaw .compact-summary-strip,
+app/static/styles.css:2875:body.theme-openclaw .workspace-card-grid {
+app/static/styles.css:2880:body.theme-openclaw .compact-summary-strip {
+app/static/styles.css:2884:body.theme-openclaw .compact-summary-card,
+app/static/styles.css:2885:body.theme-openclaw .rail-card,
+app/static/styles.css:2886:body.theme-openclaw .ops-card,
+app/static/styles.css:2887:body.theme-openclaw .live-ops-card,
+app/static/styles.css:2888:body.theme-openclaw .kernel-console-shell,
+app/static/styles.css:2889:body.theme-openclaw .role-board-shell,
+app/static/styles.css:2890:body.theme-openclaw .chat-list,
+app/static/styles.css:2891:body.theme-openclaw .composer {
+app/static/styles.css:2899:body.theme-openclaw .compact-summary-card {
+app/static/styles.css:2905:body.theme-openclaw .compact-summary-value,
+app/static/styles.css:2906:body.theme-openclaw .hero-mini-card strong,
+app/static/styles.css:2907:body.theme-openclaw .ops-gate-card strong,
+app/static/styles.css:2908:body.theme-openclaw .summary-metric-value,
+app/static/styles.css:2909:body.theme-openclaw .kernel-card-title,
+app/static/styles.css:2910:body.theme-openclaw .rail-title,
+app/static/styles.css:2911:body.theme-openclaw .ops-card .rail-title {
+app/static/styles.css:2915:body.theme-openclaw .compact-summary-value {
+app/static/styles.css:2922:body.theme-openclaw .compact-summary-grid,
+app/static/styles.css:2923:body.theme-openclaw .hero-mini-grid,
+app/static/styles.css:2924:body.theme-openclaw .ops-gate-grid,
+app/static/styles.css:2925:body.theme-openclaw .summary-metric-grid {
+app/static/styles.css:2930:body.theme-openclaw .compact-summary-grid,
+app/static/styles.css:2931:body.theme-openclaw .hero-mini-grid,
+app/static/styles.css:2932:body.theme-openclaw .ops-gate-grid {
+app/static/styles.css:2936:body.theme-openclaw .summary-metric-grid {
+app/static/styles.css:2940:body.theme-openclaw .hero-chip,
+app/static/styles.css:2941:body.theme-openclaw .ops-chip,
+app/static/styles.css:2942:body.theme-openclaw .signal-chip,
+app/static/styles.css:2943:body.theme-openclaw .dag-badge,
+app/static/styles.css:2944:body.theme-openclaw .log-filter-chip,
+app/static/styles.css:2945:body.theme-openclaw .file-chip,
+app/static/styles.css:2946:body.theme-openclaw .inline-citation-tag {
+app/static/styles.css:2953:body.theme-openclaw .hero-mini-card,
+app/static/styles.css:2954:body.theme-openclaw .ops-gate-card,
+app/static/styles.css:2955:body.theme-openclaw .summary-metric,
+app/static/styles.css:2956:body.theme-openclaw .ops-entry,
+app/static/styles.css:2957:body.theme-openclaw .dag-node,
+app/static/styles.css:2958:body.theme-openclaw .dag-branch-card,
+app/static/styles.css:2959:body.theme-openclaw .log-entry,
+app/static/styles.css:2960:body.theme-openclaw .kernel-console-card,
+app/static/styles.css:2961:body.theme-openclaw .module-card,
+app/static/styles.css:2962:body.theme-openclaw .evolution-event,
+app/static/styles.css:2963:body.theme-openclaw .milestone-card,
+app/static/styles.css:2964:body.theme-openclaw .system-flow-node,
+app/static/styles.css:2965:body.theme-openclaw .runtime-step {
+app/static/styles.css:2972:body.theme-openclaw .chat-list {
+app/static/styles.css:2981:body.theme-openclaw .bubble {
+app/static/styles.css:2991:body.theme-openclaw .bubble.user {
+app/static/styles.css:2998:body.theme-openclaw .bubble.assistant {
+app/static/styles.css:3004:body.theme-openclaw .bubble.system {
+app/static/styles.css:3010:body.theme-openclaw .bubble.assistant pre {
+app/static/styles.css:3018:body.theme-openclaw .bubble.assistant code {
+app/static/styles.css:3022:body.theme-openclaw .bubble.assistant a {
+app/static/styles.css:3026:body.theme-openclaw .composer {
+app/static/styles.css:3034:body.theme-openclaw input,
+app/static/styles.css:3035:body.theme-openclaw select,
+app/static/styles.css:3036:body.theme-openclaw textarea {
+app/static/styles.css:3044:body.theme-openclaw textarea {
+app/static/styles.css:3050:body.theme-openclaw .drop-zone {
+app/static/styles.css:3058:body.theme-openclaw .drop-zone.dragging {
+app/static/styles.css:3063:body.theme-openclaw .runtime-panel--openclaw {
+app/static/styles.css:3072:body.theme-openclaw .live-ops-grid {
+app/static/styles.css:3078:body.theme-openclaw .live-ops-card,
+app/static/styles.css:3079:body.theme-openclaw .ops-card,
+app/static/styles.css:3080:body.theme-openclaw .rail-card,
+app/static/styles.css:3081:body.theme-openclaw .kernel-console-shell,
+app/static/styles.css:3082:body.theme-openclaw .role-board-shell {
+app/static/styles.css:3086:body.theme-openclaw .workspace-card-grid--control,
+app/static/styles.css:3087:body.theme-openclaw .workspace-card-grid--operations,
+app/static/styles.css:3088:body.theme-openclaw .workspace-card-grid--system {
+app/static/styles.css:3092:body.theme-openclaw .workspace-card-grid--operations .ops-card--index,
+app/static/styles.css:3093:body.theme-openclaw .workspace-card-grid--system .ops-card:last-child {
+app/static/styles.css:3097:body.theme-openclaw .ops-links-row {
+app/static/styles.css:3102:body.theme-openclaw .ops-link-button {
+app/static/styles.css:3108:body.theme-openclaw .execution-log,
+app/static/styles.css:3109:body.theme-openclaw .module-bay,
+app/static/styles.css:3110:body.theme-openclaw .evolution-feed,
+app/static/styles.css:3111:body.theme-openclaw .stats-view,
+app/static/styles.css:3112:body.theme-openclaw .runtime-pre,
+app/static/styles.css:3113:body.theme-openclaw .runtime-graph,
+app/static/styles.css:3114:body.theme-openclaw .runtime-failures {
+app/static/styles.css:3121:body.theme-openclaw .runtime-details {
+app/static/styles.css:3127:body.theme-openclaw .runtime-details summary {
+app/static/styles.css:3133:body.theme-openclaw .runtime-pre {
+app/static/styles.css:3137:body.theme-openclaw .kernel-console-shell,
+app/static/styles.css:3138:body.theme-openclaw .role-board-shell {
+app/static/styles.css:3142:body.theme-openclaw .command-palette-backdrop {
+app/static/styles.css:3147:body.theme-openclaw .command-palette-dialog {
+app/static/styles.css:3153:body.theme-openclaw .command-item {
+app/static/styles.css:3161:  body.theme-openclaw .workspace-topbar {
+app/static/styles.css:3167:  body.theme-openclaw .app-shell--openclaw {
+app/static/styles.css:3171:  body.theme-openclaw .compact-summary-strip,
+app/static/styles.css:3172:  body.theme-openclaw .workspace-card-grid--control,
+app/static/styles.css:3173:  body.theme-openclaw .workspace-card-grid--operations,
+app/static/styles.css:3174:  body.theme-openclaw .workspace-card-grid--system,
+app/static/styles.css:3175:  body.theme-openclaw .live-ops-grid,
+app/static/styles.css:3176:  body.theme-openclaw .ops-links-row,
+app/static/styles.css:3177:  body.theme-openclaw .hero-mini-grid,
+app/static/styles.css:3178:  body.theme-openclaw .ops-gate-grid,
+app/static/styles.css:3179:  body.theme-openclaw .compact-summary-grid {
+app/static/styles.css:3185:  body.theme-openclaw .app-shell--openclaw {
+app/static/styles.css:3190:  body.theme-openclaw .workspace-topbar {
+app/static/styles.css:3195:  body.theme-openclaw .topbar-status-strip {
+app/static/styles.css:3200:  body.theme-openclaw .control-rail--openclaw {
+app/static/styles.css:3206:  body.theme-openclaw .sidebar-session-shell {
+app/static/styles.css:3210:  body.theme-openclaw .chat-main-shell {
+app/static/styles.css:3216:  body.theme-openclaw .app-shell--openclaw {
+app/static/styles.css:3220:  body.theme-openclaw .workspace-topbar {
+app/static/styles.css:3224:  body.theme-openclaw .control-rail--openclaw {
+app/static/styles.css:3232:  body.theme-openclaw .sidebar-session-shell {
+app/static/styles.css:3236:  body.theme-openclaw .workspace-views {
+app/static/styles.css:3240:  body.theme-openclaw .sidebar-nav {
+app/static/styles.css:3244:  body.theme-openclaw .compact-summary-card,
+app/static/styles.css:3245:  body.theme-openclaw .rail-card,
+app/static/styles.css:3246:  body.theme-openclaw .ops-card,
+app/static/styles.css:3247:  body.theme-openclaw .live-ops-card,
+app/static/styles.css:3248:  body.theme-openclaw .kernel-console-shell,
+app/static/styles.css:3249:  body.theme-openclaw .role-board-shell,
+app/static/styles.css:3250:  body.theme-openclaw .chat-list,
+app/static/styles.css:3251:  body.theme-openclaw .composer {
+app/static/styles.css:3255:  body.theme-openclaw .chat-list,
+app/static/styles.css:3256:  body.theme-openclaw .composer {
+app/static/styles.css:3260:  body.theme-openclaw .bubble {
+app/static/styles.css:3264:  body.theme-openclaw .topbar-actions {
+app/static/styles.css:3271:  body.theme-openclaw .sidebar-nav {
+app/static/styles.css:3278:body.theme-openclaw .workspace-view--chat {
+app/static/styles.css:3286:body.theme-openclaw .chat-main-shell {
+app/static/styles.css:3299:body.theme-openclaw .chat-main-shell .chat-list,
+app/static/styles.css:3300:body.theme-openclaw .chat-main-shell .composer {
+app/static/styles.css:3304:body.theme-openclaw .chat-main-shell .chat-list {
+app/static/styles.css:3311:body.theme-openclaw .chat-main-shell .composer {
+app/static/styles.css:3319:body.theme-openclaw .chat-info-backdrop {
+app/static/styles.css:3332:body.theme-openclaw .chat-info-panel {
+app/static/styles.css:3351:body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-backdrop {
+app/static/styles.css:3356:body.theme-openclaw .chat-info-panel-head {
+app/static/styles.css:3368:body.theme-openclaw .chat-info-panel-body {
+app/static/styles.css:3377:body.theme-openclaw .chat-info-panel .compact-summary-card {
+app/static/styles.css:3383:body.theme-openclaw .chat-info-panel .compact-summary-value {
+app/static/styles.css:3387:body.theme-openclaw .chat-info-panel .compact-summary-grid {
+app/static/styles.css:3392:  body.theme-openclaw .chat-info-panel {
+app/static/styles.css:3398:  body.theme-openclaw .chat-info-panel {
+app/tool_trace_summary.py:87:    if normalized == "apply_patch":
+app/tool_trace_summary.py:155:    if normalized == "apply_patch":
+app/vintage_programmer_runtime.py:144:    "apply_patch",
+app/vintage_programmer_runtime.py:181:    "apply_patch",
+app/vintage_programmer_runtime.py:241:                name in {"exec_command", "write_stdin", "apply_patch", "web_download", "archive_extract", "mail_extract_attachments"}
+app/vintage_programmer_runtime.py:478:            self._build_codex_agentic_harness_prompt(
+app/vintage_programmer_runtime.py:546:        coding_agent_like = any(token in model_label for token in ("codex", "claude", "coder", "devstral", "qwen3-coder"))
+app/vintage_programmer_runtime.py:557:            "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
+app/vintage_programmer_runtime.py:566:    def _build_codex_agentic_harness_prompt(
+app/vintage_programmer_runtime.py:1789:        if tool_name == "apply_patch":
+app/vintage_programmer_runtime.py:2000:        if name == "apply_patch":
+app/vintage_programmer_runtime.py:3301:                        "tool_drain_mode": "codex_style_all_calls",
+app/vintage_programmer_runtime.py:3315:                        "tool_drain_mode": "codex_style_all_calls",
+app/vintage_programmer_runtime.py:3759:                        "tool_drain_mode": "codex_style_all_calls",
+app/workbench.py:21:    "exec_command": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+app/workbench.py:22:    "write_stdin": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+app/workbench.py:23:    "apply_patch": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
+app/workbench.py:24:    "update_plan": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
+app/workbench.py:25:    "request_user_input": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
+app/workbench.py:26:    "read_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:27:    "list_dir": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:28:    "glob_file_search": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:29:    "search_contents_in_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:30:    "search_contents_in_file_multi": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:31:    "read_section": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:32:    "table_extract": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:33:    "fact_check_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:34:    "search_codebase": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:38:    "sessions_list": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:39:    "sessions_history": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:40:    "image_inspect": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:41:    "image_read": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:44:    "browser_open": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:45:    "browser_click": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:46:    "browser_type": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:47:    "browser_wait": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:48:    "browser_snapshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:49:    "browser_screenshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
+app/workbench.py:76:        "codex_core": 0,
+app/workbench.py:82:        "browser_fallback": 6,
+docs/internal_design_manual.md:3:本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
+docs/internal_design_manual.md:7:本项目是一个本地运行的单主 agent 工作台，默认主 agent 为 `vintage_programmer`。它采用一种接近 Codex 的架构风格，但不是复制私有实现。
+docs/internal_design_manual.md:18:- 本项目不是以 Responses API（响应接口）作为当前稳定主路径。
+docs/internal_design_manual.md:19:- 仓库中确实存在 `app/codex_runner.py` 这样的 Responses runner（响应式 runner）代码，但它不是本文描述的主线运行路径；本文聚焦 `VintageProgrammerRuntime` 的当前稳定行为。
+docs/internal_design_manual.md:22:为什么说它“Codex-like（类 Codex 风格）”：
+docs/internal_design_manual.md:193:- `apply_patch`
+docs/internal_design_manual.md:234:- `apply_patch`：适合结构化修改文件
+docs/internal_design_manual.md:668:## 20. v2.9.6 Codex-like Action Runtime Notes
+docs/internal_design_manual.md:670:v2.9.6 keeps the v2.9.x stable LangChain runtime line while making the tool loop closer to Codex-style model-led execution.
+docs/internal_design_manual.md:691:## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes
+docs/internal_design_manual.md:725:## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes
+docs/internal_design_manual.md:737:v2.9.11 keeps the v2.9.10 Codex-style all-tool drain behavior and improves model-visible path portability.
+docs/internal_design_manual.md:748:v2.9.12 keeps the v2.9.10 Codex-style all-tool drain behavior and the v2.9.11 path portability rules.
+docs/internal_design_manual.md:760:v2.9.13 keeps the v2.9.10 Codex-style all-tool drain behavior and makes the workspace boundary easier to explain.
+docs/internal_design_manual.md:823:## 20.13 v2.9.20 Codex-style Permission Modes Notes
+docs/internal_design_manual.md:825:v2.9.20 renames the product permission model to Codex-style trust levels: `Default / Auto / Full Access`.
+docs/internal_design_manual.md:837:v3.0.0 keeps the Codex-style tool drain semantics and permission selector UI, but reduces the model-facing core to one explicit path.
+docs/internal_design_manual.md:851:For v2.9.0, the project prioritizes stable Codex-style execution over experimental streaming.
+docs/internal_design_manual.md:863:OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
+docs/internal_design_manual.md:875:Any future streaming implementation must preserve the existing Codex-style loop:
+docs/internal_design_manual.md:986:1. `Responses API` 相关代码是否会在未来成为稳定主路径：当前仓库存在可选 runner，但不是本文主线。
+evals/cases.json:1395:    "name": "helper_codex_model_normalization_strips_chat_suffix",
+evals/cases.json:1400:      "auth_mode": "codex_auth"
+evals/cases.json:1423:    "name": "helper_codex_input_payload_preserves_tool_history",
+evals/cases.json:1425:    "helper": "_debug_codex_input_payload",
+evals/cases.json:2217:        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+evals/gate_cases.json:361:        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+packages/office_modules/agent_module.py:23:    selected_tool_module_id: str = "codex_core_tools",
+packages/office_modules/agent_module.py:46:    selected_tool_module_id: str = "codex_core_tools",
+packages/office_modules/agent_module.py:68:    selected_tool_module_id: str = "codex_core_tools",
+packages/office_modules/agent_module.py:96:        selected_tool_module_id="codex_core_tools",
+packages/office_modules/execution_runtime.py:198:        use_responses_api: bool | None = None,
+packages/office_modules/execution_runtime.py:520:        use_responses_api: bool | None = None,
+packages/office_modules/execution_runtime.py:528:            use_responses_api=use_responses_api,
+packages/office_modules/execution_runtime.py:535:        use_responses_api: bool | None = None,
+packages/office_modules/execution_runtime.py:540:            use_responses_api=use_responses_api,
+packages/office_modules/intent_support.py:479:        "table_extract", "fact_check_file", "search_codebase", "apply_patch", "写入", "替换", "更新", "改成", "改为",
+packages/office_modules/legacy_runtime_support.py:9:from app.codex_runner import build_codex_input_payload
+packages/office_modules/legacy_runtime_support.py:18:    if normalized == "codex_core_tools":
+packages/office_modules/legacy_runtime_support.py:106:def legacy_codex_input_payload(agent: Any, messages: list[dict[str, Any]]) -> dict[str, Any]:
+packages/office_modules/legacy_runtime_support.py:133:    instructions, input_items = build_codex_input_payload(built_messages)
+packages/office_modules/legacy_runtime_support.py:440:    "legacy_codex_input_payload",
+packages/office_modules/manifest.json:8:    "codex_core_tools",
+packages/office_modules/office_agent_runtime.py:76:    legacy_codex_input_payload as legacy_codex_input_payload_helper,
+packages/office_modules/office_agent_runtime.py:99:from app.codex_runner import CodexResponsesRunner
+packages/office_modules/office_agent_runtime.py:887:    def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+packages/office_modules/office_agent_runtime.py:888:        return legacy_codex_input_payload_helper(self, messages)
+packages/office_modules/office_agent_runtime.py:928:        if normalized_mode == "codex_auth":
+packages/office_modules/office_agent_runtime.py:929:            return self._auth_manager._resolve_codex_auth()
+packages/office_modules/office_agent_runtime.py:2902:                                "请立即调用必要工具完成任务（例如 read_file/exec_command/apply_patch），",
+packages/office_modules/office_agent_runtime.py:7216:    def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
+packages/office_modules/office_agent_runtime.py:7222:            use_responses_api=use_responses_api,
+packages/office_modules/office_agent_runtime.py:7230:        use_responses_api: bool | None = None,
+packages/office_modules/office_agent_runtime.py:7235:            use_responses_api=use_responses_api,
+packages/office_modules/office_agent_runtime.py:7244:        use_responses_api: bool | None = None,
+packages/office_modules/office_agent_runtime.py:7246:        if auth.mode == "codex_auth":
+packages/office_modules/office_agent_runtime.py:7247:            return CodexResponsesRunner(
+packages/office_modules/office_agent_runtime.py:7255:        selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
+packages/office_modules/office_agent_runtime.py:7260:            "use_responses_api": selected_use_responses,
+packages/office_modules/office_agent_runtime.py:7378:            if auth.mode == "codex_auth" or not self._is_405_error(exc):
+packages/office_modules/office_agent_runtime.py:7381:        fallback_use_responses = not self.config.openai_use_responses_api
+packages/office_modules/office_agent_runtime.py:7383:            f"模型 {model} 返回 405，自动切换 use_responses_api={str(fallback_use_responses).lower()} 重试。"
+packages/office_modules/office_agent_runtime.py:7388:            use_responses_api=fallback_use_responses,
+packages/office_modules/office_agent_runtime.py:7492:                name="apply_patch",
+packages/office_modules/office_agent_runtime.py:7493:                description="Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+packages/office_modules/office_agent_runtime.py:7495:                func=self._apply_patch_tool,
+packages/office_modules/office_agent_runtime.py:7806:    def _apply_patch_tool(self, patch: str, cwd: str = ".", check: bool = False) -> str:
+packages/office_modules/office_agent_runtime.py:7807:        result = self.tools.apply_patch(patch=patch, cwd=cwd, check=check)
+packages/office_modules/office_agent_runtime.py:8864:        suffixes = ["/chat/completions", "/responses", "/v1/chat/completions", "/v1/responses"]
+packages/office_modules/office_agent_runtime.py:8913:    selected_tool_module_id: str = "codex_core_tools",
+packages/office_modules/tools.py:118:_CODEX_CORE_TOOL_NAMES = (
+packages/office_modules/tools.py:121:    "apply_patch",
+packages/office_modules/tools.py:159:    _CODEX_CORE_TOOL_NAMES
+packages/office_modules/tools.py:182:            module_id="codex_core_tools",
+packages/office_modules/tools.py:183:            title="Codex Core Tool Module",
+packages/office_modules/tools.py:184:            description="Codex 风格的主工具集合。",
+packages/office_modules/tools.py:186:                module_id="codex_core_tools",
+packages/office_modules/tools.py:187:                title="Codex Core Tool Module",
+packages/office_modules/tools.py:188:                group="codex_core",
+packages/office_modules/tools.py:189:                tool_names=_CODEX_CORE_TOOL_NAMES,
+packages/office_modules/tools.py:192:            tool_names=_CODEX_CORE_TOOL_NAMES,
+packages/office_modules/tools.py:193:            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "codex_core"},
+packages/runtime_core/legacy_host_support.py:19:    if normalized == "codex_core_tools":
+run.ps1:74:$supportsCodexAuth = ($llmProvider -eq "openai")
+run.ps1:79:$codexHome = Get-EnvFirst @("VP_CODEX_HOME")
+run.ps1:80:if (-not $codexHome) {
+run.ps1:81:  $codexHome = Join-Path $HOME ".codex"
+run.ps1:83:$codexAuthFile = Get-EnvFirst @("VP_CODEX_AUTH_FILE")
+run.ps1:84:if (-not $codexAuthFile) {
+run.ps1:85:  $codexAuthFile = Join-Path $codexHome "auth.json"
+run.ps1:87:$hasCodexAuth = Test-Path $codexAuthFile
+run.ps1:90:  if ($supportsCodexAuth -and $hasCodexAuth) {
+run.ps1:91:  } elseif ($supportsCodexAuth) {
+run.ps1:92:    Write-Warning "No API key found and Codex auth.json was not found. /api/chat requests will fail until one auth source is available."
+run.sh:35:CODEX_HOME_DIR="$(env_first VP_CODEX_HOME || printf '%s/.codex' "$HOME")"
+run.sh:36:CODEX_AUTH_FILE="$(env_first VP_CODEX_AUTH_FILE || printf '%s/auth.json' "$CODEX_HOME_DIR")"
+run.sh:53:has_codex_auth=false
+run.sh:54:supports_codex_auth=false
+run.sh:63:  supports_codex_auth=true
+run.sh:65:if [ -f "$CODEX_AUTH_FILE" ]; then
+run.sh:66:  has_codex_auth=true
+run.sh:70:  if [ "$supports_codex_auth" = true ] && [ "$has_codex_auth" = true ]; then
+run.sh:72:  elif [ "$supports_codex_auth" = true ]; then
+run.sh:73:    echo "WARN: No API key found and Codex auth.json was not found. /api/chat requests will fail until one auth source is available." >&2
+tests/integration/test_chat_vintage_programmer_api.py:29:                "apply_patch",
+tests/integration/test_chat_vintage_programmer_api.py:66:                    "apply_patch",
+tests/integration/test_chat_vintage_programmer_api.py:89:                    {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
+tests/integration/test_chat_vintage_programmer_api.py:90:                    {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
+tests/integration/test_chat_vintage_programmer_api.py:91:                    {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
+tests/integration/test_chat_vintage_programmer_api.py:92:                    {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
+tests/integration/test_chat_vintage_programmer_api.py:93:                    {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+tests/integration/test_chat_vintage_programmer_api.py:94:                    {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+tests/integration/test_chat_vintage_programmer_api.py:95:                    {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+tests/integration/test_chat_vintage_programmer_api.py:96:                    {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
+tests/integration/test_chat_vintage_programmer_api.py:97:                    {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
+tests/integration/test_chat_vintage_programmer_api.py:98:                    {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
+tests/integration/test_chat_vintage_programmer_api.py:99:                    {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
+tests/integration/test_chat_vintage_programmer_api.py:103:                    {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
+tests/integration/test_chat_vintage_programmer_api.py:104:                    {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
+tests/integration/test_chat_vintage_programmer_api.py:105:                    {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
+tests/integration/test_chat_vintage_programmer_api.py:108:                    {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
+tests/integration/test_chat_vintage_programmer_api.py:109:                    {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
+tests/integration/test_chat_vintage_programmer_api.py:113:                {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
+tests/integration/test_chat_vintage_programmer_api.py:114:                {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
+tests/integration/test_chat_vintage_programmer_api.py:115:                {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
+tests/integration/test_chat_vintage_programmer_api.py:116:                {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
+tests/integration/test_chat_vintage_programmer_api.py:117:                {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+tests/integration/test_chat_vintage_programmer_api.py:118:                {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
+tests/integration/test_chat_vintage_programmer_api.py:119:                {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
+tests/integration/test_chat_vintage_programmer_api.py:120:                {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
+tests/integration/test_chat_vintage_programmer_api.py:121:                {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
+tests/integration/test_chat_vintage_programmer_api.py:122:                {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
+tests/integration/test_chat_vintage_programmer_api.py:123:                {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
+tests/integration/test_chat_vintage_programmer_api.py:127:                {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
+tests/integration/test_chat_vintage_programmer_api.py:128:                {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
+tests/integration/test_chat_vintage_programmer_api.py:129:                {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
+tests/integration/test_chat_vintage_programmer_api.py:132:                {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
+tests/integration/test_chat_vintage_programmer_api.py:133:                {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
+tests/integration/test_chat_vintage_programmer_api.py:1918:    assert {"codex_core", "fs_content", "web_context", "session_context", "media_context", "content_unpack"}.issubset(
+tests/modules/test_tool_registration.py:35:def test_codex_core_tool_module_exposes_core_tools() -> None:
+tests/modules/test_tool_registration.py:38:    workspace = next(item for item in modules if item.module_id == "codex_core_tools")
+tests/modules/test_tool_registration.py:47:        "codex_core_tools",
+tests/modules/test_tool_registration.py:57:    assert "apply_patch" in tool_names
+tests/modules/test_tool_registration.py:80:        module_id="codex_core_tools",
+tests/modules/test_tool_registration.py:81:        title="Codex Core Tool Module",
+tests/modules/test_tool_registration.py:82:        group="codex_core",
+tests/test_frontend_locale_regressions.py:90:    "activity.tool_title.apply_patch",
+tests/test_frontend_locale_regressions.py:115:    "activity.progress.apply_patch",
+tests/test_frontend_locale_regressions.py:620:    assert "## 20. v2.9.6 Codex-like Action Runtime Notes" in manual
+tests/test_frontend_locale_regressions.py:621:    assert "## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes" in manual
+tests/test_frontend_locale_regressions.py:624:    assert "## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes" in manual
+tests/test_frontend_locale_regressions.py:633:    assert "## 20.13 v2.9.20 Codex-style Permission Modes Notes" in manual
+tests/test_local_tools_public_surface.py:38:        "apply_patch",
+tests/test_local_tools_public_surface.py:545:def test_apply_patch_supports_check_create_update_and_delete(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:552:    check_result = executor.apply_patch(add_patch, cwd=cwd, check=True)
+tests/test_local_tools_public_surface.py:557:    add_result = executor.apply_patch(add_patch, cwd=cwd)
+tests/test_local_tools_public_surface.py:562:    update_result = executor.apply_patch(update_patch, cwd=cwd)
+tests/test_local_tools_public_surface.py:565:    delete_result = executor.apply_patch(delete_patch, cwd=cwd)
+tests/test_local_tools_public_surface.py:570:def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:574:    result = executor.apply_patch(delete_patch, cwd=str(tmp_path))
+tests/test_vintage_programmer_runtime.py:169:            {"name": "apply_patch", "description": "apply patch", "parameters": {}},
+tests/test_vintage_programmer_runtime.py:329:                        "provider": "codex_auth",
+tests/test_vintage_programmer_runtime.py:1750:            _FakeMessage(content="请确认，我再 apply_patch。"),
+tests/test_vp_env_config.py:23:    assert config.llm_supports_codex_auth is False
+tests/test_vp_env_config.py:48:def test_openai_uses_codex_auth_automatically_when_auth_file_exists(monkeypatch, tmp_path) -> None:
+tests/test_vp_env_config.py:52:    auth_file = tmp_path / ".codex" / "auth.json"
+tests/test_vp_env_config.py:58:    monkeypatch.setenv("VP_CODEX_AUTH_FILE", str(auth_file))
+tests/test_vp_env_config.py:63:    assert resolved.mode == "codex_auth"
