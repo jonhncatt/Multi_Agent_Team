@@ -7,6 +7,17 @@ from typing import Any
 from app.i18n import translate
 
 
+_IMAGE_TOOL_NAMES = {"image_read", "image_inspect"}
+_DOCUMENT_READ_TOOL_NAMES = {
+    "read_file",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
+    "read_section",
+    "table_extract",
+    "fact_check_file",
+}
+
+
 def attachment_paths(attachments: list[dict[str, Any]], *, kind: str | None = None) -> list[str]:
     wanted_kind = str(kind or "").strip().lower()
     paths: list[str] = []
@@ -42,6 +53,13 @@ def build_attachment_tool_guidance(attachments: list[dict[str, Any]], *, locale:
     document_paths = attachment_paths(attachments, kind="document")
     if document_paths:
         lines.append(translate(locale, "runtime.attachment_guidance.document"))
+        lines.append(
+            translate(
+                locale,
+                "runtime.attachment_guidance.document_paths",
+                paths=json.dumps(document_paths[:6], ensure_ascii=False),
+            )
+        )
         lines.append(translate(locale, "runtime.attachment_guidance.msg"))
     return "\n".join(lines)
 
@@ -109,33 +127,34 @@ def rewrite_attachment_tool_arguments(
 ) -> dict[str, Any]:
     normalized = dict(arguments or {})
     tool_name = str(name or "").strip()
-    if tool_name in {"image_read", "image_inspect"}:
+    if tool_name in _IMAGE_TOOL_NAMES:
         for legacy_key in ("image_path", "file_path", "filepath", "file", "image", "attachment", "attachment_id"):
             if "path" not in normalized and legacy_key in normalized:
                 normalized["path"] = normalized.pop(legacy_key)
-    if tool_name in {"image_read", "image_inspect"} and "path" not in normalized and "image_path" in normalized:
+    if tool_name in _IMAGE_TOOL_NAMES and "path" not in normalized and "image_path" in normalized:
         normalized["path"] = normalized.pop("image_path")
 
-    if tool_name in {"image_read", "image_inspect"} and "path" in normalized:
+    if tool_name in _IMAGE_TOOL_NAMES and "path" in normalized:
         normalized["path"] = _resolve_attachment_argument_path(
             normalized.get("path"),
             attachments,
             preferred_kind="image",
         )
-    elif tool_name in {"image_read", "image_inspect"}:
+    elif tool_name in _IMAGE_TOOL_NAMES:
         fallback_path = _first_attachment_path(attachments, kind="image")
         if fallback_path:
             normalized["path"] = fallback_path
-    elif tool_name in {
-        "read_file",
-        "list_dir",
-        "glob_file_search",
-        "search_contents_in_file",
-        "search_contents_in_file_multi",
-        "read_section",
-        "table_extract",
-        "fact_check_file",
-    } and "path" in normalized:
+    elif tool_name in _DOCUMENT_READ_TOOL_NAMES and "path" in normalized:
+        normalized["path"] = _resolve_attachment_argument_path(
+            normalized.get("path"),
+            attachments,
+            preferred_kind="document",
+        )
+    elif tool_name in _DOCUMENT_READ_TOOL_NAMES:
+        fallback_path = _first_attachment_path(attachments, kind="document")
+        if fallback_path:
+            normalized["path"] = fallback_path
+    elif tool_name in {"list_dir", "glob_file_search", "search_codebase"} and "path" in normalized:
         normalized["path"] = _resolve_attachment_argument_path(normalized.get("path"), attachments)
     elif tool_name == "archive_extract" and "zip_path" in normalized:
         normalized["zip_path"] = _resolve_attachment_argument_path(normalized.get("zip_path"), attachments)

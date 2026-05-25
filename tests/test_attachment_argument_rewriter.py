@@ -26,6 +26,15 @@ def test_attachment_guidance_mentions_image_paths(tmp_path: Path) -> None:
     assert str(tmp_path / "diagram.png") in guidance
 
 
+def test_attachment_guidance_mentions_document_paths(tmp_path: Path) -> None:
+    doc_path = tmp_path / "report.pdf"
+    attachments = [{"kind": "document", "path": str(doc_path)}]
+
+    guidance = build_attachment_tool_guidance(attachments, locale="zh-CN")
+
+    assert str(doc_path) in guidance
+
+
 def test_attachment_rewriter_maps_legacy_image_keys_and_attachment_ids(tmp_path: Path) -> None:
     image_path = tmp_path / "diagram.png"
     attachments = [{"id": "att-1", "kind": "image", "name": "diagram.png", "path": str(image_path)}]
@@ -60,3 +69,48 @@ def test_attachment_rewriter_resolves_document_and_archive_paths(tmp_path: Path)
 
     assert rewritten_doc == {"path": str(doc_path)}
     assert rewritten_zip == {"zip_path": str(zip_path)}
+
+
+def test_attachment_rewriter_falls_back_to_single_document_for_read_file(tmp_path: Path) -> None:
+    doc_path = tmp_path / "notes.md"
+    attachments = [
+        {
+            "id": "doc-1",
+            "kind": "document",
+            "name": "notes.md",
+            "path": str(doc_path),
+        }
+    ]
+
+    rewritten = rewrite_attachment_tool_arguments(
+        name="read_file",
+        arguments={},
+        attachments=attachments,
+    )
+
+    assert rewritten == {"path": str(doc_path)}
+
+
+def test_attachment_rewriter_does_not_guess_when_multiple_documents(tmp_path: Path) -> None:
+    attachments = [
+        {
+            "id": "doc-1",
+            "kind": "document",
+            "name": "a.md",
+            "path": str(tmp_path / "a.md"),
+        },
+        {
+            "id": "doc-2",
+            "kind": "document",
+            "name": "b.md",
+            "path": str(tmp_path / "b.md"),
+        },
+    ]
+
+    rewritten = rewrite_attachment_tool_arguments(
+        name="read_file",
+        arguments={},
+        attachments=attachments,
+    )
+
+    assert rewritten == {}

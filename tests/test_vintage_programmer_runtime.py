@@ -1131,6 +1131,47 @@ def test_runtime_records_completed_initial_llm_exchange(tmp_path: Path) -> None:
     assert all("llm_exchanges" not in dict(item.get("payload") or {}) for item in result["activity"]["trace_events"])
 
 
+def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    attachment_path = str(tmp_path / "report.md")
+    backend = _FakeBackend([_FakeMessage(content="收到附件。")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="帮我看一下这个附件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-current-attachments",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "name": "report.md",
+                    "mime": "text/markdown",
+                    "kind": "document",
+                    "path": attachment_path,
+                }
+            ],
+        },
+    )
+
+    sent = json.dumps(result["activity"]["llm_exchanges"][0]["sent_messages_exact"], ensure_ascii=False)
+
+    assert "[current_attachments]" in sent
+    assert "report.md" in sent
+    assert "text/markdown" in sent
+    assert "document" in sent
+    assert attachment_path in sent
+    assert any("[current_attachments]" in str(item.content or "") for item in backend.invocations[0]["messages"])
+
+
 def test_runtime_records_tool_and_followup_llm_exchanges(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -1738,7 +1779,7 @@ def test_repeated_confirmation_text_is_model_final_answer_not_runtime_block(tmp_
     assert "invalid_final_guard" not in result
 
 
-def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: Path) -> None:
+def test_runtime_sends_attachment_evidence_pack_to_model_messages(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend([_FakeMessage(content="根据资料补齐完成")])
@@ -1768,6 +1809,7 @@ def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: P
                     "name": "requirements.pdf",
                     "kind": "document",
                     "summary": "missing export button",
+                    "text_preview": "hello attachment",
                     "read_hint": {"tool": "read_file", "path": "/tmp/requirements.pdf"},
                 }
             ],
@@ -1776,8 +1818,14 @@ def test_runtime_injects_attachment_evidence_pack_into_model_context(tmp_path: P
 
     first_messages = backend.invocations[0]["messages"]
     human_payload = str(first_messages[-1].content)
+    sent = json.dumps(result["activity"]["llm_exchanges"][0]["sent_messages_exact"], ensure_ascii=False)
+
     assert "attachment_evidence" not in human_payload
     assert "missing export button" not in human_payload
+    assert "[attachment_evidence_pack]" in sent
+    assert "missing export button" in sent
+    assert "hello attachment" in sent
+    assert any("[attachment_evidence_pack]" in str(item.content or "") for item in first_messages)
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
 

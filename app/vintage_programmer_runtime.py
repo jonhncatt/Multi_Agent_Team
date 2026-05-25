@@ -1338,6 +1338,61 @@ class VintageProgrammerRuntime:
         return refs[:8]
 
     @staticmethod
+    def _truncate_attachment_debug_text(value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "…"
+
+    @classmethod
+    def _attachment_manifest_for_model(cls, attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+        manifest: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in attachments:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            attachment_id = str(item.get("id") or "").strip()
+            name = str(item.get("name") or item.get("original_name") or "").strip()
+            mime = str(item.get("mime") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+            key = path or attachment_id or name
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            manifest.append(
+                {
+                    "id": attachment_id,
+                    "name": name,
+                    "mime": mime,
+                    "kind": kind,
+                    "path": path,
+                }
+            )
+        return manifest[:8]
+
+    @classmethod
+    def _attachment_evidence_pack_for_model(cls, evidence_pack: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        for item in evidence_pack:
+            if not isinstance(item, dict):
+                continue
+            compact_item: dict[str, Any] = {}
+            for key in ("id", "name", "mime", "kind", "path", "source_format", "exists", "size", "has_more"):
+                if key in item:
+                    compact_item[str(key)] = dump_model(item.get(key))
+            for key, limit in (("summary", 700), ("preview", 4000), ("text_preview", 4000)):
+                value = cls._truncate_attachment_debug_text(item.get(key), limit)
+                if value:
+                    compact_item[key] = value
+            read_hint = item.get("read_hint")
+            if isinstance(read_hint, dict) and read_hint:
+                compact_item["read_hint"] = dump_model(read_hint)
+            if compact_item:
+                compacted.append(compact_item)
+        return compacted[:4]
+
+    @staticmethod
     def _normalize_task_checkpoint(raw: Any) -> dict[str, Any]:
         if not isinstance(raw, dict):
             return {}
@@ -2785,6 +2840,20 @@ class VintageProgrammerRuntime:
         ]
         if attachment_guidance:
             messages.append(self._backend._SystemMessage(content=attachment_guidance))
+        attachment_manifest = self._attachment_manifest_for_model(attachment_metas)
+        if attachment_manifest:
+            messages.append(
+                self._backend._SystemMessage(
+                    content="[current_attachments]\n" + json.dumps(attachment_manifest, ensure_ascii=False)
+                )
+            )
+        model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(attachment_evidence_pack)
+        if model_visible_attachment_evidence:
+            messages.append(
+                self._backend._SystemMessage(
+                    content="[attachment_evidence_pack]\n" + json.dumps(model_visible_attachment_evidence, ensure_ascii=False)
+                )
+            )
         messages.append(
             self._backend._HumanMessage(
                 content=render_model_context(turn_model_context)
