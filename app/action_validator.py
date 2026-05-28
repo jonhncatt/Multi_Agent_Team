@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.runtime_boundary import RuntimeBoundary, build_runtime_boundary
 from app.serialization import dump_model
+from app.tool_metadata import get_tool_metadata
 from app.tool_trace_summary import normalize_tool_arguments, safe_error_message, safe_preview, validate_tool_arguments
 
 
@@ -372,6 +373,23 @@ class ActionValidator:
                 schema_validation={"status": "skipped", "checked": False, "summary": "Tool is not allowed.", "errors": []},
             )
 
+        metadata_error = self._validate_metadata_capabilities(tool_name)
+        if metadata_error is not None:
+            code, message = metadata_error
+            checks.update({"schema": "skipped", "policy": "passed", "permission": "failed", "boundary": "skipped"})
+            return self._result(
+                allowed=False,
+                code=code,
+                message=message,
+                tool_name=tool_name,
+                raw_tool_name=raw_tool_name,
+                raw_arguments=raw_arguments,
+                normalized_arguments=parsed_arguments,
+                normalization_notes=parse_notes,
+                checks=checks,
+                schema_validation={"status": "skipped", "checked": False, "summary": "Blocked by tool capability policy.", "errors": []},
+            )
+
         tool_schema = dict((self._tool_specs_by_name.get(tool_name) or {}).get("parameters") or {})
         if tool_name == "update_plan":
             plan_result = self._validate_update_plan(parsed_arguments)
@@ -463,6 +481,22 @@ class ActionValidator:
             schema_validation=schema_validation,
             severity="info",
         )
+
+    def _validate_metadata_capabilities(self, tool_name: str) -> tuple[str, str] | None:
+        metadata = get_tool_metadata(tool_name)
+        requires = dict(metadata.get("requires") or {})
+        if bool(requires.get("workspace_read")) and not self._boundary.workspace_read_allowed:
+            return "workspace_read_not_allowed", f"Workspace read is not allowed for tool: {tool_name}"
+        if bool(requires.get("workspace_write")) and not self._boundary.workspace_write_allowed:
+            return "workspace_write_not_allowed", f"Workspace write is not allowed for tool: {tool_name}"
+        if bool(requires.get("shell")) and not self._boundary.shell_allowed:
+            return "shell_not_allowed", f"Shell execution is not allowed for tool: {tool_name}"
+        if bool(requires.get("network")) and not self._boundary.network_allowed:
+            return "network_not_allowed", f"Network access is not allowed for tool: {tool_name}"
+        browser_allowed = bool(getattr(self._boundary, "browser_allowed", self._boundary.network_allowed))
+        if bool(requires.get("browser")) and not browser_allowed:
+            return "browser_not_allowed", f"Browser access is not allowed for tool: {tool_name}"
+        return None
 
     @staticmethod
     def _redaction_placeholder_field(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -739,6 +773,7 @@ def validation_observation(result: ValidationResult, *, tool: str | None = None)
         "workspace_read_not_allowed",
         "workspace_write_not_allowed",
         "network_not_allowed",
+        "browser_not_allowed",
         "shell_not_allowed",
         "dangerous_command",
         "tool_not_allowed",
@@ -747,7 +782,7 @@ def validation_observation(result: ValidationResult, *, tool: str | None = None)
         observation_type = "boundary_denied"
     if code in {"repeated_invalid_tool_call", "loop_limit_exceeded"}:
         observation_type = "loop_safeguard"
-    retryable = code not in {"shell_not_allowed", "network_not_allowed", "workspace_write_not_allowed", "dangerous_command"}
+    retryable = code not in {"shell_not_allowed", "network_not_allowed", "browser_not_allowed", "workspace_write_not_allowed", "dangerous_command"}
     return {
         "ok": False,
         "type": observation_type,

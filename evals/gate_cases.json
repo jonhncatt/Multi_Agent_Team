@@ -357,8 +357,7 @@
         "selected_modules.attachment_context": "attachment_context@1.0.0",
         "selected_modules.finalizer": "finalizer@1.0.0",
         "selected_modules.tool_registry": "tool_registry@1.0.0",
-        "selected_modules.provider:api_key": "provider_openai_api@1.0.0",
-        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+        "selected_modules.provider:api_key": "provider_openai_api@1.0.0"
       }
     }
   },

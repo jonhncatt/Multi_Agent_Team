@@ -115,7 +115,7 @@ def _build_scoped_executor_factory(
     return factory
 
 
-_CODEX_CORE_TOOL_NAMES = (
+_WORKSPACE_CORE_TOOL_NAMES = (
     "exec_command",
     "write_stdin",
     "apply_patch",
@@ -156,7 +156,7 @@ _BROWSER_TOOL_NAMES = (
     "browser_screenshot",
 )
 _ALL_TOOL_NAMES = (
-    _CODEX_CORE_TOOL_NAMES
+    _WORKSPACE_CORE_TOOL_NAMES
     + _FS_CONTENT_TOOL_NAMES
     + _WEB_CONTEXT_TOOL_NAMES
     + _SESSION_CONTEXT_TOOL_NAMES
@@ -179,18 +179,18 @@ def get_tool_executor(config: Any) -> ScopedToolExecutor:
 def build_office_tool_modules() -> tuple[ToolModule, ...]:
     return (
         ToolModule(
-            module_id="codex_core_tools",
-            title="Codex Core Tool Module",
-            description="Codex 风格的主工具集合。",
+            module_id="workspace_core_tools",
+            title="Workspace Core Tool Module",
+            description="主工具集合，覆盖控制、shell 与补丁编辑能力。",
             build_executor=_build_scoped_executor_factory(
-                module_id="codex_core_tools",
-                title="Codex Core Tool Module",
-                group="codex_core",
-                tool_names=_CODEX_CORE_TOOL_NAMES,
+                module_id="workspace_core_tools",
+                title="Workspace Core Tool Module",
+                group="control",
+                tool_names=_WORKSPACE_CORE_TOOL_NAMES,
             ),
             default=True,
-            tool_names=_CODEX_CORE_TOOL_NAMES,
-            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "codex_core"},
+            tool_names=_WORKSPACE_CORE_TOOL_NAMES,
+            metadata={"family": "office", "executor": "ScopedToolExecutor", "group": "control"},
         ),
         ToolModule(
             module_id="fs_content_tools",

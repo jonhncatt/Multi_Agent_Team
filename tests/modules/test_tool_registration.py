@@ -32,10 +32,10 @@ class _StubLocalToolExecutor:
         return {"ok": True, "name": name, "arguments": arguments}
 
 
-def test_codex_core_tool_module_exposes_core_tools() -> None:
+def test_workspace_core_tool_module_exposes_core_tools() -> None:
     modules = tools_module.build_office_tool_modules()
     module_ids = {item.module_id for item in modules}
-    workspace = next(item for item in modules if item.module_id == "codex_core_tools")
+    workspace = next(item for item in modules if item.module_id == "workspace_core_tools")
     fs_tools = next(item for item in modules if item.module_id == "fs_content_tools")
     web_tools = next(item for item in modules if item.module_id == "web_context_tools")
     session_tools = next(item for item in modules if item.module_id == "session_context_tools")
@@ -44,7 +44,7 @@ def test_codex_core_tool_module_exposes_core_tools() -> None:
     tool_names = set(workspace.tool_names)
 
     assert {
-        "codex_core_tools",
+        "workspace_core_tools",
         "fs_content_tools",
         "web_context_tools",
         "session_context_tools",
@@ -77,9 +77,9 @@ def test_scoped_executor_accepts_case_variant_tool_name(monkeypatch) -> None:
     monkeypatch.setattr(tools_module, "LocalToolExecutor", _StubLocalToolExecutor)
     executor = tools_module.ScopedToolExecutor(
         config=object(),
-        module_id="codex_core_tools",
-        title="Codex Core Tool Module",
-        group="codex_core",
+        module_id="workspace_core_tools",
+        title="Workspace Core Tool Module",
+        group="control",
         allowed_tool_names=("exec_command",),
     )
 

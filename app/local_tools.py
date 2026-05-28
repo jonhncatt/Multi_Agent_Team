@@ -1199,7 +1199,7 @@ def _find_subsequence(lines: list[str], chunk: list[str], start: int = 0) -> int
     return -1
 
 
-def _parse_codex_patch(patch_text: str) -> list[dict[str, Any]]:
+def _parse_workspace_patch(patch_text: str) -> list[dict[str, Any]]:
     lines = str(patch_text or "").splitlines()
     if not lines or lines[0] != "*** Begin Patch":
         raise ValueError("patch must start with '*** Begin Patch'")
@@ -2078,7 +2078,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "apply_patch",
-                "description": "Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+                "description": "Apply a freeform patch inside the workspace.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3739,7 +3739,7 @@ class LocalToolExecutor:
         if not patch_text.strip():
             return {"ok": False, "error": "patch cannot be empty"}
         try:
-            operations = _parse_codex_patch(patch_text)
+            operations = _parse_workspace_patch(patch_text)
             real_cwd = self._resolve_path(cwd)
             if not real_cwd.exists() or not real_cwd.is_dir():
                 return {"ok": False, "error": f"Invalid cwd: {cwd}"}

@@ -1,10 +1,10 @@
 # 内部设计手册（v3.0.0）
 
-本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，不推测未公开的 Codex 私有实现。
+本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，也不推测外部未公开实现。
 
 ## 1. 项目定位
 
-本项目是一个本地运行的单主 agent 工作台，默认主 agent 为 `vintage_programmer`。它采用一种接近 Codex 的架构风格，但不是复制私有实现。
+本项目是一个本地运行的单主 agent 工作台，默认主 agent 为 `vintage_programmer`。它采用一种以模型驱动工具决策为核心的 agentic 工作流。
 
 当前稳定主路径可以概括为：
 
@@ -16,10 +16,9 @@
 
 - 本项目当前稳定主路径以 Chat Completions（聊天补全接口）风格的消息循环为主。
 - 本项目不是以 Responses API（响应接口）作为当前稳定主路径。
-- 仓库中确实存在 `app/codex_runner.py` 这样的 Responses runner（响应式 runner）代码，但它不是本文描述的主线运行路径；本文聚焦 `VintageProgrammerRuntime` 的当前稳定行为。
 - 项目通过自建 harness（执行控制层）实现 tool loop（工具循环）、Tool Guard（工具守卫）、progress UI（进度界面）、runtime stats（运行统计）和 context compaction（上下文压缩）。
 
-为什么说它“Codex-like（类 Codex 风格）”：
+为什么说它是“agentic（智能体式）”工作流：
 
 - 工具由模型选择，不是 runtime 预先写死固定流程。
 - harness 负责执行边界，而不是替模型做完整任务规划。
@@ -665,9 +664,9 @@ This release is a narrow bugfix only and does not change prompt behavior, routin
 - Residual direct `.model_dump()` calls in `packages/office_modules/office_agent_runtime.py` are replaced with `dump_model(...)`.
 - This prevents intermittent office-style crashes such as `NoneType object has no attribute model_dump` and `dict object has no attribute model_dump`, especially in meeting-minutes and related task paths.
 
-## 20. v2.9.6 Codex-like Action Runtime Notes
+## 20. v2.9.6 Model-led Action Runtime Notes
 
-v2.9.6 keeps the v2.9.x stable LangChain runtime line while making the tool loop closer to Codex-style model-led execution.
+v2.9.6 keeps the v2.9.x stable LangChain runtime line while making the tool loop closer to model-led execution.
 
 Core rule:
 
@@ -688,7 +687,7 @@ The new `ContextPack` separates:
 
 v2.9.6 does not add a semantic ToolUseAdvisor, meeting-minutes no-tool rule, translation no-tool rule, or another LLM judge.
 
-## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes
+## 20.1 v2.9.7 Model-led Runtime Cleanup Notes
 
 v2.9.7 is a cleanup release on the same stable LangChain runtime line.
 It removes the remaining proposal/validated-next-step/guard layering from the execution path.
@@ -722,7 +721,7 @@ v2.9.9 keeps the same model-led action loop and makes ContextPack smaller and no
 - The model-facing RuntimeBoundary view is concise and does not include full `allowed_roots` or `writable_roots`; the full boundary remains internal for ActionValidator.
 - `route_hints`, `route_state`, `legacy_context`, `context_injections`, and route-derived memory fields are not sent to the model ContextPack.
 
-## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes
+## 20.4 v2.9.10 All-Tool Drain Fix Notes
 
 v2.9.10 fixes a protocol-level tool-call transaction bug in the stable LangChain runtime path.
 
@@ -734,7 +733,7 @@ v2.9.10 fixes a protocol-level tool-call transaction bug in the stable LangChain
 
 ## 20.5 v2.9.11 Path Portability and Search Safety Notes
 
-v2.9.11 keeps the v2.9.10 Codex-style all-tool drain behavior and improves model-visible path portability.
+v2.9.11 keeps the v2.9.10 all-tool drain behavior and improves model-visible path portability.
 
 - File/path tool outputs prefer project-relative paths such as `app/local_tools.py`; absolute paths remain available as `resolved_path` / `resolved_root` for debug and trace use.
 - `list_dir`, `read_file`, `glob_file_search`, and `search_codebase` return model-actionable paths that are easier to reuse after a project folder is moved.
@@ -745,7 +744,7 @@ v2.9.11 keeps the v2.9.10 Codex-style all-tool drain behavior and improves model
 
 ## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes
 
-v2.9.12 keeps the v2.9.10 Codex-style all-tool drain behavior and the v2.9.11 path portability rules.
+v2.9.12 keeps the v2.9.10 all-tool drain behavior and the v2.9.11 path portability rules.
 
 - The main assistant card now tracks live run items from SSE `item/started`, `item/completed`, and LLM/answer trace events so users can see model thinking, tool execution, answer generation, and failures without opening debug details.
 - Completed turns still collapse back to a clean activity summary while keeping detailed execution data available behind the debug drawer.
@@ -757,7 +756,7 @@ v2.9.12 keeps the v2.9.10 Codex-style all-tool drain behavior and the v2.9.11 pa
 
 ## 20.7 v2.9.13 Workspace and Permission Profiles Notes
 
-v2.9.13 keeps the v2.9.10 Codex-style all-tool drain behavior and makes the workspace boundary easier to explain.
+v2.9.13 keeps the v2.9.10 all-tool drain behavior and makes the workspace boundary easier to explain.
 
 - The current `project_root` is the default workspace.
 - File reads default to the current project and explicitly imported files; file writes default to the current project.
@@ -820,9 +819,9 @@ v2.9.19 combines a scoped hard cleanup with a manual-only self-update button.
 - The endpoint does not accept arbitrary frontend-provided command strings.
 - Cache/generated files remain ignored and are not part of the application architecture.
 
-## 20.13 v2.9.20 Codex-style Permission Modes Notes
+## 20.13 v2.9.20 Permission Mode Notes
 
-v2.9.20 renames the product permission model to Codex-style trust levels: `Default / Auto / Full Access`.
+v2.9.20 renames the product permission model to product trust levels: `Default / Auto / Full Access`.
 
 - Canonical runtime values are now `default`, `auto`, and `full_access`.
 - Legacy values such as `chat`, `code`, and `full_dev` remain accepted as compatibility aliases.
@@ -834,7 +833,7 @@ v2.9.20 renames the product permission model to Codex-style trust levels: `Defau
 
 ## 20.14 v3.0.0 ModelContext Minimal Core Refactor Notes
 
-v3.0.0 keeps the Codex-style tool drain semantics and permission selector UI, but reduces the model-facing core to one explicit path.
+v3.0.0 keeps the all-tool drain semantics and permission selector UI, but reduces the model-facing core to one explicit path.
 
 - `ModelContext` remains the only model-facing context envelope.
 - Normal `build_model_context()` now accepts only `user_request`, `ContextManager`, `RuntimeBoundary`, `project_root`, and `cwd`.
@@ -848,7 +847,7 @@ v3.0.0 keeps the Codex-style tool drain semantics and permission selector UI, bu
 
 v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
 The v2.8.x series experimented with OpenAI native SDK, streaming, detailed diagnostics, and tool-call canonicalization. These experiments improved low-level visibility but introduced regressions in task continuity, image_read behavior, tool-call stability, CPU usage, and latency.
-For v2.9.0, the project prioritizes stable Codex-style execution over experimental streaming.
+For v2.9.0, the project prioritizes stable model-led execution over experimental streaming.
 The stable runtime must preserve:
 
 - long-task continuation
@@ -872,7 +871,7 @@ OpenAI native SDK and Responses API support are future adapter work. They must n
 ## 23. Streaming Policy
 
 Streaming is postponed for v2.9.0.
-Any future streaming implementation must preserve the existing Codex-style loop:
+Any future streaming implementation must preserve the existing model-led loop:
 
 1. tool calls must remain reliable;
 2. tool results must return to the model;

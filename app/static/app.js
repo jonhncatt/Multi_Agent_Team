@@ -5731,7 +5731,7 @@ function App() {
               )
             : html`
                 <section className="empty-panel">
-                  <div className="empty-kicker">OpenClaw-first Tools · Codex-style Workspace</div>
+                  <div className="empty-kicker">Native Tools · Model-led Workspace</div>
                   <div className="empty-title" id="emptyPromptLine">${t("empty.prompt_title")}</div>
                   <p className="empty-copy">
                     ${t("labels.current_project")}

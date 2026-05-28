@@ -18,7 +18,7 @@ class RuntimeContract:
     permission_profile: str = "auto"
     sandbox_scope: str = "workspace"
     approval_policy: str = "avoid_unnecessary_confirmation"
-    reason: str = "codex_style_full_auto"
+    reason: str = "native_full_auto"
     hint_source: str = ""
 
     def as_payload(self) -> dict[str, Any]:

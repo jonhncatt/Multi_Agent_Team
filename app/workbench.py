@@ -9,45 +9,13 @@ import yaml
 
 from app.config import AppConfig
 from app.i18n import normalize_locale
+from app.tool_metadata import TOOL_GROUP_ORDER, get_tool_metadata
 
 
 SPEC_FILE_NAMES = ("soul.md", "identity.md", "agent.md", "tools.md")
 SKILL_FILE_NAME = "SKILL.md"
 SKILL_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 BASE_SPEC_LOCALE = "zh-CN"
-
-
-_TOOL_METADATA: dict[str, dict[str, Any]] = {
-    "exec_command": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
-    "write_stdin": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
-    "apply_patch": {"group": "codex_core", "source": "codex_core", "read_only": False, "requires_evidence": False},
-    "update_plan": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
-    "request_user_input": {"group": "codex_core", "source": "codex_core", "read_only": True, "requires_evidence": False},
-    "read_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "list_dir": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "glob_file_search": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "search_contents_in_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "search_contents_in_file_multi": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "read_section": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "table_extract": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "fact_check_file": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "search_codebase": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "web_search": {"group": "web_context", "source": "local_hosted", "read_only": True, "requires_evidence": True},
-    "web_fetch": {"group": "web_context", "source": "local_hosted", "read_only": True, "requires_evidence": True},
-    "web_download": {"group": "web_context", "source": "local_specialized", "read_only": False, "requires_evidence": True},
-    "sessions_list": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "sessions_history": {"group": "session_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "image_inspect": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "image_read": {"group": "media_context", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
-    "archive_extract": {"group": "content_unpack", "source": "local_specialized", "read_only": False, "requires_evidence": False},
-    "mail_extract_attachments": {"group": "content_unpack", "source": "local_specialized", "read_only": False, "requires_evidence": False},
-    "browser_open": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-    "browser_click": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-    "browser_type": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-    "browser_wait": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-    "browser_snapshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-    "browser_screenshot": {"group": "browser_fallback", "source": "openclaw_fallback", "read_only": True, "requires_evidence": True},
-}
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -72,16 +40,6 @@ def dump_frontmatter(meta: dict[str, Any], body: str) -> str:
 
 
 def build_tool_descriptors(tool_specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    group_order = {
-        "codex_core": 0,
-        "fs_content": 1,
-        "web_context": 2,
-        "session_context": 3,
-        "media_context": 4,
-        "content_unpack": 5,
-        "browser_fallback": 6,
-        "other": 9,
-    }
     out: list[dict[str, Any]] = []
     for item in tool_specs:
         if not isinstance(item, dict):
@@ -89,19 +47,25 @@ def build_tool_descriptors(tool_specs: list[dict[str, Any]]) -> list[dict[str, A
         name = str(item.get("name") or "").strip()
         if not name:
             continue
-        meta = dict(_TOOL_METADATA.get(name) or {})
+        meta = get_tool_metadata(name)
         out.append(
             {
                 "name": name,
-                "group": str(meta.get("group") or "workspace"),
-                "source": str(meta.get("source") or "native"),
+                "group": str(meta.get("group") or "unknown"),
+                "source": str(meta.get("source") or "unknown"),
                 "enabled": True,
                 "read_only": bool(meta.get("read_only")),
                 "requires_evidence": bool(meta.get("requires_evidence")),
-                "summary": str(item.get("description") or "").strip(),
+                "summary": str(meta.get("summary") or item.get("description") or "").strip(),
             }
         )
-    out.sort(key=lambda row: (group_order.get(str(row.get("group") or ""), 5), str(row.get("group") or ""), str(row.get("name") or "")))
+    out.sort(
+        key=lambda row: (
+            TOOL_GROUP_ORDER.get(str(row.get("group") or ""), TOOL_GROUP_ORDER["unknown"]),
+            str(row.get("group") or ""),
+            str(row.get("name") or ""),
+        )
+    )
     return out
 
 

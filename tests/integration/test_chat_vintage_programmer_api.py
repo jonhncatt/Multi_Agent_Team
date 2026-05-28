@@ -13,40 +13,51 @@ from app.config import load_config
 from app.evolution import EvolutionStore
 from app.i18n import translate
 from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
-from app.workbench import WorkbenchStore
+from app.workbench import WorkbenchStore, build_tool_descriptors
+
+
+_FAKE_TOOL_SPECS = [
+    {"name": "exec_command", "description": "run shell commands"},
+    {"name": "apply_patch", "description": "apply workspace patch"},
+    {"name": "read_file", "description": "read one local file"},
+    {"name": "list_dir", "description": "list one local directory"},
+    {"name": "glob_file_search", "description": "find files by glob pattern"},
+    {"name": "search_contents_in_file", "description": "search one local file"},
+    {"name": "search_contents_in_file_multi", "description": "search one local file with multiple queries"},
+    {"name": "read_section", "description": "read one matched section"},
+    {"name": "table_extract", "description": "extract document tables"},
+    {"name": "fact_check_file", "description": "fact check one file"},
+    {"name": "search_codebase", "description": "search codebase"},
+    {"name": "web_search", "description": "search the web"},
+    {"name": "web_fetch", "description": "fetch one web page"},
+    {"name": "web_download", "description": "download one remote file"},
+    {"name": "sessions_list", "description": "list sessions"},
+    {"name": "image_inspect", "description": "inspect image"},
+    {"name": "image_read", "description": "read image content"},
+    {"name": "archive_extract", "description": "extract archive"},
+    {"name": "mail_extract_attachments", "description": "extract mail attachments"},
+    {"name": "update_plan", "description": "sync checklist"},
+    {"name": "request_user_input", "description": "request structured input"},
+]
+_FAKE_TOOL_DESCRIPTORS = build_tool_descriptors(_FAKE_TOOL_SPECS)
+_FAKE_TOOL_DESCRIPTOR_BY_NAME = {
+    str(item.get("name") or ""): dict(item)
+    for item in _FAKE_TOOL_DESCRIPTORS
+    if str(item.get("name") or "")
+}
+_FAKE_ALLOWED_TOOLS = [str(item["name"]) for item in _FAKE_TOOL_SPECS]
 
 
 class _FakeVintageRuntime:
     def descriptor(self, locale: str | None = None, *, refresh: bool = False) -> dict[str, object]:
         _ = (locale, refresh)
+        tools = [dict(item) for item in _FAKE_TOOL_DESCRIPTORS]
         return {
             "agent_id": "vintage_programmer",
             "title": "Vintage Programmer",
             "default_model": "gpt-test",
             "tool_policy": "all",
-            "allowed_tools": [
-                "exec_command",
-                "apply_patch",
-                "read_file",
-                "list_dir",
-                "glob_file_search",
-                "search_contents_in_file",
-                "search_contents_in_file_multi",
-                "read_section",
-                "table_extract",
-                "fact_check_file",
-                "search_codebase",
-                "web_search",
-                "web_fetch",
-                "web_download",
-                "sessions_list",
-                "image_inspect",
-                "image_read",
-                "archive_extract",
-                "mail_extract_attachments",
-                "update_plan",
-                "request_user_input",
-            ],
+            "allowed_tools": list(_FAKE_ALLOWED_TOOLS),
             "spec_files": ["soul.md", "identity.md", "agent.md", "tools.md"],
             "identity": {"document": "identity", "sections": {"角色定义": ["primary agent"]}},
             "workflow": {
@@ -61,77 +72,11 @@ class _FakeVintageRuntime:
             },
             "network": {"mode": "explicit_tools", "web_tool_contract": ["web_search", "web_fetch", "web_download"]},
             "capabilities": {
-                "allowed_tools": [
-                    "exec_command",
-                    "apply_patch",
-                    "read_file",
-                    "list_dir",
-                    "glob_file_search",
-                    "search_contents_in_file",
-                    "search_contents_in_file_multi",
-                    "read_section",
-                    "table_extract",
-                    "fact_check_file",
-                    "search_codebase",
-                    "web_search",
-                    "web_fetch",
-                    "web_download",
-                    "sessions_list",
-                    "image_inspect",
-                    "image_read",
-                    "archive_extract",
-                    "mail_extract_attachments",
-                    "update_plan",
-                    "request_user_input",
-                ],
-                "tool_count": 21,
-                "tools": [
-                    {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
-                    {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
-                    {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
-                    {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
-                    {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
-                    {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
-                    {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
-                    {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
-                    {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
-                    {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
-                    {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
-                    {"name": "web_search", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search the web"},
-                    {"name": "web_fetch", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fetch one web page"},
-                    {"name": "web_download", "group": "web_context", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": True, "summary": "download one remote file"},
-                    {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
-                    {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
-                    {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
-                    {"name": "archive_extract", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract archive"},
-                    {"name": "mail_extract_attachments", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract mail attachments"},
-                    {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
-                    {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
-                ],
+                "allowed_tools": list(_FAKE_ALLOWED_TOOLS),
+                "tool_count": len(_FAKE_ALLOWED_TOOLS),
+                "tools": [dict(item) for item in tools],
             },
-            "tools": [
-                {"name": "exec_command", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "run shell commands"},
-                {"name": "apply_patch", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "apply workspace patch"},
-                {"name": "read_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one local file"},
-                {"name": "list_dir", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list one local directory"},
-                {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
-                {"name": "search_contents_in_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file"},
-                {"name": "search_contents_in_file_multi", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search one local file with multiple queries"},
-                {"name": "read_section", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read one matched section"},
-                {"name": "table_extract", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "extract document tables"},
-                {"name": "fact_check_file", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fact check one file"},
-                {"name": "search_codebase", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search codebase"},
-                {"name": "web_search", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "search the web"},
-                {"name": "web_fetch", "group": "web_context", "source": "local_hosted", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "fetch one web page"},
-                {"name": "web_download", "group": "web_context", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": True, "summary": "download one remote file"},
-                {"name": "sessions_list", "group": "session_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "list sessions"},
-                {"name": "image_inspect", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "inspect image"},
-                {"name": "image_read", "group": "media_context", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "read image content"},
-                {"name": "archive_extract", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract archive"},
-                {"name": "mail_extract_attachments", "group": "content_unpack", "source": "local_specialized", "enabled": True, "read_only": False, "requires_evidence": False, "summary": "extract mail attachments"},
-                {"name": "update_plan", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "sync checklist"},
-                {"name": "request_user_input", "group": "codex_core", "source": "codex_core", "enabled": True, "read_only": True, "requires_evidence": False, "summary": "request structured input"},
-            ],
+            "tools": [dict(item) for item in tools],
             "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
         }
 
@@ -142,6 +87,7 @@ class _FakeVintageRuntime:
         _ = (message, settings, context)
         project = dict(context.get("project") or {})
         run_id = str(context.get("run_id") or "run-fake")
+        web_search_tool = dict(_FAKE_TOOL_DESCRIPTOR_BY_NAME["web_search"])
         trace_events = [
             {
                 "id": "trace-runtime",
@@ -178,7 +124,18 @@ class _FakeVintageRuntime:
         return {
             "text": "single-agent response",
             "effective_model": "gpt-test",
-            "tool_events": [{"name": "web_search", "input": {"query": "x"}, "output_preview": "ok", "status": "ok", "group": "web_context", "source": "local_hosted", "summary": "searched", "source_refs": ["https://example.com"]}],
+            "tool_events": [
+                {
+                    "name": "web_search",
+                    "input": {"query": "x"},
+                    "output_preview": "ok",
+                    "status": "ok",
+                    "group": str(web_search_tool.get("group") or ""),
+                    "source": str(web_search_tool.get("source") or ""),
+                    "summary": "searched",
+                    "source_refs": ["https://example.com"],
+                }
+            ],
             "token_usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "llm_calls": 1},
             "answer_bundle": {"summary": "single-agent response", "claims": [], "citations": [], "warnings": []},
             "model_action": {
@@ -307,7 +264,7 @@ class _FakeVintageRuntime:
                         "next_action": "",
                     },
                 },
-                "tool_timeline": [{"name": "web_search", "group": "web_context", "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
+                "tool_timeline": [{"name": "web_search", "group": str(web_search_tool.get("group") or ""), "status": "ok", "summary": "searched", "source_refs": ["https://example.com"]}],
                 "evidence": {"status": "collected", "required": True, "warning": "", "source_refs": ["https://example.com"]},
                 "session": {
                     "session_id": "s-1",
@@ -698,6 +655,7 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
         payload = super().run(message=message, settings=settings, context=context, progress_cb=None)
         run_id = str(context.get("run_id") or "run-tool-audit")
         session_id = str(context.get("session_id") or "s-tool-audit")
+        web_search_tool = dict(_FAKE_TOOL_DESCRIPTOR_BY_NAME["web_search"])
         tool_item = {
             "id": f"{run_id}:tool:web_search",
             "name": "web_search",
@@ -725,8 +683,8 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
             "schema_validation": {"status": "valid", "checked": True},
             "output_preview": "ok",
             "status": "ok",
-            "group": "web_context",
-            "source": "local_hosted",
+            "group": str(web_search_tool.get("group") or ""),
+            "source": str(web_search_tool.get("source") or ""),
             "summary": "searched",
             "source_refs": ["https://example.com"],
         }
@@ -740,7 +698,7 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
                     "source_refs": ["https://example.com"],
                     "tool_round": 1,
                     "tool_index": 1,
-                    "group": "web_context",
+                    "group": str(web_search_tool.get("group") or ""),
                     "agent_id": "vintage_programmer",
                     "thread_id": session_id,
                     "run_id": run_id,
@@ -1293,8 +1251,8 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert payload["agent_id"] == "vintage_programmer"
     assert payload["text"] == "single-agent response"
     assert payload["tool_events"][0]["name"] == "web_search"
-    assert payload["tool_events"][0]["source"] == "local_hosted"
-    assert payload["tool_events"][0]["group"] == "web_context"
+    assert payload["tool_events"][0]["source"] == "adapter"
+    assert payload["tool_events"][0]["group"] == "web"
     assert payload["tool_events"][0]["status"] == "ok"
     assert payload["permission_profile"] == "auto"
     assert payload["turn_status"] == "completed"
@@ -1915,7 +1873,7 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     tool_rows = tools_response.json()["tools"]
     assert tool_rows[0]["name"]
     assert all(item["source"] != "legacy_retained" for item in tool_rows)
-    assert {"codex_core", "fs_content", "web_context", "session_context", "media_context", "content_unpack"}.issubset(
+    assert {"control", "shell", "edit", "file", "document", "web", "session", "media", "archive"}.issubset(
         {item["group"] for item in tool_rows}
     )
     assert "view_image" not in {item["name"] for item in tool_rows}

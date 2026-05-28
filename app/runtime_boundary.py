@@ -17,6 +17,7 @@ class RuntimeBoundary(BaseModel):
     workspace_write_allowed: bool = True
     shell_allowed: bool = True
     network_allowed: bool = True
+    browser_allowed: bool = True
     permission_profile: str = "auto"
     approval_policy: str = "avoid_unnecessary_confirmation"
     allowed_roots: list[str] = Field(default_factory=list)
@@ -40,6 +41,7 @@ class RuntimeBoundary(BaseModel):
             "workspace_write_allowed": bool(self.workspace_write_allowed),
             "shell_allowed": bool(self.shell_allowed),
             "network_allowed": bool(self.network_allowed),
+            "browser_allowed": bool(self.browser_allowed),
             "network_reason": self.network_reason(),
             "approval_policy": str(self.approval_policy or ""),
             "cwd": str(self.cwd or ""),
@@ -188,6 +190,7 @@ def build_turn_runtime_boundary(
     workspace_write_allowed = bool(contract.workspace_write_allowed) and profile in {"auto", "full_access"}
     shell_allowed = bool(contract.shell_allowed) and profile in {"auto", "full_access"}
     network_allowed = bool(contract.network_allowed) and profile in {"auto", "full_access"}
+    browser_allowed = network_allowed
     if workspace_write_allowed:
         writable_roots = _dedup_paths([any_root] if allow_any_path else ([root, *extra_roots] if profile == "full_access" else [root]))
     else:
@@ -202,6 +205,7 @@ def build_turn_runtime_boundary(
         workspace_write_allowed=workspace_write_allowed,
         shell_allowed=shell_allowed,
         network_allowed=network_allowed,
+        browser_allowed=browser_allowed,
         permission_profile=profile,
         approval_policy=str(contract.approval_policy or "avoid_unnecessary_confirmation"),
         allowed_roots=[str(path) for path in allowed_roots],

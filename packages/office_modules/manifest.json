@@ -5,7 +5,7 @@
     "local_tool_executor"
   ],
   "tool_modules": [
-    "codex_core_tools",
+    "workspace_core_tools",
     "fs_content_tools",
     "web_context_tools",
     "session_context_tools",

@@ -7,7 +7,7 @@
 ![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20%7C%20OpenRouter%20%7C%20Ollama-purple)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-Codex 風の activity tracing を備えた、ローカルファーストの AI Agent ワークベンチです。editable agent specs と local skills、そして harness-validated execution を一体で扱えます。
+可観測な activity tracing を備えた、ローカルファーストの AI Agent ワークベンチです。editable agent specs と local skills、そして harness-validated execution を一体で扱えます。
 
 **Vintage Programmer** は、最終回答だけを返す通常のチャット UI ではありません。  
 1 回の turn の中で Agent が何を提案し、runtime が何を検証し、どの tool が実行され、どのような観測結果が返ったのかを見えるようにすることを目的としています。
@@ -20,9 +20,9 @@ Codex 風の activity tracing を備えた、ローカルファーストの AI A
 ## Stable Runtime
 
 v2.9.15 は main card UX、構造化 Debug、mode cleanup のリリースであり、v2.9.0 の安定回復方針を維持します。
-v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、Codex 風の tool loop、長いタスクの継続性、image/file task completion を優先します。
+v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、モデル主導の tool loop、長いタスクの継続性、image/file task completion を優先します。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.15 は v2.9.10 の Codex-style all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles、v2.9.14 の `ModelContext` を維持します。このリリースでは main message card に実行中の live cards を表示し、完了後は簡潔な execution summary に折りたたみ、古い mode control を削除します。
+OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.15 は v2.9.10 の all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles、v2.9.14 の `ModelContext` を維持します。このリリースでは main message card に実行中の live cards を表示し、完了後は簡潔な execution summary に折りたたみ、古い mode control を削除します。
 
 ## Max Output Tokens
 
@@ -61,7 +61,7 @@ Vintage Programmer は、既定のメイン agent として `vintage_programmer`
 このリポジトリには、次の要素がまとまっています。
 
 - Chat Completions ベースの runtime loop
-- Codex 風の activity timeline と progress checklist
+- 可観測な activity timeline と progress checklist
 - harness 側の tool validation と execution
 - Markdown で編集できるローカル agent specs
 - メイン agent に bind できる local skills
@@ -87,7 +87,7 @@ Vintage Programmer は、その回答に至る execution path を重視します
 
 ## 主な特徴
 
-- **Codex 風 activity timeline**  
+- **可観測な activity timeline**  
   モデルの進行、tool call、validation 状態、回答生成を可視化します。
 - **モデル主導、harness 検証実行**  
   action proposal はモデルが行い、tool 名・引数・実行境界の検証は runtime が担当します。
@@ -173,16 +173,7 @@ VP_OPENAI_API_KEY=your_key
 VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
-### OpenAI 公式 + Codex auth
-
-```env
-VP_LLM_PROVIDER=openai
-VP_CODEX_HOME=/absolute/path/to/.codex
-VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
-VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
-```
-
-`VP_OPENAI_API_KEY` がなくても、ローカルに `VP_CODEX_AUTH_FILE` があれば Codex auth を自動利用できます。
+Vintage Programmer は明示的な provider API key 設定のみを使います。ローカルのアカウント認証ファイルへの自動フォールバックは行いません。
 
 ### OpenAI-compatible gateway
 
@@ -290,12 +281,12 @@ workspace/skills/<skill_id>/SKILL.md
 
 正式な release flow は次の通りです。
 
-1. `codex/*` ブランチで release candidate の変更を進める。
+1. `cleanup/*` などの release candidate ブランチで変更を進める。
 2. ローカル runtime state を Git に含めない。
 3. ローカルで release gates を実行する。
 4. `main` への PR を作成する。
 5. 回帰確認が green になってから `main` へマージする。
 6. release commit に annotated tag を作成する。
-7. 次の作業は、更新済み `main` から新しい `codex/*` ブランチを切って始める。
+7. 次の作業は、更新済み `main` から新しい候補ブランチを切って始める。
 
 詳細は [RELEASING.md](RELEASING.md) を参照してください。

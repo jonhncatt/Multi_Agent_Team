@@ -2379,7 +2379,7 @@ body.theme-minimal .ops-rail {
 }
 
 /* === 2026-03 sidebar-first shell redesign === */
-body.theme-openclaw {
+body.theme-vintage {
   --ink: #18181b;
   --muted: #71717a;
   --line: #d3e3d7;
@@ -2398,11 +2398,11 @@ body.theme-openclaw {
   font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Hiragino Sans GB", sans-serif;
 }
 
-body.theme-openclaw .bg-shape {
+body.theme-vintage .bg-shape {
   display: none;
 }
 
-body.theme-openclaw .bg-grid {
+body.theme-vintage .bg-grid {
   opacity: 0.03;
   background-image:
     linear-gradient(rgba(29, 35, 44, 0.05) 1px, transparent 1px),
@@ -2411,11 +2411,11 @@ body.theme-openclaw .bg-grid {
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.24), transparent 88%);
 }
 
-body.theme-openclaw [hidden] {
+body.theme-vintage [hidden] {
   display: none !important;
 }
 
-body.theme-openclaw .app-shell--openclaw {
+body.theme-vintage .app-shell--vintage {
   max-width: none;
   width: 100%;
   margin: 0;
@@ -2425,13 +2425,13 @@ body.theme-openclaw .app-shell--openclaw {
   padding: 0;
 }
 
-body.theme-openclaw .control-rail {
+body.theme-vintage .control-rail {
   grid-area: auto;
   align-self: stretch;
   min-height: 0;
 }
 
-body.theme-openclaw .control-rail--openclaw {
+body.theme-vintage .control-rail--vintage {
   position: sticky;
   top: 0;
   height: 100vh;
@@ -2448,13 +2448,13 @@ body.theme-openclaw .control-rail--openclaw {
   overflow-y: auto;
 }
 
-body.theme-openclaw .sidebar-brand {
+body.theme-vintage .sidebar-brand {
   display: grid;
   gap: 8px;
   padding: 4px 6px 8px;
 }
 
-body.theme-openclaw .sidebar-brand-logo {
+body.theme-vintage .sidebar-brand-logo {
   width: 100%;
   max-width: 188px;
   height: auto;
@@ -2464,60 +2464,60 @@ body.theme-openclaw .sidebar-brand-logo {
   background: #eef4f0;
 }
 
-body.theme-openclaw .sidebar-brand-caption {
+body.theme-vintage .sidebar-brand-caption {
   font-size: 12px;
   line-height: 1.4;
   color: #6c7680;
   padding-left: 2px;
 }
 
-body.theme-openclaw .sidebar-brand-kicker,
-body.theme-openclaw .sidebar-group-label,
-body.theme-openclaw .compact-summary-kicker,
-body.theme-openclaw .workspace-breadcrumb,
-body.theme-openclaw .topbar-chip-label,
-body.theme-openclaw .rail-kicker,
-body.theme-openclaw .summary-metric-label,
-body.theme-openclaw .ops-subtitle,
-body.theme-openclaw .hero-mini-card span,
-body.theme-openclaw .ops-gate-card span {
+body.theme-vintage .sidebar-brand-kicker,
+body.theme-vintage .sidebar-group-label,
+body.theme-vintage .compact-summary-kicker,
+body.theme-vintage .workspace-breadcrumb,
+body.theme-vintage .topbar-chip-label,
+body.theme-vintage .rail-kicker,
+body.theme-vintage .summary-metric-label,
+body.theme-vintage .ops-subtitle,
+body.theme-vintage .hero-mini-card span,
+body.theme-vintage .ops-gate-card span {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #9299a4;
 }
 
-body.theme-openclaw .sidebar-nav-meta {
+body.theme-vintage .sidebar-nav-meta {
   display: none;
 }
 
-body.theme-openclaw .sidebar-brand-meta,
-body.theme-openclaw .sidebar-nav-meta,
-body.theme-openclaw .field-hint,
-body.theme-openclaw .workspace-section-note,
-body.theme-openclaw .compact-summary-meta,
-body.theme-openclaw .compact-summary-note,
-body.theme-openclaw .ops-note,
-body.theme-openclaw .dag-legend,
-body.theme-openclaw .execution-log-meta,
-body.theme-openclaw .command-palette-hint,
-body.theme-openclaw .log-entry-detail,
-body.theme-openclaw .role-board-legend,
-body.theme-openclaw .kernel-console-subtitle,
-body.theme-openclaw .kernel-live-meta,
-body.theme-openclaw .log-entry-time,
-body.theme-openclaw .session-history-meta,
-body.theme-openclaw .session-history-preview,
-body.theme-openclaw .ops-entry-path {
+body.theme-vintage .sidebar-brand-meta,
+body.theme-vintage .sidebar-nav-meta,
+body.theme-vintage .field-hint,
+body.theme-vintage .workspace-section-note,
+body.theme-vintage .compact-summary-meta,
+body.theme-vintage .compact-summary-note,
+body.theme-vintage .ops-note,
+body.theme-vintage .dag-legend,
+body.theme-vintage .execution-log-meta,
+body.theme-vintage .command-palette-hint,
+body.theme-vintage .log-entry-detail,
+body.theme-vintage .role-board-legend,
+body.theme-vintage .kernel-console-subtitle,
+body.theme-vintage .kernel-live-meta,
+body.theme-vintage .log-entry-time,
+body.theme-vintage .session-history-meta,
+body.theme-vintage .session-history-preview,
+body.theme-vintage .ops-entry-path {
   color: var(--muted);
 }
 
-body.theme-openclaw .sidebar-nav {
+body.theme-vintage .sidebar-nav {
   display: grid;
   gap: 2px;
 }
 
-body.theme-openclaw .sidebar-nav-item {
+body.theme-vintage .sidebar-nav-item {
   width: 100%;
   display: flex;
   align-items: center;
@@ -2531,20 +2531,20 @@ body.theme-openclaw .sidebar-nav-item {
   text-align: left;
 }
 
-body.theme-openclaw .sidebar-nav-item:hover {
+body.theme-vintage .sidebar-nav-item:hover {
   background: #edf5f0;
   color: var(--ink);
   transform: none;
 }
 
-body.theme-openclaw .sidebar-nav-item.is-active {
+body.theme-vintage .sidebar-nav-item.is-active {
   background: var(--accent-soft);
   border-color: transparent;
   box-shadow: none;
   color: var(--ink);
 }
 
-body.theme-openclaw .sidebar-nav-icon {
+body.theme-vintage .sidebar-nav-icon {
   width: 16px;
   height: 16px;
   border-radius: 0;
@@ -2558,24 +2558,24 @@ body.theme-openclaw .sidebar-nav-icon {
   opacity: 0.8;
 }
 
-body.theme-openclaw .sidebar-nav-item.is-active .sidebar-nav-icon {
+body.theme-vintage .sidebar-nav-item.is-active .sidebar-nav-icon {
   color: var(--accent-dark);
   opacity: 1;
 }
 
-body.theme-openclaw .sidebar-nav-copy {
+body.theme-vintage .sidebar-nav-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-body.theme-openclaw .sidebar-nav-title {
+body.theme-vintage .sidebar-nav-title {
   font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
 }
 
-body.theme-openclaw .sidebar-session-shell {
+body.theme-vintage .sidebar-session-shell {
   min-height: 0;
   margin-top: auto;
   border-top: 1px solid var(--line);
@@ -2584,7 +2584,7 @@ body.theme-openclaw .sidebar-session-shell {
   gap: 8px;
 }
 
-body.theme-openclaw .sidebar-session-toggle {
+body.theme-vintage .sidebar-session-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2596,21 +2596,21 @@ body.theme-openclaw .sidebar-session-toggle {
   text-align: left;
 }
 
-body.theme-openclaw .sidebar-session-toggle:hover {
+body.theme-vintage .sidebar-session-toggle:hover {
   background: #edf5f0;
 }
 
-body.theme-openclaw .sidebar-session-toggle-copy {
+body.theme-vintage .sidebar-session-toggle-copy {
   display: grid;
   gap: 2px;
 }
 
-body.theme-openclaw .sidebar-session-toggle-note {
+body.theme-vintage .sidebar-session-toggle-note {
   font-size: 12px;
   color: var(--muted);
 }
 
-body.theme-openclaw .sidebar-session-toggle-icon {
+body.theme-vintage .sidebar-session-toggle-icon {
   width: 22px;
   height: 22px;
   border-radius: 999px;
@@ -2622,84 +2622,84 @@ body.theme-openclaw .sidebar-session-toggle-icon {
   color: var(--ink);
 }
 
-body.theme-openclaw .sidebar-session-shell.is-open .sidebar-session-toggle {
+body.theme-vintage .sidebar-session-shell.is-open .sidebar-session-toggle {
   background: rgba(255, 255, 255, 0.9);
   border-color: var(--line);
 }
 
-body.theme-openclaw .sidebar-session-body {
+body.theme-vintage .sidebar-session-body {
   min-height: 0;
   display: grid;
   gap: 8px;
 }
 
-body.theme-openclaw .sidebar-session-actions {
+body.theme-vintage .sidebar-session-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
 }
 
-body.theme-openclaw .sidebar-primary-action,
-body.theme-openclaw .topbar-command-button,
-body.theme-openclaw button {
+body.theme-vintage .sidebar-primary-action,
+body.theme-vintage .topbar-command-button,
+body.theme-vintage button {
   border-radius: 8px;
   padding: 9px 12px;
   font-weight: 600;
 }
 
-body.theme-openclaw .sidebar-primary-action {
+body.theme-vintage .sidebar-primary-action {
   width: 100%;
   justify-content: center;
 }
 
-body.theme-openclaw button {
+body.theme-vintage button {
   background: #eef5f0;
   color: var(--ink);
   box-shadow: none;
   border: 1px solid var(--line);
 }
 
-body.theme-openclaw button:hover {
+body.theme-vintage button:hover {
   transform: none;
   border-color: var(--line-strong);
 }
 
-body.theme-openclaw button.secondary,
-body.theme-openclaw .ops-link-button,
-body.theme-openclaw .session-history-rename {
+body.theme-vintage button.secondary,
+body.theme-vintage .ops-link-button,
+body.theme-vintage .session-history-rename {
   background: rgba(255, 255, 255, 0.86);
   color: var(--ink);
   border: 1px solid var(--line);
   box-shadow: none;
 }
 
-body.theme-openclaw button.secondary.preset-active,
-body.theme-openclaw .log-filter-chip.is-active,
-body.theme-openclaw .command-item.is-active {
+body.theme-vintage button.secondary.preset-active,
+body.theme-vintage .log-filter-chip.is-active,
+body.theme-vintage .command-item.is-active {
   background: var(--accent-soft);
   border-color: transparent;
   color: var(--accent-dark);
 }
 
-body.theme-openclaw button.small {
+body.theme-vintage button.small {
   padding: 8px 10px;
   font-size: 12px;
 }
 
-body.theme-openclaw .sidebar-primary-action,
-body.theme-openclaw #sendBtn {
+body.theme-vintage .sidebar-primary-action,
+body.theme-vintage #sendBtn {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
 }
 
-body.theme-openclaw .sidebar-primary-action:hover,
-body.theme-openclaw #sendBtn:hover {
+body.theme-vintage .sidebar-primary-action:hover,
+body.theme-vintage #sendBtn:hover {
   border-color: var(--accent-strong);
   background: var(--accent-strong);
 }
 
-body.theme-openclaw .session-history-list--sidebar {
+body.theme-vintage .session-history-list--sidebar {
   min-height: 0;
   overflow: auto;
   gap: 6px;
@@ -2707,15 +2707,15 @@ body.theme-openclaw .session-history-list--sidebar {
   max-height: 240px;
 }
 
-body.theme-openclaw .session-history-list--sidebar .session-history-row {
+body.theme-vintage .session-history-list--sidebar .session-history-row {
   grid-template-columns: 1fr;
 }
 
-body.theme-openclaw .session-history-list--sidebar .session-history-rename {
+body.theme-vintage .session-history-list--sidebar .session-history-rename {
   display: none;
 }
 
-body.theme-openclaw .session-history-item {
+body.theme-vintage .session-history-item {
   border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
@@ -2723,21 +2723,21 @@ body.theme-openclaw .session-history-item {
   padding: 8px 10px;
 }
 
-body.theme-openclaw .session-history-item:hover {
+body.theme-vintage .session-history-item:hover {
   border-color: transparent;
   background: #edf5f0;
 }
 
-body.theme-openclaw .session-history-item.active {
+body.theme-vintage .session-history-item.active {
   border-color: transparent;
   background: var(--accent-soft);
 }
 
-body.theme-openclaw .session-history-preview {
+body.theme-vintage .session-history-preview {
   display: none;
 }
 
-body.theme-openclaw .workspace-shell--openclaw {
+body.theme-vintage .workspace-shell--vintage {
   grid-area: auto;
   min-width: 0;
   display: grid;
@@ -2747,7 +2747,7 @@ body.theme-openclaw .workspace-shell--openclaw {
   background: #edf5f0;
 }
 
-body.theme-openclaw .workspace-topbar {
+body.theme-vintage .workspace-topbar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto auto;
   gap: 16px;
@@ -2761,35 +2761,35 @@ body.theme-openclaw .workspace-topbar {
   backdrop-filter: blur(10px);
 }
 
-body.theme-openclaw .workspace-topbar-copy {
+body.theme-vintage .workspace-topbar-copy {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
-body.theme-openclaw .workspace-topbar #productTitle {
+body.theme-vintage .workspace-topbar #productTitle {
   display: none;
 }
 
-body.theme-openclaw .workspace-topbar .hint {
+body.theme-vintage .workspace-topbar .hint {
   display: none;
 }
 
-body.theme-openclaw .workspace-breadcrumb {
+body.theme-vintage .workspace-breadcrumb {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-body.theme-openclaw .topbar-status-strip {
+body.theme-vintage .topbar-status-strip {
   display: flex;
   gap: 10px;
   width: auto;
   align-items: center;
 }
 
-body.theme-openclaw .topbar-chip {
+body.theme-vintage .topbar-chip {
   min-height: auto;
   padding: 6px 10px;
   border-radius: 999px;
@@ -2801,18 +2801,18 @@ body.theme-openclaw .topbar-chip {
   white-space: nowrap;
 }
 
-body.theme-openclaw .topbar-chip code,
-body.theme-openclaw .topbar-chip .runtime-head-text,
-body.theme-openclaw .version-badge {
+body.theme-vintage .topbar-chip code,
+body.theme-vintage .topbar-chip .runtime-head-text,
+body.theme-vintage .version-badge {
   color: var(--ink);
 }
 
-body.theme-openclaw .topbar-chip--build,
-body.theme-openclaw .topbar-chip--session {
+body.theme-vintage .topbar-chip--build,
+body.theme-vintage .topbar-chip--session {
   display: none;
 }
 
-body.theme-openclaw .topbar-command-button {
+body.theme-vintage .topbar-command-button {
   min-width: auto;
   background: #f6fcf8;
   color: var(--ink);
@@ -2820,24 +2820,24 @@ body.theme-openclaw .topbar-command-button {
   box-shadow: none;
 }
 
-body.theme-openclaw .topbar-actions {
+body.theme-vintage .topbar-actions {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
 }
 
-body.theme-openclaw .topbar-command-button--ghost {
+body.theme-vintage .topbar-command-button--ghost {
   background: rgba(244, 250, 246, 0.92);
 }
 
-body.theme-openclaw .topbar-command-button--ghost.is-active {
+body.theme-vintage .topbar-command-button--ghost.is-active {
   background: rgba(224, 244, 235, 0.9);
   border-color: rgba(62, 169, 124, 0.26);
   color: var(--accent-dark);
 }
 
-body.theme-openclaw .workspace-views {
+body.theme-vintage .workspace-views {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -2845,18 +2845,18 @@ body.theme-openclaw .workspace-views {
   padding: 12px 20px 24px;
 }
 
-body.theme-openclaw .workspace-view {
+body.theme-vintage .workspace-view {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   gap: 16px;
 }
 
-body.theme-openclaw .workspace-view--chat {
+body.theme-vintage .workspace-view--chat {
   min-height: 0;
 }
 
-body.theme-openclaw .workspace-section-head {
+body.theme-vintage .workspace-section-head {
   display: flex;
   align-items: end;
   justify-content: space-between;
@@ -2864,31 +2864,31 @@ body.theme-openclaw .workspace-section-head {
   padding: 0 2px;
 }
 
-body.theme-openclaw .workspace-section-title {
+body.theme-vintage .workspace-section-title {
   font-size: 28px;
   line-height: 1.05;
   font-weight: 700;
   letter-spacing: -0.04em;
 }
 
-body.theme-openclaw .compact-summary-strip,
-body.theme-openclaw .workspace-card-grid {
+body.theme-vintage .compact-summary-strip,
+body.theme-vintage .workspace-card-grid {
   display: grid;
   gap: 14px;
 }
 
-body.theme-openclaw .compact-summary-strip {
+body.theme-vintage .compact-summary-strip {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-body.theme-openclaw .compact-summary-card,
-body.theme-openclaw .rail-card,
-body.theme-openclaw .ops-card,
-body.theme-openclaw .live-ops-card,
-body.theme-openclaw .kernel-console-shell,
-body.theme-openclaw .role-board-shell,
-body.theme-openclaw .chat-list,
-body.theme-openclaw .composer {
+body.theme-vintage .compact-summary-card,
+body.theme-vintage .rail-card,
+body.theme-vintage .ops-card,
+body.theme-vintage .live-ops-card,
+body.theme-vintage .kernel-console-shell,
+body.theme-vintage .role-board-shell,
+body.theme-vintage .chat-list,
+body.theme-vintage .composer {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
@@ -2896,80 +2896,80 @@ body.theme-openclaw .composer {
   backdrop-filter: none;
 }
 
-body.theme-openclaw .compact-summary-card {
+body.theme-vintage .compact-summary-card {
   padding: 18px;
   display: grid;
   gap: 10px;
 }
 
-body.theme-openclaw .compact-summary-value,
-body.theme-openclaw .hero-mini-card strong,
-body.theme-openclaw .ops-gate-card strong,
-body.theme-openclaw .summary-metric-value,
-body.theme-openclaw .kernel-card-title,
-body.theme-openclaw .rail-title,
-body.theme-openclaw .ops-card .rail-title {
+body.theme-vintage .compact-summary-value,
+body.theme-vintage .hero-mini-card strong,
+body.theme-vintage .ops-gate-card strong,
+body.theme-vintage .summary-metric-value,
+body.theme-vintage .kernel-card-title,
+body.theme-vintage .rail-title,
+body.theme-vintage .ops-card .rail-title {
   color: var(--ink);
 }
 
-body.theme-openclaw .compact-summary-value {
+body.theme-vintage .compact-summary-value {
   font-size: 22px;
   line-height: 1.1;
   font-weight: 700;
   letter-spacing: -0.04em;
 }
 
-body.theme-openclaw .compact-summary-grid,
-body.theme-openclaw .hero-mini-grid,
-body.theme-openclaw .ops-gate-grid,
-body.theme-openclaw .summary-metric-grid {
+body.theme-vintage .compact-summary-grid,
+body.theme-vintage .hero-mini-grid,
+body.theme-vintage .ops-gate-grid,
+body.theme-vintage .summary-metric-grid {
   display: grid;
   gap: 10px;
 }
 
-body.theme-openclaw .compact-summary-grid,
-body.theme-openclaw .hero-mini-grid,
-body.theme-openclaw .ops-gate-grid {
+body.theme-vintage .compact-summary-grid,
+body.theme-vintage .hero-mini-grid,
+body.theme-vintage .ops-gate-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-body.theme-openclaw .summary-metric-grid {
+body.theme-vintage .summary-metric-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-body.theme-openclaw .hero-chip,
-body.theme-openclaw .ops-chip,
-body.theme-openclaw .signal-chip,
-body.theme-openclaw .dag-badge,
-body.theme-openclaw .log-filter-chip,
-body.theme-openclaw .file-chip,
-body.theme-openclaw .inline-citation-tag {
+body.theme-vintage .hero-chip,
+body.theme-vintage .ops-chip,
+body.theme-vintage .signal-chip,
+body.theme-vintage .dag-badge,
+body.theme-vintage .log-filter-chip,
+body.theme-vintage .file-chip,
+body.theme-vintage .inline-citation-tag {
   border-radius: 999px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.82);
   color: #4f5966;
 }
 
-body.theme-openclaw .hero-mini-card,
-body.theme-openclaw .ops-gate-card,
-body.theme-openclaw .summary-metric,
-body.theme-openclaw .ops-entry,
-body.theme-openclaw .dag-node,
-body.theme-openclaw .dag-branch-card,
-body.theme-openclaw .log-entry,
-body.theme-openclaw .kernel-console-card,
-body.theme-openclaw .module-card,
-body.theme-openclaw .evolution-event,
-body.theme-openclaw .milestone-card,
-body.theme-openclaw .system-flow-node,
-body.theme-openclaw .runtime-step {
+body.theme-vintage .hero-mini-card,
+body.theme-vintage .ops-gate-card,
+body.theme-vintage .summary-metric,
+body.theme-vintage .ops-entry,
+body.theme-vintage .dag-node,
+body.theme-vintage .dag-branch-card,
+body.theme-vintage .log-entry,
+body.theme-vintage .kernel-console-card,
+body.theme-vintage .module-card,
+body.theme-vintage .evolution-event,
+body.theme-vintage .milestone-card,
+body.theme-vintage .system-flow-node,
+body.theme-vintage .runtime-step {
   border-radius: 10px;
   border: 1px solid var(--line);
   background: #ffffff;
   box-shadow: none;
 }
 
-body.theme-openclaw .chat-list {
+body.theme-vintage .chat-list {
   min-height: 0;
   padding: 12px 4px;
   overflow-x: hidden;
@@ -2978,7 +2978,7 @@ body.theme-openclaw .chat-list {
   border-radius: 0;
 }
 
-body.theme-openclaw .bubble {
+body.theme-vintage .bubble {
   max-width: min(78%, 780px);
   padding: 12px 14px;
   border-radius: 12px;
@@ -2988,26 +2988,26 @@ body.theme-openclaw .bubble {
   word-break: break-word;
 }
 
-body.theme-openclaw .bubble.user {
+body.theme-vintage .bubble.user {
   background: rgba(47, 143, 106, 0.09);
   border-color: rgba(47, 143, 106, 0.24);
   color: #1f6f51;
   box-shadow: none;
 }
 
-body.theme-openclaw .bubble.assistant {
+body.theme-vintage .bubble.assistant {
   background: #ffffff;
   border-color: var(--line);
   box-shadow: none;
 }
 
-body.theme-openclaw .bubble.system {
+body.theme-vintage .bubble.system {
   background: rgba(217, 119, 6, 0.08);
   border: 1px solid rgba(217, 119, 6, 0.18);
   color: #92400e;
 }
 
-body.theme-openclaw .bubble.assistant pre {
+body.theme-vintage .bubble.assistant pre {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(246, 246, 244, 0.96);
@@ -3015,15 +3015,15 @@ body.theme-openclaw .bubble.assistant pre {
   overflow-wrap: anywhere;
 }
 
-body.theme-openclaw .bubble.assistant code {
+body.theme-vintage .bubble.assistant code {
   background: rgba(29, 35, 44, 0.06);
 }
 
-body.theme-openclaw .bubble.assistant a {
+body.theme-vintage .bubble.assistant a {
   color: var(--accent-dark);
 }
 
-body.theme-openclaw .composer {
+body.theme-vintage .composer {
   padding: 12px 4px 4px;
   gap: 12px;
   border: 0;
@@ -3031,9 +3031,9 @@ body.theme-openclaw .composer {
   background: linear-gradient(to bottom, transparent, #edf5f0 18%);
 }
 
-body.theme-openclaw input,
-body.theme-openclaw select,
-body.theme-openclaw textarea {
+body.theme-vintage input,
+body.theme-vintage select,
+body.theme-vintage textarea {
   border-radius: 8px;
   border: 1px solid var(--line);
   background: #ffffff;
@@ -3041,13 +3041,13 @@ body.theme-openclaw textarea {
   box-shadow: none;
 }
 
-body.theme-openclaw textarea {
+body.theme-vintage textarea {
   min-height: 104px;
   padding: 12px 13px;
   resize: vertical;
 }
 
-body.theme-openclaw .drop-zone {
+body.theme-vintage .drop-zone {
   min-height: 52px;
   border-radius: 8px;
   border: 1px dashed var(--line-strong);
@@ -3055,12 +3055,12 @@ body.theme-openclaw .drop-zone {
   color: var(--muted);
 }
 
-body.theme-openclaw .drop-zone.dragging {
+body.theme-vintage .drop-zone.dragging {
   border-color: rgba(47, 143, 106, 0.4);
   background: rgba(47, 143, 106, 0.08);
 }
 
-body.theme-openclaw .runtime-panel--openclaw {
+body.theme-vintage .runtime-panel--vintage {
   padding: 0;
   border: 0;
   background: transparent;
@@ -3069,88 +3069,88 @@ body.theme-openclaw .runtime-panel--openclaw {
   gap: 16px;
 }
 
-body.theme-openclaw .live-ops-grid {
+body.theme-vintage .live-ops-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
-body.theme-openclaw .live-ops-card,
-body.theme-openclaw .ops-card,
-body.theme-openclaw .rail-card,
-body.theme-openclaw .kernel-console-shell,
-body.theme-openclaw .role-board-shell {
+body.theme-vintage .live-ops-card,
+body.theme-vintage .ops-card,
+body.theme-vintage .rail-card,
+body.theme-vintage .kernel-console-shell,
+body.theme-vintage .role-board-shell {
   padding: 18px;
 }
 
-body.theme-openclaw .workspace-card-grid--control,
-body.theme-openclaw .workspace-card-grid--operations,
-body.theme-openclaw .workspace-card-grid--system {
+body.theme-vintage .workspace-card-grid--control,
+body.theme-vintage .workspace-card-grid--operations,
+body.theme-vintage .workspace-card-grid--system {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-body.theme-openclaw .workspace-card-grid--operations .ops-card--index,
-body.theme-openclaw .workspace-card-grid--system .ops-card:last-child {
+body.theme-vintage .workspace-card-grid--operations .ops-card--index,
+body.theme-vintage .workspace-card-grid--system .ops-card:last-child {
   grid-column: 1 / -1;
 }
 
-body.theme-openclaw .ops-links-row {
+body.theme-vintage .ops-links-row {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
-body.theme-openclaw .ops-link-button {
+body.theme-vintage .ops-link-button {
   padding: 10px 12px;
   text-decoration: none;
   text-align: center;
 }
 
-body.theme-openclaw .execution-log,
-body.theme-openclaw .module-bay,
-body.theme-openclaw .evolution-feed,
-body.theme-openclaw .stats-view,
-body.theme-openclaw .runtime-pre,
-body.theme-openclaw .runtime-graph,
-body.theme-openclaw .runtime-failures {
+body.theme-vintage .execution-log,
+body.theme-vintage .module-bay,
+body.theme-vintage .evolution-feed,
+body.theme-vintage .stats-view,
+body.theme-vintage .runtime-pre,
+body.theme-vintage .runtime-graph,
+body.theme-vintage .runtime-failures {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(244, 250, 246, 0.88);
   color: #45505d;
 }
 
-body.theme-openclaw .runtime-details {
+body.theme-vintage .runtime-details {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.78);
 }
 
-body.theme-openclaw .runtime-details summary {
+body.theme-vintage .runtime-details summary {
   padding: 10px 12px;
   color: var(--ink);
   font-weight: 600;
 }
 
-body.theme-openclaw .runtime-pre {
+body.theme-vintage .runtime-pre {
   border-top: 1px solid rgba(29, 35, 44, 0.06);
 }
 
-body.theme-openclaw .kernel-console-shell,
-body.theme-openclaw .role-board-shell {
+body.theme-vintage .kernel-console-shell,
+body.theme-vintage .role-board-shell {
   gap: 16px;
 }
 
-body.theme-openclaw .command-palette-backdrop {
+body.theme-vintage .command-palette-backdrop {
   background: rgba(20, 24, 31, 0.22);
   backdrop-filter: blur(14px);
 }
 
-body.theme-openclaw .command-palette-dialog {
+body.theme-vintage .command-palette-dialog {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 24px 60px rgba(17, 22, 28, 0.12);
 }
 
-body.theme-openclaw .command-item {
+body.theme-vintage .command-item {
   border-radius: 16px;
   border: 1px solid var(--line);
   background: rgba(247, 247, 245, 0.84);
@@ -3158,70 +3158,70 @@ body.theme-openclaw .command-item {
 }
 
 @media (max-width: 1380px) {
-  body.theme-openclaw .workspace-topbar {
+  body.theme-vintage .workspace-topbar {
     grid-template-columns: minmax(180px, 1fr) auto auto;
   }
 }
 
 @media (max-width: 1200px) {
-  body.theme-openclaw .app-shell--openclaw {
+  body.theme-vintage .app-shell--vintage {
     grid-template-columns: 240px minmax(0, 1fr);
   }
 
-  body.theme-openclaw .compact-summary-strip,
-  body.theme-openclaw .workspace-card-grid--control,
-  body.theme-openclaw .workspace-card-grid--operations,
-  body.theme-openclaw .workspace-card-grid--system,
-  body.theme-openclaw .live-ops-grid,
-  body.theme-openclaw .ops-links-row,
-  body.theme-openclaw .hero-mini-grid,
-  body.theme-openclaw .ops-gate-grid,
-  body.theme-openclaw .compact-summary-grid {
+  body.theme-vintage .compact-summary-strip,
+  body.theme-vintage .workspace-card-grid--control,
+  body.theme-vintage .workspace-card-grid--operations,
+  body.theme-vintage .workspace-card-grid--system,
+  body.theme-vintage .live-ops-grid,
+  body.theme-vintage .ops-links-row,
+  body.theme-vintage .hero-mini-grid,
+  body.theme-vintage .ops-gate-grid,
+  body.theme-vintage .compact-summary-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 980px) {
-  body.theme-openclaw .app-shell--openclaw {
+  body.theme-vintage .app-shell--vintage {
     grid-template-columns: 220px minmax(0, 1fr);
     padding: 0;
   }
 
-  body.theme-openclaw .workspace-topbar {
+  body.theme-vintage .workspace-topbar {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
   }
 
-  body.theme-openclaw .topbar-status-strip {
+  body.theme-vintage .topbar-status-strip {
     grid-column: 1 / -1;
     justify-content: flex-start;
   }
 
-  body.theme-openclaw .control-rail--openclaw {
+  body.theme-vintage .control-rail--vintage {
     position: sticky;
     top: 0;
     height: 100vh;
   }
 
-  body.theme-openclaw .sidebar-session-shell {
+  body.theme-vintage .sidebar-session-shell {
     max-height: none;
   }
 
-  body.theme-openclaw .chat-main-shell {
+  body.theme-vintage .chat-main-shell {
     width: 100%;
   }
 }
 
 @media (max-width: 640px) {
-  body.theme-openclaw .app-shell--openclaw {
+  body.theme-vintage .app-shell--vintage {
     grid-template-columns: 1fr;
   }
 
-  body.theme-openclaw .workspace-topbar {
+  body.theme-vintage .workspace-topbar {
     grid-template-columns: 1fr;
   }
 
-  body.theme-openclaw .control-rail--openclaw {
+  body.theme-vintage .control-rail--vintage {
     position: static;
     height: auto;
     border-right: 0;
@@ -3229,53 +3229,53 @@ body.theme-openclaw .command-item {
     overflow: visible;
   }
 
-  body.theme-openclaw .sidebar-session-shell {
+  body.theme-vintage .sidebar-session-shell {
     margin-top: 12px;
   }
 
-  body.theme-openclaw .workspace-views {
+  body.theme-vintage .workspace-views {
     padding: 12px 14px 18px;
   }
 
-  body.theme-openclaw .sidebar-nav {
+  body.theme-vintage .sidebar-nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  body.theme-openclaw .compact-summary-card,
-  body.theme-openclaw .rail-card,
-  body.theme-openclaw .ops-card,
-  body.theme-openclaw .live-ops-card,
-  body.theme-openclaw .kernel-console-shell,
-  body.theme-openclaw .role-board-shell,
-  body.theme-openclaw .chat-list,
-  body.theme-openclaw .composer {
+  body.theme-vintage .compact-summary-card,
+  body.theme-vintage .rail-card,
+  body.theme-vintage .ops-card,
+  body.theme-vintage .live-ops-card,
+  body.theme-vintage .kernel-console-shell,
+  body.theme-vintage .role-board-shell,
+  body.theme-vintage .chat-list,
+  body.theme-vintage .composer {
     border-radius: 12px;
   }
 
-  body.theme-openclaw .chat-list,
-  body.theme-openclaw .composer {
+  body.theme-vintage .chat-list,
+  body.theme-vintage .composer {
     padding: 12px 4px;
   }
 
-  body.theme-openclaw .bubble {
+  body.theme-vintage .bubble {
     max-width: 100%;
   }
 
-  body.theme-openclaw .topbar-actions {
+  body.theme-vintage .topbar-actions {
     width: 100%;
     justify-content: flex-start;
   }
 }
 
 @media (max-width: 480px) {
-  body.theme-openclaw .sidebar-nav {
+  body.theme-vintage .sidebar-nav {
     grid-template-columns: 1fr;
   }
 }
 
 /* ========== Sidebar Drawer Chat Layout ========== */
 
-body.theme-openclaw .workspace-view--chat {
+body.theme-vintage .workspace-view--chat {
   position: relative;
   display: flex;
   min-height: 0;
@@ -3283,7 +3283,7 @@ body.theme-openclaw .workspace-view--chat {
   overflow: hidden;
 }
 
-body.theme-openclaw .chat-main-shell {
+body.theme-vintage .chat-main-shell {
   min-height: 0;
   height: 100%;
   display: flex;
@@ -3296,19 +3296,19 @@ body.theme-openclaw .chat-main-shell {
   background: transparent;
 }
 
-body.theme-openclaw .chat-main-shell .chat-list,
-body.theme-openclaw .chat-main-shell .composer {
+body.theme-vintage .chat-main-shell .chat-list,
+body.theme-vintage .chat-main-shell .composer {
   min-width: 0;
 }
 
-body.theme-openclaw .chat-main-shell .chat-list {
+body.theme-vintage .chat-main-shell .chat-list {
   flex: 1 1 0;
   min-height: 0;
   margin: 0 -4px;
   overflow-y: auto;
 }
 
-body.theme-openclaw .chat-main-shell .composer {
+body.theme-vintage .chat-main-shell .composer {
   position: sticky;
   bottom: 0;
   z-index: 1;
@@ -3316,7 +3316,7 @@ body.theme-openclaw .chat-main-shell .composer {
   margin-top: auto;
 }
 
-body.theme-openclaw .chat-info-backdrop {
+body.theme-vintage .chat-info-backdrop {
   position: absolute;
   inset: 0;
   display: block;
@@ -3329,7 +3329,7 @@ body.theme-openclaw .chat-info-backdrop {
   z-index: 2;
 }
 
-body.theme-openclaw .chat-info-panel {
+body.theme-vintage .chat-info-panel {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -3348,12 +3348,12 @@ body.theme-openclaw .chat-info-panel {
   z-index: 3;
 }
 
-body.theme-openclaw .workspace-view--chat.is-info-open .chat-info-backdrop {
+body.theme-vintage .workspace-view--chat.is-info-open .chat-info-backdrop {
   opacity: 1;
   pointer-events: auto;
 }
 
-body.theme-openclaw .chat-info-panel-head {
+body.theme-vintage .chat-info-panel-head {
   display: flex;
   align-items: start;
   justify-content: space-between;
@@ -3365,7 +3365,7 @@ body.theme-openclaw .chat-info-panel-head {
   z-index: 1;
 }
 
-body.theme-openclaw .chat-info-panel-body {
+body.theme-vintage .chat-info-panel-body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
@@ -3374,28 +3374,28 @@ body.theme-openclaw .chat-info-panel-body {
   padding-right: 2px;
 }
 
-body.theme-openclaw .chat-info-panel .compact-summary-card {
+body.theme-vintage .chat-info-panel .compact-summary-card {
   padding: 14px;
   display: grid;
   gap: 8px;
 }
 
-body.theme-openclaw .chat-info-panel .compact-summary-value {
+body.theme-vintage .chat-info-panel .compact-summary-value {
   font-size: 18px;
 }
 
-body.theme-openclaw .chat-info-panel .compact-summary-grid {
+body.theme-vintage .chat-info-panel .compact-summary-grid {
   grid-template-columns: 1fr;
 }
 
 @media (max-width: 1200px) {
-  body.theme-openclaw .chat-info-panel {
+  body.theme-vintage .chat-info-panel {
     width: min(320px, calc(100vw - 40px));
   }
 }
 
 @media (max-width: 860px) {
-  body.theme-openclaw .chat-info-panel {
+  body.theme-vintage .chat-info-panel {
     top: 0;
     right: 0;
     bottom: 0;
