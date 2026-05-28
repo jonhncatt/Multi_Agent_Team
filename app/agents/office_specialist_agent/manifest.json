@@ -1,8 +1,0 @@
-{
-  "name": "office_specialist_agent",
-  "entry_class": "OfficeSpecialistAgent",
-  "description": "办公专家代理，负责文档、汇报、邮件和流程化办公任务。",
-  "capabilities": ["office_workflow", "document_polish", "business_writing"],
-  "version": "1.1"
-}
-

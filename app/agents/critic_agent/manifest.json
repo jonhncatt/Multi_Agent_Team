@@ -1,8 +1,0 @@
-{
-  "name": "critic_agent",
-  "entry_class": "CriticAgent",
-  "description": "批判评估代理，负责识别风险、漏洞与逻辑问题。",
-  "capabilities": ["risk_review", "logic_check", "quality_gate"],
-  "version": "1.1"
-}
-

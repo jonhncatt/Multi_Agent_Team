@@ -1,8 +1,0 @@
-{
-  "name": "planner_agent",
-  "entry_class": "PlannerAgent",
-  "description": "规划代理，负责把复杂目标拆解为可执行阶段与里程碑。",
-  "capabilities": ["task_decomposition", "planning", "milestone_design"],
-  "version": "1.1"
-}
-

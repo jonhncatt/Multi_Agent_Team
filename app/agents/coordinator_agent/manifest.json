@@ -1,8 +1,0 @@
-{
-  "name": "coordinator_agent",
-  "entry_class": "CoordinatorAgent",
-  "description": "协同代理，负责多 Agent 任务编排、顺序与依赖协调。",
-  "capabilities": ["coordination", "dependency_management", "orchestration"],
-  "version": "1.1"
-}
-

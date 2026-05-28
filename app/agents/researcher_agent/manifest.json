@@ -1,8 +1,0 @@
-{
-  "name": "researcher_agent",
-  "entry_class": "ResearcherAgent",
-  "description": "研究代理，负责检索信息、整理事实与来源。",
-  "capabilities": ["research", "fact_collection", "source_synthesis"],
-  "version": "1.1"
-}
-

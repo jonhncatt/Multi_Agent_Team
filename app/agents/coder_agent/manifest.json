@@ -1,8 +1,0 @@
-{
-  "name": "coder_agent",
-  "entry_class": "CoderAgent",
-  "description": "编码代理，负责代码实现、修复与重构建议。",
-  "capabilities": ["coding", "debugging", "refactoring"],
-  "version": "1.1"
-}
-

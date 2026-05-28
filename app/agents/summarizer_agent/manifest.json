@@ -1,8 +1,0 @@
-{
-  "name": "summarizer_agent",
-  "entry_class": "SummarizerAgent",
-  "description": "总结代理，负责压缩信息并输出高密度结论。",
-  "capabilities": ["summarization", "compression", "insight_highlight"],
-  "version": "1.1"
-}
-

@@ -1,8 +1,0 @@
-{
-  "module_id": "office_addons",
-  "version": "0.1.0",
-  "tools": [],
-  "roles": [],
-  "profiles": ["addon_overlay"],
-  "notes": ["Example secondary capability module for multi-module loading."]
-}

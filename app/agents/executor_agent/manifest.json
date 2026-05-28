@@ -1,8 +1,0 @@
-{
-  "name": "executor_agent",
-  "entry_class": "ExecutorAgent",
-  "description": "执行代理，负责把计划转换成明确动作与产出。",
-  "capabilities": ["action_execution", "task_delivery", "follow_through"],
-  "version": "1.1"
-}
-
