@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4b-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v3.1.4a`
+現在の安定版: `v3.1.4b`
 
 ## Stable Runtime
 
-v3.1.4a は、v3.1.4 後の `LocalToolExecutor` tool surface cleanup を完了するための整理リリースです。canonical 29-tool surface を `tool_specs`、tool metadata、Workbench UI、`ActionValidator`、`_execute_impl` dispatch の間で一致させます。
+v3.1.4b は、model-led `web_search` に向けた整理リリースです。`web_search` 内部の news/baseball/RSS intent routing を取り除き、canonical 29-tool surface はそのまま維持します。
 
-v3.1.4 と比べて、`LocalToolExecutor` から public な non-canonical tool-like method を削除し、canonical tool からまだ必要な旧実装は private な `_xxx_impl` helper に集約し、書き込み経路は引き続き `apply_patch` を正とします。
+v3.1.4a と比べて、何を検索するかはモデルが決め、`web_search` は汎用検索だけを実行します。Google News、MLB、ESPN、Yahoo、NHK の RSS 経路への内部切り替えや、野球向けの静的フォールバックリンクは返しません。
 
 ## Max Output Tokens
 
