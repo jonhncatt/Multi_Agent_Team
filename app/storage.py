@@ -258,7 +258,7 @@ class SessionStore:
         session.setdefault("turns", []).append(turn)
         return turn
 
-    def list_sessions(
+    def list_recent_sessions(
         self,
         limit: int = 50,
         *,

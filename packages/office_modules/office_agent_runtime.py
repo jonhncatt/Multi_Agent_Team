@@ -980,15 +980,11 @@ class OfficeAgent:
             "504",
         )
         retryable_tools = {
-            "fetch_web",
             "web_fetch",
-            "search_web",
             "web_search",
-            "download_web_file",
             "web_download",
-            "run_shell",
+            "exec_command",
             "read_file",
-            "read_text_file",
             "search_codebase",
         }
         if str(tool_name or "").strip() not in retryable_tools:
@@ -1132,9 +1128,9 @@ class OfficeAgent:
             compact_roots.append(f"...(+{len(access_roots) - 4})")
         allowed_roots_text = ", ".join(compact_roots) or "(none)"
         session_tools_hint = (
-            "当用户提到“之前/上次会话里说过什么”时，可调用 list_sessions 和 read_session_history 主动检索历史，不要先让用户手工找 session_id。\n"
+            "当用户提到“之前/上次会话里说过什么”时，可调用 sessions_list 和 sessions_history 主动检索历史，不要先让用户手工找 session_id。\n"
             if self.config.enable_session_tools
-            else "当前未启用跨会话工具，不要调用 list_sessions/read_session_history。\n"
+            else "当前未启用跨会话工具，不要调用 sessions_list/sessions_history。\n"
         )
 
         debug_raw = bool(getattr(settings, "debug_raw", False))
@@ -1473,7 +1469,7 @@ class OfficeAgent:
                     "默认先按 basename 进行模糊搜索（文件名/内容都可），不要先追问完整文件名或扩展名。\n"
                     "当默认 root='.' 没有命中时，继续在其他可访问根目录自动重试，不要立即向用户追问地址。\n"
                     "当需要对同一文件同时尝试多个关键词时，优先用 search_contents_in_file_multi；"
-                    "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
+                    "大 PDF 优先结合 search_contents_in_file、read_section 与 table_extract 进行定位，不要依赖隐藏索引工具；"
                     "大文件优先用 read_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
                     "应先调用 read_file(path=..., start_char=0, max_chars=1000000)，"
@@ -1486,7 +1482,7 @@ class OfficeAgent:
                     "当用户要求“解释邮件全部内容/完整解释邮件”时，默认范围=邮件正文+可解析附件内容；"
                     "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
-                    "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
+                    "改写或新建文件优先使用 apply_patch，尽量使用绝对路径。\n"
                     "如果上一轮你已经给出“预览代码/草稿”，而本轮用户只说“写入/应用/替换”，"
                     "默认按上一轮预览内容原样写入（包含注释、空行和缩进）；"
                     "除非用户明确要求改动，否则不要私自删改注释。\n"
@@ -1521,7 +1517,7 @@ class OfficeAgent:
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
                     "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
-                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
+                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 exec_command 执行 git clone 后继续分析；"
                     "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
                     "如果用户要求已经退场的 kernel/platform 自我升级能力，必须明确说明该能力已不在当前聊天产品主线中，"
                     "并引导回当前支持的聊天、代码、文档、图片与本地工具工作流。\n"
@@ -2067,7 +2063,7 @@ class OfficeAgent:
                 detail="\n\n".join(specialist_system_hints),
             )
 
-        prefetch_payload = self._auto_prefetch_web(specialist_prefetch_query, bool(route.get("use_web_prefetch")))
+        prefetch_payload = self._auto_preweb_fetch(specialist_prefetch_query, bool(route.get("use_web_prefetch")))
         if prefetch_payload:
             messages.append(self._SystemMessage(content=prefetch_payload["context"]))
             add_trace(
@@ -2078,7 +2074,7 @@ class OfficeAgent:
                 add_trace(f"预搜索提示: {warning}")
             add_tool_event(
                 build_tool_event(
-                    "search_web(auto_prefetch)",
+                    "web_search(auto_prefetch)",
                     {"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
                     self._shorten(
                         json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
@@ -2088,7 +2084,7 @@ class OfficeAgent:
             )
             add_debug(
                 stage="backend_prefetch",
-                title="后台预取 search_web（Worker 前置）",
+                title="后台预取 web_search（Worker 前置）",
                 detail=self._shorten(
                     json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
                     3200 if not debug_raw else 120000,
@@ -2097,7 +2093,7 @@ class OfficeAgent:
             worker_citation_candidates = self._merge_citation_candidates(
                 worker_citation_candidates,
                 self._extract_citations_from_tool_result(
-                    name="search_web",
+                    name="web_search",
                     arguments={"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
                     result=prefetch_payload.get("raw_result", {}),
                 ),
@@ -2852,9 +2848,7 @@ class OfficeAgent:
                 break
 
             messages.append(ai_msg)
-            batch_has_read_text_call = any(
-                str(call.get("name") or "") in {"read_file", "read_text_file"} for call in tool_calls
-            )
+            batch_has_read_text_call = any(str(call.get("name") or "") in {"read_file"} for call in tool_calls)
             worker_tool_branch_group = (
                 f"{latest_worker_node_id or coordinator_node_id or 'worker'}:tool_batch:{execution_state.attempts}"
             )
@@ -4802,7 +4796,7 @@ class OfficeAgent:
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         for event in reversed(tool_events):
-            if str(getattr(event, "name", "") or "") not in {"read_file", "read_text_file"}:
+            if str(getattr(event, "name", "") or "") not in {"read_file"}:
                 continue
             preview = str(getattr(event, "output_preview", "") or "")
             parsed = self._parse_json_object(preview) or self._parse_loose_object_literal(preview)
@@ -5243,7 +5237,7 @@ class OfficeAgent:
                 return True, "spec/evidence mode requires review chain"
             if task_type in {"evidence_lookup", "web_research"}:
                 return True, f"task_type={task_type}"
-            web_tool_prefixes = ("search_web", "web_search", "fetch_web", "web_fetch", "download_web_file", "web_download")
+            web_tool_prefixes = ("web_search", "web_fetch", "web_download")
             has_web_tool_evidence = any(
                 str(getattr(event, "name", "") or "").strip().startswith(web_tool_prefixes)
                 for event in tool_events
@@ -5675,9 +5669,9 @@ class OfficeAgent:
 
     def _has_text_search_evidence(self, tool_events: list[ToolEvent]) -> bool:
         search_tools = {
-            "search_text_in_file",
             "search_contents_in_file",
-            "multi_query_search",
+            "search_contents_in_file",
+            "search_contents_in_file_multi",
             "search_contents_in_file_multi",
             "search_codebase",
         }
@@ -6237,7 +6231,7 @@ class OfficeAgent:
         keys = {str(key).strip() for key in parsed.keys()}
 
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
-        list_directory_keys = {"path", "max_entries"}
+        list_dir_keys = {"path", "max_entries"}
         read_keys = {"path", "start_char", "max_chars", "start_line", "max_lines", "max_entries"}
         search_contents_in_file_keys = {"path", "query", "max_matches", "context_chars"}
 
@@ -6287,7 +6281,7 @@ class OfficeAgent:
                 "inferred": True,
             }
 
-        if "path" in keys and keys.issubset(list_directory_keys):
+        if "path" in keys and keys.issubset(list_dir_keys):
             path = str(parsed.get("path") or "").strip() or "."
             args = {"path": path, "max_entries": parsed.get("max_entries", 200)}
             return {
@@ -6340,7 +6334,7 @@ class OfficeAgent:
             return True
         return False
 
-    def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
+    def _auto_preweb_fetch(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
         if not enable_tools:
             return None
         query = (user_message or "").strip()
@@ -6364,7 +6358,7 @@ class OfficeAgent:
             if not q or q.lower() in seen:
                 continue
             seen.add(q.lower())
-            result = self.tools.search_web(query=q, max_results=6, timeout_sec=self.config.web_fetch_timeout_sec)
+            result = self.tools.web_search(query=q, max_results=6, timeout_sec=self.config.web_fetch_timeout_sec)
             if not result.get("ok"):
                 continue
             count = int(result.get("count") or 0)
@@ -8177,11 +8171,11 @@ class OfficeAgent:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _fetch_web_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
-        result = self.tools.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+    def _web_fetch_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
+        result = self.tools.web_fetch(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 
-    def _download_web_file_tool(
+    def _web_download_tool(
         self,
         url: str,
         dst_path: str = "",
@@ -8190,7 +8184,7 @@ class OfficeAgent:
         timeout_sec: int = 20,
         max_bytes: int = 52428800,
     ) -> str:
-        result = self.tools.download_web_file(
+        result = self.tools.web_download(
             url=url,
             dst_path=dst_path,
             overwrite=overwrite,
@@ -8200,16 +8194,16 @@ class OfficeAgent:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
-        result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
+    def _web_search_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
+        result = self.tools.web_search(query=query, max_results=max_results, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 
-    def _list_sessions_tool(self, max_sessions: int = 20) -> str:
-        result = self.tools.list_sessions(max_sessions=max_sessions)
+    def _sessions_list_tool(self, max_sessions: int = 20) -> str:
+        result = self.tools.sessions_list(max_sessions=max_sessions)
         return json.dumps(result, ensure_ascii=False)
 
-    def _read_session_history_tool(self, session_id: str, max_turns: int = 80) -> str:
-        result = self.tools.read_session_history(session_id=session_id, max_turns=max_turns)
+    def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
+        result = self.tools.sessions_history(session_id=session_id, max_turns=max_turns)
         return json.dumps(result, ensure_ascii=False)
 
     def _build_user_content(

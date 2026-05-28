@@ -1,0 +1,2261 @@
+[
+  {
+    "name": "apply_patch",
+    "description": "Apply a freeform patch inside the workspace.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "patch": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string",
+          "default": "."
+        },
+        "check": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "patch"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.apply_patch"
+    },
+    "tool_module": {
+      "module_id": "workspace_core_tools",
+      "module_title": "Workspace Core Tool Module",
+      "module_group": "control"
+    },
+    "metadata": {
+      "present": true,
+      "group": "edit",
+      "source": "native",
+      "read_only": false,
+      "requires_evidence": false,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "apply a workspace patch"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "archive_extract",
+    "description": "Extract a local .zip archive into a target directory under allowed roots.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "zip_path": {
+          "type": "string"
+        },
+        "dst_dir": {
+          "type": "string",
+          "default": ""
+        },
+        "overwrite": {
+          "type": "boolean",
+          "default": true
+        },
+        "create_dirs": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 20000
+        },
+        "max_total_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 2147483648,
+          "default": 524288000
+        }
+      },
+      "required": [
+        "zip_path"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.archive_extract"
+    },
+    "tool_module": {
+      "module_id": "content_unpack_tools",
+      "module_title": "Content Unpack Tool Module",
+      "module_group": "content_unpack"
+    },
+    "metadata": {
+      "present": true,
+      "group": "archive",
+      "source": "native",
+      "read_only": false,
+      "requires_evidence": false,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "extract a local archive"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_click",
+    "description": "Click one element in the current browser session by CSS selector.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 12000
+        }
+      },
+      "required": [
+        "selector"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_click"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "click in the browser runtime"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_open",
+    "description": "Open a webpage in a headless browser session and capture the current page state.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 20000
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_open"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "open a web page in the browser runtime"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_screenshot",
+    "description": "Save a screenshot from the current browser session to local storage.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "full_page": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_screenshot"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": false,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": true,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "save a browser screenshot"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": true,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_snapshot",
+    "description": "Capture the current browser page title, URL, text excerpt, and top links.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "max_chars": {
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 50000,
+          "default": 12000
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_snapshot"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "capture browser page state"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_type",
+    "description": "Type or fill text into the current browser session by CSS selector.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "submit": {
+          "type": "boolean",
+          "default": false
+        },
+        "clear": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 12000
+        }
+      },
+      "required": [
+        "selector",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_type"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "type in the browser runtime"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "browser_wait",
+    "description": "Wait for a selector or a timeout in the current browser session.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 60000,
+          "default": 5000
+        },
+        "state": {
+          "type": "string",
+          "default": "visible"
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.browser_wait"
+    },
+    "tool_module": {
+      "module_id": "browser_tools",
+      "module_title": "Browser Tool Module",
+      "module_group": "browser"
+    },
+    "metadata": {
+      "present": true,
+      "group": "browser",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "summary": "wait in the browser runtime"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": true,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "exec_command",
+    "description": "Run a workspace command and keep a resumable command session for follow-up polling or stdin.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "type": "string",
+          "description": "Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`"
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory relative to workspace",
+          "default": "."
+        },
+        "yield_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "default": 1000
+        },
+        "max_output_chars": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 60000,
+          "default": 12000
+        },
+        "tty": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "cmd"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.exec_command"
+    },
+    "tool_module": {
+      "module_id": "workspace_core_tools",
+      "module_title": "Workspace Core Tool Module",
+      "module_group": "control"
+    },
+    "metadata": {
+      "present": true,
+      "group": "shell",
+      "source": "adapter",
+      "read_only": false,
+      "requires_evidence": false,
+      "risk": "high",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": true,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "run workspace shell commands"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": true,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": true,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "fact_check_file",
+    "description": "Check whether a file provides supporting evidence for a claim, using derived or provided search queries.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "claim": {
+          "type": "string"
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "max_evidence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12,
+          "default": 6
+        }
+      },
+      "required": [
+        "path",
+        "claim"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.fact_check_file"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "document",
+      "source": "optional",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "fact check one file"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "glob_file_search",
+    "description": "Find files by glob pattern relative to the workspace or a given directory root.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.glob_file_search"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "find files by glob pattern"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "image_inspect",
+    "description": "Inspect a local image and return basic metadata such as size, mode, and format.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.image_inspect"
+    },
+    "tool_module": {
+      "module_id": "media_context_tools",
+      "module_title": "Media Context Tool Module",
+      "module_group": "media_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "media",
+      "source": "optional",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "Pillow"
+        ]
+      },
+      "summary": "inspect image metadata"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "Pillow"
+        ]
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "image_read",
+    "description": "Read a local image with zero-config OCR first, then optional multimodal analysis, and return visible text plus a concise analysis.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string",
+          "default": ""
+        },
+        "max_output_chars": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 24000,
+          "default": 12000
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.image_read"
+    },
+    "tool_module": {
+      "module_id": "media_context_tools",
+      "module_title": "Media Context Tool Module",
+      "module_group": "media_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "media",
+      "source": "optional",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "Pillow"
+        ]
+      },
+      "summary": "read image content"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "Pillow"
+        ]
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "list_dir",
+    "description": "List files and directories under one local directory path without reading file contents.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.list_dir"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "list one local directory"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "mail_extract_attachments",
+    "description": "Extract attachments from a local Outlook .msg email into a target directory.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "msg_path": {
+          "type": "string"
+        },
+        "dst_dir": {
+          "type": "string",
+          "default": ""
+        },
+        "overwrite": {
+          "type": "boolean",
+          "default": true
+        },
+        "create_dirs": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_attachments": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000,
+          "default": 500
+        },
+        "max_total_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 2147483648,
+          "default": 524288000
+        }
+      },
+      "required": [
+        "msg_path"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.mail_extract_attachments"
+    },
+    "tool_module": {
+      "module_id": "content_unpack_tools",
+      "module_title": "Content Unpack Tool Module",
+      "module_group": "content_unpack"
+    },
+    "metadata": {
+      "present": true,
+      "group": "archive",
+      "source": "optional",
+      "read_only": false,
+      "requires_evidence": false,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "extract-msg"
+        ]
+      },
+      "summary": "extract mail attachments"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": true,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "extract-msg"
+        ]
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "read_file",
+    "description": "Read one local file. Supports chunked reads plus Office/PDF text extraction for large document formats.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "start_char": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 1000000,
+          "default": 200000
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200000,
+          "default": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.read_file"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "read one local file"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "read_section",
+    "description": "Read a document section by matching a heading or section number and returning that section's content.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "heading": {
+          "type": "string"
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 50000,
+          "default": 12000
+        }
+      },
+      "required": [
+        "path",
+        "heading"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.read_section"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "read one matched section"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "request_user_input",
+    "description": "Pause the turn and ask the user one to three structured follow-up questions.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "header": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "question": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "description"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "header",
+              "id",
+              "question",
+              "options"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.request_user_input"
+    },
+    "tool_module": {
+      "module_id": "workspace_core_tools",
+      "module_title": "Workspace Core Tool Module",
+      "module_group": "control"
+    },
+    "metadata": {
+      "present": true,
+      "group": "control",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": false,
+      "risk": "low",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "request structured follow-up input"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "search_codebase",
+    "description": "Search code or text files under a local root and return structured file, line, and text matches.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string",
+          "default": "."
+        },
+        "max_matches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        },
+        "file_glob": {
+          "type": "string",
+          "default": ""
+        },
+        "use_regex": {
+          "type": "boolean",
+          "default": false
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.search_codebase"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "search codebase"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path",
+        "root"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "search_contents_in_file",
+    "description": "Search text inside one known local file or extracted document text and return evidence snippets with read hints.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "max_matches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 8
+        },
+        "context_chars": {
+          "type": "integer",
+          "minimum": 40,
+          "maximum": 2000,
+          "default": 280
+        }
+      },
+      "required": [
+        "path",
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.search_contents_in_file"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "search one local file"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "search_contents_in_file_multi",
+    "description": "Run multiple text searches against one known local file or extracted document text and merge the evidence snippets.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "per_query_max_matches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        },
+        "context_chars": {
+          "type": "integer",
+          "minimum": 40,
+          "maximum": 2000,
+          "default": 280
+        }
+      },
+      "required": [
+        "path",
+        "queries"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.search_contents_in_file_multi"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "file",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "search one local file with multiple queries"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "sessions_history",
+    "description": "Read one local chat session summary and recent turns by session_id.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 800,
+          "default": 80
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.sessions_history"
+    },
+    "tool_module": {
+      "module_id": "session_context_tools",
+      "module_title": "Session Context Tool Module",
+      "module_group": "session_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "session",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "read one session history"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "sessions_list",
+    "description": "List recent local chat sessions so the agent can locate past context.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.sessions_list"
+    },
+    "tool_module": {
+      "module_id": "session_context_tools",
+      "module_title": "Session Context Tool Module",
+      "module_group": "session_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "session",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "low",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "list sessions"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "table_extract",
+    "description": "Extract tables from a local PDF or XLSX file, optionally narrowed by query or page hint.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string",
+          "default": ""
+        },
+        "page_hint": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_tables": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 25
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.table_extract"
+    },
+    "tool_module": {
+      "module_id": "fs_content_tools",
+      "module_title": "FS Content Tool Module",
+      "module_group": "fs_content"
+    },
+    "metadata": {
+      "present": true,
+      "group": "document",
+      "source": "optional",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "pypdf",
+          "openpyxl"
+        ]
+      },
+      "summary": "extract document tables"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": true,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": [
+          "pypdf",
+          "openpyxl"
+        ]
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [
+        "path"
+      ],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "update_plan",
+    "description": "Synchronize a lightweight checklist for the current turn.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "explanation": {
+          "type": "string",
+          "default": ""
+        },
+        "plan": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "plan_state": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.update_plan"
+    },
+    "tool_module": {
+      "module_id": "workspace_core_tools",
+      "module_title": "Workspace Core Tool Module",
+      "module_group": "control"
+    },
+    "metadata": {
+      "present": true,
+      "group": "control",
+      "source": "native",
+      "read_only": true,
+      "requires_evidence": false,
+      "risk": "low",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "synchronize a lightweight plan"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "web_download",
+    "description": "Download a web file (binary-safe) to a local path under allowed roots for later reading or extraction.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "dst_path": {
+          "type": "string",
+          "default": ""
+        },
+        "overwrite": {
+          "type": "boolean",
+          "default": true
+        },
+        "create_dirs": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 120,
+          "default": 20
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 209715200,
+          "default": 52428800
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.web_download"
+    },
+    "tool_module": {
+      "module_id": "web_context_tools",
+      "module_title": "Web Context Tool Module",
+      "module_group": "web_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "web",
+      "source": "adapter",
+      "read_only": false,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": true,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "download one remote file"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": true,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": true,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": [
+        "dst_path",
+        "path"
+      ]
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "web_fetch",
+    "description": "Fetch one web page or document URL through the local hosted web fetcher.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 500000,
+          "default": 120000
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 30,
+          "default": 12
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.web_fetch"
+    },
+    "tool_module": {
+      "module_id": "web_context_tools",
+      "module_title": "Web Context Tool Module",
+      "module_group": "web_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "web",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "fetch one web page"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": true,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "web_search",
+    "description": "Search the web using the local hosted provider and return candidate URLs and snippets.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 30,
+          "default": 12
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.web_search"
+    },
+    "tool_module": {
+      "module_id": "web_context_tools",
+      "module_title": "Web Context Tool Module",
+      "module_group": "web_context"
+    },
+    "metadata": {
+      "present": true,
+      "group": "web",
+      "source": "adapter",
+      "read_only": true,
+      "requires_evidence": true,
+      "risk": "medium",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "search the web"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": false,
+        "network": true,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": true,
+      "shell_table": false,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": true,
+      "write_runtime_set": false
+    },
+    "in_workbench_metadata": true
+  },
+  {
+    "name": "write_stdin",
+    "description": "Write characters to a running exec_command session, or poll for fresh output.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "integer"
+        },
+        "chars": {
+          "type": "string",
+          "default": ""
+        },
+        "yield_time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "default": 1000
+        },
+        "max_output_chars": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 60000,
+          "default": 12000
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "additionalProperties": false
+    },
+    "implementation": {
+      "module": "app.local_tools",
+      "qualname": "LocalToolExecutor.write_stdin"
+    },
+    "tool_module": {
+      "module_id": "workspace_core_tools",
+      "module_title": "Workspace Core Tool Module",
+      "module_group": "control"
+    },
+    "metadata": {
+      "present": true,
+      "group": "shell",
+      "source": "adapter",
+      "read_only": false,
+      "requires_evidence": false,
+      "risk": "high",
+      "requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": true,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "summary": "write to a running shell session"
+    },
+    "validator": {
+      "metadata_present": true,
+      "metadata_requires": {
+        "workspace_read": false,
+        "workspace_write": false,
+        "shell": true,
+        "network": false,
+        "browser": false,
+        "optional_dependency": []
+      },
+      "network_table": false,
+      "shell_table": true,
+      "read_path_fields": [],
+      "write_path_fields": []
+    },
+    "runtime_sets": {
+      "read_only_runtime_set": false,
+      "write_runtime_set": true
+    },
+    "in_workbench_metadata": true
+  }
+]

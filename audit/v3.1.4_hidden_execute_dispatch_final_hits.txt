@@ -1,0 +1,107 @@
+app/local_tools.py:2915:        result = self.list_directory(path=path, max_entries=max_entries)
+app/local_tools.py:3313:        result = self.extract_zip(
+app/local_tools.py:3336:        result = self.extract_msg_attachments(
+app/local_tools.py:3350:    def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
+app/local_tools.py:3429:            return {"ok": False, "error": f"run_shell failed: {exc}"}
+app/local_tools.py:3431:    def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
+app/local_tools.py:3474:            return {"ok": False, "error": f"list_directory failed: {exc}"}
+app/local_tools.py:3746:    def list_skills(self) -> dict[str, Any]:
+app/local_tools.py:3751:            return {"ok": False, "error": f"list_skills failed: {exc}"}
+app/local_tools.py:3753:    def read_skill(self, skill_id: str) -> dict[str, Any]:
+app/local_tools.py:3757:            return {"ok": False, "error": f"read_skill failed: {exc}"}
+app/local_tools.py:3759:    def write_skill(self, content: str, skill_id: str = "") -> dict[str, Any]:
+app/local_tools.py:3768:            return {"ok": False, "error": f"write_skill failed: {exc}"}
+app/local_tools.py:3770:    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
+app/local_tools.py:3775:            return {"ok": False, "error": f"toggle_skill failed: {exc}"}
+app/local_tools.py:3777:    def list_agent_specs(self) -> dict[str, Any]:
+app/local_tools.py:3782:            return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
+app/local_tools.py:3784:    def read_agent_spec(self, name: str) -> dict[str, Any]:
+app/local_tools.py:3788:            return {"ok": False, "error": f"read_agent_spec failed: {exc}"}
+app/local_tools.py:3790:    def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
+app/local_tools.py:3795:            return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
+app/local_tools.py:4162:    def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
+app/local_tools.py:4173:                    "error": "doc_index_build currently supports PDF files only",
+app/local_tools.py:4191:            return {"ok": False, "error": f"doc_index_build failed: {exc}"}
+app/local_tools.py:4608:    def copy_file(
+app/local_tools.py:4642:            return {"ok": False, "error": f"copy_file failed: {exc}"}
+app/local_tools.py:4644:    def extract_zip(
+app/local_tools.py:4736:            return {"ok": False, "error": f"extract_zip failed: {exc}"}
+app/local_tools.py:4738:    def extract_msg_attachments(
+app/local_tools.py:4949:            return {"ok": False, "error": f"extract_msg_attachments failed: {exc}"}
+app/local_tools.py:4951:    def write_text_file(
+app/local_tools.py:4981:                return {"ok": False, "error": f"write_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:4982:            return {"ok": False, "error": f"write_text_file failed: {exc}"}
+app/local_tools.py:4984:    def append_text_file(
+app/local_tools.py:5019:                return {"ok": False, "error": f"append_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:5020:            return {"ok": False, "error": f"append_text_file failed: {exc}"}
+app/local_tools.py:5022:    def replace_in_file(
+app/local_tools.py:5060:                return {"ok": False, "error": f"replace_in_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:5061:            return {"ok": False, "error": f"replace_in_file failed: {exc}"}
+app/workbench.py:198:    def _read_skill_file(self, path: Path) -> dict[str, Any]:
+app/workbench.py:216:                out.append(self._read_skill_file(path))
+app/workbench.py:238:        return self._read_skill_file(path)
+packages/office_modules/office_agent_runtime.py:7957:    def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
+packages/office_modules/office_agent_runtime.py:7958:        result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
+packages/office_modules/office_agent_runtime.py:8017:    def _doc_index_build_tool(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> str:
+packages/office_modules/office_agent_runtime.py:8018:        result = self.tools.doc_index_build(path=path, force_rebuild=force_rebuild, max_headings=max_headings)
+packages/office_modules/office_agent_runtime.py:8082:    def _copy_file_tool(
+packages/office_modules/office_agent_runtime.py:8085:        result = self.tools.copy_file(
+packages/office_modules/office_agent_runtime.py:8093:    def _extract_zip_tool(
+packages/office_modules/office_agent_runtime.py:8102:        result = self.tools.extract_zip(
+packages/office_modules/office_agent_runtime.py:8112:    def _extract_msg_attachments_tool(
+packages/office_modules/office_agent_runtime.py:8121:        result = self.tools.extract_msg_attachments(
+packages/office_modules/office_agent_runtime.py:8131:    def _write_text_file_tool(
+packages/office_modules/office_agent_runtime.py:8134:        result = self.tools.write_text_file(
+packages/office_modules/office_agent_runtime.py:8142:    def _append_text_file_tool(
+packages/office_modules/office_agent_runtime.py:8149:        result = self.tools.append_text_file(
+packages/office_modules/office_agent_runtime.py:8157:    def _replace_in_file_tool(
+packages/office_modules/office_agent_runtime.py:8165:        result = self.tools.replace_in_file(
+tests/test_canonical_tool_surface.py:63:    "run_shell",
+tests/test_canonical_tool_surface.py:64:    "list_directory",
+tests/test_canonical_tool_surface.py:65:    "doc_index_build",
+tests/test_canonical_tool_surface.py:66:    "copy_file",
+tests/test_canonical_tool_surface.py:67:    "extract_zip",
+tests/test_canonical_tool_surface.py:68:    "extract_msg_attachments",
+tests/test_canonical_tool_surface.py:69:    "write_text_file",
+tests/test_canonical_tool_surface.py:70:    "append_text_file",
+tests/test_canonical_tool_surface.py:71:    "replace_in_file",
+tests/test_canonical_tool_surface.py:72:    "list_skills",
+tests/test_canonical_tool_surface.py:73:    "read_skill",
+tests/test_canonical_tool_surface.py:74:    "write_skill",
+tests/test_canonical_tool_surface.py:75:    "toggle_skill",
+tests/test_canonical_tool_surface.py:76:    "list_agent_specs",
+tests/test_canonical_tool_surface.py:77:    "read_agent_spec",
+tests/test_canonical_tool_surface.py:78:    "write_agent_spec",
+tests/test_canonical_tool_surface.py:206:        "run_shell": {"command": "pwd"},
+tests/test_canonical_tool_surface.py:207:        "list_directory": {"path": "."},
+tests/test_canonical_tool_surface.py:208:        "doc_index_build": {"path": str(sample_path)},
+tests/test_canonical_tool_surface.py:209:        "copy_file": {"src_path": str(sample_path), "dst_path": str(tmp_path / "copy.md")},
+tests/test_canonical_tool_surface.py:210:        "extract_zip": {"zip_path": str(sample_path), "dst_dir": str(tmp_path / "out")},
+tests/test_canonical_tool_surface.py:211:        "extract_msg_attachments": {"msg_path": str(sample_path), "output_dir": str(tmp_path / "out")},
+tests/test_canonical_tool_surface.py:212:        "write_text_file": {"path": str(sample_path), "content": "demo"},
+tests/test_canonical_tool_surface.py:213:        "append_text_file": {"path": str(sample_path), "content": "demo"},
+tests/test_canonical_tool_surface.py:214:        "replace_in_file": {"path": str(sample_path), "old": "demo", "new": "updated"},
+tests/test_canonical_tool_surface.py:215:        "list_skills": {},
+tests/test_canonical_tool_surface.py:216:        "read_skill": {"skill_id": "example"},
+tests/test_canonical_tool_surface.py:217:        "write_skill": {"skill_id": "example", "content": "demo"},
+tests/test_canonical_tool_surface.py:218:        "toggle_skill": {"skill_id": "example", "enabled": True},
+tests/test_canonical_tool_surface.py:219:        "list_agent_specs": {},
+tests/test_canonical_tool_surface.py:220:        "read_agent_spec": {"name": "example"},
+tests/test_canonical_tool_surface.py:221:        "write_agent_spec": {"name": "example", "content": "demo"},
+tests/test_canonical_tool_surface.py:236:        "write_text_file": {"path": str(sample_path), "content": "demo"},
+tests/test_canonical_tool_surface.py:237:        "append_text_file": {"path": str(sample_path), "content": "demo"},
+tests/test_canonical_tool_surface.py:238:        "replace_in_file": {"path": str(sample_path), "old": "demo", "new": "updated"},
+tests/test_canonical_tool_surface.py:239:        "copy_file": {"src_path": str(sample_path), "dst_path": str(tmp_path / "copy.md")},
+tests/test_canonical_tool_surface.py:251:        "write_skill": {"skill_id": "example", "content": "demo"},
+tests/test_canonical_tool_surface.py:252:        "toggle_skill": {"skill_id": "example", "enabled": True},
+tests/test_canonical_tool_surface.py:253:        "write_agent_spec": {"name": "example", "content": "demo"},
+tests/test_local_tool_executor_projects.py:45:    write_result = executor.write_text_file("notes.txt", "hello from project")
+tests/test_local_tool_executor_projects.py:46:    list_result = executor.list_directory(".")
+tests/test_local_tools_exec_command.py:125:    result = manager.run_shell(command="rm temp.txt", cwd=str(tmp_path))
+tests/test_local_tools_exec_command.py:142:    result = manager.run_shell(command="pwd", cwd="/etc")
+tests/test_local_tools_exec_command.py:164:    result = manager.run_shell(command=command, cwd=".")
+tests/test_local_tools_exec_command.py:179:    result = manager.run_shell(command="cp app/main.py /tmp/main.py", cwd=".")
+tests/test_local_tools_exec_command.py:192:    result = manager.run_shell(command="pytest -q", cwd=".")
+tests/test_local_tools_exec_command.py:198:def test_write_text_file_respects_writable_roots(
+tests/test_local_tools_exec_command.py:205:    allowed = manager.write_text_file("docs/test.md", "x")
+tests/test_local_tools_exec_command.py:206:    denied = manager.write_text_file("/tmp/outside.md", "x")

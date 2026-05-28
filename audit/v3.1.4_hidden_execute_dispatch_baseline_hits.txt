@@ -1,0 +1,187 @@
+app/action_validator.py:50:    "write_text_file": ("path",),
+app/action_validator.py:52:    "append_text_file": ("path",),
+app/action_validator.py:53:    "replace_in_file": ("path",),
+app/action_validator.py:54:    "copy_file": ("dst_path", "destination", "target_path"),
+app/action_validator.py:55:    "extract_zip": ("dst_dir", "output_dir"),
+app/action_validator.py:60:_SHELL_TOOLS = {"exec_command", "run_shell", "write_stdin"}
+app/local_tools.py:2616:        if name == "run_shell":
+app/local_tools.py:2617:            result = self.run_shell(**arguments)
+app/local_tools.py:2619:        if name == "list_directory":
+app/local_tools.py:2620:            result = self.list_directory(**arguments)
+app/local_tools.py:2622:        if name == "doc_index_build":
+app/local_tools.py:2623:            result = self.doc_index_build(**arguments)
+app/local_tools.py:2625:        if name == "copy_file":
+app/local_tools.py:2626:            result = self.copy_file(**arguments)
+app/local_tools.py:2628:        if name == "extract_zip":
+app/local_tools.py:2629:            result = self.extract_zip(**arguments)
+app/local_tools.py:2631:        if name == "extract_msg_attachments":
+app/local_tools.py:2632:            result = self.extract_msg_attachments(**arguments)
+app/local_tools.py:2634:        if name == "write_text_file":
+app/local_tools.py:2635:            result = self.write_text_file(**arguments)
+app/local_tools.py:2637:        if name == "append_text_file":
+app/local_tools.py:2638:            result = self.append_text_file(**arguments)
+app/local_tools.py:2640:        if name == "replace_in_file":
+app/local_tools.py:2641:            result = self.replace_in_file(**arguments)
+app/local_tools.py:2664:        if name == "list_skills":
+app/local_tools.py:2665:            result = self.list_skills(**arguments)
+app/local_tools.py:2667:        if name == "read_skill":
+app/local_tools.py:2668:            result = self.read_skill(**arguments)
+app/local_tools.py:2670:        if name == "write_skill":
+app/local_tools.py:2671:            result = self.write_skill(**arguments)
+app/local_tools.py:2673:        if name == "toggle_skill":
+app/local_tools.py:2674:            result = self.toggle_skill(**arguments)
+app/local_tools.py:2676:        if name == "list_agent_specs":
+app/local_tools.py:2677:            result = self.list_agent_specs(**arguments)
+app/local_tools.py:2679:        if name == "read_agent_spec":
+app/local_tools.py:2680:            result = self.read_agent_spec(**arguments)
+app/local_tools.py:2682:        if name == "write_agent_spec":
+app/local_tools.py:2683:            result = self.write_agent_spec(**arguments)
+app/local_tools.py:2963:        result = self.list_directory(path=path, max_entries=max_entries)
+app/local_tools.py:3361:        result = self.extract_zip(
+app/local_tools.py:3384:        result = self.extract_msg_attachments(
+app/local_tools.py:3398:    def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
+app/local_tools.py:3477:            return {"ok": False, "error": f"run_shell failed: {exc}"}
+app/local_tools.py:3479:    def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
+app/local_tools.py:3522:            return {"ok": False, "error": f"list_directory failed: {exc}"}
+app/local_tools.py:3794:    def list_skills(self) -> dict[str, Any]:
+app/local_tools.py:3796:            skills = self._workbench.list_skills()
+app/local_tools.py:3799:            return {"ok": False, "error": f"list_skills failed: {exc}"}
+app/local_tools.py:3801:    def read_skill(self, skill_id: str) -> dict[str, Any]:
+app/local_tools.py:3805:            return {"ok": False, "error": f"read_skill failed: {exc}"}
+app/local_tools.py:3807:    def write_skill(self, content: str, skill_id: str = "") -> dict[str, Any]:
+app/local_tools.py:3810:                self._workbench.write_skill(skill_id, content)
+app/local_tools.py:3816:            return {"ok": False, "error": f"write_skill failed: {exc}"}
+app/local_tools.py:3818:    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
+app/local_tools.py:3820:            payload = self._workbench.toggle_skill(skill_id, enabled=enabled)
+app/local_tools.py:3823:            return {"ok": False, "error": f"toggle_skill failed: {exc}"}
+app/local_tools.py:3825:    def list_agent_specs(self) -> dict[str, Any]:
+app/local_tools.py:3827:            specs = self._workbench.list_agent_specs(locale=self._current_locale_hint())
+app/local_tools.py:3830:            return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
+app/local_tools.py:3832:    def read_agent_spec(self, name: str) -> dict[str, Any]:
+app/local_tools.py:3836:            return {"ok": False, "error": f"read_agent_spec failed: {exc}"}
+app/local_tools.py:3838:    def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
+app/local_tools.py:3840:            payload = self._workbench.write_agent_spec(name, content, locale=self._current_locale_hint())
+app/local_tools.py:3843:            return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
+app/local_tools.py:4210:    def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
+app/local_tools.py:4221:                    "error": "doc_index_build currently supports PDF files only",
+app/local_tools.py:4239:            return {"ok": False, "error": f"doc_index_build failed: {exc}"}
+app/local_tools.py:4656:    def copy_file(
+app/local_tools.py:4690:            return {"ok": False, "error": f"copy_file failed: {exc}"}
+app/local_tools.py:4692:    def extract_zip(
+app/local_tools.py:4784:            return {"ok": False, "error": f"extract_zip failed: {exc}"}
+app/local_tools.py:4786:    def extract_msg_attachments(
+app/local_tools.py:4997:            return {"ok": False, "error": f"extract_msg_attachments failed: {exc}"}
+app/local_tools.py:4999:    def write_text_file(
+app/local_tools.py:5029:                return {"ok": False, "error": f"write_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:5030:            return {"ok": False, "error": f"write_text_file failed: {exc}"}
+app/local_tools.py:5032:    def append_text_file(
+app/local_tools.py:5067:                return {"ok": False, "error": f"append_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:5068:            return {"ok": False, "error": f"append_text_file failed: {exc}"}
+app/local_tools.py:5070:    def replace_in_file(
+app/local_tools.py:5108:                return {"ok": False, "error": f"replace_in_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
+app/local_tools.py:5109:            return {"ok": False, "error": f"replace_in_file failed: {exc}"}
+app/main.py:635:    skills = get_workbench_store().list_skills()
+app/main.py:662:def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
+app/main.py:664:        updated = SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
+app/main.py:672:def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
+app/main.py:674:        updated = SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
+app/main.py:697:    specs = get_workbench_store().list_agent_specs(locale=locale)
+app/main.py:714:        updated = SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content, locale=locale))
+app/main.py:1254:        list_result = tools.list_directory(path=".", max_entries=20)
+app/main.py:1259:            else str(list_result.get("error") or "list_directory failed")
+app/main.py:1263:            name="list_directory",
+app/main.py:1272:        pwd_result = tools.run_shell(command="pwd", cwd=".", timeout_sec=12)
+app/main.py:1278:            else str(pwd_result.get("error") or "run_shell pwd failed")
+app/main.py:1282:            name="run_shell_pwd",
+app/main.py:1293:            py_result = tools.run_shell(command=f"{python_command} --version", cwd=".", timeout_sec=12)
+app/main.py:1301:                name="run_shell_python_version",
+app/main.py:1311:                name="run_shell_python_version",
+app/static/app.js:1254:  const commandTools = new Set(["exec_command", "run_shell", "run_command", "shell", "bash"]);
+app/static/app.js:1255:  const patchTools = new Set(["apply_patch", "write_skill", "read_skill", "list_skills"]);
+app/static/app.js:4876:      const nextError = applyUiError(err, t("errors.toggle_skill_failed"));
+app/static/app.js:4877:      pushLogWithLimit(setLogs, "error", t("errors.toggle_skill_failed"));
+app/static/locales.js:49:      "errors.toggle_skill_failed": "切换技能失败，请稍后重试。",
+app/static/locales.js:270:      "activity.tool_title.run_shell": "执行命令",
+app/static/locales.js:271:      "activity.tool_title.write_skill": "写入 Skill",
+app/static/locales.js:272:      "activity.tool_title.read_skill": "读取 Skill",
+app/static/locales.js:273:      "activity.tool_title.list_skills": "列出 Skills",
+app/static/locales.js:487:      "errors.toggle_skill_failed": "Skill の切り替えに失敗しました。しばらくしてから再試行してください。",
+app/static/locales.js:708:      "activity.tool_title.run_shell": "コマンド実行",
+app/static/locales.js:709:      "activity.tool_title.write_skill": "Skill 書き込み",
+app/static/locales.js:710:      "activity.tool_title.read_skill": "Skill 読み取り",
+app/static/locales.js:711:      "activity.tool_title.list_skills": "Skills 一覧",
+app/static/locales.js:925:      "errors.toggle_skill_failed": "Failed to toggle the skill. Please try again shortly.",
+app/static/locales.js:1146:      "activity.tool_title.run_shell": "Run command",
+app/static/locales.js:1147:      "activity.tool_title.write_skill": "Write Skill",
+app/static/locales.js:1148:      "activity.tool_title.read_skill": "Read Skill",
+app/static/locales.js:1149:      "activity.tool_title.list_skills": "List Skills",
+app/vintage_programmer_runtime.py:2597:        elif normalized_tool in {"list_dir", "list_directory"}:
+app/workbench.py:198:    def _read_skill_file(self, path: Path) -> dict[str, Any]:
+app/workbench.py:212:    def list_skills(self) -> list[dict[str, Any]]:
+app/workbench.py:216:                out.append(self._read_skill_file(path))
+app/workbench.py:238:        return self._read_skill_file(path)
+app/workbench.py:250:    def write_skill(self, skill_id: str, content: str) -> dict[str, Any]:
+app/workbench.py:258:    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
+app/workbench.py:272:        return self.write_skill(skill_id, content)
+app/workbench.py:286:        for item in self.list_skills():
+app/workbench.py:296:    def list_agent_specs(self, *, locale: str | None = None) -> list[dict[str, Any]]:
+app/workbench.py:340:    def write_agent_spec(self, name: str, content: str, *, locale: str | None = None) -> dict[str, Any]:
+evals/cases.json:2811:    "name": "tool_doc_index_build_external_nvme_pdf",
+evals/cases.json:2813:    "tool": "doc_index_build",
+packages/office_modules/intent_support.py:481:        "run_shell", "web_search", "web_fetch", "web_download", ".pdf",
+packages/office_modules/office_agent_runtime.py:989:            "run_shell",
+packages/office_modules/office_agent_runtime.py:1476:                    "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
+packages/office_modules/office_agent_runtime.py:1489:                    "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
+packages/office_modules/office_agent_runtime.py:1524:                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
+packages/office_modules/office_agent_runtime.py:6238:        list_directory_keys = {"path", "max_entries"}
+packages/office_modules/office_agent_runtime.py:6288:        if "path" in keys and keys.issubset(list_directory_keys):
+packages/office_modules/office_agent_runtime.py:7961:    def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
+packages/office_modules/office_agent_runtime.py:7962:        result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
+packages/office_modules/office_agent_runtime.py:8021:    def _doc_index_build_tool(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> str:
+packages/office_modules/office_agent_runtime.py:8022:        result = self.tools.doc_index_build(path=path, force_rebuild=force_rebuild, max_headings=max_headings)
+packages/office_modules/office_agent_runtime.py:8086:    def _copy_file_tool(
+packages/office_modules/office_agent_runtime.py:8089:        result = self.tools.copy_file(
+packages/office_modules/office_agent_runtime.py:8097:    def _extract_zip_tool(
+packages/office_modules/office_agent_runtime.py:8106:        result = self.tools.extract_zip(
+packages/office_modules/office_agent_runtime.py:8116:    def _extract_msg_attachments_tool(
+packages/office_modules/office_agent_runtime.py:8125:        result = self.tools.extract_msg_attachments(
+packages/office_modules/office_agent_runtime.py:8135:    def _write_text_file_tool(
+packages/office_modules/office_agent_runtime.py:8138:        result = self.tools.write_text_file(
+packages/office_modules/office_agent_runtime.py:8146:    def _append_text_file_tool(
+packages/office_modules/office_agent_runtime.py:8153:        result = self.tools.append_text_file(
+packages/office_modules/office_agent_runtime.py:8161:    def _replace_in_file_tool(
+packages/office_modules/office_agent_runtime.py:8169:        result = self.tools.replace_in_file(
+packages/office_modules/request_analysis.py:245:        "已经完成了解析", "已解析完成", "write_text_file", "append_text_file", "directly search", "search directly",
+packages/office_modules/request_analysis.py:255:        "文件", "读取", "写入", "生成", "保存", "read_file", "write_text_file", "append_text_file", "chunk",
+packages/office_modules/review_support.py:136:        "extract_zip",
+packages/office_modules/review_support.py:138:        "extract_msg_attachments",
+packages/office_modules/review_support.py:192:        "write_text_file",
+packages/office_modules/review_support.py:193:        "append_text_file",
+packages/office_modules/review_support.py:194:        "replace_in_file",
+packages/office_modules/review_support.py:195:        "copy_file",
+packages/office_modules/review_support.py:196:        "extract_zip",
+packages/office_modules/review_support.py:197:        "extract_msg_attachments",
+packages/office_modules/review_support.py:225:        if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+packages/office_modules/review_support.py:231:        if name == "copy_file" and not path:
+packages/office_modules/review_support.py:256:        if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+packages/office_modules/review_support.py:264:        if name == "copy_file" and not path:
+packages/office_modules/reviewer_helpers.py:8:    "list_dir": {"list_dir", "list_directory"},
+packages/office_modules/reviewer_helpers.py:128:    if name == "doc_index_build":
+packages/office_modules/reviewer_helpers.py:132:        return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
+tests/test_action_validator.py:51:            "name": "write_text_file",
+tests/test_action_validator.py:161:        {"name": "write_text_file", "args": {"path": "writable/out.txt", "content": "x"}}
+tests/test_action_validator.py:170:        {"name": "write_text_file", "args": {"path": "writable/out.txt", "content": "x"}}
+tests/test_frontend_locale_regressions.py:86:    "activity.tool_title.run_shell",
+tests/test_frontend_locale_regressions.py:87:    "activity.tool_title.write_skill",
+tests/test_frontend_locale_regressions.py:88:    "activity.tool_title.read_skill",
+tests/test_frontend_locale_regressions.py:89:    "activity.tool_title.list_skills",
+tests/test_local_tool_executor_projects.py:45:    write_result = executor.write_text_file("notes.txt", "hello from project")
+tests/test_local_tool_executor_projects.py:46:    list_result = executor.list_directory(".")
+tests/test_local_tools_exec_command.py:125:    result = manager.run_shell(command="rm temp.txt", cwd=str(tmp_path))
+tests/test_local_tools_exec_command.py:142:    result = manager.run_shell(command="pwd", cwd="/etc")
+tests/test_local_tools_exec_command.py:164:    result = manager.run_shell(command=command, cwd=".")
+tests/test_local_tools_exec_command.py:179:    result = manager.run_shell(command="cp app/main.py /tmp/main.py", cwd=".")
+tests/test_local_tools_exec_command.py:192:    result = manager.run_shell(command="pytest -q", cwd=".")
+tests/test_local_tools_exec_command.py:198:def test_write_text_file_respects_writable_roots(
+tests/test_local_tools_exec_command.py:205:    allowed = manager.write_text_file("docs/test.md", "x")
+tests/test_local_tools_exec_command.py:206:    denied = manager.write_text_file("/tmp/outside.md", "x")

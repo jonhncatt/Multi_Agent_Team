@@ -1251,8 +1251,8 @@ function formatToolProgressLabel(locale, group) {
   const listTools = new Set(["list_dir"]);
   const globTools = new Set(["glob_file_search"]);
   const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "fact_check_file", "web_search", "web_fetch", "web_download"]);
-  const commandTools = new Set(["exec_command", "run_shell", "run_command", "shell", "bash"]);
-  const patchTools = new Set(["apply_patch", "write_skill", "read_skill", "list_skills"]);
+  const commandTools = new Set(["exec_command", "run_command", "shell", "bash"]);
+  const patchTools = new Set(["apply_patch"]);
   if (readTools.has(toolName)) return translateUi(locale, "activity.progress.read", { target: labelValue });
   if (listTools.has(toolName)) return translateUi(locale, "activity.progress.list_dir", { target: labelValue });
   if (globTools.has(toolName)) return translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
@@ -4873,8 +4873,8 @@ function App() {
         }),
       );
     } catch (err) {
-      const nextError = applyUiError(err, t("errors.toggle_skill_failed"));
-      pushLogWithLimit(setLogs, "error", t("errors.toggle_skill_failed"));
+      const nextError = applyUiError(err, t("errors.skill_toggle_failed"));
+      pushLogWithLimit(setLogs, "error", t("errors.skill_toggle_failed"));
     } finally {
       setSavingWorkbench(false);
     }

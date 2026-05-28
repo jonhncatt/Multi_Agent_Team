@@ -89,7 +89,7 @@ def run_reviewer_role(
         "block = 证据链明显缺失、独立复核冲突明显、或当前结论高风险到不能直接交付。"
         "如果 tool_events 或 write_actions 已显示 Worker 成功新建/改写了交付文件，"
         "不得仅因为 raw_user_message 里出现“查看/查找旧文件”之类的短跟进措辞，就误判为偏离任务。"
-        "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
+        "如果任务是 spec_lookup，那么没有 search_contents_in_file + read_file 的取证链时通常应为 block；"
         "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
         "如果无法完全证明某个技术成因（例如为何出现空指针、为何函数为空实现），"
         "不能直接写成“调查结果不采用”或全盘否定；"
@@ -98,7 +98,7 @@ def run_reviewer_role(
         "最多只能指出“仍需核对后续覆盖、调用链或分支条件”。"
         "如果结论与现象存在张力，也应在 followups 中明确写出“代码实现可能存在缺陷/与预期不一致”的调查方向。"
         "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
-        "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase、search_web、fetch_web。"
+        "优先考虑 fact_check_file、read_section、search_contents_in_file、table_extract、search_codebase、web_search、web_fetch。"
         "你还要使用自己的通识和领域知识做冲突检测："
         "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
         "即使文案表面自洽，也必须标记为 warn 或 block，并在 risks/followups 中明确要求重新取证。"
@@ -148,9 +148,9 @@ def run_reviewer_role(
                         agent._SystemMessage(
                             content=(
                                 "请先完成独立复核，再输出 JSON。"
-                                "优先调用 fact_check_file；若需要精读文档章节，调用 read_section_by_heading 或 search_text_in_file。"
+                                "优先调用 fact_check_file；若需要精读文档章节，调用 read_section 或 search_contents_in_file。"
                                 "如果是代码任务，优先调用 search_codebase。"
-                                "如果涉及实时信息、新闻、网页来源或联网事实，优先调用 search_web 和 fetch_web。"
+                                "如果涉及实时信息、新闻、网页来源或联网事实，优先调用 web_search 和 web_fetch。"
                             )
                         )
                     )

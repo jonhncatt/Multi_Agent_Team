@@ -48,11 +48,14 @@ def _tool_specs() -> list[dict]:
             },
         },
         {
-            "name": "write_text_file",
+            "name": "web_download",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                "required": ["path", "content"],
+                "properties": {
+                    "url": {"type": "string"},
+                    "dst_path": {"type": "string"},
+                },
+                "required": ["url", "dst_path"],
                 "additionalProperties": False,
             },
         },
@@ -158,7 +161,7 @@ def test_read_file_path_traversal_rejected(tmp_path: Path) -> None:
 
 def test_write_file_when_write_disabled_rejected(tmp_path: Path) -> None:
     result = _validator(tmp_path, workspace_write_allowed=False).validate_tool_call(
-        {"name": "write_text_file", "args": {"path": "writable/out.txt", "content": "x"}}
+        {"name": "web_download", "args": {"url": "https://example.com/file.txt", "dst_path": "writable/out.txt"}}
     )
 
     assert not result.allowed
@@ -167,7 +170,7 @@ def test_write_file_when_write_disabled_rejected(tmp_path: Path) -> None:
 
 def test_write_file_inside_writable_root_allowed(tmp_path: Path) -> None:
     result = _validator(tmp_path).validate_tool_call(
-        {"name": "write_text_file", "args": {"path": "writable/out.txt", "content": "x"}}
+        {"name": "web_download", "args": {"url": "https://example.com/file.txt", "dst_path": "writable/out.txt"}}
     )
 
     assert result.allowed

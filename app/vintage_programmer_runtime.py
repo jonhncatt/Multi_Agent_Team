@@ -2594,7 +2594,7 @@ class VintageProgrammerRuntime:
                 compact["matches"] = matches[:100]
                 compact["truncated"] = True
                 compact["model_note"] = "Only the first 100 matches are shown. Use a narrower pattern."
-        elif normalized_tool in {"list_dir", "list_directory"}:
+        elif normalized_tool == "list_dir":
             entries = list(compact.get("entries") or [])
             if len(entries) > 120:
                 compact["entries"] = entries[:120]

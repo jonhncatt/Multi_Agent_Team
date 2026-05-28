@@ -1,0 +1,96 @@
+.env.example:16:# VP_CODEX_HOME=/absolute/path/to/.codex
+.env.example:17:# VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.en.md:178:VP_CODEX_HOME=/absolute/path/to/.codex
+README.en.md:179:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.en.md:183:If `VP_OPENAI_API_KEY` is absent but `VP_CODEX_AUTH_FILE` exists locally, the app can use Codex auth automatically.
+README.ja.md:180:VP_CODEX_HOME=/absolute/path/to/.codex
+README.ja.md:181:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.ja.md:185:`VP_OPENAI_API_KEY` がなくても、ローカルに `VP_CODEX_AUTH_FILE` があれば Codex auth を自動利用できます。
+README.md:184:VP_CODEX_HOME=/absolute/path/to/.codex
+README.md:185:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.md:189:如果没有填写 `VP_OPENAI_API_KEY`，但本地存在 `VP_CODEX_AUTH_FILE`，程序可以自动使用 Codex auth。
+README.windows.md:62:如果你不填 `VP_OPENAI_API_KEY`，但本机存在 `VP_CODEX_AUTH_FILE`，程序会自动切到 Codex auth。
+README.zh-CN.md:180:VP_CODEX_HOME=/absolute/path/to/.codex
+README.zh-CN.md:181:VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
+README.zh-CN.md:185:如果没有填写 `VP_OPENAI_API_KEY`，但本地存在 `VP_CODEX_AUTH_FILE`，程序可以自动使用 Codex auth。
+app/codex_runner.py:52:        self._auth_manager.refresh_codex_auth(force=True)
+app/codex_runner.py:67:        self._auth_manager.refresh_codex_auth(force=True)
+app/codex_runner.py:78:        if auth.mode != "codex_auth":
+app/codex_runner.py:79:            raise RuntimeError(f"Codex runner requires codex_auth, got {auth.mode}.")
+app/codex_runner.py:87:            default_headers={"chatgpt-account-id": str(auth.account_id)},
+app/codex_runner.py:108:            "provider": "codex_auth",
+app/codex_runner.py:144:                            "provider": "codex_auth",
+app/codex_runner.py:156:                            "provider": "codex_auth",
+app/codex_runner.py:313:            "provider": "codex_auth",
+app/config.py:274:def _supports_codex_auth(provider: str, base_url: str | None) -> bool:
+app/config.py:373:    llm_supports_codex_auth: bool
+app/config.py:379:    codex_auth_file: Path
+app/config.py:486:    llm_supports_codex_auth = _supports_codex_auth(normalized_provider, openai_base_url)
+app/config.py:575:        "llm_supports_codex_auth": llm_supports_codex_auth,
+app/config.py:631:        llm_supports_codex_auth=bool(resolved.get("llm_supports_codex_auth")),
+app/config.py:901:    llm_supports_codex_auth = _supports_codex_auth(llm_provider, openai_base_url)
+app/config.py:904:            "VP_CODEX_HOME",
+app/config.py:909:    codex_auth_file = Path(
+app/config.py:911:            "VP_CODEX_AUTH_FILE",
+app/config.py:920:            default="https://chatgpt.com/backend-api/codex",
+app/config.py:922:        or "https://chatgpt.com/backend-api/codex"
+app/config.py:927:            default="https://auth.openai.com/oauth/token",
+app/config.py:929:        or "https://auth.openai.com/oauth/token"
+app/config.py:1169:    llm_supports_codex_auth = bool(provider_runtime.get("llm_supports_codex_auth"))
+app/config.py:1214:        llm_supports_codex_auth=llm_supports_codex_auth,
+app/config.py:1220:        codex_auth_file=codex_auth_file,
+app/config.py:1221:        codex_chatgpt_base_url=codex_chatgpt_base_url or "https://chatgpt.com/backend-api/codex",
+app/config.py:1222:        codex_refresh_url=codex_refresh_url or "https://auth.openai.com/oauth/token",
+app/openai_auth.py:15:DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+app/openai_auth.py:16:DEFAULT_CODEX_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex"
+app/openai_auth.py:17:DEFAULT_CODEX_REFRESH_URL = "https://auth.openai.com/oauth/token"
+app/openai_auth.py:18:DEFAULT_CODEX_REFRESH_INTERVAL_DAYS = 8
+app/openai_auth.py:24:    if normalized_mode == "codex_auth" and normalized_model.lower().endswith("-chat"):
+app/openai_auth.py:56:    def _llm_supports_codex_auth(self) -> bool:
+app/openai_auth.py:57:        return bool(getattr(self.config, "llm_supports_codex_auth", True))
+app/openai_auth.py:84:        supports_codex_auth = self._llm_supports_codex_auth()
+app/openai_auth.py:87:        codex_auth = self._resolve_codex_auth() if supports_codex_auth else ResolvedOpenAIAuth(
+app/openai_auth.py:88:            mode="codex_auth",
+app/openai_auth.py:91:            reason=f"Provider '{provider}' does not support codex_auth.",
+app/openai_auth.py:96:        if supports_codex_auth and codex_auth.available:
+app/openai_auth.py:97:            return codex_auth
+app/openai_auth.py:102:        if supports_codex_auth:
+app/openai_auth.py:105:                "If VP_LLM_PROVIDER=openai and VP_CODEX_AUTH_FILE exists, the app will use Codex auth automatically."
+app/openai_auth.py:118:        if resolved.mode != "codex_auth" or not allow_refresh:
+app/openai_auth.py:121:            return self.refresh_codex_auth(force=False)
+app/openai_auth.py:124:    def refresh_codex_auth(self, *, force: bool = True) -> ResolvedOpenAIAuth:
+app/openai_auth.py:125:        if not self._llm_supports_codex_auth():
+app/openai_auth.py:126:            raise RuntimeError(f"Provider '{self._llm_provider()}' does not support codex_auth.")
+app/openai_auth.py:128:            resolved = self._resolve_codex_auth()
+app/openai_auth.py:136:            auth_file_path = resolved.auth_file_path or self.config.codex_auth_file
+app/openai_auth.py:180:            return self._resolve_codex_auth()
+app/openai_auth.py:223:        auth_json = self._read_auth_json(self.config.codex_auth_file)
+app/openai_auth.py:230:                source=f"file:{self.config.codex_auth_file}:{file_key}",
+app/openai_auth.py:233:                auth_file_path=self.config.codex_auth_file,
+app/openai_auth.py:244:    def _resolve_codex_auth(self) -> ResolvedOpenAIAuth:
+app/openai_auth.py:245:        auth_file_path = self.config.codex_auth_file
+app/openai_auth.py:249:                mode="codex_auth",
+app/openai_auth.py:269:            mode="codex_auth",
+app/openai_auth.py:285:        if resolved.mode != "codex_auth":
+evals/cases.json:1400:      "auth_mode": "codex_auth"
+evals/cases.json:2217:        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+evals/gate_cases.json:361:        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+packages/office_modules/office_agent_runtime.py:860:        if normalized_mode == "codex_auth":
+packages/office_modules/office_agent_runtime.py:861:            return self._auth_manager._resolve_codex_auth()
+packages/office_modules/office_agent_runtime.py:7104:        if auth.mode == "codex_auth":
+packages/office_modules/office_agent_runtime.py:7236:            if auth.mode == "codex_auth" or not self._is_405_error(exc):
+run.ps1:79:$codexHome = Get-EnvFirst @("VP_CODEX_HOME")
+run.ps1:83:$codexAuthFile = Get-EnvFirst @("VP_CODEX_AUTH_FILE")
+run.sh:35:CODEX_HOME_DIR="$(env_first VP_CODEX_HOME || printf '%s/.codex' "$HOME")"
+run.sh:36:CODEX_AUTH_FILE="$(env_first VP_CODEX_AUTH_FILE || printf '%s/auth.json' "$CODEX_HOME_DIR")"
+run.sh:53:has_codex_auth=false
+run.sh:54:supports_codex_auth=false
+run.sh:63:  supports_codex_auth=true
+run.sh:66:  has_codex_auth=true
+run.sh:70:  if [ "$supports_codex_auth" = true ] && [ "$has_codex_auth" = true ]; then
+run.sh:72:  elif [ "$supports_codex_auth" = true ]; then
+tests/test_vintage_programmer_runtime.py:329:                        "provider": "codex_auth",
+tests/test_vp_env_config.py:23:    assert config.llm_supports_codex_auth is False
+tests/test_vp_env_config.py:48:def test_openai_uses_codex_auth_automatically_when_auth_file_exists(monkeypatch, tmp_path) -> None:
+tests/test_vp_env_config.py:58:    monkeypatch.setenv("VP_CODEX_AUTH_FILE", str(auth_file))
+tests/test_vp_env_config.py:63:    assert resolved.mode == "codex_auth"

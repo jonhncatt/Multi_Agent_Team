@@ -595,7 +595,7 @@ Context compaction（上下文压缩）的目标是：
 
 不是。Tool Guard 只负责工具执行边界，不负责完整任务规划。
 
-### Q4. 为什么旧工具名 `read / search_file` 不再使用？
+### Q4. 为什么旧工具短别名不再使用？
 
 因为当前工具体系已经切到 canonical names（标准工具名），语义更明确，也便于 guard 和 UI 统一处理。
 

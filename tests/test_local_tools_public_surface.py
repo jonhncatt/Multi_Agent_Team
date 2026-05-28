@@ -66,6 +66,8 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "view_image",
         "list_sessions",
         "read_session_history",
+        "search_web",
+        "fetch_web",
         "read",
         "search_file",
         "search_file_multi",
@@ -389,6 +391,16 @@ def test_removed_legacy_public_tool_names_return_unknown_tool(tmp_path: Path) ->
     sample_path.write_text("demo\n", encoding="utf-8")
 
     for name, arguments in (
+        ("read_text_file", {"path": str(sample_path)}),
+        ("search_text_in_file", {"path": str(sample_path), "query": "demo"}),
+        ("multi_query_search", {"path": str(sample_path), "queries": ["demo"]}),
+        ("read_section_by_heading", {"path": str(sample_path), "heading": "demo"}),
+        ("download_web_file", {"url": "https://example.com"}),
+        ("view_image", {"path": str(sample_path)}),
+        ("list_sessions", {"max_sessions": 5}),
+        ("read_session_history", {"session_id": "demo"}),
+        ("search_web", {"query": "demo"}),
+        ("fetch_web", {"url": "https://example.com"}),
         ("read", {"path": str(sample_path)}),
         ("search_file", {"path": str(sample_path), "query": "demo"}),
         ("search_file_multi", {"path": str(sample_path), "queries": ["demo"]}),

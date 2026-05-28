@@ -83,10 +83,6 @@ REQUIRED_CORE_KEYS = (
     "activity.tool_title.search_contents_in_file_multi",
     "activity.tool_title.search_codebase",
     "activity.tool_title.exec_command",
-    "activity.tool_title.run_shell",
-    "activity.tool_title.write_skill",
-    "activity.tool_title.read_skill",
-    "activity.tool_title.list_skills",
     "activity.tool_title.apply_patch",
     "activity.tool_title.web_search",
     "activity.tool_title.web_fetch",
@@ -441,8 +437,6 @@ def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
     assert '"glob_file_search"' in script
     assert '"search_contents_in_file"' in script
     assert '"search_contents_in_file_multi"' in script
-    assert '"search_file"' not in script
-    assert '"search_file_multi"' not in script
 
 
 def test_main_cards_project_tool_traces_with_non_blank_fallbacks() -> None:

@@ -4,15 +4,15 @@ from typing import Any
 
 
 _TOOL_ALIASES = {
-    "read_file": {"read_file", "read_text_file"},
-    "list_dir": {"list_dir", "list_directory"},
+    "read_file": {"read_file"},
+    "list_dir": {"list_dir"},
     "glob_file_search": {"glob_file_search"},
-    "search_contents_in_file": {"search_contents_in_file", "search_text_in_file"},
-    "search_contents_in_file_multi": {"search_contents_in_file_multi", "multi_query_search"},
-    "read_section": {"read_section", "read_section_by_heading"},
-    "web_search": {"web_search", "search_web"},
-    "web_fetch": {"web_fetch", "fetch_web"},
-    "web_download": {"web_download", "download_web_file"},
+    "search_contents_in_file": {"search_contents_in_file"},
+    "search_contents_in_file_multi": {"search_contents_in_file_multi"},
+    "read_section": {"read_section"},
+    "web_search": {"web_search"},
+    "web_fetch": {"web_fetch"},
+    "web_download": {"web_download"},
 }
 
 
@@ -23,23 +23,17 @@ def _tool_name_is(name: str, canonical: str) -> bool:
 
 def reviewer_readonly_tool_names() -> list[str]:
     return [
-        "read_text_file",
         "read_file",
         "list_dir",
         "glob_file_search",
-        "search_text_in_file",
         "search_contents_in_file",
-        "multi_query_search",
         "search_contents_in_file_multi",
         "read_section",
-        "read_section_by_heading",
         "table_extract",
         "fact_check_file",
         "search_codebase",
         "web_search",
-        "search_web",
         "web_fetch",
-        "fetch_web",
         "image_inspect",
         "image_read",
         "sessions_list",
@@ -65,7 +59,7 @@ def normalize_reviewer_verdict(
     verdict = str(raw_verdict or "pass").strip().lower()
     partial_evidence_available = bool(attachment_context_available or worker_evidence_available)
     readonly_set = set(readonly_checks)
-    has_spec_search = bool(readonly_set & {"search_contents_in_file", "search_text_in_file"})
+    has_spec_search = bool(readonly_set & {"search_contents_in_file"})
     if verdict == "needs_attention":
         if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
             spec_lookup_request and not has_spec_search and not partial_evidence_available
@@ -130,12 +124,6 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         first = matches[0] if matches else {}
         page_hint = int(first.get("page_hint") or 0)
         return f"search_contents_in_file_multi queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
-
-    if name == "doc_index_build":
-        page_count = int(result.get("page_count") or 0)
-        heading_count = int(result.get("heading_count") or 0)
-        cached = bool(result.get("cached"))
-        return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
 
     if _tool_name_is(name, "read_section"):
         heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip() or "(not found)"

@@ -1,0 +1,14 @@
+.github/workflows/regression-ci.yml:7:      - "codex/**"
+NOTICE:3:- openai/codex (Apache-2.0): tool naming, collaboration-mode concepts, and patch-tool grammar alignment.
+NOTICE:4:- openclaw/openclaw (MIT): browser-tool fallback grouping and agentic runtime fallback ideas.
+NOTICE:8:- https://github.com/openai/codex
+NOTICE:9:- https://github.com/openclaw/openclaw
+RELEASING.md:5:1. Land release-candidate work on a `codex/*` branch.
+RELEASING.md:11:7. Start the next change from a fresh `codex/*` branch cut from updated `main`.
+RELEASING.md:62:git checkout -b codex/<next-topic>
+app/pricing.py:19:    "gpt-5-codex": _ModelPrice(input_per_1m=1.25, output_per_1m=10.00),
+app/pricing.py:20:    "gpt-5-codex-mini": _ModelPrice(input_per_1m=0.25, output_per_1m=2.00),
+app/pricing.py:28:    ("gpt-5.1-codex-mini", "gpt-5-codex-mini"),
+app/pricing.py:29:    ("gpt-5-codex-mini", "gpt-5-codex-mini"),
+app/pricing.py:30:    ("gpt-5.1-codex", "gpt-5-codex"),
+app/pricing.py:31:    ("gpt-5-codex", "gpt-5-codex"),
