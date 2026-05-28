@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.config import load_config
 from app.tool_metadata import TOOL_METADATA, get_tool_metadata, metadata_missing_names
+from app.vintage_programmer_runtime import _READ_ONLY_TOOL_NAMES
 from packages.office_modules.tools import get_tool_executor
 
 
@@ -62,3 +63,9 @@ def test_unknown_tool_metadata_uses_safe_fallback() -> None:
     assert meta["requires"]["shell"] is False
     assert meta["requires"]["network"] is False
     assert meta["requires"]["browser"] is False
+
+
+def test_read_only_tool_policy_only_exposes_metadata_read_only_tools() -> None:
+    for name in sorted(_READ_ONLY_TOOL_NAMES):
+        meta = get_tool_metadata(name)
+        assert meta["read_only"] is True, name
