@@ -262,86 +262,6 @@ needs_runtime_test_before_delete（删除前需要运行时验证）
 ### 目录级建议
 keep（保留）
 
-## 目录：app/bootstrap
-### 观察到的用途
-磁盘上仍存在的旧产品壳区域，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `app/bootstrap` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：app/business_modules
-### 观察到的用途
-磁盘上仍存在的旧产品壳区域，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `app/business_modules` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：app/kernel
-### 观察到的用途
-磁盘上仍存在的旧产品壳区域，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `app/kernel` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：app/llm
-### 观察到的用途
-磁盘上仍存在的旧产品壳区域，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `app/llm` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：app/modules
-### 观察到的用途
-磁盘上仍存在的旧产品壳区域，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `app/modules` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
 ## 目录：docs
 ### 观察到的用途
 架构、运维和可观测性文档。
@@ -527,38 +447,6 @@ needs_owner_confirmation（需要 owner 确认）
 ### 目录级建议
 needs_owner_confirmation（需要 owner 确认）
 
-## 目录：packages/kernel-robot
-### 观察到的用途
-已移除的旧产品壳目录；磁盘上只剩一个空目录。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `packages/kernel-robot` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：packages/role-agent-lab
-### 观察到的用途
-已移除的旧产品壳目录；磁盘上只剩一个空目录。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `packages/role-agent-lab` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
 ## 目录：tests
 ### 观察到的用途
 单测、集成测试、路由测试和回归测试。
@@ -620,118 +508,6 @@ needs_owner_confirmation（需要 owner 确认）
 ### 目录级建议
 keep（保留）
 
-## 目录：tests/kernel
-### 观察到的用途
-磁盘上仍存在的旧测试目录，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `tests/kernel` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：tests/migration
-### 观察到的用途
-磁盘上仍存在的旧测试目录，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `tests/migration` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：tests/operations
-### 观察到的用途
-磁盘上仍存在的旧测试目录，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `tests/operations` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：tests/replay
-### 观察到的用途
-磁盘上仍存在的旧测试目录，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `tests/replay` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：tests/swarm
-### 观察到的用途
-磁盘上仍存在的旧测试目录，但当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `tests/swarm` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：workspace
-### 观察到的用途
-本地可编辑的 workbench 工作区，主要用于 skills。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `workspace` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
-## 目录：workspace/skills
-### 观察到的用途
-本地 skill 草稿和实验目录；当前分支没有 tracked 文件。
-### 当前引用情况
-- Imports：0 处外部 import 命中
-- Runtime references：0 处运行时 / 配置引用
-- Test references：0 处测试引用
-- Documentation references：0 处文档 / README 引用
-- Dynamic loading risk：low（低）
-### 已审查文件
-| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
-|---|---:|---:|---|---|---|
-| `workspace/skills` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
-### 目录级建议
-needs_owner_confirmation（需要 owner 确认）
-
 ## 目录：scripts
 ### 观察到的用途
 仓库维护脚本和边界检查脚本。
@@ -748,9 +524,9 @@ needs_owner_confirmation（需要 owner 确认）
 ### 目录级建议
 keep（保留）
 
-## 目录：artifacts
+## 目录：.env.example
 ### 观察到的用途
-磁盘上的生成产物，如 eval 汇总和 trace 文件；未纳入 git 跟踪。
+当前分支下该目录没有 tracked 文件。
 ### 当前引用情况
 - Imports：0 处外部 import 命中
 - Runtime references：0 处运行时 / 配置引用
@@ -760,13 +536,13 @@ keep（保留）
 ### 已审查文件
 | 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
 |---|---:|---:|---|---|---|
-| `artifacts` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+| `.env.example` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
 ### 目录级建议
 needs_owner_confirmation（需要 owner 确认）
 
-## 目录：output
+## 目录：.gitignore
 ### 观察到的用途
-磁盘上的输出产物，如截图和本地导出内容；未纳入 git 跟踪。
+当前分支下该目录没有 tracked 文件。
 ### 当前引用情况
 - Imports：0 处外部 import 命中
 - Runtime references：0 处运行时 / 配置引用
@@ -776,7 +552,199 @@ needs_owner_confirmation（需要 owner 确认）
 ### 已审查文件
 | 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
 |---|---:|---:|---|---|---|
-| `output` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+| `.gitignore` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：LICENSE
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `LICENSE` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：NOTICE
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `NOTICE` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：README.en.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `README.en.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：README.ja.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `README.ja.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：README.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `README.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：README.windows.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `README.windows.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：README.zh-CN.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `README.zh-CN.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：RELEASING.md
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `RELEASING.md` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：requirements-dev.txt
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `requirements-dev.txt` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：requirements.txt
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `requirements.txt` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：run.ps1
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `run.ps1` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
+### 目录级建议
+needs_owner_confirmation（需要 owner 确认）
+
+## 目录：run.sh
+### 观察到的用途
+当前分支下该目录没有 tracked 文件。
+### 当前引用情况
+- Imports：0 处外部 import 命中
+- Runtime references：0 处运行时 / 配置引用
+- Test references：0 处测试引用
+- Documentation references：0 处文档 / README 引用
+- Dynamic loading risk：low（低）
+### 已审查文件
+| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |
+|---|---:|---:|---|---|---|
+| `run.sh` | 0 | 0 | low（低） | needs_owner_confirmation（需要 owner 确认） | 目录在磁盘上存在，但当前分支没有 tracked 文件 |
 ### 目录级建议
 needs_owner_confirmation（需要 owner 确认）
 

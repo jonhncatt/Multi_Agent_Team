@@ -1,19 +1,9 @@
 path,type,folder,static_refs,test_refs,doc_refs,dynamic_risk,classification,recommendation,evidence
 app/agents,dir,app/agents,40,0,0,medium,not_safe_to_delete,Do not delete the whole folder; only remove approved subfiles,Folder recommendation derived from 82 tracked files; dynamic risk medium.
 app/api,dir,app/api,1,0,0,low,probably_safe_but_needs_runtime_check,Run runtime smoke + pytest before folder cleanup,Folder recommendation derived from 3 tracked files; dynamic risk low.
-app/bootstrap,dir,app/bootstrap,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-app/business_modules,dir,app/business_modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-app/kernel,dir,app/kernel,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-app/llm,dir,app/llm,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-app/modules,dir,app/modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
 packages/agent-core,dir,packages/agent-core,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
 packages/office-modules,dir,packages/office-modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
 packages/runtime-core,dir,packages/runtime-core,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
-packages/kernel-robot,dir,packages/kernel-robot,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-packages/role-agent-lab,dir,packages/role-agent-lab,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-workspace/skills,dir,workspace/skills,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-artifacts,dir,artifacts,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
-output,dir,output,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
 app/agents/__init__.py,file,app/agents,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
 app/agents/agent_plugin.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
 app/agents/answer_bundle_support.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low

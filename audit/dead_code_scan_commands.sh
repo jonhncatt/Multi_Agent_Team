@@ -539,16 +539,12 @@ for rel in scan_tracked:
         "evidence": evidence_for(rel),
     }
 
-existing_top_dirs = sorted(
-    p.name
-    for p in REPO.iterdir()
-    if p.is_dir() and p.name not in {".git", ".venv", "__pycache__", ".pytest_cache", ".playwright-cli", "audit"}
-)
+existing_top_dirs = sorted({Path(rel).parts[0] for rel in scan_tracked if Path(rel).parts})
 sections: list[str] = []
 for folder in SECTION_ORDER:
     if folder in sections:
         continue
-    if (REPO / folder).exists() or any(rel.startswith(folder + "/") for rel in scan_tracked):
+    if any(rel.startswith(folder + "/") for rel in scan_tracked):
         sections.append(folder)
 for folder in existing_top_dirs:
     if folder not in sections:
@@ -726,7 +722,6 @@ folder_csv_allowlist = {
 }
 for folder in sections:
     files = tracked_under(folder)
-    exists = (REPO / folder).exists()
     folder_label = folder_recommendation(folder, files)
     if folder in folder_csv_allowlist and folder_label != "keep":
         folder_recommendation_text = {
@@ -745,10 +740,10 @@ for folder in sections:
             "static_refs": sum(len(runtime_refs.get(item, set()) | config_refs.get(item, set())) for item in files),
             "test_refs": sum(len(test_refs.get(item, set())) for item in files),
             "doc_refs": sum(len(doc_refs.get(item, set())) for item in files),
-            "dynamic_risk": folder_dynamic_risk(folder, files) if files else "low",
-            "classification": "needs_owner_confirmation" if not files else ("not_safe_to_delete" if folder == "app/agents" else ("probably_safe_but_needs_runtime_check" if folder_label == "needs_runtime_test_before_delete" else ("safe_to_delete_after_approval" if folder_label == "delete_after_approval" else "needs_owner_confirmation"))),
+            "dynamic_risk": folder_dynamic_risk(folder, files),
+            "classification": "not_safe_to_delete" if folder == "app/agents" else ("probably_safe_but_needs_runtime_check" if folder_label == "needs_runtime_test_before_delete" else ("safe_to_delete_after_approval" if folder_label == "delete_after_approval" else "needs_owner_confirmation")),
             "recommendation": folder_recommendation_text,
-            "evidence": "Folder exists on disk but has no tracked files in this branch." if not files else f"Folder recommendation derived from {len(files)} tracked files; dynamic risk {folder_dynamic_risk(folder, files)}.",
+            "evidence": f"Folder recommendation derived from {len(files)} tracked files; dynamic risk {folder_dynamic_risk(folder, files)}.",
         })
 
 for rel, info in sorted(file_info.items()):
@@ -810,50 +805,35 @@ audit_lines: list[str] = [
 ]
 
 for folder in sections:
-    exists = (REPO / folder).exists()
     recursive_files = tracked_under(folder)
     files = section_files(folder)
     audit_lines.append(f"## 目录：{folder}")
     audit_lines.append("### 观察到的用途")
     audit_lines.append(summarize_folder(folder, recursive_files))
     audit_lines.append("### 当前引用情况")
-    if not exists and not recursive_files:
-        audit_lines.append("- Imports：不适用")
-        audit_lines.append("- Runtime references：不适用")
-        audit_lines.append("- Test references：不适用")
-        audit_lines.append("- Documentation references：不适用")
-        audit_lines.append("- Dynamic loading risk：不适用")
-    else:
-        runtime_count = len({src for rel in recursive_files for src in runtime_refs.get(rel, set()) | config_refs.get(rel, set())})
-        test_count = len({src for rel in recursive_files for src in test_refs.get(rel, set())})
-        doc_count = len({src for rel in recursive_files for src in doc_refs.get(rel, set())})
-        import_count = len({src for rel in recursive_files for src in import_referrers.get(rel, set())})
-        audit_lines.append(f"- Imports：{import_count} 处外部 import 命中")
-        audit_lines.append(f"- Runtime references：{runtime_count} 处运行时 / 配置引用")
-        audit_lines.append(f"- Test references：{test_count} 处测试引用")
-        audit_lines.append(f"- Documentation references：{doc_count} 处文档 / README 引用")
-        audit_lines.append(f"- Dynamic loading risk：{risk_display(folder_dynamic_risk(folder, recursive_files) if recursive_files else 'low')}")
+    runtime_count = len({src for rel in recursive_files for src in runtime_refs.get(rel, set()) | config_refs.get(rel, set())})
+    test_count = len({src for rel in recursive_files for src in test_refs.get(rel, set())})
+    doc_count = len({src for rel in recursive_files for src in doc_refs.get(rel, set())})
+    import_count = len({src for rel in recursive_files for src in import_referrers.get(rel, set())})
+    audit_lines.append(f"- Imports：{import_count} 处外部 import 命中")
+    audit_lines.append(f"- Runtime references：{runtime_count} 处运行时 / 配置引用")
+    audit_lines.append(f"- Test references：{test_count} 处测试引用")
+    audit_lines.append(f"- Documentation references：{doc_count} 处文档 / README 引用")
+    audit_lines.append(f"- Dynamic loading risk：{risk_display(folder_dynamic_risk(folder, recursive_files))}")
     audit_lines.append("### 已审查文件")
     audit_lines.append("| 文件 | 静态引用数 | 测试引用数 | 动态使用风险 | 分类 | 建议 |")
     audit_lines.append("|---|---:|---:|---|---|---|")
-    if not exists and not recursive_files:
-        audit_lines.append(f"| `{folder}` | 0 | 0 | 不适用 | {classification_display('needs_owner_confirmation')} | 当前分支中未找到该目录 |")
-    elif not files:
+    if not files:
         audit_lines.append(f"| `{folder}` | 0 | 0 | {risk_display('low')} | {classification_display('needs_owner_confirmation')} | 目录在磁盘上存在，但当前分支没有 tracked 文件 |")
     else:
         for rel in files:
             audit_lines.append(render_file_row(rel))
     audit_lines.append("### 目录级建议")
     recommendation = folder_recommendation(folder, recursive_files)
-    if not exists and not recursive_files:
-        audit_lines.append(folder_recommendation_display("needs_owner_confirmation"))
+    audit_lines.append(folder_recommendation_display(recommendation))
+    if recursive_files and len(files) != len(recursive_files):
         audit_lines.append("")
-        audit_lines.append("说明：当前分支中未找到该目录。")
-    else:
-        audit_lines.append(folder_recommendation_display(recommendation))
-        if recursive_files and len(files) != len(recursive_files):
-            audit_lines.append("")
-            audit_lines.append(f"说明：本节只列出 `{folder}` 目录下直接审查的 {len(files)} 个文件；子目录中的 tracked 文件会在各自章节单独覆盖。")
+        audit_lines.append(f"说明：本节只列出 `{folder}` 目录下直接审查的 {len(files)} 个文件；子目录中的 tracked 文件会在各自章节单独覆盖。")
     audit_lines.append("")
 
 app_agents_files = tracked_under("app/agents")

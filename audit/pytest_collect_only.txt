@@ -353,4 +353,4 @@ tests/test_vp_env_config.py::test_resolve_python_command_prefers_python_then_pyt
 tests/test_vp_env_config.py::test_resolve_python_command_uses_python3_when_python_missing
 tests/test_vp_env_config.py::test_resolve_python_command_falls_back_to_py_when_needed
 
-354 tests collected in 3.03s
+354 tests collected in 2.80s
