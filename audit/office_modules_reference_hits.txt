@@ -1,0 +1,93 @@
+app/agents/answer_bundle_support.py:1:from packages.office_modules.answer_bundle_support import *  # noqa: F401,F403
+app/agents/citation_support.py:1:from packages.office_modules.citation_support import *  # noqa: F401,F403
+app/agents/conflict_detector_role.py:1:from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+app/agents/planner_role.py:1:from packages.office_modules.planner_role import run_planner_role
+app/agents/planning_support.py:1:from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+app/agents/review_support.py:1:from packages.office_modules.review_support import *  # noqa: F401,F403
+app/agents/reviewer_helpers.py:1:from packages.office_modules.reviewer_helpers import *  # noqa: F401,F403
+app/agents/reviewer_role.py:1:from packages.office_modules.reviewer_role import run_reviewer_role
+app/agents/revision_role.py:1:from packages.office_modules.revision_role import run_revision_role
+app/agents/role_catalog.py:1:from packages.office_modules.role_catalog import *  # noqa: F401,F403
+app/agents/role_contracts.py:5:from packages.office_modules.runtime_profiles import RuntimeProfile
+app/agents/role_debug_support.py:7:from packages.office_modules.runtime_profiles import (
+app/agents/role_helpers.py:1:from packages.office_modules.role_helpers import *  # noqa: F401,F403
+app/agents/role_registry.py:2:from packages.office_modules.roles import build_office_role_registry as build_default_role_registry
+app/agents/role_smoke.py:7:from packages.office_modules.planner_role import run_planner_role
+app/agents/role_smoke.py:8:from packages.office_modules.reviewer_role import run_reviewer_role
+app/agents/role_smoke.py:9:from packages.office_modules.revision_role import run_revision_role
+app/agents/role_smoke.py:11:from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE, runtime_profile_spec
+app/agents/role_smoke.py:12:from packages.office_modules.structurer_role import run_structurer_role
+app/agents/runtime_profiles.py:1:from packages.office_modules.runtime_profiles import *  # noqa: F401,F403
+app/agents/specialist_role.py:1:from packages.office_modules.specialist_role import (
+app/agents/structurer_role.py:1:from packages.office_modules.structurer_role import run_structurer_role
+app/config.py:752:            default="packages.office_modules",
+app/config.py:754:        or "packages.office_modules"
+app/policy_router.py:7:from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+app/policy_router.py:10:from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
+app/vintage_programmer_runtime.py:69:from packages.office_modules.intent_support import has_image_attachments as has_image_attachments_helper
+app/vintage_programmer_runtime.py:70:from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+docs/internal_design_manual.md:665:- Residual direct `.model_dump()` calls in `packages/office_modules/office_agent_runtime.py` are replaced with `dump_model(...)`.
+docs/internal_design_manual.md:981:- `packages/office_modules/office_agent_runtime.py`
+docs/internal_design_manual.md:982:- `packages/office_modules/review_support.py`
+evals/cases.json:2845:          "office_modules"
+evals/cases.json:2867:          "packages.office_modules"
+evals/gate_cases.json:441:          "office_modules"
+evals/gate_cases.json:463:          "packages.office_modules"
+packages/README.md:8:- `packages.office_modules`
+packages/office-modules/README.md:6:- `packages/office_modules`
+packages/office-modules/README.md:9:- Python imports must use `packages.office_modules`
+packages/office_modules/__init__.py:65:        module_id=str(manifest.get("module_id") or "office_modules"),
+packages/office_modules/agent_module.py:5:from packages.office_modules.execution_engine import OfficeExecutionEngine
+packages/office_modules/agent_module.py:6:from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+packages/office_modules/agent_module.py:7:from packages.office_modules.execution_runtime import (
+packages/office_modules/conflict_detector_role.py:6:from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/conflict_detector_role.py:7:from packages.office_modules.review_support import summarize_tool_events_for_review, summarize_validation_context
+packages/office_modules/execution_engine.py:6:from packages.office_modules.execution_runtime import (
+packages/office_modules/intent_support.py:13:from packages.office_modules.router_hints import (
+packages/office_modules/legacy_runtime_support.py:94:        ["packages.office_modules", "packages.office_addons"],
+packages/office_modules/manifest.json:2:  "module_id": "office_modules",
+packages/office_modules/module_wrapper_surface.py:5:from packages.office_modules.execution_runtime import adapt_office_legacy_helper_surface
+packages/office_modules/office_agent_runtime.py:18:from packages.office_modules.reviewer_helpers import (
+packages/office_modules/office_agent_runtime.py:23:from packages.office_modules.answer_bundle_support import (
+packages/office_modules/office_agent_runtime.py:33:from packages.office_modules.citation_support import (
+packages/office_modules/office_agent_runtime.py:39:from packages.office_modules.planning_support import (
+packages/office_modules/office_agent_runtime.py:43:from packages.office_modules.planner_role import run_planner_role as run_planner_role_helper
+packages/office_modules/office_agent_runtime.py:44:from packages.office_modules.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
+packages/office_modules/office_agent_runtime.py:45:from packages.office_modules.review_support import (
+packages/office_modules/office_agent_runtime.py:55:from packages.office_modules.reviewer_role import run_reviewer_role as run_reviewer_role_helper
+packages/office_modules/office_agent_runtime.py:56:from packages.office_modules.revision_role import run_revision_role as run_revision_role_helper
+packages/office_modules/office_agent_runtime.py:57:from packages.office_modules.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
+packages/office_modules/office_agent_runtime.py:58:from packages.office_modules.role_helpers import (
+packages/office_modules/office_agent_runtime.py:69:from packages.office_modules.runtime_profiles import (
+packages/office_modules/office_agent_runtime.py:73:from packages.office_modules.legacy_runtime_support import (
+packages/office_modules/office_agent_runtime.py:88:from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
+packages/office_modules/office_agent_runtime.py:89:from packages.office_modules.specialist_role import (
+packages/office_modules/office_agent_runtime.py:100:from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+packages/office_modules/office_agent_runtime.py:116:from packages.office_modules.request_analysis import (
+packages/office_modules/office_agent_runtime.py:124:from packages.office_modules.router_hints import (
+packages/office_modules/office_agent_runtime.py:141:from packages.office_modules.intent_support import (
+packages/office_modules/planner_role.py:6:from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+packages/office_modules/reviewer_role.py:6:from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/reviewer_role.py:7:from packages.office_modules.review_support import (
+packages/office_modules/revision_role.py:6:from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/revision_role.py:7:from packages.office_modules.review_support import (
+packages/office_modules/role_helpers.py:5:from packages.office_modules.role_catalog import ROLE_KINDS
+packages/office_modules/roles.py:3:from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+packages/office_modules/roles.py:4:from packages.office_modules.planner_role import run_planner_role
+packages/office_modules/roles.py:5:from packages.office_modules.reviewer_role import run_reviewer_role
+packages/office_modules/roles.py:6:from packages.office_modules.revision_role import run_revision_role
+packages/office_modules/roles.py:7:from packages.office_modules.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
+packages/office_modules/roles.py:8:from packages.office_modules.specialist_role import run_specialist_with_context
+packages/office_modules/roles.py:9:from packages.office_modules.structurer_role import run_structurer_role
+packages/office_modules/specialist_role.py:6:from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/specialist_role.py:7:from packages.office_modules.role_catalog import SPECIALIST_LABELS
+packages/office_modules/specialist_role.py:8:from packages.office_modules.role_helpers import make_role_result, make_role_spec
+packages/office_modules/structurer_role.py:6:from packages.office_modules.answer_bundle_support import (
+packages/runtime_core/legacy_host_support.py:150:    from packages.office_modules.execution_runtime import normalize_legacy_run_chat_result
+tests/modules/test_office_runtime_contract.py:5:from packages.office_modules.execution_runtime import (
+tests/modules/test_office_runtime_contract.py:10:from packages.office_modules.execution_engine import OfficeExecutionEngine
+tests/modules/test_office_runtime_contract.py:11:from packages.office_modules.office_agent_runtime import OfficeAgent, classify_office_llm_exception
+tests/modules/test_request_analysis_guards.py:5:from packages.office_modules.intent_support import request_likely_requires_tools
+tests/modules/test_request_analysis_guards.py:6:from packages.office_modules.request_analysis import looks_like_permission_gate_text
+tests/modules/test_tool_registration.py:5:from packages.office_modules import tools as tools_module
+tests/test_safe_serialization_static.py:7:    path = Path("packages/office_modules/office_agent_runtime.py")

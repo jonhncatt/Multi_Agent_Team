@@ -1,0 +1,17 @@
+packages/README.md:9:- `packages.runtime_core`
+packages/agent_core/orchestration.py:8:from packages.runtime_core.capability_loader import (
+packages/agent_core/orchestration.py:16:from packages.runtime_core.tool_execution_bus import ToolExecutionBus
+packages/office_addons/__init__.py:8:from packages.runtime_core.capability_loader import CapabilityBundle
+packages/office_modules/__init__.py:7:from packages.runtime_core.capability_loader import CapabilityBundle
+packages/office_modules/agent_module.py:12:from packages.runtime_core.capability_loader import AgentModule
+packages/office_modules/execution_runtime.py:12:from packages.runtime_core.legacy_host_support import kernel_host_snapshot, read_kernel_host_getattr_metrics
+packages/office_modules/memory_module.py:3:from packages.runtime_core.capability_loader import MemoryModule
+packages/office_modules/office_agent_runtime.py:140:    from packages.runtime_core.blackboard import Blackboard
+packages/office_modules/output_module.py:3:from packages.runtime_core.capability_loader import OutputModule
+packages/office_modules/tools.py:5:from packages.runtime_core.capability_loader import ToolModule
+packages/runtime-core/README.md:6:- `packages/runtime_core`
+packages/runtime-core/README.md:9:- Python imports must use `packages.runtime_core`
+packages/runtime_core/legacy_host_support.py:9:from packages.runtime_core.blackboard import Blackboard
+packages/runtime_core/tool_execution_bus.py:7:from packages.runtime_core.capability_loader import ToolModule
+tests/test_tool_execution_bus.py:3:from packages.runtime_core.capability_loader import ToolModule
+tests/test_tool_execution_bus.py:4:from packages.runtime_core.tool_execution_bus import ToolExecutionBus

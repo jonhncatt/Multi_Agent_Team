@@ -1,0 +1,492 @@
+README.en.md:55:The default permission profile is `Code`: read the current project and imported files, write inside the current project, run safe commands inside the current project, and keep network access off by default. `Chat` is read-only analysis with no file writes or shell commands. `Full Dev` can read explicitly configured extra roots and can enable network according to global config, but it is still bounded by path checks, the command allowlist, and dangerous-command blocking.
+README.ja.md:55:既定の permission profile は `Code` です。現在のプロジェクトと imported files を読み取り、現在のプロジェクト内に書き込み、現在のプロジェクト内で安全なコマンドを実行できます。network は既定で off です。`Chat` は読み取り専用で、ファイル書き込みと shell 実行は無効です。`Full Dev` は明示設定された extra roots を読み取り、global config に従って network を有効化できますが、path boundary、command allowlist、危険コマンドブロックは維持されます。
+agents/vintage_programmer/agent.md:15:  - glob_file_search
+agents/vintage_programmer/locales/en/agent.md:15:  - glob_file_search
+agents/vintage_programmer/locales/en/tools.md:10:- File discovery: use `list_dir` to inspect a known directory and `glob_file_search` to find files by path or filename pattern.
+agents/vintage_programmer/locales/ja-JP/agent.md:15:  - glob_file_search
+agents/vintage_programmer/locales/ja-JP/tools.md:10:- ファイル探索: 既知ディレクトリの構造確認は `list_dir`、パス名やファイル名パターンでの探索は `glob_file_search` を使う。
+agents/vintage_programmer/tools.md:10:- 文件发现：已知目录下看结构用 `list_dir`；按路径或文件名模式找文件用 `glob_file_search`。
+app/action_validator.py:37:    "glob_file_search": ("path",),
+app/action_validator.py:75:    "glob_file_search": ("pattern", "path"),
+app/action_validator.py:76:    "search_codebase": ("query", "file_glob", "root"),
+app/action_validator.py:87:    "*** is a UI redaction placeholder, not a real file name, path, glob pattern, function name, or search query. "
+app/action_validator.py:88:    "Use a concrete relative path or inspect the directory again with list_dir/glob_file_search using a narrower pattern."
+app/attachment_argument_rewriter.py:157:    elif tool_name in {"list_dir", "glob_file_search", "search_codebase"} and "path" in normalized:
+app/config.py:344:    active_manifest_path: Path
+app/config.py:345:    shadow_manifest_path: Path
+app/config.py:526:    include_global_model_keys = normalized_provider == _normalize_llm_provider(active_provider)
+app/config.py:529:    if include_global_model_keys:
+app/config.py:770:    active_manifest_path = Path(
+app/config.py:773:            default=str(runtime_dir / "active_manifest.json"),
+app/config.py:775:        or str(runtime_dir / "active_manifest.json")
+app/config.py:777:    shadow_manifest_path = Path(
+app/config.py:780:            default=str(runtime_dir / "shadow_manifest.json"),
+app/config.py:782:        or str(runtime_dir / "shadow_manifest.json")
+app/config.py:1185:        active_manifest_path=active_manifest_path,
+app/config.py:1186:        shadow_manifest_path=shadow_manifest_path,
+app/contracts/__init__.py:10:from app.contracts.manifest import CompatibilityLevel, ModuleKind, ModuleManifest
+app/contracts/errors.py:9:    """Raised when manifest compatibility check fails."""
+app/contracts/module.py:6:from app.contracts.manifest import ModuleManifest
+app/contracts/module.py:14:    manifest: ModuleManifest
+app/evolution.py:338:            for module_name, deltas in (event.get("modules") or {}).items():
+app/evolution.py:339:                bucket = profile["module_affinity"].setdefault(str(module_name), {})
+app/evolution.py:359:            files = sorted(self.evolution_logs_dir.glob("*.json"), reverse=True)
+app/evolution.py:371:        for module_name in ["router", "explainer", "finalizer"]:
+app/evolution.py:372:            module_snapshot[module_name] = _top_items(module_affinity.get(module_name) or {}, limit=limit_signals)
+app/i18n.py:144:        "runtime.progress.new_glob_matches": "查找 {target} 时发现了 {count} 个新文件",
+app/i18n.py:283:        "runtime.progress.new_glob_matches": "{target} の探索で新しいファイルを {count} 件見つけました",
+app/i18n.py:422:        "runtime.progress.new_glob_matches": "Found {count} new file matches for {target}",
+app/local_tools.py:7:import importlib
+app/local_tools.py:106:def _is_broad_glob_pattern(pattern: str) -> bool:
+app/local_tools.py:310:            meta_files = sorted(meta_dir.glob("*.json"), key=lambda m: m.stat().st_mtime, reverse=True)[:500]
+app/local_tools.py:332:            config.uploads_dir.glob(f"*__{basename}"),
+app/local_tools.py:1309:            agent_dir=config.workspace_root / "agents" / "vintage_programmer",
+app/local_tools.py:1451:        rapidocr_spec = importlib.util.find_spec("rapidocr_onnxruntime")
+app/local_tools.py:1454:        onnx_spec = importlib.util.find_spec("onnxruntime")
+app/local_tools.py:1551:        rapidocr_module = importlib.import_module("rapidocr_onnxruntime")
+app/local_tools.py:2124:                "name": "glob_file_search",
+app/local_tools.py:2125:                "description": "Find files by glob pattern relative to the workspace or a given directory root.",
+app/local_tools.py:2234:                        "file_glob": {"type": "string", "default": ""},
+app/local_tools.py:2562:        if name == "glob_file_search":
+app/local_tools.py:2563:            result = self.glob_file_search(**arguments)
+app/local_tools.py:3000:    def glob_file_search(
+app/local_tools.py:3017:            all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
+app/local_tools.py:3018:            if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
+app/local_tools.py:3021:                    "tool_name": "glob_file_search",
+app/local_tools.py:3023:                        "kind": "broad_glob_on_large_directory",
+app/local_tools.py:3024:                        "message": "The glob pattern is too broad for this directory. Use list_dir to inspect subdirectories or use a narrower filename pattern.",
+app/local_tools.py:3036:                        "Use a narrower glob such as '*runner*', '*.py', or '*target_name*'.",
+app/local_tools.py:3039:                    "summary": "glob pattern too broad for large directory",
+app/local_tools.py:3047:                "tool_name": "glob_file_search",
+app/local_tools.py:3061:            return {"ok": False, "error": f"glob_file_search failed: {exc}"}
+app/local_tools.py:3560:                self.config.sessions_dir.glob("*.json"),
+app/local_tools.py:4455:        file_glob: str = "",
+app/local_tools.py:4480:                if file_glob.strip():
+app/local_tools.py:4481:                    argv_core.extend(["-g", file_glob.strip()])
+app/local_tools.py:4562:                for file_path in real_root.rglob("*"):
+app/local_tools.py:4565:                    if file_glob.strip():
+app/local_tools.py:4567:                        if not fnmatch.fnmatch(rel, file_glob.strip()):
+app/local_tools.py:4629:                    file_candidates = [item for item in real_root.rglob("*") if item.is_file()]
+app/local_tools.py:4638:                    if file_glob.strip() and not fnmatch.fnmatch(rel, file_glob.strip()):
+app/main.py:110:    agent_dir=AGENT_DIR,
+app/main.py:114:    agent_dir=AGENT_DIR,
+app/main.py:188:    - bounded global concurrency across sessions
+app/main.py:192:        self._global_sem = threading.BoundedSemaphore(max(1, int(max_concurrent_runs)))
+app/main.py:210:        self._global_sem.acquire()
+app/main.py:212:        return _AgentRunQueueTicket(self._global_sem, session_lock, wait_ms)
+app/main.py:218:        global_sem: threading.BoundedSemaphore,
+app/main.py:222:        self._global_sem = global_sem
+app/main.py:232:            self._global_sem.release()
+app/main.py:420:                agent_dir=AGENT_DIR,
+app/main.py:1713:            global_token_totals=TokenTotals(),
+app/main.py:2432:        global_totals_raw = stats_snapshot.get("totals", {})
+app/main.py:2439:            global_token_totals=dict(global_totals_raw),
+app/main.py:2555:            global_token_totals=TokenTotals(**global_totals_raw),
+app/models.py:279:    global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
+app/runtime_boundary.py:119:        return "global_disabled"
+app/static/app.js:1198:    normalizedArguments.glob,
+app/static/app.js:1211:    rawArguments.glob,
+app/static/app.js:1222:    rawCallArguments.glob,
+app/static/app.js:1252:  const globTools = new Set(["glob_file_search"]);
+app/static/app.js:1258:  if (globTools.has(toolName)) return translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
+app/static/app.js:1701:  const searchCount = allToolNames.filter((name) => /search|glob|grep|rg|web/i.test(name)).length;
+app/static/app.js:4478:        global_token_totals: latestGlobalTokenTotals,
+app/static/app.js:4562:              latestGlobalTokenTotals = payload.global_token_totals && typeof payload.global_token_totals === "object"
+app/static/app.js:4563:                ? payload.global_token_totals
+app/static/locales.js:173:      "context_meter.network.global_disabled": "全局开关已关闭",
+app/static/locales.js:265:      "activity.tool_title.glob_file_search": "查找文件",
+app/static/locales.js:286:      "activity.progress.glob_file_search": "查找文件 {target}",
+app/static/locales.js:601:      "context_meter.network.global_disabled": "グローバル設定で無効",
+app/static/locales.js:693:      "activity.tool_title.glob_file_search": "ファイル検索",
+app/static/locales.js:714:      "activity.progress.glob_file_search": "{target} に一致するファイルを探す",
+app/static/locales.js:1029:      "context_meter.network.global_disabled": "Disabled by global setting",
+app/static/locales.js:1121:      "activity.tool_title.glob_file_search": "Find files",
+app/static/locales.js:1142:      "activity.progress.glob_file_search": "Find files matching {target}",
+app/static/vendor/marked.umd.js:12:(function (global, factory) {
+app/static/vendor/marked.umd.js:15:    (global = typeof globalThis !== 'undefined' ? globalThis : global || self, factory(global.marked = {}));
+app/static/vendor/purify.min.js:2:!function(e,t){"object"==typeof exports&&"undefined"!=typeof module?module.exports=t():"function"==typeof define&&define.amd?define(t):(e="undefined"!=typeof globalThis?globalThis:e||self).DOMPurify=t()}(this,(function(){"use strict";const{entries:e,setPrototypeOf:t,isFrozen:n,getPrototypeOf:o,getOwnPropertyDescriptor:r}=Object;let{freeze:i,seal:a,create:l}=Object,{apply:c,construct:s}="undefined"!=typeof Reflect&&Reflect;i||(i=function(e){return e}),a||(a=function(e){return e}),c||(c=function(e,t,n){return e.apply(t,n)}),s||(s=function(e,t){return new e(...t)});const u=b(Array.prototype.forEach),m=b(Array.prototype.pop),p=b(Array.prototype.push),f=b(String.prototype.toLowerCase),d=b(String.prototype.toString),h=b(String.prototype.match),g=b(String.prototype.replace),T=b(String.prototype.indexOf),y=b(String.prototype.trim),E=b(Object.prototype.hasOwnProperty),_=b(RegExp.prototype.test),A=(N=TypeError,function(){for(var e=arguments.length,t=new Array(e),n=0;n<e;n++)t[n]=arguments[n];return s(N,t)});var N;function b(e){return function(t){for(var n=arguments.length,o=new Array(n>1?n-1:0),r=1;r<n;r++)o[r-1]=arguments[r];return c(e,t,o)}}function S(e,o){let r=arguments.length>2&&void 0!==arguments[2]?arguments[2]:f;t&&t(e,null);let i=o.length;for(;i--;){let t=o[i];if("string"==typeof t){const e=r(t);e!==t&&(n(o)||(o[i]=e),t=e)}e[t]=!0}return e}function R(e){for(let t=0;t<e.length;t++){E(e,t)||(e[t]=null)}return e}function w(t){const n=l(null);for(const[o,r]of e(t)){E(t,o)&&(Array.isArray(r)?n[o]=R(r):r&&"object"==typeof r&&r.constructor===Object?n[o]=w(r):n[o]=r)}return n}function C(e,t){for(;null!==e;){const n=r(e,t);if(n){if(n.get)return b(n.get);if("function"==typeof n.value)return b(n.value)}e=o(e)}return function(){return null}}const L=i(["a","abbr","acronym","address","area","article","aside","audio","b","bdi","bdo","big","blink","blockquote","body","br","button","canvas","caption","center","cite","code","col","colgroup","content","data","datalist","dd","decorator","del","details","dfn","dialog","dir","div","dl","dt","element","em","fieldset","figcaption","figure","font","footer","form","h1","h2","h3","h4","h5","h6","head","header","hgroup","hr","html","i","img","input","ins","kbd","label","legend","li","main","map","mark","marquee","menu","menuitem","meter","nav","nobr","ol","optgroup","option","output","p","picture","pre","progress","q","rp","rt","ruby","s","samp","section","select","shadow","small","source","spacer","span","strike","strong","style","sub","summary","sup","table","tbody","td","template","textarea","tfoot","th","thead","time","tr","track","tt","u","ul","var","video","wbr"]),D=i(["svg","a","altglyph","altglyphdef","altglyphitem","animatecolor","animatemotion","animatetransform","circle","clippath","defs","desc","ellipse","filter","font","g","glyph","glyphref","hkern","image","line","lineargradient","marker","mask","metadata","mpath","path","pattern","polygon","polyline","radialgradient","rect","stop","style","switch","symbol","text","textpath","title","tref","tspan","view","vkern"]),v=i(["feBlend","feColorMatrix","feComponentTransfer","feComposite","feConvolveMatrix","feDiffuseLighting","feDisplacementMap","feDistantLight","feDropShadow","feFlood","feFuncA","feFuncB","feFuncG","feFuncR","feGaussianBlur","feImage","feMerge","feMergeNode","feMorphology","feOffset","fePointLight","feSpecularLighting","feSpotLight","feTile","feTurbulence"]),O=i(["animate","color-profile","cursor","discard","font-face","font-face-format","font-face-name","font-face-src","font-face-uri","foreignobject","hatch","hatchpath","mesh","meshgradient","meshpatch","meshrow","missing-glyph","script","set","solidcolor","unknown","use"]),x=i(["math","menclose","merror","mfenced","mfrac","mglyph","mi","mlabeledtr","mmultiscripts","mn","mo","mover","mpadded","mphantom","mroot","mrow","ms","mspace","msqrt","mstyle","msub","msup","msubsup","mtable","mtd","mtext","mtr","munder","munderover","mprescripts"]),k=i(["maction","maligngroup","malignmark","mlongdiv","mscarries","mscarry","msgroup","mstack","msline","msrow","semantics","annotation","annotation-xml","mprescripts","none"]),M=i(["#text"]),I=i(["accept","action","align","alt","autocapitalize","autocomplete","autopictureinpicture","autoplay","background","bgcolor","border","capture","cellpadding","cellspacing","checked","cite","class","clear","color","cols","colspan","controls","controlslist","coords","crossorigin","datetime","decoding","default","dir","disabled","disablepictureinpicture","disableremoteplayback","download","draggable","enctype","enterkeyhint","face","for","headers","height","hidden","high","href","hreflang","id","inputmode","integrity","ismap","kind","label","lang","list","loading","loop","low","max","maxlength","media","method","min","minlength","multiple","muted","name","nonce","noshade","novalidate","nowrap","open","optimum","pattern","placeholder","playsinline","popover","popovertarget","popovertargetaction","poster","preload","pubdate","radiogroup","readonly","rel","required","rev","reversed","role","rows","rowspan","spellcheck","scope","selected","shape","size","sizes","span","srclang","start","src","srcset","step","style","summary","tabindex","title","translate","type","usemap","valign","value","width","wrap","xmlns","slot"]),U=i(["accent-height","accumulate","additive","alignment-baseline","ascent","attributename","attributetype","azimuth","basefrequency","baseline-shift","begin","bias","by","class","clip","clippathunits","clip-path","clip-rule","color","color-interpolation","color-interpolation-filters","color-profile","color-rendering","cx","cy","d","dx","dy","diffuseconstant","direction","display","divisor","dur","edgemode","elevation","end","fill","fill-opacity","fill-rule","filter","filterunits","flood-color","flood-opacity","font-family","font-size","font-size-adjust","font-stretch","font-style","font-variant","font-weight","fx","fy","g1","g2","glyph-name","glyphref","gradientunits","gradienttransform","height","href","id","image-rendering","in","in2","k","k1","k2","k3","k4","kerning","keypoints","keysplines","keytimes","lang","lengthadjust","letter-spacing","kernelmatrix","kernelunitlength","lighting-color","local","marker-end","marker-mid","marker-start","markerheight","markerunits","markerwidth","maskcontentunits","maskunits","max","mask","media","method","mode","min","name","numoctaves","offset","operator","opacity","order","orient","orientation","origin","overflow","paint-order","path","pathlength","patterncontentunits","patterntransform","patternunits","points","preservealpha","preserveaspectratio","primitiveunits","r","rx","ry","radius","refx","refy","repeatcount","repeatdur","restart","result","rotate","scale","seed","shape-rendering","specularconstant","specularexponent","spreadmethod","startoffset","stddeviation","stitchtiles","stop-color","stop-opacity","stroke-dasharray","stroke-dashoffset","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-opacity","stroke","stroke-width","style","surfacescale","systemlanguage","tabindex","targetx","targety","transform","transform-origin","text-anchor","text-decoration","text-rendering","textlength","type","u1","u2","unicode","values","viewbox","visibility","version","vert-adv-y","vert-origin-x","vert-origin-y","width","word-spacing","wrap","writing-mode","xchannelselector","ychannelselector","x","x1","x2","xmlns","y","y1","y2","z","zoomandpan"]),P=i(["accent","accentunder","align","bevelled","close","columnsalign","columnlines","columnspan","denomalign","depth","dir","display","displaystyle","encoding","fence","frame","height","href","id","largeop","length","linethickness","lspace","lquote","mathbackground","mathcolor","mathsize","mathvariant","maxsize","minsize","movablelimits","notation","numalign","open","rowalign","rowlines","rowspacing","rowspan","rspace","rquote","scriptlevel","scriptminsize","scriptsizemultiplier","selection","separator","separators","stretchy","subscriptshift","supscriptshift","symmetric","voffset","width","xmlns"]),F=i(["xlink:href","xml:id","xlink:title","xml:space","xmlns:xlink"]),H=a(/\{\{[\w\W]*|[\w\W]*\}\}/gm),z=a(/<%[\w\W]*|[\w\W]*%>/gm),B=a(/\${[\w\W]*}/gm),W=a(/^data-[\-\w.\u00B7-\uFFFF]/),G=a(/^aria-[\-\w]+$/),Y=a(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i),j=a(/^(?:\w+script|data):/i),X=a(/[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g),q=a(/^html$/i),$=a(/^[a-z][.\w]*(-[.\w]+)+$/i);var K=Object.freeze({__proto__:null,MUSTACHE_EXPR:H,ERB_EXPR:z,TMPLIT_EXPR:B,DATA_ATTR:W,ARIA_ATTR:G,IS_ALLOWED_URI:Y,IS_SCRIPT_OR_DATA:j,ATTR_WHITESPACE:X,DOCTYPE_NAME:q,CUSTOM_ELEMENT:$});const V=1,Z=3,J=7,Q=8,ee=9,te=function(){return"undefined"==typeof window?null:window};var ne=function t(){let n=arguments.length>0&&void 0!==arguments[0]?arguments[0]:te();const o=e=>t(e);if(o.version="3.1.6",o.removed=[],!n||!n.document||n.document.nodeType!==ee)return o.isSupported=!1,o;let{document:r}=n;const a=r,c=a.currentScript,{DocumentFragment:s,HTMLTemplateElement:N,Node:b,Element:R,NodeFilter:H,NamedNodeMap:z=n.NamedNodeMap||n.MozNamedAttrMap,HTMLFormElement:B,DOMParser:W,trustedTypes:G}=n,j=R.prototype,X=C(j,"cloneNode"),$=C(j,"remove"),ne=C(j,"nextSibling"),oe=C(j,"childNodes"),re=C(j,"parentNode");if("function"==typeof N){const e=r.createElement("template");e.content&&e.content.ownerDocument&&(r=e.content.ownerDocument)}let ie,ae="";const{implementation:le,createNodeIterator:ce,createDocumentFragment:se,getElementsByTagName:ue}=r,{importNode:me}=a;let pe={};o.isSupported="function"==typeof e&&"function"==typeof re&&le&&void 0!==le.createHTMLDocument;const{MUSTACHE_EXPR:fe,ERB_EXPR:de,TMPLIT_EXPR:he,DATA_ATTR:ge,ARIA_ATTR:Te,IS_SCRIPT_OR_DATA:ye,ATTR_WHITESPACE:Ee,CUSTOM_ELEMENT:_e}=K;let{IS_ALLOWED_URI:Ae}=K,Ne=null;const be=S({},[...L,...D,...v,...x,...M]);let Se=null;const Re=S({},[...I,...U,...P,...F]);let we=Object.seal(l(null,{tagNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},allowCustomizedBuiltInElements:{writable:!0,configurable:!1,enumerable:!0,value:!1}})),Ce=null,Le=null,De=!0,ve=!0,Oe=!1,xe=!0,ke=!1,Me=!0,Ie=!1,Ue=!1,Pe=!1,Fe=!1,He=!1,ze=!1,Be=!0,We=!1,Ge=!0,Ye=!1,je={},Xe=null;const qe=S({},["annotation-xml","audio","colgroup","desc","foreignobject","head","iframe","math","mi","mn","mo","ms","mtext","noembed","noframes","noscript","plaintext","script","style","svg","template","thead","title","video","xmp"]);let $e=null;const Ke=S({},["audio","video","img","source","image","track"]);let Ve=null;const Ze=S({},["alt","class","for","id","label","name","pattern","placeholder","role","summary","title","value","style","xmlns"]),Je="http://www.w3.org/1998/Math/MathML",Qe="http://www.w3.org/2000/svg",et="http://www.w3.org/1999/xhtml";let tt=et,nt=!1,ot=null;const rt=S({},[Je,Qe,et],d);let it=null;const at=["application/xhtml+xml","text/html"];let lt=null,ct=null;const st=r.createElement("form"),ut=function(e){return e instanceof RegExp||e instanceof Function},mt=function(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{};if(!ct||ct!==e){if(e&&"object"==typeof e||(e={}),e=w(e),it=-1===at.indexOf(e.PARSER_MEDIA_TYPE)?"text/html":e.PARSER_MEDIA_TYPE,lt="application/xhtml+xml"===it?d:f,Ne=E(e,"ALLOWED_TAGS")?S({},e.ALLOWED_TAGS,lt):be,Se=E(e,"ALLOWED_ATTR")?S({},e.ALLOWED_ATTR,lt):Re,ot=E(e,"ALLOWED_NAMESPACES")?S({},e.ALLOWED_NAMESPACES,d):rt,Ve=E(e,"ADD_URI_SAFE_ATTR")?S(w(Ze),e.ADD_URI_SAFE_ATTR,lt):Ze,$e=E(e,"ADD_DATA_URI_TAGS")?S(w(Ke),e.ADD_DATA_URI_TAGS,lt):Ke,Xe=E(e,"FORBID_CONTENTS")?S({},e.FORBID_CONTENTS,lt):qe,Ce=E(e,"FORBID_TAGS")?S({},e.FORBID_TAGS,lt):{},Le=E(e,"FORBID_ATTR")?S({},e.FORBID_ATTR,lt):{},je=!!E(e,"USE_PROFILES")&&e.USE_PROFILES,De=!1!==e.ALLOW_ARIA_ATTR,ve=!1!==e.ALLOW_DATA_ATTR,Oe=e.ALLOW_UNKNOWN_PROTOCOLS||!1,xe=!1!==e.ALLOW_SELF_CLOSE_IN_ATTR,ke=e.SAFE_FOR_TEMPLATES||!1,Me=!1!==e.SAFE_FOR_XML,Ie=e.WHOLE_DOCUMENT||!1,Fe=e.RETURN_DOM||!1,He=e.RETURN_DOM_FRAGMENT||!1,ze=e.RETURN_TRUSTED_TYPE||!1,Pe=e.FORCE_BODY||!1,Be=!1!==e.SANITIZE_DOM,We=e.SANITIZE_NAMED_PROPS||!1,Ge=!1!==e.KEEP_CONTENT,Ye=e.IN_PLACE||!1,Ae=e.ALLOWED_URI_REGEXP||Y,tt=e.NAMESPACE||et,we=e.CUSTOM_ELEMENT_HANDLING||{},e.CUSTOM_ELEMENT_HANDLING&&ut(e.CUSTOM_ELEMENT_HANDLING.tagNameCheck)&&(we.tagNameCheck=e.CUSTOM_ELEMENT_HANDLING.tagNameCheck),e.CUSTOM_ELEMENT_HANDLING&&ut(e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)&&(we.attributeNameCheck=e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck),e.CUSTOM_ELEMENT_HANDLING&&"boolean"==typeof e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements&&(we.allowCustomizedBuiltInElements=e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements),ke&&(ve=!1),He&&(Fe=!0),je&&(Ne=S({},M),Se=[],!0===je.html&&(S(Ne,L),S(Se,I)),!0===je.svg&&(S(Ne,D),S(Se,U),S(Se,F)),!0===je.svgFilters&&(S(Ne,v),S(Se,U),S(Se,F)),!0===je.mathMl&&(S(Ne,x),S(Se,P),S(Se,F))),e.ADD_TAGS&&(Ne===be&&(Ne=w(Ne)),S(Ne,e.ADD_TAGS,lt)),e.ADD_ATTR&&(Se===Re&&(Se=w(Se)),S(Se,e.ADD_ATTR,lt)),e.ADD_URI_SAFE_ATTR&&S(Ve,e.ADD_URI_SAFE_ATTR,lt),e.FORBID_CONTENTS&&(Xe===qe&&(Xe=w(Xe)),S(Xe,e.FORBID_CONTENTS,lt)),Ge&&(Ne["#text"]=!0),Ie&&S(Ne,["html","head","body"]),Ne.table&&(S(Ne,["tbody"]),delete Ce.tbody),e.TRUSTED_TYPES_POLICY){if("function"!=typeof e.TRUSTED_TYPES_POLICY.createHTML)throw A('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');if("function"!=typeof e.TRUSTED_TYPES_POLICY.createScriptURL)throw A('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');ie=e.TRUSTED_TYPES_POLICY,ae=ie.createHTML("")}else void 0===ie&&(ie=function(e,t){if("object"!=typeof e||"function"!=typeof e.createPolicy)return null;let n=null;const o="data-tt-policy-suffix";t&&t.hasAttribute(o)&&(n=t.getAttribute(o));const r="dompurify"+(n?"#"+n:"");try{return e.createPolicy(r,{createHTML:e=>e,createScriptURL:e=>e})}catch(e){return console.warn("TrustedTypes policy "+r+" could not be created."),null}}(G,c)),null!==ie&&"string"==typeof ae&&(ae=ie.createHTML(""));i&&i(e),ct=e}},pt=S({},["mi","mo","mn","ms","mtext"]),ft=S({},["foreignobject","annotation-xml"]),dt=S({},["title","style","font","a","script"]),ht=S({},[...D,...v,...O]),gt=S({},[...x,...k]),Tt=function(e){p(o.removed,{element:e});try{re(e).removeChild(e)}catch(t){$(e)}},yt=function(e,t){try{p(o.removed,{attribute:t.getAttributeNode(e),from:t})}catch(e){p(o.removed,{attribute:null,from:t})}if(t.removeAttribute(e),"is"===e&&!Se[e])if(Fe||He)try{Tt(t)}catch(e){}else try{t.setAttribute(e,"")}catch(e){}},Et=function(e){let t=null,n=null;if(Pe)e="<remove></remove>"+e;else{const t=h(e,/^[\r\n\t ]+/);n=t&&t[0]}"application/xhtml+xml"===it&&tt===et&&(e='<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>'+e+"</body></html>");const o=ie?ie.createHTML(e):e;if(tt===et)try{t=(new W).parseFromString(o,it)}catch(e){}if(!t||!t.documentElement){t=le.createDocument(tt,"template",null);try{t.documentElement.innerHTML=nt?ae:o}catch(e){}}const i=t.body||t.documentElement;return e&&n&&i.insertBefore(r.createTextNode(n),i.childNodes[0]||null),tt===et?ue.call(t,Ie?"html":"body")[0]:Ie?t.documentElement:i},_t=function(e){return ce.call(e.ownerDocument||e,e,H.SHOW_ELEMENT|H.SHOW_COMMENT|H.SHOW_TEXT|H.SHOW_PROCESSING_INSTRUCTION|H.SHOW_CDATA_SECTION,null)},At=function(e){return e instanceof B&&("string"!=typeof e.nodeName||"string"!=typeof e.textContent||"function"!=typeof e.removeChild||!(e.attributes instanceof z)||"function"!=typeof e.removeAttribute||"function"!=typeof e.setAttribute||"string"!=typeof e.namespaceURI||"function"!=typeof e.insertBefore||"function"!=typeof e.hasChildNodes)},Nt=function(e){return"function"==typeof b&&e instanceof b},bt=function(e,t,n){pe[e]&&u(pe[e],(e=>{e.call(o,t,n,ct)}))},St=function(e){let t=null;if(bt("beforeSanitizeElements",e,null),At(e))return Tt(e),!0;const n=lt(e.nodeName);if(bt("uponSanitizeElement",e,{tagName:n,allowedTags:Ne}),e.hasChildNodes()&&!Nt(e.firstElementChild)&&_(/<[/\w]/g,e.innerHTML)&&_(/<[/\w]/g,e.textContent))return Tt(e),!0;if(e.nodeType===J)return Tt(e),!0;if(Me&&e.nodeType===Q&&_(/<[/\w]/g,e.data))return Tt(e),!0;if(!Ne[n]||Ce[n]){if(!Ce[n]&&wt(n)){if(we.tagNameCheck instanceof RegExp&&_(we.tagNameCheck,n))return!1;if(we.tagNameCheck instanceof Function&&we.tagNameCheck(n))return!1}if(Ge&&!Xe[n]){const t=re(e)||e.parentNode,n=oe(e)||e.childNodes;if(n&&t){for(let o=n.length-1;o>=0;--o){const r=X(n[o],!0);r.__removalCount=(e.__removalCount||0)+1,t.insertBefore(r,ne(e))}}}return Tt(e),!0}return e instanceof R&&!function(e){let t=re(e);t&&t.tagName||(t={namespaceURI:tt,tagName:"template"});const n=f(e.tagName),o=f(t.tagName);return!!ot[e.namespaceURI]&&(e.namespaceURI===Qe?t.namespaceURI===et?"svg"===n:t.namespaceURI===Je?"svg"===n&&("annotation-xml"===o||pt[o]):Boolean(ht[n]):e.namespaceURI===Je?t.namespaceURI===et?"math"===n:t.namespaceURI===Qe?"math"===n&&ft[o]:Boolean(gt[n]):e.namespaceURI===et?!(t.namespaceURI===Qe&&!ft[o])&&!(t.namespaceURI===Je&&!pt[o])&&!gt[n]&&(dt[n]||!ht[n]):!("application/xhtml+xml"!==it||!ot[e.namespaceURI]))}(e)?(Tt(e),!0):"noscript"!==n&&"noembed"!==n&&"noframes"!==n||!_(/<\/no(script|embed|frames)/i,e.innerHTML)?(ke&&e.nodeType===Z&&(t=e.textContent,u([fe,de,he],(e=>{t=g(t,e," ")})),e.textContent!==t&&(p(o.removed,{element:e.cloneNode()}),e.textContent=t)),bt("afterSanitizeElements",e,null),!1):(Tt(e),!0)},Rt=function(e,t,n){if(Be&&("id"===t||"name"===t)&&(n in r||n in st))return!1;if(ve&&!Le[t]&&_(ge,t));else if(De&&_(Te,t));else if(!Se[t]||Le[t]){if(!(wt(e)&&(we.tagNameCheck instanceof RegExp&&_(we.tagNameCheck,e)||we.tagNameCheck instanceof Function&&we.tagNameCheck(e))&&(we.attributeNameCheck instanceof RegExp&&_(we.attributeNameCheck,t)||we.attributeNameCheck instanceof Function&&we.attributeNameCheck(t))||"is"===t&&we.allowCustomizedBuiltInElements&&(we.tagNameCheck instanceof RegExp&&_(we.tagNameCheck,n)||we.tagNameCheck instanceof Function&&we.tagNameCheck(n))))return!1}else if(Ve[t]);else if(_(Ae,g(n,Ee,"")));else if("src"!==t&&"xlink:href"!==t&&"href"!==t||"script"===e||0!==T(n,"data:")||!$e[e]){if(Oe&&!_(ye,g(n,Ee,"")));else if(n)return!1}else;return!0},wt=function(e){return"annotation-xml"!==e&&h(e,_e)},Ct=function(e){bt("beforeSanitizeAttributes",e,null);const{attributes:t}=e;if(!t)return;const n={attrName:"",attrValue:"",keepAttr:!0,allowedAttributes:Se};let r=t.length;for(;r--;){const i=t[r],{name:a,namespaceURI:l,value:c}=i,s=lt(a);let p="value"===a?c:y(c);if(n.attrName=s,n.attrValue=p,n.keepAttr=!0,n.forceKeepAttr=void 0,bt("uponSanitizeAttribute",e,n),p=n.attrValue,Me&&_(/((--!?|])>)|<\/(style|title)/i,p)){yt(a,e);continue}if(n.forceKeepAttr)continue;if(yt(a,e),!n.keepAttr)continue;if(!xe&&_(/\/>/i,p)){yt(a,e);continue}ke&&u([fe,de,he],(e=>{p=g(p,e," ")}));const f=lt(e.nodeName);if(Rt(f,s,p)){if(!We||"id"!==s&&"name"!==s||(yt(a,e),p="user-content-"+p),ie&&"object"==typeof G&&"function"==typeof G.getAttributeType)if(l);else switch(G.getAttributeType(f,s)){case"TrustedHTML":p=ie.createHTML(p);break;case"TrustedScriptURL":p=ie.createScriptURL(p)}try{l?e.setAttributeNS(l,a,p):e.setAttribute(a,p),At(e)?Tt(e):m(o.removed)}catch(e){}}}bt("afterSanitizeAttributes",e,null)},Lt=function e(t){let n=null;const o=_t(t);for(bt("beforeSanitizeShadowDOM",t,null);n=o.nextNode();)bt("uponSanitizeShadowNode",n,null),St(n)||(n.content instanceof s&&e(n.content),Ct(n));bt("afterSanitizeShadowDOM",t,null)};return o.sanitize=function(e){let t=arguments.length>1&&void 0!==arguments[1]?arguments[1]:{},n=null,r=null,i=null,l=null;if(nt=!e,nt&&(e="\x3c!--\x3e"),"string"!=typeof e&&!Nt(e)){if("function"!=typeof e.toString)throw A("toString is not a function");if("string"!=typeof(e=e.toString()))throw A("dirty is not a string, aborting")}if(!o.isSupported)return e;if(Ue||mt(t),o.removed=[],"string"==typeof e&&(Ye=!1),Ye){if(e.nodeName){const t=lt(e.nodeName);if(!Ne[t]||Ce[t])throw A("root node is forbidden and cannot be sanitized in-place")}}else if(e instanceof b)n=Et("\x3c!----\x3e"),r=n.ownerDocument.importNode(e,!0),r.nodeType===V&&"BODY"===r.nodeName||"HTML"===r.nodeName?n=r:n.appendChild(r);else{if(!Fe&&!ke&&!Ie&&-1===e.indexOf("<"))return ie&&ze?ie.createHTML(e):e;if(n=Et(e),!n)return Fe?null:ze?ae:""}n&&Pe&&Tt(n.firstChild);const c=_t(Ye?e:n);for(;i=c.nextNode();)St(i)||(i.content instanceof s&&Lt(i.content),Ct(i));if(Ye)return e;if(Fe){if(He)for(l=se.call(n.ownerDocument);n.firstChild;)l.appendChild(n.firstChild);else l=n;return(Se.shadowroot||Se.shadowrootmode)&&(l=me.call(a,l,!0)),l}let m=Ie?n.outerHTML:n.innerHTML;return Ie&&Ne["!doctype"]&&n.ownerDocument&&n.ownerDocument.doctype&&n.ownerDocument.doctype.name&&_(q,n.ownerDocument.doctype.name)&&(m="<!DOCTYPE "+n.ownerDocument.doctype.name+">\n"+m),ke&&u([fe,de,he],(e=>{m=g(m,e," ")})),ie&&ze?ie.createHTML(m):m},o.setConfig=function(){mt(arguments.length>0&&void 0!==arguments[0]?arguments[0]:{}),Ue=!0},o.clearConfig=function(){ct=null,Ue=!1},o.isValidAttribute=function(e,t,n){ct||mt({});const o=lt(e),r=lt(t);return Rt(o,r,n)},o.addHook=function(e,t){"function"==typeof t&&(pe[e]=pe[e]||[],p(pe[e],t))},o.removeHook=function(e){if(pe[e])return m(pe[e])},o.removeHooks=function(e){pe[e]&&(pe[e]=[])},o.removeAllHooks=function(){pe={}},o}();return ne}));
+app/static/vendor/react.production.min.js:27:Array(f);for(var g=0;g<f;g++)l[g]=arguments[g+2];e.children=l}return{$$typeof:y,type:a.type,key:d,ref:k,props:e,_owner:h}};c.createContext=function(a){a={$$typeof:wa,_currentValue:a,_currentValue2:a,_threadCount:0,Provider:null,Consumer:null,_defaultValue:null,_globalName:null};a.Provider={$$typeof:va,_context:a};return a.Consumer=a};c.createElement=Z;c.createFactory=function(a){var b=Z.bind(null,a);b.type=a;return b};c.createRef=function(){return{current:null}};c.forwardRef=function(a){return{$$typeof:xa,
+app/storage.py:271:            self.sessions_dir.glob("*.json"),
+app/storage.py:348:        for path in sorted(self.sessions_dir.glob("*.json")):
+app/storage.py:366:        for path in sorted(self.sessions_dir.glob("*.json")):
+app/storage.py:841:        files = sorted(self.logs_dir.glob("*.jsonl"), key=lambda path: path.name, reverse=True)
+app/system_modules/memory_module/__init__.py:1:from app.system_modules.memory_module.manifest import MEMORY_MODULE_MANIFEST
+app/system_modules/memory_module/module.py:6:from app.system_modules.memory_module.manifest import MEMORY_MODULE_MANIFEST
+app/system_modules/memory_module/module.py:10:    manifest = MEMORY_MODULE_MANIFEST
+app/system_modules/memory_module/module.py:21:            component_id=self.manifest.module_id,
+app/system_modules/output_module/__init__.py:1:from app.system_modules.output_module.manifest import OUTPUT_MODULE_MANIFEST
+app/system_modules/output_module/module.py:6:from app.system_modules.output_module.manifest import OUTPUT_MODULE_MANIFEST
+app/system_modules/output_module/module.py:10:    manifest = OUTPUT_MODULE_MANIFEST
+app/system_modules/output_module/module.py:20:            component_id=self.manifest.module_id,
+app/system_modules/policy_module/__init__.py:1:from app.system_modules.policy_module.manifest import POLICY_MODULE_MANIFEST
+app/system_modules/policy_module/manifest.py:10:    description="System policy module for global execution constraints.",
+app/system_modules/policy_module/module.py:6:from app.system_modules.policy_module.manifest import POLICY_MODULE_MANIFEST
+app/system_modules/policy_module/module.py:10:    manifest = POLICY_MODULE_MANIFEST
+app/system_modules/policy_module/module.py:20:            component_id=self.manifest.module_id,
+app/system_modules/tool_runtime_module/__init__.py:1:from app.system_modules.tool_runtime_module.manifest import TOOL_RUNTIME_MODULE_MANIFEST
+app/system_modules/tool_runtime_module/module.py:6:from app.system_modules.tool_runtime_module.manifest import TOOL_RUNTIME_MODULE_MANIFEST
+app/system_modules/tool_runtime_module/module.py:10:    manifest = TOOL_RUNTIME_MODULE_MANIFEST
+app/system_modules/tool_runtime_module/module.py:25:            component_id=self.manifest.module_id,
+app/tool_providers/file_provider.py:95:                "file_glob": str(args.get("file_glob") or ""),
+app/tool_trace_summary.py:68:    if normalized == "glob_file_search":
+app/tool_trace_summary.py:134:    if normalized == "glob_file_search":
+app/vintage_programmer_runtime.py:76:    "glob_file_search",
+app/vintage_programmer_runtime.py:290:        agent_dir: Path,
+app/vintage_programmer_runtime.py:294:        self._agent_dir = agent_dir.resolve()
+app/vintage_programmer_runtime.py:305:        self._workbench = WorkbenchStore(config=config, agent_dir=self._agent_dir)
+app/vintage_programmer_runtime.py:326:            self._agent_dir / "locales" / normalized_locale / name,
+app/vintage_programmer_runtime.py:327:            self._agent_dir / "locales" / locale_family / name,
+app/vintage_programmer_runtime.py:328:            self._agent_dir / name,
+app/vintage_programmer_runtime.py:336:        raise RuntimeError(f"Missing required agent spec file: {self._agent_dir / name}")
+app/vintage_programmer_runtime.py:354:            self._agent_dir / "locales" / normalize_locale(locale, self._config.default_locale) / "tools.md",
+app/vintage_programmer_runtime.py:355:            self._agent_dir / "locales" / normalize_locale(locale, self._config.default_locale).split("-", 1)[0] / "tools.md",
+app/vintage_programmer_runtime.py:356:            self._agent_dir / "tools.md",
+app/vintage_programmer_runtime.py:557:            "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
+app/vintage_programmer_runtime.py:1348:    def _attachment_manifest_for_model(cls, attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+app/vintage_programmer_runtime.py:1349:        manifest: list[dict[str, str]] = []
+app/vintage_programmer_runtime.py:1363:            manifest.append(
+app/vintage_programmer_runtime.py:1372:        return manifest[:8]
+app/vintage_programmer_runtime.py:1509:            "glob_file_search",
+app/vintage_programmer_runtime.py:1753:            "glob_matches": set(),
+app/vintage_programmer_runtime.py:1785:        if tool_name == "glob_file_search":
+app/vintage_programmer_runtime.py:1907:        if name == "glob_file_search":
+app/vintage_programmer_runtime.py:1909:            seen = tracker.setdefault("glob_matches", set())
+app/vintage_programmer_runtime.py:1921:                    kind="new_glob_matches",
+app/vintage_programmer_runtime.py:1922:                    summary=translate(locale, "runtime.progress.new_glob_matches", target=pattern or name, count=new_matches),
+app/vintage_programmer_runtime.py:2592:        if normalized_tool == "glob_file_search":
+app/vintage_programmer_runtime.py:2843:        attachment_manifest = self._attachment_manifest_for_model(attachment_metas)
+app/vintage_programmer_runtime.py:2844:        if attachment_manifest:
+app/vintage_programmer_runtime.py:2847:                    content="[current_attachments]\n" + json.dumps(attachment_manifest, ensure_ascii=False)
+app/workbench.py:28:    "glob_file_search": {"group": "fs_content", "source": "openclaw_inspired", "read_only": True, "requires_evidence": True},
+app/workbench.py:133:    def __init__(self, *, config: AppConfig, agent_dir: Path) -> None:
+app/workbench.py:135:        self._agent_dir = agent_dir.resolve()
+app/workbench.py:144:    def agent_dir(self) -> Path:
+app/workbench.py:145:        return self._agent_dir
+app/workbench.py:160:        path = (self._agent_dir / spec_name).resolve()
+app/workbench.py:161:        self._ensure_within(path, self._agent_dir)
+app/workbench.py:167:        path = (self._agent_dir / "locales" / locale / spec_name).resolve()
+app/workbench.py:168:        self._ensure_within(path, self._agent_dir)
+app/workbench.py:250:        for path in sorted(self._skills_dir.glob(f"*/{SKILL_FILE_NAME}")):
+app/workbench.py:355:        self._ensure_within(read_path, self._agent_dir)
+app/workbench.py:387:        self._ensure_within(path, self._agent_dir)
+docs/internal_design_manual.md:173:- `glob_file_search`
+docs/internal_design_manual.md:231:- `list_dir / glob_file_search`：适合先定位文件
+docs/internal_design_manual.md:385:- new glob matches（找到了新的路径匹配）
+docs/internal_design_manual.md:740:- `list_dir`, `read_file`, `glob_file_search`, and `search_codebase` return model-actionable paths that are easier to reuse after a project folder is moved.
+docs/internal_design_manual.md:741:- Broad glob patterns such as `**/*` return guidance on large folders instead of flooding the model context with hundreds or thousands of absolute paths.
+docs/internal_design_manual.md:742:- `***` is treated as a UI redaction placeholder, not a real path, glob pattern, filename, function name, or search query. The ActionValidator rejects it with a validation observation, preserving tool-call closure.
+docs/internal_design_manual.md:798:- Runtime status and Debug Runtime expose `network_reason` so Full Access can distinguish global network disablement from profile-level network disablement.
+evals/cases.json:2228:        "runtime_files.active_manifest_path": [
+evals/cases.json:2229:          "app/data/runtime/active_manifest.json"
+evals/cases.json:2253:    "name": "helper_debug_kernel_shadow_validation_rejects_broken_manifest",
+evals/cases.json:2255:    "helper": "_debug_kernel_shadow_validation_rejects_broken_manifest",
+evals/cases.json:2278:        "stage.shadow_manifest.router": "router_rules@2.0.0",
+evals/cases.json:2362:        "contracts.manifest_source": "active"
+evals/cases.json:2398:    "name": "helper_debug_kernel_shadow_auto_repair_broken_manifest",
+evals/cases.json:2400:    "helper": "_debug_kernel_shadow_auto_repair_broken_manifest",
+evals/cases.json:2405:        "broken_pipeline.failure_classification.category": "manifest_validation",
+evals/cases.json:2423:        "shadow_manifest_after.router": [
+evals/cases.json:2452:        "promotion.active_manifest.router": [
+evals/cases.json:2455:        "rollback.active_manifest.router": [
+evals/cases.json:2471:    "name": "helper_debug_kernel_shadow_pipeline_classifies_broken_manifest",
+evals/cases.json:2473:    "helper": "_debug_kernel_shadow_pipeline_classifies_broken_manifest",
+evals/cases.json:2478:        "pipeline.failure_classification.category": "manifest_validation",
+evals/cases.json:2480:        "last_upgrade_run.failure_classification.category": "manifest_validation"
+evals/cases.json:2487:          "shadow manifest"
+evals/cases.json:2508:        "active_manifest.router": "router_rules@1.0.0"
+evals/cases.json:2511:        "shadow_manifest.router": [
+evals/cases.json:2571:        "shadow_manifest_after.router": [
+evals/cases.json:2579:        "shadow_manifest_after.router": [
+evals/cases.json:2637:        "shadow_manifest_after.router": [
+evals/cases.json:2662:        "active_manifest_after.router": [
+evals/cases.json:2665:        "shadow_manifest_after.router": [
+evals/cases.json:2670:        "active_manifest_after.router": [
+evals/cases.json:2673:        "shadow_manifest_after.router": [
+evals/gate_cases.json:372:        "runtime_files.active_manifest_path": [
+evals/gate_cases.json:373:          "app/data/runtime/active_manifest.json"
+packages/agent_core/orchestration.py:170:                "manifest": dict(bundle.manifest),
+packages/office_addons/__init__.py:11:def _manifest_path() -> Path:
+packages/office_addons/__init__.py:12:    return (Path(__file__).resolve().parent / 'manifest.json').resolve()
+packages/office_addons/__init__.py:15:def read_manifest() -> dict[str, Any]:
+packages/office_addons/__init__.py:16:    return json.loads(_manifest_path().read_text(encoding='utf-8'))
+packages/office_addons/__init__.py:24:    manifest = read_manifest()
+packages/office_addons/__init__.py:26:        module_id=str(manifest.get('module_id') or 'office_addons'),
+packages/office_addons/__init__.py:27:        version=str(manifest.get('version') or '0.1.0'),
+packages/office_addons/__init__.py:28:        manifest=manifest,
+packages/office_addons/__init__.py:32:            'profiles': list(manifest.get('profiles') or []),
+packages/office_addons/__init__.py:33:            'tools': list(manifest.get('tools') or []),
+packages/office_addons/__init__.py:34:            'roles': list(manifest.get('roles') or []),
+packages/office_addons/__init__.py:35:            'notes': list(manifest.get('notes') or []),
+packages/office_modules/__init__.py:9:def _manifest_path() -> Path:
+packages/office_modules/__init__.py:10:    return (Path(__file__).resolve().parent / "manifest.json").resolve()
+packages/office_modules/__init__.py:49:def read_office_manifest() -> dict[str, Any]:
+packages/office_modules/__init__.py:50:    return json.loads(_manifest_path().read_text(encoding="utf-8"))
+packages/office_modules/__init__.py:54:    manifest = read_office_manifest()
+packages/office_modules/__init__.py:56:        "agent_modules": list(manifest.get("agent_modules") or []),
+packages/office_modules/__init__.py:57:        "memory_modules": list(manifest.get("memory_modules") or []),
+packages/office_modules/__init__.py:58:        "profiles": list(manifest.get("profiles") or []),
+packages/office_modules/__init__.py:59:        "output_modules": list(manifest.get("output_modules") or []),
+packages/office_modules/__init__.py:60:        "tools": list(manifest.get("tools") or []),
+packages/office_modules/__init__.py:61:        "tool_modules": list(manifest.get("tool_modules") or []),
+packages/office_modules/__init__.py:62:        "roles": list(manifest.get("roles") or []),
+packages/office_modules/__init__.py:65:        module_id=str(manifest.get("module_id") or "office_modules"),
+packages/office_modules/__init__.py:66:        version=str(manifest.get("version") or "0.1.0"),
+packages/office_modules/__init__.py:67:        manifest=manifest,
+packages/office_modules/__init__.py:91:    "read_office_manifest",
+packages/office_modules/execution_runtime.py:280:    global _LEGACY_HELPER_SURFACE_METRICS_CACHE
+packages/office_modules/execution_runtime.py:327:    global _LEGACY_HELPER_SURFACE_METRICS_CACHE
+packages/office_modules/intent_support.py:366:        "read_file", "read_text_file", "list_dir", "glob_file_search", "search_contents_in_file", "search_text_in_file", "search_contents_in_file_multi",
+packages/office_modules/intent_support.py:439:        "list_dir", "glob_file_search",
+packages/office_modules/intent_support.py:477:        "tests", "case", "在哪", "搜索", "上网", "网上", "查一下", "搜一下", "read_file", "read_text_file", "list_dir", "glob_file_search", "search_contents_in_file",
+packages/office_modules/legacy_runtime_support.py:144:        "active_manifest": dict(snapshot.active_manifest),
+packages/office_modules/office_agent_runtime.py:590:    file_glob: str = ""
+packages/office_modules/office_agent_runtime.py:1083:    def _debug_kernel_shadow_validation_rejects_broken_manifest(
+packages/office_modules/office_agent_runtime.py:1088:        return self._legacy_platform_removed_debug_payload("kernel_shadow_validation_rejects_broken_manifest")
+packages/office_modules/office_agent_runtime.py:1111:    def _debug_kernel_shadow_pipeline_classifies_broken_manifest(
+packages/office_modules/office_agent_runtime.py:1116:        return self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline_classifies_broken_manifest")
+packages/office_modules/office_agent_runtime.py:1118:    def _debug_kernel_shadow_auto_repair_broken_manifest(
+packages/office_modules/office_agent_runtime.py:1123:        return self._legacy_platform_removed_debug_payload("kernel_shadow_auto_repair_broken_manifest")
+packages/office_modules/office_agent_runtime.py:1612:                    "默认先在当前工作区根目录 '.' 调用 search_codebase、list_dir(path='.') 或 glob_file_search，不要先索取具体路径；"
+packages/office_modules/office_agent_runtime.py:1615:                    "可以直接把该名字作为 list_dir(path=...)、glob_file_search(path=...) 或 search_codebase(root=...) 的参数尝试；"
+packages/office_modules/office_agent_runtime.py:1752:                        "若延续主题属于代码/文件搜索，请直接调用 search_codebase、read_file、search_contents_in_file、list_dir 或 glob_file_search 等必要工具继续执行。"
+packages/office_modules/office_agent_runtime.py:2707:                                "请立即使用 search_codebase、read_file、search_contents_in_file、list_dir 或 glob_file_search 等必要工具继续完成任务。"
+packages/office_modules/office_agent_runtime.py:2982:                                        "请直接在默认根目录或用户给出的相对目录下调用 search_codebase/list_dir/glob_file_search/read_file/search_contents_in_file 完成任务。"
+packages/office_modules/office_agent_runtime.py:6179:        if re.search(r"(?i)\b(?:package|tsconfig|composer|manifest)\.json\b", text):
+packages/office_modules/office_agent_runtime.py:6384:        search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
+packages/office_modules/office_agent_runtime.py:6394:            for optional in ("max_matches", "file_glob", "use_regex", "case_sensitive"):
+packages/office_modules/office_agent_runtime.py:6472:            "file_glob",
+packages/office_modules/office_agent_runtime.py:7183:                "直接调用 search_codebase、list_dir、glob_file_search、read_file、search_contents_in_file 等工具搜索并读取上下文。"
+packages/office_modules/office_agent_runtime.py:7510:                name="glob_file_search",
+packages/office_modules/office_agent_runtime.py:7511:                description="Find files by glob pattern relative to the workspace or a given directory root.",
+packages/office_modules/office_agent_runtime.py:7513:                func=self._glob_file_search_tool,
+packages/office_modules/office_agent_runtime.py:8125:    def _glob_file_search_tool(
+packages/office_modules/office_agent_runtime.py:8131:        result = self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results)
+packages/office_modules/office_agent_runtime.py:8186:        file_glob: str = "",
+packages/office_modules/office_agent_runtime.py:8194:            file_glob=file_glob,
+packages/office_modules/office_agent_runtime.py:8208:            and not bool(file_glob.strip())
+packages/office_modules/office_agent_runtime.py:8220:                    file_glob=file_glob,
+packages/office_modules/review_support.py:129:        "glob_file_search",
+packages/office_modules/reviewer_helpers.py:9:    "glob_file_search": {"glob_file_search"},
+packages/office_modules/reviewer_helpers.py:29:        "glob_file_search",
+packages/office_modules/reviewer_helpers.py:193:    if _tool_name_is(name, "glob_file_search"):
+packages/office_modules/reviewer_helpers.py:196:        return f"glob_file_search pattern={pattern}, matches={match_count}"
+packages/office_modules/tools.py:128:    "glob_file_search",
+packages/runtime_core/capability_loader.py:4:import importlib
+packages/runtime_core/capability_loader.py:60:    manifest: dict[str, Any] = field(default_factory=dict)
+packages/runtime_core/capability_loader.py:81:        module = importlib.import_module(key)
+packages/runtime_core/legacy_host_support.py:99:    global _KERNEL_HOST_GETATTR_METRICS_CACHE
+packages/runtime_core/legacy_host_support.py:142:    global _KERNEL_HOST_GETATTR_METRICS_CACHE
+scripts/check_platform_boundaries.py:27:        for path in base.rglob("*.py"):
+tests/docs/test_markdown_packaging.py:7:    targets = [REPO_ROOT / 'README.md', REPO_ROOT / 'README.en.md', *(REPO_ROOT / 'docs').rglob('*.md')]
+tests/integration/test_chat_vintage_programmer_api.py:32:                "glob_file_search",
+tests/integration/test_chat_vintage_programmer_api.py:69:                    "glob_file_search",
+tests/integration/test_chat_vintage_programmer_api.py:93:                    {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+tests/integration/test_chat_vintage_programmer_api.py:117:                {"name": "glob_file_search", "group": "fs_content", "source": "openclaw_inspired", "enabled": True, "read_only": True, "requires_evidence": True, "summary": "find files by glob pattern"},
+tests/integration/test_chat_vintage_programmer_api.py:894:        WorkbenchStore(config=type("Cfg", (), {"workspace_root": tmp_path})(), agent_dir=tmp_path / "agents" / "vintage_programmer"),
+tests/integration/test_chat_vintage_programmer_api.py:1923:    assert {"web_download", "image_read", "list_dir", "glob_file_search", "search_contents_in_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
+tests/modules/test_tool_registration.py:62:        "glob_file_search",
+tests/test_compaction_context_pack.py:47:    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+tests/test_compaction_context_pack.py:89:    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+tests/test_context_pack.py:121:    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+tests/test_frontend_locale_regressions.py:81:    "activity.tool_title.glob_file_search",
+tests/test_frontend_locale_regressions.py:112:    "activity.progress.glob_file_search",
+tests/test_frontend_locale_regressions.py:180:    "context_meter.network.global_disabled",
+tests/test_frontend_locale_regressions.py:441:    assert '"glob_file_search"' in script
+tests/test_local_tools_public_surface.py:41:        "glob_file_search",
+tests/test_local_tools_public_surface.py:352:def test_list_dir_lists_children_and_glob_file_search_finds_matches(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:359:    glob_result = executor.glob_file_search("**/*.py")
+tests/test_local_tools_public_surface.py:365:    assert glob_result["ok"] is True
+tests/test_local_tools_public_surface.py:366:    assert glob_result["tool_name"] == "glob_file_search"
+tests/test_local_tools_public_surface.py:367:    assert "src/main.py" in glob_result["matches"]
+tests/test_local_tools_public_surface.py:370:def test_list_dir_rejects_non_directory_and_glob_file_search_handles_no_matches(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:376:    glob_result = executor.glob_file_search("**/*.js")
+tests/test_local_tools_public_surface.py:380:    assert glob_result["ok"] is True
+tests/test_local_tools_public_surface.py:381:    assert glob_result["tool_name"] == "glob_file_search"
+tests/test_local_tools_public_surface.py:382:    assert glob_result["count"] == 0
+tests/test_local_tools_public_surface.py:383:    assert glob_result["matches"] == []
+tests/test_local_tools_public_surface.py:411:def test_glob_file_search_returns_project_relative_paths(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:420:    result = executor.glob_file_search(pattern="*.py", path="app")
+tests/test_local_tools_public_surface.py:480:def test_broad_glob_in_large_directory_returns_guidance(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:487:    result = executor.glob_file_search(pattern="**/*", path=".")
+tests/test_local_tools_public_surface.py:490:    assert result["error"]["kind"] == "broad_glob_on_large_directory"
+tests/test_local_tools_public_surface.py:496:def test_broad_glob_in_small_directory_still_works(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:503:    result = executor.glob_file_search(pattern="**/*", path=".")
+tests/test_runtime_boundary.py:160:    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
+tests/test_tool_trace_summary.py:44:    assert summarize_tool_result("glob_file_search", {"ok": True, "matches": ["a.py", "b.py"]}) == "matched 2 files"
+tests/test_vintage_programmer_runtime.py:69:    "runtime.progress.new_glob_matches",
+tests/test_vintage_programmer_runtime.py:125:            {"name": "glob_file_search", "description": "find files by glob pattern", "parameters": {}},
+tests/test_vintage_programmer_runtime.py:446:def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: bool = True) -> None:
+tests/test_vintage_programmer_runtime.py:447:    agent_dir.mkdir(parents=True, exist_ok=True)
+tests/test_vintage_programmer_runtime.py:449:        (agent_dir / "soul.md").write_text("soul rules", encoding="utf-8")
+tests/test_vintage_programmer_runtime.py:450:    (agent_dir / "identity.md").write_text(
+tests/test_vintage_programmer_runtime.py:454:    (agent_dir / "agent.md").write_text(
+tests/test_vintage_programmer_runtime.py:470:        (agent_dir / "tools.md").write_text("tool rules", encoding="utf-8")
+tests/test_vintage_programmer_runtime.py:489:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:490:    _write_specs(agent_dir, include_soul=False)
+tests/test_vintage_programmer_runtime.py:495:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:501:    agent_dir = tmp_path / "agents" / "missing_identity"
+tests/test_vintage_programmer_runtime.py:502:    agent_dir.mkdir(parents=True, exist_ok=True)
+tests/test_vintage_programmer_runtime.py:503:    (agent_dir / "soul.md").write_text("soul", encoding="utf-8")
+tests/test_vintage_programmer_runtime.py:504:    (agent_dir / "agent.md").write_text("---\nid: vintage_programmer\n---\nagent\n", encoding="utf-8")
+tests/test_vintage_programmer_runtime.py:508:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:516:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:517:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:521:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:546:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:547:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:551:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:584:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:585:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:589:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:668:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:669:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:674:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:695:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:696:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:701:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:722:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:723:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:731:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:767:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:768:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:773:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:801:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:802:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:810:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:866:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:867:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:880:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:939:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:940:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:950:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:975:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:976:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:986:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1016:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1017:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1031:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1061:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1062:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1074:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1099:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1100:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1105:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1135:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1136:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1142:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1176:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1177:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1187:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1217:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1218:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1227:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1275:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1276:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1287:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1322:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1323:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1333:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1372:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1373:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1383:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1406:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1407:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1420:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1443:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1444:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1448:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1469:def test_runtime_rejects_redaction_placeholder_as_glob_pattern(tmp_path: Path) -> None:
+tests/test_vintage_programmer_runtime.py:1470:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1471:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1476:                tool_calls=[{"id": "tc-redacted-glob", "name": "glob_file_search", "args": {"pattern": "***", "path": "."}}],
+tests/test_vintage_programmer_runtime.py:1484:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1492:            "session_id": "s-redacted-glob",
+tests/test_vintage_programmer_runtime.py:1502:    tool_message = next(item for item in followup_messages if item.kwargs.get("tool_call_id") == "tc-redacted-glob")
+tests/test_vintage_programmer_runtime.py:1509:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1510:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1523:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1550:        "tool_name": "glob_file_search",
+tests/test_vintage_programmer_runtime.py:1557:    compact = VintageProgrammerRuntime._compact_tool_result_for_model(result, tool_name="glob_file_search")
+tests/test_vintage_programmer_runtime.py:1565:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1566:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1585:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1608:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1609:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1614:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1640:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1641:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1652:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1676:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1677:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1683:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1704:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1705:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1706:    agent_spec = agent_dir / "agent.md"
+tests/test_vintage_programmer_runtime.py:1716:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1744:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1745:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1746:    agent_spec = agent_dir / "agent.md"
+tests/test_vintage_programmer_runtime.py:1756:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1783:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1784:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1789:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1833:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1834:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1848:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1879:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1880:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1893:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1927:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1928:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1940:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:1963:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:1964:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:1979:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2005:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2006:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2019:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2044:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2045:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2057:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2083:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2084:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2096:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2119:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2120:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2131:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2168:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2169:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2184:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2213:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2214:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2229:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2260:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2261:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2276:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2307:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2308:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2321:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2352:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2353:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2369:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2399:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2400:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2413:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2443:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2444:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2449:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2482:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2483:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2496:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2527:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2528:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2538:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2564:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2565:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2576:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2608:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2609:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2629:        agent_dir=agent_dir,
+tests/test_vintage_programmer_runtime.py:2647:    agent_dir = tmp_path / "agents" / "vintage_programmer"
+tests/test_vintage_programmer_runtime.py:2648:    _write_specs(agent_dir)
+tests/test_vintage_programmer_runtime.py:2653:        agent_dir=agent_dir,

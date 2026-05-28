@@ -1,0 +1,1068 @@
+app/action_validator.py: from __future__ import annotations
+app/action_validator.py: import json
+app/action_validator.py: import re
+app/action_validator.py: import shlex
+app/action_validator.py: from pathlib import Path
+app/action_validator.py: from typing import Any, Callable
+app/action_validator.py: from urllib.parse import urlparse
+app/action_validator.py: from pydantic import BaseModel, Field
+app/action_validator.py: from app.runtime_boundary import RuntimeBoundary, build_runtime_boundary
+app/action_validator.py: from app.serialization import dump_model
+app/action_validator.py: from app.tool_trace_summary import normalize_tool_arguments, safe_error_message, safe_preview, validate_tool_arguments
+app/adapters/__init__.py: from app.adapters import auth, http, llm, storage
+app/agents/__init__.py: from __future__ import annotations
+app/agents/agent_plugin.py: from __future__ import annotations
+app/agents/agent_plugin.py: from dataclasses import dataclass
+app/agents/agent_plugin.py: from typing import Any
+app/agents/answer_bundle_support.py: from packages.office_modules.answer_bundle_support import *
+app/agents/citation_support.py: from packages.office_modules.citation_support import *
+app/agents/coder_agent/__init__.py: from app.agents.coder_agent.agent import CoderAgent
+app/agents/coder_agent/agent.py: from __future__ import annotations
+app/agents/coder_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/conflict_detector_agent.py: from __future__ import annotations
+app/agents/conflict_detector_agent.py: from typing import Any
+app/agents/conflict_detector_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/conflict_detector_role.py: from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+app/agents/coordinator_agent/__init__.py: from app.agents.coordinator_agent.agent import CoordinatorAgent
+app/agents/coordinator_agent/agent.py: from __future__ import annotations
+app/agents/coordinator_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/coordinator_agent.py: from __future__ import annotations
+app/agents/coordinator_agent.py: from typing import Any
+app/agents/coordinator_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/critic_agent/__init__.py: from app.agents.critic_agent.agent import CriticAgent
+app/agents/critic_agent/agent.py: from __future__ import annotations
+app/agents/critic_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/executor_agent/__init__.py: from app.agents.executor_agent.agent import ExecutorAgent
+app/agents/executor_agent/agent.py: from __future__ import annotations
+app/agents/executor_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/file_reader_agent.py: from __future__ import annotations
+app/agents/file_reader_agent.py: from typing import Any
+app/agents/file_reader_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/fixer_agent.py: from __future__ import annotations
+app/agents/fixer_agent.py: from typing import Any
+app/agents/fixer_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/navigator_agent/__init__.py: from app.agents.navigator_agent.agent import NavigatorAgent
+app/agents/navigator_agent/agent.py: from __future__ import annotations
+app/agents/navigator_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/office_specialist_agent/__init__.py: from app.agents.office_specialist_agent.agent import OfficeSpecialistAgent
+app/agents/office_specialist_agent/agent.py: from __future__ import annotations
+app/agents/office_specialist_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/planner_agent/__init__.py: from app.agents.planner_agent.agent import PlannerAgent
+app/agents/planner_agent/agent.py: from __future__ import annotations
+app/agents/planner_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/planner_agent.py: from __future__ import annotations
+app/agents/planner_agent.py: from typing import Any
+app/agents/planner_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/planner_role.py: from packages.office_modules.planner_role import run_planner_role
+app/agents/planning_support.py: from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+app/agents/plugin_base.py: from __future__ import annotations
+app/agents/plugin_base.py: from typing import Any
+app/agents/researcher_agent/__init__.py: from app.agents.researcher_agent.agent import ResearcherAgent
+app/agents/researcher_agent/agent.py: from __future__ import annotations
+app/agents/researcher_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/researcher_agent.py: from __future__ import annotations
+app/agents/researcher_agent.py: from typing import Any
+app/agents/researcher_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/review_support.py: from packages.office_modules.review_support import *
+app/agents/reviewer_agent/__init__.py: from app.agents.reviewer_agent.agent import ReviewerAgent
+app/agents/reviewer_agent/agent.py: from __future__ import annotations
+app/agents/reviewer_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/reviewer_agent.py: from __future__ import annotations
+app/agents/reviewer_agent.py: from typing import Any
+app/agents/reviewer_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/reviewer_helpers.py: from packages.office_modules.reviewer_helpers import *
+app/agents/reviewer_role.py: from packages.office_modules.reviewer_role import run_reviewer_role
+app/agents/revision_agent.py: from __future__ import annotations
+app/agents/revision_agent.py: from typing import Any
+app/agents/revision_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/revision_role.py: from packages.office_modules.revision_role import run_revision_role
+app/agents/role_catalog.py: from packages.office_modules.role_catalog import *
+app/agents/role_contracts.py: from __future__ import annotations
+app/agents/role_contracts.py: from typing import Any
+app/agents/role_contracts.py: from packages.office_modules.runtime_profiles import RuntimeProfile
+app/agents/role_contracts.py: from packages.agent_core.role_runtime import RoleContext, RoleResult, RoleSpec
+app/agents/role_debug_support.py: from __future__ import annotations
+app/agents/role_debug_support.py: from typing import Any
+app/agents/role_debug_support.py: from app.agents.role_contracts import validate_role_result, validate_runtime_profile
+app/agents/role_debug_support.py: from app.agents.role_smoke import run_role_execution_smoke
+app/agents/role_debug_support.py: from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE, default_runtime_profile_for_route, runtime_profile_spec
+app/agents/role_helpers.py: from packages.office_modules.role_helpers import *
+app/agents/role_registry.py: from packages.agent_core.role_registry import RegisteredRole, RoleHandler, RoleRegistry
+app/agents/role_registry.py: from packages.office_modules.roles import build_office_role_registry
+app/agents/role_smoke.py: from __future__ import annotations
+app/agents/role_smoke.py: import json
+app/agents/role_smoke.py: from dataclasses import replace
+app/agents/role_smoke.py: from typing import Any
+app/agents/role_smoke.py: from packages.office_modules.planner_role import run_planner_role
+app/agents/role_smoke.py: from packages.office_modules.reviewer_role import run_reviewer_role
+app/agents/role_smoke.py: from packages.office_modules.revision_role import run_revision_role
+app/agents/role_smoke.py: from app.agents.role_contracts import validate_role_result, validate_runtime_profile
+app/agents/role_smoke.py: from packages.office_modules.runtime_profiles import PATCH_WORKER_PROFILE, runtime_profile_spec
+app/agents/role_smoke.py: from packages.office_modules.structurer_role import run_structurer_role
+app/agents/role_smoke.py: from app.models import ChatSettings
+app/agents/router_agent.py: from __future__ import annotations
+app/agents/router_agent.py: from typing import Any
+app/agents/router_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/runtime_controller.py: from packages.agent_core.runtime_controller import RoleExecution, RoleRuntimeController
+app/agents/runtime_profiles.py: from packages.office_modules.runtime_profiles import *
+app/agents/specialist_role.py: from packages.office_modules.specialist_role import build_specialist_input_payload, format_specialist_system_hint, normalize_specialist_brief_payload, run_specialist_with_context, specialist_contract, specialist_fallback
+app/agents/structurer_agent.py: from __future__ import annotations
+app/agents/structurer_agent.py: from typing import Any
+app/agents/structurer_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/structurer_role.py: from packages.office_modules.structurer_role import run_structurer_role
+app/agents/summarizer_agent/__init__.py: from app.agents.summarizer_agent.agent import SummarizerAgent
+app/agents/summarizer_agent/agent.py: from __future__ import annotations
+app/agents/summarizer_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/summarizer_agent.py: from __future__ import annotations
+app/agents/summarizer_agent.py: from typing import Any
+app/agents/summarizer_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/tool_user_agent/__init__.py: from app.agents.tool_user_agent.agent import ToolUserAgent
+app/agents/tool_user_agent/agent.py: from __future__ import annotations
+app/agents/tool_user_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/worker_agent/__init__.py: from app.agents.worker_agent.agent import WorkerAgent
+app/agents/worker_agent/agent.py: from __future__ import annotations
+app/agents/worker_agent/agent.py: from app.agents.plugin_base import BaseIndependentAgent
+app/agents/worker_agent.py: from __future__ import annotations
+app/agents/worker_agent.py: from typing import Any
+app/agents/worker_agent.py: from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/answer_stream_state.py: from __future__ import annotations
+app/answer_stream_state.py: from typing import Any
+app/api/__init__.py: from app.api.main import app
+app/api/main.py: from app.main import app
+app/attachment_argument_rewriter.py: from __future__ import annotations
+app/attachment_argument_rewriter.py: import json
+app/attachment_argument_rewriter.py: from pathlib import Path
+app/attachment_argument_rewriter.py: from typing import Any
+app/attachment_argument_rewriter.py: from app.i18n import translate
+app/attachment_evidence.py: from __future__ import annotations
+app/attachment_evidence.py: from pathlib import Path
+app/attachment_evidence.py: from typing import Any
+app/attachment_evidence.py: from PIL import Image
+app/attachment_evidence.py: from app.attachments import extract_document_text
+app/attachment_evidence.py: from app.attachments import extract_outlook_msg_payload
+app/attachments.py: from __future__ import annotations
+app/attachments.py: import base64
+app/attachments.py: import io
+app/attachments.py: import re
+app/attachments.py: import zipfile
+app/attachments.py: import xml.etree.ElementTree
+app/attachments.py: from html import unescape
+app/attachments.py: from pathlib import Path
+app/attachments.py: from app.document_text import extract_pdf_text_from_path, truncate_text
+app/attachments.py: from app.i18n import normalize_locale
+app/attachments.py: from docx import Document
+app/attachments.py: from PIL import Image
+app/attachments.py: from openpyxl import load_workbook
+app/attachments.py: import extract_msg
+app/attachments.py: from PIL import Image
+app/attachments.py: from pillow_heif import register_heif_opener
+app/attachments.py: from extract_msg.enums import DeencapType
+app/browser_runtime.py: from __future__ import annotations
+app/browser_runtime.py: from dataclasses import dataclass
+app/browser_runtime.py: from pathlib import Path
+app/browser_runtime.py: import threading
+app/browser_runtime.py: import time
+app/browser_runtime.py: from typing import Any
+app/browser_runtime.py: from playwright.sync_api import TimeoutError
+app/browser_runtime.py: from playwright.sync_api import sync_playwright
+app/candidate_intents.py: from __future__ import annotations
+app/candidate_intents.py: from app.context_assembly import coerce_active_task, infer_task_control
+app/candidate_intents.py: from app.intent_schema import ConversationFrame, IntentScore, RequestSignals
+app/chat_product_runtime.py: from __future__ import annotations
+app/chat_product_runtime.py: import threading
+app/chat_product_runtime.py: import time
+app/chat_product_runtime.py: from pathlib import Path
+app/chat_product_runtime.py: from typing import Any
+app/chat_product_runtime.py: from app.config import AppConfig
+app/chat_product_runtime.py: from app.local_tools import LocalToolExecutor
+app/codex_runner.py: from __future__ import annotations
+app/codex_runner.py: import json
+app/codex_runner.py: import time
+app/codex_runner.py: from typing import Any
+app/codex_runner.py: from openai import OpenAI
+app/codex_runner.py: from app.openai_auth import OpenAIAuthManager
+app/codex_runner.py: from app.serialization import safe_model_dump
+app/config.py: from __future__ import annotations
+app/config.py: import os
+app/config.py: import platform
+app/config.py: import re
+app/config.py: import shutil
+app/config.py: from dataclasses import dataclass, replace
+app/config.py: from pathlib import Path
+app/config.py: from typing import Callable
+app/config.py: from app.i18n import normalize_locale
+app/context_assembly.py: from __future__ import annotations
+app/context_assembly.py: from typing import Any
+app/context_assembly.py: from pydantic import BaseModel, Field
+app/context_assembly.py: from app.intent_schema import ActiveTask, TaskControl
+app/context_assembly.py: from app.serialization import dump_model
+app/context_meter.py: from __future__ import annotations
+app/context_meter.py: import json
+app/context_meter.py: import re
+app/context_meter.py: from datetime import datetime, timezone
+app/context_meter.py: from typing import Any
+app/context_meter.py: import tiktoken
+app/context_meter.py: from app import session_context
+app/context_pack.py: from __future__ import annotations
+app/context_pack.py: import json
+app/context_pack.py: from pathlib import Path
+app/context_pack.py: import re
+app/context_pack.py: from typing import Any, Literal
+app/context_pack.py: from pydantic import BaseModel, Field
+app/context_pack.py: from app.serialization import dump_model
+app/contracts/__init__.py: from app.contracts.errors import AgentOSError, CompatibilityError, ModuleInitError, ModuleLoadError, ProviderUnavailableError, ToolExecutionError
+app/contracts/__init__.py: from app.contracts.health import HealthReport, HealthStatus
+app/contracts/__init__.py: from app.contracts.manifest import CompatibilityLevel, ModuleKind, ModuleManifest
+app/contracts/__init__.py: from app.contracts.module import BaseBusinessModule, BaseModule, BaseSystemModule, BaseToolProvider, provider_contract_from_instance
+app/contracts/__init__.py: from app.contracts.provider_contract import ProviderContract
+app/contracts/__init__.py: from app.contracts.task import TaskRequest, TaskResponse
+app/contracts/__init__.py: from app.contracts.tool import ToolCall, ToolResult
+app/contracts/__init__.py: from app.contracts.tool_contract import ToolContract
+app/contracts/errors.py: from __future__ import annotations
+app/contracts/health.py: from __future__ import annotations
+app/contracts/health.py: from dataclasses import dataclass, field
+app/contracts/health.py: from typing import Literal
+app/contracts/manifest.py: from __future__ import annotations
+app/contracts/manifest.py: from dataclasses import dataclass, field
+app/contracts/manifest.py: from typing import Literal
+app/contracts/module.py: from __future__ import annotations
+app/contracts/module.py: from typing import Any, Protocol, runtime_checkable
+app/contracts/module.py: from app.contracts.health import HealthReport
+app/contracts/module.py: from app.contracts.manifest import ModuleManifest
+app/contracts/module.py: from app.contracts.provider_contract import ProviderContract
+app/contracts/module.py: from app.contracts.task import TaskRequest, TaskResponse
+app/contracts/module.py: from app.contracts.tool import ToolCall, ToolResult
+app/contracts/provider_contract.py: from __future__ import annotations
+app/contracts/provider_contract.py: from dataclasses import dataclass, field
+app/contracts/provider_contract.py: from typing import Any
+app/contracts/task.py: from __future__ import annotations
+app/contracts/task.py: from dataclasses import dataclass, field
+app/contracts/task.py: from typing import Any
+app/contracts/tool.py: from __future__ import annotations
+app/contracts/tool.py: from dataclasses import dataclass, field
+app/contracts/tool.py: from typing import Any
+app/contracts/tool_contract.py: from __future__ import annotations
+app/contracts/tool_contract.py: from dataclasses import dataclass, field
+app/contracts/tool_contract.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T145157-04233670/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T145157-04233670/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T145353-f9028301/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T145353-f9028301/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T145732-2a7b33b3/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T145732-2a7b33b3/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T150805-70adfb3b/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T150805-70adfb3b/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T153258-24d712ec/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T153258-24d712ec/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T153411-fa885e8a/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T153411-fa885e8a/router/module/module.py: from typing import Any
+app/data/runtime/repair_workspaces/20260320T235745-d0598c48/router/module/module.py: from __future__ import annotations
+app/data/runtime/repair_workspaces/20260320T235745-d0598c48/router/module/module.py: from typing import Any
+app/document_text.py: from __future__ import annotations
+app/document_text.py: import io
+app/document_text.py: import json
+app/document_text.py: import os
+app/document_text.py: import re
+app/document_text.py: import tempfile
+app/document_text.py: from hashlib import sha256
+app/document_text.py: from pathlib import Path
+app/document_text.py: import pdfplumber
+app/document_text.py: from pypdf import PdfReader
+app/document_text.py: import pdfplumber
+app/evolution.py: from __future__ import annotations
+app/evolution.py: import json
+app/evolution.py: import re
+app/evolution.py: import threading
+app/evolution.py: import uuid
+app/evolution.py: from collections import Counter
+app/evolution.py: from datetime import datetime, timezone
+app/evolution.py: from pathlib import Path
+app/evolution.py: from typing import Any
+app/frame_resolver.py: from __future__ import annotations
+app/frame_resolver.py: from typing import Any
+app/frame_resolver.py: from app.context_assembly import coerce_active_task
+app/frame_resolver.py: from app.intent_constants import SHORT_FOLLOWUP_MAX_LEN
+app/frame_resolver.py: from app.intent_schema import ConversationFrame, RequestSignals
+app/i18n.py: from __future__ import annotations
+app/i18n.py: from typing import Any
+app/intent_classifier.py: from __future__ import annotations
+app/intent_classifier.py: from typing import Any
+app/intent_classifier.py: from app.candidate_intents import CandidateIntentGenerator
+app/intent_classifier.py: from app.context_assembly import AssembledContext
+app/intent_classifier.py: from app.frame_resolver import FrameResolver
+app/intent_classifier.py: from app.intent_constants import INTENT_HIGH_AMBIGUITY_THRESHOLD, INTENT_LLM_ESCALATION_THRESHOLD, INTENT_LOW_CONFIDENCE_THRESHOLD, INTENT_MARGIN_MIXED_THRESHOLD
+app/intent_classifier.py: from app.intent_schema import ConversationFrame, IntentClassification, IntentDecision, IntentScore, RequestSignals
+app/intent_classifier.py: from app.intent_scorer import IntentScorer
+app/intent_constants.py: from __future__ import annotations
+app/intent_schema.py: from __future__ import annotations
+app/intent_schema.py: from typing import Any, Literal
+app/intent_schema.py: from pydantic import BaseModel, Field
+app/intent_schema.py: from app.serialization import dump_model
+app/intent_scorer.py: from __future__ import annotations
+app/intent_scorer.py: import json
+app/intent_scorer.py: from typing import Any
+app/intent_scorer.py: from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target, infer_task_control
+app/intent_scorer.py: from app.intent_constants import INTENT_HIGH_AMBIGUITY_THRESHOLD, INTENT_LOW_CONFIDENCE_THRESHOLD, INTENT_MARGIN_MIXED_THRESHOLD
+app/intent_scorer.py: from app.intent_schema import ConversationFrame, IntentDecision, IntentScore, RequestSignals, TaskControl
+app/intent_scorer.py: from app.serialization import dump_model
+app/kernel_robot_main.py: from __future__ import annotations
+app/kernel_robot_main.py: from app.main import app
+app/llm_exchange.py: from __future__ import annotations
+app/llm_exchange.py: import json
+app/llm_exchange.py: import traceback
+app/llm_exchange.py: from typing import Any
+app/llm_exchange.py: from app.serialization import dump_model, safe_model_dump
+app/local_tools.py: from __future__ import annotations
+app/local_tools.py: import json
+app/local_tools.py: import fnmatch
+app/local_tools.py: import hashlib
+app/local_tools.py: import itertools
+app/local_tools.py: import importlib
+app/local_tools.py: import re
+app/local_tools.py: import shlex
+app/local_tools.py: import shutil
+app/local_tools.py: import ssl
+app/local_tools.py: import subprocess
+app/local_tools.py: import tempfile
+app/local_tools.py: import threading
+app/local_tools.py: import time
+app/local_tools.py: import urllib.error
+app/local_tools.py: import urllib.parse
+app/local_tools.py: import urllib.request
+app/local_tools.py: import xml.etree.ElementTree
+app/local_tools.py: import zipfile
+app/local_tools.py: from html import unescape
+app/local_tools.py: from pathlib import Path
+app/local_tools.py: from typing import Any, Callable
+app/local_tools.py: from PIL import Image, ImageEnhance, ImageOps
+app/local_tools.py: from app.action_validator import validate_command_path_args
+app/local_tools.py: from app.browser_runtime import BrowserToolManager
+app/local_tools.py: from app.config import AppConfig, get_access_roots, normalize_permission_profile
+app/local_tools.py: from app.i18n import normalize_locale
+app/local_tools.py: from app.document_text import build_pdf_document_index, clear_pdf_cache_for_path, extract_heading_entries_from_pages, extract_pdf_page_texts_from_path, extract_pdf_tables_from_path, extract_pdf_text_from_bytes, extract_pdf_text_from_path, normalize_lookup_text, truncate_text
+app/local_tools.py: from app.sandbox import DockerSandboxManager
+app/local_tools.py: from app.storage import ProjectStore
+app/local_tools.py: from app.tool_trace_summary import safe_error_message
+app/local_tools.py: from app.workbench import WorkbenchStore
+app/local_tools.py: from pillow_heif import register_heif_opener
+app/local_tools.py: from app.attachments import looks_like_outlook_msg_file
+app/local_tools.py: import extract_msg
+app/local_tools.py: from openpyxl import load_workbook
+app/local_tools.py: from app.attachments import extract_outlook_msg_payload
+app/local_tools.py: from app.attachments import extract_document_text
+app/local_tools.py: from app.attachments import extract_document_text, extract_outlook_msg_payload, looks_like_outlook_msg_bytes
+app/local_tools.py: from app.attachments import extract_document_text, looks_like_pptx_file, looks_like_xlsx_file
+app/main.py: from __future__ import annotations
+app/main.py: import ast
+app/main.py: import copy
+app/main.py: import hashlib
+app/main.py: import json
+app/main.py: import os
+app/main.py: import queue
+app/main.py: from pathlib import Path
+app/main.py: import subprocess
+app/main.py: import threading
+app/main.py: import time
+app/main.py: from typing import Any, Callable
+app/main.py: import uuid
+app/main.py: from fastapi import FastAPI, File, HTTPException, UploadFile
+app/main.py: from fastapi.middleware.cors import CORSMiddleware
+app/main.py: from fastapi.responses import FileResponse, StreamingResponse
+app/main.py: from fastapi.staticfiles import StaticFiles
+app/main.py: from app.attachment_evidence import build_attachment_evidence_pack
+app/main.py: from app.chat_product_runtime import ChatProductRuntime
+app/main.py: from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name, normalize_permission_profile
+app/main.py: from app.context_meter import build_compaction_status, build_context_meter, build_context_meter_from_status, build_runtime_context_payload, ensure_compaction_state, maybe_auto_compact_session
+app/main.py: from app.context_pack import ContextManager, classify_assistant_output
+app/main.py: from app.evolution import EvolutionStore
+app/main.py: from app.i18n import normalize_locale, supported_locales, translate
+app/main.py: from app.models import AppStatusResponse, AppUpdateResponse, BootstrapResponse, ChatRequest, ChatResponse, ChatSettings, ClearStatsResponse, DeleteThreadResponse, DeleteSessionResponse, HealthResponse, MessageActivity, NewSessionResponse, NewSessionRequest, NewThreadResponse, ProjectCreateRequest, ProjectDescriptor, ProjectDeleteResponse, ProjectListResponse, ProjectUpdateRequest, RuntimeStatusResponse, SessionDetailResponse, SessionListItem, SessionListResponse, SessionTurn, SkillDeleteResponse, SkillDescriptor, SkillUpsertRequest, SpecDescriptor, SpecUpsertRequest, UpdateSessionTitleRequest, UpdateSessionTitleResponse, SandboxDrillRequest, SandboxDrillResponse, SandboxDrillStep, TokenStatsResponse, TokenTotals, ToggleSkillRequest, ToolDescriptor, ToolEvent, TokenUsage, ThreadDetailResponse, ThreadListItem, ThreadListResponse, UploadResponse, WorkbenchSkillsResponse, WorkbenchSpecsResponse, WorkbenchToolsResponse
+app/main.py: from app.openai_auth import OpenAIAuthManager
+app/main.py: from app.phase_timing import PhaseTimer
+app/main.py: from app.pricing import estimate_usage_cost
+app/main.py: from app.serialization import dump_model
+app/main.py: from app.runtime_boundary import build_turn_runtime_boundary
+app/main.py: from app.runtime_contract import build_full_auto_runtime_contract
+app/main.py: from app import session_context
+app/main.py: from app.session_context import normalize_attachment_ids
+app/main.py: from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+app/main.py: from app.update_manager import AppUpdateManager
+app/main.py: from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
+app/main.py: from app.workbench import WorkbenchStore
+app/models.py: from __future__ import annotations
+app/models.py: from typing import Any, Literal
+app/models.py: from pydantic import BaseModel, Field
+app/openai_auth.py: from __future__ import annotations
+app/openai_auth.py: from dataclasses import dataclass
+app/openai_auth.py: from datetime import datetime, timedelta, timezone
+app/openai_auth.py: import json
+app/openai_auth.py: import os
+app/openai_auth.py: from pathlib import Path
+app/openai_auth.py: import threading
+app/openai_auth.py: from typing import Any
+app/openai_auth.py: from urllib.error import HTTPError, URLError
+app/openai_auth.py: from urllib.request import Request, urlopen
+app/openai_auth.py: from app.config import AppConfig
+app/phase_timing.py: from __future__ import annotations
+app/phase_timing.py: from contextlib import contextmanager
+app/phase_timing.py: from dataclasses import dataclass, field
+app/phase_timing.py: import time
+app/phase_timing.py: from typing import Any, Iterator
+app/pipeline_hooks.py: from __future__ import annotations
+app/pipeline_hooks.py: from typing import Any
+app/policy_router.py: from __future__ import annotations
+app/policy_router.py: from typing import Any
+app/policy_router.py: from uuid import uuid4
+app/policy_router.py: from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target
+app/policy_router.py: from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+app/policy_router.py: from app.intent_schema import ActiveTask, ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision, TaskControl
+app/policy_router.py: from app.serialization import dump_model
+app/policy_router.py: from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
+app/pricing.py: from __future__ import annotations
+app/pricing.py: from dataclasses import dataclass
+app/pricing.py: from typing import Any
+app/role_runtime.py: from packages.agent_core.role_runtime import *
+app/route_trace.py: from __future__ import annotations
+app/route_trace.py: from typing import Any
+app/route_trace.py: from app.context_assembly import AssembledContext, coerce_active_task
+app/route_trace.py: from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals, RouteTrace
+app/route_trace.py: from app.serialization import dump_model
+app/route_verifier.py: from __future__ import annotations
+app/route_verifier.py: from app.context_assembly import AssembledContext, coerce_active_task
+app/route_verifier.py: from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals
+app/route_verifier.py: from app.serialization import dump_model
+app/router_signals.py: from __future__ import annotations
+app/router_signals.py: from typing import Any
+app/router_signals.py: from app.context_assembly import coerce_active_task, infer_task_control, looks_like_translation_request, translation_followup_flags
+app/router_signals.py: from app.intent_constants import SHORT_FOLLOWUP_MAX_LEN
+app/router_signals.py: from app.intent_schema import RequestSignals
+app/runtime_boundary.py: from __future__ import annotations
+app/runtime_boundary.py: from pathlib import Path
+app/runtime_boundary.py: from typing import Any
+app/runtime_boundary.py: from pydantic import BaseModel, Field
+app/runtime_boundary.py: from app.config import AppConfig, normalize_permission_profile
+app/runtime_boundary.py: from app.runtime_contract import RuntimeContract
+app/runtime_contract.py: from __future__ import annotations
+app/runtime_contract.py: from dataclasses import asdict, dataclass
+app/runtime_contract.py: from typing import Any
+app/runtime_contract.py: from app.config import AppConfig, normalize_permission_profile
+app/runtime_contract.py: from app.models import ChatSettings
+app/runtime_errors.py: from __future__ import annotations
+app/runtime_errors.py: from typing import Any
+app/runtime_errors.py: from app.i18n import normalize_locale, translate
+app/runtime_hints.py: from __future__ import annotations
+app/runtime_hints.py: import re
+app/runtime_hints.py: from typing import Any
+app/runtime_hints.py: from app.tool_trace_summary import safe_preview
+app/runtime_trace_labels.py: from __future__ import annotations
+app/runtime_trace_labels.py: from typing import Any
+app/runtime_trace_labels.py: from app.i18n import normalize_locale
+app/sandbox.py: from __future__ import annotations
+app/sandbox.py: import hashlib
+app/sandbox.py: import shutil
+app/sandbox.py: import subprocess
+app/sandbox.py: import threading
+app/sandbox.py: import time
+app/sandbox.py: from pathlib import Path
+app/serialization.py: from __future__ import annotations
+app/serialization.py: from dataclasses import asdict, is_dataclass
+app/serialization.py: from datetime import date, datetime
+app/serialization.py: from pathlib import Path
+app/serialization.py: from typing import Any
+app/session_context.py: from __future__ import annotations
+app/session_context.py: import re
+app/session_context.py: import uuid
+app/session_context.py: from datetime import datetime, timezone
+app/session_context.py: from typing import Any
+app/session_migration.py: from __future__ import annotations
+app/session_migration.py: import re
+app/session_migration.py: from typing import Any
+app/session_migration.py: from app.context_pack import ContextManager, RecentObservation, _has_context_manager_data, _known_previous_project_roots, _normalize_clean_turns, _normalize_plan_items, _normalize_recent_observations, _rebase_text_paths_for_model, _rebase_value_paths_for_model, _unique_strings
+app/session_migration.py: from app.serialization import dump_model
+app/session_migration.py: from app.session_context import normalize_current_task_focus
+app/storage.py: from __future__ import annotations
+app/storage.py: import json
+app/storage.py: import re
+app/storage.py: import subprocess
+app/storage.py: import threading
+app/storage.py: import time
+app/storage.py: import uuid
+app/storage.py: from datetime import datetime, timezone
+app/storage.py: from pathlib import Path
+app/storage.py: from typing import Any
+app/storage.py: from fastapi import UploadFile
+app/storage.py: from app.session_migration import CONTEXT_SCHEMA_VERSION, migrate_legacy_session_to_context_manager
+app/storage.py: from app import session_context
+app/system_modules/__init__.py: from app.system_modules.memory_module.module import MemoryModule
+app/system_modules/__init__.py: from app.system_modules.output_module.module import OutputModule
+app/system_modules/__init__.py: from app.system_modules.policy_module.module import PolicyModule
+app/system_modules/__init__.py: from app.system_modules.tool_runtime_module.module import ToolRuntimeModule
+app/system_modules/memory_module/__init__.py: from app.system_modules.memory_module.manifest import MEMORY_MODULE_MANIFEST
+app/system_modules/memory_module/__init__.py: from app.system_modules.memory_module.module import MemoryModule
+app/system_modules/memory_module/manifest.py: from __future__ import annotations
+app/system_modules/memory_module/manifest.py: from app.contracts import ModuleManifest
+app/system_modules/memory_module/module.py: from __future__ import annotations
+app/system_modules/memory_module/module.py: from typing import Any
+app/system_modules/memory_module/module.py: from app.contracts import HealthReport
+app/system_modules/memory_module/module.py: from app.system_modules.memory_module.manifest import MEMORY_MODULE_MANIFEST
+app/system_modules/output_module/__init__.py: from app.system_modules.output_module.manifest import OUTPUT_MODULE_MANIFEST
+app/system_modules/output_module/__init__.py: from app.system_modules.output_module.module import OutputModule
+app/system_modules/output_module/manifest.py: from __future__ import annotations
+app/system_modules/output_module/manifest.py: from app.contracts import ModuleManifest
+app/system_modules/output_module/module.py: from __future__ import annotations
+app/system_modules/output_module/module.py: from typing import Any
+app/system_modules/output_module/module.py: from app.contracts import HealthReport, TaskResponse
+app/system_modules/output_module/module.py: from app.system_modules.output_module.manifest import OUTPUT_MODULE_MANIFEST
+app/system_modules/policy_module/__init__.py: from app.system_modules.policy_module.manifest import POLICY_MODULE_MANIFEST
+app/system_modules/policy_module/__init__.py: from app.system_modules.policy_module.module import PolicyModule
+app/system_modules/policy_module/manifest.py: from __future__ import annotations
+app/system_modules/policy_module/manifest.py: from app.contracts import ModuleManifest
+app/system_modules/policy_module/module.py: from __future__ import annotations
+app/system_modules/policy_module/module.py: from typing import Any
+app/system_modules/policy_module/module.py: from app.contracts import HealthReport
+app/system_modules/policy_module/module.py: from app.system_modules.policy_module.manifest import POLICY_MODULE_MANIFEST
+app/system_modules/tool_runtime_module/__init__.py: from app.system_modules.tool_runtime_module.manifest import TOOL_RUNTIME_MODULE_MANIFEST
+app/system_modules/tool_runtime_module/__init__.py: from app.system_modules.tool_runtime_module.module import ToolRuntimeModule
+app/system_modules/tool_runtime_module/manifest.py: from __future__ import annotations
+app/system_modules/tool_runtime_module/manifest.py: from app.contracts import ModuleManifest
+app/system_modules/tool_runtime_module/module.py: from __future__ import annotations
+app/system_modules/tool_runtime_module/module.py: from typing import Any
+app/system_modules/tool_runtime_module/module.py: from app.contracts import HealthReport, ToolCall, ToolResult
+app/system_modules/tool_runtime_module/module.py: from app.system_modules.tool_runtime_module.manifest import TOOL_RUNTIME_MODULE_MANIFEST
+app/tool_name_normalizer.py: from __future__ import annotations
+app/tool_providers/__init__.py: from app.tool_providers.file_provider import LocalFileProvider
+app/tool_providers/__init__.py: from app.tool_providers.session_provider import SessionStoreProvider
+app/tool_providers/__init__.py: from app.tool_providers.web_provider import HttpWebProvider
+app/tool_providers/__init__.py: from app.tool_providers.workspace_provider import LocalWorkspaceProvider
+app/tool_providers/__init__.py: from app.tool_providers.write_provider import PatchWriteProvider
+app/tool_providers/file_provider.py: from __future__ import annotations
+app/tool_providers/file_provider.py: from typing import Any
+app/tool_providers/file_provider.py: from app.config import AppConfig
+app/tool_providers/file_provider.py: from app.contracts import BaseToolProvider, HealthReport, ToolCall, ToolResult
+app/tool_providers/file_provider.py: from app.local_tools import LocalToolExecutor
+app/tool_providers/session_provider.py: from __future__ import annotations
+app/tool_providers/session_provider.py: from typing import Any
+app/tool_providers/session_provider.py: from app.config import AppConfig
+app/tool_providers/session_provider.py: from app.contracts import BaseToolProvider, HealthReport, ToolCall, ToolResult
+app/tool_providers/session_provider.py: from app.local_tools import LocalToolExecutor
+app/tool_providers/web_provider.py: from __future__ import annotations
+app/tool_providers/web_provider.py: from typing import Any
+app/tool_providers/web_provider.py: from app.config import AppConfig
+app/tool_providers/web_provider.py: from app.contracts import BaseToolProvider, HealthReport, ToolCall, ToolResult
+app/tool_providers/web_provider.py: from app.local_tools import LocalToolExecutor
+app/tool_providers/workspace_provider.py: from __future__ import annotations
+app/tool_providers/workspace_provider.py: from typing import Any
+app/tool_providers/workspace_provider.py: from app.config import AppConfig
+app/tool_providers/workspace_provider.py: from app.contracts import BaseToolProvider, HealthReport, ToolCall, ToolResult
+app/tool_providers/workspace_provider.py: from app.local_tools import LocalToolExecutor
+app/tool_providers/write_provider.py: from __future__ import annotations
+app/tool_providers/write_provider.py: from typing import Any
+app/tool_providers/write_provider.py: from app.config import AppConfig
+app/tool_providers/write_provider.py: from app.contracts import BaseToolProvider, HealthReport, ToolCall, ToolResult
+app/tool_providers/write_provider.py: from app.local_tools import LocalToolExecutor
+app/tool_trace_summary.py: from __future__ import annotations
+app/tool_trace_summary.py: import json
+app/tool_trace_summary.py: import re
+app/tool_trace_summary.py: from typing import Any
+app/tool_trace_summary.py: from app.i18n import translate
+app/trace_events.py: from __future__ import annotations
+app/trace_events.py: from dataclasses import dataclass, field
+app/trace_events.py: import time
+app/trace_events.py: from typing import Any, Literal
+app/trace_events.py: import uuid
+app/update_manager.py: from __future__ import annotations
+app/update_manager.py: import subprocess
+app/update_manager.py: from dataclasses import dataclass
+app/update_manager.py: from pathlib import Path
+app/update_manager.py: from typing import Callable, Sequence
+app/vintage_programmer_runtime.py: from __future__ import annotations
+app/vintage_programmer_runtime.py: import copy
+app/vintage_programmer_runtime.py: from dataclasses import dataclass
+app/vintage_programmer_runtime.py: import hashlib
+app/vintage_programmer_runtime.py: import inspect
+app/vintage_programmer_runtime.py: import json
+app/vintage_programmer_runtime.py: from pathlib import Path
+app/vintage_programmer_runtime.py: import re
+app/vintage_programmer_runtime.py: import threading
+app/vintage_programmer_runtime.py: import time
+app/vintage_programmer_runtime.py: import traceback
+app/vintage_programmer_runtime.py: from typing import Any, Callable
+app/vintage_programmer_runtime.py: import uuid
+app/vintage_programmer_runtime.py: from app.action_validator import ActionValidator, ValidationResult, validation_observation
+app/vintage_programmer_runtime.py: from app.answer_stream_state import answer_stream_diagnostics, consume_stream_delta_for_display, new_answer_stream_state, start_answer_stream_call
+app/vintage_programmer_runtime.py: from app.attachment_argument_rewriter import build_attachment_tool_guidance, rewrite_attachment_tool_arguments
+app/vintage_programmer_runtime.py: from app.config import AppConfig
+app/vintage_programmer_runtime.py: from app.context_pack import ContextManager, ModelContext, build_model_context, render_model_context
+app/vintage_programmer_runtime.py: from app.context_meter import count_tokens
+app/vintage_programmer_runtime.py: from app.i18n import normalize_locale, response_style_hint, translate
+app/vintage_programmer_runtime.py: from app.llm_exchange import MAX_EXCHANGES_PER_TURN, snapshot_ai_message, snapshot_error, snapshot_messages
+app/vintage_programmer_runtime.py: from app.models import ChatSettings, ExecutionTraceEntry, ProgressSignal, ToolEvent
+app/vintage_programmer_runtime.py: from app.openai_auth import OpenAIAuthManager
+app/vintage_programmer_runtime.py: from app.phase_timing import PhaseTimer
+app/vintage_programmer_runtime.py: from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
+app/vintage_programmer_runtime.py: from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
+app/vintage_programmer_runtime.py: from app.runtime_errors import classify_llm_exception, runtime_error_user_text
+app/vintage_programmer_runtime.py: from app.runtime_hints import extract_activity_excerpt, looks_like_inline_document_payload, looks_like_japanese_review_request, looks_like_revision_request
+app/vintage_programmer_runtime.py: from app.runtime_trace_labels import trace_label
+app/vintage_programmer_runtime.py: from app.serialization import dump_model, safe_model_dump
+app/vintage_programmer_runtime.py: from app.session_context import compat_task_checkpoint_from_focus
+app/vintage_programmer_runtime.py: from app.tool_name_normalizer import normalize_tool_name
+app/vintage_programmer_runtime.py: from app.tool_trace_summary import build_tool_argument_audit, normalize_tool_arguments, safe_error_message, safe_preview, summarize_tool_args, summarize_tool_result, validate_tool_arguments
+app/vintage_programmer_runtime.py: from app.trace_events import make_activity_event, make_trace_event
+app/vintage_programmer_runtime.py: from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
+app/vintage_programmer_runtime.py: from packages.office_modules.intent_support import has_image_attachments
+app/vintage_programmer_runtime.py: from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+app/workbench.py: from __future__ import annotations
+app/workbench.py: from pathlib import Path
+app/workbench.py: import re
+app/workbench.py: import shutil
+app/workbench.py: from typing import Any
+app/workbench.py: import yaml
+app/workbench.py: from app.config import AppConfig
+app/workbench.py: from app.i18n import normalize_locale
+packages/agent_core/__init__.py: from role_registry import RegisteredRole, RoleHandler, RoleRegistry
+packages/agent_core/__init__.py: from role_runtime import HookDebugEntry, HookPromptInjection, HookResult, RoleContext, RoleInstance, RoleResult, RoleSpec, RunState, TaskNode
+packages/agent_core/__init__.py: from orchestration import AgentCapabilityRuntime, build_agent_capability_runtime
+packages/agent_core/__init__.py: from runtime_controller import RoleExecution, RoleRuntimeController
+packages/agent_core/orchestration.py: from __future__ import annotations
+packages/agent_core/orchestration.py: from dataclasses import dataclass, field
+packages/agent_core/orchestration.py: from typing import Any
+packages/agent_core/orchestration.py: from packages.agent_core.role_registry import RegisteredRole, RoleRegistry
+packages/agent_core/orchestration.py: from packages.agent_core.runtime_controller import RoleRuntimeController
+packages/agent_core/orchestration.py: from packages.runtime_core.capability_loader import AgentModule, CapabilityBundle, MemoryModule, OutputModule, ToolModule, load_capability_bundles
+packages/agent_core/orchestration.py: from packages.runtime_core.tool_execution_bus import ToolExecutionBus
+packages/agent_core/role_registry.py: from __future__ import annotations
+packages/agent_core/role_registry.py: from dataclasses import dataclass, field
+packages/agent_core/role_registry.py: from typing import Any, Callable
+packages/agent_core/role_runtime.py: from __future__ import annotations
+packages/agent_core/role_runtime.py: from dataclasses import dataclass, field
+packages/agent_core/role_runtime.py: import time
+packages/agent_core/role_runtime.py: from typing import Any, Literal
+packages/agent_core/runtime_controller.py: from __future__ import annotations
+packages/agent_core/runtime_controller.py: from dataclasses import dataclass
+packages/agent_core/runtime_controller.py: from concurrent.futures import ThreadPoolExecutor, as_completed
+packages/agent_core/runtime_controller.py: import threading
+packages/agent_core/runtime_controller.py: from typing import Any
+packages/agent_core/runtime_controller.py: from packages.agent_core.role_registry import RoleRegistry
+packages/agent_core/runtime_controller.py: from packages.agent_core.role_runtime import RoleContext, RoleResult, RunState
+packages/office_addons/__init__.py: from __future__ import annotations
+packages/office_addons/__init__.py: import json
+packages/office_addons/__init__.py: from pathlib import Path
+packages/office_addons/__init__.py: from typing import Any
+packages/office_addons/__init__.py: from packages.agent_core.role_registry import RoleRegistry
+packages/office_addons/__init__.py: from packages.runtime_core.capability_loader import CapabilityBundle
+packages/office_modules/__init__.py: from __future__ import annotations
+packages/office_modules/__init__.py: import json
+packages/office_modules/__init__.py: from pathlib import Path
+packages/office_modules/__init__.py: from typing import Any
+packages/office_modules/__init__.py: from packages.runtime_core.capability_loader import CapabilityBundle
+packages/office_modules/__init__.py: from agent_module import build_office_agent_modules
+packages/office_modules/__init__.py: from memory_module import build_office_memory_modules
+packages/office_modules/__init__.py: from output_module import build_office_output_modules
+packages/office_modules/__init__.py: from roles import build_office_role_registry
+packages/office_modules/__init__.py: from tools import build_office_tool_modules
+packages/office_modules/__init__.py: from tools import get_tool_executor
+packages/office_modules/agent_module.py: from __future__ import annotations
+packages/office_modules/agent_module.py: from typing import Any
+packages/office_modules/agent_module.py: from packages.office_modules.execution_engine import OfficeExecutionEngine
+packages/office_modules/agent_module.py: from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+packages/office_modules/agent_module.py: from packages.office_modules.execution_runtime import LegacyOfficeHelperAdapter, OfficeExecutionRuntime, OfficeLegacyHelperSurface
+packages/office_modules/agent_module.py: from packages.runtime_core.capability_loader import AgentModule
+packages/office_modules/answer_bundle_support.py: from __future__ import annotations
+packages/office_modules/answer_bundle_support.py: import re
+packages/office_modules/answer_bundle_support.py: from typing import Any
+packages/office_modules/citation_support.py: from __future__ import annotations
+packages/office_modules/citation_support.py: from pathlib import Path
+packages/office_modules/citation_support.py: from typing import Any
+packages/office_modules/citation_support.py: from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+packages/office_modules/conflict_detector_role.py: from __future__ import annotations
+packages/office_modules/conflict_detector_role.py: import json
+packages/office_modules/conflict_detector_role.py: from typing import Any
+packages/office_modules/conflict_detector_role.py: from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/conflict_detector_role.py: from packages.office_modules.review_support import summarize_tool_events_for_review, summarize_validation_context
+packages/office_modules/conflict_detector_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/execution_engine.py: from __future__ import annotations
+packages/office_modules/execution_engine.py: from dataclasses import dataclass
+packages/office_modules/execution_engine.py: from typing import Any, Protocol
+packages/office_modules/execution_engine.py: from packages.office_modules.execution_runtime import OfficeExecutionResult, OfficeExecutionRuntime, normalize_legacy_run_chat_result
+packages/office_modules/execution_policy.py: from __future__ import annotations
+packages/office_modules/execution_policy.py: from dataclasses import dataclass
+packages/office_modules/execution_policy.py: from typing import Literal
+packages/office_modules/execution_runtime.py: from __future__ import annotations
+packages/office_modules/execution_runtime.py: from abc import ABC, abstractmethod
+packages/office_modules/execution_runtime.py: from dataclasses import dataclass, field
+packages/office_modules/execution_runtime.py: from datetime import datetime, timezone
+packages/office_modules/execution_runtime.py: from functools import wraps
+packages/office_modules/execution_runtime.py: import json
+packages/office_modules/execution_runtime.py: from pathlib import Path
+packages/office_modules/execution_runtime.py: from threading import Lock
+packages/office_modules/execution_runtime.py: from typing import Any
+packages/office_modules/execution_runtime.py: from packages.runtime_core.legacy_host_support import kernel_host_snapshot, read_kernel_host_getattr_metrics
+packages/office_modules/execution_state.py: from __future__ import annotations
+packages/office_modules/execution_state.py: from dataclasses import dataclass, field
+packages/office_modules/intent_support.py: from __future__ import annotations
+packages/office_modules/intent_support.py: from pathlib import Path
+packages/office_modules/intent_support.py: import re
+packages/office_modules/intent_support.py: from typing import Any
+packages/office_modules/intent_support.py: from packages.office_modules.router_hints import HOLISTIC_DIRECT_PHRASES, HOLISTIC_EXPLAIN_MARKERS, HOLISTIC_OVERVIEW_MARKERS, SOURCE_TRACE_HINTS, SPEC_LOOKUP_HINTS, SPEC_SCOPE_HINTS, TABLE_REFERENCE_HINTS, TABLE_REFORMAT_HINTS, VERIFICATION_HINTS, text_has_any
+packages/office_modules/legacy_runtime_support.py: from __future__ import annotations
+packages/office_modules/legacy_runtime_support.py: import json
+packages/office_modules/legacy_runtime_support.py: import tempfile
+packages/office_modules/legacy_runtime_support.py: import time
+packages/office_modules/legacy_runtime_support.py: from pathlib import Path
+packages/office_modules/legacy_runtime_support.py: from typing import Any
+packages/office_modules/legacy_runtime_support.py: from app.codex_runner import build_codex_input_payload
+packages/office_modules/legacy_runtime_support.py: from app.evolution import EvolutionStore
+packages/office_modules/legacy_runtime_support.py: from app.models import ChatSettings
+packages/office_modules/legacy_runtime_support.py: from app.openai_auth import normalize_model_for_auth_mode
+packages/office_modules/legacy_runtime_support.py: from packages.agent_core import RoleContext, RoleResult, RunState, build_agent_capability_runtime
+packages/office_modules/memory_module.py: from __future__ import annotations
+packages/office_modules/memory_module.py: from packages.runtime_core.capability_loader import MemoryModule
+packages/office_modules/module_wrapper_surface.py: from __future__ import annotations
+packages/office_modules/module_wrapper_surface.py: from typing import Any
+packages/office_modules/module_wrapper_surface.py: from packages.office_modules.execution_runtime import adapt_office_legacy_helper_surface
+packages/office_modules/office_agent_runtime.py: from __future__ import annotations
+packages/office_modules/office_agent_runtime.py: from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
+packages/office_modules/office_agent_runtime.py: from datetime import datetime, timezone
+packages/office_modules/office_agent_runtime.py: import json
+packages/office_modules/office_agent_runtime.py: import logging
+packages/office_modules/office_agent_runtime.py: import os
+packages/office_modules/office_agent_runtime.py: import re
+packages/office_modules/office_agent_runtime.py: import threading
+packages/office_modules/office_agent_runtime.py: import time
+packages/office_modules/office_agent_runtime.py: from uuid import uuid4
+packages/office_modules/office_agent_runtime.py: from pathlib import Path
+packages/office_modules/office_agent_runtime.py: from typing import TYPE_CHECKING, Any, Callable
+packages/office_modules/office_agent_runtime.py: from urllib.parse import urlparse, urlunparse
+packages/office_modules/office_agent_runtime.py: from pydantic import BaseModel, Field
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.reviewer_helpers import normalize_reviewer_verdict, reviewer_readonly_tool_names, summarize_reviewer_tool_result
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.answer_bundle_support import augment_bundle_warnings, citation_kind, citation_strength, extract_answer_summary, fallback_answer_bundle, normalize_claim_record, split_claim_candidates, strip_answer_bundle_meta
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.citation_support import domain_from_url, extract_citations_from_tool_result, finalize_citation_candidates, merge_citation_candidates
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.planner_role import run_planner_role
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.review_support import format_tool_event_for_review, has_successful_local_file_access, prepare_tool_result_for_llm, successful_write_targets, summarize_tool_events_for_review, summarize_validation_context, summarize_write_tool_events, text_acknowledges_written_targets
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.reviewer_role import run_reviewer_role
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.revision_role import run_revision_role
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.role_helpers import make_default_role_result, make_role_context, make_role_result, make_role_spec, role_payload_dict
+packages/office_modules/office_agent_runtime.py: from app.agents.role_debug_support import debug_role_contract_matrix, debug_role_execution_smoke_matrix
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.runtime_profiles import build_runtime_profile_hint, default_runtime_profile_for_route
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.legacy_runtime_support import legacy_capability_bundle_snapshot, legacy_capability_multi_module_snapshot, legacy_codex_input_payload, legacy_evolution_overlay_snapshot, legacy_evolution_turn_update, legacy_normalize_model_for_auth, legacy_openai_auth_summary, legacy_role_lab_multi_instance_batch, compact_legacy_session, legacy_role_lab_worker_branch_graph, legacy_route_runtime_override_attachment_context_requires_tooling, legacy_route_runtime_override_force_tool_followup, legacy_role_lab_runtime_snapshot
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.structurer_role import run_structurer_role
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.specialist_role import build_specialist_input_payload, format_specialist_system_hint, normalize_specialist_brief_payload, run_specialist_with_context, specialist_contract, specialist_fallback
+packages/office_modules/office_agent_runtime.py: from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
+packages/office_modules/office_agent_runtime.py: from app.config import AppConfig, get_access_roots
+packages/office_modules/office_agent_runtime.py: from app.codex_runner import CodexResponsesRunner
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+packages/office_modules/office_agent_runtime.py: from app.intent_classifier import IntentClassifier
+packages/office_modules/office_agent_runtime.py: from app.intent_schema import RouteTrace
+packages/office_modules/office_agent_runtime.py: from app.context_assembly import ContextAssembler, coerce_active_task
+packages/office_modules/office_agent_runtime.py: from app.policy_router import PolicyRouter
+packages/office_modules/office_agent_runtime.py: from app.route_trace import build_route_trace, route_trace_payload
+packages/office_modules/office_agent_runtime.py: from app.route_verifier import RouteVerifier
+packages/office_modules/office_agent_runtime.py: from app.models import AgentPanel, ChatSettings, ToolEvent
+packages/office_modules/office_agent_runtime.py: from app.runtime_errors import classify_llm_exception
+packages/office_modules/office_agent_runtime.py: from app.serialization import dump_model
+packages/office_modules/office_agent_runtime.py: from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
+packages/office_modules/office_agent_runtime.py: from app.pipeline_hooks import PIPELINE_HOOK_HANDLERS, build_pipeline_hook_panel_payload, build_pipeline_hook_telemetry
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.request_analysis import has_file_like_lookup_token, looks_like_code_generation_request, looks_like_local_code_lookup_request, looks_like_permission_gate_text, message_has_explicit_local_path, should_auto_search_default_roots
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.router_hints import HOLISTIC_DIRECT_PHRASES, HOLISTIC_EXPLAIN_MARKERS, HOLISTIC_OVERVIEW_MARKERS, SOURCE_TRACE_HINTS, SPEC_LOOKUP_HINTS, SPEC_SCOPE_HINTS, TABLE_REFERENCE_HINTS, TABLE_REFORMAT_HINTS, VERIFICATION_HINTS, text_has_any
+packages/office_modules/office_agent_runtime.py: from app.router_signals import RouterSignalExtractor
+packages/office_modules/office_agent_runtime.py: from app.action_validator import ActionValidator, build_runtime_boundary, validation_observation
+packages/office_modules/office_agent_runtime.py: from packages.office_modules.intent_support import attachment_is_inline_parseable, attachment_needs_tooling, attachment_needs_tooling_for_turn, evidence_mode_needs_more_support, has_image_attachments, looks_like_holistic_document_explanation_request, looks_like_image_capability_denial, looks_like_image_text_extraction_request, looks_like_initial_content_triage_request, looks_like_inline_code_payload, looks_like_inline_document_payload, looks_like_internal_ticket_reference, looks_like_meeting_minutes_request, looks_like_source_trace_request, looks_like_spec_lookup_request, looks_like_stub_image_transcription, looks_like_table_reformat_request, looks_like_understanding_request, request_likely_requires_tools, requires_evidence_mode
+packages/office_modules/office_agent_runtime.py: from packages.agent_core import AgentCapabilityRuntime, HookDebugEntry, HookPromptInjection, HookResult, RoleContext, RoleExecution, RoleResult, RoleRuntimeController, RoleSpec, RunState, build_agent_capability_runtime
+packages/office_modules/office_agent_runtime.py: from packages.runtime_core.blackboard import Blackboard
+packages/office_modules/office_agent_runtime.py: from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+packages/office_modules/office_agent_runtime.py: from langchain_core.tools import StructuredTool
+packages/office_modules/office_agent_runtime.py: from langchain_openai import ChatOpenAI
+packages/office_modules/output_module.py: from __future__ import annotations
+packages/office_modules/output_module.py: from packages.runtime_core.capability_loader import OutputModule
+packages/office_modules/planner_role.py: from __future__ import annotations
+packages/office_modules/planner_role.py: import json
+packages/office_modules/planner_role.py: from typing import Any
+packages/office_modules/planner_role.py: from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+packages/office_modules/planner_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/planning_support.py: from __future__ import annotations
+packages/office_modules/planning_support.py: from typing import Any
+packages/office_modules/request_analysis.py: from __future__ import annotations
+packages/office_modules/request_analysis.py: import re
+packages/office_modules/request_analysis.py: from typing import Any
+packages/office_modules/review_support.py: from __future__ import annotations
+packages/office_modules/review_support.py: import json
+packages/office_modules/review_support.py: from pathlib import Path
+packages/office_modules/review_support.py: from typing import Any
+packages/office_modules/review_support.py: from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+packages/office_modules/review_support.py: from app.models import ToolEvent
+packages/office_modules/reviewer_helpers.py: from __future__ import annotations
+packages/office_modules/reviewer_helpers.py: from typing import Any
+packages/office_modules/reviewer_role.py: from __future__ import annotations
+packages/office_modules/reviewer_role.py: import json
+packages/office_modules/reviewer_role.py: from typing import Any, Callable
+packages/office_modules/reviewer_role.py: from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/reviewer_role.py: from packages.office_modules.review_support import has_successful_local_file_access, prepare_tool_result_for_llm, summarize_tool_events_for_review, summarize_validation_context, summarize_write_tool_events
+packages/office_modules/reviewer_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/revision_role.py: from __future__ import annotations
+packages/office_modules/revision_role.py: import json
+packages/office_modules/revision_role.py: from typing import Any
+packages/office_modules/revision_role.py: from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/revision_role.py: from packages.office_modules.review_support import has_successful_local_file_access, summarize_tool_events_for_review, summarize_write_tool_events
+packages/office_modules/revision_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/role_catalog.py: from __future__ import annotations
+packages/office_modules/role_helpers.py: from __future__ import annotations
+packages/office_modules/role_helpers.py: from typing import Any
+packages/office_modules/role_helpers.py: from packages.office_modules.role_catalog import ROLE_KINDS
+packages/office_modules/role_helpers.py: from packages.agent_core import RoleContext, RoleResult, RoleSpec
+packages/office_modules/roles.py: from __future__ import annotations
+packages/office_modules/roles.py: from packages.office_modules.conflict_detector_role import run_conflict_detector_role
+packages/office_modules/roles.py: from packages.office_modules.planner_role import run_planner_role
+packages/office_modules/roles.py: from packages.office_modules.reviewer_role import run_reviewer_role
+packages/office_modules/roles.py: from packages.office_modules.revision_role import run_revision_role
+packages/office_modules/roles.py: from packages.office_modules.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
+packages/office_modules/roles.py: from packages.office_modules.specialist_role import run_specialist_with_context
+packages/office_modules/roles.py: from packages.office_modules.structurer_role import run_structurer_role
+packages/office_modules/roles.py: from packages.agent_core.role_registry import RegisteredRole, RoleHandler, RoleRegistry
+packages/office_modules/router_hints.py: from __future__ import annotations
+packages/office_modules/runtime_profiles.py: from __future__ import annotations
+packages/office_modules/runtime_profiles.py: from dataclasses import dataclass
+packages/office_modules/runtime_profiles.py: from typing import Any
+packages/office_modules/specialist_role.py: from __future__ import annotations
+packages/office_modules/specialist_role.py: import json
+packages/office_modules/specialist_role.py: from typing import Any
+packages/office_modules/specialist_role.py: from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
+packages/office_modules/specialist_role.py: from packages.office_modules.role_catalog import SPECIALIST_LABELS
+packages/office_modules/specialist_role.py: from packages.office_modules.role_helpers import make_role_result, make_role_spec
+packages/office_modules/specialist_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/structurer_role.py: from __future__ import annotations
+packages/office_modules/structurer_role.py: import json
+packages/office_modules/structurer_role.py: from typing import Any
+packages/office_modules/structurer_role.py: from packages.office_modules.answer_bundle_support import augment_bundle_warnings, fallback_answer_bundle, normalize_claim_record, strip_answer_bundle_meta
+packages/office_modules/structurer_role.py: from packages.agent_core import RoleContext, RoleResult
+packages/office_modules/tools.py: from __future__ import annotations
+packages/office_modules/tools.py: from typing import Any, Callable
+packages/office_modules/tools.py: from packages.runtime_core.capability_loader import ToolModule
+packages/office_modules/tools.py: from app.local_tools import LocalToolExecutor
+packages/runtime_core/__init__.py: from capability_loader import AgentModule, CapabilityBundle, CapabilityModuleLoader, MemoryModule, OutputModule, ToolModule, load_capability_bundle, load_capability_bundles
+packages/runtime_core/__init__.py: from blackboard import Blackboard
+packages/runtime_core/__init__.py: from tool_execution_bus import ToolDispatchMeta, ToolExecutionBus
+packages/runtime_core/blackboard.py: from __future__ import annotations
+packages/runtime_core/blackboard.py: from dataclasses import dataclass, field
+packages/runtime_core/blackboard.py: from datetime import datetime, timezone
+packages/runtime_core/blackboard.py: from typing import Any
+packages/runtime_core/blackboard.py: from uuid import uuid4
+packages/runtime_core/capability_loader.py: from __future__ import annotations
+packages/runtime_core/capability_loader.py: from dataclasses import dataclass, field
+packages/runtime_core/capability_loader.py: import importlib
+packages/runtime_core/capability_loader.py: from typing import Any, Callable
+packages/runtime_core/legacy_host_support.py: from __future__ import annotations
+packages/runtime_core/legacy_host_support.py: from datetime import datetime, timezone
+packages/runtime_core/legacy_host_support.py: import json
+packages/runtime_core/legacy_host_support.py: from pathlib import Path
+packages/runtime_core/legacy_host_support.py: from threading import Lock
+packages/runtime_core/legacy_host_support.py: from typing import Any
+packages/runtime_core/legacy_host_support.py: from packages.runtime_core.blackboard import Blackboard
+packages/runtime_core/legacy_host_support.py: from packages.office_modules.execution_runtime import normalize_legacy_run_chat_result
+packages/runtime_core/tool_execution_bus.py: from __future__ import annotations
+packages/runtime_core/tool_execution_bus.py: from dataclasses import dataclass
+packages/runtime_core/tool_execution_bus.py: import inspect
+packages/runtime_core/tool_execution_bus.py: from typing import Any, Callable
+packages/runtime_core/tool_execution_bus.py: from packages.runtime_core.capability_loader import ToolModule
+scripts/check_platform_boundaries.py: from __future__ import annotations
+scripts/check_platform_boundaries.py: import argparse
+scripts/check_platform_boundaries.py: import ast
+scripts/check_platform_boundaries.py: from pathlib import Path
+tests/conftest.py: from __future__ import annotations
+tests/conftest.py: import sys
+tests/conftest.py: from pathlib import Path
+tests/docs/test_console_workstation_shell.py: from pathlib import Path
+tests/docs/test_markdown_packaging.py: from pathlib import Path
+tests/integration/test_chat_vintage_programmer_api.py: from __future__ import annotations
+tests/integration/test_chat_vintage_programmer_api.py: import json
+tests/integration/test_chat_vintage_programmer_api.py: from pathlib import Path
+tests/integration/test_chat_vintage_programmer_api.py: import threading
+tests/integration/test_chat_vintage_programmer_api.py: import time
+tests/integration/test_chat_vintage_programmer_api.py: from fastapi.testclient import TestClient
+tests/integration/test_chat_vintage_programmer_api.py: import app.main
+tests/integration/test_chat_vintage_programmer_api.py: import app.storage
+tests/integration/test_chat_vintage_programmer_api.py: from app.config import load_config
+tests/integration/test_chat_vintage_programmer_api.py: from app.evolution import EvolutionStore
+tests/integration/test_chat_vintage_programmer_api.py: from app.i18n import translate
+tests/integration/test_chat_vintage_programmer_api.py: from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+tests/integration/test_chat_vintage_programmer_api.py: from app.workbench import WorkbenchStore
+tests/modules/test_office_runtime_contract.py: from __future__ import annotations
+tests/modules/test_office_runtime_contract.py: from typing import Any
+tests/modules/test_office_runtime_contract.py: from packages.office_modules.execution_runtime import LEGACY_RUN_CHAT_FIELDS, LegacyOfficeExecutionRuntimeAdapter, normalize_legacy_run_chat_result
+tests/modules/test_office_runtime_contract.py: from packages.office_modules.execution_engine import OfficeExecutionEngine
+tests/modules/test_office_runtime_contract.py: from packages.office_modules.office_agent_runtime import OfficeAgent, classify_office_llm_exception
+tests/modules/test_request_analysis_guards.py: from __future__ import annotations
+tests/modules/test_request_analysis_guards.py: from typing import Any
+tests/modules/test_request_analysis_guards.py: from packages.office_modules.intent_support import request_likely_requires_tools
+tests/modules/test_request_analysis_guards.py: from packages.office_modules.request_analysis import looks_like_permission_gate_text
+tests/modules/test_tool_registration.py: from __future__ import annotations
+tests/modules/test_tool_registration.py: from pathlib import Path
+tests/modules/test_tool_registration.py: from packages.office_modules import tools
+tests/router/support.py: from __future__ import annotations
+tests/router/support.py: import json
+tests/router/support.py: from dataclasses import dataclass
+tests/router/support.py: from types import SimpleNamespace
+tests/router/support.py: from typing import Any
+tests/router/support.py: from app.context_assembly import ContextAssembler
+tests/router/support.py: from app.intent_classifier import IntentClassifier
+tests/router/support.py: from app.intent_schema import ActiveTask
+tests/router/support.py: from app.policy_router import PolicyRouter
+tests/router/support.py: from app.route_trace import build_route_trace
+tests/router/support.py: from app.route_verifier import RouteVerifier
+tests/router/support.py: from app.router_signals import RouterSignalExtractor
+tests/router/test_followup_inheritance.py: from __future__ import annotations
+tests/router/test_followup_inheritance.py: import pytest
+tests/router/test_followup_inheritance.py: from tests.router.support import run_pipeline
+tests/router/test_grounded_generation.py: from __future__ import annotations
+tests/router/test_grounded_generation.py: import pytest
+tests/router/test_grounded_generation.py: from tests.router.support import run_pipeline
+tests/router/test_low_confidence_fallback.py: from __future__ import annotations
+tests/router/test_low_confidence_fallback.py: import pytest
+tests/router/test_low_confidence_fallback.py: from tests.router.support import run_pipeline
+tests/router/test_mixed_intents.py: from __future__ import annotations
+tests/router/test_mixed_intents.py: import pytest
+tests/router/test_mixed_intents.py: from tests.router.support import run_pipeline
+tests/router/test_single_turn_intents.py: from __future__ import annotations
+tests/router/test_single_turn_intents.py: import pytest
+tests/router/test_single_turn_intents.py: from tests.router.support import run_pipeline
+tests/router/test_translation_task_control.py: from __future__ import annotations
+tests/router/test_translation_task_control.py: from tests.router.support import pdf_attachment, run_pipeline, translation_active_task
+tests/router/test_verifier_guards.py: from __future__ import annotations
+tests/router/test_verifier_guards.py: from app.intent_schema import ConversationFrame, IntentDecision, RequestSignals
+tests/router/test_verifier_guards.py: from app.route_verifier import RouteVerifier
+tests/test_action_validator.py: from __future__ import annotations
+tests/test_action_validator.py: from pathlib import Path
+tests/test_action_validator.py: from app.action_validator import ActionValidator, ValidationResult, validation_observation
+tests/test_action_validator.py: from app.runtime_boundary import RuntimeBoundary
+tests/test_action_validator.py: from app.serialization import dump_model
+tests/test_answer_stream_state.py: from __future__ import annotations
+tests/test_answer_stream_state.py: from app.answer_stream_state import answer_stream_diagnostics, new_answer_stream_state, start_answer_stream_call
+tests/test_attachment_argument_rewriter.py: from __future__ import annotations
+tests/test_attachment_argument_rewriter.py: from pathlib import Path
+tests/test_attachment_argument_rewriter.py: from app.attachment_argument_rewriter import attachment_paths, build_attachment_tool_guidance, rewrite_attachment_tool_arguments
+tests/test_chat_product_boundaries.py: from __future__ import annotations
+tests/test_chat_product_boundaries.py: import ast
+tests/test_chat_product_boundaries.py: from pathlib import Path
+tests/test_chat_product_boundaries.py: import app.main
+tests/test_chat_product_boundaries.py: from scripts.check_platform_boundaries import forbidden_import_violations
+tests/test_compaction_context_pack.py: from __future__ import annotations
+tests/test_compaction_context_pack.py: import json
+tests/test_compaction_context_pack.py: from pathlib import Path
+tests/test_compaction_context_pack.py: from typing import Any
+tests/test_compaction_context_pack.py: from app.config import load_config
+tests/test_compaction_context_pack.py: from app.context_meter import build_compaction_status, ensure_compaction_state
+tests/test_compaction_context_pack.py: from app.vintage_programmer_runtime import VintageProgrammerRuntime
+tests/test_context_meter.py: from __future__ import annotations
+tests/test_context_meter.py: from app.context_meter import build_compaction_status, build_context_meter, build_context_meter_from_status, build_runtime_context_payload, maybe_auto_compact_session, resolve_context_window
+tests/test_context_pack.py: from __future__ import annotations
+tests/test_context_pack.py: import inspect
+tests/test_context_pack.py: import json
+tests/test_context_pack.py: from pathlib import Path
+tests/test_context_pack.py: from typing import Any
+tests/test_context_pack.py: import pytest
+tests/test_context_pack.py: from app.config import load_config
+tests/test_context_pack.py: from app.context_pack import ContextManager, build_model_context, classify_assistant_output, render_model_context
+tests/test_context_pack.py: from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
+tests/test_context_pack.py: from app.runtime_contract import RuntimeContract
+tests/test_context_pack.py: from app.serialization import dump_model
+tests/test_context_pack.py: from app.vintage_programmer_runtime import VintageProgrammerRuntime
+tests/test_context_pack_minimal.py: from __future__ import annotations
+tests/test_context_pack_minimal.py: from app.context_pack import ContextManager, build_model_context
+tests/test_context_pack_minimal.py: from app.runtime_boundary import RuntimeBoundary
+tests/test_context_pack_minimal.py: from app.serialization import dump_model
+tests/test_frontend_locale_regressions.py: from __future__ import annotations
+tests/test_frontend_locale_regressions.py: import re
+tests/test_frontend_locale_regressions.py: from pathlib import Path
+tests/test_llm_exchange.py: from __future__ import annotations
+tests/test_llm_exchange.py: from typing import Any
+tests/test_llm_exchange.py: from app.llm_exchange import snapshot_ai_message, snapshot_error, snapshot_messages
+tests/test_local_tool_executor_projects.py: from __future__ import annotations
+tests/test_local_tool_executor_projects.py: import json
+tests/test_local_tool_executor_projects.py: from pathlib import Path
+tests/test_local_tool_executor_projects.py: import app.storage
+tests/test_local_tool_executor_projects.py: from app.config import load_config
+tests/test_local_tool_executor_projects.py: from app.local_tools import LocalToolExecutor
+tests/test_local_tool_executor_projects.py: from app.storage import ProjectStore
+tests/test_local_tools_exec_command.py: from __future__ import annotations
+tests/test_local_tools_exec_command.py: from pathlib import Path
+tests/test_local_tools_exec_command.py: import pytest
+tests/test_local_tools_exec_command.py: from app.config import load_config
+tests/test_local_tools_exec_command.py: from app.local_tools import LocalToolExecutor
+tests/test_local_tools_public_surface.py: from __future__ import annotations
+tests/test_local_tools_public_surface.py: import base64
+tests/test_local_tools_public_surface.py: import json
+tests/test_local_tools_public_surface.py: from pathlib import Path
+tests/test_local_tools_public_surface.py: from app.config import load_config
+tests/test_local_tools_public_surface.py: from app.local_tools import LocalToolExecutor
+tests/test_runtime_boundary.py: from __future__ import annotations
+tests/test_runtime_boundary.py: from pathlib import Path
+tests/test_runtime_boundary.py: from app.config import load_config
+tests/test_runtime_boundary.py: from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
+tests/test_runtime_boundary.py: from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
+tests/test_runtime_boundary.py: from app.models import ChatSettings
+tests/test_runtime_boundary.py: from app.serialization import dump_model
+tests/test_runtime_boundary.py: from app.vintage_programmer_runtime import VintageProgrammerRuntime
+tests/test_runtime_hints.py: from __future__ import annotations
+tests/test_runtime_hints.py: from app.runtime_hints import extract_activity_excerpt, has_explicit_network_hint, has_explicit_workspace_hint, looks_like_inline_document_payload, looks_like_japanese_review_request, looks_like_revision_request
+tests/test_runtime_trace_labels.py: from __future__ import annotations
+tests/test_runtime_trace_labels.py: from app.runtime_trace_labels import trace_label
+tests/test_safe_serialization_static.py: from __future__ import annotations
+tests/test_safe_serialization_static.py: from pathlib import Path
+tests/test_serialization.py: from __future__ import annotations
+tests/test_serialization.py: from dataclasses import dataclass
+tests/test_serialization.py: from datetime import date, datetime
+tests/test_serialization.py: from pathlib import Path
+tests/test_serialization.py: from pydantic import BaseModel
+tests/test_serialization.py: from app.serialization import dump_model, safe_model_dump
+tests/test_session_context_task_reset.py: from __future__ import annotations
+tests/test_session_context_task_reset.py: from app import session_context
+tests/test_session_migration.py: from __future__ import annotations
+tests/test_session_migration.py: import json
+tests/test_session_migration.py: from pathlib import Path
+tests/test_session_migration.py: from app.context_pack import ContextManager, build_model_context
+tests/test_session_migration.py: from app.runtime_boundary import RuntimeBoundary
+tests/test_session_migration.py: from app.serialization import dump_model
+tests/test_session_migration.py: from app.session_migration import CONTEXT_SCHEMA_VERSION, has_context_manager_payload, has_legacy_context_payload, migrate_legacy_session_to_context_manager
+tests/test_tool_execution_bus.py: from __future__ import annotations
+tests/test_tool_execution_bus.py: from packages.runtime_core.capability_loader import ToolModule
+tests/test_tool_execution_bus.py: from packages.runtime_core.tool_execution_bus import ToolExecutionBus
+tests/test_tool_name_normalizer.py: from __future__ import annotations
+tests/test_tool_name_normalizer.py: from app.tool_name_normalizer import normalize_tool_name
+tests/test_tool_trace_summary.py: from __future__ import annotations
+tests/test_tool_trace_summary.py: from app.tool_trace_summary import build_tool_argument_audit, mask_sensitive_text, normalize_tool_arguments, safe_preview, summarize_tool_args, summarize_tool_result, validate_tool_arguments
+tests/test_trace_events.py: from __future__ import annotations
+tests/test_trace_events.py: from app.trace_events import make_activity_event, make_trace_event
+tests/test_update_manager.py: from __future__ import annotations
+tests/test_update_manager.py: from pathlib import Path
+tests/test_update_manager.py: from typing import Sequence
+tests/test_update_manager.py: from app.update_manager import AppUpdateManager, UpdateCommandResult
+tests/test_update_plan_stability.py: from __future__ import annotations
+tests/test_update_plan_stability.py: from pathlib import Path
+tests/test_update_plan_stability.py: from app.config import load_config
+tests/test_update_plan_stability.py: from app.local_tools import LocalToolExecutor
+tests/test_upload_store.py: from __future__ import annotations
+tests/test_upload_store.py: import asyncio
+tests/test_upload_store.py: import io
+tests/test_upload_store.py: from pathlib import Path
+tests/test_upload_store.py: import pytest
+tests/test_upload_store.py: from app.storage import UploadStore
+tests/test_vintage_programmer_runtime.py: from __future__ import annotations
+tests/test_vintage_programmer_runtime.py: import json
+tests/test_vintage_programmer_runtime.py: from pathlib import Path
+tests/test_vintage_programmer_runtime.py: import threading
+tests/test_vintage_programmer_runtime.py: from typing import Any
+tests/test_vintage_programmer_runtime.py: import pytest
+tests/test_vintage_programmer_runtime.py: from app.config import load_config
+tests/test_vintage_programmer_runtime.py: from app.i18n import translate
+tests/test_vintage_programmer_runtime.py: from app.models import ChatSettings
+tests/test_vintage_programmer_runtime.py: from app.answer_stream_state import new_answer_stream_state
+tests/test_vintage_programmer_runtime.py: from app.vintage_programmer_runtime import VintageProgrammerRuntime
+tests/test_vintage_programmer_runtime.py: import app.vintage_programmer_runtime
+tests/test_vp_env_config.py: from __future__ import annotations
+tests/test_vp_env_config.py: import pytest
+tests/test_vp_env_config.py: from app.config import list_provider_profiles, load_config, resolve_python_command
+tests/test_vp_env_config.py: from app.models import ChatSettings
+tests/test_vp_env_config.py: from app.openai_auth import OpenAIAuthManager

@@ -1,0 +1,110 @@
+path,type,folder,static_refs,test_refs,doc_refs,dynamic_risk,classification,recommendation,evidence
+app/agents,dir,app/agents,40,0,0,medium,not_safe_to_delete,Do not delete the whole folder; only remove approved subfiles,Folder recommendation derived from 82 tracked files; dynamic risk medium.
+app/api,dir,app/api,1,0,0,low,probably_safe_but_needs_runtime_check,Run runtime smoke + pytest before folder cleanup,Folder recommendation derived from 3 tracked files; dynamic risk low.
+app/bootstrap,dir,app/bootstrap,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+app/business_modules,dir,app/business_modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+app/kernel,dir,app/kernel,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+app/llm,dir,app/llm,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+app/modules,dir,app/modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+packages/agent-core,dir,packages/agent-core,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
+packages/office-modules,dir,packages/office-modules,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
+packages/runtime-core,dir,packages/runtime-core,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder recommendation derived from 1 tracked files; dynamic risk low.
+packages/kernel-robot,dir,packages/kernel-robot,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+packages/role-agent-lab,dir,packages/role-agent-lab,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+workspace/skills,dir,workspace/skills,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+artifacts,dir,artifacts,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+output,dir,output,0,0,0,low,needs_owner_confirmation,Owner decision required,Folder exists on disk but has no tracked files in this branch.
+app/agents/__init__.py,file,app/agents,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/agent_plugin.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/answer_bundle_support.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/citation_support.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/coder_agent/__init__.py,file,app/agents/coder_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/coder_agent/agent.py,file,app/agents/coder_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/coder_agent/manifest.json,file,app/agents/coder_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/conflict_detector_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/conflict_detector_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/coordinator_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/coordinator_agent/__init__.py,file,app/agents/coordinator_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/coordinator_agent/agent.py,file,app/agents/coordinator_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/coordinator_agent/manifest.json,file,app/agents/coordinator_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/critic_agent/__init__.py,file,app/agents/critic_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/critic_agent/agent.py,file,app/agents/critic_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/critic_agent/manifest.json,file,app/agents/critic_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/executor_agent/__init__.py,file,app/agents/executor_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/executor_agent/agent.py,file,app/agents/executor_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/executor_agent/manifest.json,file,app/agents/executor_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/file_reader_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/fixer_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/manifests/conflict_detector_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/coordinator_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/file_reader_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/fixer_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/planner_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/researcher_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/reviewer_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/revision_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/router_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/structurer_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/summarizer_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/manifests/worker_agent.json,file,app/agents/manifests,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/navigator_agent/__init__.py,file,app/agents/navigator_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/navigator_agent/agent.py,file,app/agents/navigator_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/navigator_agent/manifest.json,file,app/agents/navigator_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/office_specialist_agent/__init__.py,file,app/agents/office_specialist_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/office_specialist_agent/agent.py,file,app/agents/office_specialist_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/office_specialist_agent/manifest.json,file,app/agents/office_specialist_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/planner_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/planner_agent/__init__.py,file,app/agents/planner_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/planner_agent/agent.py,file,app/agents/planner_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/planner_agent/manifest.json,file,app/agents/planner_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/planner_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/planning_support.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/plugin_base.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/researcher_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/researcher_agent/__init__.py,file,app/agents/researcher_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/researcher_agent/agent.py,file,app/agents/researcher_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/researcher_agent/manifest.json,file,app/agents/researcher_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/review_support.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/reviewer_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/reviewer_agent/__init__.py,file,app/agents/reviewer_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/reviewer_agent/agent.py,file,app/agents/reviewer_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/reviewer_agent/manifest.json,file,app/agents/reviewer_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/reviewer_helpers.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/reviewer_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/revision_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/revision_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/role_catalog.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/role_contracts.py,file,app/agents,0,0,0,low,not_safe_to_delete,第 2 阶段不要删除,required by the `role_debug_support` -> `role_smoke` contract-validation chain; dynamic risk: low
+app/agents/role_debug_support.py,file,app/agents,1,0,0,low,not_safe_to_delete,第 2 阶段不要删除,runtime/config refs: packages/office_modules/office_agent_runtime.py; dynamic risk: low
+app/agents/role_helpers.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/role_registry.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/role_smoke.py,file,app/agents,0,0,0,low,not_safe_to_delete,第 2 阶段不要删除,required by the `role_debug_support` debug smoke path; dynamic risk: low
+app/agents/router_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/runtime_controller.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/runtime_profiles.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/specialist_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/structurer_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/structurer_role.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/summarizer_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/summarizer_agent/__init__.py,file,app/agents/summarizer_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/summarizer_agent/agent.py,file,app/agents/summarizer_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/summarizer_agent/manifest.json,file,app/agents/summarizer_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/tool_user_agent/__init__.py,file,app/agents/tool_user_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/tool_user_agent/agent.py,file,app/agents/tool_user_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/tool_user_agent/manifest.json,file,app/agents/tool_user_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/agents/worker_agent.py,file,app/agents,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/worker_agent/__init__.py,file,app/agents/worker_agent,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/agents/worker_agent/agent.py,file,app/agents/worker_agent,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/agents/worker_agent/manifest.json,file,app/agents/worker_agent,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+app/api/__init__.py,file,app/api,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/api/main.py,file,app/api,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/api/routes/__init__.py,file,app/api/routes,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+app/kernel_robot_main.py,file,app,0,0,0,low,safe_to_delete_after_approval,在第 2 阶段经 owner 审批后删除,dynamic risk: low
+app/role_runtime.py,file,app,0,0,0,low,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: low
+packages/agent-core/README.md,file,packages/agent-core,0,0,0,low,needs_owner_confirmation,删除前需要 owner 明确确认,dynamic risk: low
+packages/office-modules/README.md,file,packages/office-modules,0,0,0,low,needs_owner_confirmation,删除前需要 owner 明确确认,dynamic risk: low
+packages/office_addons/manifest.json,file,packages/office_addons,0,0,0,high,uncertain_dynamic_usage,删除前先确认动态加载 / 模块发现路径,dynamic risk: high
+packages/office_modules/execution_state.py,file,packages/office_modules,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+packages/office_modules/manifest.json,file,packages/office_modules,0,0,0,high,uncertain_dynamic_usage,删除前先确认动态加载 / 模块发现路径,dynamic risk: high
+packages/office_modules/module_wrapper_surface.py,file,packages/office_modules,0,0,0,medium,probably_safe_but_needs_runtime_check,先做 runtime smoke 和 pytest，再考虑删除,dynamic risk: medium
+packages/runtime-core/README.md,file,packages/runtime-core,0,0,0,low,needs_owner_confirmation,删除前需要 owner 明确确认,dynamic risk: low

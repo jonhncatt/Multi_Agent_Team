@@ -1,0 +1,74 @@
+README.en.md:235:- `agents/vintage_programmer/soul.md`
+README.en.md:236:- `agents/vintage_programmer/identity.md`
+README.en.md:237:- `agents/vintage_programmer/agent.md`
+README.en.md:238:- `agents/vintage_programmer/tools.md`
+README.en.md:242:- `agents/vintage_programmer/locales/en/`
+README.en.md:243:- `agents/vintage_programmer/locales/ja-JP/`
+README.ja.md:237:- `agents/vintage_programmer/soul.md`
+README.ja.md:238:- `agents/vintage_programmer/identity.md`
+README.ja.md:239:- `agents/vintage_programmer/agent.md`
+README.ja.md:240:- `agents/vintage_programmer/tools.md`
+README.ja.md:244:- `agents/vintage_programmer/locales/en/`
+README.ja.md:245:- `agents/vintage_programmer/locales/ja-JP/`
+README.md:241:- `agents/vintage_programmer/soul.md`
+README.md:242:- `agents/vintage_programmer/identity.md`
+README.md:243:- `agents/vintage_programmer/agent.md`
+README.md:244:- `agents/vintage_programmer/tools.md`
+README.md:248:- `agents/vintage_programmer/locales/en/`
+README.md:249:- `agents/vintage_programmer/locales/ja-JP/`
+README.zh-CN.md:237:- `agents/vintage_programmer/soul.md`
+README.zh-CN.md:238:- `agents/vintage_programmer/identity.md`
+README.zh-CN.md:239:- `agents/vintage_programmer/agent.md`
+README.zh-CN.md:240:- `agents/vintage_programmer/tools.md`
+README.zh-CN.md:244:- `agents/vintage_programmer/locales/en/`
+README.zh-CN.md:245:- `agents/vintage_programmer/locales/ja-JP/`
+app/agents/coder_agent/__init__.py:1:from app.agents.coder_agent.agent import CoderAgent
+app/agents/coder_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/conflict_detector_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/coordinator_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/coordinator_agent/__init__.py:1:from app.agents.coordinator_agent.agent import CoordinatorAgent
+app/agents/coordinator_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/critic_agent/__init__.py:1:from app.agents.critic_agent.agent import CriticAgent
+app/agents/critic_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/executor_agent/__init__.py:1:from app.agents.executor_agent.agent import ExecutorAgent
+app/agents/executor_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/file_reader_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/fixer_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/navigator_agent/__init__.py:1:from app.agents.navigator_agent.agent import NavigatorAgent
+app/agents/navigator_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/office_specialist_agent/__init__.py:1:from app.agents.office_specialist_agent.agent import OfficeSpecialistAgent
+app/agents/office_specialist_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/planner_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/planner_agent/__init__.py:1:from app.agents.planner_agent.agent import PlannerAgent
+app/agents/planner_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/researcher_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/researcher_agent/__init__.py:1:from app.agents.researcher_agent.agent import ResearcherAgent
+app/agents/researcher_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/reviewer_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/reviewer_agent/__init__.py:1:from app.agents.reviewer_agent.agent import ReviewerAgent
+app/agents/reviewer_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/revision_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/role_debug_support.py:5:from app.agents.role_contracts import validate_role_result, validate_runtime_profile
+app/agents/role_debug_support.py:6:from app.agents.role_smoke import run_role_execution_smoke
+app/agents/role_smoke.py:10:from app.agents.role_contracts import validate_role_result, validate_runtime_profile
+app/agents/router_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/structurer_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/summarizer_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/summarizer_agent/__init__.py:1:from app.agents.summarizer_agent.agent import SummarizerAgent
+app/agents/summarizer_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/tool_user_agent/__init__.py:1:from app.agents.tool_user_agent.agent import ToolUserAgent
+app/agents/tool_user_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+app/agents/worker_agent.py:5:from app.agents.agent_plugin import AgentPlugin, placeholder_result
+app/agents/worker_agent/__init__.py:1:from app.agents.worker_agent.agent import WorkerAgent
+app/agents/worker_agent/agent.py:3:from app.agents.plugin_base import BaseIndependentAgent
+docs/internal_design_manual.md:979:- `agents/vintage_programmer/agent.md`
+docs/internal_design_manual.md:980:- `agents/vintage_programmer/tools.md`
+packages/office_modules/office_agent_runtime.py:65:from app.agents.role_debug_support import (
+tests/integration/test_chat_vintage_programmer_api.py:852:    for name in ("sessions", "uploads", "shadow_logs", "evolution_logs", "workspace/skills", "agents/vintage_programmer"):
+tests/integration/test_chat_vintage_programmer_api.py:1968:    assert agent_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
+tests/integration/test_chat_vintage_programmer_api.py:1969:    assert agent_row["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
+tests/integration/test_chat_vintage_programmer_api.py:1972:    assert tools_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+tests/integration/test_chat_vintage_programmer_api.py:1973:    assert tools_row["resolved_path"].endswith("/agents/vintage_programmer/tools.md")
+tests/integration/test_chat_vintage_programmer_api.py:1991:    assert update_response.json()["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+tests/integration/test_chat_vintage_programmer_api.py:1992:    assert update_response.json()["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+tests/test_chat_product_boundaries.py:50:        "/api/agents/{agent_id}/reload",

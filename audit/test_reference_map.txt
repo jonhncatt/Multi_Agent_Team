@@ -1,0 +1,85 @@
+tests/integration/test_chat_vintage_programmer_api.py:1917:    assert all(item["source"] != "legacy_retained" for item in tool_rows)
+tests/modules/test_office_runtime_contract.py:5:from packages.office_modules.execution_runtime import (
+tests/modules/test_office_runtime_contract.py:8:    normalize_legacy_run_chat_result,
+tests/modules/test_office_runtime_contract.py:10:from packages.office_modules.execution_engine import OfficeExecutionEngine
+tests/modules/test_office_runtime_contract.py:11:from packages.office_modules.office_agent_runtime import OfficeAgent, classify_office_llm_exception
+tests/modules/test_office_runtime_contract.py:14:def _make_legacy_tuple(**overrides: Any) -> tuple[Any, ...]:
+tests/modules/test_office_runtime_contract.py:46:def test_normalize_legacy_run_chat_result_golden_basic_chat() -> None:
+tests/modules/test_office_runtime_contract.py:47:    result = normalize_legacy_run_chat_result(_make_legacy_tuple(text="basic chat", current_role="worker"))
+tests/modules/test_office_runtime_contract.py:56:def test_normalize_legacy_run_chat_result_golden_tools_and_trace() -> None:
+tests/modules/test_office_runtime_contract.py:57:    result = normalize_legacy_run_chat_result(
+tests/modules/test_office_runtime_contract.py:58:        _make_legacy_tuple(
+tests/modules/test_office_runtime_contract.py:72:def test_normalize_legacy_run_chat_result_golden_route_state_bundle_and_panels() -> None:
+tests/modules/test_office_runtime_contract.py:73:    result = normalize_legacy_run_chat_result(
+tests/modules/test_office_runtime_contract.py:74:        _make_legacy_tuple(
+tests/modules/test_office_runtime_contract.py:90:def test_execution_runtime_adapter_returns_structured_result_from_legacy_surface() -> None:
+tests/modules/test_office_runtime_contract.py:93:            _make_legacy_tuple(
+tests/modules/test_office_runtime_contract.py:112:        _make_legacy_tuple(
+tests/modules/test_office_runtime_contract.py:130:    backend = _FakeLegacySurface(_make_legacy_tuple(text="engine with blackboard"))
+tests/modules/test_request_analysis_guards.py:5:from packages.office_modules.intent_support import request_likely_requires_tools
+tests/modules/test_request_analysis_guards.py:6:from packages.office_modules.request_analysis import looks_like_permission_gate_text
+tests/modules/test_tool_registration.py:5:from packages.office_modules import tools as tools_module
+tests/test_attachment_argument_rewriter.py:38:def test_attachment_rewriter_maps_legacy_image_keys_and_attachment_ids(tmp_path: Path) -> None:
+tests/test_chat_product_boundaries.py:31:    assert "app.legacy_platform_runtime" not in imported
+tests/test_chat_product_boundaries.py:42:def test_repo_has_no_removed_legacy_platform_imports() -> None:
+tests/test_chat_product_boundaries.py:46:def test_removed_legacy_platform_routes_are_not_registered() -> None:
+tests/test_chat_product_boundaries.py:71:def test_legacy_product_shell_entrypoints_are_removed() -> None:
+tests/test_compaction_context_pack.py:44:def test_compaction_status_feeds_context_pack_without_legacy_context(tmp_path: Path) -> None:
+tests/test_compaction_context_pack.py:82:    assert "legacy_context" not in model_context
+tests/test_compaction_context_pack.py:86:def test_runtime_model_context_does_not_fallback_to_legacy_summary_or_history(tmp_path: Path) -> None:
+tests/test_compaction_context_pack.py:96:                "summary": "legacy summary should not be read",
+tests/test_compaction_context_pack.py:97:                "history_turns": [{"role": "assistant", "text": "legacy turn should not be read"}],
+tests/test_context_pack.py:35:def test_build_model_context_signature_rejects_legacy_inputs(tmp_path: Path) -> None:
+tests/test_context_pack.py:107:            "summary": "legacy summary",
+tests/test_context_pack.py:108:            "thread_memory": {"summary": "legacy thread memory"},
+tests/test_context_pack.py:109:            "history_turns": [{"role": "assistant", "text": "legacy turn"}],
+tests/test_context_pack.py:111:            "plan_state": {"items": [{"step": "legacy plan", "status": "pending"}]},
+tests/test_context_pack_minimal.py:25:    assert "legacy_context" not in pack
+tests/test_frontend_locale_regressions.py:53:    "activity.debug.legacy_details",
+tests/test_local_tools_public_surface.py:109:def test_execute_image_read_accepts_legacy_image_path_argument(tmp_path: Path) -> None:
+tests/test_local_tools_public_surface.py:124:            "analysis": "legacy arg alias",
+tests/test_local_tools_public_surface.py:131:    result = executor.execute("image_read", {"image_path": str(image_path), "prompt": "legacy", "max_output_chars": 2222})
+tests/test_local_tools_public_surface.py:136:    assert seen["prompt"] == "legacy"
+tests/test_local_tools_public_surface.py:386:def test_removed_legacy_public_tool_names_return_unknown_tool(tmp_path: Path) -> None:
+tests/test_safe_serialization_static.py:7:    path = Path("packages/office_modules/office_agent_runtime.py")
+tests/test_serialization.py:25:        return {"legacy": True}
+tests/test_serialization.py:58:def test_dump_model_handles_legacy_dict_objects() -> None:
+tests/test_serialization.py:59:    assert dump_model(LegacyModel()) == {"legacy": True}
+tests/test_serialization.py:76:        "legacy": LegacyModel(),
+tests/test_serialization.py:84:        "legacy": {"legacy": True},
+tests/test_session_migration.py:12:    has_legacy_context_payload,
+tests/test_session_migration.py:13:    migrate_legacy_session_to_context_manager,
+tests/test_session_migration.py:32:    migrated, changed = migrate_legacy_session_to_context_manager(payload)
+tests/test_session_migration.py:35:    assert has_legacy_context_payload(payload) is False
+tests/test_session_migration.py:43:def test_session_migration_migrates_summary_from_legacy_sources(tmp_path: Path) -> None:
+tests/test_session_migration.py:44:    migrated, changed = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:55:    assert has_legacy_context_payload(migrated) is True
+tests/test_session_migration.py:61:def test_session_migration_filters_clean_turns_from_legacy_messages(tmp_path: Path) -> None:
+tests/test_session_migration.py:62:    migrated, changed = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:85:    migrated, changed = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:108:def test_session_migration_normalizes_legacy_plan_items(tmp_path: Path) -> None:
+tests/test_session_migration.py:109:    migrated, changed = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:132:    migrated, changed = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:138:            "route_state": {"task_checkpoint": {"goal": "legacy goal"}},
+tests/test_session_migration.py:139:            "agent_state": {"current_task_focus": {"goal": "legacy focus"}},
+tests/test_session_migration.py:157:    legacy_session = {
+tests/test_session_migration.py:185:    migrated_once, changed_once = migrate_legacy_session_to_context_manager(legacy_session)
+tests/test_session_migration.py:186:    migrated_twice, changed_twice = migrate_legacy_session_to_context_manager(migrated_once)
+tests/test_session_migration.py:194:def test_normal_model_context_ignores_legacy_session_fields_after_migration(tmp_path: Path) -> None:
+tests/test_session_migration.py:195:    migrated, _ = migrate_legacy_session_to_context_manager(
+tests/test_session_migration.py:200:            "current_turn": {"goal": "legacy current turn goal"},
+tests/test_session_migration.py:201:            "current_task_focus": {"goal": "legacy focus goal", "active_files": [str(tmp_path / "app" / "main.py")]},
+tests/test_session_migration.py:220:    assert "legacy current turn goal" not in encoded
+tests/test_session_migration.py:221:    assert "legacy focus goal" not in encoded
+tests/test_tool_execution_bus.py:3:from packages.runtime_core.capability_loader import ToolModule
+tests/test_tool_execution_bus.py:4:from packages.runtime_core.tool_execution_bus import ToolExecutionBus
+tests/test_tool_execution_bus.py:10:        self.tool_specs = [{"name": "legacy_tool"}]
+tests/test_tool_execution_bus.py:55:def test_tool_execution_bus_set_runtime_context_supports_legacy_and_modern_executors() -> None:
+tests/test_tool_execution_bus.py:56:    legacy = _LegacyExecutor()
+tests/test_tool_execution_bus.py:59:        ToolModule(module_id="legacy", title="Legacy", tool_names=("legacy_tool",)),
+tests/test_tool_execution_bus.py:66:            "legacy": legacy,
+tests/test_tool_execution_bus.py:80:    assert legacy.calls == [
+tests/test_vintage_programmer_runtime.py:625:    assert "legacy_context" not in payload
+tests/test_vintage_programmer_runtime.py:974:def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_to_model(tmp_path: Path) -> None:
+tests/test_vintage_programmer_runtime.py:1832:def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(tmp_path: Path) -> None:
+tests/test_vintage_programmer_runtime.py:1914:def test_runtime_ignores_legacy_emergency_tool_call_cap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
