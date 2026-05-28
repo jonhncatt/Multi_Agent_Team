@@ -2613,33 +2613,6 @@ class LocalToolExecutor:
         if name == "request_user_input":
             result = self.request_user_input(**arguments)
             return self._decorate_result(result)
-        if name == "run_shell":
-            result = self.run_shell(**arguments)
-            return self._decorate_result(result)
-        if name == "list_directory":
-            result = self.list_directory(**arguments)
-            return self._decorate_result(result)
-        if name == "doc_index_build":
-            result = self.doc_index_build(**arguments)
-            return self._decorate_result(result)
-        if name == "copy_file":
-            result = self.copy_file(**arguments)
-            return self._decorate_result(result)
-        if name == "extract_zip":
-            result = self.extract_zip(**arguments)
-            return self._decorate_result(result)
-        if name == "extract_msg_attachments":
-            result = self.extract_msg_attachments(**arguments)
-            return self._decorate_result(result)
-        if name == "write_text_file":
-            result = self.write_text_file(**arguments)
-            return self._decorate_result(result)
-        if name == "append_text_file":
-            result = self.append_text_file(**arguments)
-            return self._decorate_result(result)
-        if name == "replace_in_file":
-            result = self.replace_in_file(**arguments)
-            return self._decorate_result(result)
         if name == "browser_open":
             result = self.browser_open(**arguments)
             return self._decorate_result(result)
@@ -2660,27 +2633,6 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "apply_patch":
             result = self.apply_patch(**arguments)
-            return self._decorate_result(result)
-        if name == "list_skills":
-            result = self.list_skills(**arguments)
-            return self._decorate_result(result)
-        if name == "read_skill":
-            result = self.read_skill(**arguments)
-            return self._decorate_result(result)
-        if name == "write_skill":
-            result = self.write_skill(**arguments)
-            return self._decorate_result(result)
-        if name == "toggle_skill":
-            result = self.toggle_skill(**arguments)
-            return self._decorate_result(result)
-        if name == "list_agent_specs":
-            result = self.list_agent_specs(**arguments)
-            return self._decorate_result(result)
-        if name == "read_agent_spec":
-            result = self.read_agent_spec(**arguments)
-            return self._decorate_result(result)
-        if name == "write_agent_spec":
-            result = self.write_agent_spec(**arguments)
             return self._decorate_result(result)
         return self._decorate_result(
             {
@@ -3793,7 +3745,7 @@ class LocalToolExecutor:
 
     def list_skills(self) -> dict[str, Any]:
         try:
-            skills = self._workbench.list_skills()
+            skills = self._workbench.list_skill_entries()
             return {"ok": True, "count": len(skills), "skills": skills}
         except Exception as exc:
             return {"ok": False, "error": f"list_skills failed: {exc}"}
@@ -3807,7 +3759,7 @@ class LocalToolExecutor:
     def write_skill(self, content: str, skill_id: str = "") -> dict[str, Any]:
         try:
             payload = (
-                self._workbench.write_skill(skill_id, content)
+                self._workbench.save_skill(skill_id, content)
                 if str(skill_id or "").strip()
                 else self._workbench.create_skill(content)
             )
@@ -3817,14 +3769,14 @@ class LocalToolExecutor:
 
     def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
         try:
-            payload = self._workbench.toggle_skill(skill_id, enabled=enabled)
+            payload = self._workbench.set_skill_enabled(skill_id, enabled=enabled)
             return {"ok": True, **payload, "summary": f"skill {skill_id} {'enabled' if payload.get('enabled') else 'disabled'}"}
         except Exception as exc:
             return {"ok": False, "error": f"toggle_skill failed: {exc}"}
 
     def list_agent_specs(self) -> dict[str, Any]:
         try:
-            specs = self._workbench.list_agent_specs(locale=self._current_locale_hint())
+            specs = self._workbench.list_spec_entries(locale=self._current_locale_hint())
             return {"ok": True, "count": len(specs), "specs": specs}
         except Exception as exc:
             return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
@@ -3837,7 +3789,7 @@ class LocalToolExecutor:
 
     def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
         try:
-            payload = self._workbench.write_agent_spec(name, content, locale=self._current_locale_hint())
+            payload = self._workbench.save_agent_spec(name, content, locale=self._current_locale_hint())
             return {"ok": True, **payload, "summary": f"{name} saved"}
         except Exception as exc:
             return {"ok": False, "error": f"write_agent_spec failed: {exc}"}

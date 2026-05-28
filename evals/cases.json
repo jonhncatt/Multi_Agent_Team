@@ -2808,28 +2808,6 @@
     }
   },
   {
-    "name": "tool_doc_index_build_external_nvme_pdf",
-    "kind": "tool",
-    "tool": "doc_index_build",
-    "optional": true,
-    "args": {
-      "path": "${EVAL_NVME_PDF}",
-      "max_headings": 100
-    },
-    "skip_if_missing_env": [
-      "EVAL_NVME_PDF"
-    ],
-    "assert": {
-      "equals": {
-        "ok": true
-      },
-      "min_value": {
-        "page_count": 100,
-        "heading_count": 20
-      }
-    }
-  },
-  {
     "name": "agent_optional_spec_lookup",
     "kind": "agent",
     "optional": true,

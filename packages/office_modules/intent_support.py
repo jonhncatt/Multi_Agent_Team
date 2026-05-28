@@ -478,7 +478,7 @@ def request_likely_requires_tools(agent: Any, user_message: str, attachment_meta
         "search_contents_in_file_multi", "read_section",
         "table_extract", "fact_check_file", "search_codebase", "apply_patch", "写入", "替换", "更新", "改成", "改为",
         "保存", "落盘", "apply", "patch", "write back", "overwrite", "replace", "update", "exec_command",
-        "run_shell", "web_search", "web_fetch", "web_download", ".pdf",
+        "web_search", "web_fetch", "web_download", ".pdf",
         ".doc", ".docx", ".ppt", ".pptx", ".xlsx", ".csv", ".zip", ".msg", "页码", "定位", "命中", "查证", "核对",
         "according to", "citation", "github", "git clone", "clone repo", "读取仓库", "仓库内容",
         "进化", "模块进化", "自我更新", "自我升级", "自我修复", "热插拔", "升级", "upgrade",

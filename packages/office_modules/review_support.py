@@ -133,9 +133,7 @@ def has_successful_local_file_access(agent: Any, tool_events: list[ToolEvent]) -
         "fact_check_file",
         "search_codebase",
         "archive_extract",
-        "extract_zip",
         "mail_extract_attachments",
-        "extract_msg_attachments",
         "image_inspect",
         "image_read",
     }
@@ -188,14 +186,7 @@ def summarize_tool_events_for_review(agent: Any, tool_events: list[ToolEvent], l
     if not tool_events:
         return []
 
-    keep_names = {
-        "write_text_file",
-        "append_text_file",
-        "replace_in_file",
-        "copy_file",
-        "extract_zip",
-        "extract_msg_attachments",
-    }
+    keep_names = {"apply_patch", "archive_extract", "mail_extract_attachments"}
     kept_indexes: list[int] = []
     seen_indexes: set[int] = set()
 
@@ -222,14 +213,12 @@ def summarize_write_tool_events(agent: Any, tool_events: list[ToolEvent], limit:
     lines: list[str] = []
     for event in tool_events:
         name = str(event.name or "").strip()
-        if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+        if name != "apply_patch":
             continue
         parsed = agent._parse_tool_event_preview(event) or {}
         ok = agent._tool_event_ok(event)
         path = str(parsed.get("path") or "").strip() or str((event.input or {}).get("path") or "").strip()
         action = str(parsed.get("action") or "").strip()
-        if name == "copy_file" and not path:
-            path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
         parts = [name]
         if ok is True:
             parts.append("ok")
@@ -253,7 +242,7 @@ def successful_write_targets(agent: Any, tool_events: list[ToolEvent]) -> list[s
     targets: list[str] = []
     for event in tool_events:
         name = str(event.name or "").strip()
-        if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+        if name != "apply_patch":
             continue
         if agent._tool_event_ok(event) is not True:
             continue
@@ -261,8 +250,6 @@ def successful_write_targets(agent: Any, tool_events: list[ToolEvent]) -> list[s
         path = str(parsed.get("path") or "").strip()
         if not path:
             path = str((event.input or {}).get("path") or "").strip()
-        if name == "copy_file" and not path:
-            path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
         if path:
             targets.append(path)
     deduped: list[str] = []

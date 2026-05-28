@@ -631,8 +631,8 @@ def delete_project(project_id: str) -> ProjectDeleteResponse:
 
 
 @app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
-def workbench_skills() -> WorkbenchSkillsResponse:
-    skills = get_workbench_store().list_skills()
+def workbench_skill_catalog() -> WorkbenchSkillsResponse:
+    skills = get_workbench_store().list_skill_entries()
     return WorkbenchSkillsResponse(skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)])
 
 
@@ -659,9 +659,9 @@ def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
 
 
 @app.put("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
-def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
+def workbench_update_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
     try:
-        updated = SkillDescriptor(**get_workbench_store().write_skill(skill_id, req.content))
+        updated = SkillDescriptor(**get_workbench_store().save_skill(skill_id, req.content))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _invalidate_runtime_descriptor_caches()
@@ -669,9 +669,9 @@ def workbench_write_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescri
 
 
 @app.post("/api/workbench/skills/{skill_id}/toggle", response_model=SkillDescriptor)
-def workbench_toggle_skill(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
+def workbench_set_skill_enabled(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
     try:
-        updated = SkillDescriptor(**get_workbench_store().toggle_skill(skill_id, enabled=req.enabled))
+        updated = SkillDescriptor(**get_workbench_store().set_skill_enabled(skill_id, enabled=req.enabled))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -693,8 +693,8 @@ def workbench_delete_skill(skill_id: str) -> SkillDeleteResponse:
 
 
 @app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
-def workbench_specs(locale: str | None = None) -> WorkbenchSpecsResponse:
-    specs = get_workbench_store().list_agent_specs(locale=locale)
+def workbench_spec_catalog(locale: str | None = None) -> WorkbenchSpecsResponse:
+    specs = get_workbench_store().list_spec_entries(locale=locale)
     return WorkbenchSpecsResponse(specs=[SpecDescriptor(**item) for item in specs if isinstance(item, dict)])
 
 
@@ -709,9 +709,9 @@ def workbench_spec_detail(name: str, locale: str | None = None) -> SpecDescripto
 
 
 @app.put("/api/workbench/specs/{name}", response_model=SpecDescriptor)
-def workbench_write_spec(name: str, req: SpecUpsertRequest, locale: str | None = None) -> SpecDescriptor:
+def workbench_update_spec(name: str, req: SpecUpsertRequest, locale: str | None = None) -> SpecDescriptor:
     try:
-        updated = SpecDescriptor(**get_workbench_store().write_agent_spec(name, req.content, locale=locale))
+        updated = SpecDescriptor(**get_workbench_store().save_agent_spec(name, req.content, locale=locale))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1251,16 +1251,16 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
     tools.set_runtime_context(execution_mode=execution_mode, session_id=drill_session_id)
     try:
         started = time.perf_counter()
-        list_result = tools.list_directory(path=".", max_entries=20)
+        list_result = tools.list_dir(path=".", max_entries=20)
         list_ok = bool(list_result.get("ok"))
         list_detail = (
             f"path={list_result.get('path', '')}, entries={len(list_result.get('entries') or [])}"
             if list_ok
-            else str(list_result.get("error") or "list_directory failed")
+            else str(list_result.get("error") or "list_dir failed")
         )
         _append_drill_step(
             steps,
-            name="list_directory",
+            name="list_dir",
             ok=list_ok,
             detail=list_detail,
             started_at=started,
@@ -1269,17 +1269,17 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
             failed += 1
 
         started = time.perf_counter()
-        pwd_result = tools.run_shell(command="pwd", cwd=".", timeout_sec=12)
+        pwd_result = tools.exec_command(cmd="pwd", cwd=".", yield_time_ms=200)
         pwd_ok = bool(pwd_result.get("ok"))
         pwd_detail = (
-            f"mode={pwd_result.get('execution_mode')}, host_cwd={pwd_result.get('host_cwd')}, "
-            f"sandbox_cwd={pwd_result.get('sandbox_cwd') or '-'}"
+            f"mode={pwd_result.get('execution_mode')}, cwd={pwd_result.get('cwd')}, "
+            f"status={pwd_result.get('status')}"
             if pwd_ok
-            else str(pwd_result.get("error") or "run_shell pwd failed")
+            else str(pwd_result.get("error") or "exec_command pwd failed")
         )
         _append_drill_step(
             steps,
-            name="run_shell_pwd",
+            name="exec_command_pwd",
             ok=pwd_ok,
             detail=pwd_detail,
             started_at=started,
@@ -1290,15 +1290,15 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         started = time.perf_counter()
         python_command = str(config.python_command or "python").strip() or "python"
         if python_command in config.allowed_commands:
-            py_result = tools.run_shell(command=f"{python_command} --version", cwd=".", timeout_sec=12)
+            py_result = tools.exec_command(cmd=f"{python_command} --version", cwd=".", yield_time_ms=200)
             py_ok = bool(py_result.get("ok"))
-            py_out = str(py_result.get("stdout") or py_result.get("stderr") or "").strip().splitlines()
+            py_out = str(py_result.get("output") or "").strip().splitlines()
             py_detail = py_out[0] if py_out else (
                 str(py_result.get("error") or f"{python_command} --version failed") if not py_ok else f"{python_command} ok"
             )
             _append_drill_step(
                 steps,
-                name="run_shell_python_version",
+                name="exec_command_python_version",
                 ok=py_ok,
                 detail=py_detail,
                 started_at=started,
@@ -1308,7 +1308,7 @@ def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
         else:
             _append_drill_step(
                 steps,
-                name="run_shell_python_version",
+                name="exec_command_python_version",
                 ok=True,
                 detail=f"skipped: {python_command} is not in VP_ALLOWED_COMMANDS",
                 started_at=started,

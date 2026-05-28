@@ -242,7 +242,7 @@ def looks_like_permission_gate_text(
         "need your confirmation", "do you want me to continue", "should i continue", "please provide instructions",
         "你当前的指示中没有新增对读取附件内容的要求", "没有新增对读取附件内容的要求", "若后续需要解析",
         "后续需要解析", "无需调用工具", "无需再调用工具", "无需再次调用工具", "不需要调用工具", "已完成解析",
-        "已经完成了解析", "已解析完成", "write_text_file", "append_text_file", "directly search", "search directly",
+        "已经完成了解析", "已解析完成", "apply_patch", "directly search", "search directly",
         "absolute path", "full path", "full filename", "exact filename", "file extension", "with extension",
     )
     if re.search(r"请确认.{0,24}(?:读取|访问|查看).{0,24}(?:路径|文件|附件)", lowered):
@@ -252,7 +252,7 @@ def looks_like_permission_gate_text(
     if not any(p in lowered for p in patterns):
         return False
     file_hints = (
-        "文件", "读取", "写入", "生成", "保存", "read_file", "write_text_file", "append_text_file", "chunk",
+        "文件", "读取", "写入", "生成", "保存", "read_file", "apply_patch", "chunk",
         "附件", "邮件", "文档", "path", "扩展名", "文件名", "解析", "搜索", "函数", "目录", "文件夹",
     )
     return any(h in lowered for h in file_hints)

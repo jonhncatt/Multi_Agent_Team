@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import re
 
@@ -58,6 +59,25 @@ LEGACY_TOOL_NAMES = (
     "fetch_web",
 )
 
+HIDDEN_NON_CANONICAL_DISPATCH_NAMES = (
+    "run_shell",
+    "list_directory",
+    "doc_index_build",
+    "copy_file",
+    "extract_zip",
+    "extract_msg_attachments",
+    "write_text_file",
+    "append_text_file",
+    "replace_in_file",
+    "list_skills",
+    "read_skill",
+    "write_skill",
+    "toggle_skill",
+    "list_agent_specs",
+    "read_agent_spec",
+    "write_agent_spec",
+)
+
 
 def _config(tmp_path: Path):
     config = load_config()
@@ -79,11 +99,48 @@ def _registered_tool_names(tmp_path: Path) -> list[str]:
     return [str(item.get("name") or "") for item in executor.tool_specs if str(item.get("name") or "")]
 
 
+def _execute_impl_dispatch_names() -> list[str]:
+    path = Path("app/local_tools.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.in_execute_impl = False
+            self.names: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            previous = self.in_execute_impl
+            if node.name == "_execute_impl":
+                self.in_execute_impl = True
+                self.generic_visit(node)
+                self.in_execute_impl = previous
+                return
+            self.generic_visit(node)
+
+        def visit_Compare(self, node: ast.Compare) -> None:
+            if self.in_execute_impl and isinstance(node.left, ast.Name) and node.left.id == "name":
+                for comparator in node.comparators:
+                    if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+                        self.names.append(comparator.value)
+            self.generic_visit(node)
+
+    visitor = Visitor()
+    visitor.visit(tree)
+    return sorted(set(visitor.names))
+
+
 def test_registered_tools_match_metadata(tmp_path: Path) -> None:
     registered = _registered_tool_names(tmp_path)
 
     assert set(registered) == set(CANONICAL_TOOL_NAMES)
     assert set(registered) == set(TOOL_METADATA)
+
+
+def test_execute_impl_dispatch_names_match_registered_tools(tmp_path: Path) -> None:
+    registered = _registered_tool_names(tmp_path)
+    dispatch_names = _execute_impl_dispatch_names()
+
+    assert dispatch_names == sorted(registered)
 
 
 def test_no_legacy_tools_registered(tmp_path: Path) -> None:
@@ -139,6 +196,67 @@ def test_legacy_tools_are_not_executable(tmp_path: Path) -> None:
         assert result["ok"] is False
         assert result["error"]["kind"] == "unknown_tool"
         assert result["error"]["tool"] == name
+
+
+def test_hidden_non_canonical_tools_are_not_executable(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    sample_path = tmp_path / "README.md"
+    sample_path.write_text("demo\n", encoding="utf-8")
+    arguments_by_tool = {
+        "run_shell": {"command": "pwd"},
+        "list_directory": {"path": "."},
+        "doc_index_build": {"path": str(sample_path)},
+        "copy_file": {"src_path": str(sample_path), "dst_path": str(tmp_path / "copy.md")},
+        "extract_zip": {"zip_path": str(sample_path), "dst_dir": str(tmp_path / "out")},
+        "extract_msg_attachments": {"msg_path": str(sample_path), "output_dir": str(tmp_path / "out")},
+        "write_text_file": {"path": str(sample_path), "content": "demo"},
+        "append_text_file": {"path": str(sample_path), "content": "demo"},
+        "replace_in_file": {"path": str(sample_path), "old": "demo", "new": "updated"},
+        "list_skills": {},
+        "read_skill": {"skill_id": "example"},
+        "write_skill": {"skill_id": "example", "content": "demo"},
+        "toggle_skill": {"skill_id": "example", "enabled": True},
+        "list_agent_specs": {},
+        "read_agent_spec": {"name": "example"},
+        "write_agent_spec": {"name": "example", "content": "demo"},
+    }
+
+    for name in HIDDEN_NON_CANONICAL_DISPATCH_NAMES:
+        result = executor.execute(name, arguments_by_tool[name])
+        assert result["ok"] is False
+        assert result["error"]["kind"] == "unknown_tool"
+        assert result["error"]["tool"] == name
+
+
+def test_high_risk_hidden_write_tools_are_not_executable(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    sample_path = tmp_path / "README.md"
+    sample_path.write_text("demo\n", encoding="utf-8")
+    high_risk_arguments = {
+        "write_text_file": {"path": str(sample_path), "content": "demo"},
+        "append_text_file": {"path": str(sample_path), "content": "demo"},
+        "replace_in_file": {"path": str(sample_path), "old": "demo", "new": "updated"},
+        "copy_file": {"src_path": str(sample_path), "dst_path": str(tmp_path / "copy.md")},
+    }
+
+    for name, arguments in high_risk_arguments.items():
+        result = executor.execute(name, arguments)
+        assert result["ok"] is False
+        assert result["error"]["kind"] == "unknown_tool"
+
+
+def test_skill_and_agent_spec_tools_are_not_executable(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    admin_arguments = {
+        "write_skill": {"skill_id": "example", "content": "demo"},
+        "toggle_skill": {"skill_id": "example", "enabled": True},
+        "write_agent_spec": {"name": "example", "content": "demo"},
+    }
+
+    for name, arguments in admin_arguments.items():
+        result = executor.execute(name, arguments)
+        assert result["ok"] is False
+        assert result["error"]["kind"] == "unknown_tool"
 
 
 def test_browser_screenshot_is_not_read_only() -> None:

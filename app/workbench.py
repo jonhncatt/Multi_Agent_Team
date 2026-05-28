@@ -209,7 +209,7 @@ class WorkbenchStore:
             "content": parsed["content"],
         }
 
-    def list_skills(self) -> list[dict[str, Any]]:
+    def list_skill_entries(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for path in sorted(self._skills_dir.glob(f"*/{SKILL_FILE_NAME}")):
             try:
@@ -247,7 +247,7 @@ class WorkbenchStore:
         path.write_text(parsed["content"], encoding="utf-8")
         return self.get_skill(parsed["id"])
 
-    def write_skill(self, skill_id: str, content: str) -> dict[str, Any]:
+    def save_skill(self, skill_id: str, content: str) -> dict[str, Any]:
         parsed = self._parse_skill_content(content, expected_id=validate_skill_id(skill_id))
         path = self._skill_file(skill_id)
         self._ensure_within(path, self._skills_dir)
@@ -255,7 +255,7 @@ class WorkbenchStore:
         path.write_text(parsed["content"], encoding="utf-8")
         return self.get_skill(skill_id)
 
-    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
+    def set_skill_enabled(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
         current = self.get_skill(skill_id)
         parsed = self._parse_skill_content(current["content"], expected_id=skill_id)
         next_enabled = (not bool(parsed["enabled"])) if enabled is None else bool(enabled)
@@ -269,7 +269,7 @@ class WorkbenchStore:
             },
             parsed["body"],
         )
-        return self.write_skill(skill_id, content)
+        return self.save_skill(skill_id, content)
 
     def delete_skill(self, skill_id: str) -> None:
         path = self._skill_file(skill_id)
@@ -283,7 +283,7 @@ class WorkbenchStore:
     def enabled_skills_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
         wanted = str(agent_id or "").strip()
         out: list[dict[str, Any]] = []
-        for item in self.list_skills():
+        for item in self.list_skill_entries():
             if item.get("validation_status") != "valid":
                 continue
             if not bool(item.get("enabled")):
@@ -293,7 +293,7 @@ class WorkbenchStore:
                 out.append(item)
         return out
 
-    def list_agent_specs(self, *, locale: str | None = None) -> list[dict[str, Any]]:
+    def list_spec_entries(self, *, locale: str | None = None) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for name in SPEC_FILE_NAMES:
             resolved = self._resolve_spec_paths(name, locale)
@@ -337,7 +337,7 @@ class WorkbenchStore:
             "content": content,
         }
 
-    def write_agent_spec(self, name: str, content: str, *, locale: str | None = None) -> dict[str, Any]:
+    def save_agent_spec(self, name: str, content: str, *, locale: str | None = None) -> dict[str, Any]:
         spec_name = str(name or "").strip()
         if spec_name not in SPEC_FILE_NAMES:
             raise ValueError(f"Unsupported spec: {spec_name}")

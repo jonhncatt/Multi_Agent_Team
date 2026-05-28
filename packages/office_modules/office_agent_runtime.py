@@ -981,13 +981,9 @@ class OfficeAgent:
         )
         retryable_tools = {
             "web_fetch",
-            "web_fetch",
-            "web_search",
             "web_search",
             "web_download",
-            "web_download",
-            "run_shell",
-            "read_file",
+            "exec_command",
             "read_file",
             "search_codebase",
         }
@@ -1473,7 +1469,7 @@ class OfficeAgent:
                     "默认先按 basename 进行模糊搜索（文件名/内容都可），不要先追问完整文件名或扩展名。\n"
                     "当默认 root='.' 没有命中时，继续在其他可访问根目录自动重试，不要立即向用户追问地址。\n"
                     "当需要对同一文件同时尝试多个关键词时，优先用 search_contents_in_file_multi；"
-                    "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
+                    "大 PDF 优先结合 search_contents_in_file、read_section 与 table_extract 进行定位，不要依赖隐藏索引工具；"
                     "大文件优先用 read_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
                     "应先调用 read_file(path=..., start_char=0, max_chars=1000000)，"
@@ -1486,7 +1482,7 @@ class OfficeAgent:
                     "当用户要求“解释邮件全部内容/完整解释邮件”时，默认范围=邮件正文+可解析附件内容；"
                     "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
-                    "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
+                    "改写或新建文件优先使用 apply_patch，尽量使用绝对路径。\n"
                     "如果上一轮你已经给出“预览代码/草稿”，而本轮用户只说“写入/应用/替换”，"
                     "默认按上一轮预览内容原样写入（包含注释、空行和缩进）；"
                     "除非用户明确要求改动，否则不要私自删改注释。\n"
@@ -1521,7 +1517,7 @@ class OfficeAgent:
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
                     "如果当前用户消息只是“上网查一下/再查一下/搜一下”这类短跟进，默认延续最近一轮用户主题，不要假装丢失上下文重新问用户想查什么。\n"
-                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 run_shell 执行 git clone 后继续分析；"
+                    "当用户给出 GitHub/仓库 URL 并要求读取仓库内容时，先直接联网抓取目录或正文，必要时用 exec_command 执行 git clone 后继续分析；"
                     "不要以“planner 约束只能输出计划/不能联网下载”作为拒绝理由。\n"
                     "如果用户要求已经退场的 kernel/platform 自我升级能力，必须明确说明该能力已不在当前聊天产品主线中，"
                     "并引导回当前支持的聊天、代码、文档、图片与本地工具工作流。\n"
@@ -6235,7 +6231,7 @@ class OfficeAgent:
         keys = {str(key).strip() for key in parsed.keys()}
 
         search_codebase_keys = {"query", "root", "max_matches", "file_glob", "use_regex", "case_sensitive"}
-        list_directory_keys = {"path", "max_entries"}
+        list_dir_keys = {"path", "max_entries"}
         read_keys = {"path", "start_char", "max_chars", "start_line", "max_lines", "max_entries"}
         search_contents_in_file_keys = {"path", "query", "max_matches", "context_chars"}
 
@@ -6285,7 +6281,7 @@ class OfficeAgent:
                 "inferred": True,
             }
 
-        if "path" in keys and keys.issubset(list_directory_keys):
+        if "path" in keys and keys.issubset(list_dir_keys):
             path = str(parsed.get("path") or "").strip() or "."
             args = {"path": path, "max_entries": parsed.get("max_entries", 200)}
             return {

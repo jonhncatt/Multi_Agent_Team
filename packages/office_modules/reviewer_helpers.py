@@ -5,7 +5,7 @@ from typing import Any
 
 _TOOL_ALIASES = {
     "read_file": {"read_file"},
-    "list_dir": {"list_dir", "list_directory"},
+    "list_dir": {"list_dir"},
     "glob_file_search": {"glob_file_search"},
     "search_contents_in_file": {"search_contents_in_file"},
     "search_contents_in_file_multi": {"search_contents_in_file_multi"},
@@ -124,12 +124,6 @@ def summarize_reviewer_tool_result(agent: Any, *, name: str, result: dict[str, A
         first = matches[0] if matches else {}
         page_hint = int(first.get("page_hint") or 0)
         return f"search_contents_in_file_multi queries={', '.join(queries) or '(none)'}, matches={match_count}, first_page={page_hint or 'n/a'}"
-
-    if name == "doc_index_build":
-        page_count = int(result.get("page_count") or 0)
-        heading_count = int(result.get("heading_count") or 0)
-        cached = bool(result.get("cached"))
-        return f"doc_index_build cached={str(cached).lower()}, pages={page_count}, headings={heading_count}"
 
     if _tool_name_is(name, "read_section"):
         heading = str(result.get("matched_heading") or result.get("matched_section") or "").strip() or "(not found)"
