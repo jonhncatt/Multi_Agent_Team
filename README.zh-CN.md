@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4b-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v3.1.4a`
+当前稳定版本：`v3.1.4b`
 
 ## Stable Runtime
 
-v3.1.4a 是一个面向 `LocalToolExecutor` 的清理版本，用来完成 v3.1.4 之后的工具表面收口。它继续保持 canonical 29-tool surface 在 `tool_specs`、tool metadata、Workbench UI、`ActionValidator` 和 `_execute_impl` dispatch 之间一致。
+v3.1.4b 是一个面向 model-led `web_search` 的清理版本，用来移除 `web_search` 内部的 news/baseball/RSS 意图分流。canonical 29-tool surface 保持不变。
 
-相对 v3.1.4，本版本删除 `LocalToolExecutor` 上公开的非 canonical tool-like 方法，把 canonical tool 仍需复用的旧实现收敛为私有 `_xxx_impl` helper，并继续以 `apply_patch` 作为权威写入路径。
+相对 v3.1.4a，本版本让模型决定搜什么、`web_search` 只执行通用搜索，不再内部切换到 Google News、MLB、ESPN、Yahoo 或 NHK RSS 路径，也不再返回棒球静态回退链接。
 
 ## Max Output Tokens
 

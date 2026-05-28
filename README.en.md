@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4b-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v3.1.4a`
+Current stable release: `v3.1.4b`
 
 ## Stable Runtime
 
-v3.1.4a is a cleanup release focused on finishing the `LocalToolExecutor` tool-surface cleanup after v3.1.4. It keeps the canonical 29-tool surface aligned across `tool_specs`, tool metadata, the Workbench UI, `ActionValidator`, and `_execute_impl` dispatch.
+v3.1.4b is a cleanup release focused on model-led `web_search`. It removes internal news/baseball/RSS intent routing while keeping the canonical 29-tool surface unchanged.
 
-Compared with v3.1.4, this release removes public non-canonical tool-like methods from `LocalToolExecutor`, converts still-needed legacy implementations into private `_xxx_impl` helpers, and keeps `apply_patch` as the authoritative file-write path.
+Compared with v3.1.4a, the model now decides what to search and `web_search` stays a general search tool. It no longer switches internally to Google News, MLB, ESPN, Yahoo, or NHK RSS paths, and it no longer returns baseball-specific static fallback links.
 
 ## Max Output Tokens
 

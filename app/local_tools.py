@@ -16,7 +16,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 import zipfile
 from html import unescape
 from pathlib import Path
@@ -538,46 +537,6 @@ def _score_web_result(query: str, item: dict[str, Any]) -> float:
     return score
 
 
-def _query_looks_specific(query: str) -> bool:
-    text = (query or "").strip()
-    if not text:
-        return False
-
-    normalized = text.lower()
-    generic_markers = (
-        "news",
-        "latest",
-        "recent",
-        "today",
-        "score",
-        "scores",
-        "baseball",
-        "mlb",
-        "npb",
-        "kbo",
-        "棒球",
-        "野球",
-        "新闻",
-        "消息",
-        "最近",
-        "近期",
-        "今天",
-        "今日",
-        "查一下",
-        "查下",
-        "搜一下",
-        "搜索",
-        "在不在",
-        "是否",
-    )
-    for marker in generic_markers:
-        normalized = normalized.replace(marker, " ")
-
-    ascii_tokens = [part for part in re.split(r"[^a-z0-9]+", normalized) if len(part) >= 2]
-    cjk_chars = "".join(re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", normalized))
-    return bool(ascii_tokens or len(cjk_chars) >= 2)
-
-
 def _looks_like_script_payload(text: str) -> bool:
     sample = (text or "")[:6000].lower()
     if not sample:
@@ -711,152 +670,6 @@ def _extract_ddg_results(raw_html: str, max_results: int) -> list[dict[str, str]
             if len(out) >= limit:
                 return out
 
-    return out
-
-
-def _looks_news_like_query(query: str) -> bool:
-    text = (query or "").strip().lower()
-    if not text:
-        return False
-    keywords = [
-        "news",
-        "latest",
-        "recent",
-        "breaking",
-        "headline",
-        "headlines",
-        "today",
-        "score",
-        "scores",
-        "最近",
-        "近期",
-        "近况",
-        "新闻",
-        "消息",
-        "今日",
-        "今天",
-        "速报",
-        "戰報",
-        "战报",
-        "比分",
-        "ニュース",
-    ]
-    return any(k in text for k in keywords)
-
-
-def _looks_baseball_query(query: str) -> bool:
-    text = (query or "").strip().lower()
-    if not text:
-        return False
-    keywords = [
-        "baseball",
-        "mlb",
-        "npb",
-        "kbo",
-        "棒球",
-        "野球",
-        "甲子園",
-        "甲子园",
-        "大谷",
-    ]
-    return any(k in text for k in keywords)
-
-
-def _build_rss_candidates(query: str) -> list[tuple[str, str]]:
-    q = (query or "").strip()
-    out: list[tuple[str, str]] = []
-    is_baseball = _looks_baseball_query(q)
-    query_has_cjk = bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", q))
-    query_is_specific = _query_looks_specific(q)
-
-    if is_baseball:
-        q_en = urllib.parse.quote_plus(f"{q} baseball")
-        q_ja = urllib.parse.quote_plus(f"{q} 野球")
-        google_news = [
-            (
-                "google_news_baseball_ja",
-                f"https://news.google.com/rss/search?q={q_ja}&hl=ja&gl=JP&ceid=JP:ja",
-            ),
-            (
-                "google_news_baseball_en",
-                f"https://news.google.com/rss/search?q={q_en}&hl=en-US&gl=US&ceid=US:en",
-            ),
-        ]
-        if not query_has_cjk:
-            google_news.reverse()
-
-        generic_feeds = [
-            ("mlb_official_rss", "https://www.mlb.com/feeds/news/rss.xml"),
-            ("espn_mlb_rss", "https://www.espn.com/espn/rss/mlb/news"),
-            ("yahoo_mlb_rss", "https://sports.yahoo.com/mlb/rss/"),
-            ("nhk_sports_rss", "https://www3.nhk.or.jp/rss/news/cat7.xml"),
-        ]
-        if query_is_specific:
-            out.extend(google_news)
-            out.extend(generic_feeds)
-        else:
-            out.extend(generic_feeds)
-            out.extend(google_news)
-    else:
-        quoted = urllib.parse.quote_plus(q)
-        out.append(
-            (
-                "google_news_query_zh",
-                f"https://news.google.com/rss/search?q={quoted}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
-            )
-        )
-        out.append(
-            (
-                "google_news_query_en",
-                f"https://news.google.com/rss/search?q={quoted}&hl=en-US&gl=US&ceid=US:en",
-            )
-        )
-
-    seen: set[str] = set()
-    deduped: list[tuple[str, str]] = []
-    for name, url in out:
-        if url in seen:
-            continue
-        seen.add(url)
-        deduped.append((name, url))
-    return deduped
-
-
-def _extract_google_news_rss_results(raw_xml: str, max_results: int) -> list[dict[str, str]]:
-    limit = max(1, min(20, int(max_results)))
-    xml_text = (raw_xml or "").strip()
-    if not xml_text:
-        return []
-
-    try:
-        root = ET.fromstring(xml_text)
-    except Exception:
-        return []
-
-    items = root.findall(".//item")
-    out: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in items:
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        desc = (item.findtext("description") or "").strip()
-        if not title or not link:
-            continue
-
-        title = _clean_html_fragment(title)
-        link = _clean_html_fragment(link)
-        snippet = _clean_html_fragment(desc)
-        key = f"{title}|{link}".lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        published_at = (item.findtext("pubDate") or "").strip()
-        entry = {"title": title, "url": link, "snippet": snippet}
-        if published_at:
-            entry["published_at"] = published_at
-        out.append(entry)
-        if len(out) >= limit:
-            break
     return out
 
 
@@ -4760,27 +4573,17 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
-        cache_key = {"query": q, "max_results": limit, "algo_version": 3}
+        cache_key = {"query": q, "max_results": limit, "algo_version": 4}
         cached = self._load_web_cache("web_search", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
         ddg_allowed = self._domain_allowed("duckduckgo.com")
-        prefer_news = _looks_news_like_query(q)
-        prefer_baseball = _looks_baseball_query(q)
-        query_is_specific = _query_looks_specific(q)
-        rss_candidates = _build_rss_candidates(q)
-        rss_allowed_candidates: list[tuple[str, str]] = []
-        for name, url in rss_candidates:
-            host = (urllib.parse.urlsplit(url).hostname or "").strip().lower()
-            if host and self._domain_allowed(host):
-                rss_allowed_candidates.append((name, url))
-
-        if not ddg_allowed and not rss_allowed_candidates:
+        if not ddg_allowed:
             return {
                 "ok": False,
                 "error": (
-                    "Domain not allowed for search engines and RSS sources. "
+                    "Domain not allowed for search engine. "
                     f"Allowed: {', '.join(self.config.web_allowed_domains)}"
                 ),
             }
@@ -4877,106 +4680,23 @@ class LocalToolExecutor:
                         break
                 return added
 
-            def _rss_source_requires_query_match(source_name: str) -> bool:
-                return query_is_specific and source_name in {
-                    "mlb_official_rss",
-                    "espn_mlb_rss",
-                    "yahoo_mlb_rss",
-                    "nhk_sports_rss",
-                }
-
-            if prefer_news and rss_allowed_candidates:
-                for rss_name, rss_url in rss_allowed_candidates:
-                    if len(results) >= limit:
-                        break
-                    try:
-                        status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
-                        rss_results = _extract_google_news_rss_results(text, max_results=limit)
-                        if _rss_source_requires_query_match(rss_name):
-                            rss_results = [
-                                row for row in rss_results if _query_relevance_score(q, row) >= 12.0
-                            ]
-                        if _append_results(rss_results, rss_name) > 0 and source == "unknown":
-                            source = f"rss:{rss_name}"
-                    except Exception as exc:
-                        warning_parts.append(f"{rss_name} 获取失败: {exc}")
-
-            ddg_error: str | None = None
-            if ddg_allowed and not results:
+            if not results:
                 try:
                     status, content_type, text, truncated = _fetch_page_with_retry(search_url)
                     ddg_results = _extract_ddg_results(text, max_results=limit)
                     if _append_results(ddg_results, "duckduckgo_html") > 0:
                         source = "duckduckgo_html"
-                    if not results:
-                        status, content_type, text, truncated = _fetch_page_with_retry(lite_url)
-                        ddg_results = _extract_ddg_results(text, max_results=limit)
-                        if _append_results(ddg_results, "duckduckgo_lite") > 0:
-                            source = "duckduckgo_lite"
                 except Exception as exc:
-                    ddg_error = str(exc)
+                    warning_parts.append(f"DuckDuckGo HTML 搜索失败: {exc}")
 
-            if ddg_error:
-                warning_parts.append(f"DuckDuckGo 搜索失败: {ddg_error}")
-
-            if not results and rss_allowed_candidates and not prefer_news:
-                for rss_name, rss_url in rss_allowed_candidates:
-                    if len(results) >= limit:
-                        break
-                    try:
-                        status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
-                        rss_results = _extract_google_news_rss_results(text, max_results=limit)
-                        if _rss_source_requires_query_match(rss_name):
-                            rss_results = [
-                                row for row in rss_results if _query_relevance_score(q, row) >= 12.0
-                            ]
-                        if _append_results(rss_results, rss_name) > 0 and source == "unknown":
-                            source = f"rss:{rss_name}"
-                    except Exception as exc:
-                        warning_parts.append(f"{rss_name} 回退失败: {exc}")
-
-            if not results and prefer_baseball:
-                curated = [
-                    {
-                        "title": "MLB News (Official)",
-                        "url": "https://www.mlb.com/news",
-                        "snippet": "Fallback source when search engines are blocked.",
-                        "source": "fallback_static",
-                    },
-                    {
-                        "title": "ESPN MLB",
-                        "url": "https://www.espn.com/mlb/",
-                        "snippet": "Fallback source when search engines are blocked.",
-                        "source": "fallback_static",
-                    },
-                    {
-                        "title": "Yahoo Sports MLB",
-                        "url": "https://sports.yahoo.com/mlb/",
-                        "snippet": "Fallback source when search engines are blocked.",
-                        "source": "fallback_static",
-                    },
-                    {
-                        "title": "NPB Official",
-                        "url": "https://npb.jp/",
-                        "snippet": "Fallback source when search engines are blocked.",
-                        "source": "fallback_static",
-                    },
-                    {
-                        "title": "Yahoo Japan NPB",
-                        "url": "https://baseball.yahoo.co.jp/npb/",
-                        "snippet": "Fallback source when search engines are blocked.",
-                        "source": "fallback_static",
-                    },
-                ]
-                for item in curated:
-                    host = (urllib.parse.urlsplit(item["url"]).hostname or "").strip().lower()
-                    if host and self._domain_allowed(host):
-                        results.append(item)
-                    if len(results) >= limit:
-                        break
-                if results:
-                    source = "fallback:baseball_static_links"
-                    warning_parts.append("实时新闻抓取受限，已回退到可访问的棒球新闻入口链接。")
+            if not results:
+                try:
+                    status, content_type, text, truncated = _fetch_page_with_retry(lite_url)
+                    ddg_results = _extract_ddg_results(text, max_results=limit)
+                    if _append_results(ddg_results, "duckduckgo_lite") > 0:
+                        source = "duckduckgo_lite"
+                except Exception as exc:
+                    warning_parts.append(f"DuckDuckGo Lite 搜索失败: {exc}")
 
             if not results:
                 warning_parts.append("搜索结果页解析为空，可能被网关改写或反爬。")
@@ -5008,13 +4728,6 @@ class LocalToolExecutor:
                 ),
                 reverse=True,
             )
-            if query_is_specific and normalized_results:
-                best_score = float(normalized_results[0].get("score") or 0.0)
-                if best_score >= 12.0:
-                    min_score = max(6.0, best_score * 0.45)
-                    normalized_results = [
-                        item for item in normalized_results if float(item.get("score") or 0.0) >= min_score
-                    ]
 
             payload = {
                 "ok": True,
