@@ -14,6 +14,12 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "app.legacy_platform_runtime",
     "app.evals",
     "app.operations_overview",
+    "app.adapters",
+    "app.contracts",
+    "app.system_modules",
+    "app.tool_providers",
+    "app.agents",
+    "packages.office_addons",
 )
 
 

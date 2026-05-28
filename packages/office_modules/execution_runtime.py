@@ -9,9 +9,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from packages.runtime_core.legacy_host_support import kernel_host_snapshot, read_kernel_host_getattr_metrics
-
-
 LEGACY_RUN_CHAT_FIELDS: tuple[str, ...] = (
     "text",
     "tool_events",
@@ -186,10 +183,6 @@ class OfficeLegacyHelperSurface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def debug_openai_auth_summary(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
     def build_llm(
         self,
         *,
@@ -205,34 +198,6 @@ class OfficeLegacyHelperSurface(ABC):
 
     @abstractmethod
     def default_model(self) -> str:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_role_contract_matrix(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -503,15 +468,6 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
             inline_followup_context=inline_followup_context,
         )
 
-    def debug_openai_auth_summary(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "debug_openai_auth_summary", None)
-        if not callable(method):
-            raise AttributeError("debug_openai_auth_summary")
-        return dict(method() or {})
-
-    def _debug_openai_auth_summary(self) -> dict[str, Any]:
-        return self.debug_openai_auth_summary()
-
     def build_llm(
         self,
         *,
@@ -551,63 +507,6 @@ class LegacyOfficeHelperAdapter(OfficeLegacyHelperSurface):
         if not callable(method):
             raise AttributeError("default_model")
         return str(method() or "")
-
-    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_kernel_module_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_kernel_module_snapshot")
-
-    def _debug_kernel_host_snapshot(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_kernel_host_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        capability_runtime = getattr(self._legacy_runtime, "_capability_runtime", None)
-        if capability_runtime is not None:
-            return kernel_host_snapshot(
-                agent_modules=tuple(capability_runtime.agent_modules),
-                primary_agent_module=capability_runtime.primary_agent_module,
-                tool_modules=tuple(capability_runtime.tool_modules),
-                primary_tool_module=capability_runtime.primary_tool_module,
-                output_modules=tuple(capability_runtime.output_modules),
-                primary_output_module=capability_runtime.primary_output_module,
-                memory_modules=tuple(capability_runtime.memory_modules),
-                primary_memory_module=capability_runtime.primary_memory_module,
-                capability_runtime=capability_runtime,
-                blackboard=None,
-                getattr_metrics=read_kernel_host_getattr_metrics(),
-            )
-        raise AttributeError("_debug_kernel_host_snapshot")
-
-    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_tool_registry_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_tool_registry_snapshot")
-
-    def _debug_role_contract_matrix(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_role_contract_matrix", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_role_contract_matrix")
-
-    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_capability_multi_module_snapshot", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_capability_multi_module_snapshot")
-
-    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_route_runtime_override_attachment_context_requires_tooling", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_route_runtime_override_attachment_context_requires_tooling")
-
-    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
-        method = getattr(self._legacy_runtime, "_debug_route_runtime_override_force_tool_followup", None)
-        if callable(method):
-            return dict(method() or {})
-        raise AttributeError("_debug_route_runtime_override_force_tool_followup")
 
     def _summarize_validation_context(self, tool_events: list[Any]) -> dict[str, Any]:
         method = getattr(self._legacy_runtime, "_summarize_validation_context", None)

@@ -10,12 +10,6 @@ These are the formal import targets:
 
 These should be treated as the stable Python package layer.
 
-## Experimental Or Internal Packages
-
-- `packages/office_addons`
-
-This area is currently internal and should not be treated as a stable external API.
-
 ## Compatibility Placeholders
 
 These directories exist only to document or bridge old distribution names:

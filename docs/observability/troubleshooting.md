@@ -20,7 +20,6 @@ If the app starts but behavior looks wrong, reproduce the issue in the current c
 
 - request/stream behavior: chat UI + browser devtools network tab
 - trace fields: [`docs/observability/trace_guide.md`](trace_guide.md)
-- tool/provider degradation: [`docs/operations/tool_provider_degradation_guide.md`](../operations/tool_provider_degradation_guide.md)
 - runtime snapshot: `GET /api/runtime-status`
 - workbench diagnostics: `Run`, `Logs`, `Recent Tools`, `Context Meter`
 
