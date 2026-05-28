@@ -62,28 +62,9 @@ from packages.office_modules.role_helpers import (
     make_role_spec as make_role_spec_helper,
     role_payload_dict as role_payload_dict_helper,
 )
-from app.agents.role_debug_support import (
-    debug_role_contract_matrix as debug_role_contract_matrix_helper,
-    debug_role_execution_smoke_matrix as debug_role_execution_smoke_matrix_helper,
-)
 from packages.office_modules.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
-)
-from packages.office_modules.legacy_runtime_support import (
-    legacy_capability_bundle_snapshot as legacy_capability_bundle_snapshot_helper,
-    legacy_capability_multi_module_snapshot as legacy_capability_multi_module_snapshot_helper,
-    legacy_codex_input_payload as legacy_codex_input_payload_helper,
-    legacy_evolution_overlay_snapshot as legacy_evolution_overlay_snapshot_helper,
-    legacy_evolution_turn_update as legacy_evolution_turn_update_helper,
-    legacy_normalize_model_for_auth as legacy_normalize_model_for_auth_helper,
-    legacy_openai_auth_summary as legacy_openai_auth_summary_helper,
-    legacy_role_lab_multi_instance_batch as legacy_role_lab_multi_instance_batch_helper,
-    compact_legacy_session as compact_legacy_session_helper,
-    legacy_role_lab_worker_branch_graph as legacy_role_lab_worker_branch_graph_helper,
-    legacy_route_runtime_override_attachment_context_requires_tooling as legacy_route_runtime_override_attachment_context_requires_tooling_helper,
-    legacy_route_runtime_override_force_tool_followup as legacy_route_runtime_override_force_tool_followup_helper,
-    legacy_role_lab_runtime_snapshot as legacy_role_lab_runtime_snapshot_helper,
 )
 from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
 from packages.office_modules.specialist_role import (
@@ -869,57 +850,8 @@ class OfficeAgent:
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
-    def _debug_openai_auth_summary(self) -> dict[str, Any]:
-        return legacy_openai_auth_summary_helper(self)
-
-    def debug_openai_auth_summary(self) -> dict[str, Any]:
-        return self._debug_openai_auth_summary()
-
     def legacy_tools(self) -> Any:
         return self.tools
-
-    def _debug_capability_bundle_snapshot(self) -> dict[str, Any]:
-        return legacy_capability_bundle_snapshot_helper(self)
-
-    def _debug_capability_multi_module_snapshot(self) -> dict[str, Any]:
-        return legacy_capability_multi_module_snapshot_helper(self)
-
-    def _debug_codex_input_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        return legacy_codex_input_payload_helper(self, messages)
-
-    def _debug_normalize_model_for_auth(self, model: str, auth_mode: str) -> dict[str, Any]:
-        return legacy_normalize_model_for_auth_helper(model, auth_mode)
-
-    def _debug_kernel_module_snapshot(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_module_snapshot")
-
-    def _debug_tool_registry_snapshot(self) -> dict[str, Any]:
-        return {
-            "selected_ref": "",
-            "tool_count": len(self._lc_tools),
-            "tools": [
-                {
-                    "name": str(getattr(tool, "name", "") or ""),
-                    "description": str(getattr(tool, "description", "") or "")[:200],
-                }
-                for tool in self._lc_tools
-            ],
-        }
-
-    def _debug_evolution_overlay_snapshot(self) -> dict[str, Any]:
-        return legacy_evolution_overlay_snapshot_helper(self)
-
-    def _debug_evolution_turn_update(self) -> dict[str, Any]:
-        return legacy_evolution_turn_update_helper()
-
-    def _debug_role_lab_runtime_snapshot(self) -> dict[str, Any]:
-        return legacy_role_lab_runtime_snapshot_helper(self)
-
-    def _debug_role_lab_multi_instance_batch(self) -> dict[str, Any]:
-        return legacy_role_lab_multi_instance_batch_helper(self)
-
-    def _debug_role_lab_worker_branch_graph(self) -> dict[str, Any]:
-        return legacy_role_lab_worker_branch_graph_helper(self)
 
     def resolve_auth(self, mode: str) -> Any:
         normalized_mode = str(mode or "").strip().lower()
@@ -1068,93 +1000,6 @@ class OfficeAgent:
             return True, f"{tool_name} 命中可重试错误，Coordinator 已安排局部重试。"
         return False, ""
 
-    def _legacy_platform_removed_debug_payload(self, surface: str) -> dict[str, Any]:
-        return {
-            "ok": False,
-            "removed": True,
-            "surface": str(surface or ""),
-            "detail": "Legacy kernel/platform runtime was removed from the chat-product mainline.",
-        }
-
-    def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        _ = target_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_upgrade_flow")
-
-    def _debug_kernel_shadow_validation_rejects_broken_manifest(
-        self,
-        broken_router_ref: str = "router_rules@999.0.0",
-    ) -> dict[str, Any]:
-        _ = broken_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_validation_rejects_broken_manifest")
-
-    def _debug_kernel_shadow_stage_and_smoke(
-        self,
-        target_router_ref: str = "router_rules@2.0.0",
-    ) -> dict[str, Any]:
-        _ = target_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_stage_and_smoke")
-
-    def _debug_kernel_shadow_replay(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        _ = target_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_replay")
-
-    def _debug_kernel_shadow_contracts(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_contracts")
-
-    def _debug_kernel_active_contracts(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_active_contracts")
-
-    def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        _ = target_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline")
-
-    def _debug_kernel_shadow_pipeline_classifies_broken_manifest(
-        self,
-        broken_router_ref: str = "router_rules@999.0.0",
-    ) -> dict[str, Any]:
-        _ = broken_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline_classifies_broken_manifest")
-
-    def _debug_kernel_shadow_auto_repair_broken_manifest(
-        self,
-        broken_router_ref: str = "router_rules@999.0.0",
-    ) -> dict[str, Any]:
-        _ = broken_router_ref
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_auto_repair_broken_manifest")
-
-    def _debug_kernel_shadow_promote_rejects_path_refs(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_path_refs")
-
-    def _debug_kernel_shadow_patch_worker_persists_missing_tasks(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_patch_worker_persists_missing_tasks")
-
-    def _debug_kernel_shadow_package_path_router(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_package_path_router")
-
-    def _debug_role_contract_matrix(self) -> dict[str, Any]:
-        return debug_role_contract_matrix_helper(self)
-
-    def _debug_role_execution_smoke_matrix(self) -> dict[str, Any]:
-        return debug_role_execution_smoke_matrix_helper(self)
-
-    def _debug_route_runtime_override_attachment_context_requires_tooling(self) -> dict[str, Any]:
-        return legacy_route_runtime_override_attachment_context_requires_tooling_helper(self)
-
-    def _debug_route_runtime_override_force_tool_followup(self) -> dict[str, Any]:
-        return legacy_route_runtime_override_force_tool_followup_helper(self)
-
-    def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_package_syncs_module_version")
-
-    def _debug_kernel_shadow_promote_rejects_module_version_mismatch(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_module_version_mismatch")
-
-    def _debug_kernel_shadow_promote_rejects_dependency_mismatch(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_promote_rejects_dependency_mismatch")
-
-    def _debug_kernel_shadow_self_upgrade_flow(self) -> dict[str, Any]:
-        return self._legacy_platform_removed_debug_payload("kernel_shadow_self_upgrade_flow")
-
     def _record_module_failure(
         self,
         *,
@@ -1174,7 +1019,20 @@ class OfficeAgent:
         os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_cert_path)
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        return compact_legacy_session_helper(self, session, keep_last_turns)
+        turns = session.get("turns", [])
+        if len(turns) <= self.config.summary_trigger_turns:
+            return False
+
+        keep = max(2, min(2000, keep_last_turns))
+        older = turns[:-keep]
+        recent = turns[-keep:]
+        if not older:
+            return False
+
+        existing_summary = session.get("summary", "")
+        session["summary"] = self._summarize_turns(existing_summary, older)
+        session["turns"] = recent
+        return True
 
     def _summarize_turns(self, existing_summary: str, older_turns: list[dict[str, Any]]) -> str:
         transcript = []
@@ -8357,47 +8215,6 @@ class OfficeAgent:
     def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
         result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
-
-    def _kernel_runtime_status_tool(self, include_roles: bool = True, include_runtime_files: bool = False) -> str:
-        _ = (include_roles, include_runtime_files)
-        return json.dumps(
-            self._legacy_platform_removed_debug_payload("kernel_runtime_status_tool"),
-            ensure_ascii=False,
-        )
-
-    def _kernel_shadow_pipeline_tool(
-        self,
-        smoke_message: str = "给我今天的新闻",
-        validate_provider: bool = True,
-        promote_if_healthy: bool = False,
-    ) -> str:
-        _ = (smoke_message, validate_provider, promote_if_healthy)
-        return json.dumps(
-            self._legacy_platform_removed_debug_payload("kernel_shadow_pipeline_tool"),
-            ensure_ascii=False,
-        )
-
-    def _kernel_shadow_self_upgrade_tool(
-        self,
-        smoke_message: str = "给我今天的新闻",
-        validate_provider: bool = True,
-        max_attempts: int = 1,
-        max_tasks: int = 1,
-        max_rounds: int = 2,
-        promote_if_healthy: bool = True,
-    ) -> str:
-        _ = (
-            smoke_message,
-            validate_provider,
-            max_attempts,
-            max_tasks,
-            max_rounds,
-            promote_if_healthy,
-        )
-        return json.dumps(
-            self._legacy_platform_removed_debug_payload("kernel_shadow_self_upgrade_tool"),
-            ensure_ascii=False,
-        )
 
     def _list_sessions_tool(self, max_sessions: int = 20) -> str:
         result = self.tools.list_sessions(max_sessions=max_sessions)

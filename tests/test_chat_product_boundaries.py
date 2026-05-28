@@ -43,6 +43,20 @@ def test_repo_has_no_removed_legacy_platform_imports() -> None:
     assert forbidden_import_violations() == []
 
 
+def test_removed_redundant_layer_source_files_are_gone() -> None:
+    removed_paths = {
+        REPO_ROOT / "app" / "adapters" / "__init__.py",
+        REPO_ROOT / "app" / "contracts" / "__init__.py",
+        REPO_ROOT / "app" / "system_modules" / "__init__.py",
+        REPO_ROOT / "app" / "tool_providers" / "__init__.py",
+        REPO_ROOT / "app" / "agents" / "role_contracts.py",
+        REPO_ROOT / "app" / "agents" / "role_debug_support.py",
+        REPO_ROOT / "app" / "agents" / "role_smoke.py",
+        REPO_ROOT / "packages" / "office_addons" / "__init__.py",
+    }
+    assert all(not path.exists() for path in removed_paths)
+
+
 def test_removed_legacy_platform_routes_are_not_registered() -> None:
     route_paths = {getattr(route, "path", "") for route in main_app.app.routes}
     removed = {
