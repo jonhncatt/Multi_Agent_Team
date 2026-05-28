@@ -1,8 +1,0 @@
-{
-  "name": "navigator_agent",
-  "entry_class": "NavigatorAgent",
-  "description": "航行代理，负责全局方向判断、稳态推进与路径修正。",
-  "capabilities": ["direction_setting", "stability_control", "path_adjustment"],
-  "version": "1.1"
-}
-

@@ -1,8 +1,0 @@
-{
-  "name": "reviewer_agent",
-  "entry_class": "ReviewerAgent",
-  "description": "审查代理，负责结果审阅、一致性检查与可交付验收。",
-  "capabilities": ["review", "consistency_check", "acceptance"],
-  "version": "1.1"
-}
-

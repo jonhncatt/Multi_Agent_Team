@@ -1,8 +1,0 @@
-{
-  "name": "tool_user_agent",
-  "entry_class": "ToolUserAgent",
-  "description": "工具代理，负责工具选择、调用策略与执行反馈。",
-  "capabilities": ["tool_selection", "tool_execution", "tool_feedback"],
-  "version": "1.1"
-}
-

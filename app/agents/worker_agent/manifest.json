@@ -1,8 +1,0 @@
-{
-  "name": "worker_agent",
-  "entry_class": "WorkerAgent",
-  "description": "通用执行代理，负责把任务快速落实为可交付结果。",
-  "capabilities": ["execution", "task_completion", "delivery"],
-  "version": "1.1"
-}
-
