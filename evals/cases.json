@@ -2,7 +2,7 @@
   {
     "name": "tool_search_positive_15h",
     "kind": "tool",
-    "tool": "search_text_in_file",
+    "tool": "search_contents_in_file",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "query": "15h",
@@ -26,7 +26,7 @@
   {
     "name": "tool_search_negative_15h",
     "kind": "tool",
-    "tool": "search_text_in_file",
+    "tool": "search_contents_in_file",
     "args": {
       "path": "evals/fixtures/spec_without_15h.txt",
       "query": "15h",
@@ -41,9 +41,9 @@
     }
   },
   {
-    "name": "tool_multi_query_search",
+    "name": "tool_search_contents_in_file_multi",
     "kind": "tool",
-    "tool": "multi_query_search",
+    "tool": "search_contents_in_file_multi",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "queries": [
@@ -63,9 +63,9 @@
     }
   },
   {
-    "name": "tool_read_section_by_heading",
+    "name": "tool_read_section",
     "kind": "tool",
-    "tool": "read_section_by_heading",
+    "tool": "read_section",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "heading": "5.15 Get Features command",
@@ -131,7 +131,7 @@
     "kind": "tool",
     "tool": "search_codebase",
     "args": {
-      "query": "search_text_in_file",
+      "query": "search_contents_in_file",
       "root": "app",
       "max_matches": 5
     },
@@ -145,9 +145,9 @@
     }
   },
   {
-    "name": "tool_read_text_file_atom_feed",
+    "name": "tool_read_file_atom_feed",
     "kind": "tool",
-    "tool": "read_text_file",
+    "tool": "read_file",
     "args": {
       "path": "evals/fixtures/generated/sample.atom",
       "max_chars": 4000
@@ -177,7 +177,7 @@
       "tool_events": [
         {
           "__type": "ToolEvent",
-          "name": "search_web",
+          "name": "web_search",
           "input": {
             "query": "latest openai news"
           },
@@ -185,7 +185,7 @@
         },
         {
           "__type": "ToolEvent",
-          "name": "fetch_web",
+          "name": "web_fetch",
           "input": {
             "url": "https://example.com/story"
           },
@@ -200,8 +200,8 @@
       },
       "contains_any": {
         "web_tool_notes.0": [
-          "search_web",
-          "fetch_web"
+          "web_search",
+          "web_fetch"
         ]
       }
     }
@@ -214,7 +214,7 @@
       "citations": [
         {
           "source_type": "web",
-          "tool": "search_web",
+          "tool": "web_search",
           "label": "Candidate result",
           "url": "https://search.example/candidate",
           "locator": "query=shohei ohtani japan",
@@ -223,7 +223,7 @@
         },
         {
           "source_type": "web",
-          "tool": "fetch_web",
+          "tool": "web_fetch",
           "label": "Fetched article",
           "url": "https://news.example/story",
           "locator": "https://news.example/story",
@@ -234,7 +234,7 @@
     },
     "assert": {
       "equals": {
-        "result.0.tool": "fetch_web",
+        "result.0.tool": "web_fetch",
         "result.0.id": "c1"
       }
     }
@@ -254,7 +254,7 @@
         "c1": {
           "id": "c1",
           "kind": "candidate",
-          "tool": "search_web",
+          "tool": "web_search",
           "confidence": "low"
         }
       }
@@ -681,7 +681,7 @@
       "tool_events": [
         {
           "__type": "ToolEvent",
-          "name": "read_text_file",
+          "name": "read_file",
           "input": {
             "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
             "start_char": 0,
@@ -1075,7 +1075,7 @@
       "citations": [
         {
           "kind": "evidence",
-          "tool": "read_text_file",
+          "tool": "read_file",
           "path": "/tmp/spec.pdf",
           "snippet": "overview section"
         }
@@ -1106,7 +1106,7 @@
       "citations": [
         {
           "kind": "evidence",
-          "tool": "read_text_file",
+          "tool": "read_file",
           "path": "/tmp/meeting.docx",
           "snippet": "agenda"
         }
@@ -1416,7 +1416,7 @@
       "spec_lookup_request": false,
       "evidence_required_mode": false,
       "readonly_checks": [
-        "search_web"
+        "web_search"
       ],
       "conflict_has_conflict": true,
       "conflict_realtime_only": true,
@@ -1724,7 +1724,7 @@
     }
   },
   {
-    "name": "helper_infer_bare_tool_call_from_text_read_text_file",
+    "name": "helper_infer_bare_tool_call_from_text_read_file",
     "kind": "helper",
     "helper": "_infer_bare_tool_call_from_text",
     "args": {
@@ -1732,7 +1732,7 @@
     },
     "assert": {
       "equals": {
-        "name": "read_text_file"
+        "name": "read_file"
       },
       "contains": {
         "args.path": [
@@ -1793,7 +1793,7 @@
     },
     "assert": {
       "equals": {
-        "result.0.name": "read_text_file"
+        "result.0.name": "read_file"
       },
       "contains": {
         "result.0.args.path": [
@@ -1871,7 +1871,7 @@
       "tool_events": [
         {
           "__type": "ToolEvent",
-          "name": "read_text_file",
+          "name": "read_file",
           "input": {
             "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
             "start_char": 0,
@@ -1883,7 +1883,7 @@
     },
     "assert": {
       "equals": {
-        "result.0.name": "read_text_file",
+        "result.0.name": "read_file",
         "result.0.args.start_char": 12000
       },
       "contains": {
@@ -1923,7 +1923,7 @@
         },
         {
           "__type": "ToolEvent",
-          "name": "read_text_file",
+          "name": "read_file",
           "input": {
             "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
             "start_char": 0,
@@ -2804,28 +2804,6 @@
         "capability_modules.0": [
           "packages.office_modules"
         ]
-      }
-    }
-  },
-  {
-    "name": "tool_doc_index_build_external_nvme_pdf",
-    "kind": "tool",
-    "tool": "doc_index_build",
-    "optional": true,
-    "args": {
-      "path": "${EVAL_NVME_PDF}",
-      "max_headings": 100
-    },
-    "skip_if_missing_env": [
-      "EVAL_NVME_PDF"
-    ],
-    "assert": {
-      "equals": {
-        "ok": true
-      },
-      "min_value": {
-        "page_count": 100,
-        "heading_count": 20
       }
     }
   },

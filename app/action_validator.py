@@ -34,7 +34,6 @@ class ValidationResult(BaseModel):
 _READ_PATH_FIELDS: dict[str, tuple[str, ...]] = {
     "list_dir": ("path",),
     "read_file": ("path",),
-    "read_text_file": ("path",),
     "glob_file_search": ("path",),
     "search_codebase": ("path", "root"),
     "search_contents_in_file": ("path",),
@@ -47,18 +46,11 @@ _READ_PATH_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 _WRITE_PATH_FIELDS: dict[str, tuple[str, ...]] = {
-    "write_file": ("path",),
-    "write_text_file": ("path",),
-    "append_file": ("path",),
-    "append_text_file": ("path",),
-    "replace_in_file": ("path",),
-    "copy_file": ("dst_path", "destination", "target_path"),
-    "extract_zip": ("dst_dir", "output_dir"),
     "web_download": ("dst_path", "path"),
 }
 
-_NETWORK_TOOLS = {"web_search", "web_fetch", "web_download", "search_web", "fetch_web", "download_web_file"}
-_SHELL_TOOLS = {"exec_command", "run_shell", "write_stdin"}
+_NETWORK_TOOLS = {"web_search", "web_fetch", "web_download"}
+_SHELL_TOOLS = {"exec_command", "write_stdin"}
 
 _DANGEROUS_COMMAND_PATTERNS = (
     re.compile(r"(^|\s)rm\s+-[^\n;|&]*r[^\n;|&]*\s+/(?:\s|$)"),

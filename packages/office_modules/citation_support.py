@@ -18,10 +18,10 @@ _TRACKING_QUERY_KEYS = {
 }
 
 _TOOL_ALIASES = {
-    "web_search": {"web_search", "search_web"},
-    "web_fetch": {"web_fetch", "fetch_web"},
-    "search_contents_in_file": {"search_contents_in_file", "search_text_in_file"},
-    "read_section": {"read_section", "read_section_by_heading"},
+    "web_search": {"web_search"},
+    "web_fetch": {"web_fetch"},
+    "search_contents_in_file": {"search_contents_in_file"},
+    "read_section": {"read_section"},
 }
 
 
@@ -288,16 +288,16 @@ def finalize_citation_candidates(agent: Any, citations: list[dict[str, Any]]) ->
 
         tool_priority = {
             "web_fetch": 6,
-            "fetch_web": 6,
+            "web_fetch": 6,
             "fact_check_file": 5,
             "search_contents_in_file": 5,
-            "search_text_in_file": 5,
+            "search_contents_in_file": 5,
             "read_section": 5,
-            "read_section_by_heading": 5,
+            "read_section": 5,
             "table_extract": 5,
             "search_codebase": 4,
             "web_search": 1,
-            "search_web": 1,
+            "web_search": 1,
         }.get(tool, 3)
         if source_type in {"document", "table", "codebase"} and tool_priority < 5:
             tool_priority = 5

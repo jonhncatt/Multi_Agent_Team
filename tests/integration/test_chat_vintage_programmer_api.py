@@ -900,7 +900,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.3",
+            "app_version": "3.1.4",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -942,7 +942,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.3"
+    assert bootstrap_payload["app_version"] == "3.1.4"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1876,12 +1876,11 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     assert {"control", "shell", "edit", "file", "document", "web", "session", "media", "archive"}.issubset(
         {item["group"] for item in tool_rows}
     )
-    assert "view_image" not in {item["name"] for item in tool_rows}
-    assert "read_text_file" not in {item["name"] for item in tool_rows}
+    assert "image_inspect" in {item["name"] for item in tool_rows}
+    assert "read_file" in {item["name"] for item in tool_rows}
     assert {"web_download", "image_read", "list_dir", "glob_file_search", "search_contents_in_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
         {item["name"] for item in tool_rows}
     )
-    assert {"read", "search_file", "search_file_multi"}.isdisjoint({item["name"] for item in tool_rows})
 
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200

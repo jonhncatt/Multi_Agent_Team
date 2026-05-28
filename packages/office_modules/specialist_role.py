@@ -159,7 +159,7 @@ def specialist_fallback(
             "role": specialist,
             "summary": "优先聚焦公开来源、近期时间线与权威报道。",
             "bullets": [
-                "优先用 search_web 找候选，再用 fetch_web 读正文。",
+                "优先用 web_search 找候选，再用 web_fetch 读正文。",
                 "优先查看权威媒体、官方赛事和可核实新闻来源。",
             ],
             "worker_hint": "先围绕时间、地点、事件三件事取证，再给结论，避免只基于搜索摘要。",

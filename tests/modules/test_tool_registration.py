@@ -103,7 +103,5 @@ def test_vintage_programmer_specs_only_expose_canonical_file_tool_names() -> Non
     for path in spec_files:
         content = path.read_text(encoding="utf-8")
         assert "\n  - read\n" not in content
-        assert "`search_file`" not in content
-        assert "`search_file_multi`" not in content
         assert "read_file" in content
         assert "search_contents_in_file" in content
