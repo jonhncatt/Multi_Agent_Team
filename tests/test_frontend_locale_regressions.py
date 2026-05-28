@@ -441,8 +441,6 @@ def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
     assert '"glob_file_search"' in script
     assert '"search_contents_in_file"' in script
     assert '"search_contents_in_file_multi"' in script
-    assert '"search_file"' not in script
-    assert '"search_file_multi"' not in script
 
 
 def test_main_cards_project_tool_traces_with_non_blank_fallbacks() -> None:

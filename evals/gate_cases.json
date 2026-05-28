@@ -2,7 +2,7 @@
   {
     "name": "tool_search_positive_15h",
     "kind": "tool",
-    "tool": "search_text_in_file",
+    "tool": "search_contents_in_file",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "query": "15h",
@@ -24,9 +24,9 @@
     }
   },
   {
-    "name": "tool_multi_query_search",
+    "name": "tool_search_contents_in_file_multi",
     "kind": "tool",
-    "tool": "multi_query_search",
+    "tool": "search_contents_in_file_multi",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "queries": [
@@ -46,9 +46,9 @@
     }
   },
   {
-    "name": "tool_read_section_by_heading",
+    "name": "tool_read_section",
     "kind": "tool",
-    "tool": "read_section_by_heading",
+    "tool": "read_section",
     "args": {
       "path": "evals/fixtures/spec_excerpt.txt",
       "heading": "5.15 Get Features command",
@@ -72,7 +72,7 @@
     "kind": "tool",
     "tool": "search_codebase",
     "args": {
-      "query": "search_text_in_file",
+      "query": "search_contents_in_file",
       "root": "app",
       "max_matches": 5
     },
@@ -120,7 +120,7 @@
       "tool_events": [
         {
           "__type": "ToolEvent",
-          "name": "search_web",
+          "name": "web_search",
           "input": {
             "query": "latest openai news"
           },
@@ -128,7 +128,7 @@
         },
         {
           "__type": "ToolEvent",
-          "name": "fetch_web",
+          "name": "web_fetch",
           "input": {
             "url": "https://example.com/story"
           },
@@ -143,8 +143,8 @@
       },
       "contains_any": {
         "web_tool_notes.0": [
-          "search_web",
-          "fetch_web"
+          "web_search",
+          "web_fetch"
         ]
       }
     }

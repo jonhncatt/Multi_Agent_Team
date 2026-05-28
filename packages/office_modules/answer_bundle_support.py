@@ -8,7 +8,7 @@ def citation_kind(citation: dict[str, Any]) -> str:
     kind = str(citation.get("kind") or "").strip().lower()
     if kind in {"evidence", "candidate"}:
         return kind
-    return "candidate" if str(citation.get("tool") or "").strip() == "search_web" else "evidence"
+    return "candidate" if str(citation.get("tool") or "").strip() == "web_search" else "evidence"
 
 
 def citation_strength(citation: dict[str, Any]) -> int:

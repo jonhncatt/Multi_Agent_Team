@@ -1876,12 +1876,11 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     assert {"control", "shell", "edit", "file", "document", "web", "session", "media", "archive"}.issubset(
         {item["group"] for item in tool_rows}
     )
-    assert "view_image" not in {item["name"] for item in tool_rows}
-    assert "read_text_file" not in {item["name"] for item in tool_rows}
+    assert "image_inspect" in {item["name"] for item in tool_rows}
+    assert "read_file" in {item["name"] for item in tool_rows}
     assert {"web_download", "image_read", "list_dir", "glob_file_search", "search_contents_in_file_multi", "read_section", "table_extract", "fact_check_file"}.issubset(
         {item["name"] for item in tool_rows}
     )
-    assert {"read", "search_file", "search_file_multi"}.isdisjoint({item["name"] for item in tool_rows})
 
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200

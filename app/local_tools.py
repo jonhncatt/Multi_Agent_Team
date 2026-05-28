@@ -2619,20 +2619,8 @@ class LocalToolExecutor:
         if name == "list_directory":
             result = self.list_directory(**arguments)
             return self._decorate_result(result)
-        if name == "read_text_file":
-            result = self.read_text_file(**arguments)
-            return self._decorate_result(result)
-        if name == "search_text_in_file":
-            result = self.search_text_in_file(**arguments)
-            return self._decorate_result(result)
-        if name == "multi_query_search":
-            result = self.multi_query_search(**arguments)
-            return self._decorate_result(result)
         if name == "doc_index_build":
             result = self.doc_index_build(**arguments)
-            return self._decorate_result(result)
-        if name == "read_section_by_heading":
-            result = self.read_section_by_heading(**arguments)
             return self._decorate_result(result)
         if name == "copy_file":
             result = self.copy_file(**arguments)
@@ -2652,21 +2640,6 @@ class LocalToolExecutor:
         if name == "replace_in_file":
             result = self.replace_in_file(**arguments)
             return self._decorate_result(result)
-        if name == "fetch_web":
-            result = self.fetch_web(**arguments)
-            return self._decorate_result(result)
-        if name == "download_web_file":
-            result = self.download_web_file(**arguments)
-            return self._decorate_result(result)
-        if name == "search_web":
-            result = self.search_web(**arguments)
-            return self._decorate_result(result)
-        if name == "list_sessions":
-            result = self.list_sessions(**arguments)
-            return self._decorate_result(result)
-        if name == "read_session_history":
-            result = self.read_session_history(**arguments)
-            return self._decorate_result(result)
         if name == "browser_open":
             result = self.browser_open(**arguments)
             return self._decorate_result(result)
@@ -2684,9 +2657,6 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "browser_screenshot":
             result = self.browser_screenshot(**arguments)
-            return self._decorate_result(result)
-        if name == "view_image":
-            result = self.view_image(**arguments)
             return self._decorate_result(result)
         if name == "apply_patch":
             result = self.apply_patch(**arguments)
@@ -2943,7 +2913,7 @@ class LocalToolExecutor:
         }
 
     def web_search(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
-        result = self.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
+        result = self._web_search_impl(query=query, max_results=max_results, timeout_sec=timeout_sec)
         if not isinstance(result, dict):
             return {"ok": False, "error": "web_search failed: invalid result"}
         payload = dict(result)
@@ -2968,7 +2938,7 @@ class LocalToolExecutor:
                     "error": f"Path is a directory: {path}. Use list_dir instead.",
                 }
 
-            result = self.read_text_file(
+            result = self._read_file_impl(
                 path=path,
                 start_char=start_char,
                 max_chars=max_chars,
@@ -3067,7 +3037,7 @@ class LocalToolExecutor:
         max_matches: int = 8,
         context_chars: int = 280,
     ) -> dict[str, Any]:
-        result = self.search_text_in_file(
+        result = self._search_contents_in_file_impl(
             path=path,
             query=query,
             max_matches=max_matches,
@@ -3086,7 +3056,7 @@ class LocalToolExecutor:
         per_query_max_matches: int = 3,
         context_chars: int = 280,
     ) -> dict[str, Any]:
-        result = self.multi_query_search(
+        result = self._search_contents_in_file_multi_impl(
             path=path,
             queries=queries,
             per_query_max_matches=per_query_max_matches,
@@ -3099,7 +3069,7 @@ class LocalToolExecutor:
         return payload
 
     def read_section(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
-        result = self.read_section_by_heading(path=path, heading=heading, max_chars=max_chars)
+        result = self._read_section_impl(path=path, heading=heading, max_chars=max_chars)
         if not isinstance(result, dict):
             return {"ok": False, "error": "read_section failed: invalid result"}
         payload = dict(result)
@@ -3107,7 +3077,7 @@ class LocalToolExecutor:
         return payload
 
     def web_fetch(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
-        result = self.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+        result = self._web_fetch_impl(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
         if not isinstance(result, dict):
             return {"ok": False, "error": "web_fetch failed: invalid result"}
         payload = dict(result)
@@ -3123,7 +3093,7 @@ class LocalToolExecutor:
         timeout_sec: int = 20,
         max_bytes: int = 52428800,
     ) -> dict[str, Any]:
-        result = self.download_web_file(
+        result = self._web_download_impl(
             url=url,
             dst_path=dst_path,
             overwrite=overwrite,
@@ -3138,7 +3108,7 @@ class LocalToolExecutor:
         return payload
 
     def sessions_list(self, limit: int = 20) -> dict[str, Any]:
-        result = self.list_sessions(max_sessions=limit)
+        result = self._sessions_list_impl(max_sessions=limit)
         if not isinstance(result, dict):
             return {"ok": False, "error": "sessions_list failed: invalid result"}
         payload = dict(result)
@@ -3146,7 +3116,7 @@ class LocalToolExecutor:
         return payload
 
     def sessions_history(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
-        result = self.read_session_history(session_id=session_id, max_turns=max_turns)
+        result = self._sessions_history_impl(session_id=session_id, max_turns=max_turns)
         if not isinstance(result, dict):
             return {"ok": False, "error": "sessions_history failed: invalid result"}
         payload = dict(result)
@@ -3155,7 +3125,7 @@ class LocalToolExecutor:
 
     def image_inspect(self, path: str = "", image_path: str = "") -> dict[str, Any]:
         resolved_path = str(path or image_path or "").strip()
-        result = self.view_image(path=resolved_path)
+        result = self._image_inspect_impl(path=resolved_path)
         if not isinstance(result, dict):
             return {"ok": False, "error": "image_inspect failed: invalid result"}
         payload = dict(result)
@@ -3551,7 +3521,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"list_directory failed: {exc}"}
 
-    def list_sessions(self, max_sessions: int = 20) -> dict[str, Any]:
+    def _sessions_list_impl(self, max_sessions: int = 20) -> dict[str, Any]:
         try:
             limit = max(1, min(200, int(max_sessions)))
             current_project_id = self._current_project_id()
@@ -3603,9 +3573,9 @@ class LocalToolExecutor:
                 )
             return {"ok": True, "count": len(rows), "sessions": rows}
         except Exception as exc:
-            return {"ok": False, "error": f"list_sessions failed: {exc}"}
+            return {"ok": False, "error": f"sessions_list failed: {exc}"}
 
-    def read_session_history(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
+    def _sessions_history_impl(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
         sid = str(session_id or "").strip()
         if not sid:
             return {"ok": False, "error": "session_id cannot be empty"}
@@ -3646,7 +3616,7 @@ class LocalToolExecutor:
                 "turns": trimmed_turns,
             }
         except Exception as exc:
-            return {"ok": False, "error": f"read_session_history failed: {exc}"}
+            return {"ok": False, "error": f"sessions_history failed: {exc}"}
 
     def _browser_session_id(self) -> str:
         return self._current_session_id()
@@ -3711,7 +3681,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"browser_screenshot failed: {exc}"}
 
-    def view_image(self, path: str) -> dict[str, Any]:
+    def _image_inspect_impl(self, path: str) -> dict[str, Any]:
         try:
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
@@ -3732,7 +3702,7 @@ class LocalToolExecutor:
                     "summary": f"{real_path.name} · {width}x{height} · {image_format or 'unknown'}",
                 }
         except Exception as exc:
-            return {"ok": False, "error": f"view_image failed: {exc}"}
+            return {"ok": False, "error": f"image_inspect failed: {exc}"}
 
     def apply_patch(self, patch: str, cwd: str = ".", check: bool = False) -> dict[str, Any]:
         patch_text = str(patch or "")
@@ -3872,7 +3842,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
 
-    def read_text_file(
+    def _read_file_impl(
         self,
         path: str,
         start_char: int = 0,
@@ -4064,9 +4034,9 @@ class LocalToolExecutor:
                 payload["attachment_list"] = list(msg_payload.get("attachment_list") or [])
             return payload
         except Exception as exc:
-            return {"ok": False, "error": f"read_text_file failed: {exc}"}
+            return {"ok": False, "error": f"read_file failed: {exc}"}
 
-    def search_text_in_file(
+    def _search_contents_in_file_impl(
         self,
         path: str,
         query: str,
@@ -4136,7 +4106,7 @@ class LocalToolExecutor:
                     ),
                 }
 
-            base = self.read_text_file(path=path, start_char=0, max_chars=1_000_000)
+            base = self._read_file_impl(path=path, start_char=0, max_chars=1_000_000)
             if not bool(base.get("ok")):
                 return base
 
@@ -4188,9 +4158,9 @@ class LocalToolExecutor:
                 ),
             }
         except Exception as exc:
-            return {"ok": False, "error": f"search_text_in_file failed: {exc}"}
+            return {"ok": False, "error": f"search_contents_in_file failed: {exc}"}
 
-    def multi_query_search(
+    def _search_contents_in_file_multi_impl(
         self,
         path: str,
         queries: list[str],
@@ -4205,7 +4175,7 @@ class LocalToolExecutor:
             merged: list[dict[str, Any]] = []
             seen: set[tuple[Any, ...]] = set()
             for query in cleaned_queries[:20]:
-                result = self.search_text_in_file(
+                result = self._search_contents_in_file_impl(
                     path=path,
                     query=query,
                     max_matches=max(1, min(10, int(per_query_max_matches))),
@@ -4235,7 +4205,7 @@ class LocalToolExecutor:
                 "matches": merged,
             }
         except Exception as exc:
-            return {"ok": False, "error": f"multi_query_search failed: {exc}"}
+            return {"ok": False, "error": f"search_contents_in_file_multi failed: {exc}"}
 
     def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
         try:
@@ -4268,7 +4238,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"doc_index_build failed: {exc}"}
 
-    def read_section_by_heading(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
+    def _read_section_impl(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
         try:
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
@@ -4293,7 +4263,7 @@ class LocalToolExecutor:
                     "content": section.get("content"),
                 }
 
-            base = self.read_text_file(path=path, start_char=0, max_chars=1_000_000)
+            base = self._read_file_impl(path=path, start_char=0, max_chars=1_000_000)
             if not bool(base.get("ok")):
                 return base
             text = str(base.get("content") or "")
@@ -4313,7 +4283,7 @@ class LocalToolExecutor:
                 }
             return {"ok": False, "error": f"Heading not found: {heading}", "path": str(real_path), "line_count": len(lines)}
         except Exception as exc:
-            return {"ok": False, "error": f"read_section_by_heading failed: {exc}"}
+            return {"ok": False, "error": f"read_section failed: {exc}"}
 
     def table_extract(
         self,
@@ -4339,7 +4309,7 @@ class LocalToolExecutor:
                 if page_hint > 0:
                     candidate_pages.append(int(page_hint))
                 if query_norm:
-                    search = self.search_text_in_file(path=path, query=query_norm, max_matches=8, context_chars=120)
+                    search = self._search_contents_in_file_impl(path=path, query=query_norm, max_matches=8, context_chars=120)
                     if bool(search.get("ok")):
                         candidate_pages.extend(
                             int(item.get("page_hint") or 0)
@@ -4418,7 +4388,7 @@ class LocalToolExecutor:
             query_list = [_normalize_search_query(item) for item in (queries or []) if str(item or "").strip()]
             if not query_list:
                 query_list = _derive_fact_check_queries(cleaned_claim)
-            search = self.multi_query_search(
+            search = self._search_contents_in_file_multi_impl(
                 path=path,
                 queries=query_list,
                 per_query_max_matches=max(1, min(6, int(max_evidence))),
@@ -5149,7 +5119,7 @@ class LocalToolExecutor:
                 return True
         return False
 
-    def search_web(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
+    def _web_search_impl(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
         q = (query or "").strip()
         if not q:
             return {"ok": False, "error": "query cannot be empty"}
@@ -5157,7 +5127,7 @@ class LocalToolExecutor:
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
         cache_key = {"query": q, "max_results": limit, "algo_version": 3}
-        cached = self._load_web_cache("search_web", cache_key, max_age_sec=900)
+        cached = self._load_web_cache("web_search", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
@@ -5237,7 +5207,7 @@ class LocalToolExecutor:
                 return _fetch_page(target_url, active_context)
             except Exception as first_exc:
                 if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
-                    tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
+                    tls_warning = "TLS verify failed; web_search auto-retried with verify disabled."
                     active_context = ssl._create_unverified_context()
                     return _fetch_page(target_url, active_context)
                 raise
@@ -5424,15 +5394,15 @@ class LocalToolExecutor:
                 "warning": warning,
                 "cached": False,
             }
-            self._save_web_cache("search_web", cache_key, payload)
+            self._save_web_cache("web_search", cache_key, payload)
             return payload
         except urllib.error.HTTPError as exc:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
             return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
         except Exception as exc:
-            return {"ok": False, "error": f"search_web failed: {exc}"}
+            return {"ok": False, "error": f"web_search failed: {exc}"}
 
-    def download_web_file(
+    def _web_download_impl(
         self,
         url: str,
         dst_path: str = "",
@@ -5505,7 +5475,7 @@ class LocalToolExecutor:
                 resp_cm = _open(ssl_context)
             except Exception as first_exc:
                 if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
-                    tls_warning = "TLS verify failed; download_web_file auto-retried with verify disabled."
+                    tls_warning = "TLS verify failed; web_download auto-retried with verify disabled."
                     resp_cm = _open(ssl._create_unverified_context())
                 else:
                     raise
@@ -5559,9 +5529,9 @@ class LocalToolExecutor:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
             return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
         except Exception as exc:
-            return {"ok": False, "error": f"download_web_file failed: {exc}"}
+            return {"ok": False, "error": f"web_download failed: {exc}"}
 
-    def fetch_web(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
+    def _web_fetch_impl(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             return {"ok": False, "error": "Only http/https URLs are supported"}
@@ -5583,7 +5553,7 @@ class LocalToolExecutor:
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(512, min(500000, max_chars, self.config.web_fetch_max_chars))
         cache_key = {"url": request_url, "max_chars": limit}
-        cached = self._load_web_cache("fetch_web", cache_key, max_age_sec=900)
+        cached = self._load_web_cache("web_fetch", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
         ssl_context: ssl.SSLContext | None = None
@@ -5631,9 +5601,9 @@ class LocalToolExecutor:
             except Exception as first_exc:
                 # Pragmatic fallback for enterprise TLS chains:
                 # if verification fails and user did not explicitly disable it,
-                # retry once with verification off for fetch_web only.
+                # retry once with verification off for web_fetch only.
                 if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
-                    tls_warning = "TLS verify failed; fetch_web auto-retried with verify disabled."
+                    tls_warning = "TLS verify failed; web_fetch auto-retried with verify disabled."
                     resp_cm = _open(ssl._create_unverified_context(), request_url)
                 else:
                     raise
@@ -5684,7 +5654,7 @@ class LocalToolExecutor:
                             "warning": warning,
                             "cached": False,
                         }
-                        self._save_web_cache("fetch_web", cache_key, payload)
+                        self._save_web_cache("web_fetch", cache_key, payload)
                         return payload
                     except Exception as pdf_exc:
                         warning = (
@@ -5774,7 +5744,7 @@ class LocalToolExecutor:
                                         "canonical_url": metadata.get("canonical_url") or "",
                                         "cached": False,
                                     }
-                                    self._save_web_cache("fetch_web", cache_key, fallback_payload)
+                                    self._save_web_cache("web_fetch", cache_key, fallback_payload)
                                     return fallback_payload
                             except Exception as fb_exc:
                                 warning = (
@@ -5807,7 +5777,7 @@ class LocalToolExecutor:
                         "canonical_url": metadata.get("canonical_url") or "",
                         "cached": False,
                     }
-                    self._save_web_cache("fetch_web", cache_key, payload)
+                    self._save_web_cache("web_fetch", cache_key, payload)
                     return payload
 
                 payload = {
@@ -5823,13 +5793,13 @@ class LocalToolExecutor:
                     "warning": tls_warning,
                     "cached": False,
                 }
-                self._save_web_cache("fetch_web", cache_key, payload)
+                self._save_web_cache("web_fetch", cache_key, payload)
                 return payload
         except urllib.error.HTTPError as exc:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
             return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
         except Exception as exc:
-            return {"ok": False, "error": f"fetch_web failed: {exc}"}
+            return {"ok": False, "error": f"web_fetch failed: {exc}"}
 
 
 def parse_json_arguments(raw: str | dict[str, Any] | None) -> dict[str, Any]:

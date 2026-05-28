@@ -252,7 +252,7 @@ def looks_like_permission_gate_text(
     if not any(p in lowered for p in patterns):
         return False
     file_hints = (
-        "文件", "读取", "写入", "生成", "保存", "read_text_file", "write_text_file", "append_text_file", "chunk",
+        "文件", "读取", "写入", "生成", "保存", "read_file", "write_text_file", "append_text_file", "chunk",
         "附件", "邮件", "文档", "path", "扩展名", "文件名", "解析", "搜索", "函数", "目录", "文件夹",
     )
     return any(h in lowered for h in file_hints)

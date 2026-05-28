@@ -58,7 +58,7 @@ def run_conflict_detector_role(agent: Any, *, context: RoleContext) -> RoleResul
                 "不要仅因为 raw_user_message 是短跟进、或你自己没有独立文件证据，就把答案判成“没有依据”。"
                 "只有当答案和通识或工程常识存在明确冲突时，才应标记 has_conflict=true。"
                 "必须区分底层模型限制与工具增强后的系统能力。"
-                "如果本轮已经成功使用 search_web、fetch_web 或 download_web_file 获得实时来源，"
+                "如果本轮已经成功使用 web_search、web_fetch 或 web_download 获得实时来源，"
                 "不能仅因为“模型原生不支持实时信息”就判定答案冲突；"
                 "这类情况最多只能提醒来源质量、时效性或复核范围。"
                 '只返回 JSON 对象，字段固定为 has_conflict, confidence, summary, concerns, suggested_checks。'

@@ -828,7 +828,7 @@ def _thread_list_item_for_session_id(session_id: str) -> ThreadListItem | None:
     loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         return None
-    rows = session_store.list_sessions(limit=500, project_id=str(loaded.get("project_id") or ""), default_project=_default_project())
+    rows = session_store.list_recent_sessions(limit=500, project_id=str(loaded.get("project_id") or ""), default_project=_default_project())
     hit = next((row for row in rows if str(row.get("session_id") or "") == str(session_id or "")), None)
     if hit is None:
         return None
@@ -1121,14 +1121,14 @@ def get_thread(thread_id: str, max_turns: int = 40, before_turn_id: str | None =
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)
-def list_sessions(limit: int = 50, project_id: str | None = None) -> SessionListResponse:
-    rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
+def get_sessions_endpoint(limit: int = 50, project_id: str | None = None) -> SessionListResponse:
+    rows = session_store.list_recent_sessions(limit=limit, project_id=project_id, default_project=_default_project())
     return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
 
 
 @app.get("/api/threads", response_model=ThreadListResponse)
 def list_threads(limit: int = 50, project_id: str | None = None) -> ThreadListResponse:
-    rows = session_store.list_sessions(limit=limit, project_id=project_id, default_project=_default_project())
+    rows = session_store.list_recent_sessions(limit=limit, project_id=project_id, default_project=_default_project())
     return ThreadListResponse(threads=[_thread_list_item_from_session_row(row) for row in rows if isinstance(row, dict)])
 
 

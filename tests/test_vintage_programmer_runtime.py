@@ -2209,7 +2209,7 @@ def test_runtime_rewrites_image_tool_arguments_from_attachment_refs(tmp_path: Pa
     assert result["tool_events"][0]["input"] == {"path": str(image_path)}
 
 
-def test_runtime_aliases_image_analysis_tool_name_and_attachment_ref(tmp_path: Path) -> None:
+def test_runtime_uses_canonical_image_read_name_with_attachment_ref(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -2218,7 +2218,7 @@ def test_runtime_aliases_image_analysis_tool_name_and_attachment_ref(tmp_path: P
         [
             _FakeMessage(
                 content="",
-                tool_calls=[{"id": "tc-image", "name": "image_analysis", "args": {"image_path": "img-1"}}],
+                tool_calls=[{"id": "tc-image", "name": "image_read", "args": {"image_path": "img-1"}}],
             ),
             _FakeMessage(content="图片里是登录报错截图"),
         ]
@@ -2253,10 +2253,9 @@ def test_runtime_aliases_image_analysis_tool_name_and_attachment_ref(tmp_path: P
     assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
     assert result["tool_events"][0]["name"] == "image_read"
     assert result["tool_events"][0]["input"] == {"path": str(image_path)}
-    assert "tool_alias:image_analysis->image_read" in result["inspector"]["notes"]
 
 
-def test_runtime_aliases_image_tool_name_and_uses_single_attached_image(tmp_path: Path) -> None:
+def test_runtime_uses_single_attached_image_for_canonical_image_read(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -2265,7 +2264,7 @@ def test_runtime_aliases_image_tool_name_and_uses_single_attached_image(tmp_path
         [
             _FakeMessage(
                 content="",
-                tool_calls=[{"id": "tc-image", "name": "image_tool", "args": {}}],
+                tool_calls=[{"id": "tc-image", "name": "image_read", "args": {}}],
             ),
             _FakeMessage(content="图片里是一个登录页截图"),
         ]
@@ -2300,7 +2299,6 @@ def test_runtime_aliases_image_tool_name_and_uses_single_attached_image(tmp_path
     assert backend.tools.calls == [("image_read", {"path": str(image_path)})]
     assert result["tool_events"][0]["name"] == "image_read"
     assert result["tool_events"][0]["input"] == {"path": str(image_path)}
-    assert "tool_alias:image_tool->image_read" in result["inspector"]["notes"]
 
 
 def test_runtime_does_not_auto_rescue_missing_context_reply_for_image_attachments(tmp_path: Path) -> None:

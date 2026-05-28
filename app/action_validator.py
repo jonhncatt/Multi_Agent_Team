@@ -34,7 +34,6 @@ class ValidationResult(BaseModel):
 _READ_PATH_FIELDS: dict[str, tuple[str, ...]] = {
     "list_dir": ("path",),
     "read_file": ("path",),
-    "read_text_file": ("path",),
     "glob_file_search": ("path",),
     "search_codebase": ("path", "root"),
     "search_contents_in_file": ("path",),
@@ -57,7 +56,7 @@ _WRITE_PATH_FIELDS: dict[str, tuple[str, ...]] = {
     "web_download": ("dst_path", "path"),
 }
 
-_NETWORK_TOOLS = {"web_search", "web_fetch", "web_download", "search_web", "fetch_web", "download_web_file"}
+_NETWORK_TOOLS = {"web_search", "web_fetch", "web_download"}
 _SHELL_TOOLS = {"exec_command", "run_shell", "write_stdin"}
 
 _DANGEROUS_COMMAND_PATTERNS = (
