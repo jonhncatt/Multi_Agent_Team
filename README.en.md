@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.15-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v2.9.15`
+Current stable release: `v3.1.4a`
 
 ## Stable Runtime
 
-v2.9.15 is a main-card UX, structured debug, and mode cleanup release that keeps the v2.9.0 recovery policy intact.
-The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve model-led tool looping, long-task continuity, and reliable image/file task completion.
+v3.1.4a is a cleanup release focused on finishing the `LocalToolExecutor` tool-surface cleanup after v3.1.4. It keeps the canonical 29-tool surface aligned across `tool_specs`, tool metadata, the Workbench UI, `ActionValidator`, and `_execute_impl` dispatch.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.15 keeps the v2.9.10 all-tool drain semantics, the v2.9.11 path portability rules, the v2.9.12 live timeline, the v2.9.13 workspace permission profiles, and the v2.9.14 `ModelContext`; this release shows live execution cards in the main assistant message, folds completed runs into a concise execution summary, and removes the old mode control.
+Compared with v3.1.4, this release removes public non-canonical tool-like methods from `LocalToolExecutor`, converts still-needed legacy implementations into private `_xxx_impl` helpers, and keeps `apply_patch` as the authoritative file-write path.
 
 ## Max Output Tokens
 

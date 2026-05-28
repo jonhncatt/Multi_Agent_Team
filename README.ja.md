@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v2.9.15-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v2.9.15`
+現在の安定版: `v3.1.4a`
 
 ## Stable Runtime
 
-v2.9.15 は main card UX、構造化 Debug、mode cleanup のリリースであり、v2.9.0 の安定回復方針を維持します。
-v2.8.x では OpenAI native SDK runtime、streaming、詳細診断を試しましたが、v2.9.x では v2.7.8 を基準にした LangChain-based stable runtime を既定路線として維持し、モデル主導の tool loop、長いタスクの継続性、image/file task completion を優先します。
+v3.1.4a は、v3.1.4 後の `LocalToolExecutor` tool surface cleanup を完了するための整理リリースです。canonical 29-tool surface を `tool_specs`、tool metadata、Workbench UI、`ActionValidator`、`_execute_impl` dispatch の間で一致させます。
 
-OpenAI native SDK、Responses API、streaming は今後の adapter work として分離し、この安定版の既定 runtime path には入れません。v2.9.15 は v2.9.10 の all-tool drain semantics、v2.9.11 の path portability rules、v2.9.12 の live timeline、v2.9.13 の workspace permission profiles、v2.9.14 の `ModelContext` を維持します。このリリースでは main message card に実行中の live cards を表示し、完了後は簡潔な execution summary に折りたたみ、古い mode control を削除します。
+v3.1.4 と比べて、`LocalToolExecutor` から public な non-canonical tool-like method を削除し、canonical tool からまだ必要な旧実装は private な `_xxx_impl` helper に集約し、書き込み経路は引き続き `apply_patch` を正とします。
 
 ## Max Output Tokens
 

@@ -29,8 +29,6 @@ from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots, normalize_permission_profile
 from app.i18n import normalize_locale
 from app.document_text import (
-    build_pdf_document_index,
-    clear_pdf_cache_for_path,
     extract_heading_entries_from_pages,
     extract_pdf_page_texts_from_path,
     extract_pdf_tables_from_path,
@@ -42,7 +40,6 @@ from app.document_text import (
 from app.sandbox import DockerSandboxManager
 from app.storage import ProjectStore
 from app.tool_trace_summary import safe_error_message
-from app.workbench import WorkbenchStore
 
 try:
     from pillow_heif import register_heif_opener
@@ -1303,10 +1300,6 @@ class LocalToolExecutor:
         self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
         self._browser_manager = BrowserToolManager(
             artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve()
-        )
-        self._workbench = WorkbenchStore(
-            config=config,
-            agent_dir=config.workspace_root / "agents" / "vintage_programmer",
         )
         self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(
@@ -2912,7 +2905,7 @@ class LocalToolExecutor:
         path: str = ".",
         max_entries: int = 200,
     ) -> dict[str, Any]:
-        result = self.list_directory(path=path, max_entries=max_entries)
+        result = self._list_dir_impl(path=path, max_entries=max_entries)
         if not isinstance(result, dict):
             return {"ok": False, "error": "list_dir failed: invalid result"}
         payload = dict(result)
@@ -3310,7 +3303,7 @@ class LocalToolExecutor:
         max_entries: int = 20000,
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
-        result = self.extract_zip(
+        result = self._archive_extract_impl(
             zip_path=zip_path,
             dst_dir=dst_dir,
             overwrite=overwrite,
@@ -3333,7 +3326,7 @@ class LocalToolExecutor:
         max_attachments: int = 500,
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
-        result = self.extract_msg_attachments(
+        result = self._mail_extract_attachments_impl(
             msg_path=msg_path,
             dst_dir=dst_dir,
             overwrite=overwrite,
@@ -3347,88 +3340,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "mail_extract_attachments")
         return payload
 
-    def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
-        if not self._current_shell_allowed():
-            return self._command_failure_result(command=command, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
-        argv, error = self._safe_split_command(command, for_session=False)
-        if error:
-            return self._command_failure_result(command=command, cwd=cwd, error=error)
-        execution_mode = self._current_execution_mode()
-        session_id = self._current_session_id()
-        timeout_val = max(1, min(120, timeout_sec))
-
-        try:
-            real_cwd = self._resolve_path(cwd)
-        except Exception as exc:
-            return self._command_failure_result(command=command, cwd=cwd, error=str(exc), returncode=1)
-        if not real_cwd.exists() or not real_cwd.is_dir():
-            return self._command_failure_result(command=command, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
-        path_error = self._command_path_validation_error(argv, cwd=real_cwd)
-        if path_error:
-            message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
-            return self._command_failure_result(
-                command=command,
-                cwd=str(real_cwd),
-                error=message,
-                stderr=message,
-                error_kind="command_path_outside_allowed_roots",
-                error_detail=path_error,
-            )
-
-        timeout_val = max(1, min(120, timeout_sec))
-        execution_mode = self._current_execution_mode()
-        session_id = self._current_session_id()
-
-        try:
-            sandbox_cwd = None
-            mounts: list[dict[str, str]] = []
-            if execution_mode == "docker":
-                try:
-                    sandbox_cwd = self._docker_sandbox_for_context().container_path_for_host(real_cwd)
-                except Exception:
-                    sandbox_cwd = None
-                sandbox = self._docker_sandbox_for_context()
-                mounts = sandbox.mount_mappings()
-                proc = sandbox.run_in_sandbox(
-                    session_id=session_id,
-                    argv=argv,
-                    cwd=real_cwd,
-                    timeout_sec=timeout_val,
-                    container_cwd=sandbox_cwd,
-                )
-            else:
-                proc = subprocess.run(
-                    argv,
-                    cwd=str(real_cwd),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_val,
-                    check=False,
-                )
-            payload: dict[str, Any] = {
-                "ok": proc.returncode == 0,
-                "returncode": proc.returncode,
-                "stdout": _truncate_output(proc.stdout),
-                "stderr": _truncate_output(proc.stderr),
-                "cwd": str(real_cwd),
-                "host_cwd": str(real_cwd),
-                "command": " ".join(shlex.quote(x) for x in argv),
-                "execution_mode": execution_mode,
-            }
-            if execution_mode == "docker":
-                payload["sandbox_cwd"] = sandbox_cwd or ""
-                payload["mount_mappings"] = mounts
-                payload["path_mapping_hint"] = (
-                    "Files in sandbox_cwd are persisted to host_cwd via Docker bind mounts. "
-                    "Always report host_cwd/host absolute paths to user."
-                )
-            return payload
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "error": f"Command timed out after {timeout_val}s"}
-        except Exception as exc:
-            return {"ok": False, "error": f"run_shell failed: {exc}"}
-
-    def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
+    def _list_dir_impl(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
         try:
             real_path = self._resolve_path(path)
             write_error = self._write_path_error(real_path)
@@ -3471,7 +3383,7 @@ class LocalToolExecutor:
                 "summary": f"listed {len(entries)} entries",
             }
         except Exception as exc:
-            return {"ok": False, "error": f"list_directory failed: {exc}"}
+            return {"ok": False, "error": f"list_dir failed: {exc}"}
 
     def _sessions_list_impl(self, max_sessions: int = 20) -> dict[str, Any]:
         try:
@@ -3742,57 +3654,6 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"apply_patch failed: {exc}"}
-
-    def list_skills(self) -> dict[str, Any]:
-        try:
-            skills = self._workbench.list_skill_entries()
-            return {"ok": True, "count": len(skills), "skills": skills}
-        except Exception as exc:
-            return {"ok": False, "error": f"list_skills failed: {exc}"}
-
-    def read_skill(self, skill_id: str) -> dict[str, Any]:
-        try:
-            return {"ok": True, **self._workbench.get_skill(skill_id)}
-        except Exception as exc:
-            return {"ok": False, "error": f"read_skill failed: {exc}"}
-
-    def write_skill(self, content: str, skill_id: str = "") -> dict[str, Any]:
-        try:
-            payload = (
-                self._workbench.save_skill(skill_id, content)
-                if str(skill_id or "").strip()
-                else self._workbench.create_skill(content)
-            )
-            return {"ok": True, **payload, "summary": f"skill {payload.get('id')} saved"}
-        except Exception as exc:
-            return {"ok": False, "error": f"write_skill failed: {exc}"}
-
-    def toggle_skill(self, skill_id: str, enabled: bool | None = None) -> dict[str, Any]:
-        try:
-            payload = self._workbench.set_skill_enabled(skill_id, enabled=enabled)
-            return {"ok": True, **payload, "summary": f"skill {skill_id} {'enabled' if payload.get('enabled') else 'disabled'}"}
-        except Exception as exc:
-            return {"ok": False, "error": f"toggle_skill failed: {exc}"}
-
-    def list_agent_specs(self) -> dict[str, Any]:
-        try:
-            specs = self._workbench.list_spec_entries(locale=self._current_locale_hint())
-            return {"ok": True, "count": len(specs), "specs": specs}
-        except Exception as exc:
-            return {"ok": False, "error": f"list_agent_specs failed: {exc}"}
-
-    def read_agent_spec(self, name: str) -> dict[str, Any]:
-        try:
-            return {"ok": True, **self._workbench.get_agent_spec(name, locale=self._current_locale_hint())}
-        except Exception as exc:
-            return {"ok": False, "error": f"read_agent_spec failed: {exc}"}
-
-    def write_agent_spec(self, name: str, content: str) -> dict[str, Any]:
-        try:
-            payload = self._workbench.save_agent_spec(name, content, locale=self._current_locale_hint())
-            return {"ok": True, **payload, "summary": f"{name} saved"}
-        except Exception as exc:
-            return {"ok": False, "error": f"write_agent_spec failed: {exc}"}
 
     def _read_file_impl(
         self,
@@ -4158,37 +4019,6 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"search_contents_in_file_multi failed: {exc}"}
-
-    def doc_index_build(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> dict[str, Any]:
-        try:
-            real_path = self._resolve_source_path(path)
-            if not real_path.exists():
-                return {"ok": False, "error": f"Path not found: {path}"}
-            if not real_path.is_file():
-                return {"ok": False, "error": f"Not a file: {path}"}
-
-            if not _looks_like_pdf_path(real_path):
-                return {
-                    "ok": False,
-                    "error": "doc_index_build currently supports PDF files only",
-                }
-
-            if force_rebuild:
-                clear_pdf_cache_for_path(real_path)
-            index = build_pdf_document_index(real_path, force_rebuild=False, max_headings=max_headings)
-            headings = index.get("headings") or []
-            return {
-                "ok": True,
-                "path": index.get("path"),
-                "cache_path": index.get("cache_path"),
-                "cached": bool(index.get("cached")),
-                "page_count": int(index.get("page_count") or 0),
-                "heading_count": int(index.get("heading_count") or 0),
-                "table_page_count": len(index.get("table_pages") or []),
-                "headings_preview": headings[:20],
-            }
-        except Exception as exc:
-            return {"ok": False, "error": f"doc_index_build failed: {exc}"}
 
     def _read_section_impl(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
         try:
@@ -4605,43 +4435,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"search_codebase failed: {exc}"}
 
-    def copy_file(
-        self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
-    ) -> dict[str, Any]:
-        try:
-            src_real = self._resolve_source_path(src_path)
-            dst_real = self._resolve_path(dst_path)
-
-            if not src_real.exists():
-                return {"ok": False, "error": f"Source path not found: {src_path}"}
-            if not src_real.is_file():
-                return {"ok": False, "error": f"Source is not a file: {src_path}"}
-            if src_real == dst_real:
-                return {"ok": False, "error": "Source and destination are the same file"}
-
-            if dst_real.exists() and dst_real.is_dir():
-                return {"ok": False, "error": f"Destination is a directory: {dst_path}"}
-            if dst_real.exists() and not overwrite:
-                return {"ok": False, "error": f"Destination exists and overwrite=false: {dst_path}"}
-
-            if not dst_real.parent.exists():
-                if not create_dirs:
-                    return {"ok": False, "error": f"Destination parent not found: {dst_real.parent}"}
-                dst_real.parent.mkdir(parents=True, exist_ok=True)
-
-            action = "overwrite" if dst_real.exists() else "create"
-            shutil.copy2(src_real, dst_real)
-            return {
-                "ok": True,
-                "src_path": str(src_real),
-                "dst_path": str(dst_real),
-                "action": action,
-                "bytes": dst_real.stat().st_size,
-            }
-        except Exception as exc:
-            return {"ok": False, "error": f"copy_file failed: {exc}"}
-
-    def extract_zip(
+    def _archive_extract_impl(
         self,
         zip_path: str,
         dst_dir: str = "",
@@ -4733,9 +4527,9 @@ class LocalToolExecutor:
         except zipfile.BadZipFile:
             return {"ok": False, "error": f"Invalid zip archive: {zip_path}"}
         except Exception as exc:
-            return {"ok": False, "error": f"extract_zip failed: {exc}"}
+            return {"ok": False, "error": f"archive_extract failed: {exc}"}
 
-    def extract_msg_attachments(
+    def _mail_extract_attachments_impl(
         self,
         msg_path: str,
         dst_dir: str = "",
@@ -4946,119 +4740,7 @@ class LocalToolExecutor:
                     except Exception:
                         pass
         except Exception as exc:
-            return {"ok": False, "error": f"extract_msg_attachments failed: {exc}"}
-
-    def write_text_file(
-        self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
-    ) -> dict[str, Any]:
-        try:
-            real_path = self._resolve_path(path)
-            write_error = self._write_path_error(real_path)
-            if write_error:
-                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
-            if real_path.exists() and real_path.is_dir():
-                return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
-
-            if real_path.exists() and not overwrite:
-                return {"ok": False, "error": f"File already exists and overwrite=false: {path}"}
-
-            if not real_path.parent.exists():
-                if not create_dirs:
-                    return {"ok": False, "error": f"Parent directory not found: {real_path.parent}"}
-                real_path.parent.mkdir(parents=True, exist_ok=True)
-
-            action = "overwrite" if real_path.exists() else "create"
-            real_path.write_text(content, encoding="utf-8")
-            return {
-                "ok": True,
-                "path": str(real_path),
-                "action": action,
-                "chars": len(content),
-                "bytes_utf8": len(content.encode("utf-8")),
-            }
-        except Exception as exc:
-            if "Path out of allowed roots" in str(exc):
-                return {"ok": False, "error": f"write_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
-            return {"ok": False, "error": f"write_text_file failed: {exc}"}
-
-    def append_text_file(
-        self,
-        path: str,
-        content: str,
-        create_if_missing: bool = True,
-        create_dirs: bool = True,
-    ) -> dict[str, Any]:
-        try:
-            real_path = self._resolve_path(path)
-            write_error = self._write_path_error(real_path)
-            if write_error:
-                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
-            if real_path.exists() and real_path.is_dir():
-                return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
-            if not real_path.exists() and not create_if_missing:
-                return {"ok": False, "error": f"File not found and create_if_missing=false: {path}"}
-
-            if not real_path.parent.exists():
-                if not create_dirs:
-                    return {"ok": False, "error": f"Parent directory not found: {real_path.parent}"}
-                real_path.parent.mkdir(parents=True, exist_ok=True)
-
-            created = not real_path.exists()
-            with real_path.open("a", encoding="utf-8") as fp:
-                fp.write(content)
-            return {
-                "ok": True,
-                "path": str(real_path),
-                "action": "create" if created else "append",
-                "chars_appended": len(content),
-                "bytes_appended_utf8": len(content.encode("utf-8")),
-                "bytes_total_utf8": real_path.stat().st_size,
-            }
-        except Exception as exc:
-            if "Path out of allowed roots" in str(exc):
-                return {"ok": False, "error": f"append_text_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
-            return {"ok": False, "error": f"append_text_file failed: {exc}"}
-
-    def replace_in_file(
-        self,
-        path: str,
-        old_text: str,
-        new_text: str,
-        replace_all: bool = False,
-        max_replacements: int = 1,
-    ) -> dict[str, Any]:
-        if not old_text:
-            return {"ok": False, "error": "old_text cannot be empty"}
-        if max_replacements < 1:
-            return {"ok": False, "error": "max_replacements must be >= 1"}
-
-        try:
-            real_path = self._resolve_path(path)
-            if not real_path.exists():
-                return {"ok": False, "error": f"Path not found: {path}"}
-            if not real_path.is_file():
-                return {"ok": False, "error": f"Not a file: {path}"}
-
-            source = real_path.read_text(encoding="utf-8", errors="ignore")
-            found = source.count(old_text)
-            if found <= 0:
-                return {"ok": False, "error": "Target text not found", "path": str(real_path)}
-
-            limit = found if replace_all else min(found, max(1, min(200, max_replacements)))
-            updated = source.replace(old_text, new_text, limit)
-            real_path.write_text(updated, encoding="utf-8")
-            return {
-                "ok": True,
-                "path": str(real_path),
-                "replacements": limit,
-                "remaining_matches": max(0, found - limit),
-                "chars": len(updated),
-                "bytes_utf8": len(updated.encode("utf-8")),
-            }
-        except Exception as exc:
-            if "Path out of allowed roots" in str(exc):
-                return {"ok": False, "error": f"replace_in_file failed: {exc}", "error_kind": "write_outside_writable_roots"}
-            return {"ok": False, "error": f"replace_in_file failed: {exc}"}
+            return {"ok": False, "error": f"mail_extract_attachments failed: {exc}"}
 
     def _domain_allowed(self, host: str) -> bool:
         if self.config.web_allow_all_domains:

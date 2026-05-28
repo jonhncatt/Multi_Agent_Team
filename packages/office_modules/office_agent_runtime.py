@@ -7954,10 +7954,6 @@ class OfficeAgent:
         result = self.tools.browser_screenshot(path=path, full_page=full_page)
         return json.dumps(result, ensure_ascii=False)
 
-    def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
-        result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
-        return json.dumps(result, ensure_ascii=False)
-
     def _list_dir_tool(self, path: str = ".", max_entries: int = 200) -> str:
         result = self.tools.list_dir(path=path, max_entries=max_entries)
         return json.dumps(result, ensure_ascii=False)
@@ -8012,10 +8008,6 @@ class OfficeAgent:
             per_query_max_matches=per_query_max_matches,
             context_chars=context_chars,
         )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _doc_index_build_tool(self, path: str, force_rebuild: bool = False, max_headings: int = 400) -> str:
-        result = self.tools.doc_index_build(path=path, force_rebuild=force_rebuild, max_headings=max_headings)
         return json.dumps(result, ensure_ascii=False)
 
     def _search_codebase_tool(
@@ -8077,98 +8069,6 @@ class OfficeAgent:
                 result["auto_root_fallback"] = True
                 result["initial_root"] = "."
                 result["searched_roots"] = searched_roots
-        return json.dumps(result, ensure_ascii=False)
-
-    def _copy_file_tool(
-        self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
-    ) -> str:
-        result = self.tools.copy_file(
-            src_path=src_path,
-            dst_path=dst_path,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _extract_zip_tool(
-        self,
-        zip_path: str,
-        dst_dir: str = "",
-        overwrite: bool = True,
-        create_dirs: bool = True,
-        max_entries: int = 20000,
-        max_total_bytes: int = 524288000,
-    ) -> str:
-        result = self.tools.extract_zip(
-            zip_path=zip_path,
-            dst_dir=dst_dir,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            max_entries=max_entries,
-            max_total_bytes=max_total_bytes,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _extract_msg_attachments_tool(
-        self,
-        msg_path: str,
-        dst_dir: str = "",
-        overwrite: bool = True,
-        create_dirs: bool = True,
-        max_attachments: int = 500,
-        max_total_bytes: int = 524288000,
-    ) -> str:
-        result = self.tools.extract_msg_attachments(
-            msg_path=msg_path,
-            dst_dir=dst_dir,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            max_attachments=max_attachments,
-            max_total_bytes=max_total_bytes,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _write_text_file_tool(
-        self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
-    ) -> str:
-        result = self.tools.write_text_file(
-            path=path,
-            content=content,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _append_text_file_tool(
-        self,
-        path: str,
-        content: str,
-        create_if_missing: bool = True,
-        create_dirs: bool = True,
-    ) -> str:
-        result = self.tools.append_text_file(
-            path=path,
-            content=content,
-            create_if_missing=create_if_missing,
-            create_dirs=create_dirs,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _replace_in_file_tool(
-        self,
-        path: str,
-        old_text: str,
-        new_text: str,
-        replace_all: bool = False,
-        max_replacements: int = 1,
-    ) -> str:
-        result = self.tools.replace_in_file(
-            path=path,
-            old_text=old_text,
-            new_text=new_text,
-            replace_all=replace_all,
-            max_replacements=max_replacements,
-        )
         return json.dumps(result, ensure_ascii=False)
 
     def _web_fetch_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:

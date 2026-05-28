@@ -42,11 +42,14 @@ def test_local_tools_resolve_relative_paths_inside_selected_project(tmp_path: Pa
         cwd=str(project_root),
     )
 
-    write_result = executor.write_text_file("notes.txt", "hello from project")
-    list_result = executor.list_directory(".")
+    write_result = executor.apply_patch(
+        "*** Begin Patch\n*** Add File: notes.txt\n+hello from project\n*** End Patch\n"
+    )
+    list_result = executor.list_dir(".")
 
     assert write_result["ok"] is True
-    assert Path(write_result["path"]) == project_root / "notes.txt"
+    assert str(project_root / "notes.txt") in write_result["files"]
+    assert (project_root / "notes.txt").read_text(encoding="utf-8") == "hello from project\n"
     assert list_result["ok"] is True
     assert list_result["path"] == "."
     assert Path(list_result["resolved_path"]) == project_root

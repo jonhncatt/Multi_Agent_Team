@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.0-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4a-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,14 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v3.1.0`
+当前稳定版本：`v3.1.4a`
 
 ## Stable Runtime
 
-v3.1.0 是一个 session migration 与 runtime slimming 版本，在 v3.0.0 的 ModelContext 最小核心之上继续清理运行时分层。
-v2.8.x 曾探索 OpenAI native SDK、streaming 和额外诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证稳定的模型主导 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+v3.1.4a 是一个面向 `LocalToolExecutor` 的清理版本，用来完成 v3.1.4 之后的工具表面收口。它继续保持 canonical 29-tool surface 在 `tool_specs`、tool metadata、Workbench UI、`ActionValidator` 和 `_execute_impl` dispatch 之间一致。
 
-OpenAI native SDK、Responses API 和 streaming 会作为后续单独的 adapter work（适配器工作）继续推进，而不是进入这个稳定发布的默认路径。v3.1.0 继续保留 all-tool drain 语义、`ModelContext` 六段结构、`Default / Auto / Full Access` 权限模式、手动更新按钮和主卡片 live cards，同时增加一次性 legacy session migration，并把 trace label、tool alias、attachment rewrite、runtime hints、answer stream state 从主 runtime orchestration 中拆出。
+相对 v3.1.4，本版本删除 `LocalToolExecutor` 上公开的非 canonical tool-like 方法，把 canonical tool 仍需复用的旧实现收敛为私有 `_xxx_impl` helper，并继续以 `apply_patch` 作为权威写入路径。
 
 ## Max Output Tokens
 

@@ -116,13 +116,13 @@ def test_project_venv_python_path_is_allowed(
     assert argv[0] == "./.venv/bin/python"
 
 
-def test_blocked_command_failure_includes_structured_details(
+def test_exec_command_blocked_command_includes_structured_details(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     manager = _make_manager(monkeypatch, tmp_path)
 
-    result = manager.run_shell(command="rm temp.txt", cwd=str(tmp_path))
+    result = manager.exec_command(cmd="rm temp.txt", cwd=str(tmp_path))
 
     assert result["ok"] is False
     assert result["error"].startswith("Command not allowed: rm")
@@ -139,7 +139,7 @@ def test_exec_command_denies_cwd_outside_project(
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
-    result = manager.run_shell(command="pwd", cwd="/etc")
+    result = manager.exec_command(cmd="pwd", cwd="/etc")
 
     assert result["ok"] is False
     assert "allowed roots" in result["error"]
@@ -161,7 +161,7 @@ def test_command_path_arguments_outside_project_are_denied(
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
-    result = manager.run_shell(command=command, cwd=".")
+    result = manager.exec_command(cmd=command, cwd=".")
 
     assert result["ok"] is False
     assert result["error_kind"] == "command_path_outside_allowed_roots"
@@ -176,7 +176,7 @@ def test_cp_outside_destination_is_denied(
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
-    result = manager.run_shell(command="cp app/main.py /tmp/main.py", cwd=".")
+    result = manager.exec_command(cmd="cp app/main.py /tmp/main.py", cwd=".")
 
     assert result["ok"] is False
     assert result["error_kind"] == "command_path_outside_allowed_roots"
@@ -189,22 +189,27 @@ def test_chat_profile_denies_shell_before_execution(
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path, shell_allowed=False))
 
-    result = manager.run_shell(command="pytest -q", cwd=".")
+    result = manager.exec_command(cmd="pytest -q", cwd=".")
 
     assert result["ok"] is False
     assert "Shell execution is not allowed" in result["error"]
 
 
-def test_write_text_file_respects_writable_roots(
+def test_apply_patch_rejects_paths_outside_allowed_roots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path, write_allowed=True))
 
-    allowed = manager.write_text_file("docs/test.md", "x")
-    denied = manager.write_text_file("/tmp/outside.md", "x")
+    allowed = manager.apply_patch(
+        patch="*** Begin Patch\n*** Add File: docs/test.md\n+x\n*** End Patch\n"
+    )
+    denied = manager.apply_patch(
+        patch="*** Begin Patch\n*** Add File: /tmp/outside.md\n+x\n*** End Patch\n"
+    )
 
     assert allowed["ok"] is True
+    assert (tmp_path / "docs" / "test.md").read_text(encoding="utf-8") == "x\n"
     assert denied["ok"] is False
-    assert denied["error_kind"] == "write_outside_writable_roots"
+    assert "allowed roots" in str(denied["error"]).lower()

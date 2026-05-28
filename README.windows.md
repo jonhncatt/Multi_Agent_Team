@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v2.9.15`。
+当前稳定版本：`v3.1.4a`。
 
 ## Stable Runtime
 
-v2.9.15 是主卡片 UX、结构化 Debug 和旧模式清理版本，继续默认使用 LangChain-based stable runtime。
-v2.8.x 的 OpenAI native SDK、streaming 与更重的诊断实验暂时后置，不进入这个稳定版的默认路径。v2.9.15 继续保留 v2.9.10 的 all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.13 的 workspace permission profiles 和 v2.9.14 的 `ModelContext`。
+v3.1.4a 是一个面向 `LocalToolExecutor` 的清理版本，用来完成 v3.1.4 之后的工具表面收口。
+它继续保持 canonical 29-tool surface 在 `tool_specs`、tool metadata、Workbench UI、`ActionValidator` 和 `_execute_impl` dispatch 之间一致，并继续以 `apply_patch` 作为权威写入路径。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
