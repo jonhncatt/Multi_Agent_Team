@@ -90,7 +90,6 @@ _READ_ONLY_TOOL_NAMES = {
     "browser_type",
     "browser_wait",
     "browser_snapshot",
-    "browser_screenshot",
     "image_inspect",
     "update_plan",
     "request_user_input",
