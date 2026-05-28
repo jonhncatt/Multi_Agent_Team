@@ -77,7 +77,6 @@ from packages.office_modules.specialist_role import (
 )
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig, get_access_roots
-from app.codex_runner import CodexResponsesRunner
 from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
@@ -857,8 +856,6 @@ class OfficeAgent:
         normalized_mode = str(mode or "").strip().lower()
         if normalized_mode == "api_key":
             return self._auth_manager._resolve_api_key_auth()
-        if normalized_mode == "codex_auth":
-            return self._auth_manager._resolve_codex_auth()
         return self._auth_manager.resolve()
 
     def default_model(self) -> str:
@@ -7101,15 +7098,6 @@ class OfficeAgent:
         max_output_tokens: int,
         use_responses_api: bool | None = None,
     ):
-        if auth.mode == "codex_auth":
-            return CodexResponsesRunner(
-                auth_manager=self._auth_manager,
-                model=model,
-                max_output_tokens=max_output_tokens,
-                temperature=self.config.openai_temperature,
-                ai_message_cls=self._AIMessage,
-            )
-
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
             "model": model,
@@ -7233,7 +7221,7 @@ class OfficeAgent:
         try:
             return self._invoke_runner(runner, messages, event_cb=event_cb), runner, notes
         except Exception as exc:
-            if auth.mode == "codex_auth" or not self._is_405_error(exc):
+            if not self._is_405_error(exc):
                 raise
 
         fallback_use_responses = not self.config.openai_use_responses_api
@@ -7348,7 +7336,7 @@ class OfficeAgent:
             ),
             self._StructuredTool.from_function(
                 name="apply_patch",
-                description="Apply a Codex/OpenClaw-style freeform patch inside the workspace.",
+                description="Apply a freeform patch inside the workspace.",
                 args_schema=ApplyPatchArgs,
                 func=self._apply_patch_tool,
             ),
@@ -8727,7 +8715,7 @@ def create_office_runtime_backend(
     tool_executor: Any | None = None,
     host: Any | None = None,
     selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "codex_core_tools",
+    selected_tool_module_id: str = "workspace_core_tools",
 ) -> OfficeAgent:
     return OfficeAgent(
         config,

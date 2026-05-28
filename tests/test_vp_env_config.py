@@ -20,7 +20,6 @@ def test_vp_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:
     assert config.llm_provider == "openai_compatible"
     assert config.llm_primary_api_key_env == "VP_OPENAI_COMPAT_API_KEY"
     assert config.openai_base_url == "https://gateway.example.com/v1"
-    assert config.llm_supports_codex_auth is False
     assert config.default_model in config.model_options
     assert "gpt-5.1-chat" in config.model_options
     assert resolved.mode == "api_key"
@@ -45,23 +44,16 @@ def test_vp_openrouter_env_uses_dedicated_keys(monkeypatch, tmp_path) -> None:
     assert "nvidia/nemotron-3-super-120b-a12b:free" in config.model_options
 
 
-def test_openai_uses_codex_auth_automatically_when_auth_file_exists(monkeypatch, tmp_path) -> None:
+def test_openai_requires_explicit_api_key_configuration(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("VP_LLM_PROVIDER", "openai")
-    auth_file = tmp_path / ".codex" / "auth.json"
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
-    auth_file.write_text(
-        '{"tokens":{"refresh_token":"refresh","account_id":"acct"}}',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("VP_CODEX_AUTH_FILE", str(auth_file))
 
     config = load_config()
     resolved = OpenAIAuthManager(config).resolve()
 
-    assert resolved.mode == "codex_auth"
-    assert resolved.available is True
+    assert resolved.mode == "unconfigured"
+    assert resolved.available is False
 
 
 def test_provider_profiles_only_list_env_configured_providers(monkeypatch, tmp_path) -> None:

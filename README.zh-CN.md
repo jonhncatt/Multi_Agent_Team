@@ -7,7 +7,7 @@
 ![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20%7C%20OpenRouter%20%7C%20Ollama-purple)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-一个本地优先的 AI Agent 工作台，重点是 Codex 风格的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
+一个本地优先的 AI Agent 工作台，重点是可观察的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
 
 **Vintage Programmer** 不是普通聊天 UI。  
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
@@ -20,9 +20,9 @@
 ## Stable Runtime
 
 v2.9.15 是一个主卡片 UX、结构化 Debug 和旧模式清理版本，延续 v2.9.0 的稳定恢复策略。
-v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证 Codex 风格 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
+v2.8.x 曾尝试 OpenAI native SDK、streaming 和更重的诊断，但 v2.9.x 继续以 v2.7.8 为基线的 LangChain-based stable runtime 为默认路径，优先保证模型主导 tool loop、长任务连续性，以及 image/file task completion（图片/文件任务完成度）。
 
-OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.15 继续保留 v2.9.10 的 Codex-style all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.13 的 workspace permission profiles 和 v2.9.14 的 `ModelContext`；本版本让主消息卡片直接展示运行中的执行卡片，完成后折叠成执行摘要，并移除旧的模式控制。
+OpenAI native SDK、Responses API 和 streaming 会在后续作为独立 adapter work 继续推进，而不是成为这个稳定发布的默认 runtime path。v2.9.15 继续保留 v2.9.10 的 all-tool drain 语义、v2.9.11 的 path portability 规则、v2.9.12 的 live timeline、v2.9.13 的 workspace permission profiles 和 v2.9.14 的 `ModelContext`；本版本让主消息卡片直接展示运行中的执行卡片，完成后折叠成执行摘要，并移除旧的模式控制。
 
 ## Max Output Tokens
 
@@ -61,7 +61,7 @@ Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent
 它把这些能力放在同一个仓库里：
 
 - 基于 Chat Completions 的 runtime loop（运行时循环）
-- Codex 风格的 activity timeline（执行时间线）和 progress checklist（进度清单）
+- 可观察的 activity timeline（执行时间线）和 progress checklist（进度清单）
 - harness 侧的工具验证与执行
 - 可直接编辑的本地 Markdown agent 规范
 - 可启用、可绑定到主 agent 的本地 skills
@@ -87,7 +87,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 
 ## 核心亮点
 
-- **Codex 风格 activity timeline**  
+- **可观察 activity timeline**  
   能看到模型推进、工具调用、验证状态和回答生成过程。
 - **模型主导、harness 验证执行**  
   由模型提出动作，由 runtime 验证工具名、参数和执行边界，再决定是否执行。
@@ -173,16 +173,7 @@ VP_OPENAI_API_KEY=your_key
 VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
-### OpenAI 官方 + Codex auth
-
-```env
-VP_LLM_PROVIDER=openai
-VP_CODEX_HOME=/absolute/path/to/.codex
-VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
-VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
-```
-
-如果没有填写 `VP_OPENAI_API_KEY`，但本地存在 `VP_CODEX_AUTH_FILE`，程序可以自动使用 Codex auth。
+Vintage Programmer 现在只使用显式 provider API key 配置，不再自动回退到本地账号认证文件。
 
 ### OpenAI-compatible 网关
 
@@ -290,12 +281,12 @@ workspace/skills/<skill_id>/SKILL.md
 
 正式发布流程当前是：
 
-1. 在 `codex/*` 候选分支完成改动。
+1. 在 `cleanup/*` 或其他候选分支完成改动。
 2. 保持本地 runtime state（运行时本地状态）不进入 Git。
 3. 在本地跑 release gates（发版检查）。
 4. 向 `main` 发起 PR。
 5. 只有回归通过后才合入 `main`。
 6. 在发布提交上创建 annotated tag（带说明标签）。
-7. 后续新改动从更新后的 `main` 再切新的 `codex/*` 分支。
+7. 后续新改动从更新后的 `main` 再切新的候选分支。
 
 完整说明见 [RELEASING.md](RELEASING.md)。

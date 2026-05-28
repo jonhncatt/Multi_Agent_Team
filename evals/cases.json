@@ -1392,20 +1392,6 @@
     }
   },
   {
-    "name": "helper_codex_model_normalization_strips_chat_suffix",
-    "kind": "helper",
-    "helper": "_debug_normalize_model_for_auth",
-    "args": {
-      "model": "gpt-5.1-chat",
-      "auth_mode": "codex_auth"
-    },
-    "assert": {
-      "equals": {
-        "normalized_model": "gpt-5.1"
-      }
-    }
-  },
-  {
     "name": "helper_api_key_model_normalization_keeps_model_name",
     "kind": "helper",
     "helper": "_debug_normalize_model_for_auth",
@@ -1416,53 +1402,6 @@
     "assert": {
       "equals": {
         "normalized_model": "gpt-5.1-chat"
-      }
-    }
-  },
-  {
-    "name": "helper_codex_input_payload_preserves_tool_history",
-    "kind": "helper",
-    "helper": "_debug_codex_input_payload",
-    "args": {
-      "messages": [
-        {
-          "role": "system",
-          "content": "You are helpful."
-        },
-        {
-          "role": "user",
-          "content": "Use ping."
-        },
-        {
-          "role": "assistant",
-          "content": "",
-          "tool_calls": [
-            {
-              "name": "ping",
-              "args": {},
-              "id": "call_123",
-              "type": "tool_call"
-            }
-          ]
-        },
-        {
-          "role": "tool",
-          "name": "ping",
-          "tool_call_id": "call_123",
-          "content": "pong"
-        }
-      ]
-    },
-    "assert": {
-      "equals": {
-        "instructions": "You are helpful.",
-        "input.0.role": "user",
-        "input.0.content.0.type": "input_text",
-        "input.1.type": "function_call",
-        "input.1.call_id": "call_123",
-        "input.2.type": "function_call_output",
-        "input.2.call_id": "call_123",
-        "input.2.output": "pong"
       }
     }
   },
@@ -2213,8 +2152,7 @@
         "selected_modules.attachment_context": "attachment_context@1.0.0",
         "selected_modules.finalizer": "finalizer@1.0.0",
         "selected_modules.tool_registry": "tool_registry@1.0.0",
-        "selected_modules.provider:api_key": "provider_openai_api@1.0.0",
-        "selected_modules.provider:codex_auth": "provider_codex_auth@1.0.0"
+        "selected_modules.provider:api_key": "provider_openai_api@1.0.0"
       }
     }
   },

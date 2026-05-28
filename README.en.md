@@ -7,7 +7,7 @@
 ![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20%7C%20OpenRouter%20%7C%20Ollama-purple)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-A local-first AI agent workbench with Codex-style activity tracing, editable agent specs, local skills, and harness-validated execution.
+A local-first AI agent workbench with observable activity tracing, editable agent specs, local skills, and harness-validated execution.
 
 **Vintage Programmer** is built for people who want observable AI execution, not just a final answer.  
 Instead of hiding the process, it exposes the loop:
@@ -20,9 +20,9 @@ Current stable release: `v2.9.15`
 ## Stable Runtime
 
 v2.9.15 is a main-card UX, structured debug, and mode cleanup release that keeps the v2.9.0 recovery policy intact.
-The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve Codex-style tool looping, long-task continuity, and reliable image/file task completion.
+The v2.8.x line explored an OpenAI native SDK runtime, streaming, and deeper diagnostics, but v2.9.x keeps the v2.7.8 LangChain-based stable runtime path as the default to preserve model-led tool looping, long-task continuity, and reliable image/file task completion.
 
-OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.15 keeps the v2.9.10 Codex-style all-tool drain semantics, the v2.9.11 path portability rules, the v2.9.12 live timeline, the v2.9.13 workspace permission profiles, and the v2.9.14 `ModelContext`; this release shows live execution cards in the main assistant message, folds completed runs into a concise execution summary, and removes the old mode control.
+OpenAI native SDK, Responses API support, and streaming are postponed as future adapter work instead of being the default runtime path in this stable release. v2.9.15 keeps the v2.9.10 all-tool drain semantics, the v2.9.11 path portability rules, the v2.9.12 live timeline, the v2.9.13 workspace permission profiles, and the v2.9.14 `ModelContext`; this release shows live execution cards in the main assistant message, folds completed runs into a concise execution summary, and removes the old mode control.
 
 ## Max Output Tokens
 
@@ -61,7 +61,7 @@ Vintage Programmer is a local AI agent workstation centered on one default main 
 It combines:
 
 - a Chat Completions based runtime loop
-- Codex-style activity and progress tracing
+- observable activity and progress tracing
 - harness-side tool validation and execution
 - editable local agent specs written in Markdown
 - local skills that can be enabled and injected into the main agent
@@ -87,7 +87,7 @@ That makes the agent easier to inspect, trust, and improve.
 
 ## Highlights
 
-- **Codex-style activity timeline**  
+- **Observable activity timeline**  
   Shows model progress, tool calls, validation state, and answer generation as a visible runtime trace.
 - **Model-led, harness-validated execution**  
   The model proposes actions; the runtime validates tool names, arguments, and execution boundaries before running anything.
@@ -171,16 +171,7 @@ VP_OPENAI_API_KEY=your_key
 VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
 ```
 
-### OpenAI official with Codex auth
-
-```env
-VP_LLM_PROVIDER=openai
-VP_CODEX_HOME=/absolute/path/to/.codex
-VP_CODEX_AUTH_FILE=/absolute/path/to/.codex/auth.json
-VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
-```
-
-If `VP_OPENAI_API_KEY` is absent but `VP_CODEX_AUTH_FILE` exists locally, the app can use Codex auth automatically.
+Vintage Programmer now uses explicit provider API key configuration only. It no longer falls back to local account-based auth files automatically.
 
 ### OpenAI-compatible gateway
 
@@ -289,12 +280,12 @@ This keeps one code mainline while localizing user-facing UI and documentation t
 
 The formal release flow is:
 
-1. Land release-candidate work on a `codex/*` branch.
+1. Land release-candidate work on a `cleanup/*` branch or another release branch.
 2. Keep local runtime state out of Git.
 3. Run the release gates locally.
 4. Open a PR into `main`.
 5. Merge to `main` only after the regression checks are green.
 6. Create an annotated tag on the release commit.
-7. Start the next change from a fresh `codex/*` branch cut from updated `main`.
+7. Start the next change from a fresh release branch cut from updated `main`.
 
 See [RELEASING.md](RELEASING.md) for the full checklist.

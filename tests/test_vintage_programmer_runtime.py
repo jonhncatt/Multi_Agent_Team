@@ -326,7 +326,7 @@ class _StreamingBackend(_FakeBackend):
                     "type": "response.completed",
                     "timestamp": 2.0,
                     "diagnostics": {
-                        "provider": "codex_auth",
+                        "provider": "api_key",
                         "event_count": len(self._deltas) + 1,
                         "text_delta_count": len(self._deltas),
                         "text_chars": sum(len(item) for item in self._deltas),

@@ -617,11 +617,11 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
     assert "## 19. v2.9.5 Safe Serialization Fix Notes" in manual
-    assert "## 20. v2.9.6 Codex-like Action Runtime Notes" in manual
-    assert "## 20.1 v2.9.7 Codex-like Runtime Cleanup Notes" in manual
+    assert "## 20. v2.9.6 Model-led Action Runtime Notes" in manual
+    assert "## 20.1 v2.9.7 Model-led Runtime Cleanup Notes" in manual
     assert "## 20.2 v2.9.8 ContextPack and Compaction Cleanup Notes" in manual
     assert "## 20.3 v2.9.9 Minimal ContextPack and TurnMemory Notes" in manual
-    assert "## 20.4 v2.9.10 Codex-style Tool Drain Fix Notes" in manual
+    assert "## 20.4 v2.9.10 All-Tool Drain Fix Notes" in manual
     assert "## 20.5 v2.9.11 Path Portability and Search Safety Notes" in manual
     assert "## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes" in manual
     assert "## 20.7 v2.9.13 Workspace and Permission Profiles Notes" in manual
@@ -630,7 +630,7 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
     assert "## 20.11 v2.9.17 Permission Selector UI Polish Notes" in manual
     assert "## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes" in manual
-    assert "## 20.13 v2.9.20 Codex-style Permission Modes Notes" in manual
+    assert "## 20.13 v2.9.20 Permission Mode Notes" in manual
     assert "## 20.14 v3.0.0 ModelContext Minimal Core Refactor Notes" in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual

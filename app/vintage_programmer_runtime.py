@@ -475,7 +475,7 @@ class VintageProgrammerRuntime:
             config=self._config,
         )
         parts.append(
-            self._build_codex_agentic_harness_prompt(
+            self._build_native_agentic_harness_prompt(
                 locale=locale,
                 model=str(settings.model or spec.default_model or ""),
                 runtime_contract=runtime_contract,
@@ -543,7 +543,7 @@ class VintageProgrammerRuntime:
         python_command: str = "python",
     ) -> str:
         model_label = str(model or "").strip().lower()
-        coding_agent_like = any(token in model_label for token in ("codex", "claude", "coder", "devstral", "qwen3-coder"))
+        coding_agent_like = any(token in model_label for token in ("gpt-5", "claude", "coder", "devstral", "qwen3-coder"))
         strength = "standard" if coding_agent_like else "strict"
         detected_python = str(python_command or "python").strip() or "python"
         return (
@@ -563,7 +563,7 @@ class VintageProgrammerRuntime:
         )
 
     @classmethod
-    def _build_codex_agentic_harness_prompt(
+    def _build_native_agentic_harness_prompt(
         cls,
         *,
         locale: str,
@@ -3298,7 +3298,7 @@ class VintageProgrammerRuntime:
                         "tool_names": [str(call.get("name") or "") for call in tool_calls[:8]],
                         "tool_count": len(tool_calls),
                         "tool_count_total": len(tool_calls),
-                        "tool_drain_mode": "codex_style_all_calls",
+                        "tool_drain_mode": "all_calls",
                         "model_action": dict(model_action),
                         **turn_activity_context,
                     },
@@ -3312,7 +3312,7 @@ class VintageProgrammerRuntime:
                     status="running",
                     payload={
                         "tool_count_total": len(tool_calls),
-                        "tool_drain_mode": "codex_style_all_calls",
+                        "tool_drain_mode": "all_calls",
                         "tool_boundary_clean": self._messages_at_tool_boundary(messages),
                     },
                     trace_events=trace_events,
@@ -3756,7 +3756,7 @@ class VintageProgrammerRuntime:
                     payload={
                         "tool_count_total": len(tool_calls),
                         "tool_count_drained": len(round_signature_parts),
-                        "tool_drain_mode": "codex_style_all_calls",
+                        "tool_drain_mode": "all_calls",
                         "tool_boundary_clean": tool_boundary_clean,
                     },
                     trace_events=trace_events,

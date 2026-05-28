@@ -271,16 +271,6 @@ def _provider_specific_model_fallback_keys(provider: str) -> list[str]:
     return _dedupe_keep_order([*mapping.get(provider, []), f"VP_PROVIDER_{token}_MODEL_FALLBACKS"])
 
 
-def _supports_codex_auth(provider: str, base_url: str | None) -> bool:
-    normalized_provider = str(provider or "").strip().lower()
-    normalized_base = str(base_url or "").strip().rstrip("/").lower()
-    if normalized_provider != "openai":
-        return False
-    if not normalized_base:
-        return True
-    return normalized_base in {"https://api.openai.com/v1", "https://api.openai.com"}
-
-
 def _has_any_env_value(keys: list[str]) -> bool:
     return any(str(os.environ.get(key) or "").strip() for key in keys)
 
@@ -369,18 +359,10 @@ class AppConfig:
     llm_provider: str
     llm_primary_api_key_env: str
     llm_api_key_env_keys: list[str]
-    llm_auth_file_api_key_keys: list[str]
-    llm_supports_codex_auth: bool
     openai_base_url: str | None
     openai_ca_cert_path: str | None
     openai_temperature: float | None
     openai_use_responses_api: bool
-    codex_home: Path
-    codex_auth_file: Path
-    codex_chatgpt_base_url: str
-    codex_refresh_url: str
-    codex_client_id: str
-    codex_refresh_interval_days: int
     default_model: str
     model_options: list[str]
     model_fallbacks: list[str]
@@ -473,7 +455,6 @@ def _resolve_provider_runtime_settings(
         ]
     )
     llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VP_LLM_API_KEY"
-    llm_auth_file_api_key_keys = list(llm_api_key_env_keys)
 
     llm_base_url_keys = [
         *_provider_specific_base_url_keys(normalized_provider),
@@ -483,7 +464,6 @@ def _resolve_provider_runtime_settings(
     openai_base_url = (
         _env(*llm_base_url_keys, default=str(llm_provider_preset.get("base_url") or "")) or ""
     ).strip() or None
-    llm_supports_codex_auth = _supports_codex_auth(normalized_provider, openai_base_url)
 
     llm_ca_cert_keys = [
         *_provider_specific_ca_cert_keys(normalized_provider),
@@ -571,8 +551,6 @@ def _resolve_provider_runtime_settings(
         "label": provider_display_name(normalized_provider),
         "llm_primary_api_key_env": llm_primary_api_key_env,
         "llm_api_key_env_keys": llm_api_key_env_keys,
-        "llm_auth_file_api_key_keys": llm_auth_file_api_key_keys,
-        "llm_supports_codex_auth": llm_supports_codex_auth,
         "openai_base_url": openai_base_url,
         "openai_ca_cert_path": openai_ca_cert_path,
         "openai_temperature": openai_temperature,
@@ -627,8 +605,6 @@ def build_provider_config(base_config: AppConfig, provider: str) -> AppConfig:
         llm_provider=str(resolved.get("provider") or base_config.llm_provider),
         llm_primary_api_key_env=str(resolved.get("llm_primary_api_key_env") or base_config.llm_primary_api_key_env),
         llm_api_key_env_keys=list(resolved.get("llm_api_key_env_keys") or base_config.llm_api_key_env_keys),
-        llm_auth_file_api_key_keys=list(resolved.get("llm_auth_file_api_key_keys") or base_config.llm_auth_file_api_key_keys),
-        llm_supports_codex_auth=bool(resolved.get("llm_supports_codex_auth")),
         openai_base_url=resolved.get("openai_base_url") if "openai_base_url" in resolved else base_config.openai_base_url,
         openai_ca_cert_path=resolved.get("openai_ca_cert_path") if "openai_ca_cert_path" in resolved else base_config.openai_ca_cert_path,
         openai_temperature=resolved.get("openai_temperature") if "openai_temperature" in resolved else base_config.openai_temperature,
@@ -881,14 +857,6 @@ def load_config() -> AppConfig:
         ]
     )
     llm_primary_api_key_env = llm_api_key_env_keys[0] if llm_api_key_env_keys else "VP_LLM_API_KEY"
-    llm_auth_file_api_key_keys = _dedupe_keep_order(
-        [
-            *_provider_specific_api_key_env_keys(llm_provider),
-            f"VP_PROVIDER_{llm_provider_token}_API_KEY",
-            "VP_LLM_API_KEY",
-            preset_api_key_env,
-        ]
-    )
 
     llm_base_url_keys = [
         *_provider_specific_base_url_keys(llm_provider),
@@ -898,52 +866,6 @@ def load_config() -> AppConfig:
     openai_base_url = (
         _env(*llm_base_url_keys, default=str(llm_provider_preset.get("base_url") or "")) or ""
     ).strip() or None
-    llm_supports_codex_auth = _supports_codex_auth(llm_provider, openai_base_url)
-    codex_home = Path(
-        _env(
-            "VP_CODEX_HOME",
-            default=str(Path.home() / ".codex"),
-        )
-        or str(Path.home() / ".codex")
-    ).expanduser().resolve()
-    codex_auth_file = Path(
-        _env(
-            "VP_CODEX_AUTH_FILE",
-            default=str(codex_home / "auth.json"),
-        )
-        or str(codex_home / "auth.json")
-    ).expanduser().resolve()
-    codex_chatgpt_base_url = (
-        _env(
-            "VP_CODEX_CHATGPT_BASE_URL",
-            "VP_CHATGPT_BASE_URL",
-            default="https://chatgpt.com/backend-api/codex",
-        )
-        or "https://chatgpt.com/backend-api/codex"
-    ).strip().rstrip("/")
-    codex_refresh_url = (
-        _env(
-            "VP_CODEX_REFRESH_URL",
-            default="https://auth.openai.com/oauth/token",
-        )
-        or "https://auth.openai.com/oauth/token"
-    ).strip()
-    codex_client_id = (
-        _env(
-            "VP_CODEX_CLIENT_ID",
-            default="app_EMoamEEZ73f0CkXaXp7hrann",
-        )
-        or "app_EMoamEEZ73f0CkXaXp7hrann"
-    ).strip()
-    codex_refresh_interval_days = int(
-        (
-            _env(
-                "VP_CODEX_REFRESH_INTERVAL_DAYS",
-                default="8",
-            )
-            or "8"
-        ).strip()
-    )
     llm_ca_cert_keys = [
         *_provider_specific_ca_cert_keys(llm_provider),
         f"VP_PROVIDER_{llm_provider_token}_CA_CERT_PATH",
@@ -1165,8 +1087,6 @@ def load_config() -> AppConfig:
     provider_runtime = _resolve_provider_runtime_settings(llm_provider, active_provider=llm_provider)
     llm_primary_api_key_env = str(provider_runtime.get("llm_primary_api_key_env") or llm_primary_api_key_env)
     llm_api_key_env_keys = list(provider_runtime.get("llm_api_key_env_keys") or llm_api_key_env_keys)
-    llm_auth_file_api_key_keys = list(provider_runtime.get("llm_auth_file_api_key_keys") or llm_auth_file_api_key_keys)
-    llm_supports_codex_auth = bool(provider_runtime.get("llm_supports_codex_auth"))
     openai_base_url = provider_runtime.get("openai_base_url") if "openai_base_url" in provider_runtime else openai_base_url
     openai_ca_cert_path = provider_runtime.get("openai_ca_cert_path") if "openai_ca_cert_path" in provider_runtime else openai_ca_cert_path
     openai_temperature = provider_runtime.get("openai_temperature") if "openai_temperature" in provider_runtime else openai_temperature
@@ -1210,18 +1130,10 @@ def load_config() -> AppConfig:
         llm_provider=llm_provider,
         llm_primary_api_key_env=llm_primary_api_key_env,
         llm_api_key_env_keys=llm_api_key_env_keys,
-        llm_auth_file_api_key_keys=llm_auth_file_api_key_keys,
-        llm_supports_codex_auth=llm_supports_codex_auth,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
         openai_temperature=openai_temperature,
         openai_use_responses_api=openai_use_responses_api,
-        codex_home=codex_home,
-        codex_auth_file=codex_auth_file,
-        codex_chatgpt_base_url=codex_chatgpt_base_url or "https://chatgpt.com/backend-api/codex",
-        codex_refresh_url=codex_refresh_url or "https://auth.openai.com/oauth/token",
-        codex_client_id=codex_client_id or "app_EMoamEEZ73f0CkXaXp7hrann",
-        codex_refresh_interval_days=max(1, min(30, codex_refresh_interval_days)),
         default_model=resolved_default_model,
         model_options=resolved_model_options,
         model_fallbacks=model_fallbacks,

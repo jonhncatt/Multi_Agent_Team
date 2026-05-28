@@ -52,6 +52,7 @@ def test_turn_runtime_boundary_includes_project_and_attachment_roots(tmp_path: P
         "workspace_write_allowed": False,
         "shell_allowed": False,
         "network_allowed": False,
+        "browser_allowed": False,
         "network_reason": "profile_disabled",
         "approval_policy": "avoid_unnecessary_confirmation",
         "cwd": str(tmp_path.resolve()),

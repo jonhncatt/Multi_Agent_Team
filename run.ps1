@@ -71,28 +71,12 @@ $expectedApiKeyEnv = switch ($llmProvider) {
 
 $providerApiKey = Get-EnvFirst @($expectedApiKeyEnv, "VP_LLM_API_KEY")
 $hasApiKey = [bool]$providerApiKey
-$supportsCodexAuth = ($llmProvider -eq "openai")
 if ($llmProvider -eq "ollama") {
   $hasApiKey = $true
 }
 
-$codexHome = Get-EnvFirst @("VP_CODEX_HOME")
-if (-not $codexHome) {
-  $codexHome = Join-Path $HOME ".codex"
-}
-$codexAuthFile = Get-EnvFirst @("VP_CODEX_AUTH_FILE")
-if (-not $codexAuthFile) {
-  $codexAuthFile = Join-Path $codexHome "auth.json"
-}
-$hasCodexAuth = Test-Path $codexAuthFile
-
 if (-not $hasApiKey) {
-  if ($supportsCodexAuth -and $hasCodexAuth) {
-  } elseif ($supportsCodexAuth) {
-    Write-Warning "No API key found and Codex auth.json was not found. /api/chat requests will fail until one auth source is available."
-  } else {
-    Write-Warning "No API key found for provider=$llmProvider. Expected env: $expectedApiKeyEnv (or VP_LLM_API_KEY)."
-  }
+  Write-Warning "No API key found for provider=$llmProvider. Expected env: $expectedApiKeyEnv (or VP_LLM_API_KEY)."
 }
 
 $appModule = Get-EnvFirst @("VP_APP_MODULE")
