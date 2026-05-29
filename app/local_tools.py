@@ -23,7 +23,13 @@ from typing import Any, Callable
 
 from PIL import Image, ImageEnhance, ImageOps
 
-from app.action_validator import validate_command_path_args
+from app.action_validator import (
+    is_dangerous_command,
+    parse_compound_shell_command,
+    shell_command_uses_compound_syntax,
+    validate_command_path_args,
+    validate_single_command_for_compound_shell,
+)
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots, normalize_permission_profile
 from app.i18n import normalize_locale
@@ -1667,8 +1673,8 @@ class LocalToolExecutor:
         raw = str(command or "").strip()
         if not raw:
             return [], "Empty command"
-        if any(token in raw for token in ["|", "&&", "||", ";", "$(", "`"]):
-            return [], "Complex shell operators are blocked for safety. Use a single command only."
+        if self._is_compound_shell_command(raw):
+            return [], "Command requires compound shell validation."
         try:
             argv = shlex.split(raw)
         except Exception as exc:
@@ -1683,6 +1689,100 @@ class LocalToolExecutor:
         if for_session and execution_mode == "docker":
             return [], "Interactive exec_command sessions are only supported in host mode."
         return argv, None
+
+    def _is_compound_shell_command(self, raw: str) -> bool:
+        return shell_command_uses_compound_syntax(raw)
+
+    def _parse_compound_shell_for_validation(self, raw: str) -> dict[str, Any]:
+        return parse_compound_shell_command(raw)
+
+    def _validate_compound_shell_command(self, raw: str, cwd: Path) -> tuple[bool, dict[str, Any]]:
+        parsed = self._parse_compound_shell_for_validation(raw)
+        if not parsed.get("ok"):
+            return False, dict(parsed)
+        command_roots = self._current_command_roots()
+        writable_roots = [Path(item) for item in self._current_writable_roots()]
+        execution_mode = self._current_execution_mode()
+        effective_cwd = cwd.resolve()
+        parsed_subcommands = [str(item) for item in list(parsed.get("parsed_subcommands") or []) if str(item or "").strip()]
+        validated_subcommands: list[dict[str, Any]] = []
+
+        def reject(index: int, subcommand_text: str, reason: str, detail: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
+            payload = {
+                "ok": False,
+                "error_kind": "compound_shell_subcommand_rejected",
+                "summary": f"Compound command subcommand #{index} did not pass validation.",
+                "failed_subcommand": str(subcommand_text or "").strip(),
+                "failed_index": int(index),
+                "reason": str(reason or "").strip(),
+                "parsed_subcommands": list(parsed_subcommands),
+            }
+            if detail:
+                payload["detail"] = dict(detail)
+            return False, payload
+
+        for index, subcommand in enumerate(list(parsed.get("subcommands") or []), start=1):
+            item = dict(subcommand or {})
+            argv = [str(token) for token in list(item.get("argv") or []) if str(token or "").strip()]
+            text = str(item.get("text") or "").strip()
+            if not argv:
+                return reject(index, text, "Subcommand is empty.")
+            base_command = str(item.get("base_command") or "").strip() or Path(argv[0]).name.lower()
+            if base_command == "cd":
+                if len(argv) != 2:
+                    return reject(index, text, "Only simple `cd <path>` subcommands are supported.")
+                target = str(argv[1] or "").strip()
+                resolved = (effective_cwd / Path(target).expanduser()).resolve(strict=False) if not Path(target).expanduser().is_absolute() else Path(target).expanduser().resolve(strict=False)
+                boundary_path = resolved if resolved.exists() else resolved.parent
+                if not any(_is_within(boundary_path, root) for root in command_roots):
+                    return reject(
+                        index,
+                        text,
+                        "cd target is outside command allowed roots.",
+                        {
+                            "kind": "command_path_outside_allowed_roots",
+                            "message": "cd target is outside command allowed roots.",
+                            "argument": target,
+                            "resolved_path": str(resolved),
+                            "command_allowed_roots": [str(root) for root in command_roots],
+                        },
+                    )
+                if not resolved.exists() or not resolved.is_dir():
+                    return reject(index, text, "cd target does not exist or is not a directory.")
+                effective_cwd = resolved
+                item["effective_cwd"] = str(effective_cwd)
+                validated_subcommands.append(item)
+                continue
+            normalized_argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
+            base_cmd = str(normalized_argv[0] or "").strip()
+            if not self._is_allowed_command(base_cmd):
+                return reject(
+                    index,
+                    text,
+                    f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}",
+                )
+            ok, detail = validate_single_command_for_compound_shell(
+                normalized_argv,
+                cwd=effective_cwd,
+                command_allowed_roots=command_roots,
+                writable_roots=writable_roots,
+                redirects=list(item.get("redirects") or []),
+            )
+            if not ok:
+                return reject(index, text, str(detail.get("message") or "Subcommand validation failed."), detail)
+            item["argv"] = normalized_argv
+            item["effective_cwd"] = str(effective_cwd)
+            validated_subcommands.append(item)
+        return True, {
+            "ok": True,
+            "compound_shell": bool(parsed.get("compound_shell", True)),
+            "parsed_subcommands": parsed_subcommands,
+            "subcommands": validated_subcommands,
+        }
+
+    def _shell_argv_for_compound_command(self, raw: str) -> list[str]:
+        shell_bin = shutil.which("bash") or shutil.which("zsh") or shutil.which("sh") or "/bin/sh"
+        return [shell_bin, "-lc", str(raw or "").strip()]
 
     def _command_path_validation_error(self, argv: list[str], *, cwd: Path) -> dict[str, Any] | None:
         ok, detail = validate_command_path_args(
@@ -1768,6 +1868,8 @@ class LocalToolExecutor:
             command = str(session.get("command") or "")
             execution_mode = str(session.get("execution_mode") or self._current_execution_mode())
             tty = bool(session.get("tty"))
+            compound_shell = bool(session.get("compound_shell"))
+            compound_validation = dict(session.get("compound_validation") or {}) if compound_shell else {}
         returncode = proc.poll() if isinstance(proc, subprocess.Popen) else 0
         status = "running" if returncode is None else "completed"
         payload: dict[str, Any] = {
@@ -1782,6 +1884,9 @@ class LocalToolExecutor:
             "execution_mode": execution_mode,
             "tty": tty,
         }
+        if compound_shell:
+            payload["compound_shell"] = True
+            payload["compound_validation"] = compound_validation
         if returncode is not None:
             payload["summary"] = f"command exited with {returncode}"
         return payload
@@ -2470,26 +2575,59 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         if not self._current_shell_allowed():
             return self._command_failure_result(command=cmd, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
-        argv, error = self._safe_split_command(cmd, for_session=True)
-        if error:
-            return self._command_failure_result(command=cmd, cwd=cwd, error=error)
+        if str(cmd or "").strip() and is_dangerous_command(str(cmd)):
+            message = "Command is blocked by the runtime boundary."
+            return self._command_failure_result(
+                command=cmd,
+                cwd=cwd,
+                error=message,
+                stderr=message,
+                error_kind="dangerous_command",
+                error_detail={"message": message},
+            )
+        execution_mode = self._current_execution_mode()
+        if execution_mode == "docker":
+            return self._command_failure_result(command=cmd, cwd=cwd, error="Interactive exec_command sessions are only supported in host mode.")
         try:
             real_cwd = self._resolve_path(cwd)
         except Exception as exc:
             return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
-        path_error = self._command_path_validation_error(argv, cwd=real_cwd)
-        if path_error:
-            message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
-            return self._command_failure_result(
-                command=cmd,
-                cwd=str(real_cwd),
-                error=message,
-                stderr=message,
-                error_kind="command_path_outside_allowed_roots",
-                error_detail=path_error,
-            )
+        compound_shell = self._is_compound_shell_command(cmd)
+        compound_validation: dict[str, Any] = {}
+        if compound_shell:
+            ok, detail = self._validate_compound_shell_command(cmd, real_cwd)
+            if not ok:
+                message = str(detail.get("reason") or detail.get("summary") or detail.get("message") or "Compound shell command could not be validated safely.")
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error=message,
+                    stderr=message,
+                    error_kind=str(detail.get("error_kind") or "compound_shell_subcommand_rejected"),
+                    error_detail=detail,
+                )
+            compound_validation = {
+                "ok": True,
+                "parsed_subcommands": [str(item) for item in list(detail.get("parsed_subcommands") or []) if str(item or "").strip()],
+            }
+            argv = self._shell_argv_for_compound_command(cmd)
+        else:
+            argv, error = self._safe_split_command(cmd, for_session=True)
+            if error:
+                return self._command_failure_result(command=cmd, cwd=cwd, error=error)
+            path_error = self._command_path_validation_error(argv, cwd=real_cwd)
+            if path_error:
+                message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error=message,
+                    stderr=message,
+                    error_kind="command_path_outside_allowed_roots",
+                    error_detail=path_error,
+                )
 
         try:
             proc = subprocess.Popen(
@@ -2511,10 +2649,13 @@ class LocalToolExecutor:
                 "buffer": "",
                 "cursor": 0,
                 "cwd": str(real_cwd),
-                "command": " ".join(shlex.quote(token) for token in argv),
-                "execution_mode": self._current_execution_mode(),
+                "command": str(cmd or "").strip() if compound_shell else " ".join(shlex.quote(token) for token in argv),
+                "execution_mode": execution_mode,
                 "tty": bool(tty),
             }
+            if compound_shell:
+                self._command_sessions[session_id]["compound_shell"] = True
+                self._command_sessions[session_id]["compound_validation"] = dict(compound_validation)
         self._spawn_command_reader(session_id, proc)
         time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
         payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)

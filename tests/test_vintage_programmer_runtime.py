@@ -62,6 +62,19 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.budget.same_action_repeat",
     "runtime.budget.no_progress_after_replan",
     "runtime.budget.guard_rejections",
+    "runtime.budget.detail.title",
+    "runtime.budget.detail.reason",
+    "runtime.budget.detail.recent_actions",
+    "runtime.budget.detail.replan",
+    "runtime.budget.detail.suggestion",
+    "runtime.budget.detail.guard_rejection",
+    "runtime.budget.detail.no_progress_after_replan",
+    "runtime.budget.detail.same_action_repeat",
+    "runtime.budget.detail.same_tool_repeat",
+    "runtime.budget.detail.wall_clock",
+    "runtime.budget.detail.emergency_tool_calls",
+    "runtime.budget.detail.model_action_empty",
+    "runtime.budget.detail.unknown",
     "runtime.progress.new_error_type",
     "runtime.progress.repeated_error",
     "runtime.progress.new_file_read",
@@ -2075,6 +2088,119 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
         signal["kind"] == "no_new_info"
         for signal in result["inspector"]["run_state"]["progress_signals"]
     )
+
+
+def test_runtime_blocked_message_details_after_replan_no_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import app.vintage_programmer_runtime as runtime_module
+
+    base_safeguards = runtime_module.default_loop_safeguards()
+    monkeypatch.setattr(
+        runtime_module,
+        "default_loop_safeguards",
+        lambda: {
+            **base_safeguards,
+            "max_same_action_repeats": 100,
+            "no_progress_threshold_before_replan": 2,
+            "no_progress_threshold_after_replan": 1,
+        },
+    )
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="先搜索，没有结果时继续尝试直到阻塞",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short", locale="zh-CN"),
+        context={
+            "session_id": "s-blocked-no-progress-detail",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
+    assert "已停止" in result["text"]
+    assert "复盘后仍未取得新的有效进展" in result["text"]
+    assert "最近卡住点" in result["text"]
+    assert "复盘情况" in result["text"]
+    assert "建议下一步" in result["text"]
+    blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
+    assert blocked_trace["payload"]["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
+    assert blocked_trace["payload"]["post_replan_no_progress_cycles"] >= 1
+    assert result["inspector"]["run_state"]["blocked_stop_diagnostics"]["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
+
+
+def test_runtime_blocked_message_details_after_guard_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import app.vintage_programmer_runtime as runtime_module
+
+    base_safeguards = runtime_module.default_loop_safeguards()
+    monkeypatch.setattr(
+        runtime_module,
+        "default_loop_safeguards",
+        lambda: {
+            **base_safeguards,
+            "max_guard_rejections": 1,
+            "automatic_replan": False,
+        },
+    )
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="should not reach"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="连续触发 guard 拒绝直到阻塞",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short", locale="zh-CN"),
+        context={
+            "session_id": "s-guard-blocked-detail",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "tool_validation_rejections_exceeded"
+    assert "工具调用连续未通过 Guard 检查" in result["text"]
+    assert "最近被拒绝的动作" in result["text"]
+    assert "建议下一步" in result["text"]
+    assert "read" in result["text"]
+    blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
+    assert blocked_trace["payload"]["blocked_reason"] == "tool_validation_rejections_exceeded"
+    assert blocked_trace["payload"]["guard_rejection_count"] >= 2
+    assert result["inspector"]["run_state"]["blocked_stop_diagnostics"]["guard_rejection_count"] >= 2
 
 
 def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:

@@ -83,7 +83,7 @@ _REDACTION_PLACEHOLDER_MESSAGE = (
 
 _PATH_VALUE_FLAGS = {"-C", "--rootdir", "--prefix", "--cwd", "--config", "-f", "--file"}
 _READ_COMMANDS = {"rg", "find", "ls", "cat", "head", "tail", "wc", "pytest", "node", "python", "python3", "py"}
-_WRITE_COMMANDS = {"cp", "mv", "mkdir", "touch"}
+_WRITE_COMMANDS = {"cp", "mv", "mkdir", "touch", "tee"}
 _COMMON_PATH_SUFFIXES = (
     ".py",
     ".js",
@@ -101,6 +101,16 @@ _COMMON_PATH_SUFFIXES = (
     ".css",
     ".html",
     ".sh",
+)
+_SHELL_CONNECTORS = {"&&", "||", "|"}
+_SHELL_REDIRECT_WRITE_OPERATORS = {">", ">>", "1>", "1>>", "2>", "2>>"}
+_SHELL_REDIRECT_READ_OPERATORS = {"<", "0<"}
+_UNSUPPORTED_SHELL_PATTERNS = (
+    (re.compile(r"\$\("), "command substitution"),
+    (re.compile(r"`"), "command substitution"),
+    (re.compile(r"<<<?"), "heredoc"),
+    (re.compile(r"(^|(?:&&|\|\||;|\|)\s*)(for|while|until)\b"), "for/while loop"),
+    (re.compile(r"(^|(?:&&|\|\||;|\|)\s*)if\b"), "if"),
 )
 
 
@@ -152,6 +162,22 @@ def split_command_safely(command: str) -> tuple[list[str], str | None]:
         return [], f"Command parse failed: {safe_error_message(exc)}"
 
 
+def is_dangerous_command(command: str) -> bool:
+    try:
+        normalized = " ".join(shlex.split(command, posix=True)) if command.strip() else ""
+    except Exception:
+        normalized = ""
+    text = normalized or command
+    return any(pattern.search(text) for pattern in _DANGEROUS_COMMAND_PATTERNS)
+
+
+def shell_command_uses_compound_syntax(command: str) -> bool:
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+    return any(token in raw for token in ("&&", "||", "|", ";", ">", "<", "$(", "`"))
+
+
 def _looks_like_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
 
@@ -173,6 +199,162 @@ def _is_path_like_token(token: str) -> bool:
 def _command_base(argv0: str) -> str:
     text = str(argv0 or "").replace("\\", "/").strip()
     return text.rsplit("/", 1)[-1].lower()
+
+
+def _shell_parse_error(
+    summary: str,
+    *,
+    error_kind: str = "unsupported_shell_structure",
+    unsupported_structure: str = "",
+    parsed_subcommands: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error_kind": error_kind,
+        "summary": str(summary or "").strip(),
+        "message": str(summary or "").strip(),
+    }
+    if unsupported_structure:
+        payload["unsupported_structure"] = str(unsupported_structure)
+    if parsed_subcommands is not None:
+        payload["parsed_subcommands"] = [str(item) for item in list(parsed_subcommands or []) if str(item or "").strip()]
+    return payload
+
+
+def _unsupported_shell_structure(command: str) -> str:
+    raw = str(command or "").strip()
+    for pattern, label in _UNSUPPORTED_SHELL_PATTERNS:
+        if pattern.search(raw):
+            return str(label)
+    return ""
+
+
+def _tokenize_shell_command(command: str) -> list[str]:
+    lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars="|&;<>()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _build_parsed_shell_subcommand(tokens: list[str]) -> dict[str, Any]:
+    argv: list[str] = []
+    redirects: list[dict[str, Any]] = []
+    render_tokens: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = str(tokens[index] or "").strip()
+        if not token:
+            index += 1
+            continue
+        if token in {";", "&", "(", ")", "<<", "<<<"}:
+            return _shell_parse_error(
+                f"Compound command contains shell structure that is not currently supported for safe validation: {token}. "
+                "Please split it into simpler commands or use cwd/workdir explicitly.",
+                unsupported_structure=token,
+            )
+        if token in _SHELL_REDIRECT_READ_OPERATORS:
+            return _shell_parse_error(
+                "Compound command contains current unsupported shell structure: input redirection. "
+                "Please split it into simpler commands or use cwd/workdir explicitly.",
+                unsupported_structure="input redirection",
+            )
+        if token in _SHELL_REDIRECT_WRITE_OPERATORS:
+            if not argv:
+                return _shell_parse_error("Shell redirection requires a command before the redirect operator.", error_kind="compound_shell_parse_failed")
+            next_index = index + 1
+            if next_index >= len(tokens):
+                return _shell_parse_error("Shell redirection is missing a target path.", error_kind="compound_shell_parse_failed")
+            target = str(tokens[next_index] or "").strip()
+            if not target or target in _SHELL_CONNECTORS or target in _SHELL_REDIRECT_WRITE_OPERATORS | _SHELL_REDIRECT_READ_OPERATORS:
+                return _shell_parse_error("Shell redirection target could not be parsed safely.", error_kind="compound_shell_parse_failed")
+            redirects.append({"operator": token, "target": target, "access": "write"})
+            render_tokens.extend([token, target])
+            index += 2
+            continue
+        argv.append(token)
+        render_tokens.append(token)
+        index += 1
+    if not argv:
+        return _shell_parse_error("Compound command contains an empty subcommand.", error_kind="compound_shell_parse_failed")
+    first = str(argv[0] or "").strip()
+    if len(argv) > 1 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", first):
+        return _shell_parse_error(
+            "Compound command contains current unsupported shell structure: environment assignment prefix. "
+            "Please split it into simpler commands or use explicit tool arguments instead.",
+            unsupported_structure="environment assignment",
+        )
+    return {
+        "ok": True,
+        "subcommand": {
+            "argv": list(argv),
+            "text": " ".join(render_tokens).strip(),
+            "base_command": _command_base(argv[0]),
+            "redirects": redirects,
+        },
+    }
+
+
+def parse_compound_shell_command(command: str) -> dict[str, Any]:
+    raw = str(command or "").strip()
+    if not raw:
+        return _shell_parse_error("Empty command", error_kind="invalid_arguments")
+    unsupported = _unsupported_shell_structure(raw)
+    if unsupported:
+        return _shell_parse_error(
+            f"Compound command contains current unsupported shell structure: {unsupported}. "
+            "Please split it into simpler commands or use cwd/workdir explicitly.",
+            unsupported_structure=unsupported,
+        )
+    try:
+        tokens = _tokenize_shell_command(raw)
+    except Exception as exc:
+        return _shell_parse_error(f"Command parse failed: {safe_error_message(exc)}", error_kind="compound_shell_parse_failed")
+    if not tokens:
+        return _shell_parse_error("Empty command", error_kind="invalid_arguments")
+    subcommands: list[dict[str, Any]] = []
+    current_tokens: list[str] = []
+    operator_before = ""
+    compound_shell = False
+    for token in tokens:
+        text = str(token or "").strip()
+        if not text:
+            continue
+        if text in {";", "&", "(", ")", "<<", "<<<"}:
+            return _shell_parse_error(
+                f"Compound command contains current unsupported shell structure: {text}. "
+                "Please split it into simpler commands or use cwd/workdir explicitly.",
+                unsupported_structure=text,
+            )
+        if text in _SHELL_CONNECTORS:
+            if not current_tokens:
+                return _shell_parse_error("Compound command contains an empty subcommand before a shell operator.", error_kind="compound_shell_parse_failed")
+            built = _build_parsed_shell_subcommand(current_tokens)
+            if not built.get("ok"):
+                return built
+            subcommand = dict(built["subcommand"])
+            subcommand["operator_before"] = operator_before
+            subcommands.append(subcommand)
+            current_tokens = []
+            operator_before = text
+            compound_shell = True
+            continue
+        current_tokens.append(text)
+    if not current_tokens:
+        return _shell_parse_error("Compound command ends with a shell operator and cannot be validated safely.", error_kind="compound_shell_parse_failed")
+    built = _build_parsed_shell_subcommand(current_tokens)
+    if not built.get("ok"):
+        return built
+    subcommand = dict(built["subcommand"])
+    subcommand["operator_before"] = operator_before
+    subcommands.append(subcommand)
+    if any(list(item.get("redirects") or []) for item in subcommands):
+        compound_shell = True
+    return {
+        "ok": True,
+        "compound_shell": compound_shell,
+        "parsed_subcommands": [str(item.get("text") or "").strip() for item in subcommands],
+        "subcommands": subcommands,
+    }
 
 
 def extract_command_path_args(argv: list[str]) -> list[dict[str, Any]]:
@@ -219,7 +401,7 @@ def extract_command_path_args(argv: list[str]) -> list[dict[str, Any]]:
         positional_count += 1
         treat_as_path = _is_path_like_token(text)
         if not treat_as_path:
-            if base in {"ls", "find", "cat", "head", "tail", "wc", "pytest", "node"}:
+            if base in {"ls", "find", "cat", "head", "tail", "wc", "pytest", "node", "tee"}:
                 treat_as_path = True
             elif base == "rg" and positional_count >= 2:
                 treat_as_path = True
@@ -248,6 +430,38 @@ def _parent_for_boundary(path: Path) -> Path:
     return path.parent if str(path.parent) else path
 
 
+def _validate_command_path_item(
+    raw_arg: str,
+    *,
+    access: str,
+    cwd: Path,
+    command_allowed_roots: list[Path],
+    writable_roots: list[Path],
+) -> tuple[bool, dict[str, Any]]:
+    command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
+    write_roots = [root.expanduser().resolve() for root in writable_roots if str(root or "").strip()]
+    resolved = _resolve_command_arg_path(raw_arg, cwd=cwd)
+    boundary_path = _parent_for_boundary(resolved)
+    if not any(_is_within(boundary_path, root) for root in command_roots):
+        return False, {
+            "kind": "command_path_outside_allowed_roots",
+            "message": "Command path argument is outside command allowed roots.",
+            "argument": raw_arg,
+            "resolved_path": str(resolved),
+            "command_allowed_roots": [str(root) for root in command_roots],
+        }
+    if access == "write" and not any(_is_within(boundary_path, root) for root in write_roots):
+        return False, {
+            "kind": "command_path_outside_allowed_roots",
+            "message": "Command write path argument is outside writable command roots.",
+            "argument": raw_arg,
+            "resolved_path": str(resolved),
+            "command_allowed_roots": [str(root) for root in command_roots],
+            "writable_roots": [str(root) for root in write_roots],
+        }
+    return True, {}
+
+
 def validate_command_path_args(
     argv: list[str],
     *,
@@ -255,32 +469,155 @@ def validate_command_path_args(
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
 ) -> tuple[bool, dict[str, Any]]:
-    command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
-    write_roots = [root.expanduser().resolve() for root in writable_roots if str(root or "").strip()]
     for item in extract_command_path_args(argv):
         raw_arg = str(item.get("argument") or "").strip()
         if not raw_arg:
             continue
-        resolved = _resolve_command_arg_path(raw_arg, cwd=cwd)
-        boundary_path = _parent_for_boundary(resolved)
-        if not any(_is_within(boundary_path, root) for root in command_roots):
-            return False, {
-                "kind": "command_path_outside_allowed_roots",
-                "message": "Command path argument is outside command allowed roots.",
-                "argument": raw_arg,
-                "resolved_path": str(resolved),
-                "command_allowed_roots": [str(root) for root in command_roots],
-            }
-        if str(item.get("access") or "") == "write" and not any(_is_within(boundary_path, root) for root in write_roots):
-            return False, {
-                "kind": "command_path_outside_allowed_roots",
-                "message": "Command write path argument is outside writable command roots.",
-                "argument": raw_arg,
-                "resolved_path": str(resolved),
-                "command_allowed_roots": [str(root) for root in command_roots],
-                "writable_roots": [str(root) for root in write_roots],
-            }
+        ok, detail = _validate_command_path_item(
+            raw_arg,
+            access=str(item.get("access") or "read"),
+            cwd=cwd,
+            command_allowed_roots=command_allowed_roots,
+            writable_roots=writable_roots,
+        )
+        if not ok:
+            return False, detail
     return True, {}
+
+
+def validate_single_command_for_compound_shell(
+    argv: list[str],
+    *,
+    cwd: Path,
+    command_allowed_roots: list[Path],
+    writable_roots: list[Path],
+    redirects: list[dict[str, Any]] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    if not argv:
+        return False, {
+            "kind": "compound_shell_parse_failed",
+            "message": "Compound command contains an empty subcommand.",
+        }
+    ok, detail = validate_command_path_args(
+        argv,
+        cwd=cwd,
+        command_allowed_roots=command_allowed_roots,
+        writable_roots=writable_roots,
+    )
+    if not ok:
+        return False, detail
+    for redirect in list(redirects or []):
+        target = str(redirect.get("target") or "").strip()
+        if not target:
+            continue
+        ok, detail = _validate_command_path_item(
+            target,
+            access=str(redirect.get("access") or "write"),
+            cwd=cwd,
+            command_allowed_roots=command_allowed_roots,
+            writable_roots=writable_roots,
+        )
+        if not ok:
+            return False, detail
+    return True, {}
+
+
+def _compound_subcommand_rejection(
+    *,
+    index: int,
+    subcommand: str,
+    reason: str,
+    parsed_subcommands: list[str],
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "ok": False,
+        "error_kind": "compound_shell_subcommand_rejected",
+        "summary": f"Compound command subcommand #{index} did not pass validation.",
+        "message": f"Compound command subcommand #{index} did not pass validation.",
+        "failed_subcommand": str(subcommand or "").strip(),
+        "failed_index": int(index),
+        "reason": str(reason or "").strip(),
+        "parsed_subcommands": [str(item) for item in list(parsed_subcommands or []) if str(item or "").strip()],
+    }
+    if detail:
+        payload["detail"] = dict(detail)
+    return payload
+
+
+def validate_compound_shell_command(
+    command: str,
+    *,
+    cwd: Path,
+    command_allowed_roots: list[Path],
+    writable_roots: list[Path],
+) -> tuple[bool, dict[str, Any]]:
+    parsed = parse_compound_shell_command(command)
+    if not parsed.get("ok"):
+        return False, dict(parsed)
+    subcommands = [dict(item) for item in list(parsed.get("subcommands") or []) if isinstance(item, dict)]
+    parsed_subcommands = [str(item) for item in list(parsed.get("parsed_subcommands") or []) if str(item or "").strip()]
+    effective_cwd = cwd.resolve()
+    command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
+    for index, subcommand in enumerate(subcommands, start=1):
+        argv = [str(item) for item in list(subcommand.get("argv") or []) if str(item or "").strip()]
+        text = str(subcommand.get("text") or "").strip()
+        if not argv:
+            return False, _compound_subcommand_rejection(
+                index=index,
+                subcommand=text,
+                reason="Subcommand is empty.",
+                parsed_subcommands=parsed_subcommands,
+            )
+        base = _command_base(argv[0])
+        if base == "cd":
+            if len(argv) != 2:
+                return False, _compound_subcommand_rejection(
+                    index=index,
+                    subcommand=text,
+                    reason="Only simple `cd <path>` subcommands are supported.",
+                    parsed_subcommands=parsed_subcommands,
+                )
+            target = str(argv[1] or "").strip()
+            resolved = _resolve_command_arg_path(target, cwd=effective_cwd)
+            boundary_path = _parent_for_boundary(resolved)
+            if not any(_is_within(boundary_path, root) for root in command_roots):
+                return False, _compound_subcommand_rejection(
+                    index=index,
+                    subcommand=text,
+                    reason="cd target is outside command allowed roots.",
+                    parsed_subcommands=parsed_subcommands,
+                    detail={
+                        "kind": "command_path_outside_allowed_roots",
+                        "message": "cd target is outside command allowed roots.",
+                        "argument": target,
+                        "resolved_path": str(resolved),
+                        "command_allowed_roots": [str(root) for root in command_roots],
+                    },
+                )
+            effective_cwd = resolved
+            continue
+        ok, detail = validate_single_command_for_compound_shell(
+            argv,
+            cwd=effective_cwd,
+            command_allowed_roots=command_allowed_roots,
+            writable_roots=writable_roots,
+            redirects=list(subcommand.get("redirects") or []),
+        )
+        if not ok:
+            return False, _compound_subcommand_rejection(
+                index=index,
+                subcommand=text,
+                reason=str(detail.get("message") or "Subcommand validation failed."),
+                parsed_subcommands=parsed_subcommands,
+                detail=detail,
+            )
+    return True, {
+        "ok": True,
+        "compound_shell": bool(parsed.get("compound_shell")),
+        "parsed_subcommands": parsed_subcommands,
+        "subcommands": subcommands,
+    }
 
 
 class ActionValidator:
@@ -626,16 +963,34 @@ class ActionValidator:
             if command and self._is_dangerous_command(command):
                 return "dangerous_command", "Command is blocked by the runtime boundary."
             if command and tool_name != "write_stdin":
-                argv, split_error = split_command_safely(command)
-                if split_error:
-                    return "invalid_arguments", split_error
                 cwd_path = self._resolve_path_for_validation(str(arguments.get("cwd") or "."))
-                ok, detail = validate_command_path_args(
-                    argv,
-                    cwd=cwd_path,
-                    command_allowed_roots=command_roots,
-                    writable_roots=self._writable_roots(),
-                )
+                if shell_command_uses_compound_syntax(command):
+                    ok, detail = validate_compound_shell_command(
+                        command,
+                        cwd=cwd_path,
+                        command_allowed_roots=command_roots,
+                        writable_roots=self._writable_roots(),
+                    )
+                    if not ok:
+                        error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
+                        if error_kind == "command_path_outside_allowed_roots":
+                            return "command_path_outside_allowed_roots", str(detail.get("message") or "Command path argument is outside command allowed roots.")
+                        if error_kind == "compound_shell_subcommand_rejected":
+                            nested = detail.get("detail")
+                            if isinstance(nested, dict) and str(nested.get("kind") or "") == "command_path_outside_allowed_roots":
+                                return "command_path_outside_allowed_roots", str(detail.get("reason") or detail.get("message") or "Command path argument is outside command allowed roots.")
+                            return "invalid_arguments", str(detail.get("reason") or detail.get("message") or "Compound shell command could not be validated safely.")
+                        return "invalid_arguments", str(detail.get("message") or "Compound shell command could not be validated safely.")
+                else:
+                    argv, split_error = split_command_safely(command)
+                    if split_error:
+                        return "invalid_arguments", split_error
+                    ok, detail = validate_command_path_args(
+                        argv,
+                        cwd=cwd_path,
+                        command_allowed_roots=command_roots,
+                        writable_roots=self._writable_roots(),
+                    )
                 if not ok:
                     return "command_path_outside_allowed_roots", str(detail.get("message") or "Command path argument is outside command allowed roots.")
 
@@ -717,12 +1072,7 @@ class ActionValidator:
 
     @staticmethod
     def _is_dangerous_command(command: str) -> bool:
-        try:
-            normalized = " ".join(shlex.split(command, posix=True)) if command.strip() else ""
-        except Exception:
-            normalized = ""
-        text = normalized or command
-        return any(pattern.search(text) for pattern in _DANGEROUS_COMMAND_PATTERNS)
+        return is_dangerous_command(command)
 
     @staticmethod
     def _result(

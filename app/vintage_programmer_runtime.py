@@ -559,6 +559,7 @@ class VintageProgrammerRuntime:
             "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
             "- Use update_plan only when a valid checklist helps a multi-step execution task. If planning is unnecessary, answer directly or call the concrete tool needed now.\n"
             f"- When running Python commands, prefer the project virtual environment when available (for example ./.venv/bin/python on macOS/Linux or .venv\\Scripts\\python.exe on Windows). Otherwise use the detected interpreter command ({detected_python}). Do not assume python3 exists. Prefer project-level module execution via the selected interpreter with -m ...\n"
+            "- When using exec_command, prefer cwd/workdir instead of `cd dir && command`. If a compound shell command is still necessary, keep it simple and avoid command substitution, heredoc, downloaded scripts piped to shell, sudo destructive commands, or broad deletion commands.\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
             "- After each tool result, continue the turn until the task is complete, needs structured user input, is blocked by a concrete policy, is cancelled, or a runtime budget is exhausted.\n"
             f"- Keep the final response in the active locale ({locale}), but keep tool decisions concrete and agentic."
@@ -2157,6 +2158,312 @@ class VintageProgrammerRuntime:
                 items.append(label)
         return items[-limit:]
 
+    @staticmethod
+    def _localized_text(locale: str, *, zh_cn: str, ja_jp: str, en: str) -> str:
+        normalized = normalize_locale(locale)
+        if normalized == "ja-JP":
+            return ja_jp
+        if normalized == "zh-CN":
+            return zh_cn
+        return en
+
+    @staticmethod
+    def _recent_progress_signal_summaries(signals: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+        items: list[str] = []
+        for signal in list(signals or [])[-limit:]:
+            if not isinstance(signal, dict):
+                continue
+            tool_name = str(signal.get("tool_name") or "").strip()
+            detail = str(signal.get("detail") or "").strip()
+            summary = str(signal.get("summary") or "").strip()
+            head = tool_name or ""
+            if detail:
+                head = f"{head}: {detail}" if head else detail
+            text = head
+            if summary:
+                text = f"{text} -> {summary}" if text else summary
+            if text:
+                items.append(text[:220])
+        return items[-limit:]
+
+    @staticmethod
+    def _recent_tool_event_summaries(
+        tool_events: list[ToolEvent],
+        *,
+        limit: int = 3,
+        failed_only: bool = False,
+    ) -> list[str]:
+        items: list[str] = []
+        for event in list(tool_events or [])[-limit:]:
+            if failed_only and getattr(event, "status", "") == "ok":
+                continue
+            label = str(getattr(event, "name", "") or "tool").strip() or "tool"
+            arguments_preview = str(getattr(event, "arguments_preview", "") or "").strip()
+            summary = str(getattr(event, "summary", "") or getattr(event, "output_preview", "")).strip()
+            head = f"{label}: {arguments_preview}" if arguments_preview else label
+            text = f"{head} -> {summary[:160]}" if summary and summary not in head else head
+            if text:
+                items.append(text[:220])
+        return items[-limit:]
+
+    @staticmethod
+    def _dedup_recent_items(items: list[str], *, limit: int = 3) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            deduped.append(text)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
+    def _blocked_reason_label(self, locale: str, blocked_reason: str) -> str:
+        mapping = {
+            "turn_budget_no_progress_after_replan_exceeded": "runtime.budget.detail.no_progress_after_replan",
+            "turn_budget_same_action_repeats_exceeded": "runtime.budget.detail.same_action_repeat",
+            "turn_budget_same_tool_repeats_exceeded": "runtime.budget.detail.same_tool_repeat",
+            "tool_validation_rejections_exceeded": "runtime.budget.detail.guard_rejection",
+            "turn_budget_wall_clock_exceeded": "runtime.budget.detail.wall_clock",
+            "turn_budget_emergency_tool_calls_exceeded": "runtime.budget.detail.emergency_tool_calls",
+            "model_action_empty": "runtime.budget.detail.model_action_empty",
+        }
+        return translate(locale, mapping.get(str(blocked_reason or "").strip(), "runtime.budget.detail.unknown"))
+
+    def _blocked_reason_detail(
+        self,
+        *,
+        locale: str,
+        blocked_reason: str,
+        tool_events: list[ToolEvent],
+        guard_rejection_count: int,
+        no_progress_cycles: int,
+        post_replan_no_progress_cycles: int,
+        same_action_repeat_count: int,
+        elapsed_seconds: int,
+    ) -> str:
+        last_failed = next((item for item in reversed(tool_events or []) if getattr(item, "status", "") != "ok"), None)
+        last_failed_reason = str(getattr(last_failed, "summary", "") or "").strip()
+        reason_code = str(blocked_reason or "").strip()
+        if reason_code == "tool_validation_rejections_exceeded":
+            base = self._localized_text(
+                locale,
+                zh_cn=f"连续 {max(guard_rejection_count, 1)} 次工具调用被 Guard 拒绝。",
+                ja_jp=f"Guard による拒否が {max(guard_rejection_count, 1)} 回連続しました。",
+                en=f"{max(guard_rejection_count, 1)} consecutive tool calls were rejected by the guard.",
+            )
+            if last_failed_reason:
+                suffix = self._localized_text(
+                    locale,
+                    zh_cn=f" 最近一次原因：{last_failed_reason[:160]}",
+                    ja_jp=f" 直近の理由: {last_failed_reason[:160]}",
+                    en=f" Latest reason: {last_failed_reason[:160]}",
+                )
+                return base + suffix
+            return base
+        if reason_code == "turn_budget_no_progress_after_replan_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn=f"复盘后连续 {max(post_replan_no_progress_cycles, 1)} 轮工具调用没有产生新的有效信息，总计连续 {max(no_progress_cycles, 1)} 轮没有新进展。",
+                ja_jp=f"復盤後も {max(post_replan_no_progress_cycles, 1)} 回連続で新しい有効情報が出ず、合計 {max(no_progress_cycles, 1)} 回進展がありませんでした。",
+                en=f"No new useful information appeared for {max(post_replan_no_progress_cycles, 1)} post-replan tool cycles, and {max(no_progress_cycles, 1)} consecutive cycles produced no progress overall.",
+            )
+        if reason_code == "turn_budget_same_action_repeats_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn=f"连续 {max(same_action_repeat_count, 1)} 次提出相同动作，且没有新的有效进展。",
+                ja_jp=f"同じアクションが {max(same_action_repeat_count, 1)} 回連続し、新しい有効な進展がありませんでした。",
+                en=f"The same action repeated {max(same_action_repeat_count, 1)} times in a row without any new useful progress.",
+            )
+        if reason_code == "turn_budget_wall_clock_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn=f"当前轮次已连续执行约 {max(elapsed_seconds, 1)} 秒，达到运行预算。",
+                ja_jp=f"この turn は約 {max(elapsed_seconds, 1)} 秒連続実行され、実行予算に達しました。",
+                en=f"This turn ran for about {max(elapsed_seconds, 1)} seconds and reached the execution budget.",
+            )
+        if reason_code == "turn_budget_emergency_tool_calls_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn="当前轮次触发了紧急工具调用兜底上限。",
+                ja_jp="この turn は緊急ツール呼び出しのフェイルセーフ上限に達しました。",
+                en="This turn reached the emergency tool-call fail-safe cap.",
+            )
+        if reason_code == "model_action_empty":
+            return self._localized_text(
+                locale,
+                zh_cn="模型没有给出可执行的下一步，因此当前轮次无法继续推进。",
+                ja_jp="モデルが実行可能な次の一手を返さなかったため、この turn を続けられませんでした。",
+                en="The model did not produce an executable next step, so the turn could not continue.",
+            )
+        return self._localized_text(
+            locale,
+            zh_cn="当前轮次没有继续推进。",
+            ja_jp="この turn はそれ以上進めませんでした。",
+            en="This turn could not make further progress.",
+        )
+
+    def _blocked_replan_detail(
+        self,
+        *,
+        locale: str,
+        replan_history: list[dict[str, Any]],
+        post_replan_no_progress_cycles: int,
+    ) -> str:
+        last = next((item for item in reversed(replan_history or []) if isinstance(item, dict)), None)
+        if not last:
+            return self._localized_text(
+                locale,
+                zh_cn="本轮没有进入自动复盘。",
+                ja_jp="この turn では自動復盤は発生しませんでした。",
+                en="No automatic replan checkpoint was triggered in this turn.",
+            )
+        trigger = str(last.get("trigger") or "unknown").strip() or "unknown"
+        detail = str(last.get("detail") or "").strip()
+        suffix = ""
+        if detail:
+            suffix = self._localized_text(
+                locale,
+                zh_cn=f" 触发上下文：{detail[:140]}。",
+                ja_jp=f" きっかけ: {detail[:140]}。",
+                en=f" Trigger context: {detail[:140]}.",
+            )
+        post_note = ""
+        if post_replan_no_progress_cycles:
+            post_note = self._localized_text(
+                locale,
+                zh_cn=" 复盘后模型仍未提出能带来新信息的动作。",
+                ja_jp=" 復盤後もモデルは新情報につながる次の動きを出せませんでした。",
+                en=" After replanning, the model still did not propose a move that produced new information.",
+            )
+        return self._localized_text(
+            locale,
+            zh_cn=f"已触发自动复盘，触发点：{trigger}。{suffix}{post_note}",
+            ja_jp=f"自動復盤は実行済みです。トリガー: {trigger}。{suffix}{post_note}",
+            en=f"Automatic replan was triggered at: {trigger}.{suffix}{post_note}",
+        ).strip()
+
+    def _next_step_suggestion_for_blocked_reason(self, *, locale: str, blocked_reason: str) -> str:
+        reason_code = str(blocked_reason or "").strip()
+        if reason_code == "tool_validation_rejections_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn="请检查最近一次被拒绝的命令、路径或权限边界；如果是复合 shell，请查看具体被拒绝的子命令，或改用更明确的 cwd/workdir。",
+                ja_jp="直近で拒否されたコマンド、パス、権限境界を確認してください。複合 shell の場合は、拒否されたサブコマンドを確認するか、より明示的な cwd/workdir を使ってください。",
+                en="Inspect the last rejected command, path, or permission boundary. If this was a compound shell call, check the rejected subcommand or switch to a clearer cwd/workdir.",
+            )
+        if reason_code in {"turn_budget_no_progress_after_replan_exceeded", "turn_budget_same_action_repeats_exceeded"}:
+            return self._localized_text(
+                locale,
+                zh_cn="请换一个检查方向，指定更具体的目标文件，或先查看最近一次工具输出再决定下一步。",
+                ja_jp="調査方向を変えるか、対象ファイルをもっと具体化するか、直近のツール出力を確認してから次の一手を決めてください。",
+                en="Change the inspection angle, name a more specific target file, or review the latest tool output before choosing the next move.",
+            )
+        if reason_code == "turn_budget_wall_clock_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn="请缩小本轮目标范围，或把任务拆成更小的检查步骤后再继续。",
+                ja_jp="この turn の対象を絞るか、作業をより小さい調査ステップに分けて続行してください。",
+                en="Narrow the scope of the turn or break the task into smaller investigation steps before continuing.",
+            )
+        if reason_code == "model_action_empty":
+            return self._localized_text(
+                locale,
+                zh_cn="请明确下一步要检查的文件、测试或命令，让模型基于更具体的目标继续。",
+                ja_jp="次に確認するファイル、テスト、またはコマンドを明示して、より具体的な目標で続行してください。",
+                en="Specify the next file, test, or command to inspect so the model can continue with a more concrete target.",
+            )
+        return self._localized_text(
+            locale,
+            zh_cn="请检查最近一次工具输出，并明确下一步最值得验证的目标。",
+            ja_jp="直近のツール出力を確認し、次に検証すべき対象を明確にしてください。",
+            en="Inspect the latest tool output and name the next target that is most worth verifying.",
+        )
+
+    def _blocked_stop_debug_payload(
+        self,
+        *,
+        blocked_reason: str,
+        progress_signals: list[dict[str, Any]],
+        replan_history: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        guard_rejection_count: int,
+        no_progress_cycles: int,
+        post_replan_no_progress_cycles: int,
+    ) -> dict[str, Any]:
+        return {
+            "blocked_reason": str(blocked_reason or ""),
+            "progress_signals_tail": [dict(item) for item in list(progress_signals or [])[-3:] if isinstance(item, dict)],
+            "tool_events_tail": [dump_model(item) for item in list(tool_events or [])[-3:]],
+            "replan_history_tail": [dict(item) for item in list(replan_history or [])[-3:] if isinstance(item, dict)],
+            "guard_rejection_count": int(guard_rejection_count or 0),
+            "no_progress_cycles": int(no_progress_cycles or 0),
+            "post_replan_no_progress_cycles": int(post_replan_no_progress_cycles or 0),
+        }
+
+    def _build_blocked_stop_message(
+        self,
+        *,
+        locale: str,
+        blocked_reason: str,
+        progress_signals: list[dict[str, Any]],
+        replan_history: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        guard_rejection_count: int,
+        no_progress_cycles: int,
+        post_replan_no_progress_cycles: int,
+        same_action_repeat_count: int,
+        elapsed_seconds: int,
+    ) -> str:
+        reason_label = self._blocked_reason_label(locale, blocked_reason)
+        reason_detail = self._blocked_reason_detail(
+            locale=locale,
+            blocked_reason=blocked_reason,
+            tool_events=tool_events,
+            guard_rejection_count=guard_rejection_count,
+            no_progress_cycles=no_progress_cycles,
+            post_replan_no_progress_cycles=post_replan_no_progress_cycles,
+            same_action_repeat_count=same_action_repeat_count,
+            elapsed_seconds=elapsed_seconds,
+        )
+        if str(blocked_reason or "").strip() == "tool_validation_rejections_exceeded":
+            recent_actions = self._dedup_recent_items(
+                self._recent_tool_event_summaries(tool_events, limit=3, failed_only=True)
+                + self._recent_progress_signal_summaries(progress_signals, limit=3),
+                limit=3,
+            )
+            recent_header = self._localized_text(
+                locale,
+                zh_cn="最近被拒绝的动作：",
+                ja_jp="最近拒否されたアクション：",
+                en="Most recent rejected actions:",
+            )
+        else:
+            recent_actions = self._dedup_recent_items(
+                self._recent_progress_signal_summaries(progress_signals, limit=3)
+                + self._recent_tool_event_summaries(tool_events, limit=3),
+                limit=3,
+            )
+            recent_header = translate(locale, "runtime.budget.detail.recent_actions")
+        replan_detail = self._blocked_replan_detail(
+            locale=locale,
+            replan_history=replan_history,
+            post_replan_no_progress_cycles=post_replan_no_progress_cycles,
+        )
+        suggestion = self._next_step_suggestion_for_blocked_reason(locale=locale, blocked_reason=blocked_reason)
+        lines = [
+            translate(locale, "runtime.budget.detail.title", reason=reason_label),
+            translate(locale, "runtime.budget.detail.reason", detail=reason_detail),
+        ]
+        if recent_actions:
+            lines.append(recent_header)
+            lines.extend(f"- {item}" for item in recent_actions)
+        lines.append(translate(locale, "runtime.budget.detail.replan", detail=replan_detail))
+        lines.append(translate(locale, "runtime.budget.detail.suggestion", detail=suggestion))
+        return "\n".join(item for item in lines if str(item or "").strip()).strip()
+
     def _build_replan_checkpoint_prompt(
         self,
         *,
@@ -2893,6 +3200,7 @@ class VintageProgrammerRuntime:
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
+        blocked_stop_diagnostics: dict[str, Any] = {}
         last_successful_round = 0
         turn_activity_context = {
             "task_type": "model_action",
@@ -4212,6 +4520,28 @@ class VintageProgrammerRuntime:
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
 
+        if turn_status == "blocked":
+            blocked_stop_diagnostics = self._blocked_stop_debug_payload(
+                blocked_reason=blocked_reason,
+                progress_signals=progress_signals,
+                replan_history=replan_history,
+                tool_events=tool_events,
+                guard_rejection_count=guard_rejection_count,
+                no_progress_cycles=no_progress_cycles,
+                post_replan_no_progress_cycles=post_replan_no_progress_cycles,
+            )
+            forced_text = self._build_blocked_stop_message(
+                locale=locale,
+                blocked_reason=blocked_reason,
+                progress_signals=progress_signals,
+                replan_history=replan_history,
+                tool_events=tool_events,
+                guard_rejection_count=guard_rejection_count,
+                no_progress_cycles=no_progress_cycles,
+                post_replan_no_progress_cycles=post_replan_no_progress_cycles,
+                same_action_repeat_count=same_action_repeat_count,
+                elapsed_seconds=int(max(1.0, time.monotonic() - turn_started_at)),
+            )
         raw_assistant_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
         if not model_draft and str(answer_stream_state.get("text") or "").strip():
             model_draft = str(answer_stream_state.get("text") or "").strip()
@@ -4279,8 +4609,9 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 type="blocked",
                 title=trace_label(locale, "blocked"),
-                detail=str(blocked_reason or display_text or ""),
+                detail=str(display_text or blocked_reason or ""),
                 status="blocked",
+                payload=dict(blocked_stop_diagnostics),
                 trace_events=trace_events,
             )
         elif turn_status == "failed":
@@ -4382,6 +4713,7 @@ class VintageProgrammerRuntime:
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
                 "blocked_reason": blocked_reason,
+                "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
                 "loop_safeguards": dict(loop_safeguards),
                 "attachment_evidence_pack_preview": [
                     {
@@ -4490,6 +4822,7 @@ class VintageProgrammerRuntime:
             "pending_approval": {},
             "write_authorization_state": dict(write_authorization_state),
             "blocked_reason": blocked_reason,
+            "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
             "attachment_evidence_pack_preview": [
                 {
                     "id": str(item.get("id") or ""),
