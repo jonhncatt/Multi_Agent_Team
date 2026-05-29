@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from packages.office_modules.planning_support import summarize_attachment_metas_for_agents
-from packages.office_modules.review_support import summarize_tool_events_for_review, summarize_validation_context
-from packages.agent_core import RoleContext, RoleResult
+from app.vp_support.planning_support import summarize_attachment_metas_for_agents
+from app.vp_support.review_support import summarize_tool_events_for_review, summarize_validation_context
+from app.vp_support import RoleContext, RoleResult
 
 
 def run_conflict_detector_role(agent: Any, *, context: RoleContext) -> RoleResult:

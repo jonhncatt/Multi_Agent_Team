@@ -660,9 +660,9 @@ This release is a request-time performance cleanup only and does not change agen
 v2.9.5 keeps the v2.9.x stable LangChain runtime policy.
 This release is a narrow bugfix only and does not change prompt behavior, routing logic, tool execution behavior, or streaming behavior.
 
-- The stable runtime still wraps `office_agent_runtime` under `VintageProgrammerRuntime`, so office/runtime payload construction must use defensive serialization.
-- Residual direct `.model_dump()` calls in `packages/office_modules/office_agent_runtime.py` are replaced with `dump_model(...)`.
-- This prevents intermittent office-style crashes such as `NoneType object has no attribute model_dump` and `dict object has no attribute model_dump`, especially in meeting-minutes and related task paths.
+- The stable runtime is now app-owned under `VintageProgrammerRuntime`, so backend/runtime payload construction must use defensive serialization.
+- Residual direct `.model_dump()` calls in `app/vp_runtime_backend.py` are replaced with `dump_model(...)`.
+- This prevents intermittent runtime serialization crashes such as `NoneType object has no attribute model_dump` and `dict object has no attribute model_dump`, especially in meeting-minutes and related task paths.
 
 ## 20. v2.9.6 Model-led Action Runtime Notes
 
@@ -977,8 +977,8 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 - `app/config.py`
 - `agents/vintage_programmer/agent.md`
 - `agents/vintage_programmer/tools.md`
-- `packages/office_modules/office_agent_runtime.py`
-- `packages/office_modules/review_support.py`
+- `app/vp_runtime_backend.py`
+- `app/vp_support/review_support.py`
 
 ### 待确认点
 

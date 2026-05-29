@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.office_modules.intent_support import request_likely_requires_tools
-from packages.office_modules.request_analysis import looks_like_permission_gate_text
+from app.vp_support.intent_support import request_likely_requires_tools
+from app.vp_support.request_analysis import looks_like_permission_gate_text
 
 
 class _AgentStub:

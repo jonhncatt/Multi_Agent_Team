@@ -66,8 +66,8 @@ from app.tool_trace_summary import (
 )
 from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
-from packages.office_modules.intent_support import has_image_attachments as has_image_attachments_helper
-from packages.office_modules.office_agent_runtime import create_office_runtime_backend
+from app.vp_support.intent_support import has_image_attachments as has_image_attachments_helper
+from app.vp_runtime_backend import create_vp_runtime_backend
 
 
 _READ_ONLY_TOOL_NAMES = {
@@ -294,7 +294,7 @@ class VintageProgrammerRuntime:
         # Injected backends are treated as already-authenticated or auth-free test doubles
         # unless they opt back into the standard OpenAI auth gate.
         self._require_runtime_auth = backend is None
-        self._backend = backend or create_office_runtime_backend(config)
+        self._backend = backend or create_vp_runtime_backend(config)
         if backend is not None:
             self._require_runtime_auth = bool(getattr(self._backend, "requires_auth", False))
         self._tool_specs = list(getattr(self._backend.tools, "tool_specs", []) or [])

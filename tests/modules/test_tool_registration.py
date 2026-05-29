@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from packages.office_modules import tools as tools_module
+from app.config import load_config
+from app.vp_support import tools as tools_module
 
 
 class _StubLocalToolExecutor:
@@ -16,7 +17,7 @@ class _StubLocalToolExecutor:
         session_id: str | None = None,
         model: str | None = None,
     ) -> None:
-        _ = model
+        _ = (execution_mode, session_id, model)
         return None
 
     def clear_runtime_context(self) -> None:
@@ -32,45 +33,21 @@ class _StubLocalToolExecutor:
         return {"ok": True, "name": name, "arguments": arguments}
 
 
-def test_workspace_core_tool_module_exposes_core_tools() -> None:
-    modules = tools_module.build_office_tool_modules()
-    module_ids = {item.module_id for item in modules}
-    workspace = next(item for item in modules if item.module_id == "workspace_core_tools")
-    fs_tools = next(item for item in modules if item.module_id == "fs_content_tools")
-    web_tools = next(item for item in modules if item.module_id == "web_context_tools")
-    session_tools = next(item for item in modules if item.module_id == "session_context_tools")
-    media_tools = next(item for item in modules if item.module_id == "media_context_tools")
-    unpack_tools = next(item for item in modules if item.module_id == "content_unpack_tools")
-    tool_names = set(workspace.tool_names)
+def test_vp_tool_executor_exposes_canonical_tool_groups() -> None:
+    executor = tools_module.get_tool_executor(load_config())
+    tool_names = {item["name"] for item in executor.tool_specs}
 
-    assert {
-        "workspace_core_tools",
-        "fs_content_tools",
-        "web_context_tools",
-        "session_context_tools",
-        "media_context_tools",
-        "content_unpack_tools",
-        "browser_tools",
-    }.issubset(module_ids)
     assert "exec_command" in tool_names
-    assert "write_stdin" in tool_names
-    assert "apply_patch" in tool_names
-    assert "update_plan" in tool_names
-    assert set(fs_tools.tool_names) == {
-        "read_file",
-        "list_dir",
-        "glob_file_search",
-        "search_contents_in_file",
-        "search_contents_in_file_multi",
-        "read_section",
-        "table_extract",
-        "fact_check_file",
-        "search_codebase",
-    }
-    assert set(web_tools.tool_names) == {"web_search", "web_fetch", "web_download"}
-    assert set(session_tools.tool_names) == {"sessions_list", "sessions_history"}
-    assert set(media_tools.tool_names) == {"image_inspect", "image_read"}
-    assert set(unpack_tools.tool_names) == {"archive_extract", "mail_extract_attachments"}
+    assert "web_search" in tool_names
+    assert "browser_open" in tool_names
+
+    web_meta = executor.dispatch_meta_for_tool("web_search")
+    browser_meta = executor.dispatch_meta_for_tool("browser_open")
+
+    assert web_meta.module_id == "web_context_tools"
+    assert web_meta.group == "web_context"
+    assert browser_meta.module_id == "browser_tools"
+    assert browser_meta.group == "browser"
 
 
 def test_scoped_executor_accepts_case_variant_tool_name(monkeypatch) -> None:

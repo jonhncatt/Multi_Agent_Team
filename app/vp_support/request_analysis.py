@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-__doc__ = """Canonical office request-analysis helpers.
+__doc__ = """Canonical VP request-analysis helpers.
 
-These heuristics support the office compatibility runtime from the
-module-scoped package boundary rather than retired top-level shims.
+These heuristics support the current Vintage Programmer runtime without
+depending on retired package-scoped shims.
 """
 
 import re

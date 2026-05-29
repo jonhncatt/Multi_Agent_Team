@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.office_modules.role_catalog import ROLE_KINDS
-from packages.agent_core import RoleContext, RoleResult, RoleSpec
+from app.vp_support.role_catalog import ROLE_KINDS
+from app.vp_support import RoleContext, RoleResult, RoleSpec
 
 
 def make_role_spec(

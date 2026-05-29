@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from packages.office_modules.conflict_detector_role import run_conflict_detector_role
-from packages.office_modules.planner_role import run_planner_role
-from packages.office_modules.reviewer_role import run_reviewer_role
-from packages.office_modules.revision_role import run_revision_role
-from packages.office_modules.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
-from packages.office_modules.specialist_role import run_specialist_with_context
-from packages.office_modules.structurer_role import run_structurer_role
-from packages.agent_core.role_registry import RegisteredRole, RoleHandler, RoleRegistry
+from app.vp_support.conflict_detector_role import run_conflict_detector_role
+from app.vp_support.planner_role import run_planner_role
+from app.vp_support.reviewer_role import run_reviewer_role
+from app.vp_support.revision_role import run_revision_role
+from app.vp_support.role_catalog import ROLE_KINDS, SPECIALIST_LABELS
+from app.vp_support.specialist_role import run_specialist_with_context
+from app.vp_support.structurer_role import run_structurer_role
+from app.vp_support.role_registry import RegisteredRole, RoleHandler, RoleRegistry
 
 
-def build_office_role_registry() -> RoleRegistry:
+def build_vp_role_registry() -> RoleRegistry:
     registry = RoleRegistry()
 
     def _register(

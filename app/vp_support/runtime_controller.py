@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import Any
 
-from packages.agent_core.role_registry import RoleRegistry
-from packages.agent_core.role_runtime import RoleContext, RoleResult, RunState
+from app.vp_support.role_registry import RoleRegistry
+from app.vp_support.role_runtime import RoleContext, RoleResult, RunState
 
 
 @dataclass(slots=True)

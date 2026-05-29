@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-__doc__ = """Canonical office intent helper functions.
+__doc__ = """Canonical VP intent helper functions.
 
-These helpers support office-oriented intent interpretation from the
-module-scoped package boundary rather than retired top-level shims.
+These helpers support the current Vintage Programmer runtime without
+depending on retired package-scoped shims.
 """
 
 from pathlib import Path
 import re
 from typing import Any
 
-from packages.office_modules.router_hints import (
+from app.vp_support.router_hints import (
     HOLISTIC_DIRECT_PHRASES,
     HOLISTIC_EXPLAIN_MARKERS,
     HOLISTIC_OVERVIEW_MARKERS,

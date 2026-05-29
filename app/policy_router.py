@@ -4,10 +4,10 @@ from typing import Any
 from uuid import uuid4
 
 from app.context_assembly import AssembledContext, coerce_active_task, detect_pdf_target
-from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+from app.vp_support.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_schema import ActiveTask, ConversationFrame, IntentClassification, IntentDecision, RequestSignals, RouteDecision, TaskControl
 from app.serialization import dump_model
-from packages.office_modules.runtime_profiles import default_runtime_profile_for_route
+from app.vp_support.runtime_profiles import default_runtime_profile_for_route
 
 
 _TASK_TYPE_TO_PRIMARY_INTENT = {

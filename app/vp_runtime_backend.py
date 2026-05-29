@@ -15,12 +15,12 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
-from packages.office_modules.reviewer_helpers import (
+from app.vp_support.reviewer_helpers import (
     normalize_reviewer_verdict as normalize_reviewer_verdict_helper,
     reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
     summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
 )
-from packages.office_modules.answer_bundle_support import (
+from app.vp_support.answer_bundle_support import (
     augment_bundle_warnings as augment_bundle_warnings_helper,
     citation_kind as citation_kind_helper,
     citation_strength as citation_strength_helper,
@@ -30,19 +30,19 @@ from packages.office_modules.answer_bundle_support import (
     split_claim_candidates as split_claim_candidates_helper,
     strip_answer_bundle_meta as strip_answer_bundle_meta_helper,
 )
-from packages.office_modules.citation_support import (
+from app.vp_support.citation_support import (
     domain_from_url as domain_from_url_helper,
     extract_citations_from_tool_result as extract_citations_from_tool_result_helper,
     finalize_citation_candidates as finalize_citation_candidates_helper,
     merge_citation_candidates as merge_citation_candidates_helper,
 )
-from packages.office_modules.planning_support import (
+from app.vp_support.planning_support import (
     build_execution_plan as build_execution_plan_helper,
     summarize_attachment_metas_for_agents as summarize_attachment_metas_for_agents_helper,
 )
-from packages.office_modules.planner_role import run_planner_role as run_planner_role_helper
-from packages.office_modules.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
-from packages.office_modules.review_support import (
+from app.vp_support.planner_role import run_planner_role as run_planner_role_helper
+from app.vp_support.conflict_detector_role import run_conflict_detector_role as run_conflict_detector_role_helper
+from app.vp_support.review_support import (
     format_tool_event_for_review as format_tool_event_for_review_helper,
     has_successful_local_file_access as has_successful_local_file_access_helper,
     prepare_tool_result_for_llm as prepare_tool_result_for_llm_helper,
@@ -52,22 +52,22 @@ from packages.office_modules.review_support import (
     summarize_write_tool_events as summarize_write_tool_events_helper,
     text_acknowledges_written_targets as text_acknowledges_written_targets_helper,
 )
-from packages.office_modules.reviewer_role import run_reviewer_role as run_reviewer_role_helper
-from packages.office_modules.revision_role import run_revision_role as run_revision_role_helper
-from packages.office_modules.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
-from packages.office_modules.role_helpers import (
+from app.vp_support.reviewer_role import run_reviewer_role as run_reviewer_role_helper
+from app.vp_support.revision_role import run_revision_role as run_revision_role_helper
+from app.vp_support.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
+from app.vp_support.role_helpers import (
     make_default_role_result as make_default_role_result_helper,
     make_role_context as make_role_context_helper,
     make_role_result as make_role_result_helper,
     make_role_spec as make_role_spec_helper,
     role_payload_dict as role_payload_dict_helper,
 )
-from packages.office_modules.runtime_profiles import (
+from app.vp_support.runtime_profiles import (
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
 )
-from packages.office_modules.structurer_role import run_structurer_role as run_structurer_role_helper
-from packages.office_modules.specialist_role import (
+from app.vp_support.structurer_role import run_structurer_role as run_structurer_role_helper
+from app.vp_support.specialist_role import (
     build_specialist_input_payload as build_specialist_input_payload_helper,
     format_specialist_system_hint as format_specialist_system_hint_helper,
     normalize_specialist_brief_payload as normalize_specialist_brief_payload_helper,
@@ -77,7 +77,7 @@ from packages.office_modules.specialist_role import (
 )
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig, get_access_roots
-from packages.office_modules.execution_policy import execution_policy_spec, planner_enabled_for_policy
+from app.vp_support.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.intent_classifier import IntentClassifier
 from app.intent_schema import RouteTrace
 from app.context_assembly import ContextAssembler, coerce_active_task
@@ -93,7 +93,7 @@ from app.pipeline_hooks import (
     build_pipeline_hook_panel_payload,
     build_pipeline_hook_telemetry,
 )
-from packages.office_modules.request_analysis import (
+from app.vp_support.request_analysis import (
     has_file_like_lookup_token as has_file_like_lookup_token_helper,
     looks_like_code_generation_request as looks_like_code_generation_request_helper,
     looks_like_local_code_lookup_request as looks_like_local_code_lookup_request_helper,
@@ -101,7 +101,7 @@ from packages.office_modules.request_analysis import (
     message_has_explicit_local_path as message_has_explicit_local_path_helper,
     should_auto_search_default_roots as should_auto_search_default_roots_helper,
 )
-from packages.office_modules.router_hints import (
+from app.vp_support.router_hints import (
     HOLISTIC_DIRECT_PHRASES,
     HOLISTIC_EXPLAIN_MARKERS,
     HOLISTIC_OVERVIEW_MARKERS,
@@ -117,8 +117,8 @@ from app.router_signals import RouterSignalExtractor
 from app.action_validator import ActionValidator, build_runtime_boundary, validation_observation
 
 if TYPE_CHECKING:
-    from packages.runtime_core.blackboard import Blackboard
-from packages.office_modules.intent_support import (
+    from app.vp_support.blackboard import Blackboard
+from app.vp_support.intent_support import (
     attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
     attachment_needs_tooling as attachment_needs_tooling_helper,
     attachment_needs_tooling_for_turn as attachment_needs_tooling_for_turn_helper,
@@ -140,8 +140,7 @@ from packages.office_modules.intent_support import (
     request_likely_requires_tools as request_likely_requires_tools_helper,
     requires_evidence_mode as requires_evidence_mode_helper,
 )
-from packages.agent_core import (
-    AgentCapabilityRuntime,
+from app.vp_support import (
     HookDebugEntry,
     HookPromptInjection,
     HookResult,
@@ -151,8 +150,9 @@ from packages.agent_core import (
     RoleRuntimeController,
     RoleSpec,
     RunState,
-    build_agent_capability_runtime,
 )
+from app.vp_support.roles import build_vp_role_registry
+from app.vp_support.tools import get_tool_executor
 
 
 _STYLE_HINTS = {
@@ -773,15 +773,15 @@ class KernelShadowSelfUpgradeToolArgs(BaseModel):
     promote_if_healthy: bool = True
 
 
-class OfficeAgent:
-    """Canonical office execution runtime implementation."""
+class VPRuntimeBackend:
+    """App-owned runtime backend for Vintage Programmer."""
 
     def __init__(
         self,
         config: AppConfig,
         *,
         kernel_runtime: Any | None = None,
-        capability_runtime: AgentCapabilityRuntime | None = None,
+        capability_runtime: Any | None = None,
         tool_executor: Any | None = None,
         host: Any | None = None,
         selected_agent_module_id: str = "",
@@ -789,23 +789,12 @@ class OfficeAgent:
     ) -> None:
         self.config = config
         self._host = host
-        self._capability_runtime = capability_runtime or build_agent_capability_runtime(
-            config,
-            config.capability_modules,
-        )
-        self._selected_agent_module_id = str(
-            selected_agent_module_id or self._capability_runtime.metadata.get("primary_agent_module") or ""
-        ).strip()
-        self._selected_tool_module_id = str(
-            selected_tool_module_id or self._capability_runtime.metadata.get("primary_tool_module") or ""
-        ).strip()
-        self._selected_output_module_id = str(
-            self._capability_runtime.metadata.get("primary_output_module") or ""
-        ).strip()
-        self._selected_memory_module_id = str(
-            self._capability_runtime.metadata.get("primary_memory_module") or ""
-        ).strip()
-        self.tools = tool_executor or self._capability_runtime.tools
+        _ = capability_runtime
+        self._selected_agent_module_id = str(selected_agent_module_id or "vp_runtime_backend").strip()
+        self._selected_tool_module_id = str(selected_tool_module_id or "vp_tools").strip()
+        self._selected_output_module_id = ""
+        self._selected_memory_module_id = ""
+        self.tools = tool_executor or get_tool_executor(config)
         if hasattr(self.tools, "set_image_read_handler"):
             try:
                 self.tools.set_image_read_handler(self._image_read_tool_payload)
@@ -844,13 +833,10 @@ class OfficeAgent:
         self._lc_tool_map_casefold = {
             name.lower(): tool for name, tool in self._lc_tool_map.items()
         }
-        self._role_registry = self._capability_runtime.role_registry
-        self._role_runtime_controller = self._capability_runtime.runtime_controller
+        self._role_registry = build_vp_role_registry()
+        self._role_runtime_controller = RoleRuntimeController(self._role_registry)
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
-
-    def legacy_tools(self) -> Any:
-        return self.tools
 
     def resolve_auth(self, mode: str) -> Any:
         normalized_mode = str(mode or "").strip().lower()
@@ -7336,7 +7322,7 @@ class OfficeAgent:
             ),
             self._StructuredTool.from_function(
                 name="read_file",
-                description="Read one local file. Supports chunked reads and Office/PDF text extraction for large document formats.",
+                description="Read one local file. Supports chunked reads and document/PDF text extraction for large formats.",
                 args_schema=ReadTextFileArgs,
                 func=self._read_file_tool,
             ),
@@ -8601,17 +8587,17 @@ class OfficeAgent:
         return "405" in text or "method not allowed" in text
 
 
-def create_office_runtime_backend(
+def create_vp_runtime_backend(
     config: Any,
     *,
     kernel_runtime: Any | None = None,
     capability_runtime: Any | None = None,
     tool_executor: Any | None = None,
     host: Any | None = None,
-    selected_agent_module_id: str = "office_agent",
-    selected_tool_module_id: str = "workspace_core_tools",
-) -> OfficeAgent:
-    return OfficeAgent(
+    selected_agent_module_id: str = "vp_runtime_backend",
+    selected_tool_module_id: str = "vp_tools",
+) -> VPRuntimeBackend:
+    return VPRuntimeBackend(
         config,
         kernel_runtime=kernel_runtime,
         capability_runtime=capability_runtime,
@@ -8622,5 +8608,5 @@ def create_office_runtime_backend(
     )
 
 
-def classify_office_llm_exception(exc: BaseException, *, phase: str, model: str) -> dict[str, Any]:
+def classify_vp_llm_exception(exc: BaseException, *, phase: str, model: str) -> dict[str, Any]:
     return classify_runtime_llm_exception(exc, phase=phase, model=model)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.config import load_config
 from app.tool_metadata import TOOL_METADATA, get_tool_metadata, metadata_missing_names
 from app.vintage_programmer_runtime import _READ_ONLY_TOOL_NAMES
-from packages.office_modules.tools import get_tool_executor
+from app.vp_support.tools import get_tool_executor
 
 
 _ALLOWED_GROUPS = {

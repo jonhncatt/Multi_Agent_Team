@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from packages.office_modules.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
-from packages.agent_core import RoleContext, RoleResult
+from app.vp_support.planning_support import build_execution_plan, summarize_attachment_metas_for_agents
+from app.vp_support import RoleContext, RoleResult
 
 
 def run_planner_role(agent: Any, *, context: RoleContext, settings: Any) -> RoleResult:

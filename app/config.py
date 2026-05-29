@@ -327,8 +327,6 @@ def _load_dotenv_if_present() -> None:
 @dataclass(slots=True)
 class AppConfig:
     workspace_root: Path
-    modules_dir: Path
-    capability_modules: list[str]
     runtime_dir: Path
     evolution_dir: Path
     active_manifest_path: Path
@@ -715,20 +713,6 @@ def load_config() -> AppConfig:
     _load_dotenv_if_present()
 
     workspace_root = Path(_env("VP_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
-    modules_dir = Path(
-        _env(
-            "VP_MODULES_DIR",
-            default=str(workspace_root / "app" / "modules"),
-        )
-        or str(workspace_root / "app" / "modules")
-    ).resolve()
-    capability_modules = _split_csv(
-        _env(
-            "VP_CAPABILITY_MODULES",
-            default="packages.office_modules",
-        )
-        or "packages.office_modules"
-    )
     runtime_dir = Path(
         _env(
             "VP_RUNTIME_DIR",
@@ -821,7 +805,6 @@ def load_config() -> AppConfig:
         or str(workspace_root / "app" / "data" / "shadow_logs")
     ).resolve()
 
-    modules_dir.mkdir(parents=True, exist_ok=True)
     runtime_dir.mkdir(parents=True, exist_ok=True)
     evolution_dir.mkdir(parents=True, exist_ok=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -1098,8 +1081,6 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         workspace_root=workspace_root,
-        modules_dir=modules_dir,
-        capability_modules=capability_modules,
         runtime_dir=runtime_dir,
         evolution_dir=evolution_dir,
         active_manifest_path=active_manifest_path,

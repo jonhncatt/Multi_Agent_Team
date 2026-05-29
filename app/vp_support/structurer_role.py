@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from packages.office_modules.answer_bundle_support import (
+from app.vp_support.answer_bundle_support import (
     augment_bundle_warnings,
     fallback_answer_bundle,
     normalize_claim_record,
     strip_answer_bundle_meta,
 )
-from packages.agent_core import RoleContext, RoleResult
+from app.vp_support import RoleContext, RoleResult
 
 
 def run_structurer_role(agent: Any, *, context: RoleContext) -> RoleResult:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Canonical execution-policy definitions for the office business module."""
+"""Canonical execution-policy definitions for the VP runtime."""
 
 from dataclasses import dataclass
 from typing import Literal

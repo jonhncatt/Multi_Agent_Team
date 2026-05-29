@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-__doc__ = """Canonical office router hint tables.
+__doc__ = """Canonical VP router hint tables.
 
-These constants back office-oriented request interpretation without
-requiring the retired `app.router_rules` shim.
+These constants back request interpretation without requiring the
+retired `app.router_rules` shim.
 """
 
 
