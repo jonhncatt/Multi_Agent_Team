@@ -1665,6 +1665,7 @@ class VintageProgrammerRuntime:
         validator = ActionValidator(
             tool_specs=self._tool_specs,
             allowed_tools=runnable_tools,
+            allowed_commands=self._config.allowed_commands,
             boundary=runtime_boundary,
             locale=locale,
             normalize_tool_name=normalize_tool_name,

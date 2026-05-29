@@ -6,6 +6,37 @@ from app.action_validator import ActionValidator, ValidationResult, validation_o
 from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
 
+_ALLOWED_COMMANDS = [
+    "pwd",
+    "ls",
+    "dir",
+    "cat",
+    "rg",
+    "head",
+    "tail",
+    "wc",
+    "find",
+    "echo",
+    "printf",
+    "date",
+    "python",
+    "py",
+    "python3",
+    "git",
+    "npm",
+    "node",
+    "pytest",
+    "ruff",
+    "sed",
+    "awk",
+    "mkdir",
+    "touch",
+    "cp",
+    "mv",
+    "tee",
+    "true",
+]
+
 
 def _tool_specs() -> list[dict]:
     return [
@@ -93,6 +124,7 @@ def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
     return ActionValidator(
         tool_specs=_tool_specs(),
         allowed_tools=[item["name"] for item in _tool_specs()],
+        allowed_commands=_ALLOWED_COMMANDS,
         boundary=boundary,
         locale="en",
     )
@@ -109,6 +141,7 @@ def test_tool_not_allowed_rejected(tmp_path: Path) -> None:
     validator = ActionValidator(
         tool_specs=_tool_specs(),
         allowed_tools=["list_dir"],
+        allowed_commands=_ALLOWED_COMMANDS,
         boundary=RuntimeBoundary(allowed_roots=[str(tmp_path)], writable_roots=[str(tmp_path)], cwd=str(tmp_path), project_root=str(tmp_path)),
     )
 
@@ -207,6 +240,16 @@ def test_exec_command_pipeline_with_tee_inside_writable_root_allowed(tmp_path: P
     )
 
     assert result.allowed
+
+
+def test_exec_command_compound_disallowed_subcommand_rejected_by_guard(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "rm app && pwd", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+    assert "rm" in result.message
 
 
 def test_dangerous_command_rejected(tmp_path: Path) -> None:

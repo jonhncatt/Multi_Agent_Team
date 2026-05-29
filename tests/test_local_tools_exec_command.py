@@ -227,6 +227,26 @@ def test_exec_command_compound_pipe_with_tee_writes_inside_workspace(
     assert (tmp_path / "test.log").read_text(encoding="utf-8") == "ok\n"
 
 
+def test_exec_command_compound_mkdir_and_redirect_inside_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+
+    result = manager.exec_command(
+        cmd="mkdir -p logs && printf 'ok\\n' > logs/result.txt",
+        cwd=".",
+        yield_time_ms=300,
+    )
+
+    assert result["ok"] is True
+    assert result["compound_shell"] is True
+    assert "mkdir -p logs" in result["compound_validation"]["parsed_subcommands"]
+    assert "printf ok\\n > logs/result.txt" in result["compound_validation"]["parsed_subcommands"]
+    assert (tmp_path / "logs" / "result.txt").read_text(encoding="utf-8") == "ok\n"
+
+
 def test_compound_shell_validation_allows_simple_dev_chains(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

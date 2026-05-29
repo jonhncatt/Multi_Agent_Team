@@ -27,8 +27,8 @@ from app.action_validator import (
     is_dangerous_command,
     parse_compound_shell_command,
     shell_command_uses_compound_syntax,
+    validate_compound_shell_command as validate_compound_shell_command_shared,
     validate_command_path_args,
-    validate_single_command_for_compound_shell,
 )
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots, normalize_permission_profile
@@ -1697,12 +1697,17 @@ class LocalToolExecutor:
         return parse_compound_shell_command(raw)
 
     def _validate_compound_shell_command(self, raw: str, cwd: Path) -> tuple[bool, dict[str, Any]]:
+        ok, detail = validate_compound_shell_command_shared(
+            raw,
+            cwd=cwd.resolve(),
+            command_allowed_roots=self._current_command_roots(),
+            writable_roots=[Path(item) for item in self._current_writable_roots()],
+            allowed_commands=self.config.allowed_commands,
+        )
+        if not ok:
+            return False, dict(detail)
         parsed = self._parse_compound_shell_for_validation(raw)
-        if not parsed.get("ok"):
-            return False, dict(parsed)
         command_roots = self._current_command_roots()
-        writable_roots = [Path(item) for item in self._current_writable_roots()]
-        execution_mode = self._current_execution_mode()
         effective_cwd = cwd.resolve()
         parsed_subcommands = [str(item) for item in list(parsed.get("parsed_subcommands") or []) if str(item or "").strip()]
         validated_subcommands: list[dict[str, Any]] = []
@@ -1753,24 +1758,6 @@ class LocalToolExecutor:
                 item["effective_cwd"] = str(effective_cwd)
                 validated_subcommands.append(item)
                 continue
-            normalized_argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
-            base_cmd = str(normalized_argv[0] or "").strip()
-            if not self._is_allowed_command(base_cmd):
-                return reject(
-                    index,
-                    text,
-                    f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}",
-                )
-            ok, detail = validate_single_command_for_compound_shell(
-                normalized_argv,
-                cwd=effective_cwd,
-                command_allowed_roots=command_roots,
-                writable_roots=writable_roots,
-                redirects=list(item.get("redirects") or []),
-            )
-            if not ok:
-                return reject(index, text, str(detail.get("message") or "Subcommand validation failed."), detail)
-            item["argv"] = normalized_argv
             item["effective_cwd"] = str(effective_cwd)
             validated_subcommands.append(item)
         return True, {

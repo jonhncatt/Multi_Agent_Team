@@ -551,6 +551,7 @@ def validate_compound_shell_command(
     cwd: Path,
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
+    allowed_commands: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     parsed = parse_compound_shell_command(command)
     if not parsed.get("ok"):
@@ -559,6 +560,7 @@ def validate_compound_shell_command(
     parsed_subcommands = [str(item) for item in list(parsed.get("parsed_subcommands") or []) if str(item or "").strip()]
     effective_cwd = cwd.resolve()
     command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
+    allowed_base_commands = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
     for index, subcommand in enumerate(subcommands, start=1):
         argv = [str(item) for item in list(subcommand.get("argv") or []) if str(item or "").strip()]
         text = str(subcommand.get("text") or "").strip()
@@ -597,6 +599,19 @@ def validate_compound_shell_command(
                 )
             effective_cwd = resolved
             continue
+        if allowed_base_commands and base not in allowed_base_commands:
+            return False, _compound_subcommand_rejection(
+                index=index,
+                subcommand=text,
+                reason=f"Command not allowed: {base}. Allowed: {', '.join(sorted(allowed_base_commands))}",
+                parsed_subcommands=parsed_subcommands,
+                detail={
+                    "kind": "command_not_allowed",
+                    "message": f"Command not allowed: {base}. Allowed: {', '.join(sorted(allowed_base_commands))}",
+                    "base_command": base,
+                    "allowed_commands": sorted(allowed_base_commands),
+                },
+            )
         ok, detail = validate_single_command_for_compound_shell(
             argv,
             cwd=effective_cwd,
@@ -628,6 +643,7 @@ class ActionValidator:
         *,
         tool_specs: list[dict[str, Any]],
         allowed_tools: list[str] | None = None,
+        allowed_commands: list[str] | None = None,
         boundary: RuntimeBoundary | None = None,
         locale: str = "en",
         normalize_tool_name: Callable[[str], str] | None = None,
@@ -639,6 +655,7 @@ class ActionValidator:
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         }
         self._allowed_tools = {str(item or "").strip() for item in list(allowed_tools or []) if str(item or "").strip()}
+        self._allowed_commands = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
         self._boundary = boundary or RuntimeBoundary()
         self._locale = str(locale or "en")
         self._normalize_tool_name = normalize_tool_name or (lambda value: str(value or "").strip())
@@ -970,6 +987,7 @@ class ActionValidator:
                         cwd=cwd_path,
                         command_allowed_roots=command_roots,
                         writable_roots=self._writable_roots(),
+                        allowed_commands=self._allowed_commands,
                     )
                     if not ok:
                         error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
@@ -979,6 +997,8 @@ class ActionValidator:
                             nested = detail.get("detail")
                             if isinstance(nested, dict) and str(nested.get("kind") or "") == "command_path_outside_allowed_roots":
                                 return "command_path_outside_allowed_roots", str(detail.get("reason") or detail.get("message") or "Command path argument is outside command allowed roots.")
+                            if isinstance(nested, dict) and str(nested.get("kind") or "") == "command_not_allowed":
+                                return "command_not_allowed", str(detail.get("reason") or detail.get("message") or "Command is not allowed.")
                             return "invalid_arguments", str(detail.get("reason") or detail.get("message") or "Compound shell command could not be validated safely.")
                         return "invalid_arguments", str(detail.get("message") or "Compound shell command could not be validated safely.")
                 else:
