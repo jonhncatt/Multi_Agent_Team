@@ -6126,7 +6126,7 @@ function App() {
                             <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
                               <div className="timeline-head">
                                 <span>${item.name || "tool"}</span>
-                                <span>${formatToolGroupLabel(uiLocale, item.group || item.module_group || "tool")}</span>
+                                <span>${formatToolGroupLabel(uiLocale, item.group || "tool")}</span>
                               </div>
                               <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
                               ${renderToolAuditDetails(item)}

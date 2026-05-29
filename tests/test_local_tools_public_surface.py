@@ -20,11 +20,9 @@ def _config(tmp_path: Path):
     config.projects_registry_path = tmp_path / "projects.json"
     config.sessions_dir = tmp_path / "sessions"
     config.uploads_dir = tmp_path / "uploads"
-    config.shadow_logs_dir = tmp_path / "shadow_logs"
     config.token_stats_path = tmp_path / "token_stats.json"
     config.sessions_dir.mkdir(parents=True, exist_ok=True)
     config.uploads_dir.mkdir(parents=True, exist_ok=True)
-    config.shadow_logs_dir.mkdir(parents=True, exist_ok=True)
     return config
 
 

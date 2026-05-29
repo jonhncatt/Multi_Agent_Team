@@ -53,9 +53,6 @@ class ToolEvent(BaseModel):
     source_refs: list[str] = Field(default_factory=list)
     project_root: str = ""
     cwd: str = ""
-    module_id: str = ""
-    module_title: str = ""
-    module_group: str = ""
 
 
 class ExecutionTraceEntry(BaseModel):

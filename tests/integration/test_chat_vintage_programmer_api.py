@@ -10,9 +10,8 @@ from fastapi.testclient import TestClient
 import app.main as main_app
 import app.storage as storage_mod
 from app.config import load_config
-from app.evolution import EvolutionStore
 from app.i18n import translate
-from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
 from app.workbench import WorkbenchStore, build_tool_descriptors
 
 
@@ -48,7 +47,18 @@ _FAKE_TOOL_DESCRIPTOR_BY_NAME = {
 _FAKE_ALLOWED_TOOLS = [str(item["name"]) for item in _FAKE_TOOL_SPECS]
 
 
+class _FakeRuntimeStatusTools:
+    def docker_status(self) -> tuple[bool, str]:
+        return False, "stub"
+
+    def ocr_status(self) -> dict[str, object]:
+        return {"available": False, "reason": "stub"}
+
+
 class _FakeVintageRuntime:
+    def __init__(self) -> None:
+        self._backend = type("Backend", (), {"tools": _FakeRuntimeStatusTools()})()
+
     def descriptor(self, locale: str | None = None, *, refresh: bool = False) -> dict[str, object]:
         _ = (locale, refresh)
         tools = [dict(item) for item in _FAKE_TOOL_DESCRIPTORS]
@@ -807,7 +817,7 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
 
 
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
-    for name in ("sessions", "uploads", "shadow_logs", "evolution_logs", "workspace/skills", "agents/vintage_programmer"):
+    for name in ("sessions", "uploads", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
     (tmp_path / "agents" / "vintage_programmer" / "soul.md").write_text("soul", encoding="utf-8")
     (tmp_path / "agents" / "vintage_programmer" / "identity.md").write_text("identity", encoding="utf-8")
@@ -831,20 +841,13 @@ def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main_app.config, "projects_registry_path", tmp_path / "projects.json")
     monkeypatch.setattr(main_app.config, "sessions_dir", tmp_path / "sessions")
     monkeypatch.setattr(main_app.config, "uploads_dir", tmp_path / "uploads")
-    monkeypatch.setattr(main_app.config, "shadow_logs_dir", tmp_path / "shadow_logs")
     monkeypatch.setattr(main_app.config, "token_stats_path", tmp_path / "token_stats.json")
     monkeypatch.setattr(main_app.config, "allowed_roots", [tmp_path])
     monkeypatch.setattr(main_app, "session_store", SessionStore(tmp_path / "sessions"))
     monkeypatch.setattr(main_app, "upload_store", UploadStore(tmp_path / "uploads"))
     monkeypatch.setattr(main_app, "token_stats_store", TokenStatsStore(tmp_path / "token_stats.json"))
-    monkeypatch.setattr(main_app, "shadow_log_store", ShadowLogStore(tmp_path / "shadow_logs"))
     monkeypatch.setattr(main_app, "project_store", ProjectStore(tmp_path / "projects.json", default_root=tmp_path))
     main_app.project_store.ensure_default_project()
-    monkeypatch.setattr(
-        main_app,
-        "evolution_store",
-        EvolutionStore(tmp_path / "overlay_profile.json", tmp_path / "evolution_logs"),
-    )
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _FakeVintageRuntime())
     monkeypatch.setattr(
         main_app,

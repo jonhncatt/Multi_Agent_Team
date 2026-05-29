@@ -327,18 +327,9 @@ def _load_dotenv_if_present() -> None:
 @dataclass(slots=True)
 class AppConfig:
     workspace_root: Path
-    runtime_dir: Path
-    evolution_dir: Path
-    active_manifest_path: Path
-    shadow_manifest_path: Path
-    rollback_pointer_path: Path
-    module_health_path: Path
-    overlay_profile_path: Path
-    evolution_logs_dir: Path
     projects_registry_path: Path
     sessions_dir: Path
     uploads_dir: Path
-    shadow_logs_dir: Path
     token_stats_path: Path
     allowed_roots: list[Path]
     workspace_sibling_root: Path | None
@@ -392,7 +383,6 @@ class AppConfig:
     docker_pids_limit: int
     docker_container_prefix: str
     enable_session_tools: bool
-    enable_shadow_logging: bool
     allowed_commands: list[str]
 
 
@@ -713,62 +703,6 @@ def load_config() -> AppConfig:
     _load_dotenv_if_present()
 
     workspace_root = Path(_env("VP_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
-    runtime_dir = Path(
-        _env(
-            "VP_RUNTIME_DIR",
-            default=str(workspace_root / "app" / "data" / "runtime"),
-        )
-        or str(workspace_root / "app" / "data" / "runtime")
-    ).resolve()
-    evolution_dir = Path(
-        _env(
-            "VP_EVOLUTION_DIR",
-            default=str(workspace_root / "app" / "data" / "evolution"),
-        )
-        or str(workspace_root / "app" / "data" / "evolution")
-    ).resolve()
-    active_manifest_path = Path(
-        _env(
-            "VP_ACTIVE_MANIFEST_PATH",
-            default=str(runtime_dir / "active_manifest.json"),
-        )
-        or str(runtime_dir / "active_manifest.json")
-    ).resolve()
-    shadow_manifest_path = Path(
-        _env(
-            "VP_SHADOW_MANIFEST_PATH",
-            default=str(runtime_dir / "shadow_manifest.json"),
-        )
-        or str(runtime_dir / "shadow_manifest.json")
-    ).resolve()
-    rollback_pointer_path = Path(
-        _env(
-            "VP_ROLLBACK_POINTER_PATH",
-            default=str(runtime_dir / "rollback_pointer.json"),
-        )
-        or str(runtime_dir / "rollback_pointer.json")
-    ).resolve()
-    module_health_path = Path(
-        _env(
-            "VP_MODULE_HEALTH_PATH",
-            default=str(runtime_dir / "module_health.json"),
-        )
-        or str(runtime_dir / "module_health.json")
-    ).resolve()
-    overlay_profile_path = Path(
-        _env(
-            "VP_OVERLAY_PROFILE_PATH",
-            default=str(evolution_dir / "overlay_profile.json"),
-        )
-        or str(evolution_dir / "overlay_profile.json")
-    ).resolve()
-    evolution_logs_dir = Path(
-        _env(
-            "VP_EVOLUTION_LOGS_DIR",
-            default=str(evolution_dir / "logs"),
-        )
-        or str(evolution_dir / "logs")
-    ).resolve()
     sessions_dir = Path(
         _env(
             "VP_SESSIONS_DIR",
@@ -797,22 +731,10 @@ def load_config() -> AppConfig:
         )
         or str(workspace_root / "app" / "data" / "token_stats.json")
     ).resolve()
-    shadow_logs_dir = Path(
-        _env(
-            "VP_SHADOW_LOGS_DIR",
-            default=str(workspace_root / "app" / "data" / "shadow_logs"),
-        )
-        or str(workspace_root / "app" / "data" / "shadow_logs")
-    ).resolve()
 
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    evolution_dir.mkdir(parents=True, exist_ok=True)
     sessions_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
-    shadow_logs_dir.mkdir(parents=True, exist_ok=True)
-    overlay_profile_path.parent.mkdir(parents=True, exist_ok=True)
-    evolution_logs_dir.mkdir(parents=True, exist_ok=True)
 
     allowed_commands_raw = _env(
         "VP_ALLOWED_COMMANDS",
@@ -1063,10 +985,6 @@ def load_config() -> AppConfig:
         _env("VP_ENABLE_SESSION_TOOLS", default="true") or "true"
     ).strip().lower()
     enable_session_tools = enable_session_tools_raw in {"1", "true", "yes", "on"}
-    enable_shadow_logging_raw = (
-        _env("VP_ENABLE_SHADOW_LOGGING", default="true") or "true"
-    ).strip().lower()
-    enable_shadow_logging = enable_shadow_logging_raw in {"1", "true", "yes", "on"}
     provider_runtime = _resolve_provider_runtime_settings(llm_provider, active_provider=llm_provider)
     llm_primary_api_key_env = str(provider_runtime.get("llm_primary_api_key_env") or llm_primary_api_key_env)
     llm_api_key_env_keys = list(provider_runtime.get("llm_api_key_env_keys") or llm_api_key_env_keys)
@@ -1081,18 +999,9 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         workspace_root=workspace_root,
-        runtime_dir=runtime_dir,
-        evolution_dir=evolution_dir,
-        active_manifest_path=active_manifest_path,
-        shadow_manifest_path=shadow_manifest_path,
-        rollback_pointer_path=rollback_pointer_path,
-        module_health_path=module_health_path,
-        overlay_profile_path=overlay_profile_path,
-        evolution_logs_dir=evolution_logs_dir,
         projects_registry_path=projects_registry_path,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
-        shadow_logs_dir=shadow_logs_dir,
         token_stats_path=token_stats_path,
         allowed_roots=allowed_roots,
         workspace_sibling_root=workspace_sibling_root,
@@ -1190,6 +1099,5 @@ def load_config() -> AppConfig:
         docker_pids_limit=max(16, min(4096, docker_pids_limit)),
         docker_container_prefix=docker_container_prefix or "multi-agent-team-sbx",
         enable_session_tools=enable_session_tools,
-        enable_shadow_logging=enable_shadow_logging,
         allowed_commands=_split_csv(allowed_commands_raw),
     )

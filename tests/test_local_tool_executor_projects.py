@@ -20,11 +20,9 @@ def _project_config(tmp_path: Path):
     config.projects_registry_path = tmp_path / "projects.json"
     config.sessions_dir = tmp_path / "sessions"
     config.uploads_dir = tmp_path / "uploads"
-    config.shadow_logs_dir = tmp_path / "shadow_logs"
     config.token_stats_path = tmp_path / "token_stats.json"
     config.sessions_dir.mkdir(parents=True, exist_ok=True)
     config.uploads_dir.mkdir(parents=True, exist_ok=True)
-    config.shadow_logs_dir.mkdir(parents=True, exist_ok=True)
     store = ProjectStore(config.projects_registry_path, default_root=app_root)
     store.ensure_default_project()
     project = store.create(root_path=str(project_root), title="External Project")

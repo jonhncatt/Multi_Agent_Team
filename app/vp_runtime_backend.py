@@ -1,365 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field as dc_field, fields as dataclass_fields, is_dataclass, replace
-from datetime import datetime, timezone
 import json
-import logging
 import os
 import re
 import threading
 import time
-from uuid import uuid4
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
-from app.vp_support.reviewer_helpers import (
-    normalize_reviewer_verdict as normalize_reviewer_verdict_helper,
-    reviewer_readonly_tool_names as reviewer_readonly_tool_names_helper,
-    summarize_reviewer_tool_result as summarize_reviewer_tool_result_helper,
-)
-from app.vp_support.answer_bundle_support import (
-    augment_bundle_warnings as augment_bundle_warnings_helper,
-    citation_kind as citation_kind_helper,
-    citation_strength as citation_strength_helper,
-    extract_answer_summary as extract_answer_summary_helper,
-    fallback_answer_bundle as fallback_answer_bundle_helper,
-    normalize_claim_record as normalize_claim_record_helper,
-    split_claim_candidates as split_claim_candidates_helper,
-    strip_answer_bundle_meta as strip_answer_bundle_meta_helper,
-)
-from app.vp_support.citation_support import (
-    domain_from_url as domain_from_url_helper,
-    extract_citations_from_tool_result as extract_citations_from_tool_result_helper,
-    finalize_citation_candidates as finalize_citation_candidates_helper,
-    merge_citation_candidates as merge_citation_candidates_helper,
-)
-from app.vp_support.review_support import (
-    format_tool_event_for_review as format_tool_event_for_review_helper,
-    has_successful_local_file_access as has_successful_local_file_access_helper,
-    prepare_tool_result_for_llm as prepare_tool_result_for_llm_helper,
-    successful_write_targets as successful_write_targets_helper,
-    summarize_tool_events_for_review as summarize_tool_events_for_review_helper,
-    summarize_validation_context as summarize_validation_context_helper,
-    summarize_write_tool_events as summarize_write_tool_events_helper,
-    text_acknowledges_written_targets as text_acknowledges_written_targets_helper,
-)
-from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
+from app.attachments import image_to_data_url_with_meta
 from app.config import AppConfig, get_access_roots
-from app.models import AgentPanel, ChatSettings, ToolEvent
-from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
-from app.serialization import dump_model
+from app.local_tools import LocalToolExecutor
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
-from app.vp_support.request_analysis import (
-    has_file_like_lookup_token as has_file_like_lookup_token_helper,
-    looks_like_code_generation_request as looks_like_code_generation_request_helper,
-    looks_like_local_code_lookup_request as looks_like_local_code_lookup_request_helper,
-    looks_like_permission_gate_text as looks_like_permission_gate_text_helper,
-    message_has_explicit_local_path as message_has_explicit_local_path_helper,
-    should_auto_search_default_roots as should_auto_search_default_roots_helper,
-)
-from app.action_validator import ActionValidator, build_runtime_boundary, validation_observation
-from app.vp_support.intent_support import (
-    attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
-    attachment_needs_tooling as attachment_needs_tooling_helper,
-    attachment_needs_tooling_for_turn as attachment_needs_tooling_for_turn_helper,
-    evidence_mode_needs_more_support as evidence_mode_needs_more_support_helper,
-    has_image_attachments as has_image_attachments_helper,
-    looks_like_holistic_document_explanation_request as looks_like_holistic_document_explanation_request_helper,
-    looks_like_image_capability_denial as looks_like_image_capability_denial_helper,
-    looks_like_image_text_extraction_request as looks_like_image_text_extraction_request_helper,
-    looks_like_initial_content_triage_request as looks_like_initial_content_triage_request_helper,
-    looks_like_inline_code_payload as looks_like_inline_code_payload_helper,
-    looks_like_inline_document_payload as looks_like_inline_document_payload_helper,
-    looks_like_internal_ticket_reference as looks_like_internal_ticket_reference_helper,
-    looks_like_meeting_minutes_request as looks_like_meeting_minutes_request_helper,
-    looks_like_source_trace_request as looks_like_source_trace_request_helper,
-    looks_like_spec_lookup_request as looks_like_spec_lookup_request_helper,
-    looks_like_stub_image_transcription as looks_like_stub_image_transcription_helper,
-    looks_like_table_reformat_request as looks_like_table_reformat_request_helper,
-    looks_like_understanding_request as looks_like_understanding_request_helper,
-    request_likely_requires_tools as request_likely_requires_tools_helper,
-    requires_evidence_mode as requires_evidence_mode_helper,
-)
-from app.vp_support.tools import get_tool_executor
+from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
 
-
-_STYLE_HINTS = {
-    "short": "回答尽量简短，先给结论，再给最多3条关键点。",
-    "normal": "回答清晰、可执行，避免冗长。",
-    "long": "回答可适当详细，但要结构化并突出行动建议。",
-}
-
-_NEWS_HINTS = (
-    "news",
-    "latest",
-    "recent",
-    "breaking",
-    "headline",
-    "today",
-    "score",
-    "scores",
-    "最近",
-    "近期",
-    "近况",
-    "新闻",
-    "消息",
-    "今日",
-    "今天",
-    "战报",
-    "比分",
-    "ニュース",
-)
-
-_ATTACHMENT_INLINE_MAX_BYTES = 1 * 1024 * 1024
-_ATTACHMENT_INLINE_MAX_CHARS_SOFT = 80000
-_ATTACHMENT_INLINE_IMAGE_MAX_BYTES = 12 * 1024 * 1024
-_FOLLOWUP_INLINE_MAX_BYTES = 256 * 1024
-_FOLLOWUP_SEARCH_HINTS = (
-    "上网查",
-    "网上查",
-    "查一下",
-    "搜一下",
-    "再查",
-    "继续查",
-    "帮我查",
-    "帮我搜",
-    "再搜",
-)
-_FOLLOWUP_EXECUTION_ACK_HINTS = (
-    "可以",
-    "可以了",
-    "可以的",
-    "行",
-    "行吧",
-    "好",
-    "好的",
-    "允许",
-    "允许吧",
-    "允许调用工具",
-    "允许用工具",
-    "开始",
-    "开始吧",
-    "开始搜索",
-    "开始查",
-    "开始搜",
-    "开始检索",
-    "继续",
-    "继续吧",
-    "继续执行",
-    "继续搜索",
-    "继续查",
-    "继续搜",
-    "搜吧",
-    "查吧",
-    "写入",
-    "写入吧",
-    "开始写入",
-    "继续写入",
-    "执行写入",
-    "应用",
-    "应用吧",
-    "应用修改",
-    "套用",
-    "替换",
-    "替换吧",
-    "更新",
-    "更新吧",
-    "保存",
-    "保存吧",
-    "落盘",
-    "覆盖写入",
-    "apply",
-    "apply it",
-    "apply changes",
-    "write it",
-    "save it",
-    "update it",
-)
-_FOLLOWUP_REFERENCE_HINTS = (
-    "这个",
-    "这个内容",
-    "这个结果",
-    "这个表",
-    "这张表",
-    "该表",
-    "表格",
-    "这份",
-    "这段",
-    "该段",
-    "这版",
-    "上述",
-    "上面",
-    "前面",
-    "刚才",
-    "刚刚",
-    "上一轮",
-    "上轮",
-    "上一条",
-    "上一版",
-    "上一段",
-    "原文",
-    "命中",
-    "那个",
-    "that",
-    "this",
-    "above",
-    "previous",
-)
-_FOLLOWUP_TRANSFORM_HINTS = (
-    "归纳",
-    "整理",
-    "重整",
-    "重排",
-    "重做",
-    "排版",
-    "表格化",
-    "格式化",
-    "优化格式",
-    "改写",
-    "重写",
-    "润色",
-    "翻译",
-    "译成",
-    "译为",
-    "中文",
-    "英文",
-    "双语",
-    "写进",
-    "写到",
-    "放到",
-    "放进",
-    "改成",
-    "生成版本",
-    "几个版本",
-    "文档",
-    "报告",
-    "邮件",
-    "redmine",
-    "summarize",
-    "rewrite",
-    "polish",
-    "translate",
-    "translation",
-)
-
-_UNDERSTANDING_HINTS = (
-    "总结",
-    "总结下",
-    "概括",
-    "提炼",
-    "整体思路",
-    "整体框架",
-    "整体结构",
-    "整体逻辑",
-    "总体思路",
-    "总体框架",
-    "总体结构",
-    "总览",
-    "整理",
-    "重整",
-    "重排",
-    "表格化",
-    "讲讲",
-    "讲一下",
-    "讲下",
-    "解读",
-    "解释",
-    "说明",
-    "分析",
-    "梳理",
-    "翻译",
-    "转录",
-    "抄录",
-    "识别",
-    "ocr",
-    "原文",
-    "可见文字",
-    "图里",
-    "图片里",
-    "截图里",
-    "看到了什么",
-    "看到什么",
-    "写了什么",
-    "内容是什么",
-    "摘要",
-    "看懂",
-    "说说",
-    "summarize",
-    "summary",
-    "explain",
-    "interpret",
-    "analyze",
-    "analyse",
-    "translate",
-    "overview",
-)
-
-_MEETING_HINTS = (
-    "会议",
-    "例会",
-    "周会",
-    "晨会",
-    "复盘会",
-    "评审会",
-    "讨论会",
-    "meeting",
-    "standup",
-    "retro",
-    "sync",
-    "kickoff",
-    "1:1",
-)
-
-_MEETING_MINUTES_ACTION_HINTS = (
-    "会议纪要",
-    "会议记录",
-    "会议摘要",
-    "会议要点",
-    "会后纪要",
-    "整理纪要",
-    "整理成纪要",
-    "整理会议",
-    "提炼会议",
-    "action item",
-    "action items",
-    "meeting minutes",
-    "meeting notes",
-    "minutes",
-    "记录要点",
-    "待办项",
-    "决议",
-    "下一步",
-)
-
-_INLINE_DOC_CODE_FENCE_HINTS = (
-    "```xml",
-    "```html",
-    "```json",
-    "```yaml",
-    "```yml",
-    "```rss",
-    "```atom",
-)
-
-_INITIAL_CONTENT_TRIAGE_HINTS = (
-    "能理解吗",
-    "能看懂吗",
-    "看得懂吗",
-    "能看明白吗",
-    "帮我看下",
-    "帮我看看",
-    "看下下面",
-    "看一下下面",
-    "帮我读一下",
-    "先看看",
-    "先看下",
-    "can you understand",
-    "can you read",
-    "can you make sense",
-)
 
 class ExecCommandArgs(BaseModel):
     cmd: str = Field(description="Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`")
@@ -408,6 +64,7 @@ class GlobFileSearchArgs(BaseModel):
     path: str = Field(default=".")
     max_results: int = Field(default=200, ge=1, le=500)
 
+
 class ReadSectionArgs(BaseModel):
     path: str
     heading: str
@@ -436,6 +93,7 @@ class SearchCodebaseArgs(BaseModel):
     file_glob: str = ""
     use_regex: bool = False
     case_sensitive: bool = False
+
 
 class ArchiveExtractArgs(BaseModel):
     zip_path: str
@@ -544,7 +202,7 @@ class SessionsHistoryArgs(BaseModel):
 
 
 class VPRuntimeBackend:
-    """App-owned runtime backend for Vintage Programmer."""
+    """Minimal app-owned backend for the active Vintage Programmer runtime."""
 
     def __init__(
         self,
@@ -556,7 +214,7 @@ class VPRuntimeBackend:
     ) -> None:
         self.config = config
         self._host = host
-        self.tools = tool_executor or get_tool_executor(config)
+        self.tools = tool_executor or LocalToolExecutor(config)
         if hasattr(self.tools, "set_image_read_handler"):
             try:
                 self.tools.set_image_read_handler(self._image_read_tool_payload)
@@ -586,9 +244,7 @@ class VPRuntimeBackend:
             for tool in self._lc_tools
             if str(getattr(tool, "name", "") or "").strip()
         }
-        self._lc_tool_map_casefold = {
-            name.lower(): tool for name, tool in self._lc_tool_map.items()
-        }
+        self._lc_tool_map_casefold = {name.lower(): tool for name, tool in self._lc_tool_map.items()}
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
@@ -601,117 +257,9 @@ class VPRuntimeBackend:
     def default_model(self) -> str:
         return str(self.config.default_model or "")
 
-    def _should_retry_worker_tool_result(
-        self,
-        *,
-        tool_name: str,
-        result: dict[str, Any],
-        attempt: int,
-    ) -> tuple[bool, str]:
-        if attempt >= 2:
-            return False, ""
-        if not isinstance(result, dict):
-            return False, ""
-        if bool(result.get("ok", True)):
-            return False, ""
-        error_text = str(result.get("error") or result.get("detail") or "").strip().lower()
-        if not error_text:
-            return False, ""
-        retryable_hints = (
-            "timeout",
-            "timed out",
-            "temporarily unavailable",
-            "temporary failure",
-            "connection reset",
-            "connection aborted",
-            "connection error",
-            "tls verify failed",
-            "service unavailable",
-            "502",
-            "503",
-            "504",
-        )
-        retryable_tools = {
-            "web_fetch",
-            "web_search",
-            "web_download",
-            "exec_command",
-            "read_file",
-            "search_codebase",
-        }
-        if str(tool_name or "").strip() not in retryable_tools:
-            return False, ""
-        if any(hint in error_text for hint in retryable_hints):
-            return True, f"{tool_name} 命中可重试错误，Coordinator 已安排局部重试。"
-        return False, ""
-
     def _ensure_openai_ca_env(self, ca_cert_path: str) -> None:
         os.environ.setdefault("SSL_CERT_FILE", ca_cert_path)
         os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_cert_path)
-
-    def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
-        turns = session.get("turns", [])
-        if len(turns) <= self.config.summary_trigger_turns:
-            return False
-
-        keep = max(2, min(2000, keep_last_turns))
-        older = turns[:-keep]
-        recent = turns[-keep:]
-        if not older:
-            return False
-
-        existing_summary = session.get("summary", "")
-        session["summary"] = self._summarize_turns(existing_summary, older)
-        session["turns"] = recent
-        return True
-
-    def _summarize_turns(self, existing_summary: str, older_turns: list[dict[str, Any]]) -> str:
-        transcript = []
-        if existing_summary:
-            transcript.append(f"已有摘要:\n{existing_summary}\n")
-
-        for turn in older_turns:
-            role = turn.get("role", "user")
-            text = (turn.get("text") or "").strip()
-            if not text:
-                continue
-            transcript.append(f"[{role}] {text}")
-
-        raw = "\n".join(transcript)
-        if not raw.strip():
-            return existing_summary
-
-        try:
-            prompt_messages = [
-                self._SystemMessage(
-                    content=(
-                        "你是会话摘要器。请把历史对话压缩成可供后续继续工作的摘要，"
-                        "要保留目标、关键约束、已完成动作、未完成事项。"
-                    )
-                ),
-                self._HumanMessage(content=raw),
-            ]
-            response = self._invoke_with_405_fallback(
-                messages=prompt_messages,
-                model=self.config.summary_model,
-                max_output_tokens=450,
-                enable_tools=False,
-            )
-            summarized = self._content_to_text(response.content).strip()
-            if summarized:
-                return summarized
-        except Exception:
-            pass
-
-        lines: list[str] = []
-        if existing_summary:
-            lines.append(existing_summary)
-        for turn in older_turns[-20:]:
-            role = turn.get("role", "user")
-            text = (turn.get("text") or "").replace("\n", " ").strip()
-            if text:
-                lines.append(f"[{role}] {text[:220]}")
-        return "\n".join(lines)[:5000]
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         auth = self._auth_manager.require()
@@ -797,15 +345,11 @@ class VPRuntimeBackend:
                 last_exc = exc
                 if not self._is_failover_error(exc):
                     raise
-
                 cooldown_sec = self._mark_model_failure(candidate)
                 notes.append(
-                    f"模型 {candidate} 调用失败（{self._shorten(exc, 220)}），"
-                    f"进入冷却 {cooldown_sec}s，尝试下一个候选模型。"
+                    f"模型 {candidate} 调用失败（{self._shorten(exc, 220)}），进入冷却 {cooldown_sec}s，尝试下一个候选模型。"
                 )
-                continue
 
-        # If every candidate is cooling down, force-try the primary model once.
         if not attempted_any and candidates:
             primary = candidates[0]
             notes.append("所有候选模型均处于冷却状态，强制重试主模型一次。")
@@ -860,7 +404,6 @@ class VPRuntimeBackend:
         event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
-        auth = self._auth_manager.require(allow_refresh=False)
         llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
         runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
@@ -891,21 +434,6 @@ class VPRuntimeBackend:
         if event_cb is not None and hasattr(runner, "invoke_with_events"):
             return runner.invoke_with_events(messages, event_cb=event_cb)
         return runner.invoke(messages)
-
-    def _invoke_with_405_fallback(
-        self,
-        messages: list[Any],
-        model: str,
-        max_output_tokens: int,
-        enable_tools: bool,
-    ) -> Any:
-        response, _, _, _ = self._invoke_chat_with_runner(
-            messages=messages,
-            model=model,
-            max_output_tokens=max_output_tokens,
-            enable_tools=enable_tools,
-        )
-        return response
 
     def _build_model_candidates(self, primary_model: str) -> list[str]:
         candidates: list[str] = []
@@ -966,7 +494,7 @@ class VPRuntimeBackend:
         return int(until - now)
 
     def _build_langchain_tools(self) -> list[Any]:
-        tools = [
+        return [
             self._StructuredTool.from_function(
                 name="exec_command",
                 description="Run a workspace command in host mode and keep a resumable session for follow-up stdin or polling.",
@@ -1142,7 +670,6 @@ class VPRuntimeBackend:
                 func=self._browser_screenshot_tool,
             ),
         ]
-        return tools
 
     def build_langchain_tools(self) -> list[Any]:
         return list(getattr(self, "_lc_tools", None) or self._build_langchain_tools())
@@ -1168,10 +695,8 @@ class VPRuntimeBackend:
             payload = tool.invoke(arguments if isinstance(arguments, dict) else {})
         except Exception as exc:
             return {"ok": False, "error": f"Tool execution failed ({resolved_name}): {exc}"}
-
         if isinstance(payload, dict):
             return payload if "ok" in payload else {"ok": True, "result": payload}
-
         if isinstance(payload, str):
             stripped = payload.strip()
             if stripped.startswith("{") and stripped.endswith("}"):
@@ -1182,10 +707,8 @@ class VPRuntimeBackend:
                 if isinstance(decoded, dict):
                     return decoded
             return {"ok": True, "output": payload}
-
         if isinstance(payload, (int, float, bool)) or payload is None:
             return {"ok": True, "output": payload}
-
         return {"ok": True, "output": str(payload)}
 
     def _execute_tool_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1199,7 +722,6 @@ class VPRuntimeBackend:
             if "not registered in module" in lowered or "unknown tool" in lowered:
                 return self._invoke_langchain_tool_fallback(resolved_name, args)
             return {"ok": False, "error": message or f"Tool execution failed: {resolved_name}"}
-
         if isinstance(result, dict):
             error_text = str(result.get("error") or "").strip().lower()
             if not bool(result.get("ok", True)) and error_text.startswith("unknown tool:"):
@@ -1207,7 +729,6 @@ class VPRuntimeBackend:
                 if bool(fallback.get("ok", False)):
                     return fallback
             return result
-
         return {"ok": True, "output": result}
 
     def _select_langchain_tools(self, tool_names: list[str] | None = None) -> list[Any]:
@@ -1226,42 +747,6 @@ class VPRuntimeBackend:
             selected.append(tool)
         return selected
 
-    def _reviewer_readonly_tool_names(self) -> list[str]:
-        return reviewer_readonly_tool_names_helper()
-
-    def _normalize_reviewer_verdict(
-        self,
-        raw_verdict: Any,
-        *,
-        risks: Any,
-        followups: Any,
-        spec_lookup_request: bool,
-        evidence_required_mode: bool,
-        readonly_checks: list[str],
-        conflict_has_conflict: bool,
-        conflict_realtime_only: bool,
-        web_tools_success: bool,
-        attachment_context_available: bool = False,
-        worker_evidence_available: bool = False,
-    ) -> str:
-        return normalize_reviewer_verdict_helper(
-            self,
-            raw_verdict,
-            risks=risks,
-            followups=followups,
-            spec_lookup_request=spec_lookup_request,
-            evidence_required_mode=evidence_required_mode,
-            readonly_checks=readonly_checks,
-            conflict_has_conflict=conflict_has_conflict,
-            conflict_realtime_only=conflict_realtime_only,
-            web_tools_success=web_tools_success,
-            attachment_context_available=attachment_context_available,
-            worker_evidence_available=worker_evidence_available,
-        )
-
-    def _summarize_reviewer_tool_result(self, *, name: str, result: dict[str, Any]) -> str:
-        return summarize_reviewer_tool_result_helper(self, name=name, result=result)
-
     def _exec_command_tool(
         self,
         cmd: str,
@@ -1270,14 +755,16 @@ class VPRuntimeBackend:
         max_output_chars: int = 12000,
         tty: bool = False,
     ) -> str:
-        result = self.tools.exec_command(
-            cmd=cmd,
-            cwd=cwd,
-            yield_time_ms=yield_time_ms,
-            max_output_chars=max_output_chars,
-            tty=tty,
+        return json.dumps(
+            self.tools.exec_command(
+                cmd=cmd,
+                cwd=cwd,
+                yield_time_ms=yield_time_ms,
+                max_output_chars=max_output_chars,
+                tty=tty,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _write_stdin_tool(
         self,
@@ -1286,52 +773,49 @@ class VPRuntimeBackend:
         yield_time_ms: int = 1000,
         max_output_chars: int = 12000,
     ) -> str:
-        result = self.tools.write_stdin(
-            session_id=session_id,
-            chars=chars,
-            yield_time_ms=yield_time_ms,
-            max_output_chars=max_output_chars,
+        return json.dumps(
+            self.tools.write_stdin(
+                session_id=session_id,
+                chars=chars,
+                yield_time_ms=yield_time_ms,
+                max_output_chars=max_output_chars,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _apply_patch_tool(self, patch: str, cwd: str = ".", check: bool = False) -> str:
-        result = self.tools.apply_patch(patch=patch, cwd=cwd, check=check)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.apply_patch(patch=patch, cwd=cwd, check=check), ensure_ascii=False)
 
     def _read_section_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
-        result = self.tools.read_section(path=path, heading=heading, max_chars=max_chars)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.read_section(path=path, heading=heading, max_chars=max_chars), ensure_ascii=False)
 
     def _table_extract_tool(
         self, path: str, query: str = "", page_hint: int = 0, max_tables: int = 5, max_rows: int = 25
     ) -> str:
-        result = self.tools.table_extract(
-            path=path,
-            query=query,
-            page_hint=page_hint,
-            max_tables=max_tables,
-            max_rows=max_rows,
+        return json.dumps(
+            self.tools.table_extract(
+                path=path,
+                query=query,
+                page_hint=page_hint,
+                max_tables=max_tables,
+                max_rows=max_rows,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _fact_check_file_tool(
         self, path: str, claim: str, queries: list[str] | None = None, max_evidence: int = 6
     ) -> str:
-        result = self.tools.fact_check_file(
-            path=path,
-            claim=claim,
-            queries=queries or [],
-            max_evidence=max_evidence,
+        return json.dumps(
+            self.tools.fact_check_file(path=path, claim=claim, queries=queries or [], max_evidence=max_evidence),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _web_search_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
-        result = self.tools.web_search(query=query, max_results=max_results, timeout_sec=timeout_sec)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.web_search(query=query, max_results=max_results, timeout_sec=timeout_sec), ensure_ascii=False)
 
     def _web_fetch_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
-        result = self.tools.web_fetch(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.web_fetch(url=url, max_chars=max_chars, timeout_sec=timeout_sec), ensure_ascii=False)
 
     def _web_download_tool(
         self,
@@ -1342,27 +826,26 @@ class VPRuntimeBackend:
         timeout_sec: int = 20,
         max_bytes: int = 52428800,
     ) -> str:
-        result = self.tools.web_download(
-            url=url,
-            dst_path=dst_path,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            timeout_sec=timeout_sec,
-            max_bytes=max_bytes,
+        return json.dumps(
+            self.tools.web_download(
+                url=url,
+                dst_path=dst_path,
+                overwrite=overwrite,
+                create_dirs=create_dirs,
+                timeout_sec=timeout_sec,
+                max_bytes=max_bytes,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _sessions_list_tool(self, limit: int = 20) -> str:
-        result = self.tools.sessions_list(limit=limit)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.sessions_list(limit=limit), ensure_ascii=False)
 
     def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
-        result = self.tools.sessions_history(session_id=session_id, max_turns=max_turns)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.sessions_history(session_id=session_id, max_turns=max_turns), ensure_ascii=False)
 
     def _image_inspect_tool(self, path: str) -> str:
-        result = self.tools.image_inspect(path=path)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.image_inspect(path=path), ensure_ascii=False)
 
     def _image_read_tool_payload(
         self,
@@ -1414,15 +897,9 @@ class VPRuntimeBackend:
             "Return JSON only with keys visible_text and analysis. "
             "visible_text must contain the readable text in the image as faithfully as possible, preserving line breaks when useful. "
             "If no readable text is present, use an empty string. "
-            "analysis must briefly describe the relevant visual content without repeating visible_text verbatim. "
-            "Do not claim that you cannot view the image; the image is already attached."
+            "analysis must briefly describe the relevant visual content without repeating visible_text verbatim."
         )
-        user_prompt = str(prompt or "").strip()
-        prompt_text = (
-            user_prompt
-            if user_prompt
-            else "Read the image. Extract visible text and provide a concise analysis of the content."
-        )
+        prompt_text = str(prompt or "").strip() or "Read the image. Extract visible text and provide a concise analysis of the content."
         max_tokens = max(300, min(4096, int(max_output_chars / 3) + 256))
         messages = [
             self._SystemMessage(content=system_text),
@@ -1500,11 +977,6 @@ class VPRuntimeBackend:
             visible_text = ""
             analysis = raw_text
 
-        if len(visible_text) > max_output_chars:
-            visible_text = visible_text[:max_output_chars]
-        if len(analysis) > max_output_chars:
-            analysis = analysis[:max_output_chars]
-
         return {
             "ok": True,
             "path": inspected_path,
@@ -1512,15 +984,14 @@ class VPRuntimeBackend:
             "width": width,
             "height": height,
             "warning": warning_text,
-            "visible_text": visible_text,
-            "analysis": analysis,
+            "visible_text": visible_text[:max_output_chars],
+            "analysis": analysis[:max_output_chars],
             "model_capability_status": "ok",
             "effective_model": effective_model,
         }
 
     def _image_read_tool(self, path: str, prompt: str = "", max_output_chars: int = 12000) -> str:
-        result = self.tools.image_read(path=path, prompt=prompt, max_output_chars=max_output_chars)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.image_read(path=path, prompt=prompt, max_output_chars=max_output_chars), ensure_ascii=False)
 
     def _archive_extract_tool(
         self,
@@ -1531,15 +1002,17 @@ class VPRuntimeBackend:
         max_entries: int = 20000,
         max_total_bytes: int = 524288000,
     ) -> str:
-        result = self.tools.archive_extract(
-            zip_path=zip_path,
-            dst_dir=dst_dir,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            max_entries=max_entries,
-            max_total_bytes=max_total_bytes,
+        return json.dumps(
+            self.tools.archive_extract(
+                zip_path=zip_path,
+                dst_dir=dst_dir,
+                overwrite=overwrite,
+                create_dirs=create_dirs,
+                max_entries=max_entries,
+                max_total_bytes=max_total_bytes,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _mail_extract_attachments_tool(
         self,
@@ -1550,31 +1023,29 @@ class VPRuntimeBackend:
         max_attachments: int = 500,
         max_total_bytes: int = 524288000,
     ) -> str:
-        result = self.tools.mail_extract_attachments(
-            msg_path=msg_path,
-            dst_dir=dst_dir,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            max_attachments=max_attachments,
-            max_total_bytes=max_total_bytes,
+        return json.dumps(
+            self.tools.mail_extract_attachments(
+                msg_path=msg_path,
+                dst_dir=dst_dir,
+                overwrite=overwrite,
+                create_dirs=create_dirs,
+                max_attachments=max_attachments,
+                max_total_bytes=max_total_bytes,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _update_plan_tool(self, plan: list[dict[str, str]], explanation: str = "") -> str:
-        result = self.tools.update_plan(plan=plan, explanation=explanation)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.update_plan(plan=plan, explanation=explanation), ensure_ascii=False)
 
     def _request_user_input_tool(self, questions: list[dict[str, Any]]) -> str:
-        result = self.tools.request_user_input(questions=questions)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.request_user_input(questions=questions), ensure_ascii=False)
 
     def _browser_open_tool(self, url: str, timeout_ms: int = 20000) -> str:
-        result = self.tools.browser_open(url=url, timeout_ms=timeout_ms)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.browser_open(url=url, timeout_ms=timeout_ms), ensure_ascii=False)
 
     def _browser_click_tool(self, selector: str, timeout_ms: int = 12000) -> str:
-        result = self.tools.browser_click(selector=selector, timeout_ms=timeout_ms)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.browser_click(selector=selector, timeout_ms=timeout_ms), ensure_ascii=False)
 
     def _browser_type_tool(
         self,
@@ -1584,39 +1055,31 @@ class VPRuntimeBackend:
         clear: bool = True,
         timeout_ms: int = 12000,
     ) -> str:
-        result = self.tools.browser_type(
-            selector=selector,
-            text=text,
-            submit=submit,
-            clear=clear,
-            timeout_ms=timeout_ms,
+        return json.dumps(
+            self.tools.browser_type(
+                selector=selector,
+                text=text,
+                submit=submit,
+                clear=clear,
+                timeout_ms=timeout_ms,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _browser_wait_tool(self, selector: str = "", timeout_ms: int = 5000, state: str = "visible") -> str:
-        result = self.tools.browser_wait(selector=selector, timeout_ms=timeout_ms, state=state)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.browser_wait(selector=selector, timeout_ms=timeout_ms, state=state), ensure_ascii=False)
 
     def _browser_snapshot_tool(self, max_chars: int = 12000) -> str:
-        result = self.tools.browser_snapshot(max_chars=max_chars)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.browser_snapshot(max_chars=max_chars), ensure_ascii=False)
 
     def _browser_screenshot_tool(self, path: str = "", full_page: bool = True) -> str:
-        result = self.tools.browser_screenshot(path=path, full_page=full_page)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.browser_screenshot(path=path, full_page=full_page), ensure_ascii=False)
 
     def _list_dir_tool(self, path: str = ".", max_entries: int = 200) -> str:
-        result = self.tools.list_dir(path=path, max_entries=max_entries)
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(self.tools.list_dir(path=path, max_entries=max_entries), ensure_ascii=False)
 
-    def _glob_file_search_tool(
-        self,
-        pattern: str,
-        path: str = ".",
-        max_results: int = 200,
-    ) -> str:
-        result = self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results)
-        return json.dumps(result, ensure_ascii=False)
+    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200) -> str:
+        return json.dumps(self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results), ensure_ascii=False)
 
     def _read_file_tool(
         self,
@@ -1626,25 +1089,33 @@ class VPRuntimeBackend:
         start_line: int = 0,
         max_lines: int = 0,
     ) -> str:
-        result = self.tools.read_file(
-            path=path,
-            start_char=start_char,
-            max_chars=max_chars,
-            start_line=start_line,
-            max_lines=max_lines,
+        return json.dumps(
+            self.tools.read_file(
+                path=path,
+                start_char=start_char,
+                max_chars=max_chars,
+                start_line=start_line,
+                max_lines=max_lines,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _search_contents_in_file_tool(
-        self, path: str, query: str, max_matches: int = 8, context_chars: int = 280
+        self,
+        path: str,
+        query: str,
+        max_matches: int = 8,
+        context_chars: int = 280,
     ) -> str:
-        result = self.tools.search_contents_in_file(
-            path=path,
-            query=query,
-            max_matches=max_matches,
-            context_chars=context_chars,
+        return json.dumps(
+            self.tools.search_contents_in_file(
+                path=path,
+                query=query,
+                max_matches=max_matches,
+                context_chars=context_chars,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _search_contents_in_file_multi_tool(
         self,
@@ -1653,13 +1124,15 @@ class VPRuntimeBackend:
         per_query_max_matches: int = 3,
         context_chars: int = 280,
     ) -> str:
-        result = self.tools.search_contents_in_file_multi(
-            path=path,
-            queries=queries,
-            per_query_max_matches=per_query_max_matches,
-            context_chars=context_chars,
+        return json.dumps(
+            self.tools.search_contents_in_file_multi(
+                path=path,
+                queries=queries,
+                per_query_max_matches=per_query_max_matches,
+                context_chars=context_chars,
+            ),
+            ensure_ascii=False,
         )
-        return json.dumps(result, ensure_ascii=False)
 
     def _search_codebase_tool(
         self,
@@ -1683,14 +1156,7 @@ class VPRuntimeBackend:
             base_match_count = int((result or {}).get("match_count") or len((result or {}).get("matches") or []))
         except Exception:
             base_match_count = 0
-        base_ok = bool((result or {}).get("ok"))
-        if (
-            base_ok
-            and base_match_count <= 0
-            and base_root in {"", "."}
-            and not bool(file_glob.strip())
-            and bool(str(query or "").strip())
-        ):
+        if bool((result or {}).get("ok")) and base_match_count <= 0 and base_root in {"", "."} and not bool(file_glob.strip()) and bool(str(query or "").strip()):
             searched_roots: list[str] = [str((result or {}).get("root") or base_root)]
             for candidate in get_access_roots(self.config):
                 candidate_root = str(candidate)
@@ -1722,238 +1188,11 @@ class VPRuntimeBackend:
                 result["searched_roots"] = searched_roots
         return json.dumps(result, ensure_ascii=False)
 
-    def _web_fetch_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
-        result = self.tools.web_fetch(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _web_download_tool(
-        self,
-        url: str,
-        dst_path: str = "",
-        overwrite: bool = True,
-        create_dirs: bool = True,
-        timeout_sec: int = 20,
-        max_bytes: int = 52428800,
-    ) -> str:
-        result = self.tools.web_download(
-            url=url,
-            dst_path=dst_path,
-            overwrite=overwrite,
-            create_dirs=create_dirs,
-            timeout_sec=timeout_sec,
-            max_bytes=max_bytes,
-        )
-        return json.dumps(result, ensure_ascii=False)
-
-    def _web_search_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
-        result = self.tools.web_search(query=query, max_results=max_results, timeout_sec=timeout_sec)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _sessions_list_tool(self, max_sessions: int = 20) -> str:
-        result = self.tools.sessions_list(max_sessions=max_sessions)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
-        result = self.tools.sessions_history(session_id=session_id, max_turns=max_turns)
-        return json.dumps(result, ensure_ascii=False)
-
-    def _build_user_content(
-        self, user_message: str, attachment_metas: list[dict[str, Any]], history_turn_count: int = 0
-    ) -> tuple[list[dict[str, Any]], str, list[str]]:
-        parts: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
-        notes: list[str] = []
-        issues: list[str] = []
-        inline_max_chars = max(2000, min(self.config.max_attachment_chars, _ATTACHMENT_INLINE_MAX_CHARS_SOFT))
-
-        for meta in attachment_metas:
-            name = meta.get("original_name", "file")
-            path = meta.get("path", "")
-            kind = meta.get("kind", "other")
-            mime = meta.get("mime", "application/octet-stream")
-            suffix = str(meta.get("suffix", "") or "").lower()
-            try:
-                file_size = int(meta.get("size") or 0)
-            except Exception:
-                file_size = 0
-            if (not file_size) and path:
-                try:
-                    file_size = Path(path).stat().st_size
-                except Exception:
-                    file_size = 0
-            local_path_line = f"本地路径: {path}\n" if path else ""
-            file_size_line = f"文件大小: {self._format_bytes(file_size)}\n" if file_size > 0 else ""
-            zip_hint_line = (
-                "该文件是 ZIP，若需要解压可调用 archive_extract(zip_path=该路径, dst_dir=目标目录)。\n"
-                if suffix == ".zip"
-                else ""
-            )
-            msg_hint_line = (
-                "该文件是 MSG 邮件；若需读取其中附件（如 xlsx/png），先调用 "
-                "mail_extract_attachments(msg_path=该路径, dst_dir=目标目录)。"
-                "当用户说“完整/全部解释邮件”时，必须执行该步骤，不要跳过。\n"
-                if suffix == ".msg"
-                else ""
-            )
-
-            if kind == "document":
-                if history_turn_count > 0 and file_size > _FOLLOWUP_INLINE_MAX_BYTES:
-                    parts.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
-                                f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_contents_in_file(path=该路径, query=目标关键词)；"
-                                "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
-                                "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文，不要先询问用户。"
-                            ),
-                        }
-                    )
-                    notes.append(f"文档(跟进-路径):{name}")
-                    issues.append(
-                        f"{name} 在跟进轮次仅提供路径（{self._format_bytes(file_size)}），可按需再读，避免重复注入大文本。"
-                    )
-                    continue
-
-                if file_size > _ATTACHMENT_INLINE_MAX_BYTES:
-                    parts.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
-                                f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
-                                "若任务是在规范/协议中定位章节或命令码，先调用 search_contents_in_file(path=该路径, query=目标关键词)；"
-                                "若用户已给出章节/heading，优先调用 read_section(path=该路径, heading=...)；"
-                                "若用户提到表格/opcode 表，优先调用 table_extract(path=该路径, query=...)；"
-                                "随后再用 read_file(path=该路径, start_char=..., max_chars=...) 读取命中上下文后再分析，不要先询问用户。"
-                            ),
-                        }
-                    )
-                    notes.append(f"文档(大文件-路径):{name}")
-                    issues.append(
-                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read_file 分块读取。"
-                    )
-                    continue
-
-                extracted = extract_document_text(path, inline_max_chars)
-                if extracted:
-                    parts.append(
-                        {
-                            "type": "text",
-                            "text": f"\n[附件文档: {name}]\n{local_path_line}{zip_hint_line}{msg_hint_line}{extracted}",
-                        }
-                    )
-                    notes.append(f"文档:{name}")
-                    if extracted.startswith("[文档解析失败:"):
-                        issues.append(f"{name} 文档解析失败，模型只收到错误信息。")
-                else:
-                    try:
-                        preview = summarize_file_payload(path, max_bytes=768, max_text_chars=1200)
-                        parts.append(
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"[附件文档: {name}] 未识别为结构化文本，已附带文件预览。\n"
-                                    f"{local_path_line}{zip_hint_line}{msg_hint_line}{preview}"
-                                ),
-                            }
-                        )
-                        notes.append(f"文档(预览):{name}")
-                        issues.append(f"{name} 未结构化解析，已提供文件预览。")
-                    except Exception as exc:
-                        parts.append({"type": "text", "text": f"[附件文档: {name}] 读取失败: {exc}"})
-                        notes.append(f"文档(失败):{name}")
-                        issues.append(f"{name} 文档读取失败: {exc}")
-            elif kind == "image":
-                try:
-                    data_url, warn = image_to_data_url_with_meta(path, mime)
-                    parts.append({"type": "text", "text": f"[附件图片: {name}]\n{local_path_line}"})
-                    parts.append({"type": "image_url", "image_url": {"url": data_url}})
-                    notes.append(f"图片:{name}")
-                    if warn:
-                        issues.append(f"{name} {warn}")
-                except Exception as exc:
-                    parts.append({"type": "text", "text": f"[附件图片: {name}] 读取失败: {exc}"})
-                    notes.append(f"图片(失败):{name}")
-                    issues.append(f"{name} 图片读取失败: {exc}")
-            else:
-                try:
-                    preview = summarize_file_payload(path, max_bytes=768, max_text_chars=1200)
-                    parts.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"[附件: {name}] 二进制/未知类型，已附带文件预览。\n"
-                                f"{local_path_line}{zip_hint_line}{preview}"
-                            ),
-                        }
-                    )
-                    notes.append(f"其他(预览):{name}")
-                    issues.append(f"{name} 附件类型未知，已提供二进制预览。")
-                except Exception as exc:
-                    parts.append({"type": "text", "text": f"[附件: {name}] 读取失败: {exc}"})
-                    notes.append(f"其他(失败):{name}")
-                    issues.append(f"{name} 附件读取失败: {exc}")
-
-        return parts, "；".join(notes), issues
-
-    def _prepare_tool_result_for_llm(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-        raw_result: Any,
-        raw_json: str,
-    ) -> tuple[str, str | None]:
-        return prepare_tool_result_for_llm_helper(
-            self,
-            name=name,
-            arguments=arguments,
-            raw_result=raw_result,
-            raw_json=raw_json,
-        )
-
-    def _prune_old_tool_messages(self, messages: list[Any]) -> int:
-        keep_last = max(0, int(self.config.tool_context_prune_keep_last))
-        tool_indexes: list[int] = []
-        total_chars = 0
-        for idx, msg in enumerate(messages):
-            if type(msg).__name__ == "ToolMessage":
-                tool_indexes.append(idx)
-                total_chars += len(self._content_to_text(getattr(msg, "content", "")))
-        if total_chars <= int(self.config.tool_result_hard_clear_chars):
-            return 0
-        if len(tool_indexes) <= keep_last:
-            return 0
-
-        pruned = 0
-        candidates = tool_indexes[:-keep_last] if keep_last > 0 else tool_indexes
-        for idx in candidates:
-            msg = messages[idx]
-            content = self._content_to_text(getattr(msg, "content", ""))
-            if "[tool_result_pruned]" in content:
-                continue
-            tool_call_id = str(getattr(msg, "tool_call_id", "") or f"pruned_{idx}")
-            name = str(getattr(msg, "name", "") or "tool")
-            placeholder = {
-                "tool": name,
-                "trimmed": "history_pruned",
-                "note": "Older tool result pruned to control context growth.",
-            }
-            messages[idx] = self._ToolMessage(
-                content=json.dumps(placeholder, ensure_ascii=False),
-                tool_call_id=tool_call_id,
-                name=name,
-            )
-            pruned += 1
-        return pruned
-
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
             return content
         if not isinstance(content, list):
             return str(content or "")
-
         out: list[str] = []
         for item in content:
             if isinstance(item, str):
@@ -1962,7 +1201,6 @@ class VPRuntimeBackend:
             if not isinstance(item, dict):
                 out.append(str(item))
                 continue
-
             item_type = item.get("type")
             if item_type in {"text", "output_text", "input_text"}:
                 text = item.get("text")
@@ -1976,195 +1214,8 @@ class VPRuntimeBackend:
             return raw
         return f"{raw[:limit]}\n...[truncated {len(raw) - limit} chars]"
 
-    def _format_bytes(self, value: int | float | None) -> str:
-        try:
-            size = float(value or 0)
-        except Exception:
-            return "0 B"
-        if size <= 0:
-            return "0 B"
-        units = ["B", "KiB", "MiB", "GiB", "TiB"]
-        idx = 0
-        while size >= 1024 and idx < len(units) - 1:
-            size /= 1024.0
-            idx += 1
-        if idx == 0:
-            return f"{int(size)} {units[idx]}"
-        return f"{size:.2f} {units[idx]}"
-
-    def _looks_like_spec_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        return looks_like_spec_lookup_request_helper(self, user_message, attachment_metas)
-
-    def _looks_like_table_reformat_request(self, text: str) -> bool:
-        return looks_like_table_reformat_request_helper(text)
-
-    def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        return requires_evidence_mode_helper(self, user_message, attachment_metas)
-
-    def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:
-        return attachment_needs_tooling_helper(meta, _ATTACHMENT_INLINE_MAX_BYTES)
-
-    def _attachment_needs_tooling_for_turn(self, meta: dict[str, Any], history_turn_count: int = 0) -> bool:
-        return attachment_needs_tooling_for_turn_helper(
-            self,
-            meta,
-            history_turn_count=history_turn_count,
-            followup_inline_max_bytes=_FOLLOWUP_INLINE_MAX_BYTES,
-        )
-
-    def _evidence_mode_needs_more_support(
-        self,
-        ai_msg: Any,
-        tool_events: list[ToolEvent],
-        spec_lookup_request: bool = False,
-    ) -> bool:
-        return evidence_mode_needs_more_support_helper(self, ai_msg, tool_events, spec_lookup_request)
-
-    def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        return request_likely_requires_tools_helper(
-            self,
-            user_message,
-            attachment_metas,
-            news_hints=_NEWS_HINTS,
-        )
-
-    def _looks_like_permission_gate_text(
-        self,
-        text: str,
-        *,
-        has_attachments: bool = False,
-        request_requires_tools: bool = False,
-    ) -> bool:
-        return looks_like_permission_gate_text_helper(
-            text,
-            has_attachments=has_attachments,
-            request_requires_tools=request_requires_tools,
-        )
-
-    def _looks_like_permission_gate(
-        self,
-        ai_msg: Any,
-        has_attachments: bool = False,
-        request_requires_tools: bool = False,
-    ) -> bool:
-        text = self._content_to_text(getattr(ai_msg, "content", ""))
-        return self._looks_like_permission_gate_text(
-            text,
-            has_attachments=has_attachments,
-            request_requires_tools=request_requires_tools,
-        )
-
-    def _summarize_message_roles(self, messages: list[Any]) -> str:
-        counts: dict[str, int] = {}
-        for msg in messages:
-            role = type(msg).__name__
-            counts[role] = counts.get(role, 0) + 1
-        parts = [f"{k}={v}" for k, v in sorted(counts.items())]
-        return ", ".join(parts) if parts else "(empty)"
-
-    def _serialize_messages_for_debug(self, messages: list[Any], raw_mode: bool = False) -> str:
-        lines: list[str] = []
-        max_content = 120000 if raw_mode else 1600
-        for idx, msg in enumerate(messages, start=1):
-            role = type(msg).__name__
-            content = getattr(msg, "content", "")
-            lines.append(f"msg {idx} | {role}")
-            rendered = self._shorten(self._serialize_content_for_debug(content, raw_mode=raw_mode), max_content)
-            lines.append(self._indent_block(rendered, prefix="  "))
-            lines.append("")
-        return "\n".join(lines).strip()
-
-    def _serialize_content_for_debug(self, content: Any, raw_mode: bool = False) -> str:
-        if isinstance(content, str):
-            return content
-        if not isinstance(content, list):
-            return str(content or "")
-
-        lines: list[str] = []
-        for idx, item in enumerate(content, start=1):
-            if isinstance(item, str):
-                lines.append(f"part {idx} | {item}")
-                continue
-            if not isinstance(item, dict):
-                lines.append(f"part {idx} | {str(item)}")
-                continue
-
-            item_type = item.get("type")
-            if item_type == "image_url":
-                image_url = item.get("image_url") or {}
-                url = image_url.get("url") if isinstance(image_url, dict) else ""
-                if isinstance(url, str) and url.startswith("data:"):
-                    if raw_mode:
-                        preview = self._shorten(url, 1200)
-                        lines.append(f"part {idx} | image_url(data_url_len={len(url)}) preview={preview}")
-                    else:
-                        lines.append(f"part {idx} | image_url(data_url_len={len(url)}) [omitted]")
-                else:
-                    lines.append(f"part {idx} | {json.dumps(item, ensure_ascii=False, default=str)}")
-                continue
-
-            lines.append(f"part {idx} | {json.dumps(item, ensure_ascii=False, default=str)}")
-        return "\n".join(lines)
-
-    def _summarize_ai_response(self, ai_msg: Any, raw_mode: bool = False) -> str:
-        if raw_mode:
-            payload = {
-                "tool_calls": getattr(ai_msg, "tool_calls", None),
-                "content": getattr(ai_msg, "content", None),
-                "additional_kwargs": getattr(ai_msg, "additional_kwargs", None),
-            }
-            return self._shorten(json.dumps(payload, ensure_ascii=False, default=str), 120000)
-
-        lines: list[str] = []
-        tool_calls = getattr(ai_msg, "tool_calls", None) or []
-        if tool_calls:
-            lines.append(f"tool_calls={len(tool_calls)}")
-            for idx, call in enumerate(tool_calls, start=1):
-                name = call.get("name") or "unknown"
-                args = call.get("args") or {}
-                if not isinstance(args, dict):
-                    args = {}
-                lines.append(
-                    f"call {idx} | {name}(args={self._shorten(json.dumps(args, ensure_ascii=False), 600)})"
-                )
-
-        text = self._content_to_text(getattr(ai_msg, "content", ""))
-        if text.strip():
-            lines.append(f"text_preview={self._shorten(text, 1200)}")
-
-        if not lines:
-            lines.append("empty response content")
-        return "\n".join(lines)
-
-    def _indent_block(self, text: Any, prefix: str = "  ") -> str:
-        raw = str(text or "")
-        if not raw:
-            return ""
-        return "\n".join(f"{prefix}{line}" if line else prefix.rstrip() for line in raw.splitlines())
-
-    def _serialize_tool_message_for_debug(
-        self,
-        name: str,
-        tool_call_id: str,
-        content: str,
-        raw_mode: bool = False,
-    ) -> str:
-        payload: dict[str, Any] = {
-            "name": name,
-            "tool_call_id": tool_call_id,
-            "payload_chars": len(content),
-            "content": content,
-        }
-        limit = 120000 if raw_mode else 2400
-        return self._shorten(json.dumps(payload, ensure_ascii=False), limit)
-
     def _empty_usage(self) -> dict[str, int]:
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "llm_calls": 0,
-        }
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "llm_calls": 0}
 
     def _merge_usage(self, base: dict[str, int], extra: dict[str, int]) -> dict[str, int]:
         merged = dict(base)
@@ -2176,15 +1227,11 @@ class VPRuntimeBackend:
 
     def _extract_usage_from_message(self, message: Any) -> dict[str, int]:
         usage = self._empty_usage()
-
         usage_metadata = getattr(message, "usage_metadata", None)
         if isinstance(usage_metadata, dict):
             usage["input_tokens"] = int(usage_metadata.get("input_tokens") or usage_metadata.get("prompt_tokens") or 0)
-            usage["output_tokens"] = int(
-                usage_metadata.get("output_tokens") or usage_metadata.get("completion_tokens") or 0
-            )
+            usage["output_tokens"] = int(usage_metadata.get("output_tokens") or usage_metadata.get("completion_tokens") or 0)
             usage["total_tokens"] = int(usage_metadata.get("total_tokens") or 0)
-
         response_metadata = getattr(message, "response_metadata", None)
         if isinstance(response_metadata, dict):
             token_usage = response_metadata.get("token_usage")
@@ -2192,22 +1239,15 @@ class VPRuntimeBackend:
                 if usage["input_tokens"] <= 0:
                     usage["input_tokens"] = int(token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0)
                 if usage["output_tokens"] <= 0:
-                    usage["output_tokens"] = int(
-                        token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
-                    )
+                    usage["output_tokens"] = int(token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0)
                 if usage["total_tokens"] <= 0:
                     usage["total_tokens"] = int(token_usage.get("total_tokens") or 0)
-
         if usage["total_tokens"] <= 0:
             usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-
         usage["llm_calls"] = 1 if (usage["input_tokens"] > 0 or usage["output_tokens"] > 0 or usage["total_tokens"] > 0) else 0
         return usage
 
     def _normalize_base_url(self, raw_url: str) -> str:
-        """
-        Accept either base URL (..../v1) or full endpoint URL (..../v1/chat/completions).
-        """
         url = raw_url.strip().strip("\"'").rstrip("/")
         parsed = urlparse(url)
         path = parsed.path or ""
@@ -2217,8 +1257,52 @@ class VPRuntimeBackend:
             if lowered.endswith(suffix):
                 path = path[: -len(suffix)] + ("/v1" if suffix.startswith("/v1/") else "")
                 break
-        normalized = urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
-        return normalized
+        return urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
+
+    @staticmethod
+    def _parse_json_object(text: str) -> dict[str, Any] | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _parse_loose_object_literal(text: str) -> dict[str, Any] | None:
+        raw = str(text or "")
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _looks_like_image_capability_denial(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        hints = (
+            "cannot view the image",
+            "can't view the image",
+            "cannot access the image",
+            "can't access the image",
+            "unable to view the image",
+            "unable to access the image",
+            "i can't see the image",
+            "i cannot see the image",
+            "image input is not supported",
+            "do not support image input",
+        )
+        return any(hint in lowered for hint in hints)
 
     def _is_failover_error(self, exc: Exception) -> bool:
         text = str(exc).lower()

@@ -978,7 +978,6 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 - `agents/vintage_programmer/agent.md`
 - `agents/vintage_programmer/tools.md`
 - `app/vp_runtime_backend.py`
-- `app/vp_support/review_support.py`
 
 ### 待确认点
 

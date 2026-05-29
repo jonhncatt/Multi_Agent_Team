@@ -66,7 +66,6 @@ from app.tool_trace_summary import (
 )
 from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
-from app.vp_support.intent_support import has_image_attachments as has_image_attachments_helper
 from app.vp_runtime_backend import create_vp_runtime_backend
 
 
@@ -103,6 +102,10 @@ _DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
 _DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
+
+
+def _has_image_attachments(attachment_metas: list[dict[str, Any]]) -> bool:
+    return any(str(meta.get("kind") or "").strip().lower() == "image" for meta in attachment_metas)
 
 
 def default_loop_safeguards() -> dict[str, Any]:
@@ -1194,7 +1197,6 @@ class VintageProgrammerRuntime:
             source_refs=source_refs,
             project_root=str(result.get("project_root") or ""),
             cwd=str(result.get("cwd") or ""),
-            module_group=group,
         )
 
     @staticmethod
@@ -2747,7 +2749,7 @@ class VintageProgrammerRuntime:
             if isinstance(item, dict)
         ]
         attachment_guidance = build_attachment_tool_guidance(attachment_metas, locale=locale)
-        has_image_attachments = has_image_attachments_helper(attachment_metas)
+        has_image_attachments = _has_image_attachments(attachment_metas)
         with phase_timer.measure("agent_spec_load_ms"):
             spec = self._load_spec(locale=locale)
         with phase_timer.measure("skills_load_ms"):
