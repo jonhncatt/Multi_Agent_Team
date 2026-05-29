@@ -19,9 +19,9 @@ Current stable release: `v3.1.4c`
 
 ## Stable Runtime
 
-v3.1.4c is a cleanup release focused on the VP runtime harness. It removes the legacy `packages/` modular runtime path and keeps the active runtime app-owned.
+v3.1.4c is a cleanup release focused on the VP runtime harness. It removes the legacy `packages/` modular runtime path and keeps the active runtime in a cleaner app-owned harness.
 
-Compared with v3.1.4b, this release removes the legacy `packages/` dependency chain and moves the VP-required backend, intent, review, role, and tool wiring into `app/`.
+Compared with v3.1.4b, this release removes the legacy `packages/` dependency chain and drops the old modular runtime compatibility layer; only app-owned harness code that still directly serves the current VP runtime remains.
 
 ## Max Output Tokens
 

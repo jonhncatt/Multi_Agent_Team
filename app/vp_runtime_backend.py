@@ -10,7 +10,7 @@ import threading
 import time
 from uuid import uuid4
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
@@ -115,9 +115,6 @@ from app.vp_support.router_hints import (
 )
 from app.router_signals import RouterSignalExtractor
 from app.action_validator import ActionValidator, build_runtime_boundary, validation_observation
-
-if TYPE_CHECKING:
-    from app.vp_support.blackboard import Blackboard
 from app.vp_support.intent_support import (
     attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
     attachment_needs_tooling as attachment_needs_tooling_helper,
@@ -453,12 +450,6 @@ class RoutePipelineResult:
     trace: RouteTrace
 
 
-class RunShellArgs(BaseModel):
-    command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
-    cwd: str = Field(default=".", description="Working directory relative to workspace")
-    timeout_sec: int = Field(default=15, ge=1, le=120)
-
-
 class ExecCommandArgs(BaseModel):
     cmd: str = Field(description="Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`")
     cwd: str = Field(default=".", description="Working directory relative to workspace")
@@ -474,43 +465,27 @@ class WriteStdinArgs(BaseModel):
     max_output_chars: int = Field(default=12000, ge=256, le=60000)
 
 
-class ReadArgs(BaseModel):
-    path: str = "."
+class ReadFileArgs(BaseModel):
+    path: str
     start_char: int = Field(default=0, ge=0)
     max_chars: int = Field(default=200000, ge=128, le=1000000)
     start_line: int = Field(default=0, ge=0)
     max_lines: int = Field(default=0, ge=0, le=200000)
-    max_entries: int = Field(default=200, ge=1, le=500)
 
 
-class ListDirectoryArgs(BaseModel):
+class ListDirArgs(BaseModel):
     path: str = Field(default=".")
     max_entries: int = Field(default=200, ge=1, le=500)
 
 
-class ReadTextFileArgs(BaseModel):
-    path: str
-    start_char: int = Field(default=0, ge=0)
-    max_chars: int = Field(default=200000, ge=128, le=1000000)
-    start_line: int = Field(default=0, ge=0)
-    max_lines: int = Field(default=0, ge=0, le=200000)
-
-
-class SearchTextInFileArgs(BaseModel):
+class SearchContentsInFileArgs(BaseModel):
     path: str
     query: str
     max_matches: int = Field(default=8, ge=1, le=20)
     context_chars: int = Field(default=280, ge=40, le=2000)
 
 
-class SearchFileArgs(BaseModel):
-    path: str
-    query: str
-    max_matches: int = Field(default=8, ge=1, le=20)
-    context_chars: int = Field(default=280, ge=40, le=2000)
-
-
-class SearchFileMultiArgs(BaseModel):
+class SearchContentsInFileMultiArgs(BaseModel):
     path: str
     queries: list[str]
     per_query_max_matches: int = Field(default=3, ge=1, le=10)
@@ -521,26 +496,6 @@ class GlobFileSearchArgs(BaseModel):
     pattern: str
     path: str = Field(default=".")
     max_results: int = Field(default=200, ge=1, le=500)
-
-
-class MultiQuerySearchArgs(BaseModel):
-    path: str
-    queries: list[str]
-    per_query_max_matches: int = Field(default=3, ge=1, le=10)
-    context_chars: int = Field(default=280, ge=40, le=2000)
-
-
-class DocIndexBuildArgs(BaseModel):
-    path: str
-    force_rebuild: bool = False
-    max_headings: int = Field(default=400, ge=20, le=2000)
-
-
-class ReadSectionByHeadingArgs(BaseModel):
-    path: str
-    heading: str
-    max_chars: int = Field(default=12000, ge=512, le=50000)
-
 
 class ReadSectionArgs(BaseModel):
     path: str
@@ -571,32 +526,6 @@ class SearchCodebaseArgs(BaseModel):
     use_regex: bool = False
     case_sensitive: bool = False
 
-
-class CopyFileArgs(BaseModel):
-    src_path: str
-    dst_path: str
-    overwrite: bool = True
-    create_dirs: bool = True
-
-
-class ExtractZipArgs(BaseModel):
-    zip_path: str
-    dst_dir: str = Field(default="", description="Destination directory. Empty means sibling folder next to zip file.")
-    overwrite: bool = True
-    create_dirs: bool = True
-    max_entries: int = Field(default=20000, ge=1, le=100000)
-    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
-
-
-class ExtractMsgAttachmentsArgs(BaseModel):
-    msg_path: str
-    dst_dir: str = Field(default="", description="Destination directory. Empty means <msg_stem>_attachments.")
-    overwrite: bool = True
-    create_dirs: bool = True
-    max_attachments: int = Field(default=500, ge=1, le=5000)
-    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
-
-
 class ArchiveExtractArgs(BaseModel):
     zip_path: str
     dst_dir: str = Field(default="", description="Destination directory. Empty means sibling folder next to zip file.")
@@ -615,44 +544,7 @@ class MailExtractAttachmentsArgs(BaseModel):
     max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
 
 
-class WriteTextFileArgs(BaseModel):
-    path: str
-    content: str
-    overwrite: bool = True
-    create_dirs: bool = True
-
-
-class AppendTextFileArgs(BaseModel):
-    path: str
-    content: str
-    create_if_missing: bool = True
-    create_dirs: bool = True
-
-
-class ReplaceInFileArgs(BaseModel):
-    path: str
-    old_text: str
-    new_text: str
-    replace_all: bool = False
-    max_replacements: int = Field(default=1, ge=1, le=200)
-
-
-class FetchWebArgs(BaseModel):
-    url: str
-    max_chars: int = Field(default=120000, ge=512, le=500000)
-    timeout_sec: int = Field(default=12, ge=3, le=30)
-
-
-class DownloadWebFileArgs(BaseModel):
-    url: str
-    dst_path: str = Field(default="", description="Destination path. Empty means auto-save to downloads/<filename>.")
-    overwrite: bool = True
-    create_dirs: bool = True
-    timeout_sec: int = Field(default=20, ge=3, le=120)
-    max_bytes: int = Field(default=52428800, ge=1024, le=209715200)
-
-
-class SearchWebArgs(BaseModel):
+class WebSearchArgs(BaseModel):
     query: str
     max_results: int = Field(default=5, ge=1, le=20)
     timeout_sec: int = Field(default=12, ge=3, le=30)
@@ -677,10 +569,6 @@ class ApplyPatchArgs(BaseModel):
     patch: str
     cwd: str = "."
     check: bool = False
-
-
-class ViewImageArgs(BaseModel):
-    path: str
 
 
 class ImageInspectArgs(BaseModel):
@@ -744,35 +632,6 @@ class SessionsHistoryArgs(BaseModel):
     max_turns: int = Field(default=80, ge=1, le=800)
 
 
-class ListSessionsArgs(BaseModel):
-    max_sessions: int = Field(default=20, ge=1, le=200)
-
-
-class ReadSessionHistoryArgs(BaseModel):
-    session_id: str
-    max_turns: int = Field(default=80, ge=1, le=800)
-
-
-class KernelRuntimeStatusArgs(BaseModel):
-    include_roles: bool = True
-    include_runtime_files: bool = False
-
-
-class KernelShadowPipelineToolArgs(BaseModel):
-    smoke_message: str = "给我今天的新闻"
-    validate_provider: bool = True
-    promote_if_healthy: bool = False
-
-
-class KernelShadowSelfUpgradeToolArgs(BaseModel):
-    smoke_message: str = "给我今天的新闻"
-    validate_provider: bool = True
-    max_attempts: int = Field(default=1, ge=1, le=5)
-    max_tasks: int = Field(default=1, ge=1, le=10)
-    max_rounds: int = Field(default=2, ge=1, le=5)
-    promote_if_healthy: bool = True
-
-
 class VPRuntimeBackend:
     """App-owned runtime backend for Vintage Programmer."""
 
@@ -781,19 +640,11 @@ class VPRuntimeBackend:
         config: AppConfig,
         *,
         kernel_runtime: Any | None = None,
-        capability_runtime: Any | None = None,
         tool_executor: Any | None = None,
         host: Any | None = None,
-        selected_agent_module_id: str = "",
-        selected_tool_module_id: str = "",
     ) -> None:
         self.config = config
         self._host = host
-        _ = capability_runtime
-        self._selected_agent_module_id = str(selected_agent_module_id or "vp_runtime_backend").strip()
-        self._selected_tool_module_id = str(selected_tool_module_id or "vp_tools").strip()
-        self._selected_output_module_id = ""
-        self._selected_memory_module_id = ""
         self.tools = tool_executor or get_tool_executor(config)
         if hasattr(self.tools, "set_image_read_handler"):
             try:
@@ -801,12 +652,6 @@ class VPRuntimeBackend:
             except Exception:
                 pass
         self._auth_manager = OpenAIAuthManager(config)
-        self._product_profile_key = (
-            str(
-                os.environ.get("VP_APP_PROFILE") or ""
-            ).strip().lower()
-            or "kernel_robot"
-        )
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -846,94 +691,6 @@ class VPRuntimeBackend:
 
     def default_model(self) -> str:
         return str(self.config.default_model or "")
-
-    def _should_role_lab_parallelize_specialist(
-        self,
-        specialist: str,
-        *,
-        route: dict[str, Any],
-        attachment_metas: list[dict[str, Any]],
-    ) -> bool:
-        if self._product_profile_key != "role_agent_lab":
-            return False
-        if str(specialist or "").strip().lower() != "file_reader":
-            return False
-        if len(attachment_metas) < 2:
-            return False
-        task_type = str(route.get("task_type") or "").strip().lower()
-        return task_type in {"attachment_tooling", "evidence_lookup", "simple_understanding"}
-
-    def _merge_specialist_batch_results(
-        self,
-        *,
-        specialist: str,
-        contexts: list[RoleContext],
-        results: list[RoleResult],
-    ) -> RoleResult:
-        if not results:
-            fallback = self._specialist_fallback(
-                specialist=specialist,
-                requested_model=self.config.default_model,
-                attachment_metas=[],
-                initial_triage_request=False,
-            )
-            return self._make_default_role_result(
-                specialist,
-                payload=fallback,
-                requested_model=self.config.default_model,
-                user_message="",
-                description="batched specialist fallback",
-                output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-                raw_text="{}",
-            )
-        base_context = contexts[0]
-        attachment_names = [
-            str(((ctx.attachment_metas or [{}])[0] or {}).get("original_name") or ((ctx.attachment_metas or [{}])[0] or {}).get("name") or f"attachment-{idx+1}")
-            for idx, ctx in enumerate(contexts)
-        ]
-        bullets: list[str] = []
-        worker_hints: list[str] = []
-        queries: list[str] = []
-        stop_rules: list[str] = []
-        notes: list[str] = []
-        usage = self._empty_usage()
-        effective_model = ""
-        for idx, result in enumerate(results):
-            name = attachment_names[idx] if idx < len(attachment_names) else f"attachment-{idx+1}"
-            summary = str(result.payload.get("summary") or result.summary or "").strip()
-            if summary:
-                bullets.append(f"{name}: {summary}")
-            bullets.extend(
-                [f"{name}: {item}" for item in self._normalize_string_list(result.payload.get("bullets") or [], limit=3, item_limit=160)]
-            )
-            worker_hint = str(result.payload.get("worker_hint") or "").strip()
-            if worker_hint:
-                worker_hints.append(f"{name}: {worker_hint}")
-            queries.extend(self._normalize_string_list(result.payload.get("queries") or [], limit=3, item_limit=80))
-            stop_rules.extend(self._normalize_string_list(result.payload.get("stop_rules") or [], limit=3, item_limit=120))
-            notes.extend(list(result.notes or []))
-            usage = self._merge_usage(usage, result.usage or self._empty_usage())
-            if not effective_model:
-                effective_model = str(result.effective_model or "").strip()
-        payload = {
-            "role": specialist,
-            "summary": f"{_SPECIALIST_LABELS.get(specialist, specialist)} 已为 {len(results)} 个附件生成并行子简报。",
-            "bullets": self._normalize_string_list(bullets, limit=8, item_limit=180),
-            "worker_hint": "；".join(self._normalize_string_list(worker_hints, limit=4, item_limit=220)),
-            "queries": self._normalize_string_list(queries, limit=6, item_limit=80),
-            "scope": f"batched_{specialist}_parallel_read",
-            "stop_rules": self._normalize_string_list(stop_rules, limit=4, item_limit=120),
-            "usage": usage,
-            "effective_model": effective_model or base_context.requested_model,
-            "notes": notes,
-        }
-        raw_text = json.dumps([item.payload for item in results], ensure_ascii=False)
-        spec = self._make_role_spec(
-            specialist,
-            description=f"{_SPECIALIST_LABELS.get(specialist, specialist)} 并行子任务聚合结果。",
-            output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-        )
-        return self._make_role_result(spec, base_context, payload, raw_text)
 
     def _should_retry_worker_tool_result(
         self,
@@ -978,20 +735,6 @@ class VPRuntimeBackend:
         if any(hint in error_text for hint in retryable_hints):
             return True, f"{tool_name} 命中可重试错误，Coordinator 已安排局部重试。"
         return False, ""
-
-    def _record_module_failure(
-        self,
-        *,
-        kind: str,
-        requested_ref: str,
-        fallback_ref: str = "",
-        error: str,
-        mode: str | None = None,
-    ) -> None:
-        _ = (kind, requested_ref, fallback_ref, error, mode)
-
-    def _record_module_success(self, *, kind: str, selected_ref: str, mode: str | None = None) -> None:
-        _ = (kind, selected_ref, mode)
 
     def _ensure_openai_ca_env(self, ca_cert_path: str) -> None:
         os.environ.setdefault("SSL_CERT_FILE", ca_cert_path)
@@ -1071,7 +814,6 @@ class VPRuntimeBackend:
         session_id: str | None = None,
         route_state: dict[str, Any] | None = None,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
-        blackboard: Blackboard | None = None,
     ) -> tuple[
         str,
         list[ToolEvent],
@@ -1197,25 +939,7 @@ class VPRuntimeBackend:
 
         def add_tool_event(event: ToolEvent) -> None:
             tool_events.append(event)
-            if blackboard is not None:
-                blackboard.record_tool_event(event)
             emit_progress("tool_event", item=dump_model(event))
-
-        def sync_blackboard_state(*, reason: str = "") -> None:
-            if blackboard is None:
-                return
-            blackboard.set_route_state(route)
-            blackboard.set_execution_plan(execution_plan)
-            blackboard.set_active_modules(
-                [
-                    self._selected_agent_module_id,
-                    self._selected_tool_module_id,
-                    self._selected_output_module_id,
-                    self._selected_memory_module_id,
-                    *list((blackboard.tool_module_usage or {}).keys()),
-                ],
-                reason=reason,
-            )
 
         def emit_agent_state() -> None:
             emit_progress(
@@ -1717,7 +1441,6 @@ class VPRuntimeBackend:
             add_trace=add_trace,
             add_debug=add_debug,
         )
-        sync_blackboard_state(reason="route_resolved")
         run_state = RunState.create(
             run_id=f"run_{int(time.time() * 1000)}_{os.getpid()}",
             session_id=str(session_id or ""),
@@ -1761,7 +1484,6 @@ class VPRuntimeBackend:
             settings=settings,
             route=route,
         )
-        sync_blackboard_state(reason="execution_plan_initialized")
         add_trace(
             "Router 分诊完成: "
             f"task_type={route.get('task_type')}, complexity={route.get('complexity')}, source={route.get('source')}。"
@@ -1880,7 +1602,6 @@ class VPRuntimeBackend:
             planner_plan = self._normalize_string_list(planner_result.payload.get("plan") or [], limit=8, item_limit=160)
             if planner_plan:
                 execution_plan[:] = planner_plan
-                sync_blackboard_state(reason="planner_plan_updated")
             planner_summary = planner_result.summary or "已生成目标摘要。"
             planner_bullets = (
                 self._normalize_string_list(planner_result.payload.get("constraints") or [], limit=3, item_limit=180)
@@ -1900,7 +1621,6 @@ class VPRuntimeBackend:
             planner_execution_plan = planner_hook["execution_plan"]
             if planner_execution_plan:
                 execution_plan[:] = planner_execution_plan
-                sync_blackboard_state(reason="planner_hook_plan_updated")
             self._apply_pipeline_hook_effects(
                 hook_payload=planner_hook,
                 messages=messages,
@@ -1942,68 +1662,16 @@ class VPRuntimeBackend:
                 route=route,
                 user_content=user_content,
             )
-            if self._should_role_lab_parallelize_specialist(
-                specialist,
-                route=route,
-                attachment_metas=attachment_metas,
-            ) and run_state is not None:
-                batch_contexts: list[RoleContext] = []
-                batch_metas: list[dict[str, Any]] = []
-                for attachment_index, attachment_meta in enumerate(attachment_metas[:4], start=1):
-                    batch_contexts.append(
-                        self._make_role_context(
-                            specialist,
-                            requested_model=requested_model,
-                            user_message=user_message,
-                            effective_user_message=planner_user_message,
-                            history_summary=summary,
-                            attachment_metas=[attachment_meta],
-                            route=route,
-                            user_content=user_content,
-                            extra={"batch_slot": attachment_index},
-                        )
-                    )
-                    batch_metas.append(
-                        {
-                            "specialist": specialist,
-                            "attachment_id": str(attachment_meta.get("id") or ""),
-                            "attachment_name": str(attachment_meta.get("original_name") or attachment_meta.get("name") or ""),
-                            "batch_slot": attachment_index,
-                        }
-                    )
-                specialist_executions = self._role_runtime_controller.execute_batch(
-                    agent=self,
-                    role=specialist,
-                    contexts=batch_contexts,
-                    run_state=run_state,
-                    parent_node_id=coordinator_node_id or run_state.root_node_id,
-                    phase="specialist_parallel_brief",
-                    metas=batch_metas,
-                    max_workers=min(4, len(batch_contexts)),
-                )
-                specialist_results = [execution.result for execution in specialist_executions if execution.result is not None]
-                specialist_result = self._merge_specialist_batch_results(
-                    specialist=specialist,
-                    contexts=batch_contexts,
-                    results=specialist_results,
-                )
-                specialist_node_id = ",".join(
-                    [execution.node_id for execution in specialist_executions if execution.node_id]
-                )
-                add_trace(
-                    f"Stage 4 试点: {specialist_label} 已为 {len(specialist_results)} 个附件并行生成子简报。"
-                )
-            else:
-                specialist_execution = self._execute_registered_role(
-                    role=specialist,
-                    context=specialist_context,
-                    run_state=run_state,
-                    parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                    phase="specialist_brief",
-                    meta={"specialist": specialist},
-                )
-                specialist_result = specialist_execution.result or self._run_specialist_with_context(context=specialist_context)
-                specialist_node_id = specialist_execution.node_id
+            specialist_execution = self._execute_registered_role(
+                role=specialist,
+                context=specialist_context,
+                run_state=run_state,
+                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                phase="specialist_brief",
+                meta={"specialist": specialist},
+            )
+            specialist_result = specialist_execution.result or self._run_specialist_with_context(context=specialist_context)
+            specialist_node_id = specialist_execution.node_id
             specialist_brief = specialist_result.payload
             specialist_raw = specialist_result.raw_text
             specialist_model = str(specialist_result.effective_model or "").strip()
@@ -2408,7 +2076,6 @@ class VPRuntimeBackend:
                     settings=settings,
                     route=route,
                 )
-                sync_blackboard_state(reason="tool_mode_escalated_from_bare_tool_call")
                 add_panel(
                     "router",
                     "Router",
@@ -2516,7 +2183,6 @@ class VPRuntimeBackend:
                         settings=settings,
                         route=route,
                     )
-                    sync_blackboard_state(reason="tool_mode_escalated_from_worker_request")
                     add_panel(
                         "router",
                         "Router",
@@ -2797,7 +2463,6 @@ class VPRuntimeBackend:
                                 settings=settings,
                                 route=route,
                             )
-                            sync_blackboard_state(reason="tool_mode_escalated_from_permission_gate")
                             add_panel(
                                 "router",
                                 "Router",
@@ -7323,13 +6988,13 @@ class VPRuntimeBackend:
             self._StructuredTool.from_function(
                 name="read_file",
                 description="Read one local file. Supports chunked reads and document/PDF text extraction for large formats.",
-                args_schema=ReadTextFileArgs,
+                args_schema=ReadFileArgs,
                 func=self._read_file_tool,
             ),
             self._StructuredTool.from_function(
                 name="list_dir",
                 description="List files and directories under one local directory path without reading file contents.",
-                args_schema=ListDirectoryArgs,
+                args_schema=ListDirArgs,
                 func=self._list_dir_tool,
             ),
             self._StructuredTool.from_function(
@@ -7341,13 +7006,13 @@ class VPRuntimeBackend:
             self._StructuredTool.from_function(
                 name="search_contents_in_file",
                 description="Search text inside one known local file or extracted document text and return evidence snippets with read hints.",
-                args_schema=SearchTextInFileArgs,
+                args_schema=SearchContentsInFileArgs,
                 func=self._search_contents_in_file_tool,
             ),
             self._StructuredTool.from_function(
                 name="search_contents_in_file_multi",
                 description="Run multiple search queries against one known local file or extracted document text and merge the evidence snippets.",
-                args_schema=SearchFileMultiArgs,
+                args_schema=SearchContentsInFileMultiArgs,
                 func=self._search_contents_in_file_multi_tool,
             ),
             self._StructuredTool.from_function(
@@ -7358,7 +7023,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="table_extract",
-                description="Extract table-like rows from a local PDF, spreadsheet, or office document.",
+                description="Extract table-like rows from a local PDF, spreadsheet, or document.",
                 args_schema=TableExtractArgs,
                 func=self._table_extract_tool,
             ),
@@ -7377,7 +7042,7 @@ class VPRuntimeBackend:
             self._StructuredTool.from_function(
                 name="web_search",
                 description="Search the web by query and return candidate URLs/snippets.",
-                args_schema=SearchWebArgs,
+                args_schema=WebSearchArgs,
                 func=self._web_search_tool,
             ),
             self._StructuredTool.from_function(
@@ -8591,20 +8256,14 @@ def create_vp_runtime_backend(
     config: Any,
     *,
     kernel_runtime: Any | None = None,
-    capability_runtime: Any | None = None,
     tool_executor: Any | None = None,
     host: Any | None = None,
-    selected_agent_module_id: str = "vp_runtime_backend",
-    selected_tool_module_id: str = "vp_tools",
 ) -> VPRuntimeBackend:
     return VPRuntimeBackend(
         config,
         kernel_runtime=kernel_runtime,
-        capability_runtime=capability_runtime,
         tool_executor=tool_executor,
         host=host,
-        selected_agent_module_id=selected_agent_module_id,
-        selected_tool_module_id=selected_tool_module_id,
     )
 
 

@@ -20,10 +20,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description: str,
         handler: RoleHandler | None,
         executable: bool,
-        controller_backed: bool,
-        multi_instance_ready: bool,
-        supports_parent_child: bool,
-        runtime_profiles: tuple[str, ...] = (),
     ) -> None:
         registry.register(
             RegisteredRole(
@@ -33,10 +29,6 @@ def build_vp_role_registry() -> RoleRegistry:
                 description=description,
                 handler=handler,
                 executable=executable,
-                controller_backed=controller_backed,
-                multi_instance_ready=multi_instance_ready,
-                supports_parent_child=supports_parent_child,
-                runtime_profiles=runtime_profiles,
             )
         )
 
@@ -46,9 +38,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="规则与可选 LLM 路由入口。",
         handler=None,
         executable=False,
-        controller_backed=True,
-        multi_instance_ready=False,
-        supports_parent_child=False,
     )
     _register(
         "coordinator",
@@ -56,9 +45,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="运行时状态机与调度处理器。",
         handler=None,
         executable=False,
-        controller_backed=True,
-        multi_instance_ready=False,
-        supports_parent_child=True,
     )
     _register(
         "worker",
@@ -66,10 +52,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="主任务执行与工具循环。",
         handler=None,
         executable=False,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("explainer", "evidence", "patch_worker"),
     )
     _register(
         "planner",
@@ -77,10 +59,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="提炼目标、限制与执行计划。",
         handler=run_planner_role,
         executable=True,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("explainer", "evidence", "patch_worker"),
     )
     for specialist, title in SPECIALIST_LABELS.items():
         _register(
@@ -89,10 +67,6 @@ def build_vp_role_registry() -> RoleRegistry:
             description=f"{title} 专门简报角色。",
             handler=run_specialist_with_context,
             executable=True,
-            controller_backed=True,
-            multi_instance_ready=True,
-            supports_parent_child=True,
-            runtime_profiles=("explainer", "evidence", "patch_worker"),
         )
     _register(
         "conflict_detector",
@@ -100,10 +74,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="通识与工程知识冲突报警。",
         handler=run_conflict_detector_role,
         executable=True,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("evidence",),
     )
     _register(
         "reviewer",
@@ -111,10 +81,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="覆盖度、证据链和交付风险审阅。",
         handler=run_reviewer_role,
         executable=True,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("evidence",),
     )
     _register(
         "revision",
@@ -122,10 +88,6 @@ def build_vp_role_registry() -> RoleRegistry:
         description="按审阅结论修订答复。",
         handler=run_revision_role,
         executable=True,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("explainer", "evidence"),
     )
     _register(
         "structurer",
@@ -133,9 +95,5 @@ def build_vp_role_registry() -> RoleRegistry:
         description="整理结构化证据包与 assertions。",
         handler=run_structurer_role,
         executable=True,
-        controller_backed=True,
-        multi_instance_ready=True,
-        supports_parent_child=True,
-        runtime_profiles=("evidence",),
     )
     return registry

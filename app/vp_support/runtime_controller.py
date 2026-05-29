@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 from typing import Any
 
@@ -60,11 +59,7 @@ class RoleRuntimeController:
 
         node_id = ""
         instance_id = ""
-        merged_meta = {
-            "role_title": registered.title,
-            "runtime_profiles": list(registered.runtime_profiles),
-            **dict(meta or {}),
-        }
+        merged_meta = dict(meta or {})
         if run_state is not None:
             node_id = self._next_node_id(run_state, role)
             parent_id = parent_node_id or run_state.root_node_id
@@ -141,13 +136,9 @@ class RoleRuntimeController:
         meta: dict[str, Any] | None = None,
     ) -> RoleExecution:
         registered = self.registry.require(role)
-        if not registered.controller_backed:
-            raise RuntimeError(f"role {role} is not controller-backed")
         node_id = self._next_node_id(run_state, role)
         parent_id = parent_node_id or run_state.root_node_id
         merged_meta = {
-            "role_title": registered.title,
-            "runtime_profiles": list(registered.runtime_profiles),
             "execution_mode": "managed",
             **dict(meta or {}),
         }
@@ -278,53 +269,6 @@ class RoleRuntimeController:
             )
             self.capture_run_state(run_state)
 
-    def execute_batch(
-        self,
-        *,
-        agent: Any,
-        role: str,
-        contexts: list[RoleContext],
-        run_state: RunState,
-        parent_node_id: str | None = None,
-        phase: str = "",
-        tool_mode: str = "",
-        metas: list[dict[str, Any]] | None = None,
-        max_workers: int = 4,
-        handler_kwargs_list: list[dict[str, Any] | None] | None = None,
-    ) -> list[RoleExecution]:
-        if not contexts:
-            return []
-        jobs: list[tuple[int, RoleContext, dict[str, Any] | None, dict[str, Any] | None]] = []
-        for idx, context in enumerate(contexts):
-            job_meta = (metas[idx] if metas and idx < len(metas) else None) or {}
-            job_kwargs = (handler_kwargs_list[idx] if handler_kwargs_list and idx < len(handler_kwargs_list) else None) or {}
-            jobs.append((idx, context, job_meta, job_kwargs))
-
-        results: list[RoleExecution] = [RoleExecution(role=role) for _ in jobs]
-
-        def _run(job: tuple[int, RoleContext, dict[str, Any] | None, dict[str, Any] | None]) -> tuple[int, RoleExecution]:
-            idx, context, job_meta, job_kwargs = job
-            execution = self.execute(
-                agent=agent,
-                role=role,
-                context=context,
-                run_state=run_state,
-                parent_node_id=parent_node_id,
-                phase=phase,
-                tool_mode=tool_mode,
-                meta=job_meta,
-                handler_kwargs=job_kwargs,
-            )
-            return idx, execution
-
-        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(jobs)))) as pool:
-            futures = [pool.submit(_run, job) for job in jobs]
-            for future in as_completed(futures):
-                idx, execution = future.result()
-                results[idx] = execution
-        self.capture_run_state(run_state)
-        return results
-
     def capture_run_state(
         self,
         run_state: RunState,
@@ -371,30 +315,3 @@ class RoleRuntimeController:
         }
         self._last_run_snapshot = snapshot
         return snapshot
-
-    def stage4_readiness(self) -> dict[str, Any]:
-        registry_snapshot = self.registry.snapshot()
-        executable_roles = list(registry_snapshot.get("executable_roles") or [])
-        controller_backed_roles = list(registry_snapshot.get("controller_backed_roles") or [])
-        multi_instance_roles = list(registry_snapshot.get("multi_instance_ready_roles") or [])
-        parent_child_roles = list(registry_snapshot.get("parent_child_ready_roles") or [])
-        controller_gaps = list(registry_snapshot.get("controller_gaps") or [])
-        ready_for_trial = bool({"planner", "researcher", "file_reader"} & set(executable_roles)) and bool(multi_instance_roles)
-        full_controller_coverage = not bool(controller_gaps)
-        return {
-            "ready_for_stage4_trial": ready_for_trial,
-            "full_controller_coverage": full_controller_coverage,
-            "executable_role_count": len(executable_roles),
-            "controller_backed_role_count": len(controller_backed_roles),
-            "multi_instance_role_count": len(multi_instance_roles),
-            "parent_child_role_count": len(parent_child_roles),
-            "controller_gaps": controller_gaps,
-            "next_focus": "worker runtime abstraction" if "worker" in controller_gaps else "pilot multi-instance batch",
-        }
-
-    def runtime_snapshot(self) -> dict[str, Any]:
-        return {
-            "registry": self.registry.snapshot(),
-            "stage4_readiness": self.stage4_readiness(),
-            "last_run": dict(self._last_run_snapshot),
-        }

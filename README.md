@@ -19,9 +19,9 @@
 
 ## Stable Runtime
 
-v3.1.4c 是一个面向 VP runtime harness 的清理版本，用来移除遗留的 `packages/` 模块架构，并把当前运行时收口为 app-owned harness。canonical 29-tool surface 保持不变。
+v3.1.4c 是一个面向 VP runtime harness 的清理版本，用来移除遗留的 `packages/` 模块架构，并把当前运行时收口为更干净的 app-owned harness。canonical 29-tool surface 保持不变。
 
-相对 v3.1.4b，本版本删除旧的 `packages/` 依赖链，把 VP 当前仍需的 backend / intent / review / role / tool wiring 迁入 `app/`，不再通过 legacy modular package runtime 启动。
+相对 v3.1.4b，本版本删除旧的 `packages/` 依赖链，不再保留旧 modular runtime 兼容层；当前 VP 仅保留仍然直接服务主运行时的 app-owned harness 代码。
 
 ## Max Output Tokens
 

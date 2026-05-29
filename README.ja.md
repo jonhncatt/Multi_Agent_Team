@@ -19,9 +19,9 @@
 
 ## Stable Runtime
 
-v3.1.4c は、VP runtime harness を app-owned に整理するためのクリーンアップリリースです。legacy `packages/` modular runtime 依存を外し、canonical 29-tool surface はそのまま維持します。
+v3.1.4c は、VP runtime harness をよりクリーンな app-owned 形に整理するためのクリーンアップリリースです。legacy `packages/` modular runtime 依存を外し、canonical 29-tool surface はそのまま維持します。
 
-v3.1.4b と比べて、legacy `packages/` 依存鎖を削除し、現在の VP が必要とする backend、intent、review、role、tool wiring を `app/` に移しました。
+v3.1.4b と比べて、legacy `packages/` 依存鎖を削除し、旧 modular runtime の互換レイヤーは残していません。現在の VP runtime に直接必要な app-owned harness コードだけを残しています。
 
 ## Max Output Tokens
 
