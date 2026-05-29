@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4b-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4c-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `v3.1.4b`
+現在の安定版: `v3.1.4c`
 
 ## Stable Runtime
 
-v3.1.4b は、model-led `web_search` に向けた整理リリースです。`web_search` 内部の news/baseball/RSS intent routing を取り除き、canonical 29-tool surface はそのまま維持します。
+v3.1.4c は、VP runtime harness をよりクリーンな app-owned 形に整理するためのクリーンアップリリースです。legacy `packages/` modular runtime 依存を外し、canonical 29-tool surface はそのまま維持します。
 
-v3.1.4a と比べて、何を検索するかはモデルが決め、`web_search` は汎用検索だけを実行します。Google News、MLB、ESPN、Yahoo、NHK の RSS 経路への内部切り替えや、野球向けの静的フォールバックリンクは返しません。
+v3.1.4b と比べて、legacy `packages/` 依存鎖を削除し、旧 modular runtime の互換レイヤーは残していません。現在の VP runtime に直接必要な app-owned harness コードだけを残しています。
 
 ## Max Output Tokens
 

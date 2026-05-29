@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4b-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4c-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `v3.1.4b`
+Current stable release: `v3.1.4c`
 
 ## Stable Runtime
 
-v3.1.4b is a cleanup release focused on model-led `web_search`. It removes internal news/baseball/RSS intent routing while keeping the canonical 29-tool surface unchanged.
+v3.1.4c is a cleanup release focused on the VP runtime harness. It removes the legacy `packages/` modular runtime path and keeps the active runtime in a cleaner app-owned harness.
 
-Compared with v3.1.4a, the model now decides what to search and `web_search` stays a general search tool. It no longer switches internally to Google News, MLB, ESPN, Yahoo, or NHK RSS paths, and it no longer returns baseball-specific static fallback links.
+Compared with v3.1.4b, this release removes the legacy `packages/` dependency chain and drops the old modular runtime compatibility layer; only app-owned harness code that still directly serves the current VP runtime remains.
 
 ## Max Output Tokens
 

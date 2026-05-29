@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from app.config import load_config
+from app.local_tools import LocalToolExecutor
 from app.tool_metadata import TOOL_METADATA, get_tool_metadata, metadata_missing_names
 from app.vintage_programmer_runtime import _READ_ONLY_TOOL_NAMES
-from packages.office_modules.tools import get_tool_executor
 
 
 _ALLOWED_GROUPS = {
@@ -26,7 +26,7 @@ _REQUIRE_KEYS = {"workspace_read", "workspace_write", "shell", "network", "brows
 
 def _registered_tool_names() -> list[str]:
     config = load_config()
-    executor = get_tool_executor(config)
+    executor = LocalToolExecutor(config)
     return [str(item.get("name") or "") for item in executor.tool_specs if str(item.get("name") or "")]
 
 

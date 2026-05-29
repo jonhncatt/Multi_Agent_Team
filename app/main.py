@@ -19,7 +19,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.attachment_evidence import build_attachment_evidence_pack
-from app.chat_product_runtime import ChatProductRuntime
 from app.config import AppConfig, build_provider_config, list_provider_profiles, load_config, normalize_llm_provider_name, normalize_permission_profile
 from app.context_meter import (
     build_compaction_status,
@@ -30,7 +29,6 @@ from app.context_meter import (
     maybe_auto_compact_session,
 )
 from app.context_pack import ContextManager, classify_assistant_output
-from app.evolution import EvolutionStore
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
     AppStatusResponse,
@@ -89,7 +87,7 @@ from app.runtime_boundary import build_turn_runtime_boundary
 from app.runtime_contract import build_full_auto_runtime_contract
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
-from app.storage import ProjectStore, SessionStore, ShadowLogStore, TokenStatsStore, UploadStore
+from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
 from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
@@ -102,9 +100,6 @@ project_store = ProjectStore(config.projects_registry_path, default_root=config.
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
-shadow_log_store = ShadowLogStore(config.shadow_logs_dir)
-evolution_store = EvolutionStore(config.overlay_profile_path, config.evolution_logs_dir)
-chat_product_runtime = ChatProductRuntime(config)
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     agent_dir=AGENT_DIR,
@@ -113,7 +108,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.4b"
+APP_VERSION = "3.1.4c"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -248,15 +243,23 @@ def get_project_store() -> ProjectStore:
     return project_store
 
 
-def get_evolution_store() -> EvolutionStore:
-    return evolution_store
-
-
-def get_chat_product_runtime() -> ChatProductRuntime:
-    return chat_product_runtime
-
 def get_vintage_programmer_runtime() -> VintageProgrammerRuntime:
     return vintage_programmer_runtime
+
+
+def get_tool_executor() -> Any:
+    return get_vintage_programmer_runtime()._backend.tools
+
+
+def _runtime_meta_payload() -> dict[str, Any]:
+    tools = get_tool_executor()
+    docker_ok, docker_msg = tools.docker_status()
+    ocr_payload = tools.ocr_status() if hasattr(tools, "ocr_status") else {}
+    return {
+        "docker_available": bool(docker_ok),
+        "docker_message": str(docker_msg or ""),
+        "ocr_status": dict(ocr_payload or {}),
+    }
 
 
 def _register_active_chat_run(run_id: str) -> threading.Event:
@@ -750,7 +753,7 @@ def _runtime_provider_payload(*, include_runtime: bool = True, refresh_provider:
         provider_payload = _get_provider_payload(refresh=refresh_provider)
     with timer.measure("runtime_status_runtime_meta_ms"):
         runtime_meta = (
-            get_chat_product_runtime().runtime_meta()
+            _runtime_meta_payload()
             if include_runtime
             else {
                 "docker_available": False,
@@ -1219,7 +1222,7 @@ def _append_drill_step(
 def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
     run_id = str(uuid.uuid4())
     execution_mode = _resolve_execution_mode(req.execution_mode)
-    tools = get_chat_product_runtime().tool_executor
+    tools = get_tool_executor()
     docker_ok, docker_msg = tools.docker_status()
     steps: list[SandboxDrillStep] = []
     failed = 0
@@ -2248,7 +2251,7 @@ def _process_chat_request(
         tool_hits = [
             {
                 "name": str(item.get("name") or ""),
-                "group": str(item.get("group") or item.get("module_group") or ""),
+                "group": str(item.get("group") or ""),
                 "status": str(item.get("status") or ""),
             }
             for item in tool_events
@@ -2449,73 +2452,7 @@ def _process_chat_request(
             detail=translate(locale, "chat.token_stats_updated"),
             run_id=run_id,
         )
-        try:
-            evolution_event = get_evolution_store().record_turn(
-                session_id=session["id"],
-                user_message=req.message,
-                assistant_text=final_answer or text,
-                route_state=route_state,
-                answer_bundle=answer_bundle,
-                attachment_context_mode=attachment_context_mode,
-                attachment_count=len(resolved_attachment_ids),
-                settings=dump_model(req.settings),
-                effective_model=selected_model,
-                turn_count=len(session.get("turns", [])),
-            )
-            evolution_terms = list(evolution_event.get("domain_terms") or [])
-            evolution_note = translate(
-                locale,
-                "chat.overlay_updated",
-                overlay_path=(
-                    f"intent={evolution_event.get('primary_intent') or 'standard'}"
-                    + (f", terms={', '.join(evolution_terms[:3])}" if evolution_terms else "")
-                ),
-            )
-            inspector_notes.append(evolution_note)
-            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
-        except Exception as exc:
-            evolution_note = translate(locale, "chat.overlay_update_failed", error=exc)
-            inspector_notes.append(evolution_note)
-            _emit_progress(progress_cb, "trace", message=evolution_note, run_id=run_id)
         inspector["notes"] = inspector_notes
-        if config.enable_shadow_logging:
-            shadow_path = shadow_log_store.append(
-                {
-                    "run_id": run_id,
-                    "agent_id": "vintage_programmer",
-                    "session_id": session["id"],
-                    "effective_model": selected_model,
-                    "project_id": str(session.get("project_id") or ""),
-                    "project_root": str(session.get("project_root") or ""),
-                    "cwd": str(session.get("cwd") or ""),
-                    "attachment_context_mode": attachment_context_mode,
-                    "attachment_context_key": resolved_attachment_context_key,
-                    "effective_attachment_ids": resolved_attachment_ids,
-                    "auto_linked_attachment_ids": [item for item in auto_linked_attachment_ids if item in found_attachment_ids],
-                    "missing_attachment_ids": missing_attachment_ids,
-                    "route_state_scope": route_state_scope,
-                    "route_state_input": route_state_input or {},
-                    "route_state": route_state or {},
-                    "tool_events_count": len(tool_events),
-                    "tool_events": tool_events,
-                    "token_usage": token_usage,
-                    "inspector": inspector,
-                    "message": req.message,
-                    "settings": dump_model(req.settings),
-                    "summary_before": summary_before,
-                    "history_turns_before": history_turns_before,
-                    "attachment_metas": attachments,
-                    "attachment_evidence_pack": attachment_evidence_pack,
-                    "message_preview": req.message[:500],
-                    "response_preview": text[:500],
-                }
-            )
-            _emit_progress(
-                progress_cb,
-                "trace",
-                message=translate(locale, "chat.shadow_log_written", name=shadow_path.name),
-                run_id=run_id,
-            )
         tool_event_models = [
             item if isinstance(item, ToolEvent) else ToolEvent(**item)
             for item in tool_events

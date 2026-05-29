@@ -1813,7 +1813,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   const latestHarness = latestHarnessPayload && latestHarnessPayload.payload && typeof latestHarnessPayload.payload === "object"
     ? latestHarnessPayload.payload
     : {};
-  const inspectorRunState = inspector && inspector.run_state && typeof inspector.run_state === "object"
+  const inspectorRuntimeState = inspector && inspector.run_state && typeof inspector.run_state === "object"
     ? inspector.run_state
     : {};
   const runtimeError = Object.keys(item.runtime_error || {}).some((key) => {
@@ -1821,15 +1821,15 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
     return value !== "" && value !== null && value !== 0;
   })
     ? item.runtime_error
-    : normalizeRuntimeErrorPayload(inspectorRunState.runtime_error);
-  const sentToModel = inspectorRunState.model_context && typeof inspectorRunState.model_context === "object"
-    ? inspectorRunState.model_context
+    : normalizeRuntimeErrorPayload(inspectorRuntimeState.runtime_error);
+  const sentToModel = inspectorRuntimeState.model_context && typeof inspectorRuntimeState.model_context === "object"
+    ? inspectorRuntimeState.model_context
     : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
-  const runtimeBoundary = inspectorRunState.runtime_boundary && typeof inspectorRunState.runtime_boundary === "object"
-    ? inspectorRunState.runtime_boundary
+  const runtimeBoundary = inspectorRuntimeState.runtime_boundary && typeof inspectorRuntimeState.runtime_boundary === "object"
+    ? inspectorRuntimeState.runtime_boundary
     : {};
-  const explicitBoundaryModelView = inspectorRunState.runtime_boundary_model_view && typeof inspectorRunState.runtime_boundary_model_view === "object"
-    ? inspectorRunState.runtime_boundary_model_view
+  const explicitBoundaryModelView = inspectorRuntimeState.runtime_boundary_model_view && typeof inspectorRuntimeState.runtime_boundary_model_view === "object"
+    ? inspectorRuntimeState.runtime_boundary_model_view
     : {};
   const boundaryModelView = Object.keys(explicitBoundaryModelView).length
     ? explicitBoundaryModelView
@@ -1848,7 +1848,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       model: latestHarness.model || "",
       provider: latestHarness.provider || "",
       attachments_count: Number(latestHarness.attachments_count || latestHarness.attachment_count || 0) || 0,
-      permission_profile: latestHarness.permission_profile || inspectorRunState.permission_profile || "",
+      permission_profile: latestHarness.permission_profile || inspectorRuntimeState.permission_profile || "",
     },
     model_rounds: modelRounds,
     tool_groups: toolGroups.map((group) => ({
@@ -1866,7 +1866,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
     harness: {
       permission_profile:
         latestHarness.permission_profile
-        || inspectorRunState.permission_profile
+        || inspectorRuntimeState.permission_profile
         || modelPermissions.profile
         || boundaryModelView.permission_profile
         || "",
@@ -1886,7 +1886,7 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       turn_status: latestHarness.turn_status || item.status,
       last_successful_round: Number(runtimeError.last_successful_round || 0) || 0,
       failed_round: Number(runtimeError.failed_round || 0) || 0,
-      context_version: Number(inspectorRunState.context_version || 0) || 0,
+      context_version: Number(inspectorRuntimeState.context_version || 0) || 0,
       run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
       token_usage: latestHarness.token_usage || latestHarness.usage || {},
     },
@@ -2033,8 +2033,8 @@ function latestAssistantActivity(messages) {
   return normalizeMessageActivity({});
 }
 
-function runtimeToolTimelineForStats({ hasLiveRunState, liveToolTimeline, inspectorToolTimeline, fallbackToolTimeline }) {
-  if (hasLiveRunState) {
+function runtimeToolTimelineForStats({ hasLiveRuntimeState, liveToolTimeline, inspectorToolTimeline, fallbackToolTimeline }) {
+  if (hasLiveRuntimeState) {
     return Array.isArray(liveToolTimeline) ? liveToolTimeline : [];
   }
   if (Array.isArray(inspectorToolTimeline) && inspectorToolTimeline.length) {
@@ -2065,7 +2065,7 @@ function buildRuntimeStatsSummary({
   activeTurnStatus,
   messages,
   activityClockMs,
-  hasLiveRunState,
+  hasLiveRuntimeState,
   liveToolTimeline,
   inspectorToolTimeline,
   fallbackToolTimeline,
@@ -2091,7 +2091,7 @@ function buildRuntimeStatsSummary({
     : ((workspaceBoundary.model_view && typeof workspaceBoundary.model_view === "object") ? workspaceBoundary.model_view : {});
   const activity = latestAssistantActivity(messages);
   const toolTimeline = runtimeToolTimelineForStats({
-    hasLiveRunState,
+    hasLiveRuntimeState,
     liveToolTimeline,
     inspectorToolTimeline,
     fallbackToolTimeline,
@@ -2107,7 +2107,7 @@ function buildRuntimeStatsSummary({
   }
   const latestTool = toolTimeline.length
     ? (
-      hasLiveRunState
+      hasLiveRuntimeState
         ? toolTimeline[0]
         : toolTimeline[toolTimeline.length - 1]
     )
@@ -2509,7 +2509,7 @@ function createInitialAppState() {
     threadIndex: {
       threads: [],
       currentThreadId: "",
-      sessionRunState: {},
+      sessionRuntimeState: {},
       loading: false,
     },
     items: {
@@ -2715,7 +2715,7 @@ function App() {
   const projectId = appState.projectIndex.currentProjectId;
   const sessions = appState.threadIndex.threads;
   const sessionId = appState.threadIndex.currentThreadId;
-  const sessionRunState = appState.threadIndex.sessionRunState;
+  const sessionRuntimeState = appState.threadIndex.sessionRuntimeState;
   const messages = appState.items.messages;
   const [draft, setDraft] = useState("");
   const sending = Boolean(appState.activeTurn.sending);
@@ -2797,7 +2797,7 @@ function App() {
     if (typeof value !== "function") activeSessionIdRef.current = String(value || "");
     dispatch({ type: "update", path: ["threadIndex", "currentThreadId"], value });
   };
-  const setSessionRunState = (value) => dispatch({ type: "update", path: ["threadIndex", "sessionRunState"], value });
+  const setSessionRuntimeState = (value) => dispatch({ type: "update", path: ["threadIndex", "sessionRuntimeState"], value });
   const setMessages = (value) => dispatch({ type: "update", path: ["items", "messages"], value });
   const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
   const setLoadingSession = (value) => dispatch({ type: "update", path: ["threadIndex", "loading"], value });
@@ -3387,7 +3387,7 @@ function App() {
     return {
       detail,
       messages: extractSessionMessages(detail),
-      sessionRunState: (detail && detail.agent_state) || {},
+      sessionRuntimeState: (detail && detail.agent_state) || {},
       cachedAt: Date.now(),
     };
   }
@@ -3410,7 +3410,7 @@ function App() {
     const key = threadCacheKey(threadId);
     resetItemDomain();
     setMessages(snapshot.messages || []);
-    setSessionRunState(snapshot.sessionRunState || {});
+    setSessionRuntimeState(snapshot.sessionRuntimeState || {});
     if (snapshot.detail) {
       updateThreadStatus(key, String(snapshot.detail.status || "idle"));
     }
@@ -3677,7 +3677,7 @@ function App() {
     setProjectId(targetProjectId);
     setSessionId("");
     resetItemDomain();
-    setSessionRunState({});
+    setSessionRuntimeState({});
     clearLiveRunUi();
     setStageTimeline([]);
     setMobileThreadsOpen(false);
@@ -3801,7 +3801,7 @@ function App() {
     const previousSnapshot = {
       sessionId,
       messages,
-      sessionRunState,
+      sessionRuntimeState,
     };
     const projectRecord = projects.find((item) => String(item.project_id || "") === resolvedTargetProjectId) || currentProject || null;
     const nowIso = new Date().toISOString();
@@ -3818,7 +3818,7 @@ function App() {
     setSessionId(tempId);
     resetItemDomain();
     setMessages([]);
-    setSessionRunState({});
+    setSessionRuntimeState({});
     clearLiveRunUi();
     clearUiError();
     closeProjectMenu();
@@ -3877,7 +3877,7 @@ function App() {
         if (activeSessionIdRef.current === tempId && options.restoreOnFailure !== false) {
           setSessionId(previousSnapshot.sessionId || "");
           setMessages(previousSnapshot.messages || []);
-          setSessionRunState(previousSnapshot.sessionRunState || {});
+          setSessionRuntimeState(previousSnapshot.sessionRuntimeState || {});
         }
         throw err;
       } finally {
@@ -3912,7 +3912,7 @@ function App() {
     } else {
       resetItemDomain();
       setMessages([]);
-      setSessionRunState({});
+      setSessionRuntimeState({});
     }
     try {
       const data = normalizeThreadDetailPayload(await fetchJson(
@@ -3967,7 +3967,7 @@ function App() {
         threadDetailCacheRef.current.set(sid, {
           detail: data,
           messages: merged,
-          sessionRunState: (data && data.agent_state) || sessionRunState || {},
+          sessionRuntimeState: (data && data.agent_state) || sessionRuntimeState || {},
           cachedAt: Date.now(),
         });
         while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
@@ -3976,7 +3976,7 @@ function App() {
         }
         return merged;
       });
-      setSessionRunState((data && data.agent_state) || sessionRunState || {});
+      setSessionRuntimeState((data && data.agent_state) || sessionRuntimeState || {});
       updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
     } catch (err) {
       const nextError = applyUiError(err, t("errors.load_thread_failed"));
@@ -4022,7 +4022,7 @@ function App() {
           window.localStorage.removeItem(storageKey);
           setSessionId("");
           resetItemDomain();
-          setSessionRunState({});
+          setSessionRuntimeState({});
           clearLiveRunUi();
         }
       } else {
@@ -4066,7 +4066,7 @@ function App() {
         window.localStorage.removeItem(PROJECT_STORAGE_KEY);
         setSessionId("");
         resetItemDomain();
-        setSessionRunState({});
+        setSessionRuntimeState({});
         setLogs([]);
         clearLiveRunUi();
         const nextProjectId =
@@ -4419,7 +4419,7 @@ function App() {
               ? { ...prev, context_meter: snapshot.context_meter }
               : prev
           ));
-          setSessionRunState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
+          setSessionRuntimeState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
         }
         if (snapshot.compaction_status && typeof snapshot.compaction_status === "object") {
           setHealth((prev) => (
@@ -4427,7 +4427,7 @@ function App() {
               ? { ...prev, compaction_status: snapshot.compaction_status }
               : prev
           ));
-          setSessionRunState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
+          setSessionRuntimeState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
         }
       };
       const recordToolItem = (item) => {
@@ -4580,7 +4580,7 @@ function App() {
             } else if (event === "turn/plan/updated") {
               const nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
               applySnapshot({ plan: nextPlan });
-              setSessionRunState((prev) => ({
+              setSessionRuntimeState((prev) => ({
                 ...(prev || {}),
                 permission_profile: normalizePermissionProfile((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "auto"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
@@ -4671,7 +4671,7 @@ function App() {
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 });
-                setSessionRunState((prev) => ({
+                setSessionRuntimeState((prev) => ({
                   ...(prev || {}),
                   permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
@@ -4759,7 +4759,7 @@ function App() {
             }
           : prev
       ));
-      setSessionRunState({
+      setSessionRuntimeState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
         ...(finalPayload.inspector || {}).session,
@@ -4957,11 +4957,11 @@ function App() {
       ? health.agent.loaded_skills
       : [];
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
-  const completedRunState = lastInspector.run_state || {};
+  const completedRuntimeState = lastInspector.run_state || {};
   const completedEvidence = lastInspector.evidence || {};
-  const hasLiveRunState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
-  const runState = hasLiveRunState ? liveTurnState : completedRunState;
-  const evidence = hasLiveRunState ? liveEvidence : completedEvidence;
+  const hasLiveRuntimeState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
+  const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
+  const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
   const modelContextForRun = (
     runState.model_context && typeof runState.model_context === "object"
   )
@@ -4971,8 +4971,8 @@ function App() {
   const modelContextWorkspace = modelContextForRun.workspace && typeof modelContextForRun.workspace === "object" ? modelContextForRun.workspace : {};
   const modelContextMemory = modelContextForRun.memory && typeof modelContextForRun.memory === "object" ? modelContextForRun.memory : {};
   const activeTaskCheckpoint = {
-    goal: String(modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRunState.goal || ""),
-    cwd: String(modelContextWorkspace.cwd || runState.cwd || sessionRunState.cwd || ""),
+    goal: String(modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRuntimeState.goal || ""),
+    cwd: String(modelContextWorkspace.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
     next_action: String(modelContextTask.next_action || modelContextTask.current_step || ""),
     active_files: Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : [],
     active_attachments: [],
@@ -4983,7 +4983,7 @@ function App() {
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
   const activePermissionProfile = normalizePermissionProfile(
-    (hasLiveRunState ? runState.permission_profile : "")
+    (hasLiveRuntimeState ? runState.permission_profile : "")
     || selectedPermissionProfile
     || "auto",
   );
@@ -4992,20 +4992,20 @@ function App() {
   )
     ? runState.runtime_boundary_model_view
     : {};
-  const activeTurnStatus = String(runState.turn_status || sessionRunState.turn_status || "idle");
+  const activeTurnStatus = String(runState.turn_status || sessionRuntimeState.turn_status || "idle");
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
-    : (Array.isArray(sessionRunState.plan) ? sessionRunState.plan : []);
+    : (Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : []);
   const activePendingInput =
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
-      : ((sessionRunState.pending_user_input && typeof sessionRunState.pending_user_input === "object") ? sessionRunState.pending_user_input : {});
-  const activeToolTimeline = hasLiveRunState
+      : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
+  const activeToolTimeline = hasLiveRuntimeState
     ? liveToolTimeline
     : (Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
       ? lastInspector.tool_timeline
       : toolTimeline);
-  const activeRunLogs = hasLiveRunState ? liveRunLogs : logs;
+  const activeRunLogs = hasLiveRuntimeState ? liveRunLogs : logs;
   const activeProviderAuthReady =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
       ? Boolean(activeProviderProfile.auth_ready)
@@ -5026,14 +5026,14 @@ function App() {
   const activeContextMeter = normalizeContextMeter(
     (runState && runState.context_meter) ||
     (lastResponse && lastResponse.context_meter) ||
-    (sessionRunState && sessionRunState.context_meter) ||
+    (sessionRuntimeState && sessionRuntimeState.context_meter) ||
     (health && health.context_meter) ||
     {},
   );
   const activeCompactionStatus = normalizeCompactionStatus(
     (runState && runState.compaction_status) ||
     (lastResponse && lastResponse.compaction_status) ||
-    (sessionRunState && sessionRunState.compaction_status) ||
+    (sessionRuntimeState && sessionRuntimeState.compaction_status) ||
     (health && health.compaction_status) ||
     {},
   );
@@ -5075,7 +5075,7 @@ function App() {
     activeTurnStatus,
     messages,
     activityClockMs,
-    hasLiveRunState,
+    hasLiveRuntimeState,
     liveToolTimeline,
     inspectorToolTimeline: lastInspector.tool_timeline,
     fallbackToolTimeline: toolTimeline,
@@ -5092,7 +5092,7 @@ function App() {
     activeTurnStatus,
     messages,
     activityClockMs,
-    hasLiveRunState,
+    hasLiveRuntimeState,
     liveToolTimeline,
     lastInspector,
     toolTimeline,
@@ -6020,10 +6020,10 @@ function App() {
               <div className="workbench-scroll">
                 <section className="panel-card">
                   <div className="panel-title">${t("run.title")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionRunState.goal || sessionRunState.current_goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionRuntimeState.goal || sessionRuntimeState.current_goal || "-"}</div>
                   <div className="meta-line">${t("settings.permission_profile")}: ${t(`settings.permission_profile.${activePermissionProfile}`)}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "turn_status")}: ${formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionRunState.evidence_status || "not_needed", "not_needed")}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionRuntimeState.evidence_status || "not_needed", "not_needed")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "inline_document")}: ${formatRunBoolean(uiLocale, runState.inline_document)}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "ocr")}: ${formatRunEnum(uiLocale, "ocr_engine", ocrStatus.default_engine || "unavailable", "unavailable")}</div>
                   <div className="meta-line">
@@ -6051,8 +6051,8 @@ function App() {
                 <section className="panel-card">
                   <div className="panel-title">${t("run.current_focus")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "task_id")}: ${activeTaskCheckpoint.task_id || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionRunState.goal || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRunState.cwd || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionRuntimeState.goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRuntimeState.cwd || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`
@@ -6126,7 +6126,7 @@ function App() {
                             <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
                               <div className="timeline-head">
                                 <span>${item.name || "tool"}</span>
-                                <span>${formatToolGroupLabel(uiLocale, item.group || item.module_group || "tool")}</span>
+                                <span>${formatToolGroupLabel(uiLocale, item.group || "tool")}</span>
                               </div>
                               <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
                               ${renderToolAuditDetails(item)}

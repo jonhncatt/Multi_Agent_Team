@@ -29,7 +29,7 @@ Related docs:
 
 ## Common Debug Steps
 
-1. Check `module_id` and `final_outcome`
+1. Check `final_outcome`
 2. Inspect `selected_tools` and `selected_providers`
 3. Inspect `degraded_events` and `fallback_events`
 4. Inspect `events[]` for `tool_dispatch`, `tool_result`, `provider_failed`, `tool_fallback`

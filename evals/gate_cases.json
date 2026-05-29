@@ -424,44 +424,5 @@
         ]
       }
     }
-  },
-  {
-    "name": "helper_debug_capability_multi_module_snapshot_loads_office_and_addon_modules",
-    "kind": "helper",
-    "helper": "_debug_capability_multi_module_snapshot",
-    "args": {},
-    "assert": {
-      "equals": {
-        "module_count": 2,
-        "primary_tool_module": "workspace_tools"
-      },
-      "contains_any": {
-        "module_ids.0": [
-          "office_modules"
-        ],
-        "module_ids.1": [
-          "office_addons"
-        ]
-      }
-    }
-  },
-  {
-    "name": "helper_debug_kernel_host_snapshot_exposes_primary_agent_and_tool_modules",
-    "kind": "helper",
-    "helper": "_debug_kernel_host_snapshot",
-    "args": {},
-    "assert": {
-      "equals": {
-        "primary_agent_module.module_id": "office_agent",
-        "primary_tool_module.module_id": "workspace_tools",
-        "primary_output_module.module_id": "output_finalizer",
-        "primary_memory_module.module_id": "overlay_memory"
-      },
-      "contains_any": {
-        "capability_modules.0": [
-          "packages.office_modules"
-        ]
-      }
-    }
   }
 ]

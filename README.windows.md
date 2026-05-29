@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v3.1.4b`。
+当前稳定版本：`v3.1.4c`。
 
 ## Stable Runtime
 
-v3.1.4b 是一个面向 model-led `web_search` 的清理版本，用来移除 `web_search` 内部的 news/baseball/RSS 意图分流。
-它继续保持 canonical 29-tool surface 不变，并让 `web_search` 保持为通用搜索工具，而不是内部切换到新闻或体育 RSS 路径。
+v3.1.4c 是一个面向 VP runtime harness 的清理版本，用来移除遗留的 `packages/` 模块架构。
+它继续保持 canonical 29-tool surface 不变，并将当前仍在使用的 backend、intent、review、role、tool wiring 收口为 app-owned runtime harness。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
