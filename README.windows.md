@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v3.1.4c`。
+当前稳定版本：`v3.1.4d`。
 
 ## Stable Runtime
 
-v3.1.4c 是一个面向 VP runtime harness 的清理版本，用来移除遗留的 `packages/` 模块架构。
-它继续保持 canonical 29-tool surface 不变，并将当前仍在使用的 backend、intent、review、role、tool wiring 收口为 app-owned runtime harness。
+v3.1.4d 是一个面向开发体验的增强版本，重点补强 compound shell 校验与 blocked-stop 诊断信息。
+它继续保持 canonical 29-tool surface 不变，并将复合 shell 执行升级为“拆解验证后执行原始命令”。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

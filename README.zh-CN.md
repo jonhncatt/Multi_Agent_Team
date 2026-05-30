@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4c-blue)
+![Version](https://img.shields.io/badge/version-v3.1.4d-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v3.1.4c`
+当前稳定版本：`v3.1.4d`
 
 ## Stable Runtime
 
-v3.1.4c 是一个面向 VP runtime harness 的清理版本，用来移除遗留的 `packages/` 模块架构，并把当前运行时收口为更干净的 app-owned harness。canonical 29-tool surface 保持不变。
+v3.1.4d 是一个面向开发体验的增强版本，重点补强 compound shell 校验，以及 blocked-stop 诊断信息的可读性。canonical 29-tool surface 保持不变。
 
-相对 v3.1.4b，本版本删除旧的 `packages/` 依赖链，不再保留旧 modular runtime 兼容层；当前 VP 仅保留仍然直接服务主运行时的 app-owned harness 代码。
+相对 v3.1.4c，本版本将复合 shell 从“一刀切拒绝”升级为“拆解验证后执行原始命令”，并把 runtime 停止信息升级为“停止原因 / 最近动作 / 复盘情况 / 下一步建议”。
 
 ## Max Output Tokens
 
