@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5-blue)
+![Version](https://img.shields.io/badge/version-3.1.5b-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5`
+現在の安定版: `3.1.5b`
 
 ## Stable Runtime
 
-3.1.5 は、session / trace / task checkpoint のアーキテクチャ修正版です。thread 読み取り経路を軽量化し、重い trace を run sidecar に移し、`work_cursor + task_state` を標準化し、構造化 LLM compaction と runtime typed item events を追加しました。
+3.1.5b は、session / trace / task checkpoint のアーキテクチャ修正版です。thread 読み取り経路を軽量化し、重い trace を run sidecar に移し、`work_cursor + task_state` を標準化し、構造化 LLM compaction と runtime typed item events を追加しました。
 
 v3.1.4d と比べて、thread detail は既定で summary のみを読み込み、Activity/Debug は必要なときだけ full turn を取得します。`/api/threads` は session metadata を読み、assistant run の完全な診断は `app/data/runs` sidecar に保存され、compaction の出力は `context_manager`、`task_state`、`work_cursor` に書き戻されます。
 

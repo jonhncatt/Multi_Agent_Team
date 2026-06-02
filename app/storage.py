@@ -18,15 +18,6 @@ from app.session_migration import CONTEXT_SCHEMA_VERSION, migrate_legacy_session
 
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
-_ACTIVITY_SUMMARY_KEYS = {
-    "run_id",
-    "trace_ref",
-    "status",
-    "summary",
-    "activity_summary",
-    "tool_count",
-    "run_duration_ms",
-}
 _ACTIVITY_HEAVY_KEYS = {
     "llm_exchanges",
     "trace_events",
@@ -342,20 +333,25 @@ class SessionStore:
         self,
         activity: dict[str, Any] | None,
         *,
-        session_id: str,
         run_id: str,
         trace_ref: str,
-        artifact: dict[str, Any] | None = None,
+        tool_count: int | None = None,
     ) -> dict[str, Any]:
         source = dict(activity or {})
-        summary = {
-            key: source.get(key)
-            for key in _ACTIVITY_SUMMARY_KEYS
-            if key in source and source.get(key) not in (None, [], {})
-        }
-        summary["run_id"] = str(run_id or source.get("run_id") or "").strip()
-        summary["trace_ref"] = str(trace_ref or source.get("trace_ref") or "").strip()
-        summary["tool_count"] = self._activity_tool_count(source, artifact)
+        summary: dict[str, Any] = {}
+        normalized_run_id = str(run_id or source.get("run_id") or "").strip()
+        normalized_trace_ref = str(trace_ref or source.get("trace_ref") or "").strip()
+        if normalized_run_id:
+            summary["run_id"] = normalized_run_id
+        if normalized_trace_ref:
+            summary["trace_ref"] = normalized_trace_ref
+        normalized_tool_count = tool_count
+        if normalized_tool_count is None:
+            try:
+                normalized_tool_count = int(source.get("tool_count") or 0)
+            except Exception:
+                normalized_tool_count = 0
+        summary["tool_count"] = max(0, int(normalized_tool_count or 0))
         summary["status"] = str(source.get("status") or "idle").strip() or "idle"
         summary_text = str(source.get("summary") or source.get("activity_summary") or "").strip()
         activity_summary = str(source.get("activity_summary") or summary_text).strip()
@@ -363,6 +359,11 @@ class SessionStore:
             summary["summary"] = summary_text
         if activity_summary:
             summary["activity_summary"] = activity_summary
+        if "run_duration_ms" in source and source.get("run_duration_ms") not in (None, ""):
+            try:
+                summary["run_duration_ms"] = max(0, int(source.get("run_duration_ms") or 0))
+            except Exception:
+                pass
         return summary
 
     def _run_id_for_turn(self, turn: dict[str, Any]) -> str:
@@ -448,16 +449,68 @@ class SessionStore:
             extra=extra,
         )
         trace_ref = self.run_artifact_store.save(session_id=session_id, run_id=rid, artifact=artifact)
+        artifact_activity = artifact.get("activity") if isinstance(artifact.get("activity"), dict) else {}
         turn["activity"] = self._activity_summary(
-            artifact.get("activity") if isinstance(artifact.get("activity"), dict) else {},
-            session_id=session_id,
+            artifact_activity,
             run_id=rid,
             trace_ref=trace_ref,
-            artifact=artifact,
+            tool_count=self._activity_tool_count(artifact_activity, artifact),
         )
         turn["answer_bundle"] = {}
         turn["run_artifact"] = {}
         return artifact
+
+    def _load_turn_artifact(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        trace_ref: str,
+    ) -> dict[str, Any] | None:
+        artifact = self.run_artifact_store.load_by_ref(trace_ref) if trace_ref else None
+        if artifact is None and run_id:
+            artifact = self.run_artifact_store.load(session_id=session_id, run_id=run_id)
+        return artifact
+
+    def _turn_needs_summary_enrichment(self, activity: dict[str, Any], *, run_id: str, trace_ref: str) -> bool:
+        if not (run_id or trace_ref):
+            return False
+        if not str(activity.get("status") or "").strip():
+            return True
+        return "tool_count" not in activity
+
+    def _backfill_turn_activity_summaries(self, session: dict[str, Any]) -> bool:
+        session_id = str((session or {}).get("id") or "").strip()
+        if not session_id:
+            return False
+        changed = False
+        for turn in _coerce_turns(session.get("turns")):
+            if str(turn.get("role") or "") != "assistant":
+                continue
+            activity = turn.get("activity")
+            if not isinstance(activity, dict):
+                activity = {}
+            run_id = self._run_id_for_turn(turn)
+            trace_ref = str(activity.get("trace_ref") or "").strip()
+            next_activity = self._activity_summary(
+                activity,
+                run_id=run_id,
+                trace_ref=trace_ref,
+            )
+            if self._turn_needs_summary_enrichment(activity, run_id=run_id, trace_ref=trace_ref):
+                artifact = self._load_turn_artifact(session_id=session_id, run_id=run_id, trace_ref=trace_ref)
+                if artifact:
+                    artifact_activity = artifact.get("activity") if isinstance(artifact.get("activity"), dict) else {}
+                    next_activity = self._activity_summary(
+                        artifact_activity,
+                        run_id=str(artifact.get("run_id") or run_id or ""),
+                        trace_ref=str(artifact.get("trace_ref") or trace_ref or ""),
+                        tool_count=self._activity_tool_count(artifact_activity, artifact),
+                    )
+            if turn.get("activity") != next_activity:
+                turn["activity"] = next_activity
+                changed = True
+        return changed
 
     def _migrate_turn_artifacts(self, session: dict[str, Any]) -> bool:
         session_id = str((session or {}).get("id") or "").strip()
@@ -497,12 +550,12 @@ class SessionStore:
                 )
             else:
                 trace_ref = str(existing_artifact.get("trace_ref") or existing_trace_ref)
+                artifact_activity = existing_artifact.get("activity") if isinstance(existing_artifact.get("activity"), dict) else {}
                 turn["activity"] = self._activity_summary(
-                    activity,
-                    session_id=session_id,
+                    artifact_activity,
                     run_id=run_id,
                     trace_ref=trace_ref,
-                    artifact=existing_artifact,
+                    tool_count=self._activity_tool_count(artifact_activity, existing_artifact),
                 )
                 turn["answer_bundle"] = {}
                 turn["run_artifact"] = {}
@@ -522,10 +575,8 @@ class SessionStore:
             activity = {}
         run_id = str(activity.get("run_id") or payload.get("run_id") or payload.get("id") or "").strip()
         trace_ref = str(activity.get("trace_ref") or "").strip()
-        artifact = self.run_artifact_store.load_by_ref(trace_ref) if trace_ref else None
-        if artifact is None and run_id:
-            artifact = self.run_artifact_store.load(session_id=session_id, run_id=run_id)
         if requested_view == "full":
+            artifact = self._load_turn_artifact(session_id=session_id, run_id=run_id, trace_ref=trace_ref)
             if artifact:
                 full_activity = dict(artifact.get("activity") or {})
                 full_activity.setdefault("run_id", str(artifact.get("run_id") or run_id or ""))
@@ -547,10 +598,8 @@ class SessionStore:
             return payload
         payload["activity"] = self._activity_summary(
             activity,
-            session_id=session_id,
             run_id=run_id,
             trace_ref=trace_ref,
-            artifact=artifact,
         )
         payload["answer_bundle"] = {}
         payload["run_artifact"] = {}
@@ -667,6 +716,8 @@ class SessionStore:
         if session_context_impl.sync_session_memory_state(payload):
             changed = True
         if self._migrate_turn_artifacts(payload):
+            changed = True
+        if self._backfill_turn_activity_summaries(payload):
             changed = True
 
         return payload, changed

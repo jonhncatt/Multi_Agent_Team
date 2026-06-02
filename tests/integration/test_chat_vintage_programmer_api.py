@@ -927,7 +927,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.5",
+            "app_version": "3.1.5b",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -969,7 +969,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5"
+    assert bootstrap_payload["app_version"] == "3.1.5b"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1007,7 +1007,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     detail_payload = detail_response.json()
     assert detail_payload["thread_id"] == thread_id
     assert detail_payload["session_id"] == thread_id
-    assert detail_payload["status"] == "idle"
+    assert detail_payload.get("status", "idle") == "idle"
 
     list_response = client.get(f"/api/threads?project_id={bootstrap_payload['default_project_id']}")
     assert list_response.status_code == 200
@@ -1201,6 +1201,86 @@ def test_thread_detail_uses_lightweight_pagination_and_stable_turn_ids(monkeypat
     previous_page = client.get(f"/api/thread/{session['id']}?max_turns=2&before_turn_id={before_id}")
     assert previous_page.status_code == 200
     assert [item["text"] for item in previous_page.json()["turns"]] == ["turn-2", "turn-3"]
+
+
+def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    main_app.session_store.append_turn(session, role="user", text="inspect")
+    assistant_turn = main_app.session_store.append_turn(
+        session,
+        role="assistant",
+        text="done",
+        answer_bundle={"summary": "done", "claims": [], "citations": [], "warnings": []},
+        activity={
+            "run_id": "run-1",
+            "status": "completed",
+            "summary": "read and answered",
+            "activity_summary": "read and answered",
+            "run_duration_ms": 12,
+            "triggering_user_message": "inspect",
+            "trace_events": [{"id": "trace-1", "type": "tool.started", "payload": {"call_id": "call-1"}}],
+            "llm_exchanges": [{"round": 1, "status": "completed"}],
+            "model_draft": "draft",
+            "runtime_error": {"kind": "debug"},
+            "tool_items": [{"type": "toolCall", "tool": "read_file"}],
+        },
+    )
+    main_app.session_store.persist_turn_artifact(
+        session,
+        turn_id=str(assistant_turn["id"]),
+        run_id="run-1",
+        activity=assistant_turn["activity"],
+        answer_bundle=assistant_turn["answer_bundle"],
+        tool_events=[{"name": "read_file", "status": "ok", "summary": "read"}],
+        inspector={"run_state": {"turn_status": "completed"}},
+    )
+    main_app.session_store.save(session)
+
+    calls = {"load": 0, "load_by_ref": 0}
+    original_load = main_app.session_store.run_artifact_store.load
+    original_load_by_ref = main_app.session_store.run_artifact_store.load_by_ref
+
+    def _load_by_ref(trace_ref: str):
+        calls["load_by_ref"] += 1
+        return original_load_by_ref(trace_ref)
+
+    def _load(*, session_id: str, run_id: str):
+        calls["load"] += 1
+        return original_load(session_id=session_id, run_id=run_id)
+
+    monkeypatch.setattr(main_app.session_store.run_artifact_store, "load_by_ref", _load_by_ref)
+    monkeypatch.setattr(main_app.session_store.run_artifact_store, "load", _load)
+
+    summary_response = client.get(f"/api/thread/{session['id']}?view=summary")
+
+    assert summary_response.status_code == 200
+    assert calls == {"load": 0, "load_by_ref": 0}
+    summary_turn = summary_response.json()["turns"][-1]
+    assert set(summary_turn["activity"]) <= {
+        "run_id",
+        "trace_ref",
+        "status",
+        "summary",
+        "activity_summary",
+        "tool_count",
+        "run_duration_ms",
+    }
+    assert "triggering_user_message" not in summary_turn["activity"]
+    assert "llm_exchanges" not in summary_turn["activity"]
+    assert "answer_bundle" not in summary_turn
+    assert "run_artifact" not in summary_turn
+
+    full_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=full")
+
+    assert full_response.status_code == 200
+    assert calls["load_by_ref"] == 1
+    assert calls["load"] == 1
+    full_turn = full_response.json()
+    assert full_turn["answer_bundle"]["summary"] == "done"
+    assert full_turn["activity"]["llm_exchanges"][0]["round"] == 1
+    assert full_turn["run_artifact"]["run_id"] == "run-1"
 
 
 def test_thread_new_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp_path: Path) -> None:
@@ -1794,7 +1874,7 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     assert runtime.calls[3]["message"] == "我刚才问你的所有问题，罗列一下"
     subject_assistant_turn = turns[-5]
     assert subject_assistant_turn["role"] == "assistant"
-    assert subject_assistant_turn["activity"]["triggering_user_message"] == ""
+    assert "triggering_user_message" not in subject_assistant_turn["activity"]
     full_subject_response = client.get(f"/api/thread/{session_id}/turn/{subject_assistant_turn['id']}?view=full")
     assert full_subject_response.status_code == 200
     full_subject_activity = full_subject_response.json()["activity"]
@@ -1836,7 +1916,7 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     assert detail_response.status_code == 200
     assistant_turn = detail_response.json()["turns"][-1]
     assert assistant_turn["role"] == "assistant"
-    assert assistant_turn["activity"]["triggering_user_message"] == ""
+    assert "triggering_user_message" not in assistant_turn["activity"]
     full_response = client.get(f"/api/thread/{payload['session_id']}/turn/{assistant_turn['id']}?view=full")
     assert full_response.status_code == 200
     full_activity = full_response.json()["activity"]

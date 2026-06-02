@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5"
+APP_VERSION = "3.1.5b"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -1132,7 +1132,7 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
     return UpdateSessionTitleResponse(ok=True, session_id=session_id, title=title)
 
 
-@app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
+@app.get("/api/session/{session_id}", response_model=SessionDetailResponse, response_model_exclude_defaults=True)
 def get_session(
     session_id: str,
     max_turns: int = 40,
@@ -1166,7 +1166,7 @@ def get_session(
     )
 
 
-@app.get("/api/thread/{thread_id}", response_model=ThreadDetailResponse)
+@app.get("/api/thread/{thread_id}", response_model=ThreadDetailResponse, response_model_exclude_defaults=True)
 def get_thread(
     thread_id: str,
     max_turns: int = 40,
@@ -1176,7 +1176,7 @@ def get_thread(
     return _thread_detail_response_payload(thread_id, max_turns=max_turns, before_turn_id=before_turn_id, view=view)
 
 
-@app.get("/api/thread/{thread_id}/turn/{turn_id}", response_model=SessionTurn)
+@app.get("/api/thread/{thread_id}/turn/{turn_id}", response_model=SessionTurn, response_model_exclude_defaults=True)
 def get_thread_turn(thread_id: str, turn_id: str, view: str = "full") -> SessionTurn:
     detail_view = _normalize_detail_view(view)
     loaded = session_store.load(thread_id, default_project=_default_project())

@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5-blue)
+![Version](https://img.shields.io/badge/version-3.1.5b-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5`
+Current stable release: `3.1.5b`
 
 ## Stable Runtime
 
-3.1.5 is a session / trace / task checkpoint architecture release focused on slimming thread reads, moving heavy traces into run sidecars, standardizing `work_cursor + task_state`, and adding structured LLM compaction plus runtime typed item events.
+3.1.5b is a session / trace / task checkpoint architecture release focused on slimming thread reads, moving heavy traces into run sidecars, standardizing `work_cursor + task_state`, and adding structured LLM compaction plus runtime typed item events.
 
 Compared with v3.1.4d, this release loads summary thread detail by default, fetches full turn diagnostics only on demand, moves `/api/threads` to session metadata, stores full assistant-run diagnostics in `app/data/runs` sidecars, and writes compaction output back into `context_manager`, `task_state`, and `work_cursor`.
 
