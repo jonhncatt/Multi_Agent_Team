@@ -202,6 +202,35 @@ def test_rebuild_metadata_index_backfills_missing_light_activity(tmp_path: Path)
     assert persisted["turns"][-1]["activity"]["tool_count"] == 1
 
 
+def test_repair_sessions_reuses_backfill_and_is_idempotent(tmp_path: Path) -> None:
+    store, session, raw_session = _build_sidecar_session(tmp_path)
+    session_path = tmp_path / "sessions" / f"{session['id']}.json"
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    payload["turns"][-1]["activity"] = {
+        "run_id": raw_session["turns"][-1]["activity"]["run_id"],
+        "trace_ref": raw_session["turns"][-1]["activity"]["trace_ref"],
+    }
+    session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    first = store.repair_sessions(default_project=_project(tmp_path))
+    assert first["scanned_sessions"] == 1
+    assert first["migrated_sessions"] == 1
+    assert first["backfilled_turns"] == 1
+    assert first["rebuilt_meta"] == 1
+    assert first["errors"] == []
+
+    repaired = json.loads(session_path.read_text(encoding="utf-8"))
+    assert repaired["turns"][-1]["activity"]["status"] == "completed"
+    assert repaired["turns"][-1]["activity"]["tool_count"] == 1
+
+    second = store.repair_sessions(default_project=_project(tmp_path))
+    assert second["scanned_sessions"] == 1
+    assert second["migrated_sessions"] == 0
+    assert second["backfilled_turns"] == 0
+    assert second["skipped"] == 1
+    assert second["errors"] == []
+
+
 def test_session_list_reads_metadata_without_parsing_session_file(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))

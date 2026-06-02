@@ -137,6 +137,41 @@ function createMessage(role, text, options = {}) {
     error: Boolean(options.error),
     createdAt: options.createdAt || "",
     activity: normalizeMessageActivity(options.activity || null),
+    answerBundle: options.answerBundle && typeof options.answerBundle === "object" ? options.answerBundle : {},
+    runArtifact: options.runArtifact && typeof options.runArtifact === "object" ? options.runArtifact : {},
+    fullTurnLoading: Boolean(options.fullTurnLoading),
+    fullTurnError: String(options.fullTurnError || ""),
+  };
+}
+
+function createEmptyThreadActiveTurn() {
+  return {
+    activeRunId: "",
+    stoppingRun: false,
+    lastResponse: null,
+    toolTimeline: [],
+    liveToolTimeline: [],
+    liveTurnState: {},
+    liveEvidence: {},
+    liveRunLogs: [],
+    stageTimeline: [],
+  };
+}
+
+function normalizeThreadActiveTurn(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  return {
+    ...createEmptyThreadActiveTurn(),
+    ...item,
+    activeRunId: String(item.activeRunId || item.active_run_id || ""),
+    stoppingRun: Boolean(item.stoppingRun || item.stopping_run),
+    lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
+    toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
+    liveToolTimeline: Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline : [],
+    liveTurnState: item.liveTurnState && typeof item.liveTurnState === "object" ? item.liveTurnState : {},
+    liveEvidence: item.liveEvidence && typeof item.liveEvidence === "object" ? item.liveEvidence : {},
+    liveRunLogs: Array.isArray(item.liveRunLogs) ? item.liveRunLogs : [],
+    stageTimeline: Array.isArray(item.stageTimeline) ? item.stageTimeline : [],
   };
 }
 
@@ -527,6 +562,8 @@ function extractSessionMessages(data) {
         id: String(turn.id || `${index}-${turn.role || "turn"}-${turn.created_at || ""}`),
         createdAt: String(turn.created_at || ""),
         activity: turn.activity || {},
+        answerBundle: turn.answer_bundle || {},
+        runArtifact: turn.run_artifact || {},
       },
     ),
   );
@@ -885,7 +922,9 @@ function defaultSkillTemplate(locale) {
 
 function sessionTitleFromList(sessions, sessionId, locale) {
   const hit = sessions.find((item) => item.session_id === sessionId);
-  return hit ? hit.title || translateUi(locale, "labels.new_thread") : translateUi(locale, "labels.start_building");
+  return hit
+    ? hit.title || hit.display_title || translateUi(locale, "labels.new_thread")
+    : translateUi(locale, "labels.start_building");
 }
 
 function translateUiOrFallback(locale, key, fallback, replacements = null) {
@@ -2528,6 +2567,7 @@ function createInitialAppState() {
     },
     activeTurn: {
       sending: false,
+      activeRunThreadId: "",
       liveRunLogs: [],
       lastResponse: null,
       toolTimeline: [],
@@ -2746,6 +2786,7 @@ function App() {
   const liveToolTimeline = appState.activeTurn.liveToolTimeline;
   const stageTimeline = appState.activeTurn.stageTimeline;
   const activeRunId = appState.activeTurn.activeRunId;
+  const activeRunThreadId = appState.activeTurn.activeRunThreadId;
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
@@ -2768,6 +2809,10 @@ function App() {
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
   const [projectMenu, setProjectMenu] = useState(null);
   const [threadMenu, setThreadMenu] = useState(null);
+  const [renameDialog, setRenameDialog] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const [renamingThread, setRenamingThread] = useState(false);
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const fileInputRef = useRef(null);
@@ -2826,6 +2871,7 @@ function App() {
   const setLiveToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "liveToolTimeline"], value });
   const setStageTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "stageTimeline"], value });
   const setActiveRunId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunId"], value });
+  const setActiveRunThreadId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunThreadId"], value });
   const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
   const setWorkbenchTools = (value) => dispatch({ type: "update", path: ["panelCache", "tools", "data"], value });
   const setPanelStatus = (panel, value) => dispatch({ type: "update", path: ["panelCache", panel, "status"], value });
@@ -3391,27 +3437,136 @@ function App() {
     return String(threadId || "").trim();
   }
 
-  function snapshotFromThreadDetail(data) {
-    const detail = normalizeThreadDetailPayload(data);
-    return {
-      detail,
-      messages: extractSessionMessages(detail),
-      sessionRuntimeState: (detail && detail.agent_state) || {},
-      cachedAt: Date.now(),
-    };
+  function visibleThreadActiveTurnSnapshot() {
+    return normalizeThreadActiveTurn({
+      activeRunId,
+      stoppingRun,
+      lastResponse,
+      toolTimeline,
+      liveToolTimeline,
+      liveTurnState,
+      liveEvidence,
+      liveRunLogs,
+      stageTimeline,
+    });
   }
 
-  function rememberThreadDetail(threadId, data) {
+  function storeThreadSnapshot(threadId, snapshot) {
     const key = threadCacheKey(threadId);
-    if (!key || isTempThreadId(key)) return null;
-    const snapshot = snapshotFromThreadDetail(data);
+    if (!key || isTempThreadId(key) || !snapshot) return null;
     if (threadDetailCacheRef.current.has(key)) threadDetailCacheRef.current.delete(key);
-    threadDetailCacheRef.current.set(key, snapshot);
+    threadDetailCacheRef.current.set(key, {
+      activeTurn: normalizeThreadActiveTurn(snapshot.activeTurn),
+      cachedAt: Date.now(),
+      detail: snapshot.detail || null,
+      messages: Array.isArray(snapshot.messages) ? snapshot.messages : [],
+      sessionRuntimeState: snapshot.sessionRuntimeState && typeof snapshot.sessionRuntimeState === "object"
+        ? snapshot.sessionRuntimeState
+        : {},
+    });
     while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
       const oldestKey = threadDetailCacheRef.current.keys().next().value;
       threadDetailCacheRef.current.delete(oldestKey);
     }
-    return snapshot;
+    return threadDetailCacheRef.current.get(key) || null;
+  }
+
+  function updateThreadSnapshot(threadId, updater) {
+    const key = threadCacheKey(threadId);
+    if (!key || isTempThreadId(key)) return null;
+    const existing = threadDetailCacheRef.current.get(key) || {
+      detail: null,
+      messages: [],
+      sessionRuntimeState: {},
+      activeTurn: createEmptyThreadActiveTurn(),
+      cachedAt: 0,
+    };
+    const nextValue = typeof updater === "function" ? updater(existing) : updater;
+    if (!nextValue) return existing;
+    return storeThreadSnapshot(key, { ...existing, ...nextValue });
+  }
+
+  function rememberVisibleThreadSnapshot(targetThreadId = sessionId) {
+    const key = threadCacheKey(targetThreadId);
+    if (!key || isTempThreadId(key)) return null;
+    return updateThreadSnapshot(key, (existing) => ({
+      ...existing,
+      messages: Array.isArray(messages) ? messages : [],
+      sessionRuntimeState: sessionRuntimeState && typeof sessionRuntimeState === "object" ? sessionRuntimeState : {},
+      activeTurn: visibleThreadActiveTurnSnapshot(),
+    }));
+  }
+
+  function applyVisibleThreadActiveTurn(activeTurnSnapshot) {
+    const next = normalizeThreadActiveTurn(activeTurnSnapshot);
+    setLastResponse(next.lastResponse);
+    setToolTimeline(next.toolTimeline);
+    setLiveToolTimeline(next.liveToolTimeline);
+    setLiveTurnState(next.liveTurnState);
+    setLiveEvidence(next.liveEvidence);
+    setLiveRunLogs(next.liveRunLogs);
+    setStageTimeline(next.stageTimeline);
+    setActiveRunId(next.activeRunId);
+    setStoppingRun(next.stoppingRun);
+    setContextMeterOpen(false);
+  }
+
+  function snapshotFromThreadDetail(data, options = {}) {
+    const detail = normalizeThreadDetailPayload(data);
+    const existingSnapshot = options.existingSnapshot || null;
+    const preserveActiveTurn = Boolean(options.preserveActiveTurn && existingSnapshot);
+    const preserveMessages = Boolean(options.preserveMessages && existingSnapshot);
+    const preserveRuntimeState = Boolean(options.preserveRuntimeState && existingSnapshot);
+    const detailMessages = extractSessionMessages(detail);
+    const existingMessagesById = new Map(
+      ((existingSnapshot && Array.isArray(existingSnapshot.messages)) ? existingSnapshot.messages : [])
+        .map((item) => [String(item.id || ""), item]),
+    );
+    return {
+      detail,
+      messages: preserveMessages
+        ? (existingSnapshot.messages || [])
+        : detailMessages.map((message) => {
+            const previous = existingMessagesById.get(String(message.id || ""));
+            if (!previous) return message;
+            return {
+              ...message,
+              activity: mergeActivityState(message.activity || {}, previous.activity || {}),
+              answerBundle:
+                (previous.answerBundle && Object.keys(previous.answerBundle || {}).length)
+                  ? previous.answerBundle
+                  : message.answerBundle,
+              runArtifact:
+                (previous.runArtifact && Object.keys(previous.runArtifact || {}).length)
+                  ? previous.runArtifact
+                  : message.runArtifact,
+              fullTurnLoading: Boolean(previous.fullTurnLoading),
+              fullTurnError: String(previous.fullTurnError || ""),
+            };
+          }),
+      sessionRuntimeState: preserveRuntimeState
+        ? {
+            ...((detail && detail.agent_state) || {}),
+            ...((existingSnapshot && existingSnapshot.sessionRuntimeState) || {}),
+          }
+        : ((detail && detail.agent_state) || {}),
+      activeTurn: preserveActiveTurn
+        ? normalizeThreadActiveTurn(existingSnapshot.activeTurn)
+        : createEmptyThreadActiveTurn(),
+      cachedAt: Date.now(),
+    };
+  }
+
+  function rememberThreadDetail(threadId, data, options = {}) {
+    const key = threadCacheKey(threadId);
+    if (!key || isTempThreadId(key)) return null;
+    const snapshot = snapshotFromThreadDetail(data, {
+      existingSnapshot: threadDetailCacheRef.current.get(key) || null,
+      preserveActiveTurn: Boolean(options.preserveActiveTurn),
+      preserveMessages: Boolean(options.preserveMessages),
+      preserveRuntimeState: Boolean(options.preserveRuntimeState),
+    });
+    return storeThreadSnapshot(key, snapshot);
   }
 
   function applyThreadSnapshot(threadId, snapshot) {
@@ -3420,6 +3575,7 @@ function App() {
     resetItemDomain();
     setMessages(snapshot.messages || []);
     setSessionRuntimeState(snapshot.sessionRuntimeState || {});
+    applyVisibleThreadActiveTurn(snapshot.activeTurn || createEmptyThreadActiveTurn());
     if (snapshot.detail) {
       updateThreadStatus(key, String(snapshot.detail.status || "idle"));
     }
@@ -3514,6 +3670,13 @@ function App() {
     setThreadMenu(null);
   }
 
+  function closeRenameDialog() {
+    if (renamingThread) return;
+    setRenameDialog(null);
+    setRenameDraft("");
+    setRenameError("");
+  }
+
   function closeProjectMenu() {
     setProjectMenu(null);
   }
@@ -3579,7 +3742,7 @@ function App() {
   }
 
   function openThreadMenuAt(position, item) {
-    if (!item || sending || isTempThreadId(item.session_id || item.thread_id)) return;
+    if (!item || isTempThreadId(item.session_id || item.thread_id)) return;
     closeProjectMenu();
     setThreadMenu({
       sessionId: String(item.session_id || ""),
@@ -3595,7 +3758,7 @@ function App() {
   }
 
   function handleThreadTouchStart(event, item) {
-    if (sending || isTempThreadId(item && (item.session_id || item.thread_id))) return;
+    if (isTempThreadId(item && (item.session_id || item.thread_id))) return;
     cancelThreadLongPress();
     const touch = (event.touches && event.touches[0]) || null;
     threadLongPressRef.current = {
@@ -3620,6 +3783,20 @@ function App() {
       return;
     }
     loadSession(targetSessionId);
+  }
+
+  function openRenameThreadDialog(targetSessionId) {
+    const sid = String(targetSessionId || "").trim();
+    if (!sid || isTempThreadId(sid)) return;
+    const cached = threadDetailCacheRef.current.get(sid);
+    const existingCustomTitle = String((((cached || {}).detail || {}).title) || "").trim();
+    setRenameDialog({
+      sessionId: sid,
+      displayTitle: String((((cached || {}).detail || {}).display_title) || sessionTitleFromList(sessions, sid, uiLocale) || ""),
+    });
+    setRenameDraft(existingCustomTitle);
+    setRenameError("");
+    closeThreadMenu();
   }
 
   async function refreshProjects() {
@@ -3903,6 +4080,9 @@ function App() {
     const sid = String(targetSessionId || "").trim();
     if (!sid) return false;
     if (isTempThreadId(sid)) return true;
+    if (sessionId && sessionId !== sid) {
+      rememberVisibleThreadSnapshot(sessionId);
+    }
     const requestSeq = ++activeThreadRequestSeqRef.current;
     if (activeThreadAbortRef.current) {
       activeThreadAbortRef.current.abort();
@@ -3912,10 +4092,8 @@ function App() {
     activeThreadAbortRef.current = controller;
     setLoadingSession(true);
     setSessionId(sid);
-    fullTurnRequestRef.current.clear();
     setMobileThreadsOpen(false);
     closeThreadMenu();
-    clearLiveRunUi();
     const cached = threadDetailCacheRef.current.get(sid);
     if (cached) {
       applyThreadSnapshot(sid, cached);
@@ -3923,6 +4101,7 @@ function App() {
       resetItemDomain();
       setMessages([]);
       setSessionRuntimeState({});
+      applyVisibleThreadActiveTurn(createEmptyThreadActiveTurn());
     }
     try {
       const data = normalizeThreadDetailPayload(await fetchJson(
@@ -3930,7 +4109,17 @@ function App() {
         { signal: controller.signal },
       ));
       if (requestSeq !== activeThreadRequestSeqRef.current) return false;
-      const snapshot = rememberThreadDetail(sid, data);
+      const existingSnapshot = threadDetailCacheRef.current.get(sid) || null;
+      const preserveLiveSnapshot = Boolean(
+        existingSnapshot
+        && String(activeRunThreadId || "").trim() === sid
+        && String(((existingSnapshot.activeTurn || {}).activeRunId) || "").trim(),
+      );
+      const snapshot = rememberThreadDetail(sid, data, {
+        preserveActiveTurn: preserveLiveSnapshot,
+        preserveMessages: preserveLiveSnapshot,
+        preserveRuntimeState: preserveLiveSnapshot,
+      });
       applyThreadSnapshot(sid, snapshot);
       setSessionId(String(data.thread_id || data.session_id || sid));
       const resolvedProjectId = String((data && data.project_id) || options.projectIdOverride || "").trim();
@@ -3974,16 +4163,12 @@ function App() {
           ...olderMessages.filter((item) => !existingIds.has(String(item.id || ""))),
           ...(Array.isArray(prev) ? prev : []),
         ];
-        threadDetailCacheRef.current.set(sid, {
+        updateThreadSnapshot(sid, (existing) => ({
+          ...existing,
           detail: data,
           messages: merged,
           sessionRuntimeState: (data && data.agent_state) || sessionRuntimeState || {},
-          cachedAt: Date.now(),
-        });
-        while (threadDetailCacheRef.current.size > THREAD_DETAIL_CACHE_LIMIT) {
-          const oldestKey = threadDetailCacheRef.current.keys().next().value;
-          threadDetailCacheRef.current.delete(oldestKey);
-        }
+        }));
         return merged;
       });
       setSessionRuntimeState((data && data.agent_state) || sessionRuntimeState || {});
@@ -4050,6 +4235,57 @@ function App() {
     } catch (err) {
       const nextError = applyUiError(err, t("errors.delete_thread_failed"));
       pushLogWithLimit(setLogs, "error", t("errors.delete_thread_failed"));
+    }
+  }
+
+  async function handleRenameSession() {
+    const sid = String((renameDialog && renameDialog.sessionId) || "").trim();
+    if (!sid || renamingThread) return;
+    setRenamingThread(true);
+    setRenameError("");
+    try {
+      const payload = await fetchJson(`/api/session/${encodeURIComponent(sid)}/title`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: String(renameDraft || "").trim().slice(0, 120) }),
+      });
+      const displayTitle = String(payload.display_title || payload.title || t("labels.new_thread")).trim() || t("labels.new_thread");
+      const customTitle = String(payload.title || "").trim();
+      setSessions((prev) => (Array.isArray(prev) ? prev : []).map((entry) => (
+        String(entry.session_id || entry.thread_id || "") === sid
+          ? {
+              ...entry,
+              title: displayTitle,
+              display_title: displayTitle,
+              has_custom_title: Boolean(payload.has_custom_title),
+              updated_at: new Date().toISOString(),
+            }
+          : entry
+      )));
+      updateThreadSnapshot(sid, (existing) => ({
+        ...existing,
+        detail: {
+          ...((existing && existing.detail) || {}),
+          thread_id: sid,
+          session_id: sid,
+          title: customTitle,
+          display_title: displayTitle,
+          has_custom_title: Boolean(payload.has_custom_title),
+        },
+      }));
+      closeRenameDialog();
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        Boolean(payload.has_custom_title)
+          ? t("log.thread_renamed", { title: displayTitle })
+          : t("log.thread_title_reset", { title: displayTitle }),
+      );
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("errors.rename_thread_failed"));
+      setRenameError(nextError.summary);
+    } finally {
+      setRenamingThread(false);
     }
   }
 
@@ -4249,7 +4485,7 @@ function App() {
 
   async function handleStopRun() {
     const runId = String(activeRunId || "").trim();
-    if (!runId || !sending || stoppingRun) return;
+    if (!runId || !sending || stoppingRun || String(activeRunThreadId || "").trim() !== String(sessionId || "").trim()) return;
     setStoppingRun(true);
     try {
       const payload = await fetchJson(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, {
@@ -4295,11 +4531,18 @@ function App() {
 
     let sid = sessionId;
     let pendingMessage = null;
+    let runOwnerThreadId = "";
+    let ownerThreadVisible = () => false;
+    let updateOwnerMessages = null;
+    let updateOwnerSessionRuntimeState = null;
+    let updateOwnerActiveTurn = null;
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
       }
       if (!sid) sid = await createSession(projectId);
+      runOwnerThreadId = String(sid || "").trim();
+      setActiveRunThreadId(runOwnerThreadId);
 
       const userMessage = createMessage("user", messageText);
       pendingMessage = createMessage("assistant", t("labels.processing"), {
@@ -4311,14 +4554,28 @@ function App() {
           trace_events: [],
         },
       });
-      setMessages((prev) => [...prev, userMessage, pendingMessage]);
-      setLiveTurnState({
+      const nextInitialRuntimeState = {
         goal: messageText,
         permission_profile: normalizePermissionProfile(chatSettings.permission_profile || "auto"),
         turn_status: "running",
         plan: [],
         pending_user_input: {},
+      };
+      setMessages((prev) => {
+        const nextMessages = [...prev, userMessage, pendingMessage];
+        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+          ...existing,
+          messages: nextMessages,
+          sessionRuntimeState: existing.sessionRuntimeState || {},
+          activeTurn: normalizeThreadActiveTurn({
+            ...createEmptyThreadActiveTurn(),
+            liveTurnState: nextInitialRuntimeState,
+            liveEvidence: { status: "not_needed" },
+          }),
+        }));
+        return nextMessages;
       });
+      setLiveTurnState(nextInitialRuntimeState);
       setLiveEvidence({ status: "not_needed" });
       if (overrideText == null) setDraft("");
 
@@ -4378,15 +4635,64 @@ function App() {
       let latestGlobalTokenTotals = {};
       let completedTurnPayload = null;
       let latestActivity = normalizeMessageActivity(pendingMessage.activity);
+      ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
+      updateOwnerMessages = (value) => {
+        if (ownerThreadVisible()) {
+          setMessages((prev) => {
+            const nextMessages = resolveStateValue(Array.isArray(prev) ? prev : [], value);
+            updateThreadSnapshot(runOwnerThreadId, (existing) => ({ ...existing, messages: nextMessages }));
+            return nextMessages;
+          });
+          return;
+        }
+        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+          ...existing,
+          messages: resolveStateValue(Array.isArray(existing.messages) ? existing.messages : [], value),
+        }));
+      };
+      updateOwnerSessionRuntimeState = (value) => {
+        if (ownerThreadVisible()) {
+          setSessionRuntimeState((prev) => {
+            const nextState = resolveStateValue(prev && typeof prev === "object" ? prev : {}, value);
+            updateThreadSnapshot(runOwnerThreadId, (existing) => ({ ...existing, sessionRuntimeState: nextState }));
+            return nextState;
+          });
+          return;
+        }
+        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+          ...existing,
+          sessionRuntimeState: resolveStateValue(existing.sessionRuntimeState && typeof existing.sessionRuntimeState === "object" ? existing.sessionRuntimeState : {}, value),
+        }));
+      };
+      updateOwnerActiveTurn = (value) => {
+        const currentVisible = visibleThreadActiveTurnSnapshot();
+        const cachedSnapshot = threadDetailCacheRef.current.get(runOwnerThreadId);
+        const base = normalizeThreadActiveTurn(
+          (cachedSnapshot && cachedSnapshot.activeTurn)
+          || (ownerThreadVisible() ? currentVisible : createEmptyThreadActiveTurn()),
+        );
+        const nextTurn = normalizeThreadActiveTurn(resolveStateValue(base, value));
+        updateThreadSnapshot(runOwnerThreadId, (existing) => ({ ...existing, activeTurn: nextTurn }));
+        if (!ownerThreadVisible()) return;
+        setLastResponse(nextTurn.lastResponse);
+        setToolTimeline(nextTurn.toolTimeline);
+        setLiveToolTimeline(nextTurn.liveToolTimeline);
+        setLiveTurnState(nextTurn.liveTurnState);
+        setLiveEvidence(nextTurn.liveEvidence);
+        setLiveRunLogs(nextTurn.liveRunLogs);
+        setStageTimeline(nextTurn.stageTimeline);
+        setActiveRunId(nextTurn.activeRunId);
+        setStoppingRun(nextTurn.stoppingRun);
+      };
 
       const replacePendingText = (text, options = {}) => {
         if (options.onlyWhileWaiting && assistantMessageStarted) return;
-        setMessages((prev) =>
+        updateOwnerMessages((prev) =>
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
         );
       };
       const patchPendingActivity = (updater) => {
-        setMessages((prev) =>
+        updateOwnerMessages((prev) =>
           prev.map((item) => {
             if (!pendingMessage || item.id !== pendingMessage.id) return item;
             const nextActivity = typeof updater === "function"
@@ -4398,29 +4704,45 @@ function App() {
         );
       };
       const completePendingText = (text) => {
-        setMessages((prev) =>
+        updateOwnerMessages((prev) =>
           prev.map((item) => (
             item.id === pendingMessage.id
-              ? createMessage("assistant", text, { id: item.id, activity: item.activity })
+              ? createMessage("assistant", text, {
+                  id: item.id,
+                  activity: item.activity,
+                  answerBundle: item.answerBundle,
+                  runArtifact: item.runArtifact,
+                  fullTurnLoading: item.fullTurnLoading,
+                  fullTurnError: item.fullTurnError,
+                })
               : item
           )),
         );
       };
       const pushLiveLog = (type, text) => {
-        setLiveRunLogs((prev) => [createLog(type, text), ...prev].slice(0, 32));
+        updateOwnerActiveTurn((prev) => ({
+          ...prev,
+          liveRunLogs: [createLog(type, text), ...(Array.isArray(prev.liveRunLogs) ? prev.liveRunLogs : [])].slice(0, 32),
+        }));
       };
       const applySnapshot = (snapshot) => {
         if (!snapshot || typeof snapshot !== "object") return;
         latestRunSnapshot = mergeRunSnapshot(latestRunSnapshot, snapshot);
-        setLiveTurnState((prev) => mergeRunSnapshot(prev, snapshot));
+        updateOwnerActiveTurn((prev) => ({
+          ...prev,
+          liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, snapshot),
+        }));
         if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
           latestEvidenceState = {
             ...latestEvidenceState,
             status: String(snapshot.evidence_status || latestEvidenceState.status || "not_needed"),
           };
-          setLiveEvidence((prev) => ({
+          updateOwnerActiveTurn((prev) => ({
             ...prev,
-            status: String(snapshot.evidence_status || prev.status || "not_needed"),
+            liveEvidence: {
+              ...(prev.liveEvidence || {}),
+              status: String(snapshot.evidence_status || ((prev.liveEvidence || {}).status) || "not_needed"),
+            },
           }));
         }
         if (snapshot.context_meter && typeof snapshot.context_meter === "object") {
@@ -4429,7 +4751,7 @@ function App() {
               ? { ...prev, context_meter: snapshot.context_meter }
               : prev
           ));
-          setSessionRuntimeState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
+          updateOwnerSessionRuntimeState((prev) => ({ ...(prev || {}), context_meter: snapshot.context_meter }));
         }
         if (snapshot.compaction_status && typeof snapshot.compaction_status === "object") {
           setHealth((prev) => (
@@ -4437,14 +4759,17 @@ function App() {
               ? { ...prev, compaction_status: snapshot.compaction_status }
               : prev
           ));
-          setSessionRuntimeState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
+          updateOwnerSessionRuntimeState((prev) => ({ ...(prev || {}), compaction_status: snapshot.compaction_status }));
         }
       };
       const recordToolItem = (item) => {
         if (!item || typeof item !== "object") return;
         latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24);
-        setToolTimeline((prev) => [item, ...prev.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24));
-        setLiveToolTimeline((prev) => [item, ...prev.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24));
+        updateOwnerActiveTurn((prev) => ({
+          ...prev,
+          toolTimeline: [item, ...(Array.isArray(prev.toolTimeline) ? prev.toolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24),
+          liveToolTimeline: [item, ...(Array.isArray(prev.liveToolTimeline) ? prev.liveToolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24),
+        }));
         patchPendingActivity((activity) => mergeActivityState(activity, {
           tool_items: [item],
         }));
@@ -4510,7 +4835,7 @@ function App() {
           if (parsed) {
             const { event, payload } = parsed;
             if (payload && payload.run_id) {
-              setActiveRunId(String(payload.run_id || ""));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || "") }));
             }
             if (payload && payload.thread_id) {
               latestThreadId = String(payload.thread_id || latestThreadId || "");
@@ -4526,6 +4851,7 @@ function App() {
                 run_id: String(payload.run_id || ""),
                 status: "thinking",
               }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || "") }));
             } else if (event === "run_finished") {
               const nextStatus = String(payload.turn_status || latestRunSnapshot.turn_status || "completed");
               patchPendingActivity((activity) => mergeActivityState(activity, {
@@ -4535,18 +4861,20 @@ function App() {
                 run_duration_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
                 final_elapsed_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
               }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
               setSending(false);
               setStoppingRun(false);
-              setActiveRunId("");
+              setActiveRunThreadId("");
             } else if (event === "run_failed") {
               patchPendingActivity((activity) => mergeActivityState(activity, {
                 run_id: String(payload.run_id || ""),
                 status: "failed",
                 finished_at: Date.now(),
               }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
               setSending(false);
               setStoppingRun(false);
-              setActiveRunId("");
+              setActiveRunThreadId("");
             } else if (event === "trace_event") {
               const trace = normalizeTraceEvent(payload.trace || {});
               if (trace.id) {
@@ -4578,7 +4906,7 @@ function App() {
             } else if (event === "turn/started") {
               const turn = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const turnId = String(turn.id || "");
-              if (turnId) setActiveRunId(turnId);
+              if (turnId) updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: turnId }));
               if (String(turn.threadId || "").trim()) {
                 latestThreadId = String(turn.threadId || "").trim();
                 updateThreadStatus(latestThreadId, "active");
@@ -4590,7 +4918,7 @@ function App() {
             } else if (event === "turn/plan/updated") {
               const nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
               applySnapshot({ plan: nextPlan });
-              setSessionRuntimeState((prev) => ({
+              updateOwnerSessionRuntimeState((prev) => ({
                 ...(prev || {}),
                 permission_profile: normalizePermissionProfile((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "auto"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
@@ -4612,9 +4940,10 @@ function App() {
                 finished_at: Date.now(),
               }));
               if (assistantText) completePendingText(assistantText);
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
               setSending(false);
               setStoppingRun(false);
-              setActiveRunId("");
+              setActiveRunThreadId("");
             } else if (event === "item/started") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
               if (item.id) {
@@ -4623,14 +4952,16 @@ function App() {
                 }));
               }
               if (item.id) {
-                dispatch({
-                  type: "items/register",
-                  item: {
-                    ...item,
-                    threadId: String(payload.thread_id || latestThreadId || ""),
-                    turnId: String(payload.turn_id || activeRunId || ""),
-                  },
-                });
+                if (ownerThreadVisible()) {
+                  dispatch({
+                    type: "items/register",
+                    item: {
+                      ...item,
+                      threadId: String(payload.thread_id || latestThreadId || ""),
+                      turnId: String(payload.turn_id || activeRunId || ""),
+                    },
+                  });
+                }
               }
               if (String(item.type || "") === "agentMessage") {
                 assistantMessageStarted = true;
@@ -4640,7 +4971,9 @@ function App() {
               const delta = String(payload.delta || "");
               if (delta) {
                 assistantText += delta;
-                dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
+                if (ownerThreadVisible()) {
+                  dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
+                }
                 replacePendingText(assistantText);
                 patchPendingActivity((activity) => mergeActivityState(activity, {
                   model_draft: assistantText,
@@ -4654,14 +4987,16 @@ function App() {
                 }));
               }
               if (item.id) {
-                dispatch({
-                  type: "items/register",
-                  item: {
-                    ...item,
-                    threadId: String(payload.thread_id || latestThreadId || ""),
-                    turnId: String(payload.turn_id || activeRunId || ""),
-                  },
-                });
+                if (ownerThreadVisible()) {
+                  dispatch({
+                    type: "items/register",
+                    item: {
+                      ...item,
+                      threadId: String(payload.thread_id || latestThreadId || ""),
+                      turnId: String(payload.turn_id || activeRunId || ""),
+                    },
+                  });
+                }
               }
               const itemType = String(item.type || "");
               if (itemType === "agentMessage") {
@@ -4681,7 +5016,7 @@ function App() {
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                 });
-                setSessionRuntimeState((prev) => ({
+                updateOwnerSessionRuntimeState((prev) => ({
                   ...(prev || {}),
                   permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
@@ -4724,43 +5059,49 @@ function App() {
         plan_explanation: String(latestActivity.plan_explanation || ""),
         tool_items: latestActivity.tool_items,
       });
-      setMessages((prev) =>
+      updateOwnerMessages((prev) =>
         prev.map((item) =>
           item.id === pendingMessage.id
             ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), {
               id: item.id,
               activity: finalActivity,
+              answerBundle: finalPayload.answer_bundle || item.answerBundle || {},
+              runArtifact: finalPayload.run_artifact || item.runArtifact || {},
             })
             : item,
         ),
       );
-      setLastResponse(finalPayload);
+      updateOwnerActiveTurn((prev) => ({ ...prev, lastResponse: finalPayload }));
       setPendingUploads([]);
       clearUiError();
       if (finalPayload.thread_id || finalPayload.session_id) {
         latestThreadId = String(finalPayload.thread_id || finalPayload.session_id || latestThreadId || "");
-        if (latestThreadId) setSessionId(latestThreadId);
+        if (latestThreadId && ownerThreadVisible()) setSessionId(latestThreadId);
       }
-      setActiveRunId(String(finalPayload.run_id || ""));
-      setLiveTurnState((prev) => mergeRunSnapshot(prev, {
-        ...(((finalPayload.inspector || {}).run_state) || {}),
-        permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
-        turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
-        model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
-        final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),
-        runtime_error: finalPayload.runtime_error || (((finalPayload.inspector || {}).run_state || {}).runtime_error) || {},
-        context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-        plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
-        pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
-        work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
-        task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
-      }));
-      setLiveEvidence((prev) => ({
+      updateOwnerActiveTurn((prev) => ({
         ...prev,
-        ...latestEvidenceState,
-        ...(((finalPayload.inspector || {}).evidence) || {}),
+        activeRunId: "",
+        lastResponse: finalPayload,
+        liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
+          ...(((finalPayload.inspector || {}).run_state) || {}),
+          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
+          turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
+          model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
+          final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),
+          runtime_error: finalPayload.runtime_error || (((finalPayload.inspector || {}).run_state || {}).runtime_error) || {},
+          context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
+          plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
+          pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+          work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
+          task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
+        }),
+        liveEvidence: {
+          ...(prev.liveEvidence || {}),
+          ...latestEvidenceState,
+          ...(((finalPayload.inspector || {}).evidence) || {}),
+        },
+        liveToolTimeline: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : latestToolEvents,
       }));
-      setLiveToolTimeline(Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : latestToolEvents);
       if (latestThreadId) updateThreadStatus(latestThreadId, "idle");
       setHealth((prev) => (
         prev
@@ -4771,7 +5112,7 @@ function App() {
             }
           : prev
       ));
-      setSessionRuntimeState({
+      updateOwnerSessionRuntimeState({
         ...(finalPayload.inspector || {}).run_state,
         ...(finalPayload.inspector || {}).evidence,
         ...(finalPayload.inspector || {}).session,
@@ -4811,15 +5152,25 @@ function App() {
       );
       setSending(false);
       setStoppingRun(false);
-      setActiveRunId("");
+      setActiveRunThreadId("");
     } catch (err) {
       const nextError = applyUiError(err, t("errors.request_failed"));
       pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
-      setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+      if (updateOwnerMessages) {
+        updateOwnerMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+      } else {
+        setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+      }
     } finally {
+      if (updateOwnerActiveTurn) {
+        updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
+      } else {
+        setActiveRunId("");
+        setStoppingRun(false);
+      }
       setSending(false);
       setStoppingRun(false);
-      setActiveRunId("");
+      setActiveRunThreadId("");
     }
   }
 
@@ -4973,7 +5324,8 @@ function App() {
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
   const completedRuntimeState = lastInspector.run_state || {};
   const completedEvidence = lastInspector.evidence || {};
-  const hasLiveRuntimeState = Boolean(sending || (activeRunId && Object.keys(liveTurnState || {}).length));
+  const isActiveRunVisible = Boolean(sessionId && activeRunThreadId && sessionId === activeRunThreadId);
+  const hasLiveRuntimeState = Boolean(isActiveRunVisible && (sending || (activeRunId && Object.keys(liveTurnState || {}).length)));
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
   const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
   const modelContextForRun = (
@@ -5145,13 +5497,29 @@ function App() {
     const requestKey = `${sid}:${turnId}`;
     if (fullTurnRequestRef.current.has(requestKey)) return;
     fullTurnRequestRef.current.add(requestKey);
+    setMessages((prev) => {
+      const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
+        String(entry.id || "") === turnId
+          ? { ...entry, fullTurnLoading: true, fullTurnError: "" }
+          : entry
+      ));
+      updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
+      return nextMessages;
+    });
     try {
       const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=full`);
       const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
-            ? { ...entry, activity: mergeActivityState(entry.activity || {}, fullActivity) }
+            ? {
+                ...entry,
+                activity: mergeActivityState(entry.activity || {}, fullActivity),
+                answerBundle: ((payload && payload.answer_bundle) && typeof payload.answer_bundle === "object") ? payload.answer_bundle : {},
+                runArtifact: ((payload && payload.run_artifact) && typeof payload.run_artifact === "object") ? payload.run_artifact : {},
+                fullTurnLoading: false,
+                fullTurnError: "",
+              }
             : entry
         ));
         const cached = threadDetailCacheRef.current.get(sid);
@@ -5166,7 +5534,18 @@ function App() {
       });
     } catch (err) {
       const nextError = normalizeUiError(uiLocale, err, t("errors.load_thread_failed"));
+      setMessages((prev) => {
+        const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
+          String(entry.id || "") === turnId
+            ? { ...entry, fullTurnLoading: false, fullTurnError: String(nextError.summary || t("errors.load_thread_failed")) }
+            : entry
+        ));
+        updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
+        return nextMessages;
+      });
       pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
+    } finally {
+      fullTurnRequestRef.current.delete(requestKey);
     }
   }
 
@@ -5429,9 +5808,14 @@ function App() {
     `;
   };
 
-  const renderActivityDebugDetails = (activity, projection, messageId) => {
+  const renderActivityDebugDetails = (message, projection) => {
+    const activity = normalizeMessageActivity((message && message.activity) || {});
     const item = normalizeMessageActivity(activity || {});
-    const structured = buildStructuredDebugView(item, lastInspector || {}, uiLocale);
+    const runArtifact = message && message.runArtifact && typeof message.runArtifact === "object" ? message.runArtifact : {};
+    const answerBundle = message && message.answerBundle && typeof message.answerBundle === "object" ? message.answerBundle : {};
+    const inspector = runArtifact.inspector && typeof runArtifact.inspector === "object" ? runArtifact.inspector : {};
+    const structured = buildStructuredDebugView(item, inspector, uiLocale);
+    const messageId = String((message && message.id) || "");
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
     const exchanges = Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [];
     const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
@@ -5456,6 +5840,9 @@ function App() {
       renderRawModelIo(exchanges),
       renderPlanDetails(t("activity.model_action"), projection.model_action),
       renderRevisionSummaryDetails(projection.revision_summary),
+      Object.keys(answerBundle).length
+        ? renderDetailBlock(t("activity.debug.answer_bundle"), answerBundle)
+        : null,
     ].filter(Boolean);
     const modelRoundDetails = structured.model_rounds.length
       ? html`
@@ -5522,11 +5909,15 @@ function App() {
           </details>
         `
       : null;
-    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !rawTraceList) return null;
+    const loadError = String((message && message.fullTurnError) || "").trim();
+    const loading = Boolean(message && message.fullTurnLoading);
+    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !rawTraceList && !loadError && !loading) return null;
     return html`
       <details className="activity-debug-drawer">
         <summary>${t("activity.debug_details")}</summary>
         <div className="activity-debug-sections">
+          ${loading ? html`<div className="activity-flow-note">${t("activity.debug_loading")}</div>` : null}
+          ${loadError ? html`<div className="status-error">${loadError}</div>` : null}
           ${sentToModelDetails}
           ${modelOutputDetails}
           ${toolDebugDetails}
@@ -5581,7 +5972,7 @@ function App() {
                   <div className=${`activity-badge tone-${tone}`}>${pillLabel}</div>
                 </div>
                 ${renderActivityProgressList(projection, activity)}
-                ${renderActivityDebugDetails(activity, projection, item.id)}
+                ${renderActivityDebugDetails(item, projection)}
               </div>
             `
           : null}
@@ -5720,7 +6111,6 @@ function App() {
                           onTouchEnd=${cancelThreadLongPress}
                           onTouchMove=${cancelThreadLongPress}
                           onTouchCancel=${cancelThreadLongPress}
-                          disabled=${sending}
                         >
                           <div className="thread-row-title">${item.title || t("labels.new_thread")}</div>
                           <div className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</div>
@@ -5737,6 +6127,9 @@ function App() {
                 ref=${threadMenuRef}
                 style=${{ left: `${threadMenu.x}px`, top: `${threadMenu.y}px` }}
               >
+                <button className="thread-context-item" type="button" onClick=${() => openRenameThreadDialog(threadMenu.sessionId)}>
+                  ${t("buttons.rename_thread")}
+                </button>
                 <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteSession(threadMenu.sessionId)}>
                   ${t("buttons.delete_thread")}
                 </button>
@@ -5911,7 +6304,7 @@ function App() {
               </label>
             </div>
             <div className="composer-toolbar-right">
-              ${sending && activeRunId
+              ${sending && activeRunId && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
                 ? html`
                     <button className="ghost-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
                       ${stoppingRun ? t("buttons.stopping") : t("buttons.stop")}
@@ -6059,6 +6452,36 @@ function App() {
                 <div className="modal-actions">
                   <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>${t("buttons.cancel")}</button>
                   <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
+
+      ${renameDialog
+        ? html`
+            <div className="project-modal-backdrop" id="renameThreadModal">
+              <div className="project-modal">
+                <div className="panel-title">${t("thread_modal.rename_title")}</div>
+                <label className="form-field">
+                  <span>${t("thread_modal.display_name")}</span>
+                  <input
+                    className="drawer-input"
+                    type="text"
+                    value=${renameDraft}
+                    maxLength="120"
+                    placeholder=${t("thread_modal.display_name_placeholder")}
+                    onInput=${(event) => setRenameDraft(event.currentTarget.value)}
+                    disabled=${renamingThread}
+                  />
+                </label>
+                <div className="path-hint">${t("thread_modal.hint", { title: String((renameDialog && renameDialog.displayTitle) || "") })}</div>
+                ${renameError ? html`<div className="status-error">${renameError}</div>` : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${closeRenameDialog} disabled=${renamingThread}>${t("buttons.cancel")}</button>
+                  <button className="solid-btn" type="button" onClick=${handleRenameSession} disabled=${renamingThread}>
+                    ${renamingThread ? t("buttons.saving") : t("buttons.save")}
+                  </button>
                 </div>
               </div>
             </div>

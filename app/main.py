@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5b"
+APP_VERSION = "3.1.5c"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -1009,6 +1009,10 @@ def _session_turn_from_payload(item: dict[str, Any], *, turn_id: str) -> Session
     )
 
 
+def _thread_display_title(session: dict[str, Any]) -> str:
+    return session_store.session_meta_store.display_title_for_session(session)
+
+
 def _thread_detail_response_payload(
     session_id: str,
     max_turns: int = 40,
@@ -1066,6 +1070,8 @@ def _thread_detail_response_payload(
         thread_id=session_id,
         session_id=session_id,
         title=str(loaded.get("title") or ""),
+        display_title=_thread_display_title(loaded),
+        has_custom_title=bool(str(loaded.get("title") or "").strip()),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
         project_id=str(loaded.get("project_id") or ""),
@@ -1129,7 +1135,13 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
     title = str(req.title or "").strip()[:120]
     loaded["title"] = title
     session_store.save(loaded)
-    return UpdateSessionTitleResponse(ok=True, session_id=session_id, title=title)
+    return UpdateSessionTitleResponse(
+        ok=True,
+        session_id=session_id,
+        title=title,
+        display_title=_thread_display_title(loaded),
+        has_custom_title=bool(title),
+    )
 
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse, response_model_exclude_defaults=True)
@@ -1148,6 +1160,8 @@ def get_session(
     return SessionDetailResponse(
         session_id=str(thread_payload.thread_id or ""),
         title=thread_payload.title,
+        display_title=thread_payload.display_title,
+        has_custom_title=thread_payload.has_custom_title,
         summary=thread_payload.summary,
         turn_count=thread_payload.turn_count,
         project_id=thread_payload.project_id,

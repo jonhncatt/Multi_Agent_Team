@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5b-blue)
+![Version](https://img.shields.io/badge/version-3.1.5c-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5b`
+当前稳定版本：`3.1.5c`
 
 ## Stable Runtime
 
-3.1.5b 是一个 session / trace / task checkpoint 架构修复版本，重点瘦身 thread 读取路径、将重 trace 移入 run sidecar、统一 `work_cursor + task_state`，并补上结构化 LLM compaction 与 runtime typed item 协议。
+3.1.5c 在 3.1.5b 的 session / trace / task checkpoint 收口之上，补上了 thread rename、运行中浏览其他 thread、真正的 message-scoped full debug lazy loading，以及离线 session repair CLI。
 
-相对 v3.1.4d，本版本默认只加载 summary thread detail，Activity/Debug 按需拉取 full turn；`/api/threads` 改读 session meta；assistant run 的完整诊断写入 `app/data/runs` sidecar；compaction 输出固定结构并写回 `context_manager`、`task_state` 与 `work_cursor`。
+相对 3.1.5b，本版本继续保持 summary view 零 sidecar I/O；full debug 只在展开 Activity/Debug 时按 turn 拉取；历史 Debug 不再借用全局 inspector；运行中的 thread 可以被保留在各自 cache snapshot 中单独恢复。
 
 ## Max Output Tokens
 

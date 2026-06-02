@@ -927,7 +927,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.5b",
+            "app_version": "3.1.5c",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -969,7 +969,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5b"
+    assert bootstrap_payload["app_version"] == "3.1.5c"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1201,6 +1201,55 @@ def test_thread_detail_uses_lightweight_pagination_and_stable_turn_ids(monkeypat
     previous_page = client.get(f"/api/thread/{session['id']}?max_turns=2&before_turn_id={before_id}")
     assert previous_page.status_code == 200
     assert [item["text"] for item in previous_page.json()["turns"]] == ["turn-2", "turn-3"]
+
+
+def test_thread_rename_reuses_session_title_and_exposes_display_title(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    main_app.session_store.append_turn(session, role="user", text="derive title from this first turn")
+    main_app.session_store.save(session)
+
+    initial_thread = client.get(f"/api/thread/{session['id']}")
+    assert initial_thread.status_code == 200
+    initial_payload = initial_thread.json()
+    assert initial_payload["title"] == ""
+    assert initial_payload["display_title"] == "derive title from this first turn"
+    assert initial_payload["has_custom_title"] is False
+
+    renamed = client.patch(f"/api/session/{session['id']}/title", json={"title": "  Custom Thread  "})
+    assert renamed.status_code == 200
+    renamed_payload = renamed.json()
+    assert renamed_payload == {
+        "ok": True,
+        "session_id": session["id"],
+        "title": "Custom Thread",
+        "display_title": "Custom Thread",
+        "has_custom_title": True,
+    }
+
+    thread_detail = client.get(f"/api/thread/{session['id']}")
+    session_detail = client.get(f"/api/session/{session['id']}")
+    thread_list = client.get("/api/threads")
+    assert thread_detail.status_code == 200
+    assert session_detail.status_code == 200
+    assert thread_list.status_code == 200
+    assert thread_detail.json()["title"] == "Custom Thread"
+    assert thread_detail.json()["display_title"] == "Custom Thread"
+    assert thread_detail.json()["has_custom_title"] is True
+    assert session_detail.json()["title"] == "Custom Thread"
+    assert session_detail.json()["display_title"] == "Custom Thread"
+    assert session_detail.json()["has_custom_title"] is True
+    assert thread_list.json()["threads"][0]["title"] == "Custom Thread"
+    assert thread_list.json()["threads"][0]["has_custom_title"] is True
+
+    main_app.session_store.rebuild_metadata_index(default_project=main_app.project_store.ensure_default_project())
+    reset = client.patch(f"/api/session/{session['id']}/title", json={"title": ""})
+    assert reset.status_code == 200
+    reset_payload = reset.json()
+    assert reset_payload["title"] == ""
+    assert reset_payload["display_title"] == "derive title from this first turn"
+    assert reset_payload["has_custom_title"] is False
 
 
 def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(monkeypatch, tmp_path: Path) -> None:

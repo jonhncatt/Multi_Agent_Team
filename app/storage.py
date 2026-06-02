@@ -58,6 +58,18 @@ def _coerce_turns(raw: Any) -> list[dict[str, Any]]:
     return [item for item in list(raw or []) if isinstance(item, dict)]
 
 
+def _new_repair_stats() -> dict[str, Any]:
+    return {
+        "scanned_sessions": 0,
+        "migrated_sessions": 0,
+        "migrated_turns": 0,
+        "backfilled_turns": 0,
+        "rebuilt_meta": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+
+
 class RunArtifactStore:
     def __init__(self, runs_dir: Path) -> None:
         self.runs_dir = runs_dir
@@ -169,6 +181,10 @@ class SessionMetaStore:
             "updated_at": str(payload.get("updated_at") or ""),
             "status": str(agent_state.get("turn_status") or "idle"),
         }
+
+    @staticmethod
+    def display_title_for_session(session: dict[str, Any]) -> str:
+        return str(SessionMetaStore.metadata_from_session(session).get("title") or "").strip()
 
     def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
         meta = self.metadata_from_session(session)
@@ -479,7 +495,12 @@ class SessionStore:
             return True
         return "tool_count" not in activity
 
-    def _backfill_turn_activity_summaries(self, session: dict[str, Any]) -> bool:
+    def _backfill_turn_activity_summaries(
+        self,
+        session: dict[str, Any],
+        *,
+        repair_stats: dict[str, Any] | None = None,
+    ) -> bool:
         session_id = str((session or {}).get("id") or "").strip()
         if not session_id:
             return False
@@ -510,9 +531,16 @@ class SessionStore:
             if turn.get("activity") != next_activity:
                 turn["activity"] = next_activity
                 changed = True
+                if repair_stats is not None:
+                    repair_stats["backfilled_turns"] = int(repair_stats.get("backfilled_turns") or 0) + 1
         return changed
 
-    def _migrate_turn_artifacts(self, session: dict[str, Any]) -> bool:
+    def _migrate_turn_artifacts(
+        self,
+        session: dict[str, Any],
+        *,
+        repair_stats: dict[str, Any] | None = None,
+    ) -> bool:
         session_id = str((session or {}).get("id") or "").strip()
         if not session_id:
             return False
@@ -560,6 +588,8 @@ class SessionStore:
                 turn["answer_bundle"] = {}
                 turn["run_artifact"] = {}
             changed = True
+            if repair_stats is not None:
+                repair_stats["migrated_turns"] = int(repair_stats.get("migrated_turns") or 0) + 1
         return changed
 
     def expand_turn_for_view(self, session_id: str, turn: dict[str, Any], *, view: str = "summary") -> dict[str, Any]:
@@ -610,6 +640,7 @@ class SessionStore:
         session: dict[str, Any],
         *,
         default_project: dict[str, Any] | None = None,
+        repair_stats: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         changed = False
         payload = dict(session or {})
@@ -715,9 +746,9 @@ class SessionStore:
 
         if session_context_impl.sync_session_memory_state(payload):
             changed = True
-        if self._migrate_turn_artifacts(payload):
+        if self._migrate_turn_artifacts(payload, repair_stats=repair_stats):
             changed = True
-        if self._backfill_turn_activity_summaries(payload):
+        if self._backfill_turn_activity_summaries(payload, repair_stats=repair_stats):
             changed = True
 
         return payload, changed
@@ -889,6 +920,38 @@ class SessionStore:
                 self.session_meta_store.save_session(normalized)
             rebuilt += 1
         return rebuilt
+
+    def repair_sessions(self, *, default_project: dict[str, Any] | None = None) -> dict[str, Any]:
+        stats = _new_repair_stats()
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            stats["scanned_sessions"] = int(stats.get("scanned_sessions") or 0) + 1
+            session_repair = {"migrated_turns": 0, "backfilled_turns": 0}
+            try:
+                with self._lock:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                normalized, changed = self._normalize_session(
+                    payload,
+                    default_project=default_project,
+                    repair_stats=session_repair,
+                )
+                if changed:
+                    self.save(normalized, touch=False)
+                    stats["migrated_sessions"] = int(stats.get("migrated_sessions") or 0) + 1
+                else:
+                    self.session_meta_store.save_session(normalized)
+                    stats["skipped"] = int(stats.get("skipped") or 0) + 1
+                stats["migrated_turns"] = int(stats.get("migrated_turns") or 0) + int(session_repair.get("migrated_turns") or 0)
+                stats["backfilled_turns"] = int(stats.get("backfilled_turns") or 0) + int(session_repair.get("backfilled_turns") or 0)
+                stats["rebuilt_meta"] = int(stats.get("rebuilt_meta") or 0) + 1
+            except Exception as exc:
+                stats["errors"].append(
+                    {
+                        "path": str(path),
+                        "session_id": str(path.stem or ""),
+                        "error": str(exc),
+                    }
+                )
+        return stats
 
     def migrate_missing_project(self, default_project: dict[str, Any]) -> int:
         migrated = 0

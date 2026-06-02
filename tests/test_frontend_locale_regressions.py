@@ -764,6 +764,67 @@ def test_activity_debug_full_turn_loading_is_explicitly_lazy() -> None:
     assert 'const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });' in body
 
 
+def test_full_turn_loading_merges_message_scoped_debug_payloads() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    ensure_body = re.search(
+        r"async function ensureFullTurnActivity\(messageId\) \{(?P<body>.*?)\n  \}",
+        script,
+        re.S,
+    )
+    assert ensure_body, "ensureFullTurnActivity function not found"
+    body = ensure_body.group("body")
+
+    assert "answerBundle:" in body
+    assert "runArtifact:" in body
+    assert "fullTurnLoading: true" in body
+    assert "fullTurnLoading: false" in body
+    assert "fullTurnError" in body
+    assert "updateThreadSnapshot(sid" in body
+
+    debug_body = re.search(
+        r"const renderActivityDebugDetails = \(message, projection\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
+        script,
+        re.S,
+    )
+    assert debug_body, "renderActivityDebugDetails helper not found"
+    debug = debug_body.group("body")
+    assert "const runArtifact = message && message.runArtifact" in debug
+    assert "const answerBundle = message && message.answerBundle" in debug
+    assert "const inspector = runArtifact.inspector" in debug
+    assert "buildStructuredDebugView(item, inspector, uiLocale)" in debug
+    assert "lastInspector || {}" not in debug
+
+
+def test_running_thread_browse_state_is_thread_scoped_in_cache() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "activeRunThreadId" in script
+    assert "createEmptyThreadActiveTurn()" in script
+    assert "normalizeThreadActiveTurn(raw)" in script
+    assert "rememberVisibleThreadSnapshot(sessionId);" in script
+    assert "const preserveLiveSnapshot = Boolean(" in script
+    assert "updateOwnerMessages" in script
+    assert "ownerThreadVisible()" in script
+    assert 'String(activeRunThreadId || "").trim() === String(sessionId || "").trim()' in script
+
+    thread_block = script.split('className=${`thread-row', 1)[1].split("</button>", 1)[0]
+    assert 'disabled=${sending}' not in thread_block
+    assert "window.prompt" not in script
+
+
+def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'fetchJson(`/api/session/${encodeURIComponent(sid)}/title`' in script
+    assert 'setRenameDialog({' in script
+    assert 'id="renameThreadModal"' in script
+    assert 't("buttons.rename_thread")' in script
+    assert 't("thread_modal.rename_title")' in script
+    assert '"buttons.rename_thread": "重命名线程"' in locales
+    assert '"thread_modal.rename_title": "重命名线程"' in locales
+
+
 def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

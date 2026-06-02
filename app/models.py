@@ -320,6 +320,8 @@ class UpdateSessionTitleResponse(BaseModel):
     ok: bool
     session_id: str
     title: str = ""
+    display_title: str = ""
+    has_custom_title: bool = False
 
 
 class DeleteSessionResponse(BaseModel):
@@ -339,7 +341,9 @@ class SessionTurn(BaseModel):
 
 class SessionDetailResponse(BaseModel):
     session_id: str
-    title: str = ""
+    title: str | None = None
+    display_title: str | None = None
+    has_custom_title: bool | None = None
     summary: str = ""
     turn_count: int = 0
     project_id: str = ""
@@ -379,7 +383,9 @@ class SessionListResponse(BaseModel):
 class ThreadDetailResponse(BaseModel):
     thread_id: str
     session_id: str = ""
-    title: str = ""
+    title: str | None = None
+    display_title: str | None = None
+    has_custom_title: bool | None = None
     summary: str = ""
     turn_count: int = 0
     project_id: str = ""
