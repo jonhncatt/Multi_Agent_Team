@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`v3.1.4d`。
+当前稳定版本：`3.1.5`。
 
 ## Stable Runtime
 
-v3.1.4d 是一个面向开发体验的增强版本，重点补强 compound shell 校验与 blocked-stop 诊断信息。
-它继续保持 canonical 29-tool surface 不变，并将复合 shell 执行升级为“拆解验证后执行原始命令”。
+3.1.5 是一个 session / trace / task checkpoint 架构修复版本，重点瘦身 thread 读取路径、将重 trace 移入 run sidecar、统一 `work_cursor + task_state`，并补上结构化 LLM compaction 与 runtime typed item 协议。
+它继续保持 canonical 29-tool surface 不变，并让 Activity/Debug 只在需要时拉取 full turn 诊断。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

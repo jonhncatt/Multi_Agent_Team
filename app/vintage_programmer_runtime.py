@@ -25,7 +25,17 @@ from app.attachment_argument_rewriter import (
     rewrite_attachment_tool_arguments,
 )
 from app.config import AppConfig
-from app.context_pack import ContextManager, ModelContext, build_model_context, render_model_context
+from app.context_pack import (
+    ContextManager,
+    ModelContext,
+    build_compaction_input,
+    build_model_context,
+    build_structured_compaction_summary,
+    parse_compaction_summary_text,
+    render_compaction_prompt,
+    render_compaction_summary,
+    render_model_context,
+)
 from app.context_meter import count_tokens
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.llm_exchange import (
@@ -53,7 +63,12 @@ from app.runtime_hints import (
 )
 from app.runtime_trace_labels import trace_label
 from app.serialization import dump_model, safe_model_dump
-from app.session_context import compat_task_checkpoint_from_focus
+from app.session_context import (
+    compat_task_checkpoint_from_focus,
+    focus_from_work_cursor_task_state,
+    normalize_task_state,
+    normalize_work_cursor,
+)
 from app.tool_name_normalizer import normalize_tool_name
 from app.tool_trace_summary import (
     build_tool_argument_audit,
@@ -826,6 +841,228 @@ class VintageProgrammerRuntime:
             payload["delta"] = str(delta)
         progress_cb(payload)
 
+    @staticmethod
+    def _typed_tool_item_id(
+        *,
+        run_id: str,
+        raw_tool_call: dict[str, Any] | None,
+        tool_name: str,
+        round_idx: int,
+        call_idx: int,
+    ) -> str:
+        raw = dict(raw_tool_call or {})
+        call_id = str(raw.get("id") or raw.get("tool_call_id") or "").strip()
+        if call_id:
+            return f"{str(run_id or 'turn')}:tool:{call_id}"
+        safe_name = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(tool_name or "tool")).strip("_") or "tool"
+        return f"{str(run_id or 'turn')}:tool:{max(0, int(round_idx))}:{max(0, int(call_idx))}:{safe_name}"
+
+    @staticmethod
+    def _typed_tool_item_type(tool_name: str) -> str:
+        name = str(tool_name or "").strip()
+        if name == "exec_command":
+            return "commandExecution"
+        if name == "apply_patch":
+            return "fileChange"
+        if name == "request_user_input":
+            return "userInputRequest"
+        if name in {"image_read", "image_inspect"}:
+            return "imageView"
+        return "toolCall"
+
+    @staticmethod
+    def _typed_tool_status(status: str) -> str:
+        normalized = str(status or "").strip().lower()
+        if normalized in {"ok", "success", "completed"}:
+            return "completed"
+        if normalized in {"cancelled", "canceled"}:
+            return "cancelled"
+        if normalized in {"blocked", "rejected", "skipped"}:
+            return "blocked"
+        if normalized in {"error", "failed"}:
+            return "failed"
+        if normalized in {"running", "inprogress", "in_progress"}:
+            return "inProgress"
+        return "completed" if normalized else "completed"
+
+    def _tool_stream_item_from_event(
+        self,
+        event: ToolEvent,
+        *,
+        run_id: str,
+        round_idx: int,
+        call_idx: int,
+        agent_id: str,
+        run_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = dump_model(event)
+        raw_tool_call = dict(payload.get("raw_tool_call") or {})
+        tool_name = str(payload.get("name") or raw_tool_call.get("name") or "").strip()
+        result_preview = payload.get("result_preview")
+        item_type = self._typed_tool_item_type(tool_name)
+        item = {
+            "id": self._typed_tool_item_id(
+                run_id=run_id,
+                raw_tool_call=raw_tool_call,
+                tool_name=tool_name,
+                round_idx=round_idx,
+                call_idx=call_idx,
+            ),
+            "type": item_type,
+            "status": self._typed_tool_status(str(payload.get("status") or "")),
+            "tool": tool_name,
+            "name": tool_name,
+            "group": str(payload.get("group") or ""),
+            "source": str(payload.get("source") or ""),
+            "summary": str(payload.get("summary") or ""),
+            "sourceRefs": list(payload.get("source_refs") or []),
+            "source_refs": list(payload.get("source_refs") or []),
+            "raw_tool_call": raw_tool_call,
+            "raw_arguments": payload.get("raw_arguments"),
+            "normalized_arguments": dict(payload.get("normalized_arguments") or {}),
+            "validation_result": dict(payload.get("validation_result") or {}),
+            "arguments_preview": str(payload.get("arguments_preview") or ""),
+            "preview_error": str(payload.get("preview_error") or ""),
+            "schema_validation": dict(payload.get("schema_validation") or {}),
+            "output_preview": str(payload.get("output_preview") or ""),
+            "result_preview": result_preview,
+            "cwd": str(payload.get("cwd") or ""),
+            "projectRoot": str(payload.get("project_root") or ""),
+            "project_root": str(payload.get("project_root") or ""),
+            "tool_round": int(round_idx or 0),
+            "tool_index": int(call_idx or 0),
+            "agent_id": str(agent_id or ""),
+        }
+        if run_snapshot:
+            item["runSnapshot"] = dict(run_snapshot)
+            item["run_snapshot"] = dict(run_snapshot)
+        if item_type == "userInputRequest":
+            result_payload = result_preview if isinstance(result_preview, dict) else {}
+            item["questions"] = list(result_payload.get("questions") or [])
+            if not item["summary"]:
+                item["summary"] = str(result_payload.get("summary") or "")
+        return {key: value for key, value in item.items() if value is not None}
+
+    def _emit_tool_stream_item_started(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        thread_id: str,
+        run_id: str,
+        tool_name: str,
+        raw_tool_call: dict[str, Any] | None,
+        arguments: dict[str, Any],
+        validation_result: dict[str, Any] | None,
+        round_idx: int,
+        call_idx: int,
+        agent_id: str,
+    ) -> dict[str, Any]:
+        raw = dict(raw_tool_call or {})
+        item = {
+            "id": self._typed_tool_item_id(
+                run_id=run_id,
+                raw_tool_call=raw,
+                tool_name=tool_name,
+                round_idx=round_idx,
+                call_idx=call_idx,
+            ),
+            "type": self._typed_tool_item_type(tool_name),
+            "status": "inProgress",
+            "tool": str(tool_name or ""),
+            "name": str(tool_name or ""),
+            "raw_tool_call": raw,
+            "normalized_arguments": safe_preview(arguments, limit=4000) if isinstance(arguments, dict) else {},
+            "validation_result": dict(validation_result or {}),
+            "tool_round": int(round_idx or 0),
+            "tool_index": int(call_idx or 0),
+            "agent_id": str(agent_id or ""),
+        }
+        self._emit_message_item_event(
+            progress_cb,
+            event="item/started",
+            thread_id=thread_id,
+            turn_id=run_id,
+            item=item,
+        )
+        return item
+
+    def _emit_tool_stream_item_completed(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        thread_id: str,
+        run_id: str,
+        event: ToolEvent,
+        round_idx: int,
+        call_idx: int,
+        agent_id: str,
+        run_snapshot: dict[str, Any] | None,
+        stream_items: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        item = self._tool_stream_item_from_event(
+            event,
+            run_id=run_id,
+            round_idx=round_idx,
+            call_idx=call_idx,
+            agent_id=agent_id,
+            run_snapshot=run_snapshot,
+        )
+        if stream_items is not None:
+            stream_items.append(dict(item))
+        self._emit_message_item_event(
+            progress_cb,
+            event="item/completed",
+            thread_id=thread_id,
+            turn_id=run_id,
+            item=item,
+        )
+        return item
+
+    def _emit_context_compaction_item(
+        self,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        *,
+        thread_id: str,
+        run_id: str,
+        status: dict[str, Any],
+        summary_text: str,
+        stream_items: list[dict[str, Any]] | None = None,
+    ) -> None:
+        marker = "|".join(
+            [
+                str(status.get("generation") or ""),
+                str(status.get("last_compacted_at") or ""),
+                str(status.get("last_compaction_phase") or status.get("phase") or ""),
+            ]
+        ).strip("|") or str(uuid.uuid4())
+        item = {
+            "id": f"{str(run_id or 'turn')}:context_compaction:{marker}",
+            "type": "contextCompaction",
+            "status": "completed",
+            "phase": str(status.get("last_compaction_phase") or status.get("phase") or ""),
+            "generation": int(status.get("generation") or 0),
+            "reason": str(status.get("reason") or status.get("last_compaction_reason") or ""),
+            "before_tokens": int(status.get("before_tokens") or 0),
+            "after_tokens": int(status.get("after_tokens") or 0),
+            "summary": self._backend._shorten(str(summary_text or ""), 800),
+        }
+        self._emit_message_item_event(
+            progress_cb,
+            event="item/started",
+            thread_id=thread_id,
+            turn_id=run_id,
+            item={**item, "status": "inProgress"},
+        )
+        if stream_items is not None:
+            stream_items.append(dict(item))
+        self._emit_message_item_event(
+            progress_cb,
+            event="item/completed",
+            thread_id=thread_id,
+            turn_id=run_id,
+            item=item,
+        )
+
     def _make_model_stream_observer(
         self,
         *,
@@ -1222,10 +1459,12 @@ class VintageProgrammerRuntime:
         validation_result: dict[str, Any] | None,
         raw_arguments: Any = None,
         run_id: str,
+        thread_id: str,
         locale: str,
         progress_cb: Callable[[dict[str, Any]], None] | None,
         trace_events: list[dict[str, Any]],
         tool_events: list[ToolEvent],
+        stream_items: list[dict[str, Any]],
         current_goal: str,
         current_task_focus: dict[str, Any],
         turn_status: str,
@@ -1253,6 +1492,18 @@ class VintageProgrammerRuntime:
                 **tool_audit,
             },
             trace_events=trace_events,
+        )
+        self._emit_tool_stream_item_started(
+            progress_cb,
+            thread_id=thread_id,
+            run_id=run_id,
+            tool_name=name,
+            raw_tool_call=raw_tool_call,
+            arguments=arguments,
+            validation_result=validation_result,
+            round_idx=round_idx,
+            call_idx=call_idx,
+            agent_id=spec.agent_id,
         )
         started_at = time.monotonic()
         try:
@@ -1291,28 +1542,40 @@ class VintageProgrammerRuntime:
             parent_id=started_id,
             trace_events=trace_events,
         )
+        run_snapshot = self._build_run_snapshot(
+            goal=current_goal,
+            current_task_focus=current_task_focus,
+            turn_status=turn_status,
+            plan_state=plan_state,
+            pending_user_input=pending_user_input,
+            effective_cwd=effective_cwd,
+            evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+            tool_events=tool_events,
+        )
+        self._emit_tool_stream_item_completed(
+            progress_cb,
+            thread_id=thread_id,
+            run_id=run_id,
+            event=event,
+            round_idx=round_idx,
+            call_idx=call_idx,
+            agent_id=spec.agent_id,
+            run_snapshot=run_snapshot,
+            stream_items=stream_items,
+        )
         if progress_cb is not None:
             progress_cb(
-                    {
-                        "event": "tool",
-                        "item": dump_model(event),
-                        "status": event.status,
-                        "summary": event.summary,
-                        "source_refs": list(event.source_refs),
+                {
+                    "event": "tool",
+                    "item": dump_model(event),
+                    "status": event.status,
+                    "summary": event.summary,
+                    "source_refs": list(event.source_refs),
                     "tool_round": round_idx,
                     "tool_index": call_idx,
                     "group": event.group,
                     "agent_id": spec.agent_id,
-                    "run_snapshot": self._build_run_snapshot(
-                        goal=current_goal,
-                        current_task_focus=current_task_focus,
-                        turn_status=turn_status,
-                        plan_state=plan_state,
-                        pending_user_input=pending_user_input,
-                        effective_cwd=effective_cwd,
-                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
-                        tool_events=tool_events,
-                    ),
+                    "run_snapshot": run_snapshot,
                 }
             )
         return result, event
@@ -2928,26 +3191,119 @@ class VintageProgrammerRuntime:
         start_index: int,
         end_index: int,
         plan_state: list[dict[str, Any]],
+        task_state: dict[str, Any],
+        work_cursor: dict[str, Any],
+        current_status: str,
+        model: str | None,
+        max_output_tokens: int,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
     ) -> str:
         if end_index <= start_index:
             return ""
-        lines = [
-            "Earlier progress summary for this turn.",
-            "These tool calls were compacted to keep the live context small.",
-        ]
-        if plan_state:
-            plan_bits = [
-                f"{str(item.get('step') or 'step')}: {str(item.get('status') or 'pending')}"
-                for item in plan_state[:8]
-                if isinstance(item, dict)
-            ]
-            if plan_bits:
-                lines.append("Checklist snapshot: " + " | ".join(plan_bits))
-        for item in tool_events[start_index:end_index]:
-            lines.append(
-                f"- {item.name} [{item.status}] {self._backend._shorten(item.summary or item.output_preview, 220)}"
+        task_payload = normalize_task_state(
+            {
+                **dict(task_state or {}),
+                "plan_items": list((task_state or {}).get("plan_items") or plan_state or []),
+            }
+        )
+        cursor_payload = normalize_work_cursor(work_cursor or {})
+        compacted_events = tool_events[start_index:end_index]
+        compaction_input = build_compaction_input(
+            old_messages=[],
+            tool_evidence=[dump_model(item) for item in compacted_events],
+            task_state=task_payload,
+            work_cursor=cursor_payload,
+            modified_files=cursor_payload.get("active_files") or [],
+            failed_attempts=task_payload.get("failed_attempts") or [],
+            current_status=current_status,
+        )
+        fallback_summary = build_structured_compaction_summary(compaction_input)
+        prompt = render_compaction_prompt(compaction_input)
+        can_run_isolated_compactor = (
+            hasattr(self._backend, "build_llm")
+            and hasattr(self._backend, "_invoke_chat_with_runner")
+            and hasattr(self._backend, "_SystemMessage")
+            and hasattr(self._backend, "_HumanMessage")
+        )
+        if can_run_isolated_compactor:
+            started_id = self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="compaction.llm.started",
+                title="Compaction subtask started",
+                detail="Compacting earlier tool evidence into structured continuation memory.",
+                status="running",
+                payload={
+                    "phase": "mid_turn",
+                    "tool_event_count": len(compacted_events),
+                    "schema": [
+                        "confirmed_facts",
+                        "files_touched",
+                        "decisions",
+                        "failed_attempts",
+                        "current_state",
+                        "next_steps",
+                        "open_questions",
+                        "do_not_repeat",
+                    ],
+                },
+                trace_events=trace_events,
             )
-        return "\n".join(lines)
+            try:
+                ai_msg, _, _, _ = self._invoke_backend_method(
+                    self._backend._invoke_chat_with_runner,
+                    messages=[
+                        self._backend._SystemMessage(content="Return strict JSON only. Do not call tools."),
+                        self._backend._HumanMessage(content=prompt),
+                    ],
+                    model=str(model or self._config.default_model or ""),
+                    max_output_tokens=max(512, min(int(max_output_tokens or 1200), 2000)),
+                    enable_tools=False,
+                    tool_names=[],
+                    event_cb=None,
+                )
+                raw_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
+                parsed = parse_compaction_summary_text(raw_text)
+                if parsed is not None:
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="compaction.llm.finished",
+                        title="Compaction subtask finished",
+                        detail="Structured compaction summary accepted.",
+                        status="success",
+                        payload={"phase": "mid_turn", "summary_chars": len(render_compaction_summary(parsed))},
+                        parent_id=started_id,
+                        trace_events=trace_events,
+                    )
+                    return render_compaction_summary(parsed)
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="compaction.llm.failed",
+                    title="Compaction subtask output rejected",
+                    detail="The compaction model did not return the required JSON schema; using deterministic fallback.",
+                    status="warning",
+                    payload={"phase": "mid_turn", "raw_preview": safe_preview(raw_text, limit=1000)},
+                    parent_id=started_id,
+                    trace_events=trace_events,
+                )
+            except Exception as exc:
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="compaction.llm.failed",
+                    title="Compaction subtask failed",
+                    detail=safe_error_message(exc),
+                    status="warning",
+                    payload={"phase": "mid_turn", "exception_type": exc.__class__.__name__},
+                    parent_id=started_id,
+                    trace_events=trace_events,
+                )
+        return render_compaction_summary(fallback_summary)
 
     def _maybe_compact_live_messages(
         self,
@@ -2957,7 +3313,15 @@ class VintageProgrammerRuntime:
         tool_events: list[ToolEvent],
         compacted_until: int,
         plan_state: list[dict[str, Any]],
+        task_state: dict[str, Any],
+        work_cursor: dict[str, Any],
+        current_status: str,
         model: str | None,
+        max_output_tokens: int,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
         auto_compact_token_limit: int,
         context_window_known: bool,
     ) -> tuple[list[Any], int, bool, int]:
@@ -2996,6 +3360,15 @@ class VintageProgrammerRuntime:
             start_index=compacted_until,
             end_index=end_index,
             plan_state=plan_state,
+            task_state=task_state,
+            work_cursor=work_cursor,
+            current_status=current_status,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            progress_cb=progress_cb,
+            run_id=run_id,
+            locale=locale,
+            trace_events=trace_events,
         )
         if not summary:
             return messages, compacted_until, False, estimated_tokens
@@ -3090,6 +3463,25 @@ class VintageProgrammerRuntime:
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
+        work_cursor = normalize_work_cursor(
+            {
+                "project_root": project_root,
+                "cwd": effective_cwd,
+                **(
+                    dict(context_payload.get("work_cursor") or {})
+                    if isinstance(context_payload.get("work_cursor"), dict)
+                    else {}
+                ),
+            }
+        )
+        task_state = normalize_task_state(
+            context_payload.get("task_state")
+            if isinstance(context_payload.get("task_state"), dict)
+            else {}
+        )
+        canonical_focus = self._normalize_task_checkpoint(
+            focus_from_work_cursor_task_state(work_cursor, task_state)
+        )
         compaction_status = dict(context_payload.get("compaction_status") or {})
         auto_compact_token_limit = max(0, int(compaction_status.get("auto_compact_token_limit") or 0))
         context_window_known = bool(compaction_status.get("context_window_known"))
@@ -3101,14 +3493,18 @@ class VintageProgrammerRuntime:
         active_task_focus = self._normalize_task_checkpoint(
             context_payload.get("active_task_focus")
             or context_payload.get("current_task_focus")
+            or canonical_focus
             or route_state_input.get("current_task_focus")
             or route_state_input.get("task_checkpoint")
         )
         current_task_focus = self._initial_task_checkpoint(
-            route_state=route_state_input,
+            route_state={
+                **route_state_input,
+                "task_checkpoint": route_state_input.get("task_checkpoint") or canonical_focus,
+            },
             project_root=project_root,
             cwd=effective_cwd,
-            goal=str(current_turn_context.get("goal") or _truncate_goal(prompt_message)),
+            goal=str(current_turn_context.get("goal") or task_state.get("goal") or _truncate_goal(prompt_message)),
             attachments=attachment_metas,
             prefer_goal=bool(str(current_turn_context.get("goal") or "").strip()),
         )
@@ -3187,6 +3583,7 @@ class VintageProgrammerRuntime:
             notes.append("current_task_focus_restored")
             notes.append("task_checkpoint_restored")
         tool_events: list[ToolEvent] = []
+        stream_items: list[dict[str, Any]] = []
         effective_model = requested_model
         plan_state: list[dict[str, Any]] = []
         pending_user_input: dict[str, Any] = {}
@@ -3728,6 +4125,39 @@ class VintageProgrammerRuntime:
                             },
                             trace_events=trace_events,
                         )
+                        run_snapshot = self._build_run_snapshot(
+                            goal=current_goal,
+                            current_task_focus=current_task_focus,
+                            turn_status=turn_status,
+                            plan_state=plan_state,
+                            pending_user_input=pending_user_input,
+                            effective_cwd=effective_cwd,
+                            evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                            tool_events=tool_events,
+                        )
+                        self._emit_tool_stream_item_started(
+                            progress_cb,
+                            thread_id=session_id,
+                            run_id=run_id,
+                            tool_name=name,
+                            raw_tool_call=raw_tool_call_payload,
+                            arguments=arguments,
+                            validation_result=validation_payload,
+                            round_idx=round_idx,
+                            call_idx=call_idx,
+                            agent_id=spec.agent_id,
+                        )
+                        self._emit_tool_stream_item_completed(
+                            progress_cb,
+                            thread_id=session_id,
+                            run_id=run_id,
+                            event=event,
+                            round_idx=round_idx,
+                            call_idx=call_idx,
+                            agent_id=spec.agent_id,
+                            run_snapshot=run_snapshot,
+                            stream_items=stream_items,
+                        )
                         if progress_cb is not None:
                             progress_cb(
                                 {
@@ -3740,6 +4170,7 @@ class VintageProgrammerRuntime:
                                     "tool_index": call_idx,
                                     "group": event.group,
                                     "agent_id": spec.agent_id,
+                                    "run_snapshot": run_snapshot,
                                 }
                             )
                         messages.append(self._tool_message_for_result(result=result, call_id=call_id, name=name))
@@ -3843,10 +4274,12 @@ class VintageProgrammerRuntime:
                             validation_result=validation_payload,
                             raw_arguments=raw_arguments,
                             run_id=run_id,
+                            thread_id=session_id,
                             locale=locale,
                             progress_cb=progress_cb,
                             trace_events=trace_events,
                             tool_events=tool_events,
+                            stream_items=stream_items,
                             current_goal=current_goal,
                             current_task_focus=current_task_focus,
                             turn_status=turn_status,
@@ -3902,6 +4335,39 @@ class VintageProgrammerRuntime:
                             },
                             trace_events=trace_events,
                         )
+                        run_snapshot = self._build_run_snapshot(
+                            goal=current_goal,
+                            current_task_focus=current_task_focus,
+                            turn_status=turn_status,
+                            plan_state=plan_state,
+                            pending_user_input=pending_user_input,
+                            effective_cwd=effective_cwd,
+                            evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                            tool_events=tool_events,
+                        )
+                        self._emit_tool_stream_item_started(
+                            progress_cb,
+                            thread_id=session_id,
+                            run_id=run_id,
+                            tool_name=name or raw_name,
+                            raw_tool_call=raw_tool_call_payload,
+                            arguments=arguments,
+                            validation_result=validation_payload,
+                            round_idx=round_idx,
+                            call_idx=call_idx,
+                            agent_id=spec.agent_id,
+                        )
+                        self._emit_tool_stream_item_completed(
+                            progress_cb,
+                            thread_id=session_id,
+                            run_id=run_id,
+                            event=event,
+                            round_idx=round_idx,
+                            call_idx=call_idx,
+                            agent_id=spec.agent_id,
+                            run_snapshot=run_snapshot,
+                            stream_items=stream_items,
+                        )
                         if progress_cb is not None:
                             progress_cb(
                                 {
@@ -3914,6 +4380,7 @@ class VintageProgrammerRuntime:
                                     "tool_index": call_idx,
                                     "group": event.group,
                                     "agent_id": spec.agent_id,
+                                    "run_snapshot": run_snapshot,
                                 }
                             )
                         notes.append("tool_validation_rejected")
@@ -3984,22 +4451,33 @@ class VintageProgrammerRuntime:
                     if name == "update_plan" and bool(result.get("ok")):
                         plan_state = list(result.get("plan") or [])
                         if progress_cb is not None:
+                            plan_snapshot = self._build_run_snapshot(
+                                goal=current_goal,
+                                current_task_focus=current_task_focus,
+                                turn_status=turn_status,
+                                plan_state=plan_state,
+                                pending_user_input=pending_user_input,
+                                effective_cwd=effective_cwd,
+                                evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                tool_events=tool_events,
+                            )
                             progress_cb(
                                 {
                                     "event": "plan_update",
                                     "plan": plan_state,
                                     "explanation": str(result.get("explanation") or ""),
                                     "turn_status": turn_status,
-                                    "run_snapshot": self._build_run_snapshot(
-                                        goal=current_goal,
-                                        current_task_focus=current_task_focus,
-                                        turn_status=turn_status,
-                                        plan_state=plan_state,
-                                        pending_user_input=pending_user_input,
-                                        effective_cwd=effective_cwd,
-                                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
-                                        tool_events=tool_events,
-                                    ),
+                                    "run_snapshot": plan_snapshot,
+                                }
+                            )
+                            progress_cb(
+                                {
+                                    "event": "turn/plan/updated",
+                                    "thread_id": session_id,
+                                    "turn_id": run_id,
+                                    "plan": plan_state,
+                                    "explanation": str(result.get("explanation") or ""),
+                                    "run_snapshot": plan_snapshot,
                                 }
                             )
                     if name == "request_user_input" and bool(result.get("ok")):
@@ -4225,13 +4703,40 @@ class VintageProgrammerRuntime:
                     compacted = False
                     live_estimated_tokens = 0
                 else:
+                    live_work_cursor = normalize_work_cursor(
+                        {
+                            **dict(work_cursor or {}),
+                            "project_root": current_task_focus.get("project_root") or project_root,
+                            "cwd": current_task_focus.get("cwd") or effective_cwd or project_root,
+                            "active_files": current_task_focus.get("active_files") or work_cursor.get("active_files") or [],
+                            "active_attachments": current_task_focus.get("active_attachments") or work_cursor.get("active_attachments") or [],
+                        }
+                    )
+                    live_task_state = normalize_task_state(
+                        {
+                            **dict(task_state or {}),
+                            "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
+                            "goal": current_goal,
+                            "status": turn_status,
+                            "plan_items": plan_state,
+                            "next_required_action": current_task_focus.get("next_action") or task_state.get("next_required_action") or "",
+                        }
+                    )
                     messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
                         messages=messages,
                         base_message_count=base_message_count,
                         tool_events=tool_events,
                         compacted_until=compacted_tool_events,
                         plan_state=plan_state,
+                        task_state=live_task_state,
+                        work_cursor=live_work_cursor,
+                        current_status=turn_status,
                         model=effective_model,
+                        max_output_tokens=int(settings.max_output_tokens),
+                        progress_cb=progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                        trace_events=trace_events,
                         auto_compact_token_limit=auto_compact_token_limit,
                         context_window_known=context_window_known,
                     )
@@ -4241,6 +4746,11 @@ class VintageProgrammerRuntime:
                     notes.append("turn_context_compacted")
                     before_tokens = int(live_estimated_tokens or 0)
                     after_tokens = 0
+                    compaction_summary_text = ""
+                    try:
+                        compaction_summary_text = str(getattr(messages[base_message_count], "content", "") or "")
+                    except Exception:
+                        compaction_summary_text = ""
                     try:
                         after_tokens = count_tokens(
                             "\n".join(
@@ -4251,6 +4761,7 @@ class VintageProgrammerRuntime:
                         )
                     except Exception:
                         after_tokens = 0
+                    live_compaction_status["generation"] = int(live_compaction_status.get("generation") or 0) + 1
                     live_compaction_status["last_compaction_phase"] = "mid_turn"
                     live_compaction_status["phase"] = "mid_turn"
                     live_compaction_status["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -4277,6 +4788,14 @@ class VintageProgrammerRuntime:
                             "summary_tokens": 0,
                         },
                         trace_events=trace_events,
+                    )
+                    self._emit_context_compaction_item(
+                        progress_cb,
+                        thread_id=session_id,
+                        run_id=run_id,
+                        status=live_compaction_status,
+                        summary_text=compaction_summary_text,
+                        stream_items=stream_items,
                     )
                     if progress_cb is not None:
                         progress_cb(
@@ -4859,6 +5378,12 @@ class VintageProgrammerRuntime:
                     if isinstance(runtime_error.get("tool_boundary_clean"), bool)
                     else None
                 ),
+                "tool_items": [
+                    dict(item)
+                    for item in stream_items
+                    if str(item.get("type") or "") in {"toolCall", "commandExecution", "fileChange", "userInputRequest", "imageView"}
+                ],
+                "live_items": [dict(item) for item in stream_items],
                 "trace_events": [dict(item) for item in trace_events],
             },
             "tool_boundary_clean": (

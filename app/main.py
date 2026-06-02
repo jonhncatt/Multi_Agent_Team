@@ -97,7 +97,11 @@ config = load_config()
 DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = int(config.max_output_tokens)
 AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
 project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
-session_store = SessionStore(config.sessions_dir)
+session_store = SessionStore(
+    config.sessions_dir,
+    runs_dir=config.runs_dir,
+    session_meta_dir=config.session_meta_dir,
+)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 vintage_programmer_runtime = VintageProgrammerRuntime(
@@ -108,11 +112,12 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.4d"
+APP_VERSION = "3.1.5"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
+session_store.rebuild_metadata_index(default_project=default_project)
 _provider_runtime_lock = threading.Lock()
 _provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
 _provider_payload_lock = threading.Lock()
@@ -985,11 +990,32 @@ def _turn_public_id(item: dict[str, Any], index: int) -> str:
     return f"legacy-{index}-{digest}"
 
 
+def _normalize_detail_view(view: str | None) -> str:
+    normalized = str(view or "summary").strip().lower()
+    if normalized not in {"summary", "full"}:
+        raise HTTPException(status_code=400, detail="view must be summary or full")
+    return normalized
+
+
+def _session_turn_from_payload(item: dict[str, Any], *, turn_id: str) -> SessionTurn:
+    return SessionTurn(
+        id=turn_id,
+        role=str(item.get("role") or "user"),
+        text=str(item.get("text") or ""),
+        answer_bundle=item.get("answer_bundle") or {},
+        activity=item.get("activity") or {},
+        run_artifact=item.get("run_artifact") or {},
+        created_at=str(item.get("created_at")) if item.get("created_at") else None,
+    )
+
+
 def _thread_detail_response_payload(
     session_id: str,
     max_turns: int = 40,
     before_turn_id: str | None = None,
+    view: str | None = "summary",
 ) -> ThreadDetailResponse:
+    detail_view = _normalize_detail_view(view)
     loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1022,16 +1048,21 @@ def _thread_detail_response_payload(
     limited_turns = indexed_turns[max(0, end_index - turn_limit) : end_index]
     turns: list[SessionTurn] = []
     for index, item in limited_turns:
-        turns.append(
-            SessionTurn(
-                id=_turn_public_id(item, index),
-                role=str(item.get("role") or "user"),
-                text=str(item.get("text") or ""),
-                answer_bundle=item.get("answer_bundle") or {},
-                activity=item.get("activity") or {},
-                created_at=str(item.get("created_at")) if item.get("created_at") else None,
-            )
-        )
+        turn_id = _turn_public_id(item, index)
+        expanded = session_store.expand_turn_for_view(session_id, item, view=detail_view)
+        turns.append(_session_turn_from_payload(expanded, turn_id=turn_id))
+    work_cursor = dict(loaded.get("work_cursor") or {})
+    task_state = dict(loaded.get("task_state") or {})
+    recent_tasks = list(loaded.get("recent_tasks") or [])
+    artifact_memory_preview = list(loaded.get("artifact_memory_preview") or [])
+    agent_state.setdefault("work_cursor", work_cursor)
+    agent_state.setdefault("task_state", task_state)
+    agent_state.setdefault(
+        "task_checkpoint",
+        session_context_impl.compat_task_checkpoint_from_focus(session_context_impl.get_current_task_focus(loaded)),
+    )
+    agent_state.setdefault("recent_tasks", recent_tasks)
+    agent_state.setdefault("artifact_memory_preview", artifact_memory_preview)
     return ThreadDetailResponse(
         thread_id=session_id,
         session_id=session_id,
@@ -1045,6 +1076,10 @@ def _thread_detail_response_payload(
         cwd=str(loaded.get("cwd") or ""),
         status=_thread_status_value(session_id),
         agent_state=agent_state,
+        work_cursor=work_cursor,
+        task_state=task_state,
+        recent_tasks=recent_tasks,
+        artifact_memory_preview=artifact_memory_preview,
         context_meter=context_meter,
         compaction_status=compaction_status,
         turns=turns,
@@ -1099,8 +1134,18 @@ def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> Upd
 
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
-def get_session(session_id: str, max_turns: int = 40, before_turn_id: str | None = None) -> SessionDetailResponse:
-    thread_payload = _thread_detail_response_payload(session_id, max_turns=max_turns, before_turn_id=before_turn_id)
+def get_session(
+    session_id: str,
+    max_turns: int = 40,
+    before_turn_id: str | None = None,
+    view: str = "summary",
+) -> SessionDetailResponse:
+    thread_payload = _thread_detail_response_payload(
+        session_id,
+        max_turns=max_turns,
+        before_turn_id=before_turn_id,
+        view=view,
+    )
     return SessionDetailResponse(
         session_id=str(thread_payload.thread_id or ""),
         title=thread_payload.title,
@@ -1112,6 +1157,10 @@ def get_session(session_id: str, max_turns: int = 40, before_turn_id: str | None
         git_branch=thread_payload.git_branch,
         cwd=thread_payload.cwd,
         agent_state=thread_payload.agent_state,
+        work_cursor=thread_payload.work_cursor,
+        task_state=thread_payload.task_state,
+        recent_tasks=thread_payload.recent_tasks,
+        artifact_memory_preview=thread_payload.artifact_memory_preview,
         context_meter=thread_payload.context_meter,
         compaction_status=thread_payload.compaction_status,
         turns=thread_payload.turns,
@@ -1119,8 +1168,33 @@ def get_session(session_id: str, max_turns: int = 40, before_turn_id: str | None
 
 
 @app.get("/api/thread/{thread_id}", response_model=ThreadDetailResponse)
-def get_thread(thread_id: str, max_turns: int = 40, before_turn_id: str | None = None) -> ThreadDetailResponse:
-    return _thread_detail_response_payload(thread_id, max_turns=max_turns, before_turn_id=before_turn_id)
+def get_thread(
+    thread_id: str,
+    max_turns: int = 40,
+    before_turn_id: str | None = None,
+    view: str = "summary",
+) -> ThreadDetailResponse:
+    return _thread_detail_response_payload(thread_id, max_turns=max_turns, before_turn_id=before_turn_id, view=view)
+
+
+@app.get("/api/thread/{thread_id}/turn/{turn_id}", response_model=SessionTurn)
+def get_thread_turn(thread_id: str, turn_id: str, view: str = "full") -> SessionTurn:
+    detail_view = _normalize_detail_view(view)
+    loaded = session_store.load(thread_id, default_project=_default_project())
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+    turns_raw = loaded.get("turns", [])
+    if not isinstance(turns_raw, list):
+        turns_raw = []
+    for index, item in enumerate(turns_raw):
+        if not isinstance(item, dict):
+            continue
+        public_id = _turn_public_id(item, index)
+        if public_id != str(turn_id or "").strip():
+            continue
+        expanded = session_store.expand_turn_for_view(thread_id, item, view=detail_view)
+        return _session_turn_from_payload(expanded, turn_id=public_id)
+    raise HTTPException(status_code=404, detail="Turn not found")
 
 
 @app.get("/api/sessions", response_model=SessionListResponse)
@@ -1468,11 +1542,31 @@ def _build_run_snapshot(
     runtime_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
+    work_cursor = session_context_impl.normalize_work_cursor(
+        {
+            "project_root": normalized_focus.get("project_root") or "",
+            "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
+            "active_files": normalized_focus.get("active_files") or [],
+            "active_attachments": normalized_focus.get("active_attachments") or [],
+        }
+    )
+    task_state = session_context_impl.normalize_task_state(
+        {
+            "task_id": normalized_focus.get("task_id") or "",
+            "goal": str(goal or normalized_focus.get("goal") or "").strip(),
+            "status": str(turn_status or "running"),
+            "plan_items": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
+            "next_required_action": normalized_focus.get("next_action") or "",
+            "blocked_reason": str((runtime_error or {}).get("message") or "") if isinstance(runtime_error, dict) else "",
+        }
+    )
     payload = {
         "goal": str(goal or "").strip(),
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
         "current_task_focus": normalized_focus,
+        "work_cursor": work_cursor,
+        "task_state": task_state,
         "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
         "pending_user_input": dict(pending_user_input or {}),
         "tool_count": int(tool_count or 0),
@@ -1675,27 +1769,41 @@ def _process_chat_request(
             max_output_tokens=req.settings.max_output_tokens,
             pending_message=req.message,
         )
+        updated_at = seed_session["updated_at"]
+        seed_session["work_cursor"] = session_context_impl.normalize_work_cursor(
+            {
+                "project_root": str(seed_session.get("project_root") or ""),
+                "cwd": str(seed_session.get("project_root") or ""),
+                "updated_at": updated_at,
+            }
+        )
+        seed_session["task_state"] = session_context_impl.normalize_task_state(
+            {
+                "goal": fallback_goal,
+                "status": "blocked",
+                "blocked_reason": "missing_model_auth",
+                "next_required_action": fallback_text,
+                "updated_at": updated_at,
+            }
+        )
         seed_session["agent_state"] = {
-            "goal": fallback_goal,
+            "agent_id": "vintage_programmer",
             "permission_profile": str(req.settings.permission_profile or "auto"),
             "turn_status": "blocked",
-            "plan": [],
             "pending_user_input": {},
             "phase": "report",
             "last_run_id": "",
             "last_provider": requested_provider,
             "last_model": requested_model,
             "last_compacted_at": "",
-            "cwd": str(seed_session.get("project_root") or ""),
-            "task_checkpoint": {},
-            "context_meter": dict(fallback_context_meter),
-            "tool_hits": [],
             "tool_count": 0,
-            "tool_names": [],
             "evidence_status": "not_needed",
             "enabled_skill_ids": [],
-            "updated_at": seed_session["updated_at"],
+            "final_answer_preview": fallback_text[:240],
+            "runtime_error": {},
+            "updated_at": updated_at,
         }
+        seed_session["context_meter"] = dict(fallback_context_meter)
         session_store.save(seed_session)
         return ChatResponse(
             session_id=seed_session["id"],
@@ -1711,6 +1819,8 @@ def _process_chat_request(
             turn_status="blocked",
             plan=[],
             pending_user_input={},
+            work_cursor=dict(seed_session.get("work_cursor") or {}),
+            task_state=dict(seed_session.get("task_state") or {}),
             token_usage=TokenUsage(),
             session_token_totals=TokenTotals(),
             global_token_totals=TokenTotals(),
@@ -1895,6 +2005,36 @@ def _process_chat_request(
                     context_meter=compacted_context_meter,
                     compaction_status=compacted_context_status,
                 ),
+            )
+            compaction_item = {
+                "id": f"{run_id}:context_compaction:{compaction_after.get('generation') or 0}:{compaction_after.get('last_compacted_at') or ''}",
+                "type": "contextCompaction",
+                "status": "completed",
+                "phase": str(compaction_after.get("last_compaction_phase") or compaction_after.get("phase") or "pre_turn"),
+                "generation": int(compaction_after.get("generation") or 0),
+                "reason": str(compaction_after.get("reason") or compaction_after.get("last_compaction_reason") or ""),
+                "before_tokens": int(compaction_after.get("before_tokens") or 0),
+                "after_tokens": int(compaction_after.get("after_tokens") or 0),
+                "summary": translate(
+                    locale,
+                    "chat.replacement_history_compacted",
+                    generation=compaction_after.get("generation") or 0,
+                    retained_turn_count=compaction_after.get("retained_turn_count") or 0,
+                ),
+            }
+            _emit_progress(
+                progress_cb,
+                "item/started",
+                thread_id=session_id,
+                turn_id=run_id,
+                item={**compaction_item, "status": "inProgress"},
+            )
+            _emit_progress(
+                progress_cb,
+                "item/completed",
+                thread_id=session_id,
+                turn_id=run_id,
+                item=compaction_item,
             )
         session_context_impl.sync_session_memory_state(session)
 
@@ -2095,6 +2235,8 @@ def _process_chat_request(
                     "recent_user_messages": recent_user_messages_for_runtime,
                     "active_task_focus": active_task_focus_for_runtime,
                     "current_task_focus": current_task_focus_for_runtime,
+                    "work_cursor": copy.deepcopy(session.get("work_cursor") or {}),
+                    "task_state": copy.deepcopy(session.get("task_state") or {}),
                     "recent_tasks": recent_tasks_for_runtime,
                     "artifact_memory_preview": artifact_memory_preview,
                     "compaction_status": compaction_status_for_runtime,
@@ -2235,7 +2377,8 @@ def _process_chat_request(
                 text=text,
             )
 
-        session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
+        assistant_turn = session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
+        assistant_turn_id = str(assistant_turn.get("id") or "")
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
         inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
@@ -2257,32 +2400,48 @@ def _process_chat_request(
             for item in tool_events
             if isinstance(item, dict)
         ]
+        normalized_focus = session_context_impl.normalize_current_task_focus(current_task_focus)
+        session["work_cursor"] = session_context_impl.normalize_work_cursor(
+            {
+                "project_root": normalized_focus.get("project_root") or session.get("project_root") or "",
+                "cwd": normalized_focus.get("cwd") or (((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or "",
+                "active_files": normalized_focus.get("active_files") or [],
+                "active_attachments": normalized_focus.get("active_attachments") or [],
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
+        next_required_action = str(
+            pending_user_input.get("summary")
+            or normalized_focus.get("next_action")
+            or ("blocked" if turn_status == "blocked" else "")
+        ).strip()
+        session["task_state"] = session_context_impl.normalize_task_state(
+            {
+                "task_id": normalized_focus.get("task_id") or "",
+                "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or req.message[:240]),
+                "status": "blocked" if turn_status in {"blocked", "needs_user_input"} else ("failed" if turn_status == "failed" else ("completed" if turn_status == "completed" else "in_progress")),
+                "plan_items": list(inspector_run_state.get("plan") or plan),
+                "current_step_id": "",
+                "completed_steps": [],
+                "blocked_reason": str(runtime_error.get("message") or "") if turn_status in {"blocked", "failed"} else "",
+                "next_required_action": next_required_action,
+                "failed_attempts": [],
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        )
         session["agent_state"] = {
             "agent_id": "vintage_programmer",
-            "goal": str(inspector_run_state.get("goal") or req.message[:140]),
-            "current_goal": str(inspector_run_state.get("goal") or req.message[:140]),
             "permission_profile": permission_profile,
             "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
-            "plan": list(inspector_run_state.get("plan") or plan),
             "pending_user_input": dict(inspector_run_state.get("pending_user_input") or pending_user_input),
             "phase": str(inspector_run_state.get("phase") or "report"),
             "last_run_id": run_id,
             "last_provider": requested_provider,
             "last_model": selected_model,
-            "model_draft": model_draft,
-            "final_answer": final_answer,
+            "final_answer_preview": (final_answer or text).strip()[:240],
             "runtime_error": dict(runtime_error),
             "last_compacted_at": last_compacted_at,
-            "project_id": str(session.get("project_id") or ""),
-            "project_root": str(session.get("project_root") or ""),
-            "cwd": str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
-            "current_task_focus": dict(current_task_focus),
-            "task_checkpoint": session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
-            "context_meter": {},
-            "compaction_status": {},
-            "tool_hits": tool_hits,
             "tool_count": len(tool_hits),
-            "tool_names": [str(item.get("name") or "") for item in tool_hits if str(item.get("name") or "").strip()],
             "evidence_status": str(inspector_evidence.get("status") or "not_needed"),
             "enabled_skill_ids": [
                 str(item.get("id") or "")
@@ -2312,7 +2471,7 @@ def _process_chat_request(
         )
         context_manager.compact_if_needed()
         session["context_manager"] = context_manager.to_session_payload()
-        session["cwd"] = str(session["agent_state"].get("cwd") or session.get("project_root") or "")
+        session["cwd"] = str((session.get("work_cursor") or {}).get("cwd") or session.get("project_root") or "")
         thread_memory = session_context_impl.get_thread_memory(session)
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = session_context_impl.get_artifact_memory_preview(session)
@@ -2332,9 +2491,9 @@ def _process_chat_request(
             if value in (None, "", [], {}):
                 continue
             compaction_status[key] = value
-        session["agent_state"]["context_meter"] = dict(context_meter)
         session["agent_state"]["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or last_compacted_at or "")
-        session["agent_state"]["compaction_status"] = dict(compaction_status)
+        session["context_meter"] = dict(context_meter)
+        session["compaction_status"] = dict(compaction_status)
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
@@ -2370,6 +2529,23 @@ def _process_chat_request(
             attachment_ids=resolved_attachment_ids,
             route_state=route_state,
         )
+        if assistant_turn_id:
+            session_store.persist_turn_artifact(
+                session,
+                turn_id=assistant_turn_id,
+                run_id=run_id,
+                activity=activity,
+                answer_bundle=answer_bundle,
+                tool_events=tool_events,
+                inspector=inspector,
+                extra={
+                    "route_state": route_state,
+                    "token_usage": token_usage,
+                    "effective_model": selected_model,
+                    "permission_profile": permission_profile,
+                    "turn_status": turn_status,
+                },
+            )
         session_store.save(session)
         _emit_progress(
             progress_cb,
@@ -2483,6 +2659,8 @@ def _process_chat_request(
             plan=plan,
             pending_user_input=pending_user_input,
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
+            work_cursor=dict(session.get("work_cursor") or {}),
+            task_state=dict(session.get("task_state") or {}),
             recent_tasks=recent_tasks,
             activity=activity,
             context_meter=context_meter,
@@ -2611,43 +2789,10 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
         stream_state: dict[str, Any] = {
             "thread_id": "",
             "turn_id": "",
-            "tool_counter": 0,
-            "last_compaction_marker": "",
         }
 
         def put_event(event_name: str, payload: dict[str, Any]) -> None:
             events.put({"event": event_name, "payload": payload})
-
-        def build_tool_item_payload(data: dict[str, Any]) -> dict[str, Any]:
-            item = dict(data.get("item") or {})
-            run_snapshot = dict(data.get("run_snapshot") or {})
-            stream_state["tool_counter"] = int(stream_state.get("tool_counter") or 0) + 1
-            item_id = str(item.get("id") or "") or (
-                f"{str(stream_state.get('turn_id') or 'turn')}:{stream_state['tool_counter']}:{str(item.get('name') or 'tool')}"
-            )
-            item_type = "toolCall"
-            name = str(item.get("name") or "").strip()
-            if name == "exec_command":
-                item_type = "commandExecution"
-            elif name == "apply_patch":
-                item_type = "fileChange"
-            elif name == "request_user_input":
-                item_type = "userInputRequest"
-            elif name == "image_read":
-                item_type = "imageView"
-            return {
-                **item,
-                "id": item_id,
-                "type": item_type,
-                "tool": name,
-                "group": str(item.get("group") or ""),
-                "status": "completed" if str(item.get("status") or "") == "ok" else "failed",
-                "summary": str(item.get("summary") or data.get("summary") or ""),
-                "sourceRefs": list(item.get("source_refs") or data.get("source_refs") or []),
-                "cwd": str(item.get("cwd") or ""),
-                "projectRoot": str(item.get("project_root") or ""),
-                "runSnapshot": run_snapshot,
-            }
 
         def emit(payload: dict[str, Any]) -> None:
             event_name = str(payload.get("event") or "message")
@@ -2663,15 +2808,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                 return
 
             put_event(event_name, data)
-            if event_name == "tool":
-                item_payload = build_tool_item_payload(data)
-                typed_common = {
-                    "thread_id": str(stream_state.get("thread_id") or ""),
-                    "turn_id": str(stream_state.get("turn_id") or ""),
-                }
-                put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
-                put_event("item/completed", {**typed_common, "item": item_payload})
-            elif event_name == "plan_update":
+            if event_name == "plan_update":
                 put_event(
                     "turn/plan/updated",
                     {
@@ -2682,48 +2819,6 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                         "run_snapshot": dict(data.get("run_snapshot") or {}),
                     },
                 )
-            elif event_name == "request_user_input":
-                pending = dict(data.get("pending_user_input") or {})
-                item_id = f"{str(stream_state.get('turn_id') or 'turn')}:request_user_input"
-                typed_common = {
-                    "thread_id": str(stream_state.get("thread_id") or ""),
-                    "turn_id": str(stream_state.get("turn_id") or ""),
-                }
-                item_payload = {
-                    "id": item_id,
-                    "type": "userInputRequest",
-                    "status": "completed",
-                    "summary": str(pending.get("summary") or ""),
-                    "questions": list(pending.get("questions") or []),
-                }
-                put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
-                put_event("item/completed", {**typed_common, "item": item_payload})
-            elif event_name == "trace":
-                run_snapshot = dict(data.get("run_snapshot") or {})
-                compaction_status = dict(run_snapshot.get("compaction_status") or {})
-                marker = "|".join(
-                    [
-                        str(compaction_status.get("generation") or ""),
-                        str(compaction_status.get("last_compacted_at") or ""),
-                        str(compaction_status.get("last_compaction_phase") or ""),
-                    ]
-                ).strip("|")
-                if marker and marker != str(stream_state.get("last_compaction_marker") or ""):
-                    stream_state["last_compaction_marker"] = marker
-                    item_id = f"{str(stream_state.get('turn_id') or 'turn')}:context_compaction:{marker}"
-                    typed_common = {
-                        "thread_id": str(stream_state.get("thread_id") or ""),
-                        "turn_id": str(stream_state.get("turn_id") or ""),
-                    }
-                    item_payload = {
-                        "id": item_id,
-                        "type": "contextCompaction",
-                        "status": "completed",
-                        "phase": str(compaction_status.get("last_compaction_phase") or ""),
-                        "generation": int(compaction_status.get("generation") or 0),
-                    }
-                    put_event("item/started", {**typed_common, "item": {**item_payload, "status": "inProgress"}})
-                    put_event("item/completed", {**typed_common, "item": item_payload})
 
         def worker() -> None:
             try:

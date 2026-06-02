@@ -678,6 +678,8 @@ function liveRunItemFromStreamItem(streamItem, eventName = "") {
   let labelKey = "";
   if (itemType === "agentMessage") {
     labelKey = isCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming";
+  } else if (itemType === "contextCompaction") {
+    labelKey = isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting";
   } else if (itemType === "toolCall" || tool) {
     labelKey = isCompleted ? "activity.live.tool_finished" : "activity.live.tool_running";
   }
@@ -830,6 +832,8 @@ function normalizeMessageActivity(raw) {
     run_duration_ms: runDurationMs,
     final_elapsed_ms: finalElapsedMs,
     activity_summary: String(item.activity_summary || ""),
+    trace_ref: String(item.trace_ref || item.traceRef || ""),
+    tool_count: Math.max(0, Number(item.tool_count || item.toolCount || 0) || 0),
     triggering_user_message: String(item.triggering_user_message || item.triggeringUserMessage || ""),
     triggering_user_turn_id: String(item.triggering_user_turn_id || item.triggeringUserTurnId || ""),
     session_id: String(item.session_id || item.sessionId || ""),
@@ -2779,6 +2783,7 @@ function App() {
   const activeThreadRequestSeqRef = useRef(0);
   const activeThreadAbortRef = useRef(null);
   const threadDetailCacheRef = useRef(new Map());
+  const fullTurnRequestRef = useRef(new Set());
   const activeSessionIdRef = useRef("");
   const pendingThreadCreationPromiseRef = useRef(null);
   const pendingTempThreadIdRef = useRef("");
@@ -3903,6 +3908,7 @@ function App() {
     activeThreadAbortRef.current = controller;
     setLoadingSession(true);
     setSessionId(sid);
+    fullTurnRequestRef.current.clear();
     setMobileThreadsOpen(false);
     closeThreadMenu();
     clearLiveRunUi();
@@ -3916,7 +3922,7 @@ function App() {
     }
     try {
       const data = normalizeThreadDetailPayload(await fetchJson(
-        `/api/thread/${encodeURIComponent(sid)}?max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
+        `/api/thread/${encodeURIComponent(sid)}?view=summary&max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
         { signal: controller.signal },
       ));
       if (requestSeq !== activeThreadRequestSeqRef.current) return false;
@@ -3954,7 +3960,7 @@ function App() {
     setLoadingEarlierTurns(true);
     try {
       const data = normalizeThreadDetailPayload(await fetchJson(
-        `/api/thread/${encodeURIComponent(sid)}?max_turns=${THREAD_DETAIL_PAGE_SIZE}&before_turn_id=${encodeURIComponent(beforeTurnId)}`,
+        `/api/thread/${encodeURIComponent(sid)}?view=summary&max_turns=${THREAD_DETAIL_PAGE_SIZE}&before_turn_id=${encodeURIComponent(beforeTurnId)}`,
       ));
       if (activeSessionIdRef.current !== sid) return;
       const olderMessages = extractSessionMessages(data);
@@ -4742,6 +4748,8 @@ function App() {
         context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
         pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+        work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
+        task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
       }));
       setLiveEvidence((prev) => ({
         ...prev,
@@ -4778,6 +4786,8 @@ function App() {
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
+          work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
+          task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
@@ -4970,12 +4980,28 @@ function App() {
   const modelContextTask = modelContextForRun.task && typeof modelContextForRun.task === "object" ? modelContextForRun.task : {};
   const modelContextWorkspace = modelContextForRun.workspace && typeof modelContextForRun.workspace === "object" ? modelContextForRun.workspace : {};
   const modelContextMemory = modelContextForRun.memory && typeof modelContextForRun.memory === "object" ? modelContextForRun.memory : {};
+  const activeTaskState = (
+    runState.task_state && typeof runState.task_state === "object"
+  )
+    ? runState.task_state
+    : ((sessionRuntimeState.task_state && typeof sessionRuntimeState.task_state === "object") ? sessionRuntimeState.task_state : {});
+  const activeWorkCursor = (
+    runState.work_cursor && typeof runState.work_cursor === "object"
+  )
+    ? runState.work_cursor
+    : ((sessionRuntimeState.work_cursor && typeof sessionRuntimeState.work_cursor === "object") ? sessionRuntimeState.work_cursor : {});
   const activeTaskCheckpoint = {
-    goal: String(modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRuntimeState.goal || ""),
-    cwd: String(modelContextWorkspace.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
-    next_action: String(modelContextTask.next_action || modelContextTask.current_step || ""),
-    active_files: Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : [],
-    active_attachments: [],
+    task_id: String(activeTaskState.task_id || modelContextTask.task_id || ""),
+    goal: String(activeTaskState.goal || modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRuntimeState.goal || ""),
+    status: String(activeTaskState.status || runState.turn_status || sessionRuntimeState.turn_status || ""),
+    current_step_id: String(activeTaskState.current_step_id || modelContextTask.current_step_id || ""),
+    cwd: String(activeWorkCursor.cwd || modelContextWorkspace.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
+    next_action: String(activeTaskState.next_required_action || modelContextTask.next_action || modelContextTask.current_step || ""),
+    blocked_reason: String(activeTaskState.blocked_reason || ""),
+    active_files: Array.isArray(activeWorkCursor.active_files) && activeWorkCursor.active_files.length
+      ? activeWorkCursor.active_files
+      : (Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : []),
+    active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
@@ -5103,11 +5129,57 @@ function App() {
     lastResponse,
   ]);
 
+  async function ensureFullTurnActivity(messageId) {
+    const sid = String(sessionId || "").trim();
+    const turnId = String(messageId || "").trim();
+    if (!sid || !turnId || isTempThreadId(sid)) return;
+    const currentMessage = (Array.isArray(messages) ? messages : []).find((entry) => String(entry.id || "") === turnId);
+    if (!currentMessage || currentMessage.role !== "assistant") return;
+    const currentActivity = normalizeMessageActivity(currentMessage.activity || {});
+    const alreadyFull = Boolean(
+      currentActivity.trace_events.length
+      || currentActivity.llm_exchanges.length
+      || currentActivity.tool_items.length
+      || currentActivity.live_items.length
+    );
+    if (alreadyFull || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
+    const requestKey = `${sid}:${turnId}`;
+    if (fullTurnRequestRef.current.has(requestKey)) return;
+    fullTurnRequestRef.current.add(requestKey);
+    try {
+      const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=full`);
+      const fullActivity = normalizeMessageActivity((payload && payload.activity) || {});
+      setMessages((prev) => {
+        const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
+          String(entry.id || "") === turnId
+            ? { ...entry, activity: mergeActivityState(entry.activity || {}, fullActivity) }
+            : entry
+        ));
+        const cached = threadDetailCacheRef.current.get(sid);
+        if (cached) {
+          threadDetailCacheRef.current.set(sid, {
+            ...cached,
+            messages: nextMessages,
+            cachedAt: Date.now(),
+          });
+        }
+        return nextMessages;
+      });
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("errors.load_thread_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
+    }
+  }
+
   const toggleMessageActivity = (messageId) => {
+    const willOpen = !activityOpenByMessageId[messageId];
     setActivityOpenByMessageId((prev) => ({
       ...prev,
       [messageId]: !prev[messageId],
     }));
+    if (willOpen) {
+      ensureFullTurnActivity(messageId);
+    }
   };
 
   const renderDetailBlock = (label, value, options = {}) => {
@@ -6052,8 +6124,13 @@ function App() {
                   <div className="panel-title">${t("run.current_focus")}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "task_id")}: ${activeTaskCheckpoint.task_id || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionRuntimeState.goal || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "status")}: ${activeTaskCheckpoint.status || activeTurnStatus || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "current_step")}: ${activeTaskCheckpoint.current_step_id || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRuntimeState.cwd || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
+                  ${activeTaskCheckpoint.blocked_reason
+                    ? html`<div className="meta-line">${formatRunFieldLabel(uiLocale, "blocked_reason")}: ${activeTaskCheckpoint.blocked_reason}</div>`
+                    : null}
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`
                         <div className="timeline-detail">

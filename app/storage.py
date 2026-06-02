@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -12,10 +13,44 @@ from typing import Any
 
 from fastapi import UploadFile
 
+from app.serialization import dump_model
 from app.session_migration import CONTEXT_SCHEMA_VERSION, migrate_legacy_session_to_context_manager
 
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
+_ACTIVITY_SUMMARY_KEYS = {
+    "run_id",
+    "trace_ref",
+    "tool_count",
+    "status",
+    "started_at",
+    "turn_started_at",
+    "finished_at",
+    "run_duration_ms",
+    "final_elapsed_ms",
+    "activity_summary",
+    "triggering_user_message",
+    "triggering_user_turn_id",
+    "session_id",
+    "thread_id",
+    "tool_boundary_clean",
+    "runtime_error",
+    "model_draft",
+    "plan",
+    "plan_explanation",
+}
+_ACTIVITY_HEAVY_KEYS = {
+    "llm_exchanges",
+    "trace_events",
+    "tool_events",
+    "tool_items",
+    "live_items",
+    "model_draft",
+    "final_answer",
+    "runtime_error",
+    "inspector",
+    "answer_stream",
+}
 
 
 def now_iso() -> str:
@@ -26,34 +61,218 @@ def _safe_name(name: str) -> str:
     return _SAFE_NAME_PATTERN.sub("_", name).strip("._") or "file"
 
 
+def _is_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _activity_has_sidecar_payload(activity: dict[str, Any]) -> bool:
+    return any(_is_non_empty(activity.get(key)) for key in _ACTIVITY_HEAVY_KEYS)
+
+
+def _coerce_turns(raw: Any) -> list[dict[str, Any]]:
+    return [item for item in list(raw or []) if isinstance(item, dict)]
+
+
+class RunArtifactStore:
+    def __init__(self, runs_dir: Path) -> None:
+        self.runs_dir = runs_dir
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def _session_dir(self, session_id: str) -> Path:
+        return self.runs_dir / _safe_name(str(session_id or ""))
+
+    def _path(self, session_id: str, run_id: str) -> Path:
+        return self._session_dir(session_id) / f"{_safe_name(str(run_id or 'run'))}.json"
+
+    def trace_ref(self, session_id: str, run_id: str) -> str:
+        return f"{_safe_name(str(session_id or ''))}/{_safe_name(str(run_id or 'run'))}"
+
+    def save(self, *, session_id: str, run_id: str, artifact: dict[str, Any]) -> str:
+        sid = str(session_id or "").strip()
+        rid = str(run_id or "").strip() or str(uuid.uuid4())
+        trace_ref = self.trace_ref(sid, rid)
+        payload = dump_model(dict(artifact or {}))
+        payload["session_id"] = sid
+        payload["run_id"] = rid
+        payload["trace_ref"] = trace_ref
+        payload["updated_at"] = now_iso()
+        payload.setdefault("created_at", payload["updated_at"])
+        target = self._path(sid, rid)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = target.with_suffix(".json.tmp")
+        with self._lock:
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(target)
+        return trace_ref
+
+    def load(self, *, session_id: str, run_id: str) -> dict[str, Any] | None:
+        sid = str(session_id or "").strip()
+        rid = str(run_id or "").strip()
+        if not sid or not rid:
+            return None
+        path = self._path(sid, rid)
+        if not path.exists():
+            return None
+        try:
+            with self._lock:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            return dict(payload) if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    def load_by_ref(self, trace_ref: str) -> dict[str, Any] | None:
+        raw = str(trace_ref or "").strip()
+        if not raw:
+            return None
+        parts = [part for part in raw.split("/") if part]
+        if len(parts) < 2:
+            return None
+        return self.load(session_id=parts[-2], run_id=parts[-1])
+
+    def delete_session(self, session_id: str) -> None:
+        target = self._session_dir(session_id)
+        if not target.exists():
+            return
+        with self._lock:
+            shutil.rmtree(target, ignore_errors=True)
+
+
+class SessionMetaStore:
+    def __init__(self, meta_dir: Path) -> None:
+        self.meta_dir = meta_dir
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+
+    def _path(self, session_id: str) -> Path:
+        return self.meta_dir / f"{_safe_name(str(session_id or ''))}.json"
+
+    @staticmethod
+    def metadata_from_session(session: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(session or {})
+        sid = str(payload.get("id") or "").strip()
+        turns = _coerce_turns(payload.get("turns"))
+        custom_title = str(payload.get("title") or "").strip()
+        title = custom_title
+        if not title:
+            title = "新会话"
+            for turn in turns:
+                if str(turn.get("role") or "") != "user":
+                    continue
+                text = str(turn.get("text") or "").replace("\n", " ").strip()
+                if text:
+                    title = text[:48]
+                    break
+        preview = ""
+        if turns:
+            preview = str(turns[-1].get("text") or "").replace("\n", " ").strip()[:80]
+        agent_state = payload.get("agent_state")
+        if not isinstance(agent_state, dict):
+            agent_state = {}
+        return {
+            "session_id": sid,
+            "title": title,
+            "has_custom_title": bool(custom_title),
+            "preview": preview,
+            "turn_count": len(turns),
+            "project_id": str(payload.get("project_id") or ""),
+            "project_title": str(payload.get("project_title") or ""),
+            "project_root": str(payload.get("project_root") or ""),
+            "git_branch": str(payload.get("git_branch") or ""),
+            "cwd": str(payload.get("cwd") or ""),
+            "created_at": str(payload.get("created_at") or ""),
+            "updated_at": str(payload.get("updated_at") or ""),
+            "status": str(agent_state.get("turn_status") or "idle"),
+        }
+
+    def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        meta = self.metadata_from_session(session)
+        sid = str(meta.get("session_id") or "").strip()
+        if not sid:
+            return meta
+        target = self._path(sid)
+        tmp_path = target.with_suffix(".json.tmp")
+        with self._lock:
+            tmp_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(target)
+        return meta
+
+    def load(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)
+        if not path.exists():
+            return None
+        try:
+            with self._lock:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            return dict(payload) if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    def list_recent(self, limit: int = 50, *, project_id: str | None = None) -> list[dict[str, Any]]:
+        max_items = max(1, min(500, int(limit)))
+        wanted_project_id = str(project_id or "").strip()
+        rows: list[dict[str, Any]] = []
+        for path in sorted(self.meta_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                with self._lock:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if wanted_project_id and str(payload.get("project_id") or "").strip() != wanted_project_id:
+                continue
+            rows.append(dict(payload))
+            if len(rows) >= max_items:
+                break
+        return sorted(rows, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:max_items]
+
+    def delete(self, session_id: str) -> None:
+        path = self._path(session_id)
+        try:
+            with self._lock:
+                path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 class SessionStore:
-    def __init__(self, sessions_dir: Path) -> None:
+    def __init__(
+        self,
+        sessions_dir: Path,
+        *,
+        runs_dir: Path | None = None,
+        session_meta_dir: Path | None = None,
+        run_artifact_store: RunArtifactStore | None = None,
+        session_meta_store: SessionMetaStore | None = None,
+    ) -> None:
         self.sessions_dir = sessions_dir
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        data_root = self.sessions_dir.parent
+        self.run_artifact_store = run_artifact_store or RunArtifactStore(runs_dir or data_root / "runs")
+        self.session_meta_store = session_meta_store or SessionMetaStore(session_meta_dir or data_root / "session_meta")
         self._lock = threading.Lock()
 
     def _default_agent_state(self) -> dict[str, Any]:
         return {
             "agent_id": "vintage_programmer",
-            "goal": "",
-            "current_goal": "",
             "phase": "idle",
+            "turn_status": "idle",
             "last_run_id": "",
             "last_model": "",
             "last_provider": "",
             "last_compacted_at": "",
-            "current_task_focus": {},
-            "task_checkpoint": {},
-            "thread_memory": {},
-            "recent_tasks": [],
-            "artifact_memory_preview": [],
-            "context_meter": {},
-            "compaction_status": {},
-            "tool_hits": [],
             "tool_count": 0,
-            "tool_names": [],
             "evidence_status": "not_needed",
             "enabled_skill_ids": [],
+            "final_answer_preview": "",
+            "runtime_error": {},
             "updated_at": now_iso(),
         }
 
@@ -67,8 +286,303 @@ class SessionStore:
             "context_version": 0,
         }
 
+    def _default_work_cursor(self) -> dict[str, Any]:
+        return {
+            "project_root": "",
+            "cwd": "",
+            "active_files": [],
+            "active_attachments": [],
+            "updated_at": "",
+        }
+
+    def _default_task_state(self) -> dict[str, Any]:
+        return {
+            "task_id": "",
+            "goal": "",
+            "status": "idle",
+            "plan_items": [],
+            "current_step_id": "",
+            "completed_steps": [],
+            "blocked_reason": "",
+            "next_required_action": "",
+            "failed_attempts": [],
+            "updated_at": "",
+        }
+
     def _path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
+
+    def _activity_tool_count(self, activity: dict[str, Any], artifact: dict[str, Any] | None = None) -> int:
+        for source in (artifact or {}, activity or {}):
+            try:
+                explicit = int(source.get("tool_count") or 0)
+            except Exception:
+                explicit = 0
+            if explicit > 0:
+                return explicit
+        tool_events = (artifact or {}).get("tool_events")
+        if isinstance(tool_events, list) and tool_events:
+            return len(tool_events)
+        for key in ("tool_items", "live_items"):
+            items = activity.get(key)
+            if isinstance(items, list) and items:
+                return len(items)
+        trace_events = activity.get("trace_events")
+        if isinstance(trace_events, list):
+            call_ids: set[str] = set()
+            tool_like = 0
+            for trace in trace_events:
+                if not isinstance(trace, dict):
+                    continue
+                trace_type = str(trace.get("type") or "")
+                if not trace_type.startswith("tool."):
+                    continue
+                payload = trace.get("payload")
+                if not isinstance(payload, dict):
+                    payload = {}
+                call_id = str(payload.get("call_id") or payload.get("tool_call_id") or "").strip()
+                if call_id:
+                    call_ids.add(call_id)
+                else:
+                    tool_like += 1
+            return len(call_ids) or tool_like
+        return 0
+
+    def _activity_summary(
+        self,
+        activity: dict[str, Any] | None,
+        *,
+        session_id: str,
+        run_id: str,
+        trace_ref: str,
+        artifact: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source = dict(activity or {})
+        summary = {
+            key: source.get(key)
+            for key in _ACTIVITY_SUMMARY_KEYS
+            if key in source and source.get(key) not in (None, [], {})
+        }
+        summary["run_id"] = str(run_id or source.get("run_id") or "").strip()
+        summary["trace_ref"] = str(trace_ref or source.get("trace_ref") or "").strip()
+        summary["tool_count"] = self._activity_tool_count(source, artifact)
+        summary["session_id"] = str(source.get("session_id") or session_id or "").strip()
+        summary["thread_id"] = str(source.get("thread_id") or session_id or "").strip()
+        summary["status"] = str(source.get("status") or "idle").strip() or "idle"
+        return summary
+
+    def _run_id_for_turn(self, turn: dict[str, Any]) -> str:
+        activity = turn.get("activity")
+        if not isinstance(activity, dict):
+            activity = {}
+        return (
+            str(activity.get("run_id") or "").strip()
+            or str(turn.get("run_id") or "").strip()
+            or str(turn.get("id") or "").strip()
+            or str(uuid.uuid4())
+        )
+
+    def _artifact_for_turn(
+        self,
+        *,
+        session_id: str,
+        turn: dict[str, Any],
+        run_id: str,
+        activity: dict[str, Any] | None = None,
+        answer_bundle: dict[str, Any] | None = None,
+        tool_events: list[dict[str, Any]] | None = None,
+        inspector: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        activity_payload = dict(activity if isinstance(activity, dict) else (turn.get("activity") or {}))
+        answer_payload = dict(answer_bundle if isinstance(answer_bundle, dict) else (turn.get("answer_bundle") or {}))
+        artifact = {
+            "session_id": str(session_id or ""),
+            "thread_id": str(session_id or ""),
+            "run_id": str(run_id or ""),
+            "turn_id": str(turn.get("id") or ""),
+            "turn_created_at": str(turn.get("created_at") or ""),
+            "activity": activity_payload,
+            "answer_bundle": answer_payload,
+        }
+        if tool_events is not None:
+            artifact["tool_events"] = [dump_model(item) for item in list(tool_events or []) if item is not None]
+        elif isinstance(activity_payload.get("tool_events"), list):
+            artifact["tool_events"] = list(activity_payload.get("tool_events") or [])
+        if inspector is not None:
+            artifact["inspector"] = dict(inspector or {})
+        elif isinstance(activity_payload.get("inspector"), dict):
+            artifact["inspector"] = dict(activity_payload.get("inspector") or {})
+        for key in ("model_draft", "final_answer", "runtime_error", "llm_exchanges", "trace_events", "tool_items", "live_items"):
+            if key in activity_payload:
+                artifact[key] = activity_payload.get(key)
+        for key, value in dict(extra or {}).items():
+            artifact[key] = value
+        return artifact
+
+    def persist_turn_artifact(
+        self,
+        session: dict[str, Any],
+        *,
+        turn_id: str,
+        run_id: str | None = None,
+        activity: dict[str, Any] | None = None,
+        answer_bundle: dict[str, Any] | None = None,
+        tool_events: list[dict[str, Any]] | None = None,
+        inspector: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        session_id = str((session or {}).get("id") or "").strip()
+        if not session_id:
+            return None
+        wanted_turn_id = str(turn_id or "").strip()
+        if not wanted_turn_id:
+            return None
+        turns = _coerce_turns((session or {}).get("turns"))
+        turn = next((item for item in turns if str(item.get("id") or "") == wanted_turn_id), None)
+        if not turn:
+            return None
+        rid = str(run_id or "").strip() or self._run_id_for_turn(turn)
+        artifact = self._artifact_for_turn(
+            session_id=session_id,
+            turn=turn,
+            run_id=rid,
+            activity=activity,
+            answer_bundle=answer_bundle,
+            tool_events=tool_events,
+            inspector=inspector,
+            extra=extra,
+        )
+        trace_ref = self.run_artifact_store.save(session_id=session_id, run_id=rid, artifact=artifact)
+        turn["activity"] = self._activity_summary(
+            artifact.get("activity") if isinstance(artifact.get("activity"), dict) else {},
+            session_id=session_id,
+            run_id=rid,
+            trace_ref=trace_ref,
+            artifact=artifact,
+        )
+        turn["answer_bundle"] = {}
+        turn["run_artifact"] = {}
+        return artifact
+
+    def _migrate_turn_artifacts(self, session: dict[str, Any]) -> bool:
+        session_id = str((session or {}).get("id") or "").strip()
+        if not session_id:
+            return False
+        changed = False
+        for turn in _coerce_turns(session.get("turns")):
+            if str(turn.get("role") or "") != "assistant":
+                continue
+            activity = turn.get("activity")
+            if not isinstance(activity, dict):
+                activity = {}
+            answer_bundle = turn.get("answer_bundle")
+            if not isinstance(answer_bundle, dict):
+                answer_bundle = {}
+            embedded_artifact = turn.get("run_artifact")
+            if not isinstance(embedded_artifact, dict):
+                embedded_artifact = {}
+            needs_sidecar = (
+                _activity_has_sidecar_payload(activity)
+                or bool(answer_bundle)
+                or bool(embedded_artifact)
+            )
+            if not needs_sidecar:
+                continue
+            run_id = self._run_id_for_turn(turn)
+            existing_trace_ref = str(activity.get("trace_ref") or "").strip()
+            existing_artifact = self.run_artifact_store.load_by_ref(existing_trace_ref) if existing_trace_ref else None
+            if existing_artifact is None:
+                self.persist_turn_artifact(
+                    session,
+                    turn_id=str(turn.get("id") or ""),
+                    run_id=run_id,
+                    activity=activity,
+                    answer_bundle=answer_bundle,
+                    extra=embedded_artifact,
+                )
+            else:
+                trace_ref = str(existing_artifact.get("trace_ref") or existing_trace_ref)
+                turn["activity"] = self._activity_summary(
+                    activity,
+                    session_id=session_id,
+                    run_id=run_id,
+                    trace_ref=trace_ref,
+                    artifact=existing_artifact,
+                )
+                turn["answer_bundle"] = {}
+                turn["run_artifact"] = {}
+            changed = True
+        return changed
+
+    def _hydrate_failed_activity_debug(self, session: dict[str, Any]) -> None:
+        session_id = str((session or {}).get("id") or "").strip()
+        if not session_id:
+            return
+        for turn in _coerce_turns(session.get("turns")):
+            if str(turn.get("role") or "") != "assistant":
+                continue
+            activity = turn.get("activity")
+            if not isinstance(activity, dict):
+                continue
+            if str(activity.get("status") or "").strip() != "failed":
+                continue
+            if isinstance(activity.get("llm_exchanges"), list) and activity.get("llm_exchanges"):
+                continue
+            trace_ref = str(activity.get("trace_ref") or "").strip()
+            run_id = str(activity.get("run_id") or turn.get("id") or "").strip()
+            artifact = self.run_artifact_store.load_by_ref(trace_ref) if trace_ref else None
+            if artifact is None and run_id:
+                artifact = self.run_artifact_store.load(session_id=session_id, run_id=run_id)
+            full_activity = dict((artifact or {}).get("activity") or {})
+            exchanges = full_activity.get("llm_exchanges")
+            if isinstance(exchanges, list) and exchanges:
+                activity["llm_exchanges"] = exchanges
+
+    def expand_turn_for_view(self, session_id: str, turn: dict[str, Any], *, view: str = "summary") -> dict[str, Any]:
+        payload = dict(turn or {})
+        if str(payload.get("role") or "") != "assistant":
+            payload.setdefault("answer_bundle", {})
+            payload.setdefault("activity", {})
+            payload["run_artifact"] = {}
+            return payload
+        requested_view = str(view or "summary").strip().lower()
+        activity = payload.get("activity")
+        if not isinstance(activity, dict):
+            activity = {}
+        run_id = str(activity.get("run_id") or payload.get("run_id") or payload.get("id") or "").strip()
+        trace_ref = str(activity.get("trace_ref") or "").strip()
+        artifact = self.run_artifact_store.load_by_ref(trace_ref) if trace_ref else None
+        if artifact is None and run_id:
+            artifact = self.run_artifact_store.load(session_id=session_id, run_id=run_id)
+        if requested_view == "full":
+            if artifact:
+                full_activity = dict(artifact.get("activity") or {})
+                full_activity.setdefault("run_id", str(artifact.get("run_id") or run_id or ""))
+                full_activity.setdefault("trace_ref", str(artifact.get("trace_ref") or trace_ref or ""))
+                full_activity.setdefault("session_id", str(session_id or ""))
+                full_activity.setdefault("thread_id", str(session_id or ""))
+                full_activity["tool_count"] = self._activity_tool_count(full_activity, artifact)
+                if artifact.get("tool_events") and not full_activity.get("tool_items"):
+                    full_activity["tool_items"] = list(artifact.get("tool_events") or [])
+                payload["activity"] = full_activity
+                payload["answer_bundle"] = dict(artifact.get("answer_bundle") or {})
+                payload["run_artifact"] = dict(artifact)
+            else:
+                payload["activity"] = dict(activity)
+                payload["answer_bundle"] = dict(payload.get("answer_bundle") or {})
+                payload["run_artifact"] = {}
+            return payload
+        payload["activity"] = self._activity_summary(
+            activity,
+            session_id=session_id,
+            run_id=run_id,
+            trace_ref=trace_ref,
+            artifact=artifact,
+        )
+        payload["answer_bundle"] = {}
+        payload["run_artifact"] = {}
+        return payload
 
     def _normalize_session(
         self,
@@ -100,9 +614,22 @@ class SessionStore:
         if not isinstance(payload.get("attachment_route_states"), dict):
             payload["attachment_route_states"] = {}
             changed = True
-        if not isinstance(payload.get("current_task_focus"), dict):
-            payload["current_task_focus"] = {}
+        if not isinstance(payload.get("work_cursor"), dict):
+            payload["work_cursor"] = self._default_work_cursor()
             changed = True
+        else:
+            work_cursor = {**self._default_work_cursor(), **dict(payload.get("work_cursor") or {})}
+            if work_cursor != payload.get("work_cursor"):
+                payload["work_cursor"] = work_cursor
+                changed = True
+        if not isinstance(payload.get("task_state"), dict):
+            payload["task_state"] = self._default_task_state()
+            changed = True
+        else:
+            task_state = {**self._default_task_state(), **dict(payload.get("task_state") or {})}
+            if task_state != payload.get("task_state"):
+                payload["task_state"] = task_state
+                changed = True
         if not isinstance(payload.get("thread_memory"), dict):
             payload["thread_memory"] = {}
             changed = True
@@ -158,13 +685,16 @@ class SessionStore:
             payload["cwd"] = str(payload.get("project_root") or "")
             changed = True
 
+        payload_before_migration = dict(payload)
+        payload, migrated = migrate_legacy_session_to_context_manager(payload)
+        if migrated or payload != payload_before_migration:
+            changed = True
+
         from app import session_context as session_context_impl
 
         if session_context_impl.sync_session_memory_state(payload):
             changed = True
-        payload_before_migration = dict(payload)
-        payload, migrated = migrate_legacy_session_to_context_manager(payload)
-        if migrated or payload != payload_before_migration:
+        if self._migrate_turn_artifacts(payload):
             changed = True
 
         return payload, changed
@@ -191,9 +721,17 @@ class SessionStore:
             "agent_state": self._default_agent_state(),
             "route_state": {},
             "attachment_route_states": {},
-            "current_task_focus": {},
+            "work_cursor": {
+                **self._default_work_cursor(),
+                "project_root": project_root,
+                "cwd": project_root,
+                "updated_at": now_iso(),
+            },
+            "task_state": self._default_task_state(),
             "thread_memory": {},
             "artifact_memory": [],
+            "recent_tasks": [],
+            "artifact_memory_preview": [],
             "compaction_state": {},
             "context_manager": self._default_context_manager(),
             "context_schema_version": CONTEXT_SCHEMA_VERSION,
@@ -210,6 +748,7 @@ class SessionStore:
         normalized, changed = self._normalize_session(loaded, default_project=default_project)
         if changed:
             self.save(normalized, touch=False)
+        self._hydrate_failed_activity_debug(normalized)
         return normalized
 
     def load_or_create(
@@ -233,9 +772,11 @@ class SessionStore:
     def save(self, session: dict[str, Any], *, touch: bool = True) -> None:
         if touch:
             session["updated_at"] = now_iso()
+        self._migrate_turn_artifacts(session)
         path = self._path(session["id"])
         with self._lock:
             path.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.session_meta_store.save_session(session)
 
     def append_turn(
         self,
@@ -268,66 +809,13 @@ class SessionStore:
         max_items = max(1, min(500, int(limit)))
         wanted_project_id = str(project_id or "").strip()
         files = sorted(
-            self.sessions_dir.glob("*.json"),
+            self.session_meta_store.meta_dir.glob("*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-
-        out: list[dict[str, Any]] = []
-        for path in files:
-            if len(out) >= max_items:
-                break
-            try:
-                with self._lock:
-                    session = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            session, changed = self._normalize_session(session, default_project=default_project)
-            if changed:
-                self.save(session, touch=False)
-
-            sid = str(session.get("id") or path.stem)
-            turns = session.get("turns", [])
-            if not isinstance(turns, list):
-                turns = []
-            if wanted_project_id and str(session.get("project_id") or "").strip() != wanted_project_id:
-                continue
-
-            custom_title = str(session.get("title") or "").strip()
-            title = custom_title
-            if not title:
-                title = "新会话"
-                for turn in turns:
-                    if isinstance(turn, dict) and str(turn.get("role") or "") == "user":
-                        text = str(turn.get("text") or "").strip()
-                        if text:
-                            title = text.replace("\n", " ")[:48]
-                        break
-
-            preview = ""
-            if turns:
-                last = turns[-1]
-                if isinstance(last, dict):
-                    preview = str(last.get("text") or "").replace("\n", " ").strip()[:80]
-
-            out.append(
-                {
-                    "session_id": sid,
-                    "title": title,
-                    "has_custom_title": bool(custom_title),
-                    "preview": preview,
-                    "turn_count": len(turns),
-                    "project_id": str(session.get("project_id") or ""),
-                    "project_title": str(session.get("project_title") or ""),
-                    "project_root": str(session.get("project_root") or ""),
-                    "git_branch": str(session.get("git_branch") or ""),
-                    "cwd": str(session.get("cwd") or ""),
-                    "updated_at": str(session.get("updated_at") or ""),
-                    "created_at": str(session.get("created_at") or ""),
-                }
-            )
-
-        return out
+        if not files and any(self.sessions_dir.glob("*.json")):
+            self.rebuild_metadata_index(default_project=default_project)
+        return self.session_meta_store.list_recent(limit=max_items, project_id=wanted_project_id)
 
     def delete(self, session_id: str) -> bool:
         path = self._path(session_id)
@@ -336,6 +824,8 @@ class SessionStore:
         try:
             with self._lock:
                 path.unlink(missing_ok=False)
+            self.session_meta_store.delete(session_id)
+            self.run_artifact_store.delete_session(session_id)
             return True
         except Exception:
             return False
@@ -356,10 +846,29 @@ class SessionStore:
             try:
                 with self._lock:
                     path.unlink(missing_ok=False)
+                sid = str(payload.get("id") or path.stem)
+                self.session_meta_store.delete(sid)
+                self.run_artifact_store.delete_session(sid)
                 deleted += 1
             except Exception:
                 continue
         return deleted
+
+    def rebuild_metadata_index(self, *, default_project: dict[str, Any] | None = None) -> int:
+        rebuilt = 0
+        for path in sorted(self.sessions_dir.glob("*.json")):
+            try:
+                with self._lock:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            normalized, changed = self._normalize_session(payload, default_project=default_project)
+            if changed:
+                self.save(normalized, touch=False)
+            else:
+                self.session_meta_store.save_session(normalized)
+            rebuilt += 1
+        return rebuilt
 
     def migrate_missing_project(self, default_project: dict[str, Any]) -> int:
         migrated = 0
@@ -371,6 +880,7 @@ class SessionStore:
                 continue
             normalized, changed = self._normalize_session(payload, default_project=default_project)
             if not changed:
+                self.session_meta_store.save_session(normalized)
                 continue
             self.save(normalized, touch=False)
             migrated += 1

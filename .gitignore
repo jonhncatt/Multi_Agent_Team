@@ -13,6 +13,10 @@ app/data/projects.json
 app/data/apps/
 app/data/sessions/*
 !app/data/sessions/.gitkeep
+app/data/runs/*
+!app/data/runs/.gitkeep
+app/data/session_meta/*
+!app/data/session_meta/.gitkeep
 app/data/uploads/*
 !app/data/uploads/.gitkeep
 app/data/document_cache/*

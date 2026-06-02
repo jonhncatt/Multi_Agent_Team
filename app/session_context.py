@@ -322,6 +322,87 @@ def normalize_current_task_focus(raw: Any) -> dict[str, Any]:
     }
 
 
+def normalize_work_cursor(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "project_root": str(raw.get("project_root") or "").strip(),
+        "cwd": str(raw.get("cwd") or "").strip(),
+        "active_files": _dedupe_strings(list(raw.get("active_files") or []), limit=8),
+        "active_attachments": _normalize_attachment_refs(raw.get("active_attachments"), limit=8),
+        "updated_at": str(raw.get("updated_at") or "").strip(),
+    }
+
+
+def normalize_task_plan_items(raw: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(list(raw or [])):
+        if not isinstance(item, dict):
+            continue
+        step = str(item.get("step") or item.get("title") or item.get("label") or "").strip()
+        if not step:
+            continue
+        step_id = str(item.get("id") or item.get("step_id") or f"step-{index + 1}").strip()
+        items.append(
+            {
+                **dict(item),
+                "id": step_id,
+                "step": step,
+                "status": str(item.get("status") or "pending").strip() or "pending",
+            }
+        )
+    return items
+
+
+def normalize_task_state(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "task_id": str(raw.get("task_id") or "").strip(),
+        "goal": str(raw.get("goal") or "").strip(),
+        "status": str(raw.get("status") or "idle").strip() or "idle",
+        "plan_items": normalize_task_plan_items(raw.get("plan_items") or raw.get("plan") or []),
+        "current_step_id": str(raw.get("current_step_id") or "").strip(),
+        "completed_steps": [
+            dict(item)
+            for item in list(raw.get("completed_steps") or [])
+            if isinstance(item, dict)
+        ],
+        "blocked_reason": str(raw.get("blocked_reason") or "").strip(),
+        "next_required_action": str(raw.get("next_required_action") or raw.get("next_action") or "").strip(),
+        "failed_attempts": [
+            dict(item)
+            for item in list(raw.get("failed_attempts") or [])
+            if isinstance(item, dict)
+        ],
+        "updated_at": str(raw.get("updated_at") or "").strip(),
+    }
+
+
+def focus_from_work_cursor_task_state(work_cursor: Any, task_state: Any) -> dict[str, Any]:
+    cursor = normalize_work_cursor(work_cursor)
+    task = normalize_task_state(task_state)
+    completed_steps = list(task.get("completed_steps") or [])
+    last_completed = ""
+    if completed_steps:
+        latest = completed_steps[-1]
+        if isinstance(latest, dict):
+            last_completed = str(latest.get("step") or latest.get("summary") or latest.get("id") or "").strip()
+    return normalize_current_task_focus(
+        {
+            "task_id": task.get("task_id") or "",
+            "goal": task.get("goal") or "",
+            "project_root": cursor.get("project_root") or "",
+            "cwd": cursor.get("cwd") or "",
+            "active_files": cursor.get("active_files") or [],
+            "active_attachments": cursor.get("active_attachments") or [],
+            "last_completed_step": last_completed,
+            "next_action": task.get("next_required_action") or "",
+            "updated_at": task.get("updated_at") or cursor.get("updated_at") or "",
+        }
+    )
+
+
 def normalize_recent_task(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
@@ -480,6 +561,17 @@ def message_requests_attachment_context(message: str) -> bool:
 
 
 def _session_current_task_focus(session: dict[str, Any]) -> dict[str, Any]:
+    canonical_focus = focus_from_work_cursor_task_state(
+        session.get("work_cursor"),
+        session.get("task_state"),
+    )
+    if (
+        canonical_focus["task_id"]
+        or canonical_focus["goal"]
+        or canonical_focus["active_files"]
+        or canonical_focus["active_attachments"]
+    ):
+        return canonical_focus
     agent_state = session.get("agent_state")
     if isinstance(agent_state, dict):
         focus = agent_state.get("current_task_focus")
@@ -714,6 +806,8 @@ def prepare_route_state_for_turn(
         return state
     state.pop("current_task_focus", None)
     state.pop("task_checkpoint", None)
+    state.pop("work_cursor", None)
+    state.pop("task_state", None)
     return state
 
 
@@ -1006,6 +1100,28 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
     focus = _session_current_task_focus(session)
     if focus["task_id"] and not focus["updated_at"]:
         focus["updated_at"] = _now_iso()
+    work_cursor = normalize_work_cursor(session.get("work_cursor"))
+    task_state = normalize_task_state(session.get("task_state"))
+    if focus["project_root"] and work_cursor["project_root"] != focus["project_root"]:
+        work_cursor["project_root"] = focus["project_root"]
+    if focus["cwd"] and work_cursor["cwd"] != focus["cwd"]:
+        work_cursor["cwd"] = focus["cwd"]
+    if focus["active_files"] and work_cursor["active_files"] != focus["active_files"]:
+        work_cursor["active_files"] = list(focus["active_files"])
+    if focus["active_attachments"] and work_cursor["active_attachments"] != focus["active_attachments"]:
+        work_cursor["active_attachments"] = [dict(item) for item in focus["active_attachments"]]
+    if focus["updated_at"] and not work_cursor["updated_at"]:
+        work_cursor["updated_at"] = focus["updated_at"]
+    if focus["task_id"] and task_state["task_id"] != focus["task_id"]:
+        task_state["task_id"] = focus["task_id"]
+    if focus["goal"] and task_state["goal"] != focus["goal"]:
+        task_state["goal"] = focus["goal"]
+    if focus["next_action"] and task_state["next_required_action"] != focus["next_action"]:
+        task_state["next_required_action"] = focus["next_action"]
+    if focus["updated_at"] and not task_state["updated_at"]:
+        task_state["updated_at"] = focus["updated_at"]
+    if task_state["status"] == "idle" and (task_state["goal"] or task_state["plan_items"]):
+        task_state["status"] = "in_progress"
     thread_memory = _session_thread_memory(session)
     artifact_memory = _session_artifact_memory(session)
     if not thread_memory["summary"]:
@@ -1017,8 +1133,11 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
     if not thread_memory["updated_at"]:
         thread_memory["updated_at"] = agent_state.get("updated_at") if isinstance(agent_state, dict) else ""
 
-    if session.get("current_task_focus") != focus:
-        session["current_task_focus"] = dict(focus)
+    if session.get("work_cursor") != work_cursor:
+        session["work_cursor"] = dict(work_cursor)
+        changed = True
+    if session.get("task_state") != task_state:
+        session["task_state"] = dict(task_state)
         changed = True
     if session.get("thread_memory") != thread_memory:
         session["thread_memory"] = dict(thread_memory)
@@ -1026,24 +1145,32 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
     if session.get("artifact_memory") != artifact_memory:
         session["artifact_memory"] = list(artifact_memory)
         changed = True
-
-    if agent_state.get("current_task_focus") != focus:
-        agent_state["current_task_focus"] = dict(focus)
-        changed = True
-    compat_checkpoint = compat_task_checkpoint_from_focus(focus)
-    if agent_state.get("task_checkpoint") != compat_checkpoint:
-        agent_state["task_checkpoint"] = compat_checkpoint
-        changed = True
-    if agent_state.get("thread_memory") != thread_memory:
-        agent_state["thread_memory"] = dict(thread_memory)
-        changed = True
-    if agent_state.get("recent_tasks") != thread_memory["recent_tasks"]:
-        agent_state["recent_tasks"] = list(thread_memory["recent_tasks"])
+    if session.get("recent_tasks") != thread_memory["recent_tasks"]:
+        session["recent_tasks"] = list(thread_memory["recent_tasks"])
         changed = True
     artifact_preview = artifact_memory[:8]
-    if agent_state.get("artifact_memory_preview") != artifact_preview:
-        agent_state["artifact_memory_preview"] = artifact_preview
+    if session.get("artifact_memory_preview") != artifact_preview:
+        session["artifact_memory_preview"] = artifact_preview
         changed = True
+    if "current_task_focus" in session:
+        session.pop("current_task_focus", None)
+        changed = True
+
+    for legacy_key in (
+        "current_task_focus",
+        "task_checkpoint",
+        "thread_memory",
+        "recent_tasks",
+        "artifact_memory_preview",
+        "tool_hits",
+        "tool_names",
+        "goal",
+        "current_goal",
+        "plan",
+    ):
+        if legacy_key in agent_state:
+            agent_state.pop(legacy_key, None)
+            changed = True
     return changed
 
 
@@ -1068,6 +1195,20 @@ def record_turn_memory(
     if not focus["goal"]:
         focus["goal"] = str(user_message or "").strip()[:240]
     focus["updated_at"] = now
+    work_cursor = normalize_work_cursor(session.get("work_cursor"))
+    work_cursor["project_root"] = focus["project_root"] or work_cursor["project_root"]
+    work_cursor["cwd"] = focus["cwd"] or work_cursor["cwd"]
+    work_cursor["active_files"] = list(focus["active_files"] or work_cursor["active_files"])
+    work_cursor["active_attachments"] = [dict(item) for item in list(focus["active_attachments"] or work_cursor["active_attachments"])]
+    work_cursor["updated_at"] = now
+    task_state = normalize_task_state(session.get("task_state"))
+    task_state["task_id"] = focus["task_id"]
+    task_state["goal"] = focus["goal"]
+    task_state["updated_at"] = now
+    if focus["next_action"]:
+        task_state["next_required_action"] = focus["next_action"]
+    if not task_state["status"] or task_state["status"] == "idle":
+        task_state["status"] = "in_progress"
 
     turns = session.get("turns", [])
     user_turn_id = ""
@@ -1146,7 +1287,8 @@ def record_turn_memory(
     thread_memory["recent_files"] = _dedupe_strings(list(focus["active_files"]) + list(thread_memory["recent_files"]), limit=12)
     thread_memory["updated_at"] = now
 
-    session["current_task_focus"] = dict(focus)
+    session["work_cursor"] = dict(work_cursor)
+    session["task_state"] = dict(task_state)
     session["thread_memory"] = dict(thread_memory)
     session["artifact_memory"] = list(artifact_memory)
     sync_session_memory_state(session)

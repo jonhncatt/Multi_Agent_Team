@@ -10,7 +10,10 @@ import pytest
 from app.config import load_config
 from app.context_pack import (
     ContextManager,
+    apply_compaction_summary_to_state,
+    build_compaction_input,
     build_model_context,
+    build_structured_compaction_summary,
     classify_assistant_output,
     render_model_context,
 )
@@ -203,6 +206,61 @@ def test_context_manager_compacts_clean_history_without_raw_trace() -> None:
     assert len(manager.clean_turns) <= 8
     assert "RAW_OUTPUT_SHOULD_ONLY_BE_SUMMARIZED" not in manager.clean_summary
     assert manager.plan[0].step == "继续"
+
+
+def test_structured_compaction_summary_writes_task_and_cursor_state() -> None:
+    compaction_input = build_compaction_input(
+        old_messages=[{"role": "assistant", "text": "已确认 app/main.py 负责 stream endpoint。"}],
+        tool_evidence=[
+            {
+                "name": "read_file",
+                "status": "ok",
+                "summary": "读取 app/main.py 并找到 chat_stream。",
+                "arguments": {"path": "app/main.py"},
+                "output_preview": "RAW_TRACE_SHOULD_NOT_APPEAR",
+            },
+            {
+                "name": "exec_command",
+                "status": "error",
+                "summary": "pytest 首次运行失败：缺少 fixture。",
+                "arguments": {"cmd": "pytest"},
+            },
+        ],
+        task_state={
+            "goal": "实现 runtime typed item",
+            "status": "blocked",
+            "plan_items": [{"step": "补 runtime item", "status": "pending"}],
+            "failed_attempts": [{"summary": "旧失败尝试"}],
+        },
+        work_cursor={"active_files": ["app/main.py"]},
+        modified_files=["app/vintage_programmer_runtime.py"],
+        current_status="blocked",
+    )
+    summary = build_structured_compaction_summary(compaction_input)
+    manager, task_state, work_cursor = apply_compaction_summary_to_state(
+        context_manager=ContextManager(),
+        summary=summary,
+        task_state={"status": "blocked"},
+        work_cursor={},
+        generation=2,
+    )
+    encoded = json.dumps(manager.to_session_payload(), ensure_ascii=False)
+
+    assert set(dump_model(summary)) == {
+        "confirmed_facts",
+        "files_touched",
+        "decisions",
+        "failed_attempts",
+        "current_state",
+        "next_steps",
+        "open_questions",
+        "do_not_repeat",
+    }
+    assert "RAW_TRACE_SHOULD_NOT_APPEAR" not in encoded
+    assert "app/vintage_programmer_runtime.py" in manager.active_files
+    assert task_state["next_required_action"] == "补 runtime item"
+    assert task_state["failed_attempts"]
+    assert work_cursor["active_files"][0] == "app/vintage_programmer_runtime.py"
 
 
 def test_runtime_trace_only_contributes_summarized_observation(tmp_path: Path) -> None:

@@ -96,10 +96,14 @@ class TraceEventPayload(BaseModel):
 
 class MessageActivity(BaseModel):
     run_id: str = ""
+    trace_ref: str = ""
+    tool_count: int = 0
     status: str = "idle"
     started_at: float = 0.0
+    turn_started_at: float = 0.0
     finished_at: float = 0.0
     run_duration_ms: int = 0
+    final_elapsed_ms: int = 0
     activity_summary: str = ""
     triggering_user_message: str = ""
     triggering_user_turn_id: str = ""
@@ -109,6 +113,10 @@ class MessageActivity(BaseModel):
     final_answer: str = ""
     runtime_error: dict[str, Any] = Field(default_factory=dict)
     tool_boundary_clean: bool | None = None
+    plan: list[dict[str, Any]] = Field(default_factory=list)
+    plan_explanation: str = ""
+    tool_items: list[dict[str, Any]] = Field(default_factory=list)
+    live_items: list[dict[str, Any]] = Field(default_factory=list)
     llm_exchanges: list[dict[str, Any]] = Field(default_factory=list)
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
 
@@ -267,6 +275,8 @@ class ChatResponse(BaseModel):
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
+    work_cursor: dict[str, Any] = Field(default_factory=dict)
+    task_state: dict[str, Any] = Field(default_factory=dict)
     recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
     activity: MessageActivity = Field(default_factory=MessageActivity)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
@@ -321,6 +331,7 @@ class SessionTurn(BaseModel):
     text: str
     answer_bundle: AnswerBundle = Field(default_factory=AnswerBundle)
     activity: MessageActivity = Field(default_factory=MessageActivity)
+    run_artifact: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
 
 
@@ -335,6 +346,10 @@ class SessionDetailResponse(BaseModel):
     git_branch: str = ""
     cwd: str = ""
     agent_state: dict[str, object] = Field(default_factory=dict)
+    work_cursor: dict[str, Any] = Field(default_factory=dict)
+    task_state: dict[str, Any] = Field(default_factory=dict)
+    recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_memory_preview: list[dict[str, Any]] = Field(default_factory=list)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     turns: list[SessionTurn] = Field(default_factory=list)
@@ -372,6 +387,10 @@ class ThreadDetailResponse(BaseModel):
     cwd: str = ""
     status: Literal["not_loaded", "idle", "active", "system_error"] = "idle"
     agent_state: dict[str, object] = Field(default_factory=dict)
+    work_cursor: dict[str, Any] = Field(default_factory=dict)
+    task_state: dict[str, Any] = Field(default_factory=dict)
+    recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_memory_preview: list[dict[str, Any]] = Field(default_factory=list)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
     turns: list[SessionTurn] = Field(default_factory=list)

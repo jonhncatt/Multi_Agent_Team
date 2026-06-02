@@ -60,6 +60,17 @@ class PlanContext(BaseModel):
     items: list[PlanItem] = Field(default_factory=list)
 
 
+class CompactionSummary(BaseModel):
+    confirmed_facts: list[str] = Field(default_factory=list)
+    files_touched: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    failed_attempts: list[str] = Field(default_factory=list)
+    current_state: str = ""
+    next_steps: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    do_not_repeat: list[str] = Field(default_factory=list)
+
+
 class PermissionsContext(BaseModel):
     profile: str = "auto"
     label: str = "Auto"
@@ -167,6 +178,38 @@ def _unique_strings(values: Any, *, limit: int, max_chars: int = 240) -> list[st
         if len(out) >= limit:
             break
     return out
+
+
+def _summary_strings(values: Any, *, limit: int = 8, max_chars: int = 500) -> list[str]:
+    if isinstance(values, str):
+        raw_values: list[Any] = [
+            line.strip(" -\t")
+            for line in values.splitlines()
+            if line.strip(" -\t")
+        ] or [values]
+    else:
+        raw_values = list(values or [])
+    out: list[str] = []
+    for item in raw_values:
+        if isinstance(item, dict):
+            value = (
+                item.get("summary")
+                or item.get("step")
+                or item.get("title")
+                or item.get("text")
+                or item.get("message")
+                or item.get("error")
+            )
+            if not value:
+                value = json.dumps(dump_model(item), ensure_ascii=False, default=str)
+        else:
+            value = item
+        text = _truncate(value, max_chars)
+        if text:
+            out.append(text)
+        if len(out) >= limit:
+            break
+    return _unique_strings(out, limit=limit, max_chars=max_chars)
 
 
 def _normalize_plan_items(raw_items: Any) -> list[PlanItem]:
@@ -309,6 +352,376 @@ def _extract_active_files_from_events(tool_events: Any) -> list[str]:
     return _unique_strings(files, limit=10, max_chars=500)
 
 
+def _compact_turn_for_compaction(turn: Any) -> dict[str, Any] | None:
+    if not isinstance(turn, dict):
+        return None
+    role = _truncate(turn.get("role") or "unknown", 40)
+    text = _clean_text(turn.get("text") or turn.get("content"), limit=1200)
+    if not text:
+        return None
+    payload: dict[str, Any] = {
+        "id": _truncate(turn.get("id"), 120),
+        "role": role,
+        "text": text,
+        "created_at": _truncate(turn.get("created_at"), 80),
+    }
+    attachments = []
+    for item in list(turn.get("attachments") or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        label = _truncate(item.get("name") or item.get("path") or item.get("id"), 160)
+        if label:
+            attachments.append(label)
+    if attachments:
+        payload["attachments"] = attachments
+    return {key: value for key, value in payload.items() if value not in ("", [], {})}
+
+
+def _tool_evidence_for_compaction(event: Any) -> dict[str, Any] | None:
+    observation = _tool_event_observation(event)
+    if not observation:
+        return None
+    payload = dump_model(event)
+    if not isinstance(payload, dict):
+        payload = {}
+    evidence = {
+        "tool": _truncate(observation.get("tool"), 120),
+        "target": _truncate(observation.get("target"), 240),
+        "status": _truncate(observation.get("status"), 80),
+        "summary": _truncate(observation.get("summary"), 500),
+        "source_refs": [
+            _truncate(item, 240)
+            for item in list(payload.get("source_refs") or [])[:6]
+            if str(item or "").strip()
+        ],
+    }
+    return {key: value for key, value in evidence.items() if value not in ("", [], {})}
+
+
+def _normalize_compaction_tool_evidence(raw_values: Any) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for item in list(raw_values or []):
+        normalized = _tool_evidence_for_compaction(item)
+        if normalized:
+            evidence.append(normalized)
+        if len(evidence) >= 24:
+            break
+    return evidence
+
+
+def build_compaction_input(
+    *,
+    old_messages: Any = None,
+    tool_evidence: Any = None,
+    task_state: dict[str, Any] | None = None,
+    work_cursor: dict[str, Any] | None = None,
+    modified_files: Any = None,
+    failed_attempts: Any = None,
+    current_status: str = "",
+) -> dict[str, Any]:
+    task_payload = dict(task_state or {})
+    cursor_payload = dict(work_cursor or {})
+    messages = []
+    for item in list(old_messages or []):
+        turn = _compact_turn_for_compaction(item)
+        if turn:
+            messages.append(turn)
+        if len(messages) >= 24:
+            break
+    evidence = _normalize_compaction_tool_evidence(tool_evidence)
+    files_from_evidence: list[str] = []
+    for item in evidence:
+        files_from_evidence.append(str(item.get("target") or ""))
+    files = _unique_strings(
+        [
+            *list(modified_files or []),
+            *list(cursor_payload.get("active_files") or []),
+            *files_from_evidence,
+        ],
+        limit=16,
+        max_chars=500,
+    )
+    failures = _summary_strings(
+        [
+            *list(failed_attempts or []),
+            *list(task_payload.get("failed_attempts") or []),
+            *[
+                item
+                for item in evidence
+                if str(item.get("status") or "").strip().lower() not in {"", "ok", "success", "completed"}
+            ],
+        ],
+        limit=12,
+        max_chars=500,
+    )
+    return {
+        "old_messages": messages,
+        "tool_evidence": evidence,
+        "task_state": {
+            "task_id": _truncate(task_payload.get("task_id"), 120),
+            "goal": _truncate(task_payload.get("goal"), 500),
+            "status": _truncate(task_payload.get("status"), 80),
+            "plan_items": [
+                {
+                    "id": _truncate(item.get("id") or item.get("step_id"), 120),
+                    "step": _truncate(item.get("step") or item.get("title"), 500),
+                    "status": _truncate(item.get("status"), 80),
+                }
+                for item in list(task_payload.get("plan_items") or task_payload.get("plan") or [])[:12]
+                if isinstance(item, dict) and _truncate(item.get("step") or item.get("title"), 500)
+            ],
+            "current_step_id": _truncate(task_payload.get("current_step_id"), 120),
+            "completed_steps": _summary_strings(task_payload.get("completed_steps"), limit=8, max_chars=500),
+            "blocked_reason": _truncate(task_payload.get("blocked_reason"), 500),
+            "next_required_action": _truncate(task_payload.get("next_required_action") or task_payload.get("next_action"), 500),
+            "failed_attempts": failures,
+        },
+        "work_cursor": {
+            "project_root": _truncate(cursor_payload.get("project_root"), 500),
+            "cwd": _truncate(cursor_payload.get("cwd"), 500),
+            "active_files": _unique_strings(cursor_payload.get("active_files"), limit=12, max_chars=500),
+            "active_attachments": [
+                {
+                    "id": _truncate(item.get("id"), 120),
+                    "name": _truncate(item.get("name"), 160),
+                    "kind": _truncate(item.get("kind"), 80),
+                    "path": _truncate(item.get("path"), 500),
+                }
+                for item in list(cursor_payload.get("active_attachments") or [])[:8]
+                if isinstance(item, dict)
+            ],
+        },
+        "modified_files": files,
+        "failed_attempts": failures,
+        "current_status": _truncate(current_status or task_payload.get("status"), 120),
+    }
+
+
+def normalize_compaction_summary(raw: Any) -> CompactionSummary:
+    if isinstance(raw, CompactionSummary):
+        return raw
+    payload = dict(raw or {}) if isinstance(raw, dict) else {}
+    return CompactionSummary(
+        confirmed_facts=_summary_strings(payload.get("confirmed_facts"), limit=12, max_chars=500),
+        files_touched=_unique_strings(payload.get("files_touched"), limit=16, max_chars=500),
+        decisions=_summary_strings(payload.get("decisions"), limit=10, max_chars=500),
+        failed_attempts=_summary_strings(payload.get("failed_attempts"), limit=12, max_chars=500),
+        current_state=_truncate(payload.get("current_state"), 1000),
+        next_steps=_summary_strings(payload.get("next_steps"), limit=12, max_chars=500),
+        open_questions=_summary_strings(payload.get("open_questions"), limit=8, max_chars=500),
+        do_not_repeat=_summary_strings(payload.get("do_not_repeat"), limit=8, max_chars=500),
+    )
+
+
+def parse_compaction_summary_text(text: str) -> CompactionSummary | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    candidates = [raw]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE)
+    if fence:
+        candidates.insert(0, fence.group(1))
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first >= 0 and last > first:
+        candidates.insert(0, raw[first : last + 1])
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(decoded, dict):
+            return normalize_compaction_summary(decoded)
+    return None
+
+
+def build_structured_compaction_summary(compaction_input: dict[str, Any] | None) -> CompactionSummary:
+    payload = dict(compaction_input or {})
+    task_state = dict(payload.get("task_state") or {})
+    evidence = [dict(item) for item in list(payload.get("tool_evidence") or []) if isinstance(item, dict)]
+    messages = [dict(item) for item in list(payload.get("old_messages") or []) if isinstance(item, dict)]
+    confirmed: list[str] = []
+    decisions: list[str] = []
+    for item in evidence:
+        status = str(item.get("status") or "").strip().lower()
+        summary = _truncate(item.get("summary"), 500)
+        if not summary:
+            continue
+        if status in {"", "ok", "success", "completed"}:
+            confirmed.append(summary)
+    for item in messages:
+        role = str(item.get("role") or "").strip()
+        text = _truncate(item.get("text"), 320)
+        if role == "assistant" and text:
+            confirmed.append(text)
+    plan_items = [dict(item) for item in list(task_state.get("plan_items") or []) if isinstance(item, dict)]
+    for item in plan_items:
+        if str(item.get("status") or "").strip() == "completed":
+            step = _truncate(item.get("step"), 500)
+            if step:
+                decisions.append(step)
+    next_steps = []
+    next_required = _truncate(task_state.get("next_required_action"), 500)
+    if next_required:
+        next_steps.append(next_required)
+    for item in plan_items:
+        status = str(item.get("status") or "").strip()
+        if status in {"pending", "in_progress"}:
+            step = _truncate(item.get("step"), 500)
+            if step:
+                next_steps.append(step)
+    failed = _summary_strings(payload.get("failed_attempts"), limit=12, max_chars=500)
+    do_not_repeat = []
+    for item in failed[:6]:
+        do_not_repeat.append(f"Avoid repeating without new evidence: {item}")
+    status = _truncate(task_state.get("status") or payload.get("current_status"), 80)
+    goal = _truncate(task_state.get("goal"), 500)
+    blocked = _truncate(task_state.get("blocked_reason"), 500)
+    state_parts = []
+    if status:
+        state_parts.append(f"status={status}")
+    if goal:
+        state_parts.append(f"goal={goal}")
+    if next_required:
+        state_parts.append(f"next={next_required}")
+    if blocked:
+        state_parts.append(f"blocked={blocked}")
+    return CompactionSummary(
+        confirmed_facts=_unique_strings(confirmed, limit=12, max_chars=500),
+        files_touched=_unique_strings(payload.get("modified_files"), limit=16, max_chars=500),
+        decisions=_unique_strings(decisions, limit=10, max_chars=500),
+        failed_attempts=failed,
+        current_state="; ".join(state_parts),
+        next_steps=_unique_strings(next_steps, limit=12, max_chars=500),
+        open_questions=[],
+        do_not_repeat=_unique_strings(do_not_repeat, limit=8, max_chars=500),
+    )
+
+
+def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
+    payload = dict(compaction_input or {})
+    schema = {
+        "confirmed_facts": ["facts that are already verified"],
+        "files_touched": ["paths that are relevant or changed"],
+        "decisions": ["decisions already made"],
+        "failed_attempts": ["attempts that failed and why"],
+        "current_state": "one concise description of current status",
+        "next_steps": ["specific next actions"],
+        "open_questions": ["questions that still need user/model resolution"],
+        "do_not_repeat": ["actions that should not be repeated without new evidence"],
+    }
+    return (
+        "You are compacting a coding-agent thread. Return only strict JSON matching this schema.\n"
+        "Do not include raw tool output, raw traces, provider payloads, secrets, or stack traces.\n"
+        "Use only concise durable facts needed to continue the task.\n\n"
+        "schema:\n"
+        + json.dumps(schema, ensure_ascii=False, indent=2)
+        + "\n\ncompaction_input:\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    )
+
+
+def render_compaction_summary(summary: CompactionSummary | dict[str, Any], *, generation: int | None = None) -> str:
+    payload = normalize_compaction_summary(summary)
+    sections: list[tuple[str, list[str] | str]] = [
+        ("confirmed_facts", payload.confirmed_facts),
+        ("files_touched", payload.files_touched),
+        ("decisions", payload.decisions),
+        ("failed_attempts", payload.failed_attempts),
+        ("current_state", payload.current_state),
+        ("next_steps", payload.next_steps),
+        ("open_questions", payload.open_questions),
+        ("do_not_repeat", payload.do_not_repeat),
+    ]
+    lines = ["Compacted thread history."]
+    if generation is not None:
+        lines.append(f"generation: {max(0, int(generation))}")
+    for title, values in sections:
+        if isinstance(values, str):
+            text = _truncate(values, 1000)
+            if text:
+                lines.append(f"{title}: {text}")
+            continue
+        clean_values = _summary_strings(values, limit=16, max_chars=500)
+        if not clean_values:
+            continue
+        lines.append(f"{title}:")
+        lines.extend(f"- {item}" for item in clean_values)
+    return _clean_text("\n".join(lines), limit=4000)
+
+
+def apply_compaction_summary_to_state(
+    *,
+    context_manager: "ContextManager",
+    summary: CompactionSummary | dict[str, Any],
+    task_state: dict[str, Any] | None = None,
+    work_cursor: dict[str, Any] | None = None,
+    generation: int | None = None,
+) -> tuple["ContextManager", dict[str, Any], dict[str, Any]]:
+    normalized = normalize_compaction_summary(summary)
+    manager = ContextManager.from_payload(context_manager.to_session_payload())
+    manager.clean_summary = render_compaction_summary(normalized, generation=generation)
+    observations = [
+        {
+            "source": "compaction",
+            "tool": "llm_compaction",
+            "status": "ok",
+            "summary": item,
+        }
+        for item in [*normalized.confirmed_facts[:4], *normalized.decisions[:2], normalized.current_state]
+        if str(item or "").strip()
+    ]
+    manager.recent_observations = _normalize_recent_observations(
+        [*observations, *[dump_model(item) for item in manager.recent_observations]]
+    )
+    if normalized.files_touched:
+        manager.active_files = _unique_strings(
+            [*normalized.files_touched, *manager.active_files],
+            limit=10,
+            max_chars=500,
+        )
+    if normalized.next_steps:
+        manager.plan = [
+            PlanItem(step=step, status=("in_progress" if index == 0 else "pending"))
+            for index, step in enumerate(normalized.next_steps[:12])
+        ]
+    manager.clean_turns = manager.clean_turns[-8:]
+    manager._touch()
+
+    task_payload = dict(task_state or {})
+    existing_failures = [
+        dict(item)
+        for item in list(task_payload.get("failed_attempts") or [])
+        if isinstance(item, dict)
+    ]
+    for item in normalized.failed_attempts:
+        existing_failures.append({"summary": item, "source": "compaction"})
+    if normalized.failed_attempts:
+        task_payload["failed_attempts"] = existing_failures[-12:]
+    if normalized.next_steps:
+        task_payload["next_required_action"] = normalized.next_steps[0]
+        task_payload["plan_items"] = [
+            {
+                "id": f"compaction-step-{index + 1}",
+                "step": step,
+                "status": "in_progress" if index == 0 else "pending",
+            }
+            for index, step in enumerate(normalized.next_steps[:12])
+        ]
+    if normalized.current_state and not str(task_payload.get("blocked_reason") or "").strip():
+        if normalized.failed_attempts and str(task_payload.get("status") or "") in {"blocked", "failed"}:
+            task_payload["blocked_reason"] = normalized.current_state[:500]
+
+    cursor_payload = dict(work_cursor or {})
+    if normalized.files_touched:
+        cursor_payload["active_files"] = _unique_strings(
+            [*normalized.files_touched, *list(cursor_payload.get("active_files") or [])],
+            limit=8,
+            max_chars=500,
+        )
+    return manager, task_payload, cursor_payload
+
+
 def _permission_text(value: Any, *, enabled: str, disabled: str) -> str:
     return enabled if bool(value) else disabled
 
@@ -419,20 +832,30 @@ class ContextManager(BaseModel):
         keep_count = min(8, max(4, max_clean_turns // 2))
         old_turns = self.clean_turns[:-keep_count]
         retained = self.clean_turns[-keep_count:]
-        summary_parts = [self.clean_summary] if self.clean_summary.strip() else []
-        if old_turns:
-            summary_parts.append(
-                "Older conversation summary: "
-                + " ".join(f"{turn.get('role')}: {_clean_text(turn.get('text'), limit=240)}" for turn in old_turns)
-            )
-        if self.recent_observations:
-            summary_parts.append(
-                "Recent observations: "
-                + " ".join(_clean_text(item.summary, limit=160) for item in self.recent_observations[:5])
-            )
-        self.clean_summary = _clean_text(" ".join(summary_parts), limit=2000)
+        compaction_messages = [*old_turns]
+        if self.clean_summary.strip():
+            compaction_messages.insert(0, {"role": "assistant", "text": self.clean_summary})
+        compaction_input = build_compaction_input(
+            old_messages=compaction_messages,
+            tool_evidence=[dump_model(item) for item in self.recent_observations],
+            task_state={"plan_items": [dump_model(item) for item in self.plan]},
+            work_cursor={"active_files": list(self.active_files)},
+            modified_files=list(self.active_files),
+        )
+        summary = build_structured_compaction_summary(compaction_input)
+        self.clean_summary = render_compaction_summary(summary)
         self.clean_turns = retained
         self.recent_observations = self.recent_observations[:5]
+        self.active_files = _unique_strings(
+            [*summary.files_touched, *self.active_files],
+            limit=10,
+            max_chars=500,
+        )
+        if summary.next_steps:
+            self.plan = [
+                PlanItem(step=step, status=("in_progress" if index == 0 else "pending"))
+                for index, step in enumerate(summary.next_steps[:12])
+            ]
         self._touch()
         return True
 

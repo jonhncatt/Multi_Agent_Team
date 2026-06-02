@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-v3.1.4d-blue)
+![Version](https://img.shields.io/badge/version-3.1.5-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`v3.1.4d`
+当前稳定版本：`3.1.5`
 
 ## Stable Runtime
 
-v3.1.4d 是一个面向开发体验的增强版本，重点补强 compound shell 校验，以及 blocked-stop 诊断信息的可读性。canonical 29-tool surface 保持不变。
+3.1.5 是一个 session / trace / task checkpoint 架构修复版本，重点瘦身 thread 读取路径、将重 trace 移入 run sidecar、统一 `work_cursor + task_state`，并补上结构化 LLM compaction 与 runtime typed item 协议。
 
-相对 v3.1.4c，本版本将复合 shell 从“一刀切拒绝”升级为“拆解验证后执行原始命令”，并把 runtime 停止信息升级为“停止原因 / 最近动作 / 复盘情况 / 下一步建议”。
+相对 v3.1.4d，本版本默认只加载 summary thread detail，Activity/Debug 按需拉取 full turn；`/api/threads` 改读 session meta；assistant run 的完整诊断写入 `app/data/runs` sidecar；compaction 输出固定结构并写回 `context_manager`、`task_state` 与 `work_cursor`。
 
 ## Max Output Tokens
 

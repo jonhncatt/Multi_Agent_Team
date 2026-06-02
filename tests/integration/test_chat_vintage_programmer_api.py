@@ -699,6 +699,30 @@ class _ToolAuditStreamingRuntime(_FakeVintageRuntime):
             "source_refs": ["https://example.com"],
         }
         if progress_cb is not None:
+            typed_item = {
+                **dict(tool_item),
+                "id": f"{run_id}:tool:tc-1",
+                "type": "toolCall",
+                "tool": "web_search",
+                "sourceRefs": ["https://example.com"],
+                "status": "completed",
+            }
+            progress_cb(
+                {
+                    "event": "item/started",
+                    "thread_id": session_id,
+                    "turn_id": run_id,
+                    "item": {**typed_item, "status": "inProgress"},
+                }
+            )
+            progress_cb(
+                {
+                    "event": "item/completed",
+                    "thread_id": session_id,
+                    "turn_id": run_id,
+                    "item": typed_item,
+                }
+            )
             progress_cb(
                 {
                     "event": "tool",
@@ -903,7 +927,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.4d",
+            "app_version": "3.1.5",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -945,7 +969,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.4d"
+    assert bootstrap_payload["app_version"] == "3.1.5"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens

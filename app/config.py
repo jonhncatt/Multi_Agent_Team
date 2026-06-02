@@ -329,6 +329,8 @@ class AppConfig:
     workspace_root: Path
     projects_registry_path: Path
     sessions_dir: Path
+    runs_dir: Path
+    session_meta_dir: Path
     uploads_dir: Path
     token_stats_path: Path
     allowed_roots: list[Path]
@@ -710,6 +712,20 @@ def load_config() -> AppConfig:
         )
         or str(workspace_root / "app" / "data" / "sessions")
     ).resolve()
+    runs_dir = Path(
+        _env(
+            "VP_RUNS_DIR",
+            default=str(workspace_root / "app" / "data" / "runs"),
+        )
+        or str(workspace_root / "app" / "data" / "runs")
+    ).resolve()
+    session_meta_dir = Path(
+        _env(
+            "VP_SESSION_META_DIR",
+            default=str(workspace_root / "app" / "data" / "session_meta"),
+        )
+        or str(workspace_root / "app" / "data" / "session_meta")
+    ).resolve()
     projects_registry_path = Path(
         _env(
             "VP_PROJECTS_REGISTRY_PATH",
@@ -733,6 +749,8 @@ def load_config() -> AppConfig:
     ).resolve()
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    session_meta_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1001,6 +1019,8 @@ def load_config() -> AppConfig:
         workspace_root=workspace_root,
         projects_registry_path=projects_registry_path,
         sessions_dir=sessions_dir,
+        runs_dir=runs_dir,
+        session_meta_dir=session_meta_dir,
         uploads_dir=uploads_dir,
         token_stats_path=token_stats_path,
         allowed_roots=allowed_roots,
