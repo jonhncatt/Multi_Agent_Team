@@ -138,3 +138,95 @@ def test_maybe_auto_compact_session_writes_replacement_history_state() -> None:
     runtime_view = build_runtime_context_payload(session=session)
     assert runtime_view["summary"] == session["compaction_state"]["compacted_history"]
     assert len(runtime_view["history_turns"]) <= 12
+
+
+def test_maybe_auto_compact_session_uses_llm_compactor_when_available() -> None:
+    captured: dict[str, object] = {}
+    session = {
+        "summary": "",
+        "turns": [
+            {
+                "id": f"turn-{idx}",
+                "role": "user" if idx % 2 == 0 else "assistant",
+                "text": ("处理 3.1.6 compaction " if idx % 2 == 0 else "已完成部分实现 ") + ("B" * 5000),
+            }
+            for idx in range(16)
+        ],
+        "task_state": {
+            "task_id": "task-llm",
+            "goal": "finish compaction",
+            "status": "in_progress",
+            "plan_items": [{"step": "实现 LLM compaction", "status": "in_progress"}],
+            "next_required_action": "继续修 derived view",
+        },
+        "work_cursor": {"cwd": "/tmp/project", "active_files": ["app/context_meter.py"]},
+        "context_manager": {
+            "recent_observations": [{"summary": "sidecar already stores raw traces", "status": "ok"}],
+            "active_files": ["app/context_meter.py"],
+        },
+    }
+
+    def llm_compactor(compaction_input: dict[str, object]) -> dict[str, object]:
+        captured["input"] = compaction_input
+        return {
+            "summary": {
+                "confirmed_facts": ["LLM confirmed compacted history"],
+                "files_touched": ["app/context_meter.py"],
+                "decisions": ["Use an isolated compaction subtask"],
+                "failed_attempts": [],
+                "current_state": "pre-turn compaction is active",
+                "next_steps": ["verify derived fields"],
+                "open_questions": [],
+                "do_not_repeat": ["do not keep raw traces in summary"],
+            },
+            "source": "llm",
+        }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="moonshot-v1-8k",
+        max_output_tokens=2048,
+        pending_message="继续",
+        phase="pre_turn",
+        llm_compactor=llm_compactor,
+    )
+
+    assert result["compacted"] is True
+    assert captured["input"]["task_state"]["goal"] == "finish compaction"
+    assert session["compaction_state"]["llm_compaction_used"] is True
+    assert session["compaction_state"]["compaction_source"] == "llm"
+    assert session["compaction_state"]["fallback_reason"] == ""
+    assert "confirmed_facts" in session["compaction_state"]["compaction_schema"]
+    assert "LLM confirmed compacted history" in session["compaction_state"]["compacted_history"]
+    assert session["task_state"]["next_required_action"] == "verify derived fields"
+    assert session["work_cursor"]["active_files"][0] == "app/context_meter.py"
+
+
+def test_maybe_auto_compact_session_records_llm_fallback_reason() -> None:
+    session = {
+        "summary": "",
+        "turns": [
+            {
+                "id": f"turn-{idx}",
+                "role": "user" if idx % 2 == 0 else "assistant",
+                "text": ("需要压缩 " if idx % 2 == 0 else "继续 ") + ("C" * 5000),
+            }
+            for idx in range(16)
+        ],
+        "task_state": {"goal": "fallback", "status": "in_progress"},
+        "work_cursor": {"cwd": "/tmp/project"},
+    }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="moonshot-v1-8k",
+        max_output_tokens=2048,
+        pending_message="继续",
+        phase="pre_turn",
+        llm_compactor=lambda _: "not json",
+    )
+
+    assert result["compacted"] is True
+    assert session["compaction_state"]["llm_compaction_used"] is False
+    assert session["compaction_state"]["compaction_source"] == "deterministic_fallback"
+    assert session["compaction_state"]["fallback_reason"] == "llm_output_invalid"

@@ -2642,7 +2642,8 @@ def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) ->
     assert checkpoint["cwd"] == str(tmp_path)
     assert checkpoint["active_files"] == [str(image_path)]
     assert checkpoint["active_attachments"][0]["id"] == "img-1"
-    assert checkpoint["last_completed_step"].startswith("image_read:")
+    assert checkpoint["last_completed_step"] == ""
+    assert result["task_state"]["progress_basis"][0].startswith("image_read:")
 
 
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:

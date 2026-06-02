@@ -1053,16 +1053,15 @@ def _thread_detail_response_payload(
         turns.append(_session_turn_from_payload(expanded, turn_id=turn_id))
     work_cursor = dict(loaded.get("work_cursor") or {})
     task_state = dict(loaded.get("task_state") or {})
-    recent_tasks = list(loaded.get("recent_tasks") or [])
-    artifact_memory_preview = list(loaded.get("artifact_memory_preview") or [])
+    thread_memory = session_context_impl.get_thread_memory(loaded)
+    recent_tasks = list(thread_memory.get("recent_tasks") or [])
+    artifact_memory_preview = session_context_impl.get_artifact_memory_preview(loaded)
     agent_state.setdefault("work_cursor", work_cursor)
     agent_state.setdefault("task_state", task_state)
     agent_state.setdefault(
         "task_checkpoint",
         session_context_impl.compat_task_checkpoint_from_focus(session_context_impl.get_current_task_focus(loaded)),
     )
-    agent_state.setdefault("recent_tasks", recent_tasks)
-    agent_state.setdefault("artifact_memory_preview", artifact_memory_preview)
     return ThreadDetailResponse(
         thread_id=session_id,
         session_id=session_id,
@@ -1803,7 +1802,6 @@ def _process_chat_request(
             "runtime_error": {},
             "updated_at": updated_at,
         }
-        seed_session["context_meter"] = dict(fallback_context_meter)
         session_store.save(seed_session)
         return ChatResponse(
             session_id=seed_session["id"],
@@ -1971,12 +1969,20 @@ def _process_chat_request(
         history_turns_before = copy.deepcopy(session.get("turns", []))
         summary_before = str(session.get("summary", "") or "")
         with request_phase_timer.measure("pre_turn_compaction_ms"):
+            llm_compactor = None
+            if hasattr(provider_runtime, "compact_context"):
+                llm_compactor = lambda payload: provider_runtime.compact_context(
+                    payload,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                )
             compaction_result = maybe_auto_compact_session(
                 session=session,
                 model=requested_model,
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message=req.message,
                 phase="pre_turn",
+                llm_compactor=llm_compactor,
             )
         summarized = bool(compaction_result.get("compacted"))
         if summarized:
@@ -2390,6 +2396,7 @@ def _process_chat_request(
             or {}
         )
         previous_agent_state = dict(session.get("agent_state") or {})
+        previous_task_state = copy.deepcopy(session.get("task_state") or {})
         last_compacted_at = _session_last_compacted_at(session) or str(previous_agent_state.get("last_compacted_at") or "")
         tool_hits = [
             {
@@ -2410,25 +2417,44 @@ def _process_chat_request(
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
         )
-        next_required_action = str(
-            pending_user_input.get("summary")
-            or normalized_focus.get("next_action")
-            or ("blocked" if turn_status == "blocked" else "")
-        ).strip()
-        session["task_state"] = session_context_impl.normalize_task_state(
-            {
-                "task_id": normalized_focus.get("task_id") or "",
-                "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or req.message[:240]),
-                "status": "blocked" if turn_status in {"blocked", "needs_user_input"} else ("failed" if turn_status == "failed" else ("completed" if turn_status == "completed" else "in_progress")),
-                "plan_items": list(inspector_run_state.get("plan") or plan),
-                "current_step_id": "",
-                "completed_steps": [],
-                "blocked_reason": str(runtime_error.get("message") or "") if turn_status in {"blocked", "failed"} else "",
-                "next_required_action": next_required_action,
-                "failed_attempts": [],
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
+        inspector_session_state = (
+            dict(inspector.get("session") or {})
+            if isinstance(inspector.get("session"), dict)
+            else {}
         )
+        runtime_task_state: dict[str, Any] | None = None
+        if isinstance(runtime_result.get("task_state"), dict):
+            runtime_task_state = dict(runtime_result.get("task_state") or {})
+        elif isinstance(inspector_run_state.get("task_state"), dict):
+            runtime_task_state = dict(inspector_run_state.get("task_state") or {})
+        elif isinstance(inspector_session_state.get("task_state"), dict):
+            runtime_task_state = dict(inspector_session_state.get("task_state") or {})
+        fallback_error_for_task = runtime_error
+        if not fallback_error_for_task:
+            fallback_blocked_reason = str(runtime_result.get("blocked_reason") or inspector_run_state.get("blocked_reason") or "").strip()
+            fallback_error_for_task = {"message": fallback_blocked_reason} if fallback_blocked_reason else {}
+        if isinstance(runtime_task_state, dict) and runtime_task_state:
+            next_task_state = session_context_impl.normalize_task_state(runtime_task_state)
+        else:
+            next_task_state = session_context_impl.merge_task_state_after_turn(
+                {
+                    **dict(previous_task_state or {}),
+                    "task_id": normalized_focus.get("task_id") or previous_task_state.get("task_id") or "",
+                    "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or previous_task_state.get("goal") or req.message[:240]),
+                    "plan_items": list(previous_task_state.get("plan_items") or []),
+                },
+                list(inspector_run_state.get("plan") or plan),
+                tool_events,
+                list(runtime_result.get("progress_signals") or inspector_run_state.get("progress_signals") or []),
+                turn_status,
+                fallback_error_for_task,
+                pending_user_input,
+            )
+        if not next_task_state.get("task_id") and normalized_focus.get("task_id"):
+            next_task_state["task_id"] = normalized_focus.get("task_id") or ""
+        if not next_task_state.get("goal"):
+            next_task_state["goal"] = str(inspector_run_state.get("goal") or normalized_focus.get("goal") or req.message[:240])
+        session["task_state"] = session_context_impl.normalize_task_state(next_task_state)
         session["agent_state"] = {
             "agent_id": "vintage_programmer",
             "permission_profile": permission_profile,
@@ -2492,8 +2518,6 @@ def _process_chat_request(
                 continue
             compaction_status[key] = value
         session["agent_state"]["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or last_compacted_at or "")
-        session["context_meter"] = dict(context_meter)
-        session["compaction_status"] = dict(compaction_status)
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
@@ -2502,6 +2526,7 @@ def _process_chat_request(
         inspector_run_state["recent_user_messages"] = list(recent_user_messages_for_runtime)
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_run_state["task_state"] = dict(session.get("task_state") or {})
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
@@ -2516,6 +2541,7 @@ def _process_chat_request(
         inspector_session["recent_user_messages"] = list(recent_user_messages_for_runtime)
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
+        inspector_session["task_state"] = dict(session.get("task_state") or {})
         inspector_session["thread_memory"] = dict(thread_memory)
         inspector_session["recent_tasks"] = recent_tasks
         inspector_session["artifact_memory_preview"] = artifact_memory_preview

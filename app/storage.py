@@ -21,23 +21,11 @@ _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
 _ACTIVITY_SUMMARY_KEYS = {
     "run_id",
     "trace_ref",
-    "tool_count",
     "status",
-    "started_at",
-    "turn_started_at",
-    "finished_at",
-    "run_duration_ms",
-    "final_elapsed_ms",
+    "summary",
     "activity_summary",
-    "triggering_user_message",
-    "triggering_user_turn_id",
-    "session_id",
-    "thread_id",
-    "tool_boundary_clean",
-    "runtime_error",
-    "model_draft",
-    "plan",
-    "plan_explanation",
+    "tool_count",
+    "run_duration_ms",
 }
 _ACTIVITY_HEAVY_KEYS = {
     "llm_exchanges",
@@ -306,6 +294,8 @@ class SessionStore:
             "blocked_reason": "",
             "next_required_action": "",
             "failed_attempts": [],
+            "progress_basis": [],
+            "evidence_refs": [],
             "updated_at": "",
         }
 
@@ -366,9 +356,13 @@ class SessionStore:
         summary["run_id"] = str(run_id or source.get("run_id") or "").strip()
         summary["trace_ref"] = str(trace_ref or source.get("trace_ref") or "").strip()
         summary["tool_count"] = self._activity_tool_count(source, artifact)
-        summary["session_id"] = str(source.get("session_id") or session_id or "").strip()
-        summary["thread_id"] = str(source.get("thread_id") or session_id or "").strip()
         summary["status"] = str(source.get("status") or "idle").strip() or "idle"
+        summary_text = str(source.get("summary") or source.get("activity_summary") or "").strip()
+        activity_summary = str(source.get("activity_summary") or summary_text).strip()
+        if summary_text:
+            summary["summary"] = summary_text
+        if activity_summary:
+            summary["activity_summary"] = activity_summary
         return summary
 
     def _run_id_for_turn(self, turn: dict[str, Any]) -> str:
@@ -515,30 +509,6 @@ class SessionStore:
             changed = True
         return changed
 
-    def _hydrate_failed_activity_debug(self, session: dict[str, Any]) -> None:
-        session_id = str((session or {}).get("id") or "").strip()
-        if not session_id:
-            return
-        for turn in _coerce_turns(session.get("turns")):
-            if str(turn.get("role") or "") != "assistant":
-                continue
-            activity = turn.get("activity")
-            if not isinstance(activity, dict):
-                continue
-            if str(activity.get("status") or "").strip() != "failed":
-                continue
-            if isinstance(activity.get("llm_exchanges"), list) and activity.get("llm_exchanges"):
-                continue
-            trace_ref = str(activity.get("trace_ref") or "").strip()
-            run_id = str(activity.get("run_id") or turn.get("id") or "").strip()
-            artifact = self.run_artifact_store.load_by_ref(trace_ref) if trace_ref else None
-            if artifact is None and run_id:
-                artifact = self.run_artifact_store.load(session_id=session_id, run_id=run_id)
-            full_activity = dict((artifact or {}).get("activity") or {})
-            exchanges = full_activity.get("llm_exchanges")
-            if isinstance(exchanges, list) and exchanges:
-                activity["llm_exchanges"] = exchanges
-
     def expand_turn_for_view(self, session_id: str, turn: dict[str, Any], *, view: str = "summary") -> dict[str, Any]:
         payload = dict(turn or {})
         if str(payload.get("role") or "") != "assistant":
@@ -563,6 +533,7 @@ class SessionStore:
                 full_activity.setdefault("session_id", str(session_id or ""))
                 full_activity.setdefault("thread_id", str(session_id or ""))
                 full_activity["tool_count"] = self._activity_tool_count(full_activity, artifact)
+                full_activity["full_loaded"] = True
                 if artifact.get("tool_events") and not full_activity.get("tool_items"):
                     full_activity["tool_items"] = list(artifact.get("tool_events") or [])
                 payload["activity"] = full_activity
@@ -570,6 +541,7 @@ class SessionStore:
                 payload["run_artifact"] = dict(artifact)
             else:
                 payload["activity"] = dict(activity)
+                payload["activity"]["full_loaded"] = True
                 payload["answer_bundle"] = dict(payload.get("answer_bundle") or {})
                 payload["run_artifact"] = {}
             return payload
@@ -730,8 +702,6 @@ class SessionStore:
             "task_state": self._default_task_state(),
             "thread_memory": {},
             "artifact_memory": [],
-            "recent_tasks": [],
-            "artifact_memory_preview": [],
             "compaction_state": {},
             "context_manager": self._default_context_manager(),
             "context_schema_version": CONTEXT_SCHEMA_VERSION,
@@ -748,7 +718,6 @@ class SessionStore:
         normalized, changed = self._normalize_session(loaded, default_project=default_project)
         if changed:
             self.save(normalized, touch=False)
-        self._hydrate_failed_activity_debug(normalized)
         return normalized
 
     def load_or_create(

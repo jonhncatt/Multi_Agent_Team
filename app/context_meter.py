@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import tiktoken
 
 from app import session_context as session_context_impl
 from app.context_pack import (
+    CompactionSummary,
     ContextManager,
     apply_compaction_summary_to_state,
     build_compaction_input,
     build_structured_compaction_summary,
+    normalize_compaction_summary,
+    parse_compaction_summary_text,
     render_compaction_summary,
 )
 
@@ -158,12 +161,28 @@ def _default_compaction_state() -> dict[str, Any]:
         "threshold_source": "",
         "retained_turn_count": 0,
         "mode": "token_budget",
+        "compaction_source": "",
+        "llm_compaction_used": False,
+        "fallback_reason": "",
+        "compaction_schema": [],
     }
 
 
 def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
     raw = session.get("compaction_state") if isinstance(session, dict) else {}
     payload = dict(raw) if isinstance(raw, dict) else {}
+    legacy_status = session.get("compaction_status") if isinstance(session, dict) and isinstance(session.get("compaction_status"), dict) else {}
+    legacy_meter = session.get("context_meter") if isinstance(session, dict) and isinstance(session.get("context_meter"), dict) else {}
+    if legacy_status:
+        payload = {**dict(legacy_status), **payload}
+    if legacy_meter:
+        payload = {
+            "estimated_context_tokens": legacy_meter.get("estimated_tokens"),
+            "effective_context_window": legacy_meter.get("context_window"),
+            "auto_compact_token_limit": legacy_meter.get("auto_compact_token_limit"),
+            "threshold_source": legacy_meter.get("threshold_source"),
+            **payload,
+        }
     normalized = {
         "generation": max(0, int(payload.get("generation") or 0)),
         "compacted_history": str(payload.get("compacted_history") or ""),
@@ -186,6 +205,14 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
         "threshold_source": str(payload.get("threshold_source") or ""),
         "retained_turn_count": max(0, int(payload.get("retained_turn_count") or 0)),
         "mode": str(payload.get("mode") or "token_budget"),
+        "compaction_source": str(payload.get("compaction_source") or ""),
+        "llm_compaction_used": bool(payload.get("llm_compaction_used")),
+        "fallback_reason": str(payload.get("fallback_reason") or ""),
+        "compaction_schema": [
+            str(item).strip()
+            for item in list(payload.get("compaction_schema") or [])
+            if str(item).strip()
+        ],
     }
     if isinstance(session, dict) and session.get("compaction_state") != normalized:
         session["compaction_state"] = dict(normalized)
@@ -319,6 +346,10 @@ def build_compaction_status(
         "reason": reason,
         "before_tokens": int(compaction_state.get("before_tokens") or 0),
         "after_tokens": int(compaction_state.get("after_tokens") or 0),
+        "compaction_source": str(compaction_state.get("compaction_source") or ""),
+        "llm_compaction_used": bool(compaction_state.get("llm_compaction_used")),
+        "fallback_reason": str(compaction_state.get("fallback_reason") or ""),
+        "compaction_schema": list(compaction_state.get("compaction_schema") or []),
         "warning": warning,
     }
 
@@ -458,6 +489,76 @@ def _build_compacted_history(
     return _shorten(render_compaction_summary(summary, generation=next_generation), _COMPACTED_HISTORY_CHAR_LIMIT)
 
 
+_COMPACTION_SCHEMA_KEYS = [
+    "confirmed_facts",
+    "files_touched",
+    "decisions",
+    "failed_attempts",
+    "current_state",
+    "next_steps",
+    "open_questions",
+    "do_not_repeat",
+]
+
+
+def _compaction_summary_has_content(summary: CompactionSummary) -> bool:
+    return bool(
+        summary.confirmed_facts
+        or summary.files_touched
+        or summary.decisions
+        or summary.failed_attempts
+        or str(summary.current_state or "").strip()
+        or summary.next_steps
+        or summary.open_questions
+        or summary.do_not_repeat
+    )
+
+
+def _coerce_compactor_result(raw: Any) -> tuple[CompactionSummary | None, str]:
+    if isinstance(raw, CompactionSummary):
+        return normalize_compaction_summary(raw), ""
+    payload = dict(raw or {}) if isinstance(raw, dict) else {}
+    if payload and isinstance(payload.get("summary"), (dict, CompactionSummary)):
+        summary = normalize_compaction_summary(payload.get("summary"))
+        return summary, str(payload.get("source") or "llm")
+    if payload and any(key in payload for key in _COMPACTION_SCHEMA_KEYS):
+        return normalize_compaction_summary(payload), str(payload.get("source") or "llm")
+    if isinstance(raw, str):
+        parsed = parse_compaction_summary_text(raw)
+        if parsed is not None:
+            return parsed, "llm"
+    return None, ""
+
+
+def _build_compaction_summary_with_optional_llm(
+    compaction_input: dict[str, Any],
+    *,
+    llm_compactor: Callable[[dict[str, Any]], Any] | None = None,
+) -> tuple[CompactionSummary, dict[str, Any]]:
+    fallback_summary = build_structured_compaction_summary(compaction_input)
+    meta = {
+        "source": "deterministic_fallback",
+        "llm_used": False,
+        "fallback_reason": "compactor_not_configured",
+        "schema": list(_COMPACTION_SCHEMA_KEYS),
+    }
+    if llm_compactor is None:
+        return fallback_summary, meta
+    try:
+        raw_result = llm_compactor(dict(compaction_input))
+        summary, source = _coerce_compactor_result(raw_result)
+    except Exception as exc:
+        meta["fallback_reason"] = f"llm_exception:{exc.__class__.__name__}"
+        return fallback_summary, meta
+    if summary is None or not _compaction_summary_has_content(summary):
+        meta["fallback_reason"] = "llm_output_invalid"
+        return fallback_summary, meta
+    meta["source"] = source or "llm"
+    meta["llm_used"] = True
+    meta["fallback_reason"] = ""
+    return summary, meta
+
+
 def maybe_auto_compact_session(
     *,
     session: dict[str, Any] | None = None,
@@ -466,6 +567,7 @@ def maybe_auto_compact_session(
     pending_message: str = "",
     phase: str = "pre_turn",
     retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
+    llm_compactor: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any]:
     payload = dict(session or {})
     status_before = build_compaction_status(
@@ -547,7 +649,10 @@ def maybe_auto_compact_session(
         failed_attempts=raw_task_state.get("failed_attempts") or [],
         current_status=str(raw_task_state.get("status") or ""),
     )
-    compaction_summary = build_structured_compaction_summary(compaction_input)
+    compaction_summary, compaction_meta = _build_compaction_summary_with_optional_llm(
+        compaction_input,
+        llm_compactor=llm_compactor,
+    )
     compacted_history = _shorten(
         render_compaction_summary(compaction_summary, generation=next_generation),
         _COMPACTED_HISTORY_CHAR_LIMIT,
@@ -569,6 +674,10 @@ def maybe_auto_compact_session(
             "reason": "context_limit",
             "before_tokens": int(status_before.get("estimated_context_tokens") or 0),
             "mode": "token_budget",
+            "compaction_source": str(compaction_meta.get("source") or ""),
+            "llm_compaction_used": bool(compaction_meta.get("llm_used")),
+            "fallback_reason": str(compaction_meta.get("fallback_reason") or ""),
+            "compaction_schema": list(compaction_meta.get("schema") or _COMPACTION_SCHEMA_KEYS),
         }
     )
     if isinstance(session, dict):
@@ -600,4 +709,7 @@ def maybe_auto_compact_session(
         "status_before": status_before,
         "status_after": status_after,
         "compacted_turn_count": len(compacted_turns),
+        "compaction_source": str(compaction_meta.get("source") or ""),
+        "llm_compaction_used": bool(compaction_meta.get("llm_used")),
+        "fallback_reason": str(compaction_meta.get("fallback_reason") or ""),
     }

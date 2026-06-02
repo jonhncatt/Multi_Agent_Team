@@ -66,6 +66,7 @@ from app.serialization import dump_model, safe_model_dump
 from app.session_context import (
     compat_task_checkpoint_from_focus,
     focus_from_work_cursor_task_state,
+    merge_task_state_after_turn,
     normalize_task_state,
     normalize_work_cursor,
 )
@@ -1801,9 +1802,6 @@ class VintageProgrammerRuntime:
                     if str(candidate_parent).strip():
                         updated["cwd"] = str(candidate_parent)
         updated["active_attachments"] = self._attachment_refs(attachments)
-        summary = str(result.get("summary") or result.get("error") or "").strip()
-        if summary:
-            updated["last_completed_step"] = f"{tool_name}: {summary}"[:240]
         return updated
 
     def _build_answer_bundle(
@@ -3304,6 +3302,43 @@ class VintageProgrammerRuntime:
                     trace_events=trace_events,
                 )
         return render_compaction_summary(fallback_summary)
+
+    def compact_context(
+        self,
+        compaction_input: dict[str, Any],
+        *,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        can_run_isolated_compactor = (
+            hasattr(self._backend, "build_llm")
+            and hasattr(self._backend, "_invoke_chat_with_runner")
+            and hasattr(self._backend, "_SystemMessage")
+            and hasattr(self._backend, "_HumanMessage")
+        )
+        if not can_run_isolated_compactor:
+            raise RuntimeError("isolated_compactor_unavailable")
+        prompt = render_compaction_prompt(dict(compaction_input or {}))
+        ai_msg, _, _, _ = self._invoke_backend_method(
+            self._backend._invoke_chat_with_runner,
+            messages=[
+                self._backend._SystemMessage(content="Return strict JSON only. Do not call tools."),
+                self._backend._HumanMessage(content=prompt),
+            ],
+            model=str(model or self._config.default_model or ""),
+            max_output_tokens=max(512, min(int(max_output_tokens or 1200), 2000)),
+            enable_tools=False,
+            tool_names=[],
+            event_cb=None,
+        )
+        raw_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
+        parsed = parse_compaction_summary_text(raw_text)
+        if parsed is None:
+            raise ValueError("invalid_compaction_summary")
+        return {
+            "summary": dump_model(parsed),
+            "source": "llm",
+        }
 
     def _maybe_compact_live_messages(
         self,
@@ -5188,9 +5223,6 @@ class VintageProgrammerRuntime:
             current_task_focus["next_action"] = "cancelled"
         else:
             current_task_focus["next_action"] = ""
-        if not str(current_task_focus.get("last_completed_step") or "").strip() and tool_events:
-            last_tool = tool_events[-1]
-            current_task_focus["last_completed_step"] = f"{last_tool.name}: {last_tool.summary or last_tool.output_preview[:120]}"[:240]
         answer_bundle = self._build_answer_bundle(
             raw_text=final_answer,
             tool_events=tool_events,
@@ -5221,6 +5253,20 @@ class VintageProgrammerRuntime:
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
         runtime_phase = "running" if turn_status == "running" else turn_status
+        final_task_state = merge_task_state_after_turn(
+            {
+                **dict(task_state or {}),
+                "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
+                "goal": current_goal or task_state.get("goal") or "",
+                "plan_items": plan_state or task_state.get("plan_items") or [],
+            },
+            plan_state,
+            [dump_model(item) for item in tool_events],
+            progress_signals,
+            turn_status,
+            runtime_error,
+            pending_user_input,
+        )
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -5229,6 +5275,7 @@ class VintageProgrammerRuntime:
                 "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "turn_status": turn_status,
                 "plan": plan_state,
+                "task_state": dict(final_task_state),
                 "pending_user_input": pending_user_input,
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
@@ -5306,6 +5353,7 @@ class VintageProgrammerRuntime:
                 "recent_tasks": list(context_payload.get("recent_tasks") or []),
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
+                "task_state": dict(final_task_state),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
                 "phase_timings": dict(phase_timings),
@@ -5354,6 +5402,7 @@ class VintageProgrammerRuntime:
                 if isinstance(item, dict)
             ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+            "task_state": dict(final_task_state),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_boundary": dump_model(turn_runtime_boundary),
             "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),

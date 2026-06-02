@@ -743,6 +743,27 @@ def test_pending_assistant_body_uses_live_summary_fallback() -> None:
     assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
 
 
+def test_activity_debug_full_turn_loading_is_explicitly_lazy() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"async function ensureFullTurnActivity\(messageId\) \{(?P<body>.*?)\n  \}",
+        script,
+        re.S,
+    )
+    assert match, "ensureFullTurnActivity function not found"
+    body = match.group("body")
+
+    assert "currentActivity.full_loaded" in body
+    assert "currentActivity.tool_items.length" not in body
+    assert "currentActivity.live_items.length" not in body
+    assert "currentActivity.llm_exchanges.length" not in body
+    assert "currentActivity.trace_events.length" not in body
+    assert "?view=full" in body
+    assert "full_loaded: true" in body
+    assert "?view=summary&max_turns=" in script
+    assert 'const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });' in body
+
+
 def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

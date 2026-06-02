@@ -334,6 +334,81 @@ def normalize_work_cursor(raw: Any) -> dict[str, Any]:
     }
 
 
+_TASK_STEP_COMPLETED_STATUSES = {"completed", "complete", "done", "success", "succeeded"}
+_TASK_STEP_FAILED_STATUSES = {"failed", "error", "blocked"}
+
+
+def _stable_step_id(step: str, index: int) -> str:
+    text = str(step or "").strip()
+    if not text:
+        return f"step-{index + 1}"
+    digest = uuid.uuid5(uuid.NAMESPACE_URL, f"task-step:{text}").hex[:10]
+    return f"step-{digest}"
+
+
+def _as_text_list(raw: Any, *, limit: int = 8) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = [raw]
+    return _dedupe_strings(values, limit=limit)
+
+
+def _normalize_evidence_refs(raw: Any, *, limit: int = 12) -> list[dict[str, Any]]:
+    if raw is None:
+        values: list[Any] = []
+    elif isinstance(raw, (str, dict)):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = [raw]
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            ref = {k: v for k, v in dict(value).items() if v not in (None, "", [], {})}
+        else:
+            label = str(value or "").strip()
+            if not label:
+                continue
+            ref = {"ref": label}
+        key = repr(sorted(ref.items()))
+        if not ref or key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+        if len(refs) >= limit:
+            break
+    return refs
+
+
+def _merge_text_lists(*collections: Any, limit: int = 8) -> list[str]:
+    merged: list[Any] = []
+    for collection in collections:
+        merged.extend(_as_text_list(collection, limit=limit * 2))
+    return _dedupe_strings(merged, limit=limit)
+
+
+def _merge_evidence_refs(*collections: Any, limit: int = 12) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for collection in collections:
+        for ref in _normalize_evidence_refs(collection, limit=limit * 2):
+            key = repr(sorted(ref.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(ref)
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
 def normalize_task_plan_items(raw: Any) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for index, item in enumerate(list(raw or [])):
@@ -342,16 +417,73 @@ def normalize_task_plan_items(raw: Any) -> list[dict[str, Any]]:
         step = str(item.get("step") or item.get("title") or item.get("label") or "").strip()
         if not step:
             continue
-        step_id = str(item.get("id") or item.get("step_id") or f"step-{index + 1}").strip()
+        step_id = str(item.get("id") or item.get("step_id") or _stable_step_id(step, index)).strip()
+        status = str(item.get("status") or "pending").strip() or "pending"
         items.append(
             {
                 **dict(item),
                 "id": step_id,
                 "step": step,
-                "status": str(item.get("status") or "pending").strip() or "pending",
+                "status": status,
+                "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                "completed_at": str(item.get("completed_at") or "").strip(),
+                "updated_at": str(item.get("updated_at") or "").strip(),
             }
         )
     return items
+
+
+def _normalize_completed_steps(raw: Any) -> list[dict[str, Any]]:
+    completed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(list(raw or [])):
+        if not isinstance(item, dict):
+            continue
+        step = str(item.get("step") or item.get("summary") or item.get("title") or "").strip()
+        step_id = str(item.get("id") or item.get("step_id") or (_stable_step_id(step, index) if step else "")).strip()
+        key = step_id or step
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        completed.append(
+            {
+                **dict(item),
+                "id": step_id,
+                "step": step,
+                "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                "completed_at": str(item.get("completed_at") or item.get("updated_at") or "").strip(),
+                "updated_at": str(item.get("updated_at") or "").strip(),
+            }
+        )
+    return completed
+
+
+def _normalize_failed_attempts(raw: Any) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in list(raw or []):
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary") or item.get("error") or "").strip()
+        tool = str(item.get("tool") or item.get("name") or "").strip()
+        step_id = str(item.get("step_id") or item.get("id") or "").strip()
+        key = "|".join([tool, step_id, summary])
+        if not key.strip("|") or key in seen:
+            continue
+        seen.add(key)
+        attempts.append(
+            {
+                **dict(item),
+                "tool": tool,
+                "summary": summary[:500],
+                "step_id": step_id,
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                "created_at": str(item.get("created_at") or item.get("updated_at") or "").strip(),
+            }
+        )
+    return attempts
 
 
 def normalize_task_state(raw: Any) -> dict[str, Any]:
@@ -363,20 +495,244 @@ def normalize_task_state(raw: Any) -> dict[str, Any]:
         "status": str(raw.get("status") or "idle").strip() or "idle",
         "plan_items": normalize_task_plan_items(raw.get("plan_items") or raw.get("plan") or []),
         "current_step_id": str(raw.get("current_step_id") or "").strip(),
-        "completed_steps": [
-            dict(item)
-            for item in list(raw.get("completed_steps") or [])
-            if isinstance(item, dict)
-        ],
+        "completed_steps": _normalize_completed_steps(raw.get("completed_steps") or []),
+        "failed_attempts": _normalize_failed_attempts(raw.get("failed_attempts") or []),
         "blocked_reason": str(raw.get("blocked_reason") or "").strip(),
         "next_required_action": str(raw.get("next_required_action") or raw.get("next_action") or "").strip(),
-        "failed_attempts": [
-            dict(item)
-            for item in list(raw.get("failed_attempts") or [])
-            if isinstance(item, dict)
-        ],
+        "progress_basis": _as_text_list(raw.get("progress_basis"), limit=8),
+        "evidence_refs": _normalize_evidence_refs(raw.get("evidence_refs"), limit=12),
         "updated_at": str(raw.get("updated_at") or "").strip(),
     }
+
+
+def derive_current_step_id(plan_items: Any) -> str:
+    items = normalize_task_plan_items(plan_items)
+    for item in items:
+        if str(item.get("status") or "").strip() == "in_progress":
+            return str(item.get("id") or "").strip()
+    for item in items:
+        status = str(item.get("status") or "").strip()
+        if status not in _TASK_STEP_COMPLETED_STATUSES and status not in _TASK_STEP_FAILED_STATUSES:
+            return str(item.get("id") or "").strip()
+    return ""
+
+
+def _tool_event_evidence(event: dict[str, Any]) -> list[dict[str, Any]]:
+    tool = str(event.get("name") or event.get("tool") or "").strip()
+    refs = _normalize_evidence_refs(event.get("evidence_refs") or event.get("source_refs"), limit=12)
+    evidence: list[dict[str, Any]] = []
+    for ref in refs:
+        evidence.append({"source": "tool", "tool": tool, **dict(ref)})
+    if not evidence:
+        summary = str(event.get("summary") or event.get("output_preview") or event.get("result_summary") or "").strip()
+        if summary or tool:
+            evidence.append({"source": "tool", "tool": tool, "summary": summary[:240]})
+    return evidence
+
+
+def _tool_event_progress(event: dict[str, Any]) -> str:
+    tool = str(event.get("name") or event.get("tool") or "").strip() or "tool"
+    summary = str(event.get("summary") or event.get("output_preview") or event.get("result_summary") or "").strip()
+    if not summary:
+        summary = str(event.get("status") or "").strip()
+    return f"{tool}: {summary}"[:500] if summary else tool[:500]
+
+
+def _runtime_error_summary(runtime_error: Any) -> str:
+    if isinstance(runtime_error, dict):
+        message = str(runtime_error.get("message") or runtime_error.get("kind") or runtime_error.get("exception_type") or "").strip()
+    else:
+        message = str(runtime_error or "").strip()
+    return message[:500]
+
+
+def _pending_user_action(pending_user_input: Any) -> str:
+    if not isinstance(pending_user_input, dict):
+        return ""
+    return str(
+        pending_user_input.get("summary")
+        or pending_user_input.get("question")
+        or pending_user_input.get("prompt")
+        or pending_user_input.get("message")
+        or ""
+    ).strip()[:500]
+
+
+def merge_task_state_after_turn(
+    previous: Any,
+    plan: Any,
+    tool_events: Any,
+    progress_signals: Any,
+    turn_status: Any,
+    runtime_error: Any,
+    pending_user_input: Any,
+) -> dict[str, Any]:
+    now = _now_iso()
+    state = normalize_task_state(previous)
+    previous_items = list(state.get("plan_items") or [])
+    incoming_items = normalize_task_plan_items(plan if plan else previous_items)
+    previous_by_id = {str(item.get("id") or ""): item for item in previous_items if str(item.get("id") or "").strip()}
+    previous_by_step = {str(item.get("step") or "").strip().lower(): item for item in previous_items if str(item.get("step") or "").strip()}
+    merged_items: list[dict[str, Any]] = []
+    for item in incoming_items:
+        prior = previous_by_id.get(str(item.get("id") or "")) or previous_by_step.get(str(item.get("step") or "").strip().lower())
+        if prior:
+            merged = {
+                **dict(prior),
+                **dict(item),
+                "id": str(prior.get("id") or item.get("id") or "").strip(),
+                "progress_basis": _merge_text_lists(prior.get("progress_basis"), item.get("progress_basis"), limit=8),
+                "evidence_refs": _merge_evidence_refs(prior.get("evidence_refs"), item.get("evidence_refs"), limit=12),
+                "completed_at": str(item.get("completed_at") or prior.get("completed_at") or "").strip(),
+                "updated_at": str(item.get("updated_at") or prior.get("updated_at") or "").strip(),
+            }
+        else:
+            merged = dict(item)
+        merged_items.append(merged)
+
+    current_step_id = derive_current_step_id(merged_items)
+    completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
+    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
+    newly_completed = [
+        item
+        for item in merged_items
+        if str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES
+        and str(item.get("id") or "").strip()
+        and str(item.get("id") or "").strip() not in completed_ids
+    ]
+    progress_target_id = (
+        str(newly_completed[-1].get("id") or "").strip()
+        if newly_completed
+        else current_step_id
+    )
+
+    progress_basis = _merge_text_lists(state.get("progress_basis"), limit=8)
+    evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), limit=12)
+    failed_attempts = _normalize_failed_attempts(state.get("failed_attempts") or [])
+    failed_keys = {
+        "|".join([str(item.get("tool") or ""), str(item.get("step_id") or ""), str(item.get("summary") or "")])
+        for item in failed_attempts
+    }
+
+    target_item = next((item for item in merged_items if str(item.get("id") or "") == progress_target_id), None)
+    for raw_event in list(tool_events or []):
+        if not isinstance(raw_event, dict):
+            continue
+        event = dict(raw_event)
+        status = str(event.get("status") or "").strip().lower()
+        basis = _tool_event_progress(event)
+        refs = _tool_event_evidence(event)
+        if status in {"ok", "success", "completed", "complete", "done"}:
+            progress_basis = _merge_text_lists(progress_basis, [basis], limit=8)
+            evidence_refs = _merge_evidence_refs(evidence_refs, refs, limit=12)
+            if target_item is not None:
+                target_item["progress_basis"] = _merge_text_lists(target_item.get("progress_basis"), [basis], limit=8)
+                target_item["evidence_refs"] = _merge_evidence_refs(target_item.get("evidence_refs"), refs, limit=12)
+                target_item["updated_at"] = now
+            continue
+        if status in {"error", "failed", "failure", "blocked"}:
+            tool = str(event.get("name") or event.get("tool") or "").strip()
+            summary = str(event.get("summary") or event.get("error") or event.get("output_preview") or "Tool failed").strip()[:500]
+            step_id = progress_target_id or current_step_id
+            key = "|".join([tool, step_id, summary])
+            if key not in failed_keys:
+                failed_keys.add(key)
+                failed_attempts.append(
+                    {
+                        "tool": tool,
+                        "summary": summary,
+                        "step_id": step_id,
+                        "evidence_refs": refs,
+                        "created_at": now,
+                    }
+                )
+
+    for raw_signal in list(progress_signals or []):
+        if not isinstance(raw_signal, dict):
+            continue
+        summary = str(raw_signal.get("summary") or raw_signal.get("detail") or raw_signal.get("message") or "").strip()
+        if summary:
+            progress_basis = _merge_text_lists(progress_basis, [summary[:500]], limit=8)
+
+    completed_steps = _normalize_completed_steps(completed_steps)
+    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
+    for item in merged_items:
+        if str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES:
+            continue
+        step_id = str(item.get("id") or "").strip()
+        if not step_id or step_id in completed_ids:
+            continue
+        item["completed_at"] = str(item.get("completed_at") or now)
+        item["updated_at"] = str(item.get("updated_at") or now)
+        completed_steps.append(
+            {
+                "id": step_id,
+                "step": str(item.get("step") or "").strip(),
+                "completed_at": str(item.get("completed_at") or now),
+                "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+            }
+        )
+        completed_ids.add(step_id)
+
+    turn_status_text = str(turn_status or "").strip()
+    runtime_summary = _runtime_error_summary(runtime_error)
+    pending_action = _pending_user_action(pending_user_input)
+    if turn_status_text in {"blocked", "needs_user_input"}:
+        status = "blocked"
+    elif turn_status_text == "failed":
+        status = "failed"
+    elif turn_status_text == "cancelled":
+        status = "cancelled"
+    elif merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
+        status = "completed"
+    elif state.get("goal") or merged_items:
+        status = "in_progress"
+    else:
+        status = state.get("status") or "idle"
+
+    if runtime_summary and status in {"blocked", "failed"}:
+        step_id = current_step_id or progress_target_id
+        key = "|".join(["runtime", step_id, runtime_summary])
+        if key not in failed_keys:
+            failed_attempts.append(
+                {
+                    "tool": "runtime",
+                    "summary": runtime_summary,
+                    "step_id": step_id,
+                    "evidence_refs": [{"source": "runtime_error"}],
+                    "created_at": now,
+                }
+            )
+
+    next_item = next(
+        (
+            item
+            for item in merged_items
+            if str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES
+            and str(item.get("status") or "").strip() not in _TASK_STEP_FAILED_STATUSES
+        ),
+        None,
+    )
+    next_required_action = pending_action or (str(next_item.get("step") or "").strip() if next_item else "")
+    if not next_required_action and status in {"blocked", "failed"}:
+        next_required_action = runtime_summary or state.get("next_required_action") or ""
+
+    return normalize_task_state(
+        {
+            **state,
+            "status": status,
+            "plan_items": merged_items,
+            "current_step_id": current_step_id,
+            "completed_steps": completed_steps,
+            "failed_attempts": failed_attempts,
+            "blocked_reason": runtime_summary if status in {"blocked", "failed"} and runtime_summary else (state.get("blocked_reason") if status in {"blocked", "failed"} else ""),
+            "next_required_action": next_required_action,
+            "progress_basis": progress_basis,
+            "evidence_refs": evidence_refs,
+            "updated_at": now,
+        }
+    )
 
 
 def focus_from_work_cursor_task_state(work_cursor: Any, task_state: Any) -> dict[str, Any]:
@@ -596,26 +952,34 @@ def _session_current_task_focus(session: dict[str, Any]) -> dict[str, Any]:
 
 def _session_thread_memory(session: dict[str, Any]) -> dict[str, Any]:
     thread_memory = normalize_thread_memory(session.get("thread_memory"))
+    legacy_recent_tasks = normalize_recent_tasks(session.get("recent_tasks"), limit=12)
     agent_state = session.get("agent_state")
     if isinstance(agent_state, dict):
         fallback = normalize_thread_memory(agent_state.get("thread_memory"))
         if not thread_memory["summary"] and fallback["summary"]:
             thread_memory["summary"] = fallback["summary"]
-        if not thread_memory["recent_tasks"] and fallback["recent_tasks"]:
-            thread_memory["recent_tasks"] = list(fallback["recent_tasks"])
+        legacy_recent_tasks = normalize_recent_tasks(
+            [*legacy_recent_tasks, *list(fallback.get("recent_tasks") or [])],
+            limit=12,
+        )
+    if legacy_recent_tasks:
+        thread_memory["recent_tasks"] = normalize_recent_tasks(
+            [*list(thread_memory.get("recent_tasks") or []), *legacy_recent_tasks],
+            limit=12,
+        )
     if not thread_memory["summary"]:
         thread_memory["summary"] = str(session.get("summary") or "").strip()
     return thread_memory
 
 
 def _session_artifact_memory(session: dict[str, Any]) -> list[dict[str, Any]]:
-    artifacts = normalize_artifact_memory(session.get("artifact_memory"), limit=48)
-    if artifacts:
-        return artifacts
+    artifact_candidates: list[dict[str, Any]] = []
+    artifact_candidates.extend(normalize_artifact_memory(session.get("artifact_memory"), limit=48))
+    artifact_candidates.extend(normalize_artifact_memory(session.get("artifact_memory_preview"), limit=48))
     agent_state = session.get("agent_state")
     if isinstance(agent_state, dict):
-        return normalize_artifact_memory(agent_state.get("artifact_memory_preview"), limit=48)
-    return []
+        artifact_candidates.extend(normalize_artifact_memory(agent_state.get("artifact_memory_preview"), limit=48))
+    return normalize_artifact_memory(artifact_candidates, limit=48)
 
 
 def _session_task_checkpoint(session: dict[str, Any]) -> dict[str, Any]:
@@ -1116,7 +1480,7 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
         task_state["task_id"] = focus["task_id"]
     if focus["goal"] and task_state["goal"] != focus["goal"]:
         task_state["goal"] = focus["goal"]
-    if focus["next_action"] and task_state["next_required_action"] != focus["next_action"]:
+    if focus["next_action"] and not task_state["next_required_action"]:
         task_state["next_required_action"] = focus["next_action"]
     if focus["updated_at"] and not task_state["updated_at"]:
         task_state["updated_at"] = focus["updated_at"]
@@ -1124,6 +1488,45 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
         task_state["status"] = "in_progress"
     thread_memory = _session_thread_memory(session)
     artifact_memory = _session_artifact_memory(session)
+    compaction_state = dict(session.get("compaction_state") or {}) if isinstance(session.get("compaction_state"), dict) else {}
+    legacy_compaction_status = (
+        dict(session.get("compaction_status") or {})
+        if isinstance(session.get("compaction_status"), dict)
+        else {}
+    )
+    legacy_context_meter = (
+        dict(session.get("context_meter") or {})
+        if isinstance(session.get("context_meter"), dict)
+        else {}
+    )
+    for key in (
+        "generation",
+        "compacted_until_turn_id",
+        "retained_turn_ids",
+        "last_compacted_at",
+        "last_compaction_reason",
+        "last_compaction_phase",
+        "phase",
+        "reason",
+        "before_tokens",
+        "after_tokens",
+        "estimated_context_tokens",
+        "effective_context_window",
+        "auto_compact_token_limit",
+        "threshold_source",
+        "retained_turn_count",
+    ):
+        if key in legacy_compaction_status and compaction_state.get(key) in (None, "", [], {}, 0):
+            compaction_state[key] = legacy_compaction_status.get(key)
+    meter_mapping = {
+        "estimated_tokens": "estimated_context_tokens",
+        "context_window": "effective_context_window",
+        "auto_compact_token_limit": "auto_compact_token_limit",
+        "threshold_source": "threshold_source",
+    }
+    for source_key, state_key in meter_mapping.items():
+        if source_key in legacy_context_meter and compaction_state.get(state_key) in (None, "", [], {}, 0):
+            compaction_state[state_key] = legacy_context_meter.get(source_key)
     if not thread_memory["summary"]:
         thread_memory["summary"] = str(session.get("summary") or "").strip()
     if focus["cwd"] and focus["cwd"] not in thread_memory["recent_cwds"]:
@@ -1145,13 +1548,13 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
     if session.get("artifact_memory") != artifact_memory:
         session["artifact_memory"] = list(artifact_memory)
         changed = True
-    if session.get("recent_tasks") != thread_memory["recent_tasks"]:
-        session["recent_tasks"] = list(thread_memory["recent_tasks"])
+    if compaction_state and session.get("compaction_state") != compaction_state:
+        session["compaction_state"] = dict(compaction_state)
         changed = True
-    artifact_preview = artifact_memory[:8]
-    if session.get("artifact_memory_preview") != artifact_preview:
-        session["artifact_memory_preview"] = artifact_preview
-        changed = True
+    for derived_key in ("recent_tasks", "artifact_memory_preview", "context_meter", "compaction_status"):
+        if derived_key in session:
+            session.pop(derived_key, None)
+            changed = True
     if "current_task_focus" in session:
         session.pop("current_task_focus", None)
         changed = True
@@ -1205,7 +1608,7 @@ def record_turn_memory(
     task_state["task_id"] = focus["task_id"]
     task_state["goal"] = focus["goal"]
     task_state["updated_at"] = now
-    if focus["next_action"]:
+    if focus["next_action"] and not task_state["next_required_action"]:
         task_state["next_required_action"] = focus["next_action"]
     if not task_state["status"] or task_state["status"] == "idle":
         task_state["status"] = "in_progress"

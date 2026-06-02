@@ -1570,10 +1570,19 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     last_turn = session["turns"][-1]
     assert last_turn["role"] == "assistant"
     assert last_turn["text"] == payload["text"]
-    assert last_turn["activity"]["runtime_error"]["kind"] == "llm_empty_response"
-    assert last_turn["activity"]["model_draft"] == payload["model_draft"]
-    assert len(last_turn["activity"]["llm_exchanges"]) == 2
-    assert last_turn["activity"]["llm_exchanges"][-1]["error"]["kind"] == "llm_empty_response"
+    assert last_turn["activity"]["status"] == "failed"
+    assert last_turn["activity"]["trace_ref"]
+    assert "runtime_error" not in last_turn["activity"]
+    assert "model_draft" not in last_turn["activity"]
+    assert "llm_exchanges" not in last_turn["activity"]
+    full_response = client.get(f"/api/thread/{session_id}/turn/{last_turn['id']}?view=full")
+    assert full_response.status_code == 200
+    full_turn = full_response.json()
+    assert full_turn["activity"]["runtime_error"]["kind"] == "llm_empty_response"
+    assert full_turn["activity"]["model_draft"] == payload["model_draft"]
+    assert len(full_turn["activity"]["llm_exchanges"]) == 2
+    assert full_turn["activity"]["llm_exchanges"][-1]["error"]["kind"] == "llm_empty_response"
+    assert full_turn["run_artifact"]["inspector"]["run_state"]["llm_exchanges"] == full_turn["activity"]["llm_exchanges"]
     assert payload["inspector"]["run_state"]["llm_exchanges"] == payload["activity"]["llm_exchanges"]
 
     clean_turns = list(((session.get("context_manager") or {}).get("clean_turns")) or [])
@@ -1785,11 +1794,15 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     assert runtime.calls[3]["message"] == "我刚才问你的所有问题，罗列一下"
     subject_assistant_turn = turns[-5]
     assert subject_assistant_turn["role"] == "assistant"
-    assert subject_assistant_turn["activity"]["triggering_user_message"] == "题目"
-    assert "current_turn_goal" not in subject_assistant_turn["activity"]
-    assert "current_turn_followup_type" not in subject_assistant_turn["activity"]
-    assert "active_task_focus" not in subject_assistant_turn["activity"]
-    assert "recent_user_messages" not in subject_assistant_turn["activity"]
+    assert subject_assistant_turn["activity"]["triggering_user_message"] == ""
+    full_subject_response = client.get(f"/api/thread/{session_id}/turn/{subject_assistant_turn['id']}?view=full")
+    assert full_subject_response.status_code == 200
+    full_subject_activity = full_subject_response.json()["activity"]
+    assert full_subject_activity["triggering_user_message"] == "题目"
+    assert "current_turn_goal" not in full_subject_activity
+    assert "current_turn_followup_type" not in full_subject_activity
+    assert "active_task_focus" not in full_subject_activity
+    assert "recent_user_messages" not in full_subject_activity
 
 
 def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_path: Path) -> None:
@@ -1823,9 +1836,13 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     assert detail_response.status_code == 200
     assistant_turn = detail_response.json()["turns"][-1]
     assert assistant_turn["role"] == "assistant"
-    assert assistant_turn["activity"]["triggering_user_message"] == "题目"
-    assert assistant_turn["activity"]["triggering_user_turn_id"]
-    assert "current_turn_goal" not in assistant_turn["activity"]
+    assert assistant_turn["activity"]["triggering_user_message"] == ""
+    full_response = client.get(f"/api/thread/{payload['session_id']}/turn/{assistant_turn['id']}?view=full")
+    assert full_response.status_code == 200
+    full_activity = full_response.json()["activity"]
+    assert full_activity["triggering_user_message"] == "题目"
+    assert full_activity["triggering_user_turn_id"]
+    assert "current_turn_goal" not in full_activity
 
 
 def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Path) -> None:

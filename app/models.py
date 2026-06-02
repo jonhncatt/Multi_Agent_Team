@@ -99,6 +99,8 @@ class MessageActivity(BaseModel):
     trace_ref: str = ""
     tool_count: int = 0
     status: str = "idle"
+    summary: str = ""
+    full_loaded: bool = False
     started_at: float = 0.0
     turn_started_at: float = 0.0
     finished_at: float = 0.0

@@ -826,6 +826,8 @@ function normalizeMessageActivity(raw) {
   const normalizedActivity = {
     run_id: String(item.run_id || ""),
     status,
+    summary: String(item.summary || ""),
+    full_loaded: Boolean(item.full_loaded || item.fullLoaded || item.run_artifact_loaded || item.runArtifactLoaded),
     started_at: startedAt,
     turn_started_at: turnStartedAt,
     finished_at: finishedAt,
@@ -2362,6 +2364,8 @@ function mergeActivityState(previous, patch = {}) {
     finished_at: nextFinishedAt,
     run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
+    summary: String(nextPatch.summary || prev.summary || ""),
+    full_loaded: Boolean(nextPatch.full_loaded || nextPatch.fullLoaded || prev.full_loaded),
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
     model_draft: String(nextPatch.model_draft || prev.model_draft || ""),
     final_answer: String(nextPatch.final_answer || prev.final_answer || ""),
@@ -5136,19 +5140,14 @@ function App() {
     const currentMessage = (Array.isArray(messages) ? messages : []).find((entry) => String(entry.id || "") === turnId);
     if (!currentMessage || currentMessage.role !== "assistant") return;
     const currentActivity = normalizeMessageActivity(currentMessage.activity || {});
-    const alreadyFull = Boolean(
-      currentActivity.trace_events.length
-      || currentActivity.llm_exchanges.length
-      || currentActivity.tool_items.length
-      || currentActivity.live_items.length
-    );
+    const alreadyFull = Boolean(currentActivity.full_loaded);
     if (alreadyFull || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
     const requestKey = `${sid}:${turnId}`;
     if (fullTurnRequestRef.current.has(requestKey)) return;
     fullTurnRequestRef.current.add(requestKey);
     try {
       const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=full`);
-      const fullActivity = normalizeMessageActivity((payload && payload.activity) || {});
+      const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
