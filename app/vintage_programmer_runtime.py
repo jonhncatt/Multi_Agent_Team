@@ -2497,6 +2497,64 @@ class VintageProgrammerRuntime:
         return items[-limit:]
 
     @staticmethod
+    def _recent_guard_rejection_summaries(tool_events: list[ToolEvent], *, limit: int = 3) -> list[str]:
+        items: list[str] = []
+        for event in list(tool_events or [])[-12:]:
+            validation = getattr(event, "validation_result", {}) or {}
+            schema_validation = getattr(event, "schema_validation", {}) or {}
+            validation_allowed = validation.get("allowed")
+            schema_status = str(schema_validation.get("status") or "").strip().lower()
+            is_rejected = bool(validation_allowed is False or schema_status in {"invalid", "error"})
+            if not is_rejected:
+                continue
+            label = str(getattr(event, "name", "") or "tool").strip() or "tool"
+            arguments_preview = str(getattr(event, "arguments_preview", "") or "").strip()
+            summary = str(getattr(event, "summary", "") or getattr(event, "output_preview", "")).strip()
+            head = f"{label}: {arguments_preview}" if arguments_preview else label
+            text = f"{head} -> {summary[:160]}" if summary and summary not in head else head
+            if text:
+                items.append(text[:220])
+        return items[-limit:]
+
+    @staticmethod
+    def _recent_effective_progress_summaries(signals: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+        allowed_kinds = {
+            "new_file_read",
+            "new_directory_entries",
+            "new_glob_matches",
+            "new_search_hits",
+            "new_section_read",
+            "patch_applied",
+            "command_result_changed",
+            "test_result_changed",
+            "new_web_result",
+            "new_tool_output",
+        }
+        items: list[str] = []
+        for signal in list(signals or [])[-12:]:
+            if not isinstance(signal, dict) or not bool(signal.get("has_progress")):
+                continue
+            if str(signal.get("kind") or "").strip() not in allowed_kinds:
+                continue
+            summary = str(signal.get("summary") or "").strip()
+            if summary:
+                items.append(summary[:220])
+        return items[-limit:]
+
+    @staticmethod
+    def _recent_plan_update_summaries(signals: list[dict[str, Any]], *, limit: int = 3) -> list[str]:
+        items: list[str] = []
+        for signal in list(signals or [])[-12:]:
+            if not isinstance(signal, dict) or not bool(signal.get("has_progress")):
+                continue
+            if str(signal.get("kind") or "").strip() != "plan_updated":
+                continue
+            summary = str(signal.get("summary") or "").strip()
+            if summary:
+                items.append(summary[:220])
+        return items[-limit:]
+
+    @staticmethod
     def _dedup_recent_items(items: list[str], *, limit: int = 3) -> list[str]:
         deduped: list[str] = []
         seen: set[str] = set()
@@ -2509,6 +2567,148 @@ class VintageProgrammerRuntime:
             if len(deduped) >= limit:
                 break
         return deduped
+
+    def _tool_schema_for_name(self, tool_name: str) -> dict[str, Any]:
+        return dict((self._tool_specs_by_name.get(str(tool_name or "").strip()) or {}).get("parameters") or {})
+
+    @staticmethod
+    def _extract_simple_command_from_compound_shell(command: str) -> str:
+        raw = str(command or "").strip()
+        if not raw:
+            return ""
+        for pattern in (re.compile(r"\$\(([^()\n]+)\)"), re.compile(r"`([^`\n]+)`")):
+            match = pattern.search(raw)
+            if not match:
+                continue
+            candidate = str(match.group(1) or "").strip()
+            if candidate and not re.search(r"[;&|`]|&&|\|\|", candidate):
+                return candidate
+        inline_if_match = re.search(r"\bthen\s+([^;\n]+?)\s*;\s*fi\b", raw, flags=re.IGNORECASE)
+        if inline_if_match:
+            candidate = str(inline_if_match.group(1) or "").strip()
+            if candidate and not re.search(r"[;&|`]|&&|\|\|", candidate):
+                return candidate
+        return ""
+
+    def _guard_recovery_hints(
+        self,
+        *,
+        locale: str,
+        trigger: str,
+        recent_failures: list[str],
+    ) -> list[str]:
+        hints: list[str] = []
+        joined = "\n".join(str(item or "") for item in recent_failures).lower()
+        if trigger == "validation_rejection_limit" and (
+            "command substitution" in joined
+            or "unsupported shell structure" in joined
+            or "compound command" in joined
+        ):
+            hints.extend(
+                [
+                    self._localized_text(
+                        locale,
+                        zh_cn="不要再次使用 command substitution、内联 if/循环或复合 shell 验证链。",
+                        ja_jp="command substitution、インライン if/loop、複合 shell の検証チェーンを繰り返さないでください。",
+                        en="Do not repeat command substitution, inline if/loops, or compound shell verification chains.",
+                    ),
+                    self._localized_text(
+                        locale,
+                        zh_cn="必须把 shell 动作拆成简单命令，一次只执行一个清晰步骤，再根据 stdout 决定下一步。",
+                        ja_jp="shell 操作は単純なコマンドに分解し、一度に 1 つの明確なステップだけ実行し、その stdout を見て次を決めてください。",
+                        en="You must split shell work into simple commands, execute one clear step at a time, and decide the next move from stdout.",
+                    ),
+                    self._localized_text(
+                        locale,
+                        zh_cn="例如：先执行 `python hello.py`，再根据输出判断；不要用 `output=$(...) && if ...`。",
+                        ja_jp="例: まず `python hello.py` を実行し、その出力を見て判断してください。`output=$(...) && if ...` は使わないでください。",
+                        en="Example: run `python hello.py` first, then decide from its output; do not use `output=$(...) && if ...`.",
+                    ),
+                ]
+            )
+        if "$.max_chars must be >=" in joined or "max_chars must be >=" in joined:
+            hints.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="任何 read/context/evidence 工具的 `max_chars` 都必须 >= 128；如果更小，请直接改成 128 或更大。",
+                    ja_jp="read/context/evidence 系のツールでは `max_chars` を必ず 128 以上にしてください。小さすぎる値は 128 以上へ直してください。",
+                    en="For read/context/evidence tools, `max_chars` must be at least 128; raise any smaller value to 128 or higher.",
+                )
+            )
+        if "outside allowed roots" in joined or "cwd/workdir" in joined:
+            hints.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="如果路径上下文不清楚，请显式设置 `cwd`/`workdir`，并确保它位于允许的项目根目录内。",
+                    ja_jp="パス文脈が曖昧なら、`cwd`/`workdir` を明示し、許可された project root 内に収めてください。",
+                    en="If the path context is ambiguous, set `cwd`/`workdir` explicitly and keep it inside the allowed project roots.",
+                )
+            )
+        return hints
+
+    def _attempt_guard_safe_downgrade(
+        self,
+        *,
+        call: dict[str, Any],
+        validation: ValidationResult,
+        locale: str,
+        runnable_tools: list[str],
+        runtime_boundary: RuntimeBoundary,
+        attachments: list[dict[str, Any]] | None,
+        effective_cwd: str,
+    ) -> tuple[dict[str, Any] | None, ValidationResult | None, str]:
+        tool_name = str(validation.tool_name or call.get("name") or "").strip()
+        raw_tool_name = str(validation.raw_tool_name or call.get("raw_name") or tool_name).strip()
+        normalized_arguments = dict(validation.normalized_arguments or call.get("args") or {})
+        message = str(validation.message or "").strip().lower()
+        candidate_arguments: dict[str, Any] | None = None
+        reason = ""
+
+        if tool_name == "exec_command":
+            command_text = str(normalized_arguments.get("cmd") or normalized_arguments.get("command") or "").strip()
+            downgraded_command = ""
+            if "command substitution" in message or "unsupported shell structure" in message:
+                downgraded_command = self._extract_simple_command_from_compound_shell(command_text)
+                if downgraded_command:
+                    candidate_arguments = dict(normalized_arguments)
+                    candidate_arguments["cmd"] = downgraded_command
+                    if not str(candidate_arguments.get("cwd") or "").strip() and str(effective_cwd or "").strip():
+                        candidate_arguments["cwd"] = str(effective_cwd or "").strip()
+                    reason = "split compound shell into a single simple command"
+            if candidate_arguments is None and (
+                "outside allowed roots" in message
+                or "cwd/workdir" in message
+                or validation.code == "command_path_outside_allowed_roots"
+            ):
+                if not str(normalized_arguments.get("cwd") or "").strip() and str(effective_cwd or "").strip():
+                    candidate_arguments = dict(normalized_arguments)
+                    candidate_arguments["cwd"] = str(effective_cwd or "").strip()
+                    reason = "set explicit cwd for shell execution"
+
+        if candidate_arguments is None:
+            return None, None, ""
+
+        candidate_call = {
+            "id": str(call.get("id") or ""),
+            "name": tool_name,
+            "raw_name": raw_tool_name or tool_name,
+            "args": candidate_arguments,
+            "raw_args": candidate_arguments,
+        }
+        candidate_validation = self._validate_model_tool_call(
+            call=candidate_call,
+            runnable_tools=runnable_tools,
+            locale=locale,
+            runtime_boundary=runtime_boundary,
+            attachments=attachments,
+        )
+        if not candidate_validation.allowed:
+            return None, None, ""
+        candidate_validation.normalization_notes = [
+            *list(candidate_validation.normalization_notes or []),
+            f"guard_safe_downgrade:{reason}",
+        ]
+        return candidate_call, candidate_validation, reason
 
     def _blocked_reason_label(self, locale: str, blocked_reason: str) -> str:
         mapping = {
@@ -2718,25 +2918,18 @@ class VintageProgrammerRuntime:
             same_action_repeat_count=same_action_repeat_count,
             elapsed_seconds=elapsed_seconds,
         )
-        if str(blocked_reason or "").strip() == "tool_validation_rejections_exceeded":
-            recent_actions = self._dedup_recent_items(
-                self._recent_tool_event_summaries(tool_events, limit=3, failed_only=True)
-                + self._recent_progress_signal_summaries(progress_signals, limit=3),
-                limit=3,
-            )
-            recent_header = self._localized_text(
-                locale,
-                zh_cn="最近被拒绝的动作：",
-                ja_jp="最近拒否されたアクション：",
-                en="Most recent rejected actions:",
-            )
-        else:
-            recent_actions = self._dedup_recent_items(
-                self._recent_progress_signal_summaries(progress_signals, limit=3)
-                + self._recent_tool_event_summaries(tool_events, limit=3),
-                limit=3,
-            )
-            recent_header = translate(locale, "runtime.budget.detail.recent_actions")
+        rejected_actions = self._dedup_recent_items(
+            self._recent_guard_rejection_summaries(tool_events, limit=4),
+            limit=3,
+        )
+        effective_progress = self._dedup_recent_items(
+            self._recent_effective_progress_summaries(progress_signals, limit=4),
+            limit=3,
+        )
+        recent_plan_updates = self._dedup_recent_items(
+            self._recent_plan_update_summaries(progress_signals, limit=4),
+            limit=3,
+        )
         replan_detail = self._blocked_replan_detail(
             locale=locale,
             replan_history=replan_history,
@@ -2747,10 +2940,45 @@ class VintageProgrammerRuntime:
             translate(locale, "runtime.budget.detail.title", reason=reason_label),
             translate(locale, "runtime.budget.detail.reason", detail=reason_detail),
         ]
-        if recent_actions:
-            lines.append(recent_header)
-            lines.extend(f"- {item}" for item in recent_actions)
-        lines.append(translate(locale, "runtime.budget.detail.replan", detail=replan_detail))
+        if rejected_actions:
+            lines.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="最近被拒绝的动作：",
+                    ja_jp="最近拒否されたアクション：",
+                    en="Most recent rejected actions:",
+                )
+            )
+            lines.extend(f"- {item}" for item in rejected_actions)
+        if effective_progress:
+            lines.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="最近有效进展：",
+                    ja_jp="最近の有効な進展：",
+                    en="Most recent valid progress:",
+                )
+            )
+            lines.extend(f"- {item}" for item in effective_progress)
+        if recent_plan_updates:
+            lines.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="最近 plan 更新：",
+                    ja_jp="最近の plan 更新：",
+                    en="Most recent plan updates:",
+                )
+            )
+            lines.extend(f"- {item}" for item in recent_plan_updates)
+        lines.append(
+            self._localized_text(
+                locale,
+                zh_cn="复盘触发原因：",
+                ja_jp="復盤トリガー：",
+                en="Replan trigger:",
+            )
+        )
+        lines.append(f"- {replan_detail}")
         lines.append(translate(locale, "runtime.budget.detail.suggestion", detail=suggestion))
         return "\n".join(item for item in lines if str(item or "").strip()).strip()
 
@@ -2779,6 +3007,21 @@ class VintageProgrammerRuntime:
         if recent_failures:
             lines.append(translate(locale, "runtime.replan.failed_actions_intro"))
             lines.extend(f"- {item}" for item in recent_failures[:6])
+        guardrail_hints = self._guard_recovery_hints(
+            locale=locale,
+            trigger=trigger,
+            recent_failures=recent_failures,
+        )
+        if guardrail_hints:
+            lines.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="恢复约束：",
+                    ja_jp="回復ガードレール：",
+                    en="Recovery guardrails:",
+                )
+            )
+            lines.extend(f"- {item}" for item in guardrail_hints[:6])
         lines.append(translate(locale, "runtime.replan.required_next_move"))
         return "\n".join(item for item in lines if item).strip()
 
@@ -3996,6 +4239,7 @@ class VintageProgrammerRuntime:
             no_progress_cycles = 0
             post_replan_no_progress_cycles = 0
             guard_rejection_count = 0
+            safe_downgrade_attempt_count = 0
             llm_retry_used = False
             progress_tracker = self._new_progress_tracker()
             progress_signals: list[dict[str, Any]] = []
@@ -4318,6 +4562,33 @@ class VintageProgrammerRuntime:
                         runtime_boundary=turn_runtime_boundary,
                         attachments=attachment_metas,
                     )
+                    safe_downgrade_note = ""
+                    if not validation.allowed and safe_downgrade_attempt_count < 1:
+                        downgraded_call, downgraded_validation, safe_downgrade_note = self._attempt_guard_safe_downgrade(
+                            call=call,
+                            validation=validation,
+                            locale=locale,
+                            runnable_tools=runnable_tools,
+                            runtime_boundary=turn_runtime_boundary,
+                            attachments=attachment_metas,
+                            effective_cwd=effective_cwd,
+                        )
+                        if downgraded_call and downgraded_validation:
+                            safe_downgrade_attempt_count += 1
+                            call = downgraded_call
+                            validation = downgraded_validation
+                            raw_name = str(call.get("raw_name") or raw_name or "").strip()
+                            raw_arguments = call.get("raw_args")
+                            raw_tool_call_payload = {
+                                **dict(raw_tool_call_payload),
+                                "guard_safe_downgrade": safe_preview(
+                                    {
+                                        "reason": safe_downgrade_note,
+                                        "rewritten_arguments": call.get("args") or {},
+                                    },
+                                    limit=4000,
+                                ),
+                            }
                     validation_payload = dump_model(validation)
                     name = str(validation.tool_name or preview_name or raw_name).strip()
                     arguments = dict(validation.normalized_arguments or {})
@@ -4325,6 +4596,8 @@ class VintageProgrammerRuntime:
                         notes.append(f"tool_alias:{raw_name}->{name}")
                     if validation.normalization_notes:
                         notes.extend(f"tool_validation_normalized:{item}" for item in validation.normalization_notes)
+                    if safe_downgrade_note:
+                        notes.append(f"guard_safe_downgrade:{safe_downgrade_note}")
                     self._emit_trace(
                         progress_cb,
                         run_id=run_id,
@@ -4479,7 +4752,7 @@ class VintageProgrammerRuntime:
                                 }
                             )
                         notes.append("tool_validation_rejected")
-                        if max_guard_rejections and guard_rejection_count > max_guard_rejections:
+                        if guard_rejection_count > max_guard_rejections:
                             if automatic_replan_enabled and replan_attempt_count == 0:
                                 needs_replan = True
                                 replan_trigger = "validation_rejection_limit"

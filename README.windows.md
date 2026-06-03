@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5h`。
+当前稳定版本：`3.1.5i`。
 
 ## Stable Runtime
 
-3.1.5h 修复了 Debug Detail 首次点击失败的问题：assistant turn 落定后，前端会把临时 message id 替换为后端 canonical `turn_id`，因此第一次 lazy full load 就能直接命中正确 turn，不再需要切线程再回来。
-它继续保持 canonical 29-tool surface 不变；这次调整只修正前端 turn id 收口和 debug 请求时机，不改变 task checkpoint 的 canonical merge 规则。
+3.1.5i 修复了 Guard 拒绝后的恢复路径：自动复盘和证据读取里的 `max_chars` 现在会自动校正到 `>= 128`，遇到复合 shell 或缺失 `cwd/workdir` 的验证拒绝时，会先尝试一次更安全的降级动作，再决定是否阻塞。
+它继续保持 canonical 29-tool surface 不变；这次调整集中在 recovery/replan 收口，不改变 task checkpoint 的 canonical merge 规则。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

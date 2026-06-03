@@ -9,7 +9,7 @@ import pytest
 
 from app.config import load_config
 from app.i18n import translate
-from app.models import ChatSettings
+from app.models import ChatSettings, ToolEvent
 from app.answer_stream_state import new_answer_stream_state
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
@@ -2142,8 +2142,7 @@ def test_runtime_blocked_message_details_after_replan_no_progress(
     assert result["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
     assert "已停止" in result["text"]
     assert "复盘后仍未取得新的有效进展" in result["text"]
-    assert "最近卡住点" in result["text"]
-    assert "复盘情况" in result["text"]
+    assert "复盘触发原因" in result["text"]
     assert "建议下一步" in result["text"]
     blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
     assert blocked_trace["payload"]["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
@@ -2198,12 +2197,158 @@ def test_runtime_blocked_message_details_after_guard_rejections(
     assert result["blocked_reason"] == "tool_validation_rejections_exceeded"
     assert "工具调用连续未通过 Guard 检查" in result["text"]
     assert "最近被拒绝的动作" in result["text"]
+    assert "复盘触发原因" in result["text"]
     assert "建议下一步" in result["text"]
     assert "read" in result["text"]
     blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
     assert blocked_trace["payload"]["blocked_reason"] == "tool_validation_rejections_exceeded"
     assert blocked_trace["payload"]["guard_rejection_count"] >= 2
     assert result["inspector"]["run_state"]["blocked_stop_diagnostics"]["guard_rejection_count"] >= 2
+
+
+def test_runtime_guard_safe_downgrades_command_substitution_before_counting_rejection(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc1",
+                        "name": "exec_command",
+                        "args": {"cmd": 'output=$(python hello.py) && if [ "$output" = "Hello, World!" ]; then echo Match; fi'},
+                    }
+                ],
+            ),
+            _FakeMessage(content="done"),
+        ],
+        _FakeTools(),
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="先跑命令，再继续",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short", locale="zh-CN"),
+        context={
+            "session_id": "s-guard-safe-downgrade",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "done"
+    assert backend.tools.calls
+    assert backend.tools.calls[0][0] == "exec_command"
+    assert backend.tools.calls[0][1]["cmd"] == "python hello.py"
+    assert "tool_validation_rejection_replan_requested" not in result["inspector"]["notes"]
+    assert any("guard_safe_downgrade" in note for note in result["inspector"]["notes"])
+
+
+def test_runtime_replan_prompt_for_compound_shell_forbids_repeat_and_demands_simple_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import app.vintage_programmer_runtime as runtime_module
+
+    base_safeguards = runtime_module.default_loop_safeguards()
+    monkeypatch.setattr(
+        runtime_module,
+        "default_loop_safeguards",
+        lambda: {
+            **base_safeguards,
+            "max_guard_rejections": 0,
+            "automatic_replan": True,
+        },
+    )
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "for file in *.py; do python \"$file\"; done"}}]),
+            _FakeMessage(content="replanned answer"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="遇到 guard 拒绝后换一种更安全的命令方式",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short", locale="zh-CN"),
+        context={
+            "session_id": "s-guard-replan-hint",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    replan_prompt = result["inspector"]["run_state"]["replan_history"][0]["prompt"]
+    assert "不要再次使用 command substitution、内联 if/循环或复合 shell 验证链" in replan_prompt
+    assert "必须把 shell 动作拆成简单命令" in replan_prompt
+    assert "先执行 `python hello.py`" in replan_prompt
+
+
+def test_blocked_stop_message_separates_rejections_progress_plan_updates_and_replan_reason(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="done")]),
+    )
+
+    text = runtime._build_blocked_stop_message(
+        locale="zh-CN",
+        blocked_reason="tool_validation_rejections_exceeded",
+        progress_signals=[
+            {"has_progress": True, "kind": "command_result_changed", "summary": "命令结果发生了变化：python hello.py", "tool_name": "exec_command"},
+            {"has_progress": True, "kind": "plan_updated", "summary": "检查清单新增完成项：1 项", "tool_name": "update_plan"},
+        ],
+        replan_history=[{"trigger": "validation_rejection_limit", "detail": "$.max_chars must be >= 128"}],
+        tool_events=[
+            ToolEvent(
+                name="exec_command",
+                arguments_preview='output=$(python hello.py) && if ...',
+                output_preview="",
+                summary="Compound command contains current unsupported shell structure: command substitution.",
+                status="blocked",
+                validation_result={"allowed": False, "code": "invalid_arguments"},
+                schema_validation={"status": "invalid"},
+            )
+        ],
+        guard_rejection_count=3,
+        no_progress_cycles=0,
+        post_replan_no_progress_cycles=0,
+        same_action_repeat_count=0,
+        elapsed_seconds=10,
+    )
+
+    assert "最近被拒绝的动作" in text
+    assert "最近有效进展" in text
+    assert "最近 plan 更新" in text
+    assert "复盘触发原因" in text
+    assert "output=$(python hello.py) && if ..." in text
+    assert "命令结果发生了变化：python hello.py" in text
+    assert "检查清单新增完成项：1 项" in text
+    assert "触发点：validation_rejection_limit" in text
 
 
 def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:

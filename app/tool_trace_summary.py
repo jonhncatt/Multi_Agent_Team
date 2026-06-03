@@ -223,6 +223,57 @@ def normalize_tool_arguments(
     args: dict[str, Any],
     schema: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    def _path_note(path: str) -> str:
+        normalized = str(path or "$").strip() or "$"
+        return normalized[2:] if normalized.startswith("$.") else normalized
+
+    def _normalize_against_schema(value: Any, schema_node: dict[str, Any] | None, path: str) -> tuple[Any, list[str]]:
+        if not isinstance(schema_node, dict):
+            return value, []
+
+        notes: list[str] = []
+
+        if isinstance(value, dict):
+            properties = schema_node.get("properties")
+            property_map = dict(properties or {}) if isinstance(properties, dict) else {}
+            changed = False
+            updated: dict[str, Any] = dict(value)
+            for key, child_value in list(updated.items()):
+                child_schema = property_map.get(str(key))
+                next_value, child_notes = _normalize_against_schema(child_value, child_schema if isinstance(child_schema, dict) else None, f"{path}.{key}")
+                if next_value != child_value:
+                    updated[key] = next_value
+                    changed = True
+                notes.extend(child_notes)
+            return (updated if changed else value), notes
+
+        if isinstance(value, list):
+            item_schema = schema_node.get("items")
+            if not isinstance(item_schema, dict):
+                return value, []
+            changed = False
+            updated_items: list[Any] = list(value)
+            for index, item in enumerate(list(updated_items)):
+                next_value, child_notes = _normalize_against_schema(item, item_schema, f"{path}[{index}]")
+                if next_value != item:
+                    updated_items[index] = next_value
+                    changed = True
+                notes.extend(child_notes)
+            return (updated_items if changed else value), notes
+
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            minimum = schema_node.get("minimum")
+            maximum = schema_node.get("maximum")
+            next_value: Any = value
+            if isinstance(minimum, (int, float)) and next_value < minimum:
+                next_value = minimum
+            if isinstance(maximum, (int, float)) and next_value > maximum:
+                next_value = maximum
+            if next_value != value:
+                notes.append(f"{_path_note(path)}:{value}->{next_value}")
+                return next_value, notes
+        return value, []
+
     normalized_name = str(tool_name or "").strip()
     original_args = dict(args or {})
     normalized_args = dict(original_args)
@@ -262,6 +313,9 @@ def normalize_tool_arguments(
         source_key = present_aliases[0]
         normalized_args[target] = normalized_args.pop(source_key)
         notes.append(f"{source_key}->{target}")
+
+    normalized_args, schema_notes = _normalize_against_schema(normalized_args, normalized_schema, "$")
+    notes.extend(schema_notes)
 
     return {
         "arguments": normalized_args,

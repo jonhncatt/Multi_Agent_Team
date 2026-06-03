@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5h-blue)
+![Version](https://img.shields.io/badge/version-3.1.5i-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5h`
+当前稳定版本：`3.1.5i`
 
 ## Stable Runtime
 
-3.1.5h 修复了 Debug Detail 首次点击的 turn id 漏洞：新 assistant turn 完成后，前端现在会用后端返回的 canonical `turn_id` 替换临时 message id，因此首次 lazy full load 就能正确命中 `GET /api/thread/{thread_id}/turn/{turn_id}?view=full`，不再需要切线程再回来。
+3.1.5i 修复了 Guard 拒绝后的恢复路径：自动复盘、replan、context read、evidence read 中生成的 `max_chars` 现在会自动钳到 `>= 128`；遇到 command substitution、内联 if/loop、复合 shell 或 `cwd/workdir` 缺失这类验证拒绝时，runtime 会先尝试一次安全降级动作，再决定是否进入复盘或阻塞。
 
-相对 3.1.5g，本版本补上了“首次点调试详情报请求失败，重新进线程后又恢复”的前端收口缺口，并阻止 pending assistant 在运行中误触发 full turn debug 请求。
+相对 3.1.5h，本版本补上了“恢复路径自己因为 `$.max_chars must be >= 128` 再次失败”和“连续重复同类无效 shell 调用”的收口缺口，并把最近被拒绝动作、有效进展、plan 更新和复盘触发原因分开展示。
 
 ## Max Output Tokens
 

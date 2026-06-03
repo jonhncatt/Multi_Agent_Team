@@ -116,3 +116,21 @@ def test_normalize_tool_arguments_keeps_payload_when_target_schema_is_unknown() 
     assert normalized["status"] == "unchanged"
     assert normalized["arguments"] == {"q": "PLAN.md"}
     assert normalized["notes"] == []
+
+
+def test_normalize_tool_arguments_clamps_numeric_values_to_schema_minimums() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+
+    normalized = normalize_tool_arguments("read_file", {"path": "README.md", "max_chars": 100}, schema)
+
+    assert normalized["status"] == "normalized"
+    assert normalized["arguments"]["max_chars"] == 128
+    assert "max_chars:100->128" in normalized["notes"]

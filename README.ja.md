@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5h-blue)
+![Version](https://img.shields.io/badge/version-3.1.5i-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5h`
+現在の安定版: `3.1.5i`
 
 ## Stable Runtime
 
-3.1.5h では、Debug Detail を最初に開いたときの turn id の受け渡し不整合を修正しました。新しい assistant turn の確定後、フロントエンドは一時 message id を backend の canonical `turn_id` に置き換えるため、最初の lazy full load から `GET /api/thread/{thread_id}/turn/{turn_id}?view=full` を正しく参照できます。
+3.1.5i では、Guard 拒否後の回復経路を強化しました。自動 replan、context read、evidence read で生成される `max_chars` は常に `>= 128` に補正され、command substitution、インライン if/loop、複合 shell、`cwd/workdir` 欠落のような検証拒否では、runtime がまず 1 回だけ安全な降格アクションを試みます。
 
-3.1.5g と比べて、最初の debug 展開だけが失敗し、スレッドを開き直すと直るというフロントエンドの収束不具合を解消し、run 中の pending assistant が full debug リクエストを誤発行しないようにしています。
+3.1.5h と比べて、`$.max_chars must be >= 128` によって回復経路が自壊する問題を防ぎ、`validation_rejection_limit` 前の無効な shell 再試行を減らし、拒否アクション・有効進展・plan 更新・復盤トリガーを分けて表示するようにしました。
 
 ## Max Output Tokens
 

@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5h-blue)
+![Version](https://img.shields.io/badge/version-3.1.5i-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5h`
+Current stable release: `3.1.5i`
 
 ## Stable Runtime
 
-3.1.5h fixes the first-click Debug Detail turn-id gap: once a new assistant turn is finalized, the frontend now replaces the temporary message id with the canonical backend `turn_id`, so the first lazy full-load request hits `GET /api/thread/{thread_id}/turn/{turn_id}?view=full` correctly instead of requiring a thread reload.
+3.1.5i hardens the Guard recovery path: auto-replan, context reads, and evidence reads now clamp generated `max_chars` values to `>= 128`; when validation rejects command substitution, inline if/loops, compound shell structures, or missing `cwd/workdir`, the runtime first tries one safe downgrade before deciding to replan or block.
 
-Compared with 3.1.5g, this release closes the frontend handoff bug where the first debug expansion failed and only recovered after reopening the thread, and it prevents pending assistant rows from issuing full-turn debug requests while the run is still in progress.
+Compared with 3.1.5h, this release closes the self-failing recovery gap around `$.max_chars must be >= 128`, reduces repeated invalid shell retries before `validation_rejection_limit`, and separates rejected actions, valid progress, plan updates, and replan triggers in blocked summaries.
 
 ## Max Output Tokens
 
