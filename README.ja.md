@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5i-blue)
+![Version](https://img.shields.io/badge/version-3.1.5J-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5i`
+現在の安定版: `3.1.5J`
 
 ## Stable Runtime
 
-3.1.5i では、Guard 拒否後の回復経路を強化しました。自動 replan、context read、evidence read で生成される `max_chars` は常に `>= 128` に補正され、command substitution、インライン if/loop、複合 shell、`cwd/workdir` 欠落のような検証拒否では、runtime がまず 1 回だけ安全な降格アクションを試みます。
+3.1.5J では、実行中 UI の可観測性を強化しました。経過時間は SSE 更新待ちではなくフロントエンドのローカル interval で毎秒進み、plan/checklist モードには現在のステップ・ツール・アクション・コマンド・直近イベントを分けて出す専用の実行進捗パネルが追加されます。
 
-3.1.5h と比べて、`$.max_chars must be >= 128` によって回復経路が自壊する問題を防ぎ、`validation_rejection_limit` 前の無効な shell 再試行を減らし、拒否アクション・有効進展・plan 更新・復盤トリガーを分けて表示するようにしました。
+3.1.5i と比べて、「まだ動いているのに止まって見える」問題と、スレッド切り替え後に live run メタデータが欠けることがある問題を塞ぎつつ、既存の stick-to-bottom スクロール挙動は維持しています。
 
 ## Max Output Tokens
 

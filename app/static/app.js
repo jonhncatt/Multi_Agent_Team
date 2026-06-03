@@ -148,6 +148,8 @@ function createMessage(role, text, options = {}) {
 function createEmptyThreadActiveTurn() {
   return {
     activeRunId: "",
+    activeRunThreadId: "",
+    startedAt: 0,
     stoppingRun: false,
     lastResponse: null,
     toolTimeline: [],
@@ -165,6 +167,8 @@ function normalizeThreadActiveTurn(raw) {
     ...createEmptyThreadActiveTurn(),
     ...item,
     activeRunId: String(item.activeRunId || item.active_run_id || ""),
+    activeRunThreadId: String(item.activeRunThreadId || item.active_run_thread_id || ""),
+    startedAt: normalizeActivityTimestamp(item.startedAt || item.started_at || item.runStartedAt || item.run_started_at || 0),
     stoppingRun: Boolean(item.stoppingRun || item.stopping_run),
     lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
     toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
@@ -747,7 +751,7 @@ function liveRunItemFromTrace(trace) {
     return normalizeLiveRunItem({
       id: `llm-${roundKey}`,
       type,
-      status: "running",
+      status: "waiting_model",
       label: item.title || "",
       label_key: "activity.live.model_thinking",
       detail: item.detail || String(payload.model || ""),
@@ -807,12 +811,68 @@ function liveRunItemFromTrace(trace) {
     return normalizeLiveRunItem({
       id: `tool-drain-${String(payload.round_idx || payload.tool_round || "") || traceId}`,
       type,
-      status: type === "tool_drain.finished" ? "completed" : "running",
+      status: type === "tool_drain.finished" ? "waiting_model" : "waiting_tool",
       label: item.title || "",
       label_key: type === "tool_drain.finished" ? "activity.live.waiting_next_model" : "activity.live.tool_running",
       detail: item.detail || "",
       started_at: item.timestamp,
       completed_at: type === "tool_drain.finished" ? item.timestamp : 0,
+      raw: item,
+    });
+  }
+  if (type === "action.detected" || type === "tool.call_detected") {
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `action-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: "waiting_tool",
+      label: item.title || "",
+      detail: target || item.detail || String(payload.summary || ""),
+      started_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "action.validating") {
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `validation-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: "validating",
+      label: item.title || "",
+      detail: target || item.detail || String(payload.summary || ""),
+      started_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "action.allowed") {
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `allowed-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: "waiting_tool",
+      label: item.title || "",
+      detail: target || item.detail || String(payload.summary || ""),
+      started_at: item.timestamp,
+      raw: item,
+    });
+  }
+  if (type === "action.blocked") {
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `blocked-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: "failed",
+      label: item.title || "",
+      detail: target || item.detail || String(payload.summary || ""),
+      completed_at: item.timestamp,
       raw: item,
     });
   }
@@ -829,6 +889,21 @@ function liveRunItemFromTrace(trace) {
       detail: target || item.detail || String(payload.summary || ""),
       started_at: type === "tool.started" ? item.timestamp : 0,
       completed_at: type === "tool.finished" || type === "tool.failed" ? item.timestamp : 0,
+      raw: item,
+    });
+  }
+  if (type === "observation.returned") {
+    const target = toolCallTargetFromSource(payload);
+    return normalizeLiveRunItem({
+      id: callId || `observation-${traceId}`,
+      call_id: callId,
+      type,
+      tool: toolName,
+      status: "waiting_model",
+      label: item.title || "",
+      label_key: "activity.live.waiting_next_model",
+      detail: target || item.detail || String(payload.summary || ""),
+      completed_at: item.timestamp,
       raw: item,
     });
   }
@@ -1150,6 +1225,10 @@ function normalizeProgressStatus(value) {
   if (!normalized) return "pending";
   if (["completed", "success", "done", "ok"].includes(normalized)) return "completed";
   if (["in_progress", "inprogress", "running", "active", "working"].includes(normalized)) return "running";
+  if (["validating", "checking", "guarding"].includes(normalized)) return "validating";
+  if (["waiting_model", "waiting-model", "model_wait", "thinking"].includes(normalized)) return "waiting_model";
+  if (["waiting_tool", "waiting-tool", "tool_wait", "waiting_result"].includes(normalized)) return "waiting_tool";
+  if (["background_running", "background-running"].includes(normalized)) return "background_running";
   if (["failed", "error"].includes(normalized)) return "failed";
   if (["blocked", "needs_user_input"].includes(normalized)) return "blocked";
   if (["cancelled", "canceled"].includes(normalized)) return "cancelled";
@@ -2327,6 +2406,156 @@ function toolFailureSummary(item, locale) {
   return lines.slice(0, 5).join("\n");
 }
 
+function latestAssistantMessage(messages, options = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const preferPending = options.preferPending !== false;
+  const reversed = list.slice().reverse();
+  if (preferPending) {
+    const pending = reversed.find((item) => item && item.role === "assistant" && item.pending);
+    if (pending) return pending;
+  }
+  return reversed.find((item) => item && item.role === "assistant") || null;
+}
+
+function currentChecklistStepLabel(plan, checkpoint = {}) {
+  const entries = normalizePlanChecklist(plan);
+  const inProgress = entries.find((item) => normalizeProgressStatus(item.status) === "running");
+  if (inProgress && inProgress.step) return inProgress.step;
+  const pending = entries.find((item) => normalizeProgressStatus(item.status) === "pending");
+  if (pending && pending.step) return pending.step;
+  return String(
+    checkpoint.next_action
+    || checkpoint.current_step_id
+    || checkpoint.goal
+    || "",
+  ).trim();
+}
+
+function executionProgressCommandFromSource(source) {
+  const item = source && typeof source === "object" ? source : {};
+  const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
+  const rawCallArguments = rawToolCall.arguments && typeof rawToolCall.arguments === "object" ? rawToolCall.arguments : {};
+  const rawArguments = item.raw_arguments && typeof item.raw_arguments === "object" ? item.raw_arguments : {};
+  const normalizedArguments = item.normalized_arguments && typeof item.normalized_arguments === "object" ? item.normalized_arguments : {};
+  const resultPreview = item.result_preview && typeof item.result_preview === "object" ? item.result_preview : {};
+  const candidates = [
+    resultPreview.command,
+    item.command,
+    normalizedArguments.command,
+    normalizedArguments.cmd,
+    rawArguments.command,
+    rawArguments.cmd,
+    rawCallArguments.command,
+    rawCallArguments.cmd,
+  ];
+  for (const candidate of candidates) {
+    const text = shortenActivityTarget(candidate, 160);
+    if (text) return text;
+  }
+  return "";
+}
+
+function formatRunProgressStatus(locale, status) {
+  const normalized = String(status || "").trim();
+  if (!normalized) return "-";
+  return translateUiOrFallback(locale, `run.progress.status.${normalized}`, normalized);
+}
+
+function buildRunExecutionProgress({
+  messages,
+  plan,
+  checkpoint = {},
+  logs,
+  sending = false,
+  activeRunId = "",
+  activeRunThreadId = "",
+  sessionId = "",
+  locale = "zh-CN",
+}) {
+  const assistantMessage = latestAssistantMessage(messages, { preferPending: true });
+  const activity = normalizeMessageActivity((assistantMessage && assistantMessage.activity) || {});
+  const liveItems = normalizeLiveRunItems(activity.live_items);
+  const traces = Array.isArray(activity.trace_events) ? activity.trace_events : [];
+  const reversedLiveItems = liveItems.slice().reverse();
+  const priorityStatuses = new Set(["validating", "running", "waiting_tool", "waiting_model", "failed", "blocked", "completed"]);
+  const currentItem = reversedLiveItems.find((item) => priorityStatuses.has(normalizeProgressStatus(item.status))) || reversedLiveItems[0] || null;
+  const lastTrace = traces.length ? traces[traces.length - 1] : null;
+  const lastTracePayload = lastTrace && lastTrace.payload && typeof lastTrace.payload === "object" ? lastTrace.payload : {};
+  const currentSource = currentItem && currentItem.raw && currentItem.raw.payload && typeof currentItem.raw.payload === "object"
+    ? currentItem.raw.payload
+    : ((currentItem && currentItem.raw && typeof currentItem.raw === "object") ? currentItem.raw : {});
+  const toolName = String(
+    (currentItem && currentItem.tool)
+    || lastTracePayload.tool_name
+    || lastTracePayload.tool
+    || lastTracePayload.name
+    || ((lastTracePayload.raw_tool_call || {}).name)
+    || "",
+  ).trim();
+  const command = executionProgressCommandFromSource(currentSource) || executionProgressCommandFromSource(lastTracePayload);
+  let status = currentItem ? normalizeProgressStatus(currentItem.status) : "";
+  let currentAction = String(
+    command
+    || ((currentItem && (currentItem.label || currentItem.detail)) || "")
+    || ((lastTrace && (lastTrace.title || lastTrace.detail)) || "")
+    || "",
+  ).trim();
+  let recentEvent = String(
+    ((Array.isArray(logs) && logs[0] && logs[0].text) || "")
+    || ((lastTrace && (lastTrace.title || lastTrace.detail)) || "")
+    || ((currentItem && (currentItem.label || currentItem.detail)) || "")
+    || "",
+  ).trim();
+  const isCurrentThreadActiveRun = Boolean(
+    sending
+    || String(activeRunId || "").trim()
+    || (String(activeRunThreadId || "").trim() && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()),
+  );
+  if (!status) {
+    const traceType = String((lastTrace && lastTrace.type) || "").trim();
+    if (traceType === "observation.returned" || traceType.startsWith("llm.") || traceType === "answer.started" || traceType === "answer.delta") {
+      status = "waiting_model";
+    } else if (traceType.startsWith("tool.") || traceType.startsWith("action.") || traceType.startsWith("tool_drain.")) {
+      status = "waiting_tool";
+    } else if (isCurrentThreadActiveRun) {
+      status = "background_running";
+    } else {
+      status = normalizeProgressStatus(activity.status || "");
+    }
+  }
+  if (!currentAction) {
+    if (status === "waiting_model") {
+      currentAction = translateUi(locale, "run.progress.waiting_model");
+    } else if (status === "waiting_tool" || status === "validating") {
+      currentAction = translateUi(locale, "run.progress.waiting_tool");
+    } else if (status === "background_running") {
+      currentAction = translateUi(locale, "run.progress.background_running");
+    } else if (status === "completed") {
+      currentAction = String(activity.final_answer || activity.summary || translateUi(locale, "activity.live.answer_done")).trim();
+    }
+  }
+  if (!recentEvent) {
+    if (status === "waiting_model") {
+      recentEvent = translateUi(locale, "run.progress.recent_event_waiting_model");
+    } else if (status === "waiting_tool" || status === "validating") {
+      recentEvent = translateUi(locale, "run.progress.recent_event_waiting_tool");
+    } else if (status === "background_running") {
+      recentEvent = translateUi(locale, "run.progress.recent_event_background");
+    } else if (status === "completed") {
+      recentEvent = translateUi(locale, "run.progress.recent_event_completed");
+    }
+  }
+  return {
+    currentStep: currentChecklistStepLabel(plan, checkpoint),
+    currentTool: toolName,
+    currentAction,
+    status,
+    statusLabel: formatRunProgressStatus(locale, status),
+    command,
+    recentEvent,
+  };
+}
+
 function activityStatusFromTraceType(type, fallback = "thinking") {
   const normalized = String(type || "").trim();
   if (!normalized) return fallback;
@@ -2393,7 +2622,7 @@ function mergeActivityState(previous, patch = {}) {
       nextRunDurationMs,
       nextTurnStartedAt && nextFinishedAt ? Math.max(0, nextFinishedAt - nextTurnStartedAt) : 0,
     )
-    : Math.max(0, Number(prev.final_elapsed_ms || 0) || 0);
+    : 0;
   return {
     ...prev,
     ...nextPatch,
@@ -2451,7 +2680,7 @@ function appendActivityTrace(activity, trace, options = {}) {
       Number(current.run_duration_ms || 0) || 0,
       finishedAt && turnStartedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
     )
-    : Math.max(0, Number(current.final_elapsed_ms || 0) || 0);
+    : 0;
   const payloadRuntimeError = normalizedTrace.type === "llm.failed"
     ? normalizeRuntimeErrorPayload(payload)
     : normalizeRuntimeErrorPayload(payload.runtime_error);
@@ -2488,7 +2717,9 @@ function formatActivityDuration(activity, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const turnStartedAt = item.turn_started_at || item.started_at;
   if (!turnStartedAt) return "";
-  const frozenElapsedMs = Math.max(0, Number(item.final_elapsed_ms || 0) || 0);
+  const frozenElapsedMs = isActivityTerminalStatus(item.status)
+    ? Math.max(0, Number(item.final_elapsed_ms || 0) || 0)
+    : 0;
   const durationMs = frozenElapsedMs || (
     item.finished_at
       ? Math.max(
@@ -2569,6 +2800,7 @@ function createInitialAppState() {
     activeTurn: {
       sending: false,
       activeRunThreadId: "",
+      startedAt: 0,
       liveRunLogs: [],
       lastResponse: null,
       toolTimeline: [],
@@ -2788,6 +3020,7 @@ function App() {
   const stageTimeline = appState.activeTurn.stageTimeline;
   const activeRunId = appState.activeTurn.activeRunId;
   const activeRunThreadId = appState.activeTurn.activeRunThreadId;
+  const activeRunStartedAt = normalizeActivityTimestamp(appState.activeTurn.startedAt || 0);
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
@@ -2876,6 +3109,7 @@ function App() {
   const setStageTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "stageTimeline"], value });
   const setActiveRunId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunId"], value });
   const setActiveRunThreadId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunThreadId"], value });
+  const setActiveRunStartedAt = (value) => dispatch({ type: "update", path: ["activeTurn", "startedAt"], value });
   const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
   const setWorkbenchTools = (value) => dispatch({ type: "update", path: ["panelCache", "tools", "data"], value });
   const setPanelStatus = (panel, value) => dispatch({ type: "update", path: ["panelCache", panel, "status"], value });
@@ -3162,7 +3396,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId);
+    const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId) || Boolean(activeRunThreadId);
     if (!shouldTickActivityClock) {
       setActivityClockMs(Date.now());
       return undefined;
@@ -3170,7 +3404,7 @@ function App() {
     setActivityClockMs(Date.now());
     const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
-  }, [activeRunId, hasRunningActivity, sending]);
+  }, [activeRunId, activeRunThreadId, hasRunningActivity, sending]);
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -3490,6 +3724,8 @@ function App() {
     setLiveRunLogs([]);
     setStageTimeline([]);
     setActiveRunId("");
+    setActiveRunThreadId("");
+    setActiveRunStartedAt(0);
     setStoppingRun(false);
     setContextMeterOpen(false);
   }
@@ -3505,6 +3741,8 @@ function App() {
   function visibleThreadActiveTurnSnapshot() {
     return normalizeThreadActiveTurn({
       activeRunId,
+      activeRunThreadId,
+      startedAt: activeRunStartedAt,
       stoppingRun,
       lastResponse,
       toolTimeline,
@@ -3572,6 +3810,8 @@ function App() {
     setLiveRunLogs(next.liveRunLogs);
     setStageTimeline(next.stageTimeline);
     setActiveRunId(next.activeRunId);
+    setActiveRunThreadId(next.activeRunThreadId);
+    setActiveRunStartedAt(next.startedAt);
     setStoppingRun(next.stoppingRun);
     setContextMeterOpen(false);
   }
@@ -4591,6 +4831,7 @@ function App() {
     setContextMeterOpen(false);
     setStoppingRun(false);
     setActiveRunId("");
+    setActiveRunStartedAt(clientSubmittedAtMs);
     clearUiError();
     setToolTimeline([]);
     setLiveToolTimeline([]);
@@ -4619,8 +4860,8 @@ function App() {
         pending: true,
         activity: {
           status: "thinking",
-          started_at: Date.now(),
-          turn_started_at: Date.now(),
+          started_at: clientSubmittedAtMs,
+          turn_started_at: clientSubmittedAtMs,
           trace_events: [],
         },
       });
@@ -4639,6 +4880,9 @@ function App() {
           sessionRuntimeState: existing.sessionRuntimeState || {},
           activeTurn: normalizeThreadActiveTurn({
             ...createEmptyThreadActiveTurn(),
+            activeRunThreadId: runOwnerThreadId,
+            startedAt: clientSubmittedAtMs,
+            lastResponse: (existing.activeTurn && existing.activeTurn.lastResponse) || lastResponse || null,
             liveTurnState: nextInitialRuntimeState,
             liveEvidence: { status: "not_needed" },
           }),
@@ -4742,7 +4986,11 @@ function App() {
           (cachedSnapshot && cachedSnapshot.activeTurn)
           || (ownerThreadVisible() ? currentVisible : createEmptyThreadActiveTurn()),
         );
-        const nextTurn = normalizeThreadActiveTurn(resolveStateValue(base, value));
+        const nextTurn = normalizeThreadActiveTurn({
+          ...resolveStateValue(base, value),
+          activeRunThreadId: runOwnerThreadId,
+          startedAt: Number(base.startedAt || clientSubmittedAtMs || 0) || 0,
+        });
         updateThreadSnapshot(runOwnerThreadId, (existing) => ({ ...existing, activeTurn: nextTurn }));
         if (!ownerThreadVisible()) return;
         setLastResponse(nextTurn.lastResponse);
@@ -4753,6 +5001,8 @@ function App() {
         setLiveRunLogs(nextTurn.liveRunLogs);
         setStageTimeline(nextTurn.stageTimeline);
         setActiveRunId(nextTurn.activeRunId);
+        setActiveRunThreadId(nextTurn.activeRunThreadId);
+        setActiveRunStartedAt(nextTurn.startedAt);
         setStoppingRun(nextTurn.stoppingRun);
       };
 
@@ -4833,14 +5083,17 @@ function App() {
         await new Promise((resolve) => {
           window.requestAnimationFrame(() => {
             if (updateOwnerActiveTurn) {
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, stoppingRun: false }));
             } else {
               setActiveRunId("");
+              setActiveRunThreadId("");
+              setActiveRunStartedAt(0);
               setStoppingRun(false);
             }
             setSending(false);
             setStoppingRun(false);
             setActiveRunThreadId("");
+            setActiveRunStartedAt(0);
             resolve();
           });
         });
@@ -5147,6 +5400,19 @@ function App() {
               }
             } else if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || t("labels.processing"));
+              updateOwnerActiveTurn((prev) => ({
+                ...prev,
+                stageTimeline: [
+                  {
+                    id: String(payload.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+                    label: String(payload.label || payload.code || "stage"),
+                    detail,
+                    status: String(payload.status || "running"),
+                    at: Date.now(),
+                  },
+                  ...(Array.isArray(prev.stageTimeline) ? prev.stageTimeline : []),
+                ].slice(0, 24),
+              }));
               replacePendingText(detail, { onlyWhileWaiting: true });
               pushLogWithLimit(setLogs, "stage", detail);
               pushLiveLog("stage", detail);
@@ -5237,7 +5503,9 @@ function App() {
         ...(finalPayload.inspector || {}).evidence,
         ...(finalPayload.inspector || {}).session,
         ...{
+          agent: ((finalPayload.inspector || {}).agent) || sessionAgentInfo || {},
           agent_id: finalPayload.agent_id || "vintage_programmer",
+          agent_title: String((((finalPayload.inspector || {}).agent) || {}).title || sessionRuntimeState.agent_title || "Vintage Programmer"),
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
@@ -5256,6 +5524,7 @@ function App() {
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
+          loaded_skills: Array.isArray((finalPayload.inspector || {}).loaded_skills) ? finalPayload.inspector.loaded_skills : sessionLoadedSkills,
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
             ? finalPayload.inspector.loaded_skills.map((item) => item.id)
             : [],
@@ -5282,14 +5551,17 @@ function App() {
     } finally {
       if (!uiFinalized) {
         if (updateOwnerActiveTurn) {
-          updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
+          updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, stoppingRun: false }));
         } else {
           setActiveRunId("");
+          setActiveRunThreadId("");
+          setActiveRunStartedAt(0);
           setStoppingRun(false);
         }
         setSending(false);
         setStoppingRun(false);
         setActiveRunThreadId("");
+        setActiveRunStartedAt(0);
       }
     }
   }
@@ -5435,12 +5707,25 @@ function App() {
   const workspaceLabel = projectLabel(currentProject, health);
   const currentProjectRoot = String((currentProject && currentProject.root_path) || runtimeStatus.project_root || "").trim();
   const currentProjectBranch = String((currentProject && currentProject.git_branch) || runtimeStatus.git_branch || "").trim();
-  const agentInfo = (lastResponse && lastResponse.inspector && lastResponse.inspector.agent) || (health && health.agent) || {};
+  const sessionAgentInfo = sessionRuntimeState && sessionRuntimeState.agent && typeof sessionRuntimeState.agent === "object"
+    ? sessionRuntimeState.agent
+    : {};
+  const sessionLoadedSkills = Array.isArray(sessionRuntimeState && sessionRuntimeState.loaded_skills)
+    ? sessionRuntimeState.loaded_skills
+    : [];
+  const hasSessionAgentInfo = Boolean(Object.keys(sessionAgentInfo).length);
+  const hasSessionLoadedSkills = Boolean(sessionLoadedSkills.length);
+  const agentInfo = (lastResponse && lastResponse.inspector && lastResponse.inspector.agent)
+    || (hasSessionAgentInfo ? sessionAgentInfo : null)
+    || (health && health.agent)
+    || {};
   const loadedSkills = Array.isArray((lastResponse && lastResponse.inspector && lastResponse.inspector.loaded_skills))
     ? lastResponse.inspector.loaded_skills
-    : Array.isArray((health && health.agent && health.agent.loaded_skills))
-      ? health.agent.loaded_skills
-      : [];
+    : (hasSessionLoadedSkills
+      ? sessionLoadedSkills
+      : (Array.isArray((health && health.agent && health.agent.loaded_skills))
+        ? health.agent.loaded_skills
+        : []));
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
   const completedRuntimeState = lastInspector.run_state || {};
   const completedEvidence = lastInspector.evidence || {};
@@ -5505,6 +5790,14 @@ function App() {
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
     : (Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : []);
+  const hasTaskCheckpoint = Boolean(
+    activeTaskCheckpoint.task_id
+    || activeTaskCheckpoint.current_step_id
+    || activeTaskCheckpoint.completed_steps_count
+    || activeTaskCheckpoint.failed_attempts_count
+    || activeTaskCheckpoint.next_action,
+  );
+  const hasPlanMode = Boolean(activePlan.length || hasTaskCheckpoint);
   const activePendingInput =
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
@@ -5515,6 +5808,17 @@ function App() {
       ? lastInspector.tool_timeline
       : toolTimeline);
   const activeRunLogs = hasLiveRuntimeState ? liveRunLogs : logs;
+  const runExecutionProgress = buildRunExecutionProgress({
+    messages,
+    plan: activePlan,
+    checkpoint: activeTaskCheckpoint,
+    logs: activeRunLogs,
+    sending: hasLiveRuntimeState || sending,
+    activeRunId,
+    activeRunThreadId,
+    sessionId,
+    locale: uiLocale,
+  });
   const activeProviderAuthReady =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
       ? Boolean(activeProviderProfile.auth_ready)
@@ -6304,7 +6608,7 @@ function App() {
             <div className="head-stack">
               <div className="main-head-title">${headTitle}</div>
               <div className="main-head-sub" title=${currentProjectRoot || workspaceLabel || ""}>
-                ${agentInfo.title || "Vintage Programmer"}
+                ${agentInfo.title || sessionRuntimeState.agent_title || "Vintage Programmer"}
                 ${headBreadcrumb ? ` · ${headBreadcrumb}` : ""}
               </div>
             </div>
@@ -6776,6 +7080,44 @@ function App() {
                     : null}
                 </section>
 
+                ${hasPlanMode
+                  ? html`
+                      <section className="panel-card run-progress-card">
+                        <div className="panel-title">${t("run.execution_progress")}</div>
+                        <div className="run-progress-grid">
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_step")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.currentStep || activeTaskCheckpoint.next_action || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_tool")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.currentTool || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_state")}</span>
+                            <span className=${`run-progress-state status-${runExecutionProgress.status || "pending"}`}>${runExecutionProgress.statusLabel || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_action")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.currentAction || "-"}</span>
+                          </div>
+                          ${runExecutionProgress.command
+                            ? html`
+                                <div className="run-progress-row">
+                                  <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "command")}</span>
+                                  <code className="run-progress-command">${runExecutionProgress.command}</code>
+                                </div>
+                              `
+                            : null}
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "recent_event")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.recentEvent || "-"}</span>
+                          </div>
+                        </div>
+                      </section>
+                    `
+                  : null}
+
                 ${activePlan.length
                   ? html`
                       <section className="panel-card">
@@ -6820,33 +7162,37 @@ function App() {
                     `
                   : null}
 
-                <section className="panel-card">
-                  <div className="panel-title">${t("run.recent_tools")}</div>
-                  <div className="timeline-list">
-                    ${activeToolTimeline.length
-                      ? activeToolTimeline.map(
-                          (item, index) => html`
-                            <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
-                              <div className="timeline-head">
-                                <span>${item.name || "tool"}</span>
-                                <span>${formatToolGroupLabel(uiLocale, item.group || "tool")}</span>
-                              </div>
-                              <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
-                              ${renderToolAuditDetails(item)}
-                              ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
-                                ? html`
-                                    <details className="timeline-details">
-                                      <summary>${t("run.diagnostics")}</summary>
-                                      <pre>${stringifyCompactJson(item.diagnostics)}</pre>
-                                    </details>
-                                  `
-                                : null}
-                            </div>
-                          `,
-                        )
-                      : html`<div className="empty-inline">${t("run.no_tools")}</div>`}
-                  </div>
-                </section>
+                ${hasPlanMode
+                  ? null
+                  : html`
+                      <section className="panel-card">
+                        <div className="panel-title">${t("run.recent_tools")}</div>
+                        <div className="timeline-list">
+                          ${activeToolTimeline.length
+                            ? activeToolTimeline.map(
+                                (item, index) => html`
+                                  <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
+                                    <div className="timeline-head">
+                                      <span>${item.name || "tool"}</span>
+                                      <span>${formatToolGroupLabel(uiLocale, item.group || "tool")}</span>
+                                    </div>
+                                    <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
+                                    ${renderToolAuditDetails(item)}
+                                    ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
+                                      ? html`
+                                          <details className="timeline-details">
+                                            <summary>${t("run.diagnostics")}</summary>
+                                            <pre>${stringifyCompactJson(item.diagnostics)}</pre>
+                                          </details>
+                                        `
+                                      : null}
+                                  </div>
+                                `,
+                              )
+                            : html`<div className="empty-inline">${t("run.no_tools")}</div>`}
+                        </div>
+                      </section>
+                    `}
 
                 <section className="panel-card">
                   <div className="panel-title">${t("run.logs")}</div>

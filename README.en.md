@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5i-blue)
+![Version](https://img.shields.io/badge/version-3.1.5J-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5i`
+Current stable release: `3.1.5J`
 
 ## Stable Runtime
 
-3.1.5i hardens the Guard recovery path: auto-replan, context reads, and evidence reads now clamp generated `max_chars` values to `>= 128`; when validation rejects command substitution, inline if/loops, compound shell structures, or missing `cwd/workdir`, the runtime first tries one safe downgrade before deciding to replan or block.
+3.1.5J tightens live-run observability in the frontend: the elapsed timer now advances locally every second instead of waiting for SSE updates, and plan/checklist mode gets a separate execution-progress panel that keeps showing the current step, current tool, action, command, and latest event.
 
-Compared with 3.1.5h, this release closes the self-failing recovery gap around `$.max_chars must be >= 128`, reduces repeated invalid shell retries before `validation_rejection_limit`, and separates rejected actions, valid progress, plan updates, and replan triggers in blocked summaries.
+Compared with 3.1.5i, this closes the “looks frozen while still running” gap and the occasional loss of live run metadata after thread switches, while keeping the existing stick-to-bottom scroll behavior intact.
 
 ## Max Output Tokens
 

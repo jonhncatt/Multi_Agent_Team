@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5i-blue)
+![Version](https://img.shields.io/badge/version-3.1.5J-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5i`
+当前稳定版本：`3.1.5J`
 
 ## Stable Runtime
 
-3.1.5i 修复了 Guard 拒绝后的恢复路径：自动复盘、replan、context read、evidence read 中生成的 `max_chars` 现在会自动钳到 `>= 128`；遇到 command substitution、内联 if/loop、复合 shell 或 `cwd/workdir` 缺失这类验证拒绝时，runtime 会先尝试一次安全降级动作，再决定是否进入复盘或阻塞。
+3.1.5J 收紧了运行中的前端可观察性：执行计时现在由本地 interval 每秒刷新，不再依赖 SSE 事件跳秒；plan/checklist 模式下新增独立的“执行进展”区域，持续显示当前步骤、当前工具、当前动作、命令和最近事件。
 
-相对 3.1.5h，本版本补上了“恢复路径自己因为 `$.max_chars must be >= 128` 再次失败”和“连续重复同类无效 shell 调用”的收口缺口，并把最近被拒绝动作、有效进展、plan 更新和复盘触发原因分开展示。
+相对 3.1.5i，这个版本补上了“运行中看起来像卡死”和“切线程后 live run 元数据偶发消失”的体验缺口，同时保留既有的 stick-to-bottom 滚动逻辑。
 
 ## Max Output Tokens
 

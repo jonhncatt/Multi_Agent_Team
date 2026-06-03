@@ -1742,6 +1742,78 @@ button {
   align-items: baseline;
 }
 
+.run-progress-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.run-progress-row {
+  display: grid;
+  gap: 5px;
+  padding: 12px 13px;
+  border-radius: 14px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.72);
+}
+
+.run-progress-label {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.run-progress-value,
+.run-progress-command {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.run-progress-command {
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(246, 248, 251, 0.92);
+  border: 1px solid rgba(188, 198, 212, 0.6);
+  font: 12px/1.55 "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+.run-progress-state {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.run-progress-state.status-running,
+.run-progress-state.status-waiting_tool,
+.run-progress-state.status-background_running {
+  background: rgba(17, 24, 39, 0.08);
+}
+
+.run-progress-state.status-validating,
+.run-progress-state.status-waiting_model {
+  background: rgba(27, 99, 214, 0.12);
+  color: #174ea6;
+}
+
+.run-progress-state.status-completed {
+  background: rgba(31, 136, 61, 0.12);
+  color: #1f883d;
+}
+
+.run-progress-state.status-failed,
+.run-progress-state.status-blocked,
+.run-progress-state.status-cancelled {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .tool-flags {
   display: flex;
   gap: 10px;

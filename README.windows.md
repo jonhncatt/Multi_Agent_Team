@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5i`。
+当前稳定版本：`3.1.5J`。
 
 ## Stable Runtime
 
-3.1.5i 修复了 Guard 拒绝后的恢复路径：自动复盘和证据读取里的 `max_chars` 现在会自动校正到 `>= 128`，遇到复合 shell 或缺失 `cwd/workdir` 的验证拒绝时，会先尝试一次更安全的降级动作，再决定是否阻塞。
-它继续保持 canonical 29-tool surface 不变；这次调整集中在 recovery/replan 收口，不改变 task checkpoint 的 canonical merge 规则。
+3.1.5J 主要修 UI 运行体验：执行计时改为本地每秒刷新，长命令期间不会再卡在旧秒数；当 plan/checklist 占主视图时，Run 面板会单独显示当前步骤、当前工具、当前动作、命令和最近事件，便于确认后台仍在运行。
+它不改变 canonical task checkpoint 规则，也不改变既有的 stick-to-bottom 滚动策略。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

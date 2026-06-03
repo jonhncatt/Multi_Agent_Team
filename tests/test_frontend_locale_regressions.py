@@ -206,6 +206,26 @@ REQUIRED_CORE_KEYS = (
     "context_meter.mode.docker",
     "context_meter.token_usage_value",
     "context_meter.unknown",
+    "run.execution_progress",
+    "run.field.status",
+    "run.field.current_step",
+    "run.field.blocked_reason",
+    "run.field.current_tool",
+    "run.field.current_action",
+    "run.field.current_state",
+    "run.field.command",
+    "run.field.recent_event",
+    "run.progress.status.validating",
+    "run.progress.status.waiting_model",
+    "run.progress.status.waiting_tool",
+    "run.progress.status.background_running",
+    "run.progress.waiting_model",
+    "run.progress.waiting_tool",
+    "run.progress.background_running",
+    "run.progress.recent_event_waiting_model",
+    "run.progress.recent_event_waiting_tool",
+    "run.progress.recent_event_background",
+    "run.progress.recent_event_completed",
     "run.value.turn_status.failed",
 )
 REQUIRED_LIST_KEYS = ("starter.prompts",)
@@ -577,11 +597,97 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "llm_exchanges: Array.isArray(item.llm_exchanges) ? item.llm_exchanges : []" in body
     assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
     assert "const turnStartedAt = item.turn_started_at || item.started_at;" in script
-    assert "const frozenElapsedMs = Math.max(0, Number(item.final_elapsed_ms || 0) || 0);" in script
-    assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId);" in script
+    assert "const frozenElapsedMs = isActivityTerminalStatus(item.status)" in script
+    assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId) || Boolean(activeRunThreadId);" in script
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
+    assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
+    assert "startedAt: clientSubmittedAtMs," in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
+
+
+def test_run_execution_progress_panel_is_split_from_plan_checklist() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        "function buildRunExecutionProgress({",
+        "function latestAssistantMessage(messages, options = {})",
+        "function currentChecklistStepLabel(plan, checkpoint = {})",
+        "function executionProgressCommandFromSource(source)",
+        "function formatRunProgressStatus(locale, status)",
+        "const hasPlanMode = Boolean(activePlan.length || hasTaskCheckpoint);",
+        'className="panel-card run-progress-card"',
+        'formatRunFieldLabel(uiLocale, "current_tool")',
+        'formatRunFieldLabel(uiLocale, "current_action")',
+        'formatRunFieldLabel(uiLocale, "current_state")',
+        'formatRunFieldLabel(uiLocale, "recent_event")',
+        'formatRunFieldLabel(uiLocale, "command")',
+        "runExecutionProgress.statusLabel",
+        "${hasPlanMode",
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    required_style_tokens = (
+        ".run-progress-grid",
+        ".run-progress-row",
+        ".run-progress-label",
+        ".run-progress-value",
+        ".run-progress-command",
+        ".run-progress-state",
+        ".run-progress-state.status-validating",
+        ".run-progress-state.status-waiting_model",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token
+
+    required_locale_tokens = (
+        '"run.execution_progress": "执行进展"',
+        '"run.field.current_tool": "当前工具"',
+        '"run.field.current_action": "当前动作"',
+        '"run.field.current_state": "当前状态"',
+        '"run.field.command": "命令"',
+        '"run.field.recent_event": "最近事件"',
+        '"run.progress.status.waiting_model": "等待模型下一步"',
+        '"run.progress.status.waiting_tool": "等待工具结果"',
+        '"run.progress.status.background_running": "后台仍在运行"',
+    )
+    for token in required_locale_tokens:
+        assert token in locales, token
+
+
+def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "activeRunThreadId: runOwnerThreadId,",
+        "startedAt: clientSubmittedAtMs,",
+        "startedAt: activeRunStartedAt,",
+        "setActiveRunThreadId(next.activeRunThreadId);",
+        "setActiveRunStartedAt(next.startedAt);",
+        "activeRunThreadId: \"\", startedAt: 0, stoppingRun: false",
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+
+def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        'type === "action.detected" || type === "tool.call_detected"',
+        'type === "action.validating"',
+        'type === "action.allowed"',
+        'type === "action.blocked"',
+        'type === "observation.returned"',
+        'status: "validating"',
+        'status: "waiting_model"',
+        'status: "waiting_tool"',
+    )
+    for token in required_tokens:
+        assert token in script, token
 
 
 def test_frontend_uses_stable_default_max_output_tokens_and_server_bootstrap_override() -> None:
@@ -660,7 +766,7 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     assert "prev.started_at || nextStartedAtCandidate || 0" in script
     assert "prev.turn_started_at || nextTurnStartedAtCandidate || nextStartedAt || 0" in script
     assert "Number(prev.final_elapsed_ms || 0) || 0" in script
-    assert "turn_started_at: Date.now()," in script
+    assert "turn_started_at: clientSubmittedAtMs," in script
 
     run_started_match = re.search(
         r'if \(event === "run_started"\) \{(?P<body>.*?)\n            \} else if \(event === "run_finished"\)',
