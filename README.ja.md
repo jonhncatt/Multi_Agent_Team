@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5c-blue)
+![Version](https://img.shields.io/badge/version-3.1.5d-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5c`
+現在の安定版: `3.1.5d`
 
 ## Stable Runtime
 
-3.1.5c は、3.1.5b の session / trace / task checkpoint 整理の上に、thread rename、実行中でも他 thread を閲覧できる UI、message 単位の full debug lazy loading、そして offline session repair CLI を追加したリリースです。
+3.1.5d は、3.1.5c の thread/runtime/UI 整理の上に、task checkpoint を canonical `task_state` と harness-validated `task_state_delta` へ強化したリリースです。checklist 自体は `update_plan` が維持し、step の完了や失敗は証拠を検証した後にだけ永続化されます。
 
-3.1.5b と比べて、summary view は引き続き sidecar を読まず、full debug は特定 turn の Activity/Debug を開いたときだけ取得します。履歴 Debug はグローバル inspector を流用せず、実行中 thread の live snapshot も thread ごとに個別に復元できます。
+3.1.5c と比べて、step evidence validator、永続化される `validation_warnings`、model-visible な task checkpoint 要約、そして Run/Debug パネルでの task state 可観測性が追加されました。旧来の turn 終了時推定ロジックは fallback としてのみ残しています。
 
 ## Max Output Tokens
 

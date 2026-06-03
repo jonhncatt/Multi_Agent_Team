@@ -104,6 +104,59 @@ def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
     assert payload["conversation"]["recent_turns"] == [{"role": "assistant", "text": "上一轮已经完成工具入口定位。"}]
 
 
+def test_model_context_prefers_task_state_checkpoint_when_present(tmp_path: Path) -> None:
+    boundary = build_turn_runtime_boundary(
+        config=load_config(),
+        runtime_contract=RuntimeContract(permission_profile="auto", shell_allowed=True),
+        project_root=tmp_path,
+        cwd=tmp_path,
+        attachments=[],
+    )
+    manager = ContextManager.from_payload(
+        {
+            "recent_observations": [{"tool": "read_file", "summary": "旧观察", "status": "ok"}],
+            "plan": [{"step": "旧计划", "status": "pending"}],
+            "active_files": ["legacy.py"],
+        }
+    )
+
+    model_context = build_model_context(
+        user_request="继续修 task_state",
+        context_manager=manager,
+        runtime_boundary=boundary,
+        project_root=tmp_path,
+        cwd=tmp_path,
+        task_state={
+            "goal": "修 task_state validator",
+            "status": "blocked",
+            "plan_items": [
+                {"id": "step-1", "step": "Inspect current merge flow", "status": "completed"},
+                {"id": "step-2", "step": "Patch validator rules", "status": "in_progress"},
+            ],
+            "current_step_id": "step-2",
+            "next_required_action": "Run focused tests",
+            "blocked_reason": "pytest failed",
+            "completed_steps": [{"step": "Inspect current merge flow"}],
+            "failed_attempts": [{"summary": "pytest failed once"}],
+            "validation_warnings": [{"message": "Rejected generic next_required_action"}],
+        },
+        work_cursor={"active_files": ["app/session_context.py"], "cwd": str(tmp_path), "project_root": str(tmp_path)},
+    )
+    payload = dump_model(model_context)
+
+    assert payload["task"]["goal"] == "修 task_state validator"
+    assert payload["task"]["status"] == "blocked"
+    assert payload["task"]["current_step_id"] == "step-2"
+    assert payload["task"]["current_step"] == "Patch validator rules"
+    assert payload["task"]["next_action"] == "Run focused tests"
+    assert payload["task"]["blocked_reason"] == "pytest failed"
+    assert payload["task"]["completed_steps"] == ["Inspect current merge flow"]
+    assert payload["task"]["failed_attempts"] == ["pytest failed once"]
+    assert payload["task"]["validation_warnings"] == ["Rejected generic next_required_action"]
+    assert payload["workspace"]["model_visible_paths"] == ["app/session_context.py", "legacy.py"]
+    assert payload["plan"]["items"][0]["step"] == "Inspect current merge flow"
+
+
 def test_context_manager_from_context_payload_reads_only_context_manager() -> None:
     manager = ContextManager.from_context_payload(
         {

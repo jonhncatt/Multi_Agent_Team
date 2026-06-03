@@ -279,6 +279,8 @@ class ChatResponse(BaseModel):
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
     work_cursor: dict[str, Any] = Field(default_factory=dict)
     task_state: dict[str, Any] = Field(default_factory=dict)
+    task_state_delta: dict[str, Any] = Field(default_factory=dict)
+    task_state_validation: dict[str, Any] = Field(default_factory=dict)
     recent_tasks: list[dict[str, Any]] = Field(default_factory=list)
     activity: MessageActivity = Field(default_factory=MessageActivity)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)

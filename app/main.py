@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5c"
+APP_VERSION = "3.1.5d"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -2701,6 +2701,8 @@ def _process_chat_request(
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             work_cursor=dict(session.get("work_cursor") or {}),
             task_state=dict(session.get("task_state") or {}),
+            task_state_delta=dict(runtime_result.get("task_state_delta") or {}),
+            task_state_validation=dict(runtime_result.get("task_state_validation") or {}),
             recent_tasks=recent_tasks,
             activity=activity,
             context_meter=context_meter,

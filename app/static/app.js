@@ -5358,6 +5358,9 @@ function App() {
       ? activeWorkCursor.active_files
       : (Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : []),
     active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
+    completed_steps_count: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps.length : 0,
+    failed_attempts_count: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts.length : 0,
+    validation_warnings: Array.isArray(activeTaskState.validation_warnings) ? activeTaskState.validation_warnings : [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
@@ -5840,6 +5843,12 @@ function App() {
       renderRawModelIo(exchanges),
       renderPlanDetails(t("activity.model_action"), projection.model_action),
       renderRevisionSummaryDetails(projection.revision_summary),
+      Object.keys((runArtifact && runArtifact.task_state) || {}).length
+        ? renderDetailBlock("task_state", runArtifact.task_state)
+        : null,
+      Object.keys((runArtifact && runArtifact.task_state_validation) || {}).length
+        ? renderDetailBlock("task_state_validation", runArtifact.task_state_validation)
+        : null,
       Object.keys(answerBundle).length
         ? renderDetailBlock(t("activity.debug.answer_bundle"), answerBundle)
         : null,
@@ -6550,8 +6559,21 @@ function App() {
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "current_step")}: ${activeTaskCheckpoint.current_step_id || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRuntimeState.cwd || "-"}</div>
                   <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "completed_steps")}: ${activeTaskCheckpoint.completed_steps_count}</div>
+                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "failed_attempts")}: ${activeTaskCheckpoint.failed_attempts_count}</div>
                   ${activeTaskCheckpoint.blocked_reason
                     ? html`<div className="meta-line">${formatRunFieldLabel(uiLocale, "blocked_reason")}: ${activeTaskCheckpoint.blocked_reason}</div>`
+                    : null}
+                  ${activeTaskCheckpoint.validation_warnings.length
+                    ? html`
+                        <div className="timeline-detail">
+                          ${formatRunFieldLabel(uiLocale, "validation_warnings")}: ${activeTaskCheckpoint.validation_warnings
+                            .slice(0, 4)
+                            .map((item) => ((item && typeof item === "object") ? (item.message || item.code || "") : String(item || "")))
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </div>
+                      `
                     : null}
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`

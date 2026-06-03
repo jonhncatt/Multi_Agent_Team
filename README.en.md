@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5c-blue)
+![Version](https://img.shields.io/badge/version-3.1.5d-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5c`
+Current stable release: `3.1.5d`
 
 ## Stable Runtime
 
-3.1.5c builds on the 3.1.5b session / trace / task checkpoint cleanup and adds thread rename, browsing other threads while one run is active, real message-scoped full-debug lazy loading, and an offline session repair CLI.
+3.1.5d builds on the 3.1.5c thread/runtime/UI cleanup and upgrades task checkpoints to canonical `task_state` plus harness-validated `task_state_delta`: the checklist still comes from `update_plan`, but step completion and failure now persist only after evidence-backed validation.
 
-Compared with 3.1.5b, summary view still performs zero sidecar I/O, full debug is fetched only when Activity/Debug is expanded for a specific turn, historical debug no longer borrows the global inspector, and each running thread keeps its own recoverable cached live snapshot.
+Compared with 3.1.5c, this release adds step-evidence validation, persistent `validation_warnings`, model-visible task checkpoint summaries, and better Run/Debug visibility for task state; the old end-of-turn inference path remains only as a fallback.
 
 ## Max Output Tokens
 

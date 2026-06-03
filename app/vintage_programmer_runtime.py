@@ -66,7 +66,9 @@ from app.serialization import dump_model, safe_model_dump
 from app.session_context import (
     compat_task_checkpoint_from_focus,
     focus_from_work_cursor_task_state,
+    merge_task_state_delta,
     merge_task_state_after_turn,
+    normalize_task_state_delta,
     normalize_task_state,
     normalize_work_cursor,
 )
@@ -545,6 +547,11 @@ class VintageProgrammerRuntime:
             "- Do not repeat the same invalid tool call.\n"
             "- If current context is sufficient, answer directly.\n"
             "- Use update_plan only when you need to track a multi-step execution task and can provide a valid plan payload.\n"
+            "- For non-trivial coding or debugging tasks, create or refresh a plan with update_plan before claiming meaningful progress.\n"
+            "- End a non-trivial execution turn with one task_state_delta JSON block inside <task_state_delta>...</task_state_delta>.\n"
+            "- task_state_delta must be a small proposed delta only. Never restate or overwrite the full task_state.\n"
+            "- Do not mark a step completed or failed in task_state_delta unless the current turn produced matching evidence_refs.\n"
+            "- Keep the user-visible answer outside the task_state_delta block.\n"
             "[context_priority]\n"
             "- The current user message has highest priority.\n"
             "- Task memory helps maintain long-running work.\n"
@@ -574,6 +581,7 @@ class VintageProgrammerRuntime:
             "- Use tools when the request requires external context, workspace inspection, file reading, code search, file modification, testing, command execution, or long-running task progress.\n"
             "- File edits use apply_patch. Workspace inspection uses read_file/list_dir/glob_file_search/search_codebase/exec_command. Attachment understanding uses read_file/image_read/search_contents_in_file/read_section/table_extract as appropriate.\n"
             "- Use update_plan only when a valid checklist helps a multi-step execution task. If planning is unnecessary, answer directly or call the concrete tool needed now.\n"
+            "- For non-trivial coding tasks, keep the plan and task_state_delta aligned: update_plan manages the checklist, and task_state_delta proposes only validated step progress.\n"
             f"- When running Python commands, prefer the project virtual environment when available (for example ./.venv/bin/python on macOS/Linux or .venv\\Scripts\\python.exe on Windows). Otherwise use the detected interpreter command ({detected_python}). Do not assume python3 exists. Prefer project-level module execution via the selected interpreter with -m ...\n"
             "- When using exec_command, prefer cwd/workdir instead of `cd dir && command`. If a compound shell command is still necessary, keep it simple and avoid command substitution, heredoc, downloaded scripts piped to shell, sudo destructive commands, or broad deletion commands.\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
@@ -629,6 +637,16 @@ class VintageProgrammerRuntime:
             runtime_boundary=boundary,
             project_root=boundary.project_root,
             cwd=boundary.cwd,
+            task_state=(
+                context.get("task_state")
+                if isinstance(context.get("task_state"), dict)
+                else {}
+            ),
+            work_cursor=(
+                context.get("work_cursor")
+                if isinstance(context.get("work_cursor"), dict)
+                else {}
+            ),
         )
 
     def _build_human_payload(
@@ -688,6 +706,8 @@ class VintageProgrammerRuntime:
         effective_cwd: str,
         evidence_status: str,
         tool_events: list[ToolEvent],
+        task_state: dict[str, Any] | None = None,
+        task_state_delta: dict[str, Any] | None = None,
         model_draft: str = "",
         final_answer: str = "",
         runtime_error: dict[str, Any] | None = None,
@@ -702,6 +722,10 @@ class VintageProgrammerRuntime:
             "tool_count": len(tool_events),
             "evidence_status": str(evidence_status or "not_needed"),
         }
+        if isinstance(task_state, dict) and task_state:
+            payload["task_state"] = normalize_task_state(task_state)
+        if isinstance(task_state_delta, dict) and task_state_delta:
+            payload["task_state_delta"] = normalize_task_state_delta(task_state_delta)
         if str(model_draft or "").strip():
             payload["model_draft"] = str(model_draft or "")
         if str(final_answer or "").strip():
@@ -2754,6 +2778,29 @@ class VintageProgrammerRuntime:
         lines.append(translate(locale, "runtime.replan.required_next_move"))
         return "\n".join(item for item in lines if item).strip()
 
+    @staticmethod
+    def _extract_task_state_delta(ai_text: str) -> tuple[str, dict[str, Any], str]:
+        raw = str(ai_text or "")
+        if not raw.strip():
+            return "", {}, ""
+        patterns = [
+            re.compile(r"<task_state_delta>\s*(\{.*?\})\s*</task_state_delta>", flags=re.IGNORECASE | re.DOTALL),
+            re.compile(r"\[task_state_delta\]\s*```(?:json)?\s*(\{.*?\})\s*```", flags=re.IGNORECASE | re.DOTALL),
+            re.compile(r"\[task_state_delta\]\s*(\{.*?\})", flags=re.IGNORECASE | re.DOTALL),
+        ]
+        for pattern in patterns:
+            match = pattern.search(raw)
+            if not match:
+                continue
+            payload_text = str(match.group(1) or "").strip()
+            cleaned = (raw[: match.start()] + raw[match.end() :]).strip()
+            try:
+                decoded = json.loads(payload_text)
+            except Exception:
+                return cleaned, {}, "task_state_delta_parse_failed"
+            return cleaned, normalize_task_state_delta(decoded), ""
+        return raw.strip(), {}, ""
+
     def _resolve_model_step(
         self,
         *,
@@ -2761,7 +2808,7 @@ class VintageProgrammerRuntime:
         tool_calls: list[dict[str, Any]],
         step_index: int,
     ) -> dict[str, Any]:
-        cleaned_text = str(ai_text or "").strip()
+        cleaned_text, task_state_delta, delta_warning = self._extract_task_state_delta(str(ai_text or ""))
         model_action = self._resolve_model_action(
             ai_text=cleaned_text,
             tool_calls=tool_calls,
@@ -2771,6 +2818,8 @@ class VintageProgrammerRuntime:
             "clean_text": cleaned_text,
             "model_action": dict(model_action),
             "activity_context": self._activity_context_from_action(model_action),
+            "task_state_delta": dict(task_state_delta),
+            "task_state_delta_warning": delta_warning,
         }
 
     def _build_revision_summary(
@@ -3633,6 +3682,8 @@ class VintageProgrammerRuntime:
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
+        task_state_delta: dict[str, Any] = {}
+        task_state_validation: dict[str, Any] = {}
         blocked_stop_diagnostics: dict[str, Any] = {}
         last_successful_round = 0
         turn_activity_context = {
@@ -3758,6 +3809,7 @@ class VintageProgrammerRuntime:
             nonlocal turn_activity_context
             nonlocal notes
             nonlocal model_draft
+            nonlocal task_state_delta
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
             current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
@@ -3769,6 +3821,7 @@ class VintageProgrammerRuntime:
             cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
             model_action = dict(step_state.get("model_action") or {})
             turn_activity_context = dict(step_state.get("activity_context") or self._activity_context_from_action(model_action))
+            task_state_delta = dict(step_state.get("task_state_delta") or {})
             if current_tool_calls and cleaned_text:
                 model_draft = cleaned_text
             try:
@@ -3777,6 +3830,8 @@ class VintageProgrammerRuntime:
                 pass
             if model_action.get("normalization_notes"):
                 notes.extend(f"model_action_normalized:{item}" for item in list(model_action.get("normalization_notes") or []))
+            if str(step_state.get("task_state_delta_warning") or "").strip():
+                notes.append(str(step_state.get("task_state_delta_warning") or "").strip())
             emit_runtime_activity(
                 event_type,
                 "model_action",
@@ -3785,6 +3840,7 @@ class VintageProgrammerRuntime:
                 payload={
                     "model_action": dict(model_action),
                     "model_draft": model_draft,
+                    "task_state_delta": dict(task_state_delta),
                     "revision_index": int(current_step_index),
                     "runtime_boundary": dump_model(turn_runtime_boundary),
                 },
@@ -5253,20 +5309,48 @@ class VintageProgrammerRuntime:
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
         runtime_phase = "running" if turn_status == "running" else turn_status
-        final_task_state = merge_task_state_after_turn(
-            {
-                **dict(task_state or {}),
-                "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
-                "goal": current_goal or task_state.get("goal") or "",
-                "plan_items": plan_state or task_state.get("plan_items") or [],
-            },
-            plan_state,
-            [dump_model(item) for item in tool_events],
-            progress_signals,
-            turn_status,
-            runtime_error,
-            pending_user_input,
-        )
+        if task_state_delta:
+            final_task_state, task_state_validation = merge_task_state_delta(
+                {
+                    **dict(task_state or {}),
+                    "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
+                    "goal": current_goal or task_state.get("goal") or "",
+                    "plan_items": plan_state or task_state.get("plan_items") or [],
+                },
+                plan_state,
+                task_state_delta,
+                [dump_model(item) for item in tool_events],
+                turn_status,
+                runtime_error,
+                pending_user_input,
+            )
+        else:
+            final_task_state = merge_task_state_after_turn(
+                {
+                    **dict(task_state or {}),
+                    "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
+                    "goal": current_goal or task_state.get("goal") or "",
+                    "plan_items": plan_state or task_state.get("plan_items") or [],
+                },
+                plan_state,
+                [dump_model(item) for item in tool_events],
+                progress_signals,
+                turn_status,
+                runtime_error,
+                pending_user_input,
+            )
+            task_state_validation = {
+                "accepted": False,
+                "applied_step_ids": [],
+                "rejected_step_ids": [],
+                "validation_warnings": [],
+            }
+        if list(task_state_validation.get("validation_warnings") or []):
+            notes.extend(
+                f"task_state_validation_warning:{str(item.get('code') or '')}"
+                for item in list(task_state_validation.get("validation_warnings") or [])
+                if isinstance(item, dict)
+            )
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -5276,6 +5360,8 @@ class VintageProgrammerRuntime:
                 "turn_status": turn_status,
                 "plan": plan_state,
                 "task_state": dict(final_task_state),
+                "task_state_delta": dict(task_state_delta),
+                "task_state_validation": dict(task_state_validation),
                 "pending_user_input": pending_user_input,
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
@@ -5354,6 +5440,8 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "task_state": dict(final_task_state),
+                "task_state_delta": dict(task_state_delta),
+                "task_state_validation": dict(task_state_validation),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
                 "phase_timings": dict(phase_timings),
@@ -5403,6 +5491,8 @@ class VintageProgrammerRuntime:
             ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "task_state": dict(final_task_state),
+            "task_state_delta": dict(task_state_delta),
+            "task_state_validation": dict(task_state_validation),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_boundary": dump_model(turn_runtime_boundary),
             "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),
@@ -5470,5 +5560,7 @@ class VintageProgrammerRuntime:
                 "cwd": effective_cwd,
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
+                "task_state_delta": dict(task_state_delta),
+                "task_state_validation": dict(task_state_validation),
             },
         }

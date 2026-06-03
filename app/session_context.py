@@ -486,6 +486,72 @@ def _normalize_failed_attempts(raw: Any) -> list[dict[str, Any]]:
     return attempts
 
 
+def _normalize_validation_warnings(raw: Any) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in list(raw or [])[:24]:
+        if isinstance(item, dict):
+            code = str(item.get("code") or "task_state_validation").strip()
+            message = str(item.get("message") or item.get("summary") or "").strip()
+            step_id = str(item.get("step_id") or item.get("id") or "").strip()
+            severity = str(item.get("severity") or "warning").strip() or "warning"
+            created_at = str(item.get("created_at") or item.get("updated_at") or "").strip()
+        else:
+            code = "task_state_validation"
+            message = str(item or "").strip()
+            step_id = ""
+            severity = "warning"
+            created_at = ""
+        key = "|".join([code, step_id, message])
+        if not message or key in seen:
+            continue
+        seen.add(key)
+        warnings.append(
+            {
+                "code": code[:120],
+                "message": message[:500],
+                "step_id": step_id[:120],
+                "severity": severity[:40],
+                "created_at": created_at,
+            }
+        )
+    return warnings
+
+
+def _task_warning(
+    code: str,
+    message: str,
+    *,
+    step_id: str = "",
+    created_at: str = "",
+    severity: str = "warning",
+) -> dict[str, Any]:
+    return {
+        "code": str(code or "task_state_validation").strip()[:120],
+        "message": str(message or "").strip()[:500],
+        "step_id": str(step_id or "").strip()[:120],
+        "severity": str(severity or "warning").strip()[:40],
+        "created_at": str(created_at or "").strip(),
+    }
+
+
+def _normalize_step_status(value: Any, *, default: str = "") -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "none"}:
+        return default
+    if raw in _TASK_STEP_COMPLETED_STATUSES:
+        return "completed"
+    if raw in {"in_progress", "in-progress", "active", "doing", "working"}:
+        return "in_progress"
+    if raw in {"pending", "todo", "not_started", "not-started"}:
+        return "pending"
+    if raw in {"failed", "error", "failure"}:
+        return "failed"
+    if raw in {"blocked", "waiting"}:
+        return "blocked"
+    return raw
+
+
 def normalize_task_state(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
@@ -501,6 +567,7 @@ def normalize_task_state(raw: Any) -> dict[str, Any]:
         "next_required_action": str(raw.get("next_required_action") or raw.get("next_action") or "").strip(),
         "progress_basis": _as_text_list(raw.get("progress_basis"), limit=8),
         "evidence_refs": _normalize_evidence_refs(raw.get("evidence_refs"), limit=12),
+        "validation_warnings": _normalize_validation_warnings(raw.get("validation_warnings") or []),
         "updated_at": str(raw.get("updated_at") or "").strip(),
     }
 
@@ -515,6 +582,64 @@ def derive_current_step_id(plan_items: Any) -> str:
         if status not in _TASK_STEP_COMPLETED_STATUSES and status not in _TASK_STEP_FAILED_STATUSES:
             return str(item.get("id") or "").strip()
     return ""
+
+
+def _normalize_task_state_step_updates(raw: Any) -> list[dict[str, Any]]:
+    updates: list[dict[str, Any]] = []
+    for item in list(raw or [])[:16]:
+        if not isinstance(item, dict):
+            continue
+        step_id = str(item.get("step_id") or item.get("id") or "").strip()
+        if not step_id:
+            continue
+        updates.append(
+            {
+                "step_id": step_id,
+                "status": _normalize_step_status(item.get("status"), default=""),
+                "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                "blocked_reason": str(item.get("blocked_reason") or "").strip()[:500],
+                "summary": str(item.get("summary") or "").strip()[:500],
+            }
+        )
+    return updates
+
+
+def normalize_task_state_delta(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    step_updates = _normalize_task_state_step_updates(
+        raw.get("step_updates")
+        or raw.get("steps")
+        or raw.get("updates")
+        or []
+    )
+    if not step_updates:
+        for item in _normalize_completed_steps(raw.get("completed_steps") or raw.get("completed") or []):
+            step_id = str(item.get("id") or item.get("step_id") or "").strip()
+            if not step_id:
+                continue
+            step_updates.append(
+                {
+                    "step_id": step_id,
+                    "status": "completed",
+                    "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                    "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                    "blocked_reason": "",
+                    "summary": "",
+                }
+            )
+    failed_attempts = _normalize_failed_attempts(raw.get("failed_attempts") or raw.get("failures") or [])
+    return {
+        "status": _normalize_step_status(raw.get("status"), default=""),
+        "current_step_id": str(raw.get("current_step_id") or "").strip(),
+        "step_updates": step_updates,
+        "failed_attempts": failed_attempts,
+        "blocked_reason": str(raw.get("blocked_reason") or "").strip()[:500],
+        "next_required_action": str(raw.get("next_required_action") or raw.get("next_action") or "").strip()[:500],
+        "progress_basis": _as_text_list(raw.get("progress_basis"), limit=8),
+        "evidence_refs": _normalize_evidence_refs(raw.get("evidence_refs"), limit=12),
+    }
 
 
 def _tool_event_evidence(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -558,6 +683,544 @@ def _pending_user_action(pending_user_input: Any) -> str:
     ).strip()[:500]
 
 
+def _merge_plan_items_with_history(previous_items: Any, incoming_plan: Any) -> list[dict[str, Any]]:
+    prior_items = normalize_task_plan_items(previous_items or [])
+    next_items = normalize_task_plan_items(incoming_plan if incoming_plan else prior_items)
+    prior_by_id = {str(item.get("id") or ""): item for item in prior_items if str(item.get("id") or "").strip()}
+    prior_by_step = {str(item.get("step") or "").strip().lower(): item for item in prior_items if str(item.get("step") or "").strip()}
+    merged_items: list[dict[str, Any]] = []
+    for item in next_items:
+        prior = prior_by_id.get(str(item.get("id") or "")) or prior_by_step.get(str(item.get("step") or "").strip().lower())
+        if not prior:
+            merged_items.append(dict(item))
+            continue
+        merged_items.append(
+            {
+                **dict(prior),
+                **dict(item),
+                "id": str(prior.get("id") or item.get("id") or "").strip(),
+                "progress_basis": _merge_text_lists(prior.get("progress_basis"), item.get("progress_basis"), limit=8),
+                "evidence_refs": _merge_evidence_refs(prior.get("evidence_refs"), item.get("evidence_refs"), limit=12),
+                "completed_at": str(item.get("completed_at") or prior.get("completed_at") or "").strip(),
+                "updated_at": str(item.get("updated_at") or prior.get("updated_at") or "").strip(),
+            }
+        )
+    return merged_items
+
+
+def _step_kind(step: str) -> str:
+    text = str(step or "").strip().lower()
+    if not text:
+        return "generic"
+    modify_hints = (
+        "modify",
+        "patch",
+        "edit",
+        "write",
+        "implement",
+        "fix",
+        "change",
+        "update",
+        "refactor",
+        "rename",
+        "修改",
+        "修复",
+        "实现",
+        "编辑",
+        "改动",
+        "补",
+    )
+    verify_hints = (
+        "test",
+        "verify",
+        "validation",
+        "validate",
+        "check",
+        "compile",
+        "lint",
+        "smoke",
+        "run tests",
+        "测试",
+        "验证",
+        "检查",
+        "编译",
+        "回归",
+    )
+    inspect_hints = (
+        "inspect",
+        "read",
+        "search",
+        "review",
+        "look",
+        "analyze",
+        "trace",
+        "find",
+        "survey",
+        "browse",
+        "看",
+        "读",
+        "搜",
+        "检查现状",
+        "分析",
+        "定位",
+        "查找",
+    )
+    if any(hint in text for hint in modify_hints):
+        return "modify"
+    if any(hint in text for hint in verify_hints):
+        return "verify"
+    if any(hint in text for hint in inspect_hints):
+        return "inspect"
+    return "generic"
+
+
+def _event_tool_name(event: dict[str, Any]) -> str:
+    return str(event.get("name") or event.get("tool") or "").strip().lower()
+
+
+def _event_status(event: dict[str, Any]) -> str:
+    return str(event.get("status") or "").strip().lower()
+
+
+def _event_returncode(event: dict[str, Any]) -> int | None:
+    diagnostics = dict(event.get("diagnostics") or {}) if isinstance(event.get("diagnostics"), dict) else {}
+    if diagnostics.get("returncode") not in (None, ""):
+        try:
+            return int(diagnostics.get("returncode"))
+        except Exception:
+            return None
+    preview = dict(event.get("result_preview") or {}) if isinstance(event.get("result_preview"), dict) else {}
+    if preview.get("returncode") not in (None, ""):
+        try:
+            return int(preview.get("returncode"))
+        except Exception:
+            return None
+    return None
+
+
+def _event_command(event: dict[str, Any]) -> str:
+    for key in ("normalized_arguments", "input"):
+        payload = dict(event.get(key) or {}) if isinstance(event.get(key), dict) else {}
+        command = str(payload.get("cmd") or payload.get("command") or "").strip()
+        if command:
+            return command
+    return ""
+
+
+def _event_has_file_change(event: dict[str, Any]) -> bool:
+    tool_name = _event_tool_name(event)
+    if tool_name == "apply_patch":
+        return True
+    preview = dict(event.get("result_preview") or {}) if isinstance(event.get("result_preview"), dict) else {}
+    files = list(preview.get("files") or [])
+    if any(str(item or "").strip() for item in files):
+        return True
+    summary = str(event.get("summary") or "").strip().lower()
+    return any(token in summary for token in ("patched", "updated", "modified", "created", "edited", "rewrote"))
+
+
+def _event_matches_ref(event: dict[str, Any], ref: dict[str, Any]) -> bool:
+    if not isinstance(ref, dict):
+        return False
+    expected_tool = str(ref.get("tool") or "").strip().lower()
+    event_tool = _event_tool_name(event)
+    if expected_tool and expected_tool != event_tool:
+        return False
+    haystacks = [
+        event_tool,
+        str(event.get("summary") or "").strip(),
+        str(event.get("output_preview") or "").strip(),
+        str(event.get("cwd") or "").strip(),
+        _event_command(event),
+    ]
+    haystacks.extend(str(item or "").strip() for item in list(event.get("source_refs") or [])[:12])
+    preview = dict(event.get("result_preview") or {}) if isinstance(event.get("result_preview"), dict) else {}
+    haystacks.extend(
+        str(preview.get(key) or "").strip()
+        for key in ("path", "url", "summary", "command")
+    )
+    for key in ("ref", "path", "summary", "cmd", "command"):
+        expected = str(ref.get(key) or "").strip()
+        if not expected:
+            continue
+        expected_lower = expected.lower()
+        if not any(expected_lower in str(item or "").lower() for item in haystacks if str(item or "").strip()):
+            return False
+    return True
+
+
+def _resolve_evidence_events(tool_events: Any, evidence_refs: Any) -> list[dict[str, Any]]:
+    events = [dict(item) for item in list(tool_events or []) if isinstance(item, dict)]
+    refs = _normalize_evidence_refs(evidence_refs, limit=12)
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        for event in events:
+            if not _event_matches_ref(event, ref):
+                continue
+            key = repr(sorted(event.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            matched.append(event)
+    return matched
+
+
+def _events_support_step(step_kind: str, events: list[dict[str, Any]]) -> bool:
+    if not events:
+        return False
+    if step_kind == "inspect":
+        return any(
+            _event_status(event) in {"ok", "success", "completed", "complete", "done"}
+            and _event_tool_name(event)
+            in {
+                "read_file",
+                "read_section",
+                "search_contents_in_file",
+                "search_contents_in_file_multi",
+                "search_codebase",
+                "list_dir",
+                "glob_file_search",
+                "table_extract",
+                "fact_check_file",
+                "sessions_list",
+                "sessions_history",
+                "web_search",
+                "web_fetch",
+                "image_read",
+                "image_inspect",
+            }
+            for event in events
+        )
+    if step_kind == "modify":
+        return any(
+            _event_status(event) in {"ok", "success", "completed", "complete", "done"}
+            and _event_has_file_change(event)
+            for event in events
+        )
+    if step_kind == "verify":
+        return any(
+            _event_tool_name(event) == "exec_command"
+            and _event_status(event) in {"ok", "success", "completed", "complete", "done"}
+            and _event_returncode(event) == 0
+            for event in events
+        )
+    return any(_event_status(event) in {"ok", "success", "completed", "complete", "done"} for event in events)
+
+
+def _events_include_failure(events: list[dict[str, Any]]) -> bool:
+    return any(_event_status(event) in {"error", "failed", "failure", "blocked"} for event in events)
+
+
+def _fallback_next_required_action(plan_items: Any, current_step_id: str) -> str:
+    items = normalize_task_plan_items(plan_items)
+    target = next((item for item in items if str(item.get("id") or "") == str(current_step_id or "").strip()), None)
+    step = str((target or {}).get("step") or "").strip()
+    return f"Continue current step: {step}"[:500] if step else ""
+
+
+def _looks_generic_next_action(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    generic_values = {
+        "continue",
+        "continue current step",
+        "keep going",
+        "proceed",
+        "next",
+        "继续",
+        "继续当前步骤",
+        "继续当前任务",
+        "接着做",
+        "往下做",
+    }
+    return text in generic_values
+
+
+def merge_task_state_delta(
+    previous: Any,
+    plan: Any,
+    delta: Any,
+    tool_events: Any,
+    turn_status: Any,
+    runtime_error: Any,
+    pending_user_input: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    now = _now_iso()
+    state = normalize_task_state(previous)
+    merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
+    delta_payload = normalize_task_state_delta(delta)
+    warnings: list[dict[str, Any]] = []
+    completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
+    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
+    failed_attempts = _normalize_failed_attempts(state.get("failed_attempts") or [])
+    failed_keys = {
+        "|".join([str(item.get("tool") or ""), str(item.get("step_id") or ""), str(item.get("summary") or "")])
+        for item in failed_attempts
+    }
+    progress_basis = _merge_text_lists(state.get("progress_basis"), delta_payload.get("progress_basis"), limit=8)
+    evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), delta_payload.get("evidence_refs"), limit=12)
+    step_ids = {str(item.get("id") or "").strip() for item in merged_items if str(item.get("id") or "").strip()}
+    applied_step_updates: list[str] = []
+    rejected_step_updates: list[str] = []
+
+    for update in list(delta_payload.get("step_updates") or []):
+        step_id = str(update.get("step_id") or "").strip()
+        if not step_id or step_id not in step_ids:
+            warnings.append(
+                _task_warning(
+                    "unknown_step_id",
+                    f"Rejected task_state_delta update for unknown step_id: {step_id or '(empty)'}",
+                    step_id=step_id,
+                    created_at=now,
+                )
+            )
+            rejected_step_updates.append(step_id)
+            continue
+        item = next((candidate for candidate in merged_items if str(candidate.get("id") or "") == step_id), None)
+        if item is None:
+            continue
+        target_status = _normalize_step_status(update.get("status"), default=str(item.get("status") or "pending"))
+        candidate_events = _resolve_evidence_events(tool_events, update.get("evidence_refs"))
+        step_kind = _step_kind(item.get("step"))
+        if target_status in {"completed", "failed", "blocked"} and not update.get("evidence_refs"):
+            warnings.append(
+                _task_warning(
+                    "missing_evidence_refs",
+                    f"Rejected {target_status} transition for {step_id} because evidence_refs were missing.",
+                    step_id=step_id,
+                    created_at=now,
+                )
+            )
+            rejected_step_updates.append(step_id)
+            continue
+        if target_status == "completed":
+            if _events_include_failure(candidate_events):
+                warnings.append(
+                    _task_warning(
+                        "completed_step_has_failed_evidence",
+                        f"Rejected completed transition for {step_id} because referenced evidence includes failed tool results.",
+                        step_id=step_id,
+                        created_at=now,
+                    )
+                )
+                item["status"] = "in_progress"
+                rejected_step_updates.append(step_id)
+                continue
+            if not _events_support_step(step_kind, candidate_events):
+                warnings.append(
+                    _task_warning(
+                        f"insufficient_{step_kind}_evidence",
+                        f"Rejected completed transition for {step_id} because the referenced evidence does not validate a {step_kind} step.",
+                        step_id=step_id,
+                        created_at=now,
+                    )
+                )
+                item["status"] = "in_progress"
+                rejected_step_updates.append(step_id)
+                continue
+            item["status"] = "completed"
+            item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
+            item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
+            item["completed_at"] = str(item.get("completed_at") or now)
+            item["updated_at"] = now
+            progress_basis = _merge_text_lists(progress_basis, item.get("progress_basis"), limit=8)
+            evidence_refs = _merge_evidence_refs(evidence_refs, item.get("evidence_refs"), limit=12)
+            if step_id not in completed_ids:
+                completed_steps.append(
+                    {
+                        "id": step_id,
+                        "step": str(item.get("step") or "").strip(),
+                        "completed_at": str(item.get("completed_at") or now),
+                        "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
+                        "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
+                    }
+                )
+                completed_ids.add(step_id)
+            applied_step_updates.append(step_id)
+            continue
+        if target_status in {"failed", "blocked"}:
+            if not candidate_events or not _events_include_failure(candidate_events):
+                warnings.append(
+                    _task_warning(
+                        "missing_failure_evidence",
+                        f"Rejected {target_status} transition for {step_id} because the referenced evidence does not contain a failed tool result.",
+                        step_id=step_id,
+                        created_at=now,
+                    )
+                )
+                rejected_step_updates.append(step_id)
+                continue
+            item["status"] = target_status
+            item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
+            item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
+            item["updated_at"] = now
+            progress_basis = _merge_text_lists(progress_basis, item.get("progress_basis"), limit=8)
+            evidence_refs = _merge_evidence_refs(evidence_refs, item.get("evidence_refs"), limit=12)
+            summary = str(update.get("summary") or update.get("blocked_reason") or f"{target_status} step").strip()[:500]
+            key = "|".join(["task_state_delta", step_id, summary])
+            if summary and key not in failed_keys:
+                failed_keys.add(key)
+                failed_attempts.append(
+                    {
+                        "tool": "task_state_delta",
+                        "summary": summary,
+                        "step_id": step_id,
+                        "evidence_refs": _normalize_evidence_refs(update.get("evidence_refs"), limit=12),
+                        "created_at": now,
+                    }
+                )
+            applied_step_updates.append(step_id)
+            continue
+        item["status"] = target_status or str(item.get("status") or "pending")
+        item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
+        item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
+        item["updated_at"] = now
+        applied_step_updates.append(step_id)
+
+    for attempt in list(delta_payload.get("failed_attempts") or []):
+        step_id = str(attempt.get("step_id") or "").strip()
+        if not step_id or step_id not in step_ids:
+            warnings.append(
+                _task_warning(
+                    "unknown_failed_attempt_step",
+                    f"Rejected failed_attempt for unknown step_id: {step_id or '(empty)'}",
+                    step_id=step_id,
+                    created_at=now,
+                )
+            )
+            continue
+        refs = _normalize_evidence_refs(attempt.get("evidence_refs"), limit=12)
+        candidate_events = _resolve_evidence_events(tool_events, refs)
+        if not refs or not candidate_events or not _events_include_failure(candidate_events):
+            warnings.append(
+                _task_warning(
+                    "invalid_failed_attempt_evidence",
+                    f"Rejected failed_attempt for {step_id} because it does not reference a failed tool result.",
+                    step_id=step_id,
+                    created_at=now,
+                )
+            )
+            continue
+        tool_name = str(attempt.get("tool") or _event_tool_name(candidate_events[0]) or "task_state_delta").strip()
+        summary = str(attempt.get("summary") or "Failed attempt").strip()[:500]
+        key = "|".join([tool_name, step_id, summary])
+        if key in failed_keys:
+            continue
+        failed_keys.add(key)
+        failed_attempts.append(
+            {
+                "tool": tool_name,
+                "summary": summary,
+                "step_id": step_id,
+                "evidence_refs": refs,
+                "created_at": str(attempt.get("created_at") or now),
+            }
+        )
+
+    current_step_id = str(delta_payload.get("current_step_id") or "").strip()
+    if current_step_id and current_step_id not in step_ids:
+        warnings.append(
+            _task_warning(
+                "invalid_current_step_id",
+                f"Ignored task_state_delta current_step_id because it does not exist in plan_items: {current_step_id}",
+                step_id=current_step_id,
+                created_at=now,
+            )
+        )
+        current_step_id = ""
+    if not current_step_id:
+        current_step_id = derive_current_step_id(merged_items)
+
+    next_required_action = str(delta_payload.get("next_required_action") or "").strip()
+    if _looks_generic_next_action(next_required_action):
+        fallback_next = _fallback_next_required_action(merged_items, current_step_id)
+        if next_required_action:
+            warnings.append(
+                _task_warning(
+                    "generic_next_required_action",
+                    f"Rejected generic next_required_action and replaced it with: {fallback_next or '(empty)'}",
+                    step_id=current_step_id,
+                    created_at=now,
+                )
+            )
+        next_required_action = fallback_next
+    if not next_required_action:
+        next_required_action = _pending_user_action(pending_user_input) or _fallback_next_required_action(merged_items, current_step_id)
+
+    blocked_reason = str(delta_payload.get("blocked_reason") or "").strip()
+    turn_status_text = str(turn_status or "").strip()
+    runtime_summary = _runtime_error_summary(runtime_error)
+    normalized_delta_status = str(delta_payload.get("status") or "").strip()
+    if normalized_delta_status == "completed" and any(
+        str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES
+        for item in merged_items
+    ):
+        warnings.append(
+            _task_warning(
+                "invalid_task_status_transition",
+                "Rejected completed task status because not all plan_items are completed.",
+                step_id=current_step_id,
+                created_at=now,
+            )
+        )
+        normalized_delta_status = "in_progress"
+    if turn_status_text in {"blocked", "needs_user_input"}:
+        status = "blocked"
+    elif turn_status_text == "failed":
+        status = "failed"
+    elif turn_status_text == "cancelled":
+        status = "cancelled"
+    elif normalized_delta_status in {"completed", "blocked", "failed", "in_progress", "pending"}:
+        status = "completed" if normalized_delta_status == "pending" and not merged_items else normalized_delta_status
+    elif merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
+        status = "completed"
+    elif state.get("goal") or merged_items:
+        status = "in_progress"
+    else:
+        status = state.get("status") or "idle"
+
+    if status in {"blocked", "failed"} and not blocked_reason:
+        blocked_reason = runtime_summary
+    if runtime_summary and status in {"blocked", "failed"}:
+        key = "|".join(["runtime", current_step_id, runtime_summary])
+        if key not in failed_keys:
+            failed_keys.add(key)
+            failed_attempts.append(
+                {
+                    "tool": "runtime",
+                    "summary": runtime_summary,
+                    "step_id": current_step_id,
+                    "evidence_refs": [{"source": "runtime_error"}],
+                    "created_at": now,
+                }
+            )
+
+    next_state = normalize_task_state(
+        {
+            **state,
+            "status": status,
+            "plan_items": merged_items,
+            "current_step_id": current_step_id,
+            "completed_steps": completed_steps,
+            "failed_attempts": failed_attempts,
+            "blocked_reason": blocked_reason,
+            "next_required_action": next_required_action,
+            "progress_basis": progress_basis,
+            "evidence_refs": evidence_refs,
+            "validation_warnings": warnings,
+            "updated_at": now,
+        }
+    )
+    return next_state, {
+        "accepted": bool(applied_step_updates) and not rejected_step_updates,
+        "applied_step_ids": applied_step_updates,
+        "rejected_step_ids": rejected_step_updates,
+        "validation_warnings": _normalize_validation_warnings(warnings),
+    }
+
+
 def merge_task_state_after_turn(
     previous: Any,
     plan: Any,
@@ -569,26 +1232,7 @@ def merge_task_state_after_turn(
 ) -> dict[str, Any]:
     now = _now_iso()
     state = normalize_task_state(previous)
-    previous_items = list(state.get("plan_items") or [])
-    incoming_items = normalize_task_plan_items(plan if plan else previous_items)
-    previous_by_id = {str(item.get("id") or ""): item for item in previous_items if str(item.get("id") or "").strip()}
-    previous_by_step = {str(item.get("step") or "").strip().lower(): item for item in previous_items if str(item.get("step") or "").strip()}
-    merged_items: list[dict[str, Any]] = []
-    for item in incoming_items:
-        prior = previous_by_id.get(str(item.get("id") or "")) or previous_by_step.get(str(item.get("step") or "").strip().lower())
-        if prior:
-            merged = {
-                **dict(prior),
-                **dict(item),
-                "id": str(prior.get("id") or item.get("id") or "").strip(),
-                "progress_basis": _merge_text_lists(prior.get("progress_basis"), item.get("progress_basis"), limit=8),
-                "evidence_refs": _merge_evidence_refs(prior.get("evidence_refs"), item.get("evidence_refs"), limit=12),
-                "completed_at": str(item.get("completed_at") or prior.get("completed_at") or "").strip(),
-                "updated_at": str(item.get("updated_at") or prior.get("updated_at") or "").strip(),
-            }
-        else:
-            merged = dict(item)
-        merged_items.append(merged)
+    merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
 
     current_step_id = derive_current_step_id(merged_items)
     completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
@@ -730,6 +1374,7 @@ def merge_task_state_after_turn(
             "next_required_action": next_required_action,
             "progress_basis": progress_basis,
             "evidence_refs": evidence_refs,
+            "validation_warnings": [],
             "updated_at": now,
         }
     )

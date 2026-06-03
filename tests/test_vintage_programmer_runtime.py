@@ -658,6 +658,9 @@ def test_agent_docs_prefer_project_venv_python() -> None:
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
     assert "不要默认写死 `python3`" in tools_doc
+    assert "<task_state_delta>" in agent_doc
+    assert "update_plan" in agent_doc
+    assert "<task_state_delta>" in tools_doc
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:
@@ -2644,6 +2647,73 @@ def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) ->
     assert checkpoint["active_attachments"][0]["id"] == "img-1"
     assert checkpoint["last_completed_step"] == ""
     assert result["task_state"]["progress_basis"][0].startswith("image_read:")
+
+
+def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path: Path) -> None:
+    class _PatchTools(_FakeTools):
+        def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append((name, dict(arguments)))
+            if name == "apply_patch":
+                path = str(arguments.get("path") or "app/session_context.py")
+                return {
+                    "ok": True,
+                    "name": name,
+                    "summary": f"Patched {path}",
+                    "files": [path],
+                    "path": path,
+                    "project_root": str((self.runtime_context or {}).get("project_root") or ""),
+                    "cwd": str((self.runtime_context or {}).get("cwd") or ""),
+                }
+            return super().execute(name, arguments)
+
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    tools = _PatchTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "apply_patch", "args": {"path": "app/session_context.py"}}]),
+            _FakeMessage(
+                content=(
+                    "Patched the task_state merge path.\n"
+                    "<task_state_delta>{\"step_updates\":[{\"step_id\":\"step-123\",\"status\":\"completed\","
+                    "\"evidence_refs\":[{\"tool\":\"apply_patch\",\"ref\":\"app/session_context.py\"}],"
+                    "\"progress_basis\":[\"apply_patch: app/session_context.py\"]}],"
+                    "\"next_required_action\":\"Run focused tests\"}</task_state_delta>"
+                )
+            ),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="继续修 task_state",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-task-delta-runtime",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "task_state": {
+                "task_id": "task-runtime-delta",
+                "goal": "修 task_state validator",
+                "status": "in_progress",
+                "plan_items": [{"id": "step-123", "step": "Patch task_state merge path", "status": "in_progress"}],
+            },
+            "work_cursor": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+        },
+    )
+
+    assert result["text"] == "Patched the task_state merge path."
+    assert result["task_state_delta"]["step_updates"][0]["step_id"] == "step-123"
+    assert result["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge path"
+    assert result["task_state"]["next_required_action"] == "Run focused tests"
+    assert result["inspector"]["run_state"]["task_state_validation"]["accepted"] is True
 
 
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:

@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5c`。
+当前稳定版本：`3.1.5d`。
 
 ## Stable Runtime
 
-3.1.5c 在 3.1.5b 的 session / trace / task checkpoint 收口之上，补上了 thread rename、运行中浏览其他 thread、真正的 message-scoped full debug lazy loading，以及离线 session repair CLI。
-它继续保持 canonical 29-tool surface 不变，并让 Activity/Debug 只在需要时按 turn 拉取 full turn 诊断。
+3.1.5d 在 3.1.5c 的基础上，把 task checkpoint 升级为 canonical `task_state` + harness-validated `task_state_delta`，并加入 step evidence validator、`validation_warnings` 和更完整的 Run/Debug task state 观测。
+它继续保持 canonical 29-tool surface 不变；旧的 turn-end 推断逻辑只作为 fallback 保留。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

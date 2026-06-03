@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.serialization import dump_model
+from app.session_context import normalize_task_state, normalize_work_cursor
 
 
 _VALID_PLAN_STATUS = {"pending", "in_progress", "completed"}
@@ -27,8 +28,14 @@ _DRAFT_PREFIXES = (
 class TaskContext(BaseModel):
     user_request: str = ""
     goal: str = ""
+    status: str = ""
+    current_step_id: str = ""
     current_step: str = ""
     next_action: str = ""
+    blocked_reason: str = ""
+    completed_steps: list[str] = Field(default_factory=list)
+    failed_attempts: list[str] = Field(default_factory=list)
+    validation_warnings: list[str] = Field(default_factory=list)
 
 
 class WorkspaceContext(BaseModel):
@@ -53,7 +60,7 @@ class MemoryContext(BaseModel):
 
 class PlanItem(BaseModel):
     step: str = ""
-    status: Literal["pending", "in_progress", "completed"] = "pending"
+    status: Literal["pending", "in_progress", "completed", "failed", "blocked"] = "pending"
 
 
 class PlanContext(BaseModel):
@@ -905,6 +912,47 @@ def _next_action_from_context_manager(context_manager: ContextManager) -> str:
     return ""
 
 
+def _task_context_from_state(
+    *,
+    user_request: str,
+    context_manager: ContextManager,
+    task_state: dict[str, Any] | None = None,
+) -> TaskContext:
+    normalized_task = normalize_task_state(task_state or {})
+    plan_items = [dict(item) for item in list(normalized_task.get("plan_items") or []) if isinstance(item, dict)]
+    current_step_id = str(normalized_task.get("current_step_id") or "").strip()
+    current_step = ""
+    if current_step_id:
+        current_step = next(
+            (
+                _truncate(item.get("step"), 500)
+                for item in plan_items
+                if str(item.get("id") or "").strip() == current_step_id and _truncate(item.get("step"), 500)
+            ),
+            "",
+        )
+    if not current_step:
+        current_step = _truncate(
+            normalized_task.get("next_required_action") or _current_step_from_context_manager(context_manager),
+            500,
+        )
+    return TaskContext(
+        user_request=_clean_text(user_request, limit=4000),
+        goal=_truncate(normalized_task.get("goal") or normalize_user_message_preview(user_request, limit=140), 500),
+        status=_truncate(normalized_task.get("status"), 80),
+        current_step_id=_truncate(current_step_id, 120),
+        current_step=current_step,
+        next_action=_truncate(
+            normalized_task.get("next_required_action") or _next_action_from_context_manager(context_manager),
+            500,
+        ),
+        blocked_reason=_truncate(normalized_task.get("blocked_reason"), 500),
+        completed_steps=_summary_strings(normalized_task.get("completed_steps"), limit=6, max_chars=240),
+        failed_attempts=_summary_strings(normalized_task.get("failed_attempts"), limit=6, max_chars=240),
+        validation_warnings=_summary_strings(normalized_task.get("validation_warnings"), limit=6, max_chars=240),
+    )
+
+
 def build_model_context(
     *,
     user_request: str,
@@ -912,20 +960,47 @@ def build_model_context(
     runtime_boundary: Any,
     project_root: Path | str | None = None,
     cwd: Path | str | None = None,
+    task_state: dict[str, Any] | None = None,
+    work_cursor: dict[str, Any] | None = None,
 ) -> ModelContext:
     boundary_model_view = runtime_boundary.to_model_view() if hasattr(runtime_boundary, "to_model_view") else dict(runtime_boundary or {})
-    resolved_project_root = str(project_root or boundary_model_view.get("project_root") or "")
-    resolved_cwd = str(cwd or boundary_model_view.get("cwd") or resolved_project_root)
+    normalized_task = normalize_task_state(task_state or {})
+    normalized_cursor = normalize_work_cursor(work_cursor or {})
+    resolved_project_root = str(
+        project_root
+        or normalized_cursor.get("project_root")
+        or boundary_model_view.get("project_root")
+        or ""
+    )
+    resolved_cwd = str(
+        cwd
+        or normalized_cursor.get("cwd")
+        or boundary_model_view.get("cwd")
+        or resolved_project_root
+    )
     clean_user_request = _clean_text(user_request, limit=4000)
-    active_files = _unique_strings(context_manager.active_files, limit=10, max_chars=500)
+    active_files = _unique_strings(
+        [*list(normalized_cursor.get("active_files") or []), *context_manager.active_files],
+        limit=10,
+        max_chars=500,
+    )
     conversation = _normalize_clean_turns(context_manager.clean_turns, current_message=clean_user_request, limit=8)
+    task_context = _task_context_from_state(
+        user_request=clean_user_request,
+        context_manager=context_manager,
+        task_state=normalized_task,
+    )
+    plan_items = (
+        [
+            PlanItem(step=_truncate(item.get("step"), 500), status=str(item.get("status") or "pending"))
+            for item in list(normalized_task.get("plan_items") or [])[:12]
+            if isinstance(item, dict) and _truncate(item.get("step"), 500)
+        ]
+        if list(normalized_task.get("plan_items") or [])
+        else context_manager.plan[:12]
+    )
     return ModelContext(
-        task=TaskContext(
-            user_request=clean_user_request,
-            goal=_truncate(normalize_user_message_preview(clean_user_request, limit=140), 500),
-            current_step=_current_step_from_context_manager(context_manager),
-            next_action=_next_action_from_context_manager(context_manager),
-        ),
+        task=task_context,
         workspace=WorkspaceContext(
             project_root=str(resolved_project_root),
             cwd=str(resolved_cwd),
@@ -936,7 +1011,7 @@ def build_model_context(
             active_files=active_files,
             recent_observations=context_manager.recent_observations[:5],
         ),
-        plan=PlanContext(items=context_manager.plan[:12]),
+        plan=PlanContext(items=plan_items),
         permissions=_permissions_from_boundary(
             boundary_model_view,
             permission_profile=str(getattr(runtime_boundary, "permission_profile", "") or boundary_model_view.get("permission_profile") or ""),

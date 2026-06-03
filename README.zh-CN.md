@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5c-blue)
+![Version](https://img.shields.io/badge/version-3.1.5d-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5c`
+当前稳定版本：`3.1.5d`
 
 ## Stable Runtime
 
-3.1.5c 在 3.1.5b 的 session / trace / task checkpoint 收口之上，补上了 thread rename、运行中浏览其他 thread、真正的 message-scoped full debug lazy loading，以及离线 session repair CLI。
+3.1.5d 在 3.1.5c 的 thread/runtime/UI 收口之上，把 task checkpoint 升级为 canonical `task_state` + harness-validated `task_state_delta`：计划仍由 `update_plan` 维护，step 完成/失败改为基于证据校验后再落盘。
 
-相对 3.1.5b，本版本继续保持 summary view 零 sidecar I/O；full debug 只在展开 Activity/Debug 时按 turn 拉取；历史 Debug 不再借用全局 inspector；运行中的 thread 可以被保留在各自 cache snapshot 中单独恢复。
+相对 3.1.5c，本版本新增 step evidence validator、`validation_warnings`、model-visible task checkpoint 摘要，以及 Run/Debug 面板中的 task state 可观测性；旧的 turn-end 推断逻辑仅保留为 fallback。
 
 ## Max Output Tokens
 
