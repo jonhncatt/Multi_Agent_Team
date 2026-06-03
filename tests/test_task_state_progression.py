@@ -371,3 +371,30 @@ def test_task_state_delta_replaces_generic_next_action_with_current_step() -> No
 
     assert state["next_required_action"] == "Continue current step: Run focused tests"
     assert validation["validation_warnings"][0]["code"] == "generic_next_required_action"
+
+
+def test_update_plan_validation_error_does_not_pollute_failed_attempts() -> None:
+    state = merge_task_state_after_turn(
+        {
+            "task_id": "task-plan-warning",
+            "goal": "Fix update_plan schema",
+            "status": "in_progress",
+            "plan_items": [{"step": "Align update_plan schema", "status": "in_progress"}],
+        },
+        [{"step": "Align update_plan schema", "status": "in_progress"}],
+        [
+            {
+                "name": "update_plan",
+                "status": "blocked",
+                "summary": "update_plan `plan` must be a non-empty list.",
+            }
+        ],
+        [],
+        "running",
+        {},
+        {},
+    )
+
+    assert state["failed_attempts"] == []
+    assert state["validation_warnings"][0]["code"] == "update_plan_validation_error"
+    assert "non-empty list" in state["validation_warnings"][0]["message"]

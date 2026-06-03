@@ -1267,7 +1267,7 @@ def clear_stats() -> ClearStatsResponse:
     return ClearStatsResponse(ok=True)
 
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse, response_model_exclude_none=True)
 def chat(req: ChatRequest) -> ChatResponse:
     locale = normalize_locale(getattr(req.settings, "locale", ""), config.default_locale)
     try:
@@ -2096,6 +2096,7 @@ def _process_chat_request(
         with request_phase_timer.measure("attachment_load_ms"):
             attachments = upload_store.get_many(effective_attachment_ids)
         attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
+        task_state_notes: list[str] = []
         attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(
             session=session,
             model=requested_model,
@@ -2377,7 +2378,7 @@ def _process_chat_request(
                 runtime_error=runtime_error,
             ),
         )
-        inspector_notes = list(inspector.get("notes") or [])
+        inspector_notes = [*list(inspector.get("notes") or []), *task_state_notes]
         if attachment_evidence_pack:
             inspector_notes.append(f"attachment_evidence_pack:{len(attachment_evidence_pack)}")
         if missing_attachment_ids:
@@ -2425,7 +2426,7 @@ def _process_chat_request(
             or {}
         )
         previous_agent_state = dict(session.get("agent_state") or {})
-        previous_task_state = copy.deepcopy(session.get("task_state") or {})
+        previous_task_state = session_context_impl.normalize_task_state(copy.deepcopy(session.get("task_state") or {}))
         last_compacted_at = _session_last_compacted_at(session) or str(previous_agent_state.get("last_compacted_at") or "")
         tool_hits = [
             {
@@ -2462,56 +2463,143 @@ def _process_chat_request(
         if not fallback_error_for_task:
             fallback_blocked_reason = str(runtime_result.get("blocked_reason") or inspector_run_state.get("blocked_reason") or "").strip()
             fallback_error_for_task = {"message": fallback_blocked_reason} if fallback_blocked_reason else {}
-        task_state_base = {
-            **dict(previous_task_state or {}),
-            "task_id": normalized_focus.get("task_id") or previous_task_state.get("task_id") or "",
-            "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or previous_task_state.get("goal") or req.message[:240]),
-            "plan_items": list(previous_task_state.get("plan_items") or []),
-        }
-        if isinstance(runtime_task_state_delta, dict) and runtime_task_state_delta:
-            next_task_state, task_state_validation = session_context_impl.merge_task_state_delta(
-                task_state_base,
-                list(inspector_run_state.get("plan") or plan),
-                runtime_task_state_delta,
-                tool_events,
-                turn_status,
-                fallback_error_for_task,
-                pending_user_input,
-            )
-        else:
-            missing_delta_warnings = []
-            if list(inspector_run_state.get("plan") or plan) or list(tool_events or []):
-                missing_delta_warnings = [
-                    {
-                        "code": "missing_task_state_delta",
-                        "message": "Non-trivial execution turn completed without task_state_delta; fallback task_state merge was applied.",
-                        "step_id": "",
-                        "severity": "warning",
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
-                ]
-            task_state_validation = {
-                "accepted": False,
-                "applied_step_ids": [],
-                "rejected_step_ids": [],
-                "validation_warnings": missing_delta_warnings,
+        plan_from_runtime = list(inspector_run_state.get("plan") or plan or [])
+        thread_memory_before_task_merge = session_context_impl.get_thread_memory(session)
+
+        def _tool_event_name(event: dict[str, Any]) -> str:
+            return str(event.get("name") or event.get("tool") or "").strip().lower()
+
+        def _tool_event_status(event: dict[str, Any]) -> str:
+            return str(event.get("status") or "").strip().lower()
+
+        def _successful_update_plan_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                dict(item)
+                for item in list(events or [])
+                if isinstance(item, dict)
+                and _tool_event_name(item) == "update_plan"
+                and _tool_event_status(item) in {"ok", "success", "completed", "complete", "done"}
+            ]
+
+        def _latest_recent_task_goal(thread_memory: dict[str, Any]) -> str:
+            recent_tasks = list(thread_memory.get("recent_tasks") or [])
+            for item in recent_tasks:
+                if not isinstance(item, dict):
+                    continue
+                goal = str(item.get("goal") or "").strip()
+                if goal:
+                    return goal
+            return ""
+
+        def _first_plan_step(plan_items: list[dict[str, Any]]) -> str:
+            for item in list(plan_items or []):
+                if not isinstance(item, dict):
+                    continue
+                step = str(item.get("step") or item.get("title") or item.get("content") or "").strip()
+                if step:
+                    return step
+            return ""
+
+        def _update_plan_goal(events: list[dict[str, Any]]) -> str:
+            for item in reversed(list(events or [])):
+                for payload_key in ("result_preview", "input", "normalized_arguments", "raw_arguments"):
+                    payload = dict(item.get(payload_key) or {}) if isinstance(item.get(payload_key), dict) else {}
+                    explanation = str(payload.get("explanation") or payload.get("goal") or "").strip()
+                    if explanation:
+                        return explanation
+            return ""
+
+        update_plan_success_events = _successful_update_plan_events(tool_events)
+        has_successful_update_plan = bool(update_plan_success_events)
+        has_previous_task = session_context_impl.task_state_has_checkpoint(previous_task_state)
+        has_delta = isinstance(runtime_task_state_delta, dict) and bool(runtime_task_state_delta)
+        is_continue_like = session_context_impl.message_likely_continues_task(req.message, session=session)
+        should_create_new_task_state = has_successful_update_plan and not has_previous_task
+        should_update_existing_task_state = has_previous_task and (
+            has_successful_update_plan
+            or has_delta
+            or is_continue_like
+        )
+        should_track_task = should_create_new_task_state or should_update_existing_task_state
+
+        previous_goal = str(previous_task_state.get("goal") or "").strip()
+        focus_goal = str(normalized_focus.get("goal") or "").strip()
+        current_turn_goal = str(current_turn_context.get("goal") or "").strip()
+        current_turn_source = str(current_turn_context.get("source") or "").strip()
+        inspector_goal = str(inspector_run_state.get("goal") or inspector_run_state.get("current_goal") or "").strip()
+        update_plan_goal = _update_plan_goal(update_plan_success_events)
+        recent_task_goal = _latest_recent_task_goal(thread_memory_before_task_merge)
+        first_plan_step = _first_plan_step(plan_from_runtime)
+
+        derived_task_goal = ""
+        if is_continue_like and previous_goal:
+            derived_task_goal = previous_goal
+        elif update_plan_goal:
+            derived_task_goal = update_plan_goal
+        elif current_turn_source != "latest_user_message" and current_turn_goal:
+            derived_task_goal = current_turn_goal
+        elif has_successful_update_plan and inspector_goal and inspector_goal != str(req.message or "").strip():
+            derived_task_goal = inspector_goal
+        elif previous_goal:
+            derived_task_goal = previous_goal
+        elif focus_goal:
+            derived_task_goal = focus_goal
+        elif recent_task_goal:
+            derived_task_goal = recent_task_goal
+        elif has_successful_update_plan and first_plan_step:
+            derived_task_goal = first_plan_step
+
+        if has_delta and not (has_previous_task or has_successful_update_plan):
+            runtime_task_state_delta = {}
+            has_delta = False
+            task_state_notes.append("ignored_task_state_delta_without_task_mode")
+
+        task_state_validation = {}
+        if should_track_task:
+            base_task_id = str(previous_task_state.get("task_id") or normalized_focus.get("task_id") or "").strip()
+            if not base_task_id:
+                base_task_id = str(uuid.uuid4())
+            task_state_base = {
+                **dict(previous_task_state or {}),
+                "task_id": base_task_id,
+                "goal": derived_task_goal,
+                "plan_items": list(previous_task_state.get("plan_items") or []),
             }
-            next_task_state = session_context_impl.merge_task_state_after_turn(
-                task_state_base,
-                list(inspector_run_state.get("plan") or plan),
-                tool_events,
-                list(runtime_result.get("progress_signals") or inspector_run_state.get("progress_signals") or []),
-                turn_status,
-                fallback_error_for_task,
-                pending_user_input,
-            )
-            if missing_delta_warnings:
-                next_task_state["validation_warnings"] = missing_delta_warnings
-        if not next_task_state.get("task_id") and normalized_focus.get("task_id"):
-            next_task_state["task_id"] = normalized_focus.get("task_id") or ""
-        if not next_task_state.get("goal"):
-            next_task_state["goal"] = str(inspector_run_state.get("goal") or normalized_focus.get("goal") or req.message[:240])
-        session["task_state"] = session_context_impl.normalize_task_state(next_task_state)
+            if has_delta:
+                next_task_state, task_state_validation = session_context_impl.merge_task_state_delta(
+                    task_state_base,
+                    plan_from_runtime,
+                    runtime_task_state_delta,
+                    tool_events,
+                    turn_status,
+                    fallback_error_for_task,
+                    pending_user_input,
+                )
+            else:
+                next_task_state = session_context_impl.merge_task_state_after_turn(
+                    task_state_base,
+                    plan_from_runtime,
+                    tool_events,
+                    list(runtime_result.get("progress_signals") or inspector_run_state.get("progress_signals") or []),
+                    turn_status,
+                    fallback_error_for_task,
+                    pending_user_input,
+                )
+                validation_warnings = list(next_task_state.get("validation_warnings") or [])
+                if validation_warnings:
+                    task_state_validation = {
+                        "accepted": False,
+                        "applied_step_ids": [],
+                        "rejected_step_ids": [],
+                        "validation_warnings": validation_warnings,
+                    }
+            if not next_task_state.get("task_id"):
+                next_task_state["task_id"] = base_task_id or str(uuid.uuid4())
+            if not next_task_state.get("goal") and derived_task_goal:
+                next_task_state["goal"] = derived_task_goal
+            session["task_state"] = session_context_impl.normalize_task_state(next_task_state)
+        else:
+            session["task_state"] = session_context_impl.normalize_task_state(previous_task_state if has_previous_task else {})
         session["agent_state"] = {
             "agent_id": "vintage_programmer",
             "permission_profile": permission_profile,
@@ -2541,6 +2629,7 @@ def _process_chat_request(
             route_state=route_state,
             tool_events=tool_events,
             answer_bundle=answer_bundle,
+            touch_task_checkpoint=should_track_task,
         )
         context_manager = ContextManager.from_payload(
             session.get("context_manager") if isinstance(session.get("context_manager"), dict) else {}
@@ -2575,6 +2664,16 @@ def _process_chat_request(
                 continue
             compaction_status[key] = value
         session["agent_state"]["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or last_compacted_at or "")
+        response_task_state_delta = (
+            session_context_impl.normalize_task_state_delta(runtime_task_state_delta)
+            if isinstance(runtime_task_state_delta, dict) and runtime_task_state_delta
+            else None
+        )
+        response_task_state_validation = (
+            dict(task_state_validation)
+            if isinstance(task_state_validation, dict) and task_state_validation
+            else None
+        )
         inspector_run_state["thread_memory"] = dict(thread_memory)
         inspector_run_state["recent_tasks"] = recent_tasks
         inspector_run_state["artifact_memory_preview"] = artifact_memory_preview
@@ -2584,8 +2683,14 @@ def _process_chat_request(
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_state"] = dict(session.get("task_state") or {})
-        inspector_run_state["task_state_delta"] = dict(runtime_task_state_delta or {})
-        inspector_run_state["task_state_validation"] = dict(task_state_validation or {})
+        if response_task_state_delta:
+            inspector_run_state["task_state_delta"] = dict(response_task_state_delta)
+        else:
+            inspector_run_state.pop("task_state_delta", None)
+        if response_task_state_validation:
+            inspector_run_state["task_state_validation"] = dict(response_task_state_validation)
+        else:
+            inspector_run_state.pop("task_state_validation", None)
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
@@ -2601,8 +2706,14 @@ def _process_chat_request(
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_state"] = dict(session.get("task_state") or {})
-        inspector_session["task_state_delta"] = dict(runtime_task_state_delta or {})
-        inspector_session["task_state_validation"] = dict(task_state_validation or {})
+        if response_task_state_delta:
+            inspector_session["task_state_delta"] = dict(response_task_state_delta)
+        else:
+            inspector_session.pop("task_state_delta", None)
+        if response_task_state_validation:
+            inspector_session["task_state_validation"] = dict(response_task_state_validation)
+        else:
+            inspector_session.pop("task_state_validation", None)
         inspector_session["thread_memory"] = dict(thread_memory)
         inspector_session["recent_tasks"] = recent_tasks
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
@@ -2617,6 +2728,19 @@ def _process_chat_request(
             route_state=route_state,
         )
         if assistant_turn_id:
+            turn_artifact_extra = {
+                "route_state": route_state,
+                "token_usage": token_usage,
+                "effective_model": selected_model,
+                "permission_profile": permission_profile,
+                "turn_status": turn_status,
+                "work_cursor": dict(session.get("work_cursor") or {}),
+                "task_state": dict(session.get("task_state") or {}),
+            }
+            if response_task_state_delta:
+                turn_artifact_extra["task_state_delta"] = dict(response_task_state_delta)
+            if response_task_state_validation:
+                turn_artifact_extra["task_state_validation"] = dict(response_task_state_validation)
             session_store.persist_turn_artifact(
                 session,
                 turn_id=assistant_turn_id,
@@ -2625,17 +2749,7 @@ def _process_chat_request(
                 answer_bundle=answer_bundle,
                 tool_events=tool_events,
                 inspector=inspector,
-                extra={
-                    "route_state": route_state,
-                    "token_usage": token_usage,
-                    "effective_model": selected_model,
-                    "permission_profile": permission_profile,
-                    "turn_status": turn_status,
-                    "work_cursor": dict(session.get("work_cursor") or {}),
-                    "task_state": dict(session.get("task_state") or {}),
-                    "task_state_delta": dict(runtime_task_state_delta or {}),
-                    "task_state_validation": dict(task_state_validation or {}),
-                },
+                extra=turn_artifact_extra,
             )
         session_store.save(session)
         _emit_progress(
@@ -2663,8 +2777,8 @@ def _process_chat_request(
                 compaction_status=compaction_status,
                 work_cursor=dict(session.get("work_cursor") or {}),
                 task_state=dict(session.get("task_state") or {}),
-                task_state_delta=dict(runtime_task_state_delta or {}),
-                task_state_validation=dict(task_state_validation or {}),
+                task_state_delta=response_task_state_delta,
+                task_state_validation=response_task_state_validation,
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,
@@ -2758,8 +2872,8 @@ def _process_chat_request(
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             work_cursor=dict(session.get("work_cursor") or {}),
             task_state=dict(session.get("task_state") or {}),
-            task_state_delta=dict(runtime_task_state_delta or {}),
-            task_state_validation=dict(task_state_validation or {}),
+            task_state_delta=response_task_state_delta,
+            task_state_validation=response_task_state_validation,
             recent_tasks=recent_tasks,
             activity=activity,
             context_meter=context_meter,
@@ -2795,8 +2909,8 @@ def _process_chat_request(
                 compaction_status=compaction_status,
                 work_cursor=dict(session.get("work_cursor") or {}),
                 task_state=dict(session.get("task_state") or {}),
-                task_state_delta=dict(runtime_task_state_delta or {}),
-                task_state_validation=dict(task_state_validation or {}),
+                task_state_delta=response_task_state_delta,
+                task_state_validation=response_task_state_validation,
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,
@@ -2825,8 +2939,8 @@ def _process_chat_request(
                 compaction_status=compaction_status,
                 work_cursor=dict(session.get("work_cursor") or {}),
                 task_state=dict(session.get("task_state") or {}),
-                task_state_delta=dict(runtime_task_state_delta or {}),
-                task_state_validation=dict(task_state_validation or {}),
+                task_state_delta=response_task_state_delta,
+                task_state_validation=response_task_state_validation,
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,

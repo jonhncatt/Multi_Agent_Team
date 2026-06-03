@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
+from app.tool_trace_summary import validate_tool_arguments
 
 
 def _config(tmp_path: Path):
@@ -46,3 +47,58 @@ def test_update_plan_missing_plan_returns_structured_error(tmp_path: Path) -> No
     assert result["error"]["kind"] == "bad_tool_arguments"
     assert result["error"]["tool"] == "update_plan"
     assert "plan" in result["error"]["message"]
+
+
+def test_update_plan_accepts_step_id_and_alias_fields(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+
+    result = executor.update_plan(
+        plan=[
+            {
+                "step_id": "step_1",
+                "title": "Inspect schema",
+                "status": "completed",
+                "progress_basis": "Read current validator",
+                "evidence_refs": [{"tool": "read_file", "ref": "app/local_tools.py"}],
+            }
+        ],
+        explanation="Multi-step fix",
+    )
+
+    assert result["ok"] is True
+    assert result["plan"][0]["step_id"] == "step_1"
+    assert result["plan"][0]["step"] == "Inspect schema"
+    assert result["plan"][0]["progress_basis"] == ["Read current validator"]
+    assert result["plan"][0]["evidence_refs"][0]["tool"] == "read_file"
+
+
+def test_update_plan_accepts_list_of_strings_and_normalizes_to_pending_steps(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+
+    result = executor.update_plan(plan=["Inspect code", "Patch code"])
+
+    assert result["ok"] is True
+    assert result["plan"] == [
+        {"step": "Inspect code", "status": "pending"},
+        {"step": "Patch code", "status": "pending"},
+    ]
+
+
+def test_update_plan_schema_allows_step_id_in_public_tool_spec(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    spec = next(item for item in executor.tool_specs if str(item.get("name") or "") == "update_plan")
+
+    validation = validate_tool_arguments(
+        {
+            "plan": [
+                {
+                    "step_id": "step_1",
+                    "step": "Inspect code",
+                    "status": "in_progress",
+                }
+            ]
+        },
+        spec.get("parameters"),
+    )
+
+    assert validation["status"] == "valid"

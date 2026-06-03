@@ -912,6 +912,82 @@ class _NoDeltaTaskStateRuntime(_FakeVintageRuntime):
         return payload
 
 
+class _DirectAnswerNoTaskRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        project = dict(context.get("project") or {})
+        payload["text"] = f"echo:{str(message or '').strip()}"
+        payload["tool_events"] = []
+        payload["plan"] = []
+        payload["route_state"] = {
+            "agent_id": "vintage_programmer",
+            "phase": "completed",
+            "evidence_status": "not_needed",
+            "loaded_skill_ids": ["example_refactor_helper"],
+        }
+        payload["inspector"]["run_state"]["goal"] = str(message or "").strip()
+        payload["inspector"]["run_state"]["plan"] = []
+        payload["inspector"]["run_state"].pop("task_checkpoint", None)
+        payload["inspector"]["session"] = {
+            **dict(payload["inspector"].get("session") or {}),
+            "project_id": str(project.get("project_id") or ""),
+            "project_title": str(project.get("project_title") or ""),
+            "project_root": str(project.get("project_root") or ""),
+            "cwd": str(project.get("cwd") or project.get("project_root") or ""),
+        }
+        return payload
+
+
+class _ToolEvidenceOnlyRuntime(_DirectAnswerNoTaskRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        payload["tool_events"] = [
+            {
+                "name": "read_file",
+                "input": {"path": "README.md"},
+                "output_preview": "ok",
+                "status": "ok",
+                "group": "file",
+                "source": "native",
+                "summary": "Read README.md",
+                "source_refs": ["README.md"],
+            }
+        ]
+        return payload
+
+
+class _UpdatePlanCreatesTaskRuntime(_DirectAnswerNoTaskRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        payload["plan"] = [
+            {"step_id": "step_1", "step": "Inspect current update_plan schema", "status": "completed"},
+            {"step_id": "step_2", "step": "Align update_plan schema with task_state plan_items", "status": "in_progress"},
+            {"step_id": "step_3", "step": "Add tests for greetings, continue requests, and update_plan step_id", "status": "pending"},
+        ]
+        payload["tool_events"] = [
+            {
+                "name": "update_plan",
+                "input": {
+                    "explanation": "This is a multi-step code change, so a plan is useful.",
+                    "plan": list(payload["plan"]),
+                },
+                "result_preview": {
+                    "ok": True,
+                    "plan": list(payload["plan"]),
+                    "explanation": "This is a multi-step code change, so a plan is useful.",
+                },
+                "output_preview": "plan updated",
+                "status": "ok",
+                "group": "control",
+                "source": "native",
+                "summary": "plan updated (3 steps)",
+            }
+        ]
+        payload["inspector"]["run_state"]["goal"] = "Fix update_plan schema"
+        payload["inspector"]["run_state"]["plan"] = list(payload["plan"])
+        return payload
+
+
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     for name in ("sessions", "uploads", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
@@ -1916,11 +1992,178 @@ def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch,
     payload = response.json()
     assert delta_calls["count"] == 0
     assert fallback_calls["count"] == 1
-    assert payload["task_state_delta"] == {}
+    assert "task_state_delta" not in payload
     assert payload["task_state"]["task_id"] != "wrong-task"
     assert payload["task_state"]["completed_steps"][-1]["step"] == "Inspect workspace"
-    assert payload["task_state_validation"]["accepted"] is False
-    assert payload["task_state_validation"]["validation_warnings"][0]["code"] == "missing_task_state_delta"
+    assert "task_state_validation" not in payload
+
+
+def test_chat_greeting_does_not_enter_task_mode_without_update_plan(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DirectAnswerNoTaskRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "你好",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_state"]["goal"] == ""
+    assert payload["task_state"]["status"] == "idle"
+    assert payload["task_state"]["plan_items"] == []
+    assert "task_state_validation" not in payload
+    session = main_app.session_store.load(payload["session_id"], default_project=main_app.project_store.ensure_default_project())
+    assert session is not None
+    assert session["task_state"]["goal"] == ""
+    assert session["task_state"]["status"] == "idle"
+
+
+def test_chat_tool_evidence_alone_does_not_create_task_state(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _ToolEvidenceOnlyRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "解释一下这个仓库",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool_events"]
+    assert payload["task_state"]["goal"] == ""
+    assert payload["task_state"]["status"] == "idle"
+    assert "task_state_validation" not in payload
+
+
+def test_chat_simple_chat_does_not_overwrite_existing_task_state(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DirectAnswerNoTaskRuntime())
+    client = TestClient(main_app.app)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["task_state"] = main_app.session_context_impl.normalize_task_state(
+        {
+            "task_id": "task-existing",
+            "goal": "Fix update_plan schema",
+            "status": "in_progress",
+            "plan_items": [{"id": "step-1", "step": "Inspect schema", "status": "in_progress"}],
+            "updated_at": "2026-06-01T00:00:00Z",
+        }
+    )
+    main_app.session_store.save(session)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "谢谢",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_state"]["goal"] == "Fix update_plan schema"
+    assert payload["task_state"]["updated_at"] == "2026-06-01T00:00:00Z"
+    assert "task_state_validation" not in payload
+    saved = main_app.session_store.load(session["id"], default_project=main_app.project_store.ensure_default_project())
+    assert saved is not None
+    assert saved["task_state"]["goal"] == "Fix update_plan schema"
+    assert saved["task_state"]["updated_at"] == "2026-06-01T00:00:00Z"
+
+
+def test_chat_continue_like_request_inherits_previous_task_goal(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DirectAnswerNoTaskRuntime())
+    client = TestClient(main_app.app)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["task_state"] = main_app.session_context_impl.normalize_task_state(
+        {
+            "task_id": "task-continue",
+            "goal": "Fix update_plan schema",
+            "status": "in_progress",
+            "plan_items": [{"id": "step-1", "step": "Inspect schema", "status": "in_progress"}],
+        }
+    )
+    main_app.session_store.save(session)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "继续",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_state"]["goal"] == "Fix update_plan schema"
+    assert payload["task_state"]["goal"] != "继续"
+
+
+def test_chat_successful_update_plan_creates_task_state(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _UpdatePlanCreatesTaskRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "修复 update_plan schema 和 task_state 对齐问题",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_state"]["task_id"]
+    assert payload["task_state"]["goal"] in {
+        "This is a multi-step code change, so a plan is useful.",
+        "Fix update_plan schema",
+    }
+    assert len(payload["task_state"]["plan_items"]) == 3
+    assert payload["task_state"]["status"] == "in_progress"
 
 
 def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:
@@ -1970,7 +2213,7 @@ def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) 
     assert seen["summary"] == "old summary"
     assert len(seen["history_turns"]) == 2
     assert seen["thread_memory"]["summary"] == "old summary"
-    assert seen["current_task_focus"]["task_id"] == "task-old"
+    assert seen["current_task_focus"]["task_id"] == ""
     assert seen["route_state"]["task_checkpoint"]["task_id"] == "task-old"
 
 

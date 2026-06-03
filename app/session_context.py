@@ -572,6 +572,18 @@ def normalize_task_state(raw: Any) -> dict[str, Any]:
     }
 
 
+def task_state_has_checkpoint(raw: Any) -> bool:
+    task = normalize_task_state(raw)
+    return bool(
+        task.get("task_id")
+        or task.get("goal")
+        or list(task.get("plan_items") or [])
+        or str(task.get("current_step_id") or "").strip()
+        or list(task.get("completed_steps") or [])
+        or list(task.get("failed_attempts") or [])
+    )
+
+
 def derive_current_step_id(plan_items: Any) -> str:
     items = normalize_task_plan_items(plan_items)
     for item in items:
@@ -1233,6 +1245,7 @@ def merge_task_state_after_turn(
     now = _now_iso()
     state = normalize_task_state(previous)
     merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
+    warnings = _normalize_validation_warnings(state.get("validation_warnings") or [])
 
     current_step_id = derive_current_step_id(merged_items)
     completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
@@ -1263,9 +1276,21 @@ def merge_task_state_after_turn(
         if not isinstance(raw_event, dict):
             continue
         event = dict(raw_event)
+        tool_name = str(event.get("name") or event.get("tool") or "").strip()
         status = str(event.get("status") or "").strip().lower()
         basis = _tool_event_progress(event)
         refs = _tool_event_evidence(event)
+        if tool_name == "update_plan":
+            if status in {"error", "failed", "failure", "blocked"}:
+                warnings.append(
+                    _task_warning(
+                        "update_plan_validation_error",
+                        str(event.get("summary") or event.get("error") or event.get("output_preview") or "update_plan validation failed").strip()[:500],
+                        step_id=progress_target_id or current_step_id,
+                        created_at=now,
+                    )
+                )
+            continue
         if status in {"ok", "success", "completed", "complete", "done"}:
             progress_basis = _merge_text_lists(progress_basis, [basis], limit=8)
             evidence_refs = _merge_evidence_refs(evidence_refs, refs, limit=12)
@@ -1275,15 +1300,14 @@ def merge_task_state_after_turn(
                 target_item["updated_at"] = now
             continue
         if status in {"error", "failed", "failure", "blocked"}:
-            tool = str(event.get("name") or event.get("tool") or "").strip()
             summary = str(event.get("summary") or event.get("error") or event.get("output_preview") or "Tool failed").strip()[:500]
             step_id = progress_target_id or current_step_id
-            key = "|".join([tool, step_id, summary])
+            key = "|".join([tool_name, step_id, summary])
             if key not in failed_keys:
                 failed_keys.add(key)
                 failed_attempts.append(
                     {
-                        "tool": tool,
+                        "tool": tool_name,
                         "summary": summary,
                         "step_id": step_id,
                         "evidence_refs": refs,
@@ -1374,7 +1398,7 @@ def merge_task_state_after_turn(
             "next_required_action": next_required_action,
             "progress_basis": progress_basis,
             "evidence_refs": evidence_refs,
-            "validation_warnings": [],
+            "validation_warnings": warnings,
             "updated_at": now,
         }
     )
@@ -1708,6 +1732,9 @@ def derive_current_turn_context(
     goal_source = "latest_user_message"
     is_followup = False
     goal = raw[:240]
+    prior_focus_goal = str(_session_current_task_focus(session).get("goal") or "").strip()
+    prior_task_goal = str(normalize_task_state(session.get("task_state")).get("goal") or "").strip()
+    inherited_goal = prior_task_goal or prior_focus_goal
 
     if message_requests_recent_user_list(raw):
         goal = "List the recent user questions from this thread in order."
@@ -1725,8 +1752,10 @@ def derive_current_turn_context(
         goal_source = "followup_classifier"
         is_followup = True
     elif message_likely_continues_task(raw, session=session):
+        if inherited_goal:
+            goal = inherited_goal
         followup_type = "task_followup"
-        goal_source = "latest_user_message"
+        goal_source = "existing_task_goal" if inherited_goal else "latest_user_message"
         is_followup = True
 
     return {
@@ -2111,6 +2140,7 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
         focus["updated_at"] = _now_iso()
     work_cursor = normalize_work_cursor(session.get("work_cursor"))
     task_state = normalize_task_state(session.get("task_state"))
+    task_checkpoint_exists = task_state_has_checkpoint(task_state)
     if focus["project_root"] and work_cursor["project_root"] != focus["project_root"]:
         work_cursor["project_root"] = focus["project_root"]
     if focus["cwd"] and work_cursor["cwd"] != focus["cwd"]:
@@ -2121,15 +2151,15 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
         work_cursor["active_attachments"] = [dict(item) for item in focus["active_attachments"]]
     if focus["updated_at"] and not work_cursor["updated_at"]:
         work_cursor["updated_at"] = focus["updated_at"]
-    if focus["task_id"] and task_state["task_id"] != focus["task_id"]:
+    if task_checkpoint_exists and focus["task_id"] and task_state["task_id"] != focus["task_id"]:
         task_state["task_id"] = focus["task_id"]
-    if focus["goal"] and task_state["goal"] != focus["goal"]:
+    if task_checkpoint_exists and focus["goal"] and task_state["goal"] != focus["goal"]:
         task_state["goal"] = focus["goal"]
-    if focus["next_action"] and not task_state["next_required_action"]:
+    if task_checkpoint_exists and focus["next_action"] and not task_state["next_required_action"]:
         task_state["next_required_action"] = focus["next_action"]
-    if focus["updated_at"] and not task_state["updated_at"]:
+    if task_checkpoint_exists and focus["updated_at"] and not task_state["updated_at"]:
         task_state["updated_at"] = focus["updated_at"]
-    if task_state["status"] == "idle" and (task_state["goal"] or task_state["plan_items"]):
+    if task_checkpoint_exists and task_state["status"] == "idle" and (task_state["goal"] or task_state["plan_items"]):
         task_state["status"] = "in_progress"
     thread_memory = _session_thread_memory(session)
     artifact_memory = _session_artifact_memory(session)
@@ -2231,32 +2261,40 @@ def record_turn_memory(
     route_state: dict[str, Any] | None,
     tool_events: list[dict[str, Any]] | None,
     answer_bundle: dict[str, Any] | None,
+    touch_task_checkpoint: bool = True,
 ) -> None:
     now = _now_iso()
     session["route_state"] = dict(route_state or {})
-    focus = normalize_current_task_focus(
-        ((route_state or {}).get("current_task_focus") if isinstance(route_state, dict) else None)
-        or ((route_state or {}).get("task_checkpoint") if isinstance(route_state, dict) else None)
-    )
-    if not focus["task_id"]:
-        focus["task_id"] = str(uuid.uuid4())
-    if not focus["goal"]:
-        focus["goal"] = str(user_message or "").strip()[:240]
-    focus["updated_at"] = now
     work_cursor = normalize_work_cursor(session.get("work_cursor"))
-    work_cursor["project_root"] = focus["project_root"] or work_cursor["project_root"]
-    work_cursor["cwd"] = focus["cwd"] or work_cursor["cwd"]
-    work_cursor["active_files"] = list(focus["active_files"] or work_cursor["active_files"])
-    work_cursor["active_attachments"] = [dict(item) for item in list(focus["active_attachments"] or work_cursor["active_attachments"])]
-    work_cursor["updated_at"] = now
     task_state = normalize_task_state(session.get("task_state"))
-    task_state["task_id"] = focus["task_id"]
-    task_state["goal"] = focus["goal"]
-    task_state["updated_at"] = now
-    if focus["next_action"] and not task_state["next_required_action"]:
-        task_state["next_required_action"] = focus["next_action"]
-    if not task_state["status"] or task_state["status"] == "idle":
-        task_state["status"] = "in_progress"
+    has_task_checkpoint = task_state_has_checkpoint(task_state)
+    focus = (
+        focus_from_work_cursor_task_state(work_cursor, task_state)
+        if has_task_checkpoint
+        else normalize_current_task_focus({})
+    )
+    if has_task_checkpoint and touch_task_checkpoint:
+        if not task_state["task_id"]:
+            task_state["task_id"] = str(uuid.uuid4())
+        task_state["updated_at"] = now
+        focus = normalize_current_task_focus(
+            {
+                "task_id": task_state["task_id"],
+                "goal": task_state["goal"],
+                "project_root": work_cursor["project_root"],
+                "cwd": work_cursor["cwd"],
+                "active_files": list(work_cursor["active_files"]),
+                "active_attachments": [dict(item) for item in list(work_cursor["active_attachments"])],
+                "last_completed_step": focus.get("last_completed_step") or "",
+                "next_action": task_state.get("next_required_action") or focus.get("next_action") or "",
+                "updated_at": now,
+            }
+        )
+        work_cursor["project_root"] = focus["project_root"] or work_cursor["project_root"]
+        work_cursor["cwd"] = focus["cwd"] or work_cursor["cwd"]
+        work_cursor["active_files"] = list(focus["active_files"] or work_cursor["active_files"])
+        work_cursor["active_attachments"] = [dict(item) for item in list(focus["active_attachments"] or work_cursor["active_attachments"])]
+        work_cursor["updated_at"] = now
 
     turns = session.get("turns", [])
     user_turn_id = ""
@@ -2307,32 +2345,32 @@ def record_turn_memory(
         artifact_index[key] = entry
     artifact_memory = normalize_artifact_memory(list(artifact_index.values()), limit=48)
 
-    artifact_refs = normalize_attachment_ids([str(item.get("artifact_id") or "") for item in artifact_memory[:8]])
-    active_artifact_refs = normalize_attachment_ids([str(item.get("id") or "") for item in focus["active_attachments"]])
-    task = normalize_recent_task(
-        {
-            "task_id": focus["task_id"],
-            "turn_id": user_turn_id,
-            "user_request": str(user_message or "").strip(),
-            "goal": focus["goal"],
-            "cwd": focus["cwd"],
-            "artifact_refs": active_artifact_refs or artifact_refs,
-            "active_files": list(focus["active_files"]),
-            "result_digest": result_digest,
-            "updated_at": now,
-        }
-    )
-
     thread_memory = _session_thread_memory(session)
-    next_recent_tasks = [task]
-    for item in thread_memory["recent_tasks"]:
-        if str(item.get("task_id") or "") == task["task_id"]:
-            continue
-        next_recent_tasks.append(normalize_recent_task(item))
-    thread_memory["recent_tasks"] = next_recent_tasks[:12]
     thread_memory["summary"] = str(session.get("summary") or thread_memory.get("summary") or "").strip()
-    thread_memory["recent_cwds"] = _dedupe_strings([focus["cwd"], *thread_memory["recent_cwds"]], limit=8)
-    thread_memory["recent_files"] = _dedupe_strings(list(focus["active_files"]) + list(thread_memory["recent_files"]), limit=12)
+    if has_task_checkpoint and touch_task_checkpoint:
+        artifact_refs = normalize_attachment_ids([str(item.get("artifact_id") or "") for item in artifact_memory[:8]])
+        active_artifact_refs = normalize_attachment_ids([str(item.get("id") or "") for item in focus["active_attachments"]])
+        task = normalize_recent_task(
+            {
+                "task_id": task_state["task_id"],
+                "turn_id": user_turn_id,
+                "user_request": str(user_message or "").strip(),
+                "goal": task_state["goal"],
+                "cwd": work_cursor["cwd"],
+                "artifact_refs": active_artifact_refs or artifact_refs,
+                "active_files": list(work_cursor["active_files"]),
+                "result_digest": result_digest,
+                "updated_at": now,
+            }
+        )
+        next_recent_tasks = [task]
+        for item in thread_memory["recent_tasks"]:
+            if str(item.get("task_id") or "") == task["task_id"]:
+                continue
+            next_recent_tasks.append(normalize_recent_task(item))
+        thread_memory["recent_tasks"] = next_recent_tasks[:12]
+    thread_memory["recent_cwds"] = _dedupe_strings([work_cursor["cwd"], *thread_memory["recent_cwds"]], limit=8)
+    thread_memory["recent_files"] = _dedupe_strings(list(work_cursor["active_files"]) + list(thread_memory["recent_files"]), limit=12)
     thread_memory["updated_at"] = now
 
     session["work_cursor"] = dict(work_cursor)

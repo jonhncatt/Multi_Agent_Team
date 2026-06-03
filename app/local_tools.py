@@ -2286,19 +2286,30 @@ class LocalToolExecutor:
                         "plan": {
                             "type": "array",
                             "items": {
-                                "type": "object",
+                                "type": ["object", "string"],
                                 "properties": {
+                                    "step_id": {"type": "string"},
+                                    "id": {"type": "string"},
                                     "step": {"type": "string"},
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
                                     "status": {"type": "string"},
+                                    "progress_basis": {
+                                        "type": ["array", "string"],
+                                        "items": {"type": "string"},
+                                    },
+                                    "evidence_refs": {
+                                        "type": "array",
+                                        "items": {"type": ["object", "string"]},
+                                    },
                                 },
-                                "required": ["step", "status"],
                                 "additionalProperties": False,
                             },
                         },
-                        "steps": {"type": "array", "items": {"type": "object"}},
-                        "items": {"type": "array", "items": {"type": "object"}},
-                        "tasks": {"type": "array", "items": {"type": "object"}},
-                        "plan_state": {"type": "array", "items": {"type": "object"}},
+                        "steps": {"type": "array", "items": {"type": ["object", "string"]}},
+                        "items": {"type": "array", "items": {"type": ["object", "string"]}},
+                        "tasks": {"type": "array", "items": {"type": ["object", "string"]}},
+                        "plan_state": {"type": "array", "items": {"type": ["object", "string"]}},
                     },
                     "additionalProperties": False,
                 },
@@ -2712,13 +2723,71 @@ class LocalToolExecutor:
                 },
                 "summary": "plan must be a list",
             }
-        normalized_plan: list[dict[str, str]] = []
+        def _normalize_status(value: Any) -> str:
+            raw = str(value or "").strip().lower()
+            if raw in {"completed", "complete", "done", "success", "succeeded"}:
+                return "completed"
+            if raw in {"in_progress", "in-progress", "active", "doing", "working"}:
+                return "in_progress"
+            if raw in {"pending", "todo", "not_started", "not-started", ""}:
+                return "pending"
+            return raw
+
+        def _normalize_progress_basis(raw: Any) -> list[str]:
+            if raw is None:
+                values: list[Any] = []
+            elif isinstance(raw, str):
+                values = [raw]
+            elif isinstance(raw, (list, tuple, set)):
+                values = list(raw)
+            else:
+                values = [raw]
+            normalized: list[str] = []
+            seen: set[str] = set()
+            for item in values[:8]:
+                text = str(item or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                normalized.append(text)
+            return normalized
+
+        def _normalize_evidence_refs(raw: Any) -> list[Any]:
+            if raw is None:
+                values: list[Any] = []
+            elif isinstance(raw, (str, dict)):
+                values = [raw]
+            elif isinstance(raw, (list, tuple, set)):
+                values = list(raw)
+            else:
+                values = [raw]
+            refs: list[Any] = []
+            seen: set[str] = set()
+            for item in values[:12]:
+                if isinstance(item, dict):
+                    ref = {k: v for k, v in dict(item).items() if v not in (None, "", [], {})}
+                    key = repr(sorted(ref.items()))
+                    if not ref or key in seen:
+                        continue
+                    seen.add(key)
+                    refs.append(ref)
+                    continue
+                text = str(item or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                refs.append(text)
+            return refs
+
+        normalized_plan: list[dict[str, Any]] = []
         in_progress_seen = 0
         for item in list(plan or []):
+            if isinstance(item, str):
+                item = {"step": item, "status": "pending"}
             if not isinstance(item, dict):
                 continue
-            step = str(item.get("step") or "").strip()
-            status = str(item.get("status") or "").strip().lower()
+            step = str(item.get("step") or item.get("title") or item.get("content") or item.get("label") or "").strip()
+            status = _normalize_status(item.get("status"))
             if not step:
                 continue
             if status not in {"pending", "in_progress", "completed"}:
@@ -2733,16 +2802,29 @@ class LocalToolExecutor:
                 }
             if status == "in_progress":
                 in_progress_seen += 1
-            normalized_plan.append({"step": step, "status": status})
+            normalized_item: dict[str, Any] = {
+                "step": step,
+                "status": status,
+            }
+            step_id = str(item.get("step_id") or item.get("id") or "").strip()
+            if step_id:
+                normalized_item["step_id"] = step_id
+            progress_basis = _normalize_progress_basis(item.get("progress_basis"))
+            if progress_basis:
+                normalized_item["progress_basis"] = progress_basis
+            evidence_refs = _normalize_evidence_refs(item.get("evidence_refs"))
+            if evidence_refs:
+                normalized_item["evidence_refs"] = evidence_refs
+            normalized_plan.append(normalized_item)
         if not normalized_plan:
             return {
                 "ok": False,
                 "error": {
                     "kind": "bad_tool_arguments",
                     "tool": "update_plan",
-                    "message": "plan cannot be empty",
+                    "message": "update_plan `plan` must be a non-empty list.",
                 },
-                "summary": "plan cannot be empty",
+                "summary": "update_plan `plan` must be a non-empty list.",
             }
         if in_progress_seen > 1:
             return {
