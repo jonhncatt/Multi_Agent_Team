@@ -5360,6 +5360,8 @@ function App() {
     active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
     completed_steps_count: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps.length : 0,
     failed_attempts_count: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts.length : 0,
+    progress_basis: Array.isArray(activeTaskState.progress_basis) ? activeTaskState.progress_basis : [],
+    evidence_refs: Array.isArray(activeTaskState.evidence_refs) ? activeTaskState.evidence_refs : [],
     validation_warnings: Array.isArray(activeTaskState.validation_warnings) ? activeTaskState.validation_warnings : [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
@@ -6570,6 +6572,24 @@ function App() {
                           ${formatRunFieldLabel(uiLocale, "validation_warnings")}: ${activeTaskCheckpoint.validation_warnings
                             .slice(0, 4)
                             .map((item) => ((item && typeof item === "object") ? (item.message || item.code || "") : String(item || "")))
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </div>
+                      `
+                    : null}
+                  ${activeTaskCheckpoint.progress_basis.length
+                    ? html`
+                        <div className="timeline-detail">
+                          ${formatRunFieldLabel(uiLocale, "progress_basis")}: ${activeTaskCheckpoint.progress_basis.slice(0, 4).join(" · ")}
+                        </div>
+                      `
+                    : null}
+                  ${activeTaskCheckpoint.evidence_refs.length
+                    ? html`
+                        <div className="timeline-detail">
+                          ${formatRunFieldLabel(uiLocale, "evidence_refs")}: ${activeTaskCheckpoint.evidence_refs
+                            .slice(0, 4)
+                            .map((item) => ((item && typeof item === "object") ? (item.ref || item.path || item.summary || item.tool || JSON.stringify(item)) : String(item || "")))
                             .filter(Boolean)
                             .join(" · ")}
                         </div>

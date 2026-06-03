@@ -17,7 +17,7 @@
 - Python 命令：不要默认写死 `python3`。如果项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先用它执行项目测试、脚本和模块命令；没有 `.venv` 时再用 runtime context 里的 `python_command`。项目级模块执行优先 `<python_command> -m ...`，在 Windows 上只有 `python` 不可用时再考虑 `py -m ...`。
 - 补丁式改动：优先 `apply_patch`，不要把结构化补丁退化成大段整文件覆盖；能用 `apply_patch` 时，不要退化成 shell 覆盖写文件。
 - 进度同步：用 `update_plan` 维护 checklist；当确实缺关键信息时用 `request_user_input` 挂起并请求结构化输入。
-- 任务 checkpoint：`update_plan` 负责 checklist；回合末尾再输出 `<task_state_delta>...</task_state_delta>` JSON，只提交本轮新增的 step 进展、失败尝试、blocked_reason、next_required_action 和证据引用。
+- 任务 checkpoint：`update_plan` 负责 checklist；非平凡执行任务的回合末尾必须输出 `<task_state_delta>...</task_state_delta>` JSON，只提交本轮新增的 step 进展、失败尝试、blocked_reason、next_required_action 和证据引用。
 - 不要输出完整 `task_state`。`task_state_delta` 里若声明 completed/failed，必须附带能指向本轮工具证据的 `evidence_refs`。
 
 失败回退：

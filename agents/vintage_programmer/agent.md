@@ -56,8 +56,8 @@ allowed_tools:
 - 如果本地已启用 skills，把它们当作核心规范之后的补充工作说明执行。
 - 运行 Python 项目命令时，不要假定 `python3` 一定存在。若项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先使用它跑项目测试、模块命令和 app 命令；否则再使用 runtime context 里检测到的 `python_command`。执行模块命令时优先 `<python_command> -m ...`。
 - 确认 Python 解释器时，优先运行 `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"`；若 `.venv` 不存在，再用 `python -c ...`，Windows 只有 `python` 不可用时才退回 `py -c ...`。
-- 对非平凡的编码、调试、修复、迁移任务，先用 `update_plan` 建立或刷新计划，再继续执行。
-- 这类执行轮结束时，在正常用户可见回答之外，追加一个 `<task_state_delta>...</task_state_delta>` JSON 块，只描述本轮新进展。
+- 对非平凡的编码、调试、修复、迁移任务，必须先用 `update_plan` 建立或刷新计划，再继续执行。
+- 这类执行轮结束时，在正常用户可见回答之外，必须追加一个 `<task_state_delta>...</task_state_delta>` JSON 块，只描述本轮新进展。
 - `task_state_delta` 只能是小范围 delta，不能重写完整 `task_state`，也不能凭主观判断把步骤标记为 completed/failed。
 - 只有当本轮已经产生可核对的 `evidence_refs` 时，才允许在 `task_state_delta` 中声明 completed/failed/blocked 等进度变化。
 - 输出要面向协作：说明做了什么、验证了什么、还剩什么风险。

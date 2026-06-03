@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5d"
+APP_VERSION = "3.1.5e"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -2436,27 +2436,37 @@ def _process_chat_request(
             if isinstance(inspector.get("session"), dict)
             else {}
         )
-        runtime_task_state: dict[str, Any] | None = None
-        if isinstance(runtime_result.get("task_state"), dict):
-            runtime_task_state = dict(runtime_result.get("task_state") or {})
-        elif isinstance(inspector_run_state.get("task_state"), dict):
-            runtime_task_state = dict(inspector_run_state.get("task_state") or {})
-        elif isinstance(inspector_session_state.get("task_state"), dict):
-            runtime_task_state = dict(inspector_session_state.get("task_state") or {})
+        runtime_task_state_delta: dict[str, Any] | None = None
+        if isinstance(runtime_result.get("task_state_delta"), dict):
+            runtime_task_state_delta = dict(runtime_result.get("task_state_delta") or {})
+        elif isinstance(inspector_run_state.get("task_state_delta"), dict):
+            runtime_task_state_delta = dict(inspector_run_state.get("task_state_delta") or {})
+        elif isinstance(inspector_session_state.get("task_state_delta"), dict):
+            runtime_task_state_delta = dict(inspector_session_state.get("task_state_delta") or {})
         fallback_error_for_task = runtime_error
         if not fallback_error_for_task:
             fallback_blocked_reason = str(runtime_result.get("blocked_reason") or inspector_run_state.get("blocked_reason") or "").strip()
             fallback_error_for_task = {"message": fallback_blocked_reason} if fallback_blocked_reason else {}
-        if isinstance(runtime_task_state, dict) and runtime_task_state:
-            next_task_state = session_context_impl.normalize_task_state(runtime_task_state)
+        task_state_base = {
+            **dict(previous_task_state or {}),
+            "task_id": normalized_focus.get("task_id") or previous_task_state.get("task_id") or "",
+            "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or previous_task_state.get("goal") or req.message[:240]),
+            "plan_items": list(previous_task_state.get("plan_items") or []),
+        }
+        if isinstance(runtime_task_state_delta, dict) and runtime_task_state_delta:
+            next_task_state, task_state_validation = session_context_impl.merge_task_state_delta(
+                task_state_base,
+                list(inspector_run_state.get("plan") or plan),
+                runtime_task_state_delta,
+                tool_events,
+                turn_status,
+                fallback_error_for_task,
+                pending_user_input,
+            )
         else:
+            task_state_validation = {"accepted": False, "applied_step_ids": [], "rejected_step_ids": [], "validation_warnings": []}
             next_task_state = session_context_impl.merge_task_state_after_turn(
-                {
-                    **dict(previous_task_state or {}),
-                    "task_id": normalized_focus.get("task_id") or previous_task_state.get("task_id") or "",
-                    "goal": str(inspector_run_state.get("goal") or normalized_focus.get("goal") or previous_task_state.get("goal") or req.message[:240]),
-                    "plan_items": list(previous_task_state.get("plan_items") or []),
-                },
+                task_state_base,
                 list(inspector_run_state.get("plan") or plan),
                 tool_events,
                 list(runtime_result.get("progress_signals") or inspector_run_state.get("progress_signals") or []),
@@ -2541,6 +2551,8 @@ def _process_chat_request(
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_state"] = dict(session.get("task_state") or {})
+        inspector_run_state["task_state_delta"] = dict(runtime_task_state_delta or {})
+        inspector_run_state["task_state_validation"] = dict(task_state_validation or {})
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
         inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
@@ -2556,6 +2568,8 @@ def _process_chat_request(
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_state"] = dict(session.get("task_state") or {})
+        inspector_session["task_state_delta"] = dict(runtime_task_state_delta or {})
+        inspector_session["task_state_validation"] = dict(task_state_validation or {})
         inspector_session["thread_memory"] = dict(thread_memory)
         inspector_session["recent_tasks"] = recent_tasks
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
@@ -2701,8 +2715,8 @@ def _process_chat_request(
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             work_cursor=dict(session.get("work_cursor") or {}),
             task_state=dict(session.get("task_state") or {}),
-            task_state_delta=dict(runtime_result.get("task_state_delta") or {}),
-            task_state_validation=dict(runtime_result.get("task_state_validation") or {}),
+            task_state_delta=dict(runtime_task_state_delta or {}),
+            task_state_validation=dict(task_state_validation or {}),
             recent_tasks=recent_tasks,
             activity=activity,
             context_meter=context_meter,

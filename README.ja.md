@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5d-blue)
+![Version](https://img.shields.io/badge/version-3.1.5e-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5d`
+現在の安定版: `3.1.5e`
 
 ## Stable Runtime
 
-3.1.5d は、3.1.5c の thread/runtime/UI 整理の上に、task checkpoint を canonical `task_state` と harness-validated `task_state_delta` へ強化したリリースです。checklist 自体は `update_plan` が維持し、step の完了や失敗は証拠を検証した後にだけ永続化されます。
+3.1.5e は、3.1.5d の task checkpoint 強化の上に、canonical な turn 終了時の落帳欠落を埋めたリリースです。`main.py` はまず `task_state_delta` を取り込み、runtime が返した完全な `task_state` をそのまま上書きせず、harness merge を通して session に反映します。
 
-3.1.5c と比べて、step evidence validator、永続化される `validation_warnings`、model-visible な task checkpoint 要約、そして Run/Debug パネルでの task state 可観測性が追加されました。旧来の turn 終了時推定ロジックは fallback としてのみ残しています。
+3.1.5d と比べて、`main.py` の delta-first merge 経路、delta がない場合の fallback 回帰テスト、そして Run パネルでの `progress_basis` / `evidence_refs` 可視化が追加されました。
 
 ## Max Output Tokens
 

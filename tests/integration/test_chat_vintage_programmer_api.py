@@ -840,6 +840,78 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
         return payload
 
 
+class _DeltaTaskStateRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        payload["plan"] = [
+            {"step": "Patch task_state merge", "status": "in_progress"},
+            {"step": "Run focused tests", "status": "pending"},
+        ]
+        payload["tool_events"] = [
+            {
+                "name": "apply_patch",
+                "input": {"path": "app/session_context.py"},
+                "output_preview": "patched",
+                "result_preview": {"files": ["app/session_context.py"]},
+                "status": "ok",
+                "group": "edit",
+                "source": "native",
+                "summary": "Patched app/session_context.py",
+                "source_refs": ["app/session_context.py"],
+            }
+        ]
+        payload["task_state_delta"] = {
+            "step_updates": [
+                {
+                    "step_id": "step-1",
+                    "status": "completed",
+                    "progress_basis": ["apply_patch: app/session_context.py"],
+                    "evidence_refs": [{"tool": "apply_patch", "ref": "app/session_context.py"}],
+                }
+            ],
+            "next_required_action": "Run focused tests",
+        }
+        payload["task_state"] = {
+            "task_id": "wrong-task",
+            "goal": "WRONG GOAL",
+            "status": "completed",
+            "plan_items": [],
+        }
+        payload["inspector"]["run_state"]["goal"] = "Patch validator"
+        payload["inspector"]["run_state"]["plan"] = list(payload["plan"])
+        payload["inspector"]["run_state"]["task_state"] = dict(payload["task_state"])
+        payload["inspector"]["run_state"]["task_state_delta"] = dict(payload["task_state_delta"])
+        return payload
+
+
+class _NoDeltaTaskStateRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+        payload["plan"] = [{"step": "Inspect workspace", "status": "completed"}]
+        payload["tool_events"] = [
+            {
+                "name": "read_file",
+                "input": {"path": "README.md"},
+                "output_preview": "ok",
+                "status": "ok",
+                "group": "read",
+                "source": "native",
+                "summary": "Read README.md",
+                "source_refs": ["README.md"],
+            }
+        ]
+        payload["task_state"] = {
+            "task_id": "wrong-task",
+            "goal": "WRONG GOAL",
+            "status": "completed",
+            "plan_items": [],
+        }
+        payload["inspector"]["run_state"]["goal"] = "Inspect workspace"
+        payload["inspector"]["run_state"]["plan"] = list(payload["plan"])
+        payload["inspector"]["run_state"]["task_state"] = dict(payload["task_state"])
+        return payload
+
+
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     for name in ("sessions", "uploads", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
@@ -927,7 +999,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.5d",
+            "app_version": "3.1.5e",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -969,7 +1041,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5d"
+    assert bootstrap_payload["app_version"] == "3.1.5e"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1717,6 +1789,128 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     clean_turns = list(((session.get("context_manager") or {}).get("clean_turns")) or [])
     assert all("model_dump" not in str((turn or {}).get("text") or "") for turn in clean_turns)
     assert all("llm_exchanges" not in str(turn or "") for turn in clean_turns)
+
+
+def test_chat_endpoint_prefers_task_state_delta_merge_over_runtime_task_state(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DeltaTaskStateRuntime())
+    client = TestClient(main_app.app)
+
+    delta_calls = {"count": 0}
+    fallback_calls = {"count": 0}
+    original_delta = main_app.session_context_impl.merge_task_state_delta
+    original_fallback = main_app.session_context_impl.merge_task_state_after_turn
+
+    def _spy_delta(*args, **kwargs):
+        delta_calls["count"] += 1
+        return original_delta(*args, **kwargs)
+
+    def _spy_fallback(*args, **kwargs):
+        fallback_calls["count"] += 1
+        return original_fallback(*args, **kwargs)
+
+    monkeypatch.setattr(main_app.session_context_impl, "merge_task_state_delta", _spy_delta)
+    monkeypatch.setattr(main_app.session_context_impl, "merge_task_state_after_turn", _spy_fallback)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["task_state"] = main_app.session_context_impl.normalize_task_state(
+        {
+            "task_id": "task-delta",
+            "goal": "Patch validator",
+            "status": "in_progress",
+            "plan_items": [
+                {"id": "step-1", "step": "Patch task_state merge", "status": "in_progress"},
+                {"id": "step-2", "step": "Run focused tests", "status": "pending"},
+            ],
+        }
+    )
+    main_app.session_store.save(session)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "继续修 task_state",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert delta_calls["count"] == 1
+    assert fallback_calls["count"] == 0
+    assert payload["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
+    assert payload["task_state_validation"]["accepted"] is True
+    assert payload["task_state"]["task_id"] != "wrong-task"
+    assert payload["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
+    assert payload["task_state"]["next_required_action"] == "Run focused tests"
+
+    saved = main_app.session_store.load(session["id"], default_project=main_app.project_store.ensure_default_project())
+    assert saved is not None
+    assert saved["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
+    assert saved["task_state"]["task_id"] != "wrong-task"
+
+
+def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _NoDeltaTaskStateRuntime())
+    client = TestClient(main_app.app)
+
+    delta_calls = {"count": 0}
+    fallback_calls = {"count": 0}
+    original_delta = main_app.session_context_impl.merge_task_state_delta
+    original_fallback = main_app.session_context_impl.merge_task_state_after_turn
+
+    def _spy_delta(*args, **kwargs):
+        delta_calls["count"] += 1
+        return original_delta(*args, **kwargs)
+
+    def _spy_fallback(*args, **kwargs):
+        fallback_calls["count"] += 1
+        return original_fallback(*args, **kwargs)
+
+    monkeypatch.setattr(main_app.session_context_impl, "merge_task_state_delta", _spy_delta)
+    monkeypatch.setattr(main_app.session_context_impl, "merge_task_state_after_turn", _spy_fallback)
+
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["task_state"] = main_app.session_context_impl.normalize_task_state(
+        {
+            "task_id": "task-fallback",
+            "goal": "Inspect workspace",
+            "status": "in_progress",
+            "plan_items": [{"id": "step-10", "step": "Inspect workspace", "status": "in_progress"}],
+        }
+    )
+    main_app.session_store.save(session)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "继续",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert delta_calls["count"] == 0
+    assert fallback_calls["count"] == 1
+    assert payload["task_state_delta"] == {}
+    assert payload["task_state"]["task_id"] != "wrong-task"
+    assert payload["task_state"]["completed_steps"][-1]["step"] == "Inspect workspace"
 
 
 def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:

@@ -825,6 +825,21 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
+def test_run_panel_surfaces_task_state_validation_and_evidence_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "completed_steps_count" in script
+    assert "failed_attempts_count" in script
+    assert "validation_warnings" in script
+    assert "progress_basis" in script
+    assert "evidence_refs" in script
+    assert 'formatRunFieldLabel(uiLocale, "progress_basis")' in script
+    assert 'formatRunFieldLabel(uiLocale, "evidence_refs")' in script
+    assert '"run.field.progress_basis": "进展依据"' in locales
+    assert '"run.field.evidence_refs": "证据引用"' in locales
+
+
 def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

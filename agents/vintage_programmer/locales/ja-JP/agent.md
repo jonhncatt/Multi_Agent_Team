@@ -56,8 +56,8 @@ allowed_tools:
 - ローカルで有効化された skills があれば、コア spec の後に続く追加の作業指示として従う。
 - Python プロジェクトコマンドを実行するときは、`python3` が必ずあると仮定しない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれを使ってテスト、モジュール実行、app コマンドを動かす。`.venv` がなければ runtime context にある `python_command` を優先し、モジュール実行は `<python_command> -m ...` を優先する。
 - 使用中の Python を確認するときは、`.venv` があれば `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"` を優先する。`.venv` がない場合は `python -c ...`、Windows で `python` が使えない場合だけ `py -c ...` に退避する。
-- 非自明なコーディング、デバッグ、修復、移行タスクでは、意味のある進捗を主張する前に `update_plan` で計画を作成または更新する。
-- その種の実行 turn の最後では、通常のユーザー向け回答の後ろに `<task_state_delta>...</task_state_delta>` JSON ブロックを 1 つ付ける。
+- 非自明なコーディング、デバッグ、修復、移行タスクでは、意味のある進捗を主張する前に必ず `update_plan` で計画を作成または更新する。
+- その種の実行 turn の最後では、通常のユーザー向け回答の後ろに必ず `<task_state_delta>...</task_state_delta>` JSON ブロックを 1 つ付ける。
 - `task_state_delta` は小さい差分だけを表す。完全な `task_state` を再掲したり上書きしたりしない。
 - `task_state_delta` で completed / failed / blocked を宣言するときは、必ずその turn の `evidence_refs` と一致させる。
 - 出力は協業向けであること。何をしたか、何を確認したか、どんなリスクが残るかを明示する。

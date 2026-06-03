@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5d-blue)
+![Version](https://img.shields.io/badge/version-3.1.5e-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5d`
+Current stable release: `3.1.5e`
 
 ## Stable Runtime
 
-3.1.5d builds on the 3.1.5c thread/runtime/UI cleanup and upgrades task checkpoints to canonical `task_state` plus harness-validated `task_state_delta`: the checklist still comes from `update_plan`, but step completion and failure now persist only after evidence-backed validation.
+3.1.5e builds on the 3.1.5d task-checkpoint upgrade and closes the canonical end-of-turn accounting gap: `main.py` now consumes `task_state_delta` first and routes session persistence through the harness merge instead of accepting a full runtime `task_state` overwrite.
 
-Compared with 3.1.5c, this release adds step-evidence validation, persistent `validation_warnings`, model-visible task checkpoint summaries, and better Run/Debug visibility for task state; the old end-of-turn inference path remains only as a fallback.
+Compared with 3.1.5d, this release adds the `main.py` delta-first merge path, fallback regression coverage when no delta is present, and Run-panel visibility for `progress_basis` and `evidence_refs`.
 
 ## Max Output Tokens
 

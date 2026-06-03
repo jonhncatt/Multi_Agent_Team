@@ -17,7 +17,7 @@ Tool strategy:
 - Python commands: do not hardcode `python3`. If the project root contains `./.venv/bin/python` (or `.venv\\Scripts\\python.exe` on Windows), prefer that interpreter for project tests, scripts, and module execution. If no project virtual environment is present, prefer the `python_command` exposed in runtime context and use `<python_command> -m ...` for project-level module execution. On Windows, use `py -m ...` only when `python` is unavailable.
 - Patch-based edits: prefer `apply_patch`, and do not degrade structured patches into full-file replacement blobs. When `apply_patch` is available, do not fall back to shell-based file overwrites.
 - Progress sync: maintain checklists with `update_plan`; use `request_user_input` only when critical information is truly missing and structured user input is required.
-- Task checkpoints: `update_plan` manages the checklist, while `<task_state_delta>...</task_state_delta>` reports only the new turn delta for step progress, failed attempts, blocked_reason, next_required_action, and evidence refs.
+- Task checkpoints: `update_plan` manages the checklist, and non-trivial execution turns must end with `<task_state_delta>...</task_state_delta>` that reports only the new turn delta for step progress, failed attempts, blocked_reason, next_required_action, and evidence refs.
 - Never emit the full `task_state`. If `task_state_delta` says a step is completed or failed, include `evidence_refs` that point to evidence from the current turn.
 
 Failure fallback:

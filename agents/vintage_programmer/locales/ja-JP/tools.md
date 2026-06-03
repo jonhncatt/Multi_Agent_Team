@@ -17,7 +17,7 @@
 - Python コマンド: `python3` を固定で書かない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれでプロジェクトのテスト、スクリプト、モジュール実行を行う。`.venv` がない場合は runtime context の `python_command` を優先し、プロジェクト単位のモジュール実行は `<python_command> -m ...` を優先する。Windows では `python` が使えない場合だけ `py -m ...` を検討する。
 - パッチ型変更: まず `apply_patch` を使い、構造化パッチを巨大なファイル全置換に退化させない。`apply_patch` が使えるときは shell ベースの上書きに退化させない。
 - 進捗同期: `update_plan` で checklist を維持し、重要情報が本当に欠けているときだけ `request_user_input` を使って構造化入力を待つ。
-- タスク checkpoint: checklist は `update_plan` が管理し、回合末尾の `<task_state_delta>...</task_state_delta>` では、その turn で増えた step 進捗、failed attempts、blocked_reason、next_required_action、evidence refs だけを報告する。
+- タスク checkpoint: checklist は `update_plan` が管理し、非自明な実行 turn の末尾では必ず `<task_state_delta>...</task_state_delta>` を出して、その turn で増えた step 進捗、failed attempts、blocked_reason、next_required_action、evidence refs だけを報告する。
 - 完全な `task_state` は出力しない。`task_state_delta` で completed / failed を主張するときは、その turn の証拠に結び付く `evidence_refs` を必ず含める。
 
 失敗時のフォールバック:

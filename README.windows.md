@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5d`。
+当前稳定版本：`3.1.5e`。
 
 ## Stable Runtime
 
-3.1.5d 在 3.1.5c 的基础上，把 task checkpoint 升级为 canonical `task_state` + harness-validated `task_state_delta`，并加入 step evidence validator、`validation_warnings` 和更完整的 Run/Debug task state 观测。
-它继续保持 canonical 29-tool surface 不变；旧的 turn-end 推断逻辑只作为 fallback 保留。
+3.1.5e 在 3.1.5d 的基础上，补齐了 `main.py` 的 delta-first task state merge，并加入无 delta 时的 fallback 回归测试，以及 Run 面板中的 `progress_basis` / `evidence_refs` 观测。
+它继续保持 canonical 29-tool surface 不变；runtime 返回完整 `task_state` 不再直接覆盖 session canonical state。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
