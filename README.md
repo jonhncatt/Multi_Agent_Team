@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5f-blue)
+![Version](https://img.shields.io/badge/version-3.1.5g-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5f`
+当前稳定版本：`3.1.5g`
 
 ## Stable Runtime
 
-3.1.5f 在 3.1.5e 的 delta-first task state merge 之上，补齐了真实观测闭环：run sidecar 现在持久化 `task_state` / `task_state_delta` / `task_state_validation`，Run/Debug 面板可直接查看关键 checkpoint 字段，并对缺失 `task_state_delta` 的非平凡执行轮给出显式 validation warning。
+3.1.5g 收紧了前端 turn 完成收尾和滚动行为：`run_finished` / `turn/completed` 不再提前清理运行态，pending assistant 会在 final payload 或稳定 fallback 文本到位后再收尾；聊天区改为 stick-to-bottom，只在用户停留底部时自动滚动，并提供显式“回到底部”按钮。
 
-相对 3.1.5d，本版本补上了 `main.py` 的 delta-first merge 路径、无 delta 时的 fallback 回归测试，以及 Run 面板中的 `progress_basis` / `evidence_refs` 可视化。
+相对 3.1.5f，本版本修复了“计时停了但正文还没落下”的 UI 缺口，以及查看历史消息时被流式更新强制拉回底部的问题。
 
 ## Max Output Tokens
 

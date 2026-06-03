@@ -486,6 +486,21 @@ button {
   margin: 2px 0 12px;
 }
 
+.jump-latest-row {
+  position: sticky;
+  bottom: 12px;
+  display: flex;
+  justify-content: center;
+  padding-top: 10px;
+  pointer-events: none;
+}
+
+.jump-latest-row .ghost-btn {
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-soft);
+}
+
 .empty-panel {
   width: min(920px, 100%);
   margin: 0;

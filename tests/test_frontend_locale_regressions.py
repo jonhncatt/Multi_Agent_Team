@@ -673,6 +673,70 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     assert "started_at" not in run_started_body
 
 
+def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    handle_send_match = re.search(
+        r"async function handleSend\(overrideText\) \{(?P<body>.*?)\n  }\n\n  async function loadSpecDetail",
+        script,
+        re.S,
+    )
+    assert handle_send_match, "handleSend function not found"
+    body = handle_send_match.group("body")
+
+    assert "const stabilizePendingAssistant = (options = {}) => {" in body
+    assert "const cleanupRunUi = async () => {" in body
+
+    run_finished_match = re.search(
+        r'else if \(event === "run_finished"\) \{(?P<body>.*?)\n            \} else if \(event === "run_failed"\)',
+        body,
+        re.S,
+    )
+    assert run_finished_match, "run_finished branch not found"
+    run_finished_body = run_finished_match.group("body")
+    assert "stabilizePendingAssistant({" in run_finished_body
+    assert "setSending(false)" not in run_finished_body
+    assert "setActiveRunThreadId(\"\")" not in run_finished_body
+    assert "activeRunId: \"\"" not in run_finished_body
+
+    turn_completed_match = re.search(
+        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
+        body,
+        re.S,
+    )
+    assert turn_completed_match, "turn/completed branch not found"
+    turn_completed_body = turn_completed_match.group("body")
+    assert "stabilizePendingAssistant({" in turn_completed_body
+    assert "setSending(false)" not in turn_completed_body
+    assert "setActiveRunThreadId(\"\")" not in turn_completed_body
+
+    assert "await cleanupRunUi();" in body
+    assert "if (!uiFinalized) {" in body
+
+
+def test_chat_auto_scroll_switches_to_stick_to_bottom_mode() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;" in script
+    assert "const [showJumpToLatest, setShowJumpToLatest] = useState(false);" in script
+    assert "const autoScrollEnabledRef = useRef(true);" in script
+    assert "function isNearChatBottom(element, threshold = CHAT_AUTO_SCROLL_THRESHOLD_PX)" in script
+    assert "function syncChatScrollState(element)" in script
+    assert "function scrollChatToBottom(options = {})" in script
+    assert "function jumpToLatest()" in script
+    assert 'el.addEventListener("scroll", handleScroll, { passive: true });' in script
+    assert "if (!autoScrollEnabledRef.current) {" in script
+    assert "scrollChatToBottom();" in script
+    assert 'onClick=${jumpToLatest}' in script
+    assert 't("buttons.jump_to_latest")' in script
+    assert "scrollTop = chatListRef.current.scrollHeight" not in script
+    assert ".jump-latest-row" in styles
+    assert '"buttons.jump_to_latest": "回到底部"' in locales
+    assert '"buttons.jump_to_latest": "Jump to latest"' in locales
+
+
 def test_model_draft_live_cards_cover_non_terminal_activity_states() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

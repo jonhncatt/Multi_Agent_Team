@@ -46,6 +46,7 @@ const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
 const MAIN_LIVE_CARD_LIMIT = 8;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
+const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
@@ -2815,8 +2816,11 @@ function App() {
   const [renamingThread, setRenamingThread] = useState(false);
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
+  const autoScrollEnabledRef = useRef(true);
+  const chatScrollRafRef = useRef(0);
   const contextMeterRef = useRef(null);
   const contextMeterCloseTimerRef = useRef(null);
   const bootReadyRef = useRef(false);
@@ -2914,6 +2918,46 @@ function App() {
   const uiLocale = normalizeLocaleValue(chatSettings.locale || "", supportedLocales, defaultLocale);
   const t = (key, replacements = null) => translateUi(uiLocale, key, replacements);
   const currentTabLabel = (tab) => translateUi(uiLocale, `tabs.${tab}`);
+
+  function isNearChatBottom(element, threshold = CHAT_AUTO_SCROLL_THRESHOLD_PX) {
+    const el = element || chatListRef.current;
+    if (!el) return true;
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) < threshold;
+  }
+
+  function syncChatScrollState(element) {
+    const el = element || chatListRef.current;
+    if (!el) return true;
+    const nearBottom = isNearChatBottom(el);
+    autoScrollEnabledRef.current = nearBottom;
+    setShowJumpToLatest((prev) => (prev === !nearBottom ? prev : !nearBottom));
+    return nearBottom;
+  }
+
+  function scrollChatToBottom(options = {}) {
+    const el = chatListRef.current;
+    if (!el) return;
+    const behavior = String(options.behavior || "auto");
+    autoScrollEnabledRef.current = true;
+    setShowJumpToLatest(false);
+    if (chatScrollRafRef.current) {
+      window.cancelAnimationFrame(chatScrollRafRef.current);
+      chatScrollRafRef.current = 0;
+    }
+    chatScrollRafRef.current = window.requestAnimationFrame(() => {
+      chatScrollRafRef.current = 0;
+      if (!chatListRef.current) return;
+      chatListRef.current.scrollTo({
+        top: chatListRef.current.scrollHeight,
+        behavior,
+      });
+      syncChatScrollState(chatListRef.current);
+    });
+  }
+
+  function jumpToLatest() {
+    scrollChatToBottom({ behavior: "smooth" });
+  }
 
   useEffect(() => {
     if (!health) return;
@@ -3083,12 +3127,33 @@ function App() {
   }, [activeProvider, allowCustomModel, chatSettings.model, modelOptions]);
 
   useEffect(() => {
-    if (!chatListRef.current) return;
-    chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
-  }, [messages, drawerView]);
+    const el = chatListRef.current;
+    if (!el) return undefined;
+    const handleScroll = () => {
+      syncChatScrollState(el);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!autoScrollEnabledRef.current) {
+      syncChatScrollState(chatListRef.current);
+      return undefined;
+    }
+    scrollChatToBottom();
+    return undefined;
+  }, [messages]);
 
   useEffect(() => {
     return () => {
+      if (chatScrollRafRef.current) {
+        window.cancelAnimationFrame(chatScrollRafRef.current);
+        chatScrollRafRef.current = 0;
+      }
       if (contextMeterCloseTimerRef.current) {
         window.clearTimeout(contextMeterCloseTimerRef.current);
         contextMeterCloseTimerRef.current = null;
@@ -3576,6 +3641,11 @@ function App() {
     setMessages(snapshot.messages || []);
     setSessionRuntimeState(snapshot.sessionRuntimeState || {});
     applyVisibleThreadActiveTurn(snapshot.activeTurn || createEmptyThreadActiveTurn());
+    autoScrollEnabledRef.current = true;
+    setShowJumpToLatest(false);
+    if (snapshot.messages && snapshot.messages.length) {
+      scrollChatToBottom();
+    }
     if (snapshot.detail) {
       updateThreadStatus(key, String(snapshot.detail.status || "idle"));
     }
@@ -4635,6 +4705,7 @@ function App() {
       let latestGlobalTokenTotals = {};
       let completedTurnPayload = null;
       let latestActivity = normalizeMessageActivity(pendingMessage.activity);
+      let uiFinalized = false;
       ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
       updateOwnerMessages = (value) => {
         if (ownerThreadVisible()) {
@@ -4719,6 +4790,61 @@ function App() {
           )),
         );
       };
+      const resolveStableAssistantText = (options = {}) => {
+        const allowDraft = Boolean(options.allowDraft);
+        const candidates = [
+          assistantText,
+          latestRunSnapshot.final_answer,
+          latestActivity.final_answer,
+        ];
+        if (allowDraft) {
+          candidates.push(
+            latestRunSnapshot.model_draft,
+            latestActivity.model_draft,
+          );
+        }
+        return String(candidates.find((item) => String(item || "").trim()) || "").trim();
+      };
+      const stabilizePendingAssistant = (options = {}) => {
+        const nextStatus = String(options.status || latestActivity.status || "running").trim() || "running";
+        const durationMs = Math.max(0, Number(options.durationMs || 0) || 0);
+        const fallbackLabel = String(options.fallbackLabel || "").trim();
+        const stableText = resolveStableAssistantText({ allowDraft: Boolean(options.allowDraft) });
+        if (stableText) {
+          assistantText = stableText;
+          assistantMessageStarted = true;
+          completePendingText(stableText);
+        } else if (fallbackLabel) {
+          replacePendingText(fallbackLabel, { onlyWhileWaiting: false });
+        }
+        patchPendingActivity((activity) => mergeActivityState(activity, {
+          status: nextStatus,
+          finished_at: isActivityTerminalStatus(nextStatus) ? Date.now() : 0,
+          run_duration_ms: durationMs || activity.run_duration_ms || 0,
+          final_elapsed_ms: durationMs || activity.final_elapsed_ms || activity.run_duration_ms || 0,
+          final_answer: stableText || activity.final_answer || "",
+          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || ""),
+        }));
+        return Boolean(stableText);
+      };
+      const cleanupRunUi = async () => {
+        if (uiFinalized) return;
+        uiFinalized = true;
+        await new Promise((resolve) => {
+          window.requestAnimationFrame(() => {
+            if (updateOwnerActiveTurn) {
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
+            } else {
+              setActiveRunId("");
+              setStoppingRun(false);
+            }
+            setSending(false);
+            setStoppingRun(false);
+            setActiveRunThreadId("");
+            resolve();
+          });
+        });
+      };
       const pushLiveLog = (type, text) => {
         updateOwnerActiveTurn((prev) => ({
           ...prev,
@@ -4792,7 +4918,7 @@ function App() {
           (health && health.default_model) ||
           "",
         ).trim(),
-        text: assistantText || "",
+        text: resolveStableAssistantText({ allowDraft: true }) || "",
         final_answer: String(latestRunSnapshot.final_answer || ""),
         model_draft: String(latestRunSnapshot.model_draft || (latestRunSnapshot.turn_status === "completed" ? "" : assistantText || "")),
         runtime_error: latestRunSnapshot.runtime_error || {},
@@ -4805,6 +4931,10 @@ function App() {
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
+        work_cursor: latestRunSnapshot.work_cursor || {},
+        task_state: latestRunSnapshot.task_state || {},
+        task_state_delta: latestRunSnapshot.task_state_delta || {},
+        task_state_validation: latestRunSnapshot.task_state_validation || {},
         activity: latestActivity,
         context_meter: latestRunSnapshot.context_meter || {},
         compaction_status: latestRunSnapshot.compaction_status || {},
@@ -4854,27 +4984,17 @@ function App() {
               updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || "") }));
             } else if (event === "run_finished") {
               const nextStatus = String(payload.turn_status || latestRunSnapshot.turn_status || "completed");
-              patchPendingActivity((activity) => mergeActivityState(activity, {
-                run_id: String(payload.run_id || ""),
+              stabilizePendingAssistant({
                 status: nextStatus === "needs_user_input" ? "blocked" : (nextStatus || "completed"),
-                finished_at: Date.now(),
-                run_duration_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
-                final_elapsed_ms: Math.max(0, Number(payload.duration_ms || 0) || 0),
-              }));
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
-              setSending(false);
-              setStoppingRun(false);
-              setActiveRunThreadId("");
+                durationMs: Math.max(0, Number(payload.duration_ms || 0) || 0),
+                allowDraft: true,
+                fallbackLabel: t("buttons.saving"),
+              });
             } else if (event === "run_failed") {
-              patchPendingActivity((activity) => mergeActivityState(activity, {
-                run_id: String(payload.run_id || ""),
+              stabilizePendingAssistant({
                 status: "failed",
-                finished_at: Date.now(),
-              }));
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
-              setSending(false);
-              setStoppingRun(false);
-              setActiveRunThreadId("");
+                allowDraft: true,
+              });
             } else if (event === "trace_event") {
               const trace = normalizeTraceEvent(payload.trace || {});
               if (trace.id) {
@@ -4935,15 +5055,11 @@ function App() {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
-              patchPendingActivity((activity) => mergeActivityState(activity, {
+              stabilizePendingAssistant({
                 status: completionStatus === "needs_user_input" ? "blocked" : (completionStatus || "completed"),
-                finished_at: Date.now(),
-              }));
-              if (assistantText) completePendingText(assistantText);
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
-              setSending(false);
-              setStoppingRun(false);
-              setActiveRunThreadId("");
+                allowDraft: true,
+                fallbackLabel: t("buttons.saving"),
+              });
             } else if (event === "item/started") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
               if (item.id) {
@@ -5150,9 +5266,7 @@ function App() {
         "response",
         t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
       );
-      setSending(false);
-      setStoppingRun(false);
-      setActiveRunThreadId("");
+      await cleanupRunUi();
     } catch (err) {
       const nextError = applyUiError(err, t("errors.request_failed"));
       pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
@@ -5162,15 +5276,17 @@ function App() {
         setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
       }
     } finally {
-      if (updateOwnerActiveTurn) {
-        updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
-      } else {
-        setActiveRunId("");
+      if (!uiFinalized) {
+        if (updateOwnerActiveTurn) {
+          updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", stoppingRun: false }));
+        } else {
+          setActiveRunId("");
+          setStoppingRun(false);
+        }
+        setSending(false);
         setStoppingRun(false);
+        setActiveRunThreadId("");
       }
-      setSending(false);
-      setStoppingRun(false);
-      setActiveRunThreadId("");
     }
   }
 
@@ -6244,6 +6360,15 @@ function App() {
                   <div className="starter-list">${starterPromptChips(uiLocale, setDraft, handleSend)}</div>
                 </section>
               `}
+          ${showJumpToLatest && messages.length
+            ? html`
+                <div className="jump-latest-row">
+                  <button className="ghost-btn compact-btn" type="button" onClick=${jumpToLatest}>
+                    ${t("buttons.jump_to_latest")}
+                  </button>
+                </div>
+              `
+            : null}
         </section>
 
         <section

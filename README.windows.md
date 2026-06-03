@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5f`。
+当前稳定版本：`3.1.5g`。
 
 ## Stable Runtime
 
-3.1.5f 在 3.1.5e 的基础上，把 task checkpoint 的可观测链路补全：run sidecar 持久化 `task_state` / `task_state_delta` / `task_state_validation`，Run/Debug 面板可直接检查关键字段，并对缺失 `task_state_delta` 的非平凡执行轮产生显式 warning。
-它继续保持 canonical 29-tool surface 不变；runtime 返回完整 `task_state` 不再直接覆盖 session canonical state。
+3.1.5g 修正了前端回合结束和聊天滚动体验：`run_finished` / `turn/completed` 不再提前清空运行态，assistant 正文会在 final payload 或稳定 fallback 文本到位后再落定；聊天区仅在用户停留底部时自动滚动，并提供显式“回到底部”按钮。
+它继续保持 canonical 29-tool surface 不变；这次调整只收紧前端显示与收尾路径，不改变 task checkpoint 的 canonical merge 规则。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
