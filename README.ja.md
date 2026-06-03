@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5e-blue)
+![Version](https://img.shields.io/badge/version-3.1.5f-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5e`
+現在の安定版: `3.1.5f`
 
 ## Stable Runtime
 
-3.1.5e は、3.1.5d の task checkpoint 強化の上に、canonical な turn 終了時の落帳欠落を埋めたリリースです。`main.py` はまず `task_state_delta` を取り込み、runtime が返した完全な `task_state` をそのまま上書きせず、harness merge を通して session に反映します。
+3.1.5f は、3.1.5e の delta-first task state merge を土台に、観測の欠落を埋めるリリースです。run sidecar に `task_state` / `task_state_delta` / `task_state_validation` を保存し、Run/Debug パネルから checkpoint の主要項目を直接確認できるようにし、`task_state_delta` が欠けた非自明な実行 turn には明示的な validation warning を出します。
 
 3.1.5d と比べて、`main.py` の delta-first merge 経路、delta がない場合の fallback 回帰テスト、そして Run パネルでの `progress_basis` / `evidence_refs` 可視化が追加されました。
 

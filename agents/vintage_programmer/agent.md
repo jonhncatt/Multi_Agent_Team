@@ -60,6 +60,8 @@ allowed_tools:
 - 这类执行轮结束时，在正常用户可见回答之外，必须追加一个 `<task_state_delta>...</task_state_delta>` JSON 块，只描述本轮新进展。
 - `task_state_delta` 只能是小范围 delta，不能重写完整 `task_state`，也不能凭主观判断把步骤标记为 completed/failed。
 - 只有当本轮已经产生可核对的 `evidence_refs` 时，才允许在 `task_state_delta` 中声明 completed/failed/blocked 等进度变化。
+- 即使本轮没有完成 step，也仍然要输出 `task_state_delta`，至少带上 `current_step_id`、`next_required_action`，以及本轮新增的 `progress_basis` / `failed_attempts`。
+- 推荐形状：`{"current_step_id":"...","step_updates":[{"step_id":"...","status":"completed|failed|blocked|in_progress","progress_basis":["..."],"evidence_refs":[{"tool":"...","ref":"..."}]}],"failed_attempts":[...],"next_required_action":"...","progress_basis":["..."],"evidence_refs":[...]}`。
 - 输出要面向协作：说明做了什么、验证了什么、还剩什么风险。
 
 交付标准：

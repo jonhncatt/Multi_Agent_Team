@@ -829,15 +829,43 @@ def test_run_panel_surfaces_task_state_validation_and_evidence_details() -> None
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
+    assert "renderRunStateDetail" in script
+    assert "completed_steps: Array.isArray(activeTaskState.completed_steps)" in script
+    assert "failed_attempts: Array.isArray(activeTaskState.failed_attempts)" in script
     assert "completed_steps_count" in script
     assert "failed_attempts_count" in script
     assert "validation_warnings" in script
     assert "progress_basis" in script
     assert "evidence_refs" in script
+    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "completed_steps"), activeTaskCheckpoint.completed_steps)' in script
+    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "failed_attempts"), activeTaskCheckpoint.failed_attempts)' in script
+    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "validation_warnings"), activeTaskCheckpoint.validation_warnings)' in script
+    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "progress_basis"), activeTaskCheckpoint.progress_basis)' in script
+    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "evidence_refs"), activeTaskCheckpoint.evidence_refs)' in script
     assert 'formatRunFieldLabel(uiLocale, "progress_basis")' in script
     assert 'formatRunFieldLabel(uiLocale, "evidence_refs")' in script
     assert '"run.field.progress_basis": "进展依据"' in locales
     assert '"run.field.evidence_refs": "证据引用"' in locales
+
+
+def test_debug_panel_reads_task_state_from_run_artifact_or_inspector_fallback() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    debug_body = re.search(
+        r"const renderActivityDebugDetails = \(message, projection\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
+        script,
+        re.S,
+    )
+    assert debug_body, "renderActivityDebugDetails helper not found"
+    body = debug_body.group("body")
+    assert "const debugRunState = inspector.run_state" in body
+    assert "const debugSessionState = inspector.session" in body
+    assert "const debugTaskState = runArtifact.task_state" in body
+    assert "const debugTaskStateDelta = runArtifact.task_state_delta" in body
+    assert "const debugTaskStateValidation = runArtifact.task_state_validation" in body
+    assert 'renderDetailBlock("task_state", debugTaskState)' in body
+    assert 'renderDetailBlock("task_state_delta", debugTaskStateDelta)' in body
+    assert 'renderDetailBlock("task_state_validation", debugTaskStateValidation)' in body
 
 
 def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:

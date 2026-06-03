@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5e"
+APP_VERSION = "3.1.5f"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -1550,21 +1550,29 @@ def _build_run_snapshot(
     evidence_status: str = "not_needed",
     context_meter: dict[str, Any] | None = None,
     compaction_status: dict[str, Any] | None = None,
+    work_cursor: dict[str, Any] | None = None,
+    task_state: dict[str, Any] | None = None,
+    task_state_delta: dict[str, Any] | None = None,
+    task_state_validation: dict[str, Any] | None = None,
     model_draft: str = "",
     final_answer: str = "",
     runtime_error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_focus = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus or {})
-    work_cursor = session_context_impl.normalize_work_cursor(
-        {
+    normalized_work_cursor = session_context_impl.normalize_work_cursor(
+        work_cursor
+        if isinstance(work_cursor, dict) and work_cursor
+        else {
             "project_root": normalized_focus.get("project_root") or "",
             "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
             "active_files": normalized_focus.get("active_files") or [],
             "active_attachments": normalized_focus.get("active_attachments") or [],
         }
     )
-    task_state = session_context_impl.normalize_task_state(
-        {
+    normalized_task_state = session_context_impl.normalize_task_state(
+        task_state
+        if isinstance(task_state, dict) and task_state
+        else {
             "task_id": normalized_focus.get("task_id") or "",
             "goal": str(goal or normalized_focus.get("goal") or "").strip(),
             "status": str(turn_status or "running"),
@@ -1578,8 +1586,8 @@ def _build_run_snapshot(
         "turn_status": str(turn_status or "running"),
         "cwd": str(cwd or normalized_focus.get("cwd") or "").strip(),
         "current_task_focus": normalized_focus,
-        "work_cursor": work_cursor,
-        "task_state": task_state,
+        "work_cursor": normalized_work_cursor,
+        "task_state": normalized_task_state,
         "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
         "pending_user_input": dict(pending_user_input or {}),
         "tool_count": int(tool_count or 0),
@@ -1587,6 +1595,10 @@ def _build_run_snapshot(
         "context_meter": dict(context_meter or {}),
         "compaction_status": dict(compaction_status or {}),
     }
+    if isinstance(task_state_delta, dict) and task_state_delta:
+        payload["task_state_delta"] = session_context_impl.normalize_task_state_delta(task_state_delta)
+    if isinstance(task_state_validation, dict) and task_state_validation:
+        payload["task_state_validation"] = dict(task_state_validation)
     if str(model_draft or "").strip():
         payload["model_draft"] = str(model_draft or "")
     if str(final_answer or "").strip():
@@ -2464,7 +2476,23 @@ def _process_chat_request(
                 pending_user_input,
             )
         else:
-            task_state_validation = {"accepted": False, "applied_step_ids": [], "rejected_step_ids": [], "validation_warnings": []}
+            missing_delta_warnings = []
+            if list(inspector_run_state.get("plan") or plan) or list(tool_events or []):
+                missing_delta_warnings = [
+                    {
+                        "code": "missing_task_state_delta",
+                        "message": "Non-trivial execution turn completed without task_state_delta; fallback task_state merge was applied.",
+                        "step_id": "",
+                        "severity": "warning",
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                ]
+            task_state_validation = {
+                "accepted": False,
+                "applied_step_ids": [],
+                "rejected_step_ids": [],
+                "validation_warnings": missing_delta_warnings,
+            }
             next_task_state = session_context_impl.merge_task_state_after_turn(
                 task_state_base,
                 list(inspector_run_state.get("plan") or plan),
@@ -2474,6 +2502,8 @@ def _process_chat_request(
                 fallback_error_for_task,
                 pending_user_input,
             )
+            if missing_delta_warnings:
+                next_task_state["validation_warnings"] = missing_delta_warnings
         if not next_task_state.get("task_id") and normalized_focus.get("task_id"):
             next_task_state["task_id"] = normalized_focus.get("task_id") or ""
         if not next_task_state.get("goal"):
@@ -2598,6 +2628,10 @@ def _process_chat_request(
                     "effective_model": selected_model,
                     "permission_profile": permission_profile,
                     "turn_status": turn_status,
+                    "work_cursor": dict(session.get("work_cursor") or {}),
+                    "task_state": dict(session.get("task_state") or {}),
+                    "task_state_delta": dict(runtime_task_state_delta or {}),
+                    "task_state_validation": dict(task_state_validation or {}),
                 },
             )
         session_store.save(session)
@@ -2623,6 +2657,10 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                work_cursor=dict(session.get("work_cursor") or {}),
+                task_state=dict(session.get("task_state") or {}),
+                task_state_delta=dict(runtime_task_state_delta or {}),
+                task_state_validation=dict(task_state_validation or {}),
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,
@@ -2750,6 +2788,10 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                work_cursor=dict(session.get("work_cursor") or {}),
+                task_state=dict(session.get("task_state") or {}),
+                task_state_delta=dict(runtime_task_state_delta or {}),
+                task_state_validation=dict(task_state_validation or {}),
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,
@@ -2776,6 +2818,10 @@ def _process_chat_request(
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
                 compaction_status=compaction_status,
+                work_cursor=dict(session.get("work_cursor") or {}),
+                task_state=dict(session.get("task_state") or {}),
+                task_state_delta=dict(runtime_task_state_delta or {}),
+                task_state_validation=dict(task_state_validation or {}),
                 model_draft=model_draft,
                 final_answer=final_answer,
                 runtime_error=runtime_error,

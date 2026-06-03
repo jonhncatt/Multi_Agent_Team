@@ -19,6 +19,8 @@
 - 进度同步：用 `update_plan` 维护 checklist；当确实缺关键信息时用 `request_user_input` 挂起并请求结构化输入。
 - 任务 checkpoint：`update_plan` 负责 checklist；非平凡执行任务的回合末尾必须输出 `<task_state_delta>...</task_state_delta>` JSON，只提交本轮新增的 step 进展、失败尝试、blocked_reason、next_required_action 和证据引用。
 - 不要输出完整 `task_state`。`task_state_delta` 里若声明 completed/failed，必须附带能指向本轮工具证据的 `evidence_refs`。
+- 即使本轮没有完成 step，也要输出 `task_state_delta`，至少写明 `current_step_id`、`next_required_action`，以及本轮新增的 `progress_basis` 或 `failed_attempts`。
+- 推荐 JSON 结构：`{"current_step_id":"...","step_updates":[...],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`。
 
 失败回退：
 - 工具失败时要说明失败点和影响，不假装已完成。

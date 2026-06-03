@@ -19,6 +19,8 @@ Tool strategy:
 - Progress sync: maintain checklists with `update_plan`; use `request_user_input` only when critical information is truly missing and structured user input is required.
 - Task checkpoints: `update_plan` manages the checklist, and non-trivial execution turns must end with `<task_state_delta>...</task_state_delta>` that reports only the new turn delta for step progress, failed attempts, blocked_reason, next_required_action, and evidence refs.
 - Never emit the full `task_state`. If `task_state_delta` says a step is completed or failed, include `evidence_refs` that point to evidence from the current turn.
+- Even when no step completed, still emit `task_state_delta` with at least `current_step_id`, `next_required_action`, and any new `progress_basis` or `failed_attempts` from this turn.
+- Preferred JSON shape: `{"current_step_id":"...","step_updates":[...],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`.
 
 Failure fallback:
 - If a tool fails, explain the failure point and impact instead of pretending the work is done.

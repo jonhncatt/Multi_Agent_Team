@@ -303,6 +303,7 @@ class SessionStore:
             "failed_attempts": [],
             "progress_basis": [],
             "evidence_refs": [],
+            "validation_warnings": [],
             "updated_at": "",
         }
 

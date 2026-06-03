@@ -999,7 +999,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.5e",
+            "app_version": "3.1.5f",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -1041,7 +1041,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5e"
+    assert bootstrap_payload["app_version"] == "3.1.5f"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -1855,6 +1855,14 @@ def test_chat_endpoint_prefers_task_state_delta_merge_over_runtime_task_state(mo
     assert saved is not None
     assert saved["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
     assert saved["task_state"]["task_id"] != "wrong-task"
+    assistant_turn = saved["turns"][-1]
+    full_turn_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=full")
+    assert full_turn_response.status_code == 200
+    full_turn = full_turn_response.json()
+    assert full_turn["run_artifact"]["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
+    assert full_turn["run_artifact"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
+    assert full_turn["run_artifact"]["task_state_validation"]["accepted"] is True
+    assert full_turn["run_artifact"]["inspector"]["run_state"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
 
 
 def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch, tmp_path: Path) -> None:
@@ -1911,6 +1919,8 @@ def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch,
     assert payload["task_state_delta"] == {}
     assert payload["task_state"]["task_id"] != "wrong-task"
     assert payload["task_state"]["completed_steps"][-1]["step"] == "Inspect workspace"
+    assert payload["task_state_validation"]["accepted"] is False
+    assert payload["task_state_validation"]["validation_warnings"][0]["code"] == "missing_task_state_delta"
 
 
 def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:

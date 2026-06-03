@@ -5358,6 +5358,8 @@ function App() {
       ? activeWorkCursor.active_files
       : (Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : []),
     active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
+    completed_steps: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps : [],
+    failed_attempts: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts : [],
     completed_steps_count: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps.length : 0,
     failed_attempts_count: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts.length : 0,
     progress_basis: Array.isArray(activeTaskState.progress_basis) ? activeTaskState.progress_basis : [],
@@ -5575,6 +5577,11 @@ function App() {
         <pre>${text}</pre>
       </details>
     `;
+  };
+
+  const renderRunStateDetail = (label, value, options = {}) => {
+    if (!hasDisplayValue(value)) return null;
+    return renderDetailBlock(label, value, options);
   };
 
   const renderToolAuditDetails = (source) => {
@@ -5819,6 +5826,23 @@ function App() {
     const runArtifact = message && message.runArtifact && typeof message.runArtifact === "object" ? message.runArtifact : {};
     const answerBundle = message && message.answerBundle && typeof message.answerBundle === "object" ? message.answerBundle : {};
     const inspector = runArtifact.inspector && typeof runArtifact.inspector === "object" ? runArtifact.inspector : {};
+    const debugRunState = inspector.run_state && typeof inspector.run_state === "object" ? inspector.run_state : {};
+    const debugSessionState = inspector.session && typeof inspector.session === "object" ? inspector.session : {};
+    const debugTaskState = runArtifact.task_state && typeof runArtifact.task_state === "object"
+      ? runArtifact.task_state
+      : (debugRunState.task_state && typeof debugRunState.task_state === "object"
+        ? debugRunState.task_state
+        : ((debugSessionState.task_state && typeof debugSessionState.task_state === "object") ? debugSessionState.task_state : {}));
+    const debugTaskStateDelta = runArtifact.task_state_delta && typeof runArtifact.task_state_delta === "object"
+      ? runArtifact.task_state_delta
+      : (debugRunState.task_state_delta && typeof debugRunState.task_state_delta === "object"
+        ? debugRunState.task_state_delta
+        : ((debugSessionState.task_state_delta && typeof debugSessionState.task_state_delta === "object") ? debugSessionState.task_state_delta : {}));
+    const debugTaskStateValidation = runArtifact.task_state_validation && typeof runArtifact.task_state_validation === "object"
+      ? runArtifact.task_state_validation
+      : (debugRunState.task_state_validation && typeof debugRunState.task_state_validation === "object"
+        ? debugRunState.task_state_validation
+        : ((debugSessionState.task_state_validation && typeof debugSessionState.task_state_validation === "object") ? debugSessionState.task_state_validation : {}));
     const structured = buildStructuredDebugView(item, inspector, uiLocale);
     const messageId = String((message && message.id) || "");
     const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
@@ -5845,11 +5869,14 @@ function App() {
       renderRawModelIo(exchanges),
       renderPlanDetails(t("activity.model_action"), projection.model_action),
       renderRevisionSummaryDetails(projection.revision_summary),
-      Object.keys((runArtifact && runArtifact.task_state) || {}).length
-        ? renderDetailBlock("task_state", runArtifact.task_state)
+      Object.keys(debugTaskState).length
+        ? renderDetailBlock("task_state", debugTaskState)
         : null,
-      Object.keys((runArtifact && runArtifact.task_state_validation) || {}).length
-        ? renderDetailBlock("task_state_validation", runArtifact.task_state_validation)
+      Object.keys(debugTaskStateDelta).length
+        ? renderDetailBlock("task_state_delta", debugTaskStateDelta)
+        : null,
+      Object.keys(debugTaskStateValidation).length
+        ? renderDetailBlock("task_state_validation", debugTaskStateValidation)
         : null,
       Object.keys(answerBundle).length
         ? renderDetailBlock(t("activity.debug.answer_bundle"), answerBundle)
@@ -6577,6 +6604,9 @@ function App() {
                         </div>
                       `
                     : null}
+                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "completed_steps"), activeTaskCheckpoint.completed_steps)}
+                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "failed_attempts"), activeTaskCheckpoint.failed_attempts)}
+                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "validation_warnings"), activeTaskCheckpoint.validation_warnings)}
                   ${activeTaskCheckpoint.progress_basis.length
                     ? html`
                         <div className="timeline-detail">
@@ -6584,6 +6614,7 @@ function App() {
                         </div>
                       `
                     : null}
+                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "progress_basis"), activeTaskCheckpoint.progress_basis)}
                   ${activeTaskCheckpoint.evidence_refs.length
                     ? html`
                         <div className="timeline-detail">
@@ -6595,6 +6626,7 @@ function App() {
                         </div>
                       `
                     : null}
+                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "evidence_refs"), activeTaskCheckpoint.evidence_refs)}
                   ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
                     ? html`
                         <div className="timeline-detail">

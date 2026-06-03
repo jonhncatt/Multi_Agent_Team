@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5e-blue)
+![Version](https://img.shields.io/badge/version-3.1.5f-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5e`
+当前稳定版本：`3.1.5f`
 
 ## Stable Runtime
 
-3.1.5e 在 3.1.5d 的 task checkpoint 架构升级之上，补齐了 end-of-turn canonical 落账：`main.py` 现在优先消费 `task_state_delta` 并统一走 harness merge，而不是直接接受 runtime 返回的整份 `task_state`。
+3.1.5f 在 3.1.5e 的 delta-first task state merge 之上，补齐了真实观测闭环：run sidecar 现在持久化 `task_state` / `task_state_delta` / `task_state_validation`，Run/Debug 面板可直接查看关键 checkpoint 字段，并对缺失 `task_state_delta` 的非平凡执行轮给出显式 validation warning。
 
 相对 3.1.5d，本版本补上了 `main.py` 的 delta-first merge 路径、无 delta 时的 fallback 回归测试，以及 Run 面板中的 `progress_basis` / `evidence_refs` 可视化。
 

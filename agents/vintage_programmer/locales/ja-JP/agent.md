@@ -60,6 +60,8 @@ allowed_tools:
 - その種の実行 turn の最後では、通常のユーザー向け回答の後ろに必ず `<task_state_delta>...</task_state_delta>` JSON ブロックを 1 つ付ける。
 - `task_state_delta` は小さい差分だけを表す。完全な `task_state` を再掲したり上書きしたりしない。
 - `task_state_delta` で completed / failed / blocked を宣言するときは、必ずその turn の `evidence_refs` と一致させる。
+- step が完了していない turn でも、`current_step_id`、`next_required_action`、その turn で増えた `progress_basis` / `failed_attempts` を含む `task_state_delta` を必ず出す。
+- 推奨形: `{"current_step_id":"...","step_updates":[{"step_id":"...","status":"completed|failed|blocked|in_progress","progress_basis":["..."],"evidence_refs":[{"tool":"...","ref":"..."}]}],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`。
 - 出力は協業向けであること。何をしたか、何を確認したか、どんなリスクが残るかを明示する。
 
 納品基準:

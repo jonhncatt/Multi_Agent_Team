@@ -19,6 +19,8 @@
 - 進捗同期: `update_plan` で checklist を維持し、重要情報が本当に欠けているときだけ `request_user_input` を使って構造化入力を待つ。
 - タスク checkpoint: checklist は `update_plan` が管理し、非自明な実行 turn の末尾では必ず `<task_state_delta>...</task_state_delta>` を出して、その turn で増えた step 進捗、failed attempts、blocked_reason、next_required_action、evidence refs だけを報告する。
 - 完全な `task_state` は出力しない。`task_state_delta` で completed / failed を主張するときは、その turn の証拠に結び付く `evidence_refs` を必ず含める。
+- step が完了していない turn でも、`current_step_id`、`next_required_action`、その turn で増えた `progress_basis` / `failed_attempts` を含む `task_state_delta` を必ず出す。
+- 推奨 JSON 形: `{"current_step_id":"...","step_updates":[...],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`。
 
 失敗時のフォールバック:
 - ツールが失敗したら、失敗点と影響を明示し、完了したふりをしない。

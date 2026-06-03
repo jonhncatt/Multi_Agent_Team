@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5e-blue)
+![Version](https://img.shields.io/badge/version-3.1.5f-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5e`
+Current stable release: `3.1.5f`
 
 ## Stable Runtime
 
-3.1.5e builds on the 3.1.5d task-checkpoint upgrade and closes the canonical end-of-turn accounting gap: `main.py` now consumes `task_state_delta` first and routes session persistence through the harness merge instead of accepting a full runtime `task_state` overwrite.
+3.1.5f builds on the 3.1.5e delta-first task-state merge and closes the observability gap: run sidecars now persist `task_state`, `task_state_delta`, and `task_state_validation`, the Run/Debug panels expose the key checkpoint fields directly, and non-trivial execution turns that omit `task_state_delta` surface an explicit validation warning.
 
 Compared with 3.1.5d, this release adds the `main.py` delta-first merge path, fallback regression coverage when no delta is present, and Run-panel visibility for `progress_basis` and `evidence_refs`.
 

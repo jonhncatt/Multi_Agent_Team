@@ -51,6 +51,30 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
         answer_bundle=assistant_turn["answer_bundle"],
         tool_events=[{"name": "read_file", "status": "ok", "summary": "read"}],
         inspector={"run_state": {"turn_status": "completed"}},
+        extra={
+            "task_state": {
+                "task_id": "task-1",
+                "goal": "Inspect sidecar payload",
+                "status": "in_progress",
+                "current_step_id": "step-2",
+                "completed_steps": [{"id": "step-1", "step": "Read activity", "progress_basis": ["read_file: app/static/app.js"]}],
+                "failed_attempts": [],
+                "progress_basis": ["read_file: app/static/app.js"],
+                "evidence_refs": [{"tool": "read_file", "ref": "app/static/app.js"}],
+                "validation_warnings": [],
+            },
+            "task_state_delta": {
+                "current_step_id": "step-2",
+                "step_updates": [{"step_id": "step-1", "status": "completed", "evidence_refs": [{"tool": "read_file", "ref": "app/static/app.js"}]}],
+                "next_required_action": "Run focused tests",
+            },
+            "task_state_validation": {
+                "accepted": True,
+                "applied_step_ids": ["step-1"],
+                "rejected_step_ids": [],
+                "validation_warnings": [],
+            },
+        },
     )
     store.save(session)
     raw_session = json.loads((tmp_path / "sessions" / f"{session['id']}.json").read_text(encoding="utf-8"))
@@ -93,6 +117,9 @@ def test_assistant_activity_is_slimmed_to_run_sidecar(tmp_path: Path) -> None:
     assert sidecar["activity"]["trace_events"][0]["id"] == "trace-1"
     assert sidecar["answer_bundle"]["summary"] == "done"
     assert sidecar["tool_events"][0]["name"] == "read_file"
+    assert sidecar["task_state"]["current_step_id"] == "step-2"
+    assert sidecar["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
+    assert sidecar["task_state_validation"]["accepted"] is True
 
     summary_turn = store.expand_turn_for_view(session["id"], raw_session["turns"][-1], view="summary")
     assert summary_turn["answer_bundle"] == {}
@@ -108,6 +135,9 @@ def test_assistant_activity_is_slimmed_to_run_sidecar(tmp_path: Path) -> None:
     assert full_turn["activity"]["model_draft"] == "draft"
     assert full_turn["activity"]["runtime_error"]["kind"] == "debug"
     assert full_turn["run_artifact"]["inspector"]["run_state"]["turn_status"] == "completed"
+    assert full_turn["run_artifact"]["task_state"]["current_step_id"] == "step-2"
+    assert full_turn["run_artifact"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
+    assert full_turn["run_artifact"]["task_state_validation"]["accepted"] is True
 
 
 def test_expand_turn_summary_does_not_load_run_artifact(monkeypatch, tmp_path: Path) -> None:
