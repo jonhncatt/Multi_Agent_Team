@@ -999,7 +999,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-            "app_version": "3.1.5g",
+            "app_version": "3.1.5h",
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -1041,7 +1041,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5g"
+    assert bootstrap_payload["app_version"] == "3.1.5h"
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens
@@ -2159,11 +2159,15 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["turn_id"]
     assert payload["activity"]["triggering_user_message"] == "题目"
     assert payload["activity"]["triggering_user_turn_id"]
     assert "current_turn_goal" not in payload["activity"]
     assert "active_task_focus" not in payload["activity"]
     assert "recent_user_messages" not in payload["activity"]
+
+    direct_full_response = client.get(f"/api/thread/{payload['session_id']}/turn/{payload['turn_id']}?view=full")
+    assert direct_full_response.status_code == 200
 
     detail_response = client.get(f"/api/thread/{payload['session_id']}")
     assert detail_response.status_code == 200

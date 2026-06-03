@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5g`。
+当前稳定版本：`3.1.5h`。
 
 ## Stable Runtime
 
-3.1.5g 修正了前端回合结束和聊天滚动体验：`run_finished` / `turn/completed` 不再提前清空运行态，assistant 正文会在 final payload 或稳定 fallback 文本到位后再落定；聊天区仅在用户停留底部时自动滚动，并提供显式“回到底部”按钮。
-它继续保持 canonical 29-tool surface 不变；这次调整只收紧前端显示与收尾路径，不改变 task checkpoint 的 canonical merge 规则。
+3.1.5h 修复了 Debug Detail 首次点击失败的问题：assistant turn 落定后，前端会把临时 message id 替换为后端 canonical `turn_id`，因此第一次 lazy full load 就能直接命中正确 turn，不再需要切线程再回来。
+它继续保持 canonical 29-tool surface 不变；这次调整只修正前端 turn id 收口和 debug 请求时机，不改变 task checkpoint 的 canonical merge 规则。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

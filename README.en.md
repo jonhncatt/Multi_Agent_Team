@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5g-blue)
+![Version](https://img.shields.io/badge/version-3.1.5h-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5g`
+Current stable release: `3.1.5h`
 
 ## Stable Runtime
 
-3.1.5g tightens frontend turn finalization and scroll behavior: `run_finished` and `turn/completed` no longer clear runtime state too early, pending assistant output is stabilized only after the final payload or a stable fallback text is available, and the conversation pane now uses stick-to-bottom auto-scroll with an explicit "Jump to latest" control.
+3.1.5h fixes the first-click Debug Detail turn-id gap: once a new assistant turn is finalized, the frontend now replaces the temporary message id with the canonical backend `turn_id`, so the first lazy full-load request hits `GET /api/thread/{thread_id}/turn/{turn_id}?view=full` correctly instead of requiring a thread reload.
 
-Compared with 3.1.5f, this release fixes the UI gap where timing stopped before the assistant body was committed, and it stops streamed updates from yanking the viewport back to the bottom while reading older messages.
+Compared with 3.1.5g, this release closes the frontend handoff bug where the first debug expansion failed and only recovered after reopening the thread, and it prevents pending assistant rows from issuing full-turn debug requests while the run is still in progress.
 
 ## Max Output Tokens
 

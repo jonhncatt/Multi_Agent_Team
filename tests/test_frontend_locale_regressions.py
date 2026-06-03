@@ -843,6 +843,7 @@ def test_full_turn_loading_merges_message_scoped_debug_payloads() -> None:
     assert "fullTurnLoading: true" in body
     assert "fullTurnLoading: false" in body
     assert "fullTurnError" in body
+    assert "if (currentMessage.pending) return;" in body
     assert "updateThreadSnapshot(sid" in body
 
     debug_body = re.search(
@@ -857,6 +858,17 @@ def test_full_turn_loading_merges_message_scoped_debug_payloads() -> None:
     assert "const inspector = runArtifact.inspector" in debug
     assert "buildStructuredDebugView(item, inspector, uiLocale)" in debug
     assert "lastInspector || {}" not in debug
+
+
+def test_finalized_assistant_message_replaces_temp_id_with_canonical_turn_id() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'turn_id: String(latestRunSnapshot.turn_id || "")' in script
+    assert 'const previousPendingMessageId = pendingMessage.id;' in script
+    assert 'const finalizedTurnId = String(finalPayload.turn_id || latestRunSnapshot.turn_id || previousPendingMessageId || "").trim() || previousPendingMessageId;' in script
+    assert 'item.id === previousPendingMessageId' in script
+    assert 'id: finalizedTurnId,' in script
+    assert 'pendingMessage = { ...pendingMessage, id: finalizedTurnId };' in script
 
 
 def test_running_thread_browse_state_is_thread_scoped_in_cache() -> None:

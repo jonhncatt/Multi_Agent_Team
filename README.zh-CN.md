@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5g-blue)
+![Version](https://img.shields.io/badge/version-3.1.5h-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5g`
+当前稳定版本：`3.1.5h`
 
 ## Stable Runtime
 
-3.1.5g 收紧了前端 turn 完成收尾和滚动行为：`run_finished` / `turn/completed` 不再提前清理运行态，pending assistant 会在 final payload 或稳定 fallback 文本到位后再收尾；聊天区改为 stick-to-bottom，只在用户停留底部时自动滚动，并提供显式“回到底部”按钮。
+3.1.5h 修复了 Debug Detail 首次点击的 turn id 漏洞：新 assistant turn 完成后，前端现在会用后端返回的 canonical `turn_id` 替换临时 message id，因此首次 lazy full load 就能正确命中 `GET /api/thread/{thread_id}/turn/{turn_id}?view=full`，不再需要切线程再回来。
 
-相对 3.1.5f，本版本修复了“计时停了但正文还没落下”的 UI 缺口，以及查看历史消息时被流式更新强制拉回底部的问题。
+相对 3.1.5g，本版本补上了“首次点调试详情报请求失败，重新进线程后又恢复”的前端收口缺口，并阻止 pending assistant 在运行中误触发 full turn debug 请求。
 
 ## Max Output Tokens
 

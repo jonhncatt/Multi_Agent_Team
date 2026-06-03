@@ -4910,6 +4910,7 @@ function App() {
       const buildFallbackFinalPayload = () => ({
         session_id: latestThreadId || sid,
         thread_id: latestThreadId || sid,
+        turn_id: String(latestRunSnapshot.turn_id || ""),
         run_id: String(((completedTurnPayload || {}).id) || activeRunId || ""),
         agent_id: "vintage_programmer",
         effective_model: String(
@@ -5175,11 +5176,13 @@ function App() {
         plan_explanation: String(latestActivity.plan_explanation || ""),
         tool_items: latestActivity.tool_items,
       });
+      const previousPendingMessageId = pendingMessage.id;
+      const finalizedTurnId = String(finalPayload.turn_id || latestRunSnapshot.turn_id || previousPendingMessageId || "").trim() || previousPendingMessageId;
       updateOwnerMessages((prev) =>
         prev.map((item) =>
-          item.id === pendingMessage.id
+          item.id === previousPendingMessageId
             ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), {
-              id: item.id,
+              id: finalizedTurnId,
               activity: finalActivity,
               answerBundle: finalPayload.answer_bundle || item.answerBundle || {},
               runArtifact: finalPayload.run_artifact || item.runArtifact || {},
@@ -5187,6 +5190,7 @@ function App() {
             : item,
         ),
       );
+      pendingMessage = { ...pendingMessage, id: finalizedTurnId };
       updateOwnerActiveTurn((prev) => ({ ...prev, lastResponse: finalPayload }));
       setPendingUploads([]);
       clearUiError();
@@ -5614,6 +5618,7 @@ function App() {
     if (!sid || !turnId || isTempThreadId(sid)) return;
     const currentMessage = (Array.isArray(messages) ? messages : []).find((entry) => String(entry.id || "") === turnId);
     if (!currentMessage || currentMessage.role !== "assistant") return;
+    if (currentMessage.pending) return;
     const currentActivity = normalizeMessageActivity(currentMessage.activity || {});
     const alreadyFull = Boolean(currentActivity.full_loaded);
     if (alreadyFull || (!currentActivity.trace_ref && !currentActivity.run_id)) return;

@@ -254,6 +254,7 @@ class CompactionStatus(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     thread_id: str | None = None
+    turn_id: str = ""
     run_id: str | None = None
     agent_id: str = "vintage_programmer"
     agent_title: str = "Vintage Programmer"

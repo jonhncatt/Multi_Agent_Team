@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5g"
+APP_VERSION = "3.1.5h"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -1541,6 +1541,7 @@ def _emit_agent_message_events(
 def _build_run_snapshot(
     *,
     goal: str,
+    turn_id: str = "",
     current_task_focus: dict[str, Any] | None,
     turn_status: str,
     cwd: str,
@@ -1595,6 +1596,8 @@ def _build_run_snapshot(
         "context_meter": dict(context_meter or {}),
         "compaction_status": dict(compaction_status or {}),
     }
+    if str(turn_id or "").strip():
+        payload["turn_id"] = str(turn_id or "").strip()
     if isinstance(task_state_delta, dict) and task_state_delta:
         payload["task_state_delta"] = session_context_impl.normalize_task_state_delta(task_state_delta)
     if isinstance(task_state_validation, dict) and task_state_validation:
@@ -2648,6 +2651,7 @@ def _process_chat_request(
             thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
+                turn_id=assistant_turn_id,
                 current_task_focus=current_task_focus,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
@@ -2728,6 +2732,7 @@ def _process_chat_request(
         response = ChatResponse(
             session_id=session["id"],
             thread_id=session["id"],
+            turn_id=assistant_turn_id,
             run_id=run_id,
             agent_id="vintage_programmer",
             agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),
