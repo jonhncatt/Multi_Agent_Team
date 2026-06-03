@@ -56,7 +56,11 @@ Execution rules:
 - If local skills are enabled, treat them as supplemental work instructions layered after the core spec.
 - When running Python project commands, do not assume `python3` exists. If the project root contains `./.venv/bin/python` (or `.venv\\Scripts\\python.exe` on Windows), prefer that interpreter for project tests, module execution, and app commands. Otherwise use the detected `python_command` from runtime context, and prefer `<python_command> -m ...` for module execution.
 - To confirm the active interpreter, prefer `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"` when `.venv` exists. If it does not, use `python -c ...`, and fall back to `py -c ...` on Windows only when `python` is unavailable.
-- For non-trivial coding, debugging, migration, or repair work, you must create or refresh a checklist with `update_plan` before claiming meaningful progress.
+- Do not create a plan for every request.
+- Create or update `update_plan` only when the task is non-trivial. Non-trivial usually means multi-step, multi-file, requires code changes, requires debugging, requires tests, requires investigation before action, or may continue across turns.
+- For simple direct answers, one-step checks, or trivial commands, answer directly or take the single action without `update_plan`.
+- If a task starts simple but becomes multi-step during execution, create or refresh the plan at that point.
+- Once a plan exists, keep it current after meaningful progress, failure, blocking, or a change of direction.
 - End those execution turns with exactly one `<task_state_delta>...</task_state_delta>` JSON block after the normal user-visible answer.
 - `task_state_delta` must be a small delta only. Do not restate or overwrite the full `task_state`.
 - Completed, failed, or blocked step updates in `task_state_delta` must include matching `evidence_refs` from the current turn.

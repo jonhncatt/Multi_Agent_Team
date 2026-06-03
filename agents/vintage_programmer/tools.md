@@ -16,7 +16,11 @@
 - 邮件与内容解包：`.msg` 正文优先直接用 `read_file`；Outlook `.msg` 附件优先 `mail_extract_attachments`；ZIP 优先 `archive_extract`。
 - Python 命令：不要默认写死 `python3`。如果项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先用它执行项目测试、脚本和模块命令；没有 `.venv` 时再用 runtime context 里的 `python_command`。项目级模块执行优先 `<python_command> -m ...`，在 Windows 上只有 `python` 不可用时再考虑 `py -m ...`。
 - 补丁式改动：优先 `apply_patch`，不要把结构化补丁退化成大段整文件覆盖；能用 `apply_patch` 时，不要退化成 shell 覆盖写文件。
-- 进度同步：用 `update_plan` 维护 checklist；当确实缺关键信息时用 `request_user_input` 挂起并请求结构化输入。
+- 进度同步：不要为每个请求都调用 `update_plan`。只有当任务是非平凡的，且 checklist 对执行真的有帮助时，才用 `update_plan` 维护计划；当确实缺关键信息时用 `request_user_input` 挂起并请求结构化输入。
+- 非平凡通常包括：多步骤、多文件、需要代码修改、需要调试、需要测试、行动前需要先调查，或任务可能跨多个 turn 持续。
+- 简单直接回答、单步检查或琐碎命令，直接回答或执行单个动作，不要为了形式创建计划。
+- 如果任务在执行中从简单变成多步骤，就在那个时点创建或刷新计划。
+- 计划一旦存在，就要在出现实质进展、失败、阻塞或方向变化后及时更新。
 - 任务 checkpoint：`update_plan` 负责 checklist；非平凡执行任务的回合末尾必须输出 `<task_state_delta>...</task_state_delta>` JSON，只提交本轮新增的 step 进展、失败尝试、blocked_reason、next_required_action 和证据引用。
 - 不要输出完整 `task_state`。`task_state_delta` 里若声明 completed/failed，必须附带能指向本轮工具证据的 `evidence_refs`。
 - 即使本轮没有完成 step，也要输出 `task_state_delta`，至少写明 `current_step_id`、`next_required_action`，以及本轮新增的 `progress_basis` 或 `failed_attempts`。

@@ -16,7 +16,11 @@ Tool strategy:
 - Mail and content unpacking: use `read_file` first for `.msg` bodies, `mail_extract_attachments` for Outlook `.msg` attachments, and `archive_extract` for ZIP files.
 - Python commands: do not hardcode `python3`. If the project root contains `./.venv/bin/python` (or `.venv\\Scripts\\python.exe` on Windows), prefer that interpreter for project tests, scripts, and module execution. If no project virtual environment is present, prefer the `python_command` exposed in runtime context and use `<python_command> -m ...` for project-level module execution. On Windows, use `py -m ...` only when `python` is unavailable.
 - Patch-based edits: prefer `apply_patch`, and do not degrade structured patches into full-file replacement blobs. When `apply_patch` is available, do not fall back to shell-based file overwrites.
-- Progress sync: maintain checklists with `update_plan`; use `request_user_input` only when critical information is truly missing and structured user input is required.
+- Progress sync: do not call `update_plan` for every request. Maintain a checklist with `update_plan` only when the task is non-trivial and the checklist materially helps execution; use `request_user_input` only when critical information is truly missing and structured user input is required.
+- Non-trivial usually means multi-step, multi-file, requires code changes, requires debugging, requires tests, requires investigation before action, or may continue across turns.
+- For simple direct answers, one-step checks, or trivial commands, answer directly or take the single action without creating a plan.
+- If a task starts simple but becomes multi-step during execution, create or refresh the plan at that point.
+- Once a plan exists, keep it current after meaningful progress, failure, blocking, or a change of direction.
 - Task checkpoints: `update_plan` manages the checklist, and non-trivial execution turns must end with `<task_state_delta>...</task_state_delta>` that reports only the new turn delta for step progress, failed attempts, blocked_reason, next_required_action, and evidence refs.
 - Never emit the full `task_state`. If `task_state_delta` says a step is completed or failed, include `evidence_refs` that point to evidence from the current turn.
 - Even when no step completed, still emit `task_state_delta` with at least `current_step_id`, `next_required_action`, and any new `progress_basis` or `failed_attempts` from this turn.

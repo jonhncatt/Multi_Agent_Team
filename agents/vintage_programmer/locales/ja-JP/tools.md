@@ -16,7 +16,11 @@
 - メールと内容展開: `.msg` 本文はまず `read_file`、Outlook `.msg` の添付は `mail_extract_attachments`、ZIP は `archive_extract` を優先する。
 - Python コマンド: `python3` を固定で書かない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれでプロジェクトのテスト、スクリプト、モジュール実行を行う。`.venv` がない場合は runtime context の `python_command` を優先し、プロジェクト単位のモジュール実行は `<python_command> -m ...` を優先する。Windows では `python` が使えない場合だけ `py -m ...` を検討する。
 - パッチ型変更: まず `apply_patch` を使い、構造化パッチを巨大なファイル全置換に退化させない。`apply_patch` が使えるときは shell ベースの上書きに退化させない。
-- 進捗同期: `update_plan` で checklist を維持し、重要情報が本当に欠けているときだけ `request_user_input` を使って構造化入力を待つ。
+- 進捗同期: すべての依頼に対して `update_plan` を呼ばない。タスクが非自明で、checklist が実行に本当に役立つ場合だけ `update_plan` で plan を維持し、重要情報が本当に欠けているときだけ `request_user_input` を使って構造化入力を待つ。
+- 非自明とは通常、複数ステップ、複数ファイル、コード変更、デバッグ、テスト、着手前の調査が必要、または複数 turn にまたがって続く可能性がある場合を指す。
+- 単純な直接回答、1 ステップの確認、または些細なコマンドなら、plan を作らずにそのまま答えるか単発で実行する。
+- 最初は単純に見えたタスクでも、実行中に複数ステップ化したら、その時点で plan を作成または更新する。
+- いったん plan が存在したら、意味のある進捗、失敗、ブロック、方向転換のあとに最新状態へ更新する。
 - タスク checkpoint: checklist は `update_plan` が管理し、非自明な実行 turn の末尾では必ず `<task_state_delta>...</task_state_delta>` を出して、その turn で増えた step 進捗、failed attempts、blocked_reason、next_required_action、evidence refs だけを報告する。
 - 完全な `task_state` は出力しない。`task_state_delta` で completed / failed を主張するときは、その turn の証拠に結び付く `evidence_refs` を必ず含める。
 - step が完了していない turn でも、`current_step_id`、`next_required_action`、その turn で増えた `progress_basis` / `failed_attempts` を含む `task_state_delta` を必ず出す。

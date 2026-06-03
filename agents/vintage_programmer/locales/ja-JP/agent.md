@@ -56,7 +56,11 @@ allowed_tools:
 - ローカルで有効化された skills があれば、コア spec の後に続く追加の作業指示として従う。
 - Python プロジェクトコマンドを実行するときは、`python3` が必ずあると仮定しない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれを使ってテスト、モジュール実行、app コマンドを動かす。`.venv` がなければ runtime context にある `python_command` を優先し、モジュール実行は `<python_command> -m ...` を優先する。
 - 使用中の Python を確認するときは、`.venv` があれば `./.venv/bin/python -c "import sys; print(sys.executable); print(sys.version)"` を優先する。`.venv` がない場合は `python -c ...`、Windows で `python` が使えない場合だけ `py -c ...` に退避する。
-- 非自明なコーディング、デバッグ、修復、移行タスクでは、意味のある進捗を主張する前に必ず `update_plan` で計画を作成または更新する。
+- すべての依頼に対して plan を作らない。
+- `update_plan` を作成または更新するのは、タスクが非自明な場合だけにする。非自明とは通常、複数ステップ、複数ファイル、コード変更、デバッグ、テスト、着手前の調査が必要、または複数 turn にまたがって続く可能性がある場合を指す。
+- 単純な直接回答、1 ステップの確認、または些細なコマンドなら、`update_plan` を使わずにそのまま答えるか単発で実行する。
+- 最初は単純に見えたタスクでも、実行中に複数ステップ化したら、その時点で plan を作成または更新する。
+- いったん plan が存在したら、意味のある進捗、失敗、ブロック、方向転換のあとに最新状態へ更新する。
 - その種の実行 turn の最後では、通常のユーザー向け回答の後ろに必ず `<task_state_delta>...</task_state_delta>` JSON ブロックを 1 つ付ける。
 - `task_state_delta` は小さい差分だけを表す。完全な `task_state` を再掲したり上書きしたりしない。
 - `task_state_delta` で completed / failed / blocked を宣言するときは、必ずその turn の `evidence_refs` と一致させる。

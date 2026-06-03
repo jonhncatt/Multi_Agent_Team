@@ -550,6 +550,9 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "./.venv/bin/python" in prompt
     assert ".venv\\Scripts\\python.exe" in prompt
     assert f"detected interpreter command ({runtime._config.python_command})" in prompt
+    assert "Do not create a plan for every request." in prompt
+    assert "For simple direct answers, one-step checks, or trivial commands" in prompt
+    assert "If a task starts simple but becomes multi-step during execution" in prompt
     assert "Execution must happen through tool calls." not in prompt
 
 
@@ -660,7 +663,12 @@ def test_agent_docs_prefer_project_venv_python() -> None:
     assert "不要默认写死 `python3`" in tools_doc
     assert "<task_state_delta>" in agent_doc
     assert "update_plan" in agent_doc
+    assert "不要为每个请求都创建计划" in agent_doc
+    assert "多步骤、多文件、需要代码修改、需要调试、需要测试" in agent_doc
+    assert "简单直接回答、单步检查或琐碎命令" in agent_doc
     assert "<task_state_delta>" in tools_doc
+    assert "不要为每个请求都调用 `update_plan`" in tools_doc
+    assert "如果任务在执行中从简单变成多步骤" in tools_doc
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:
