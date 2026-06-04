@@ -598,11 +598,14 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
     assert "const turnStartedAt = item.turn_started_at || item.started_at;" in script
     assert "const frozenElapsedMs = isActivityTerminalStatus(item.status)" in script
-    assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId) || Boolean(activeRunThreadId);" in script
+    assert "const shouldTickActivityClock = (" in script
+    assert "|| Boolean(activeRunStartedAt)" in script
+    assert "|| Boolean(Object.keys(liveTurnState || {}).length)" in script
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
     assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now())" in script
     assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
     assert "startedAt: clientSubmittedAtMs," in script
+    assert "const liveAssistantMessageId = hasLiveRuntimeState" in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
 
@@ -668,7 +671,9 @@ def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
         "startedAt: activeRunStartedAt,",
         "setActiveRunThreadId(next.activeRunThreadId);",
         "setActiveRunStartedAt(next.startedAt);",
-        "activeRunThreadId: \"\", startedAt: 0, lastLiveProgressAt: 0, stoppingRun: false",
+        "setLastLiveProgressAt(next.lastLiveProgressAt);",
+        "setLiveHeartbeat(next.liveHeartbeat);",
+        'liveHeartbeat: createEmptyLiveHeartbeat(),',
     )
     for token in required_tokens:
         assert token in script, token
@@ -689,6 +694,44 @@ def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
         "const progressIsStale = Boolean(",
         "(nowMs - lastProgressAtMs) >= LIVE_PROGRESS_STALE_AFTER_MS",
         'status = "background_running";',
+        "const updateOwnerLiveHeartbeat = (value) => {",
+        "const syncHeartbeatFromTrace = (trace) => {",
+        "const syncHeartbeatFromStreamItem = (item, eventName = \"\") => {",
+        'recentEvent: detail || t("run.progress.recent_event_waiting_model")',
+        'recentEvent: detail || command || tool || t("run.progress.recent_event_background")',
+        'source: "validator"',
+        'source: "tool"',
+        'source: "model"',
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+
+def test_live_display_activity_overrides_latest_live_assistant_until_cleanup() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "function buildLiveDisplayActivity(activity, options = {}) {",
+        'return !["run.finished", "answer.done", "answer.finished"].includes(traceType);',
+        "const isDisplayLiveAssistant = Boolean(",
+        "&& liveAssistantMessageId",
+        "String(item.id || \"\") === liveAssistantMessageId",
+        "buildLiveDisplayActivity(activity, {",
+        "buildLiveDisplayActivity(item.activity || {}, {",
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+
+def test_summary_reload_preserves_live_heartbeat_for_active_owner_thread() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        "const existingActiveTurn = normalizeThreadActiveTurn((existingSnapshot && existingSnapshot.activeTurn) || {});",
+        "const preserveLiveSnapshot = Boolean(",
+        "activeRunStartedAt: existingActiveTurn.startedAt || activeRunStartedAt || 0,",
+        "hasRunningActivity: Boolean(existingActiveTurn.startedAt || existingActiveTurn.lastLiveProgressAt || existingActiveTurn.liveHeartbeat.updatedAt),",
+        "liveTurnState: existingActiveTurn.liveTurnState || liveTurnState || {},",
     )
     for token in required_tokens:
         assert token in script, token
