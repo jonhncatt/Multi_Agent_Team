@@ -46,6 +46,7 @@ const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
 const MAIN_LIVE_CARD_LIMIT = 8;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
+const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
 const messageHtmlCache = new Map();
@@ -150,6 +151,7 @@ function createEmptyThreadActiveTurn() {
     activeRunId: "",
     activeRunThreadId: "",
     startedAt: 0,
+    lastLiveProgressAt: 0,
     stoppingRun: false,
     lastResponse: null,
     toolTimeline: [],
@@ -169,6 +171,7 @@ function normalizeThreadActiveTurn(raw) {
     activeRunId: String(item.activeRunId || item.active_run_id || ""),
     activeRunThreadId: String(item.activeRunThreadId || item.active_run_thread_id || ""),
     startedAt: normalizeActivityTimestamp(item.startedAt || item.started_at || item.runStartedAt || item.run_started_at || 0),
+    lastLiveProgressAt: normalizeActivityTimestamp(item.lastLiveProgressAt || item.last_live_progress_at || 0),
     stoppingRun: Boolean(item.stoppingRun || item.stopping_run),
     lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
     toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
@@ -2145,6 +2148,12 @@ function formatWallClockLimit(seconds) {
   return `${normalized}s`;
 }
 
+function formatElapsedFromStartedAt(startedAt, nowMs = Date.now()) {
+  const anchor = normalizeActivityTimestamp(startedAt || 0);
+  if (!anchor) return "";
+  return `${Math.max(0, Math.floor((Math.max(anchor, nowMs) - anchor) / 1000))}s`;
+}
+
 function latestAssistantActivity(messages) {
   const items = Array.isArray(messages) ? messages : [];
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -2199,6 +2208,10 @@ function buildRuntimeStatsSummary({
   tokenUsage,
   permissionProfile,
   boundaryModelView: boundaryModelViewOverride,
+  sessionId = "",
+  activeRunThreadId = "",
+  activeRunStartedAt = 0,
+  sending = false,
 }) {
   const currentRuntimeStatus = runtimeStatus && typeof runtimeStatus === "object" ? runtimeStatus : {};
   const safeguards = (currentRuntimeStatus.loop_safeguards && typeof currentRuntimeStatus.loop_safeguards === "object")
@@ -2260,7 +2273,16 @@ function buildRuntimeStatsSummary({
       total: formatTokenCount(contextWindow),
     })
     : translateUi(locale, "context_meter.compact_tokens_unknown");
-  const elapsedValue = formatActivityDuration(activity, activityClockMs || Date.now()) || translateUi(locale, "context_meter.unknown");
+  const isCurrentThreadActiveRun = Boolean(
+    String(sessionId || "").trim()
+    && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+    && (sending || normalizeActivityTimestamp(activeRunStartedAt || 0)),
+  );
+  const elapsedValue = (
+    (isCurrentThreadActiveRun ? formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now()) : "")
+    || formatActivityDuration(activity, activityClockMs || Date.now())
+    || translateUi(locale, "context_meter.unknown")
+  );
   const autoCompactionEnabled = Boolean(safeContextMeter.compaction_enabled || safeguards.context_compaction);
   const effectivePermissionProfile = normalizePermissionProfile(
     permissionProfile
@@ -2471,11 +2493,18 @@ function buildRunExecutionProgress({
   activeRunThreadId = "",
   sessionId = "",
   locale = "zh-CN",
+  liveToolTimeline = [],
+  lastProgressAt = 0,
+  runStartedAt = 0,
+  nowMs = Date.now(),
 }) {
   const assistantMessage = latestAssistantMessage(messages, { preferPending: true });
   const activity = normalizeMessageActivity((assistantMessage && assistantMessage.activity) || {});
   const liveItems = normalizeLiveRunItems(activity.live_items);
   const traces = Array.isArray(activity.trace_events) ? activity.trace_events : [];
+  const liveToolEntry = Array.isArray(liveToolTimeline) && liveToolTimeline.length
+    ? ((liveToolTimeline[0] && typeof liveToolTimeline[0] === "object") ? liveToolTimeline[0] : {})
+    : {};
   const reversedLiveItems = liveItems.slice().reverse();
   const priorityStatuses = new Set(["validating", "running", "waiting_tool", "waiting_model", "failed", "blocked", "completed"]);
   const currentItem = reversedLiveItems.find((item) => priorityStatuses.has(normalizeProgressStatus(item.status))) || reversedLiveItems[0] || null;
@@ -2486,17 +2515,25 @@ function buildRunExecutionProgress({
     : ((currentItem && currentItem.raw && typeof currentItem.raw === "object") ? currentItem.raw : {});
   const toolName = String(
     (currentItem && currentItem.tool)
+    || liveToolEntry.tool
+    || liveToolEntry.name
+    || liveToolEntry.type
     || lastTracePayload.tool_name
     || lastTracePayload.tool
     || lastTracePayload.name
     || ((lastTracePayload.raw_tool_call || {}).name)
     || "",
   ).trim();
-  const command = executionProgressCommandFromSource(currentSource) || executionProgressCommandFromSource(lastTracePayload);
+  const command = (
+    executionProgressCommandFromSource(currentSource)
+    || executionProgressCommandFromSource(liveToolEntry)
+    || executionProgressCommandFromSource(lastTracePayload)
+  );
   let status = currentItem ? normalizeProgressStatus(currentItem.status) : "";
   let currentAction = String(
     command
     || ((currentItem && (currentItem.label || currentItem.detail)) || "")
+    || String(liveToolEntry.summary || liveToolEntry.output_preview || "").trim()
     || ((lastTrace && (lastTrace.title || lastTrace.detail)) || "")
     || "",
   ).trim();
@@ -2507,9 +2544,15 @@ function buildRunExecutionProgress({
     || "",
   ).trim();
   const isCurrentThreadActiveRun = Boolean(
-    sending
-    || String(activeRunId || "").trim()
-    || (String(activeRunThreadId || "").trim() && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()),
+    String(sessionId || "").trim()
+    && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+    && (sending || String(activeRunId || "").trim() || normalizeActivityTimestamp(runStartedAt || 0)),
+  );
+  const lastProgressAtMs = normalizeActivityTimestamp(
+    lastProgressAt
+    || ((currentItem && (currentItem.completed_at || currentItem.started_at)) || 0)
+    || ((lastTrace && lastTrace.timestamp) || 0)
+    || (activity.turn_started_at || activity.started_at || 0),
   );
   if (!status) {
     const traceType = String((lastTrace && lastTrace.type) || "").trim();
@@ -2521,6 +2564,23 @@ function buildRunExecutionProgress({
       status = "background_running";
     } else {
       status = normalizeProgressStatus(activity.status || "");
+    }
+  }
+  const progressIsStale = Boolean(
+    isCurrentThreadActiveRun
+    && lastProgressAtMs
+    && (nowMs - lastProgressAtMs) >= LIVE_PROGRESS_STALE_AFTER_MS,
+  );
+  if (progressIsStale) {
+    currentAction = "";
+    recentEvent = "";
+    const traceType = String((lastTrace && lastTrace.type) || "").trim();
+    if (traceType === "observation.returned" || traceType.startsWith("llm.") || traceType === "answer.started" || traceType === "answer.delta") {
+      status = "waiting_model";
+    } else if (toolName || traceType.startsWith("tool.") || traceType.startsWith("action.") || traceType.startsWith("tool_drain.")) {
+      status = "waiting_tool";
+    } else {
+      status = "background_running";
     }
   }
   if (!currentAction) {
@@ -3021,6 +3081,7 @@ function App() {
   const activeRunId = appState.activeTurn.activeRunId;
   const activeRunThreadId = appState.activeTurn.activeRunThreadId;
   const activeRunStartedAt = normalizeActivityTimestamp(appState.activeTurn.startedAt || 0);
+  const activeRunProgressAt = normalizeActivityTimestamp(appState.activeTurn.lastLiveProgressAt || 0);
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
@@ -3110,6 +3171,7 @@ function App() {
   const setActiveRunId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunId"], value });
   const setActiveRunThreadId = (value) => dispatch({ type: "update", path: ["activeTurn", "activeRunThreadId"], value });
   const setActiveRunStartedAt = (value) => dispatch({ type: "update", path: ["activeTurn", "startedAt"], value });
+  const setLastLiveProgressAt = (value) => dispatch({ type: "update", path: ["activeTurn", "lastLiveProgressAt"], value });
   const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
   const setWorkbenchTools = (value) => dispatch({ type: "update", path: ["panelCache", "tools", "data"], value });
   const setPanelStatus = (panel, value) => dispatch({ type: "update", path: ["panelCache", panel, "status"], value });
@@ -3743,6 +3805,7 @@ function App() {
       activeRunId,
       activeRunThreadId,
       startedAt: activeRunStartedAt,
+      lastLiveProgressAt: activeRunProgressAt,
       stoppingRun,
       lastResponse,
       toolTimeline,
@@ -3812,8 +3875,17 @@ function App() {
     setActiveRunId(next.activeRunId);
     setActiveRunThreadId(next.activeRunThreadId);
     setActiveRunStartedAt(next.startedAt);
+    setLastLiveProgressAt(next.lastLiveProgressAt);
     setStoppingRun(next.stoppingRun);
     setContextMeterOpen(false);
+  }
+
+  function mergeSessionRuntimeStateSnapshot(existingState, incomingState, options = {}) {
+    const existing = existingState && typeof existingState === "object" ? existingState : {};
+    const incoming = incomingState && typeof incomingState === "object" ? incomingState : {};
+    if (!Object.keys(incoming).length) return existing;
+    if (options.preferExisting) return { ...incoming, ...existing };
+    return { ...existing, ...incoming };
   }
 
   function snapshotFromThreadDetail(data, options = {}) {
@@ -3850,11 +3922,15 @@ function App() {
             };
           }),
       sessionRuntimeState: preserveRuntimeState
-        ? {
-            ...((detail && detail.agent_state) || {}),
-            ...((existingSnapshot && existingSnapshot.sessionRuntimeState) || {}),
-          }
-        : ((detail && detail.agent_state) || {}),
+        ? mergeSessionRuntimeStateSnapshot(
+            (existingSnapshot && existingSnapshot.sessionRuntimeState) || {},
+            (detail && detail.agent_state) || {},
+            { preferExisting: true },
+          )
+        : mergeSessionRuntimeStateSnapshot(
+            (existingSnapshot && existingSnapshot.sessionRuntimeState) || {},
+            (detail && detail.agent_state) || {},
+          ),
       activeTurn: preserveActiveTurn
         ? normalizeThreadActiveTurn(existingSnapshot.activeTurn)
         : createEmptyThreadActiveTurn(),
@@ -4477,11 +4553,11 @@ function App() {
           ...existing,
           detail: data,
           messages: merged,
-          sessionRuntimeState: (data && data.agent_state) || sessionRuntimeState || {},
+          sessionRuntimeState: mergeSessionRuntimeStateSnapshot(sessionRuntimeState || {}, (data && data.agent_state) || {}),
         }));
         return merged;
       });
-      setSessionRuntimeState((data && data.agent_state) || sessionRuntimeState || {});
+      setSessionRuntimeState((prev) => mergeSessionRuntimeStateSnapshot(prev || sessionRuntimeState || {}, (data && data.agent_state) || {}));
       updateThreadStatus(String(data.thread_id || data.session_id || sid), String(data.status || "idle"));
     } catch (err) {
       const nextError = applyUiError(err, t("errors.load_thread_failed"));
@@ -4882,6 +4958,7 @@ function App() {
             ...createEmptyThreadActiveTurn(),
             activeRunThreadId: runOwnerThreadId,
             startedAt: clientSubmittedAtMs,
+            lastLiveProgressAt: clientSubmittedAtMs,
             lastResponse: (existing.activeTurn && existing.activeTurn.lastResponse) || lastResponse || null,
             liveTurnState: nextInitialRuntimeState,
             liveEvidence: { status: "not_needed" },
@@ -5077,30 +5154,51 @@ function App() {
         }));
         return Boolean(stableText);
       };
+      const previewPendingAssistant = (options = {}) => {
+        const fallbackLabel = String(options.fallbackLabel || "").trim();
+        const stableText = resolveStableAssistantText({ allowDraft: Boolean(options.allowDraft) });
+        if (stableText) {
+          assistantText = stableText;
+          assistantMessageStarted = true;
+          replacePendingText(stableText, { onlyWhileWaiting: false });
+        } else if (fallbackLabel) {
+          replacePendingText(fallbackLabel, { onlyWhileWaiting: false });
+        }
+        patchPendingActivity((activity) => mergeActivityState(activity, {
+          status: String(activity.status || options.status || "running").trim() || "running",
+          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
+          final_answer: String(activity.final_answer || ""),
+        }));
+        return Boolean(stableText);
+      };
       const cleanupRunUi = async () => {
         if (uiFinalized) return;
         uiFinalized = true;
         await new Promise((resolve) => {
           window.requestAnimationFrame(() => {
             if (updateOwnerActiveTurn) {
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, stoppingRun: false }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, lastLiveProgressAt: 0, stoppingRun: false }));
             } else {
               setActiveRunId("");
               setActiveRunThreadId("");
               setActiveRunStartedAt(0);
+              setLastLiveProgressAt(0);
               setStoppingRun(false);
             }
             setSending(false);
             setStoppingRun(false);
             setActiveRunThreadId("");
             setActiveRunStartedAt(0);
+            setLastLiveProgressAt(0);
             resolve();
           });
         });
       };
       const pushLiveLog = (type, text) => {
+        const progressAt = Date.now();
         updateOwnerActiveTurn((prev) => ({
           ...prev,
+          lastLiveProgressAt: progressAt,
           liveRunLogs: [createLog(type, text), ...(Array.isArray(prev.liveRunLogs) ? prev.liveRunLogs : [])].slice(0, 32),
         }));
       };
@@ -5109,6 +5207,7 @@ function App() {
         latestRunSnapshot = mergeRunSnapshot(latestRunSnapshot, snapshot);
         updateOwnerActiveTurn((prev) => ({
           ...prev,
+          lastLiveProgressAt: Date.now(),
           liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, snapshot),
         }));
         if (Object.prototype.hasOwnProperty.call(snapshot, "evidence_status")) {
@@ -5235,11 +5334,10 @@ function App() {
                 run_id: String(payload.run_id || ""),
                 status: "thinking",
               }));
-              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || "") }));
+              updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || ""), lastLiveProgressAt: Date.now() }));
             } else if (event === "run_finished") {
-              const nextStatus = String(payload.turn_status || latestRunSnapshot.turn_status || "completed");
-              stabilizePendingAssistant({
-                status: nextStatus === "needs_user_input" ? "blocked" : (nextStatus || "completed"),
+              previewPendingAssistant({
+                status: latestActivity.status || "thinking",
                 durationMs: Math.max(0, Number(payload.duration_ms || 0) || 0),
                 allowDraft: true,
                 fallbackLabel: t("buttons.saving"),
@@ -5309,8 +5407,8 @@ function App() {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
-              stabilizePendingAssistant({
-                status: completionStatus === "needs_user_input" ? "blocked" : (completionStatus || "completed"),
+              previewPendingAssistant({
+                status: latestActivity.status || "thinking",
                 allowDraft: true,
                 fallbackLabel: t("buttons.saving"),
               });
@@ -5341,6 +5439,7 @@ function App() {
               const delta = String(payload.delta || "");
               if (delta) {
                 assistantText += delta;
+                updateOwnerActiveTurn((prev) => ({ ...prev, lastLiveProgressAt: Date.now() }));
                 if (ownerThreadVisible()) {
                   dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
                 }
@@ -5551,17 +5650,19 @@ function App() {
     } finally {
       if (!uiFinalized) {
         if (updateOwnerActiveTurn) {
-          updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, stoppingRun: false }));
+          updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: "", activeRunThreadId: "", startedAt: 0, lastLiveProgressAt: 0, stoppingRun: false }));
         } else {
           setActiveRunId("");
           setActiveRunThreadId("");
           setActiveRunStartedAt(0);
+          setLastLiveProgressAt(0);
           setStoppingRun(false);
         }
         setSending(false);
         setStoppingRun(false);
         setActiveRunThreadId("");
         setActiveRunStartedAt(0);
+        setLastLiveProgressAt(0);
       }
     }
   }
@@ -5818,6 +5919,10 @@ function App() {
     activeRunThreadId,
     sessionId,
     locale: uiLocale,
+    liveToolTimeline: activeToolTimeline,
+    lastProgressAt: activeRunProgressAt,
+    runStartedAt: activeRunStartedAt,
+    nowMs: activityClockMs || Date.now(),
   });
   const activeProviderAuthReady =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
@@ -5897,6 +6002,10 @@ function App() {
     tokenUsage: (lastResponse && lastResponse.token_usage) || {},
     permissionProfile: activePermissionProfile,
     boundaryModelView: activeBoundaryModelView,
+    sessionId,
+    activeRunThreadId,
+    activeRunStartedAt,
+    sending,
   }), [
     uiLocale,
     workspaceLabel,
@@ -5914,6 +6023,10 @@ function App() {
     activePermissionProfile,
     activeBoundaryModelView,
     lastResponse,
+    sessionId,
+    activeRunThreadId,
+    activeRunStartedAt,
+    sending,
   ]);
 
   async function ensureFullTurnActivity(messageId) {
@@ -6394,22 +6507,33 @@ function App() {
   const renderMessageActivity = (item) => {
     if (!item || item.role !== "assistant") return null;
     const activity = normalizeMessageActivity(item.activity || {});
-    const projection = buildActivityProjection(activity, uiLocale, activityClockMs || Date.now());
+    const displayActivity = (
+      item.pending
+      && String(sessionId || "").trim()
+      && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+      && normalizeActivityTimestamp(activeRunStartedAt || 0)
+    )
+      ? mergeActivityState(activity, {
+          started_at: activity.started_at || activeRunStartedAt,
+          turn_started_at: activity.turn_started_at || activeRunStartedAt,
+        })
+      : activity;
+    const projection = buildActivityProjection(displayActivity, uiLocale, activityClockMs || Date.now());
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
-      || activity.llm_exchanges.length
-      || activity.turn_started_at
-      || activity.started_at
-      || activity.status
-      || activity.run_duration_ms
-      || activity.activity_summary,
+      || displayActivity.llm_exchanges.length
+      || displayActivity.turn_started_at
+      || displayActivity.started_at
+      || displayActivity.status
+      || displayActivity.run_duration_ms
+      || displayActivity.activity_summary,
     );
     if (!hasActivity) return null;
     const isOpen = Boolean(activityOpenByMessageId[item.id]);
-    const tone = activityToneClass(activity.status);
-    const pillLabel = activityPillLabel(uiLocale, activity, activityClockMs || Date.now());
-    const pendingFallback = pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now());
+    const tone = activityToneClass(displayActivity.status);
+    const pillLabel = activityPillLabel(uiLocale, displayActivity, activityClockMs || Date.now());
+    const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());
     return html`
       <div className=${`message-activity tone-${tone} ${isOpen ? "open" : ""}`}>
         <button

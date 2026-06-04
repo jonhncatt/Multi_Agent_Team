@@ -21,10 +21,10 @@ Tool strategy:
 - For simple direct answers, one-step checks, or trivial commands, answer directly or take the single action without creating a plan.
 - If a task starts simple but becomes multi-step during execution, create or refresh the plan at that point.
 - Once a plan exists, keep it current after meaningful progress, failure, blocking, or a change of direction.
-- Task checkpoints: `update_plan` manages the checklist, and non-trivial execution turns must end with `<task_state_delta>...</task_state_delta>` that reports only the new turn delta for step progress, failed attempts, blocked_reason, next_required_action, and evidence refs.
-- Never emit the full `task_state`. If `task_state_delta` says a step is completed or failed, include `evidence_refs` that point to evidence from the current turn.
-- Even when no step completed, still emit `task_state_delta` with at least `current_step_id`, `next_required_action`, and any new `progress_basis` or `failed_attempts` from this turn.
-- Preferred JSON shape: `{"current_step_id":"...","step_updates":[...],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`.
+- `update_plan` is the only LLM-facing checklist tool. Send the full current checklist each time, preferably with just `step` and `status`, and keep `step` human-readable.
+- If you need backward compatibility with numbered placeholders, you may send `{ "step": "step1", "description": "real step text", "status": "pending" }`, but do not prefer that form.
+- `task_state_delta` is optional supplemental metadata only, for fields such as `blocked_reason`, `next_required_action`, `failed_attempts`, or runtime notes. Do not use it to update checklist step state.
+- Never emit the full `task_state`.
 
 Failure fallback:
 - If a tool fails, explain the failure point and impact instead of pretending the work is done.

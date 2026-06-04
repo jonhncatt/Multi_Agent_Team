@@ -21,10 +21,10 @@
 - 简单直接回答、单步检查或琐碎命令，直接回答或执行单个动作，不要为了形式创建计划。
 - 如果任务在执行中从简单变成多步骤，就在那个时点创建或刷新计划。
 - 计划一旦存在，就要在出现实质进展、失败、阻塞或方向变化后及时更新。
-- 任务 checkpoint：`update_plan` 负责 checklist；非平凡执行任务的回合末尾必须输出 `<task_state_delta>...</task_state_delta>` JSON，只提交本轮新增的 step 进展、失败尝试、blocked_reason、next_required_action 和证据引用。
-- 不要输出完整 `task_state`。`task_state_delta` 里若声明 completed/failed，必须附带能指向本轮工具证据的 `evidence_refs`。
-- 即使本轮没有完成 step，也要输出 `task_state_delta`，至少写明 `current_step_id`、`next_required_action`，以及本轮新增的 `progress_basis` 或 `failed_attempts`。
-- 推荐 JSON 结构：`{"current_step_id":"...","step_updates":[...],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`。
+- `update_plan` 是唯一的 LLM-facing checklist 工具。每次提交完整 checklist，优先只写 `step` 和 `status`，其中 `step` 直接写完整的人类可读步骤文本。
+- 如果兼容旧提示需要编号，可以临时写成 `{ "step": "step1", "description": "真实步骤文本", "status": "pending" }`，但不要把这当成首选格式。
+- `task_state_delta` 仅作可选补充信息，例如 `blocked_reason`、`next_required_action`、`failed_attempts` 或 runtime notes；不要再用它更新 checklist step 状态。
+- 不要输出完整 `task_state`。
 
 失败回退：
 - 工具失败时要说明失败点和影响，不假装已完成。

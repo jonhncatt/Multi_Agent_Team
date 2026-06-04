@@ -61,11 +61,10 @@ allowed_tools:
 - 単純な直接回答、1 ステップの確認、または些細なコマンドなら、`update_plan` を使わずにそのまま答えるか単発で実行する。
 - 最初は単純に見えたタスクでも、実行中に複数ステップ化したら、その時点で plan を作成または更新する。
 - いったん plan が存在したら、意味のある進捗、失敗、ブロック、方向転換のあとに最新状態へ更新する。
-- その種の実行 turn の最後では、通常のユーザー向け回答の後ろに必ず `<task_state_delta>...</task_state_delta>` JSON ブロックを 1 つ付ける。
-- `task_state_delta` は小さい差分だけを表す。完全な `task_state` を再掲したり上書きしたりしない。
-- `task_state_delta` で completed / failed / blocked を宣言するときは、必ずその turn の `evidence_refs` と一致させる。
-- step が完了していない turn でも、`current_step_id`、`next_required_action`、その turn で増えた `progress_basis` / `failed_attempts` を含む `task_state_delta` を必ず出す。
-- 推奨形: `{"current_step_id":"...","step_updates":[{"step_id":"...","status":"completed|failed|blocked|in_progress","progress_basis":["..."],"evidence_refs":[{"tool":"...","ref":"..."}]}],"failed_attempts":[...],"next_required_action":"...","progress_basis":[...],"evidence_refs":[...]}`。
+- 非自明な実行作業では、`update_plan` が唯一の checklist プロトコルである。各呼び出しでは、人が読める `step` テキストと `status` を使って、現在の checklist 全体を送る。
+- `step` には実際の手順文をそのまま書く。`step1` のようなプレースホルダしかない旧形式との互換が必要な場合だけ `description` を使う。
+- `task_state_delta` は任意の補足メタデータに限る。`blocked_reason`、`next_required_action`、`failed_attempts`、runtime notes が必要なときだけ使い、checklist の step 完了状態を管理するためには使わない。
+- 完全な `task_state` を出力しない。
 - 出力は協業向けであること。何をしたか、何を確認したか、どんなリスクが残るかを明示する。
 
 納品基準:

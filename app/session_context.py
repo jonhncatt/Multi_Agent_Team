@@ -414,11 +414,20 @@ def normalize_task_plan_items(raw: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(list(raw or [])):
         if not isinstance(item, dict):
             continue
-        step = str(item.get("step") or item.get("title") or item.get("label") or "").strip()
+        raw_step = str(item.get("step") or item.get("title") or item.get("label") or "").strip()
+        description = str(item.get("description") or item.get("content") or "").strip()
+        step = raw_step
+        if description and (
+            not step
+            or re.fullmatch(r"(?:step\s*)?\d+", step, flags=re.IGNORECASE)
+            or re.fullmatch(r"(?:第\s*)?\d+\s*步", step)
+            or re.fullmatch(r"步骤\s*\d+", step)
+        ):
+            step = description
         if not step:
             continue
         step_id = str(item.get("id") or item.get("step_id") or _stable_step_id(step, index)).strip()
-        status = str(item.get("status") or "pending").strip() or "pending"
+        status = _normalize_step_status(item.get("status"), default="pending") or "pending"
         items.append(
             {
                 **dict(item),
@@ -438,23 +447,27 @@ def _normalize_completed_steps(raw: Any) -> list[dict[str, Any]]:
     completed: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(list(raw or [])):
-        if not isinstance(item, dict):
-            continue
-        step = str(item.get("step") or item.get("summary") or item.get("title") or "").strip()
-        step_id = str(item.get("id") or item.get("step_id") or (_stable_step_id(step, index) if step else "")).strip()
+        if isinstance(item, dict):
+            step = str(item.get("step") or item.get("summary") or item.get("title") or "").strip()
+            step_id = str(item.get("id") or item.get("step_id") or (_stable_step_id(step, index) if step else "")).strip()
+            payload = dict(item)
+        else:
+            step = str(item or "").strip()
+            step_id = _stable_step_id(step, index) if step else ""
+            payload = {}
         key = step_id or step
         if not key or key in seen:
             continue
         seen.add(key)
         completed.append(
             {
-                **dict(item),
+                **payload,
                 "id": step_id,
                 "step": step,
                 "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
                 "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
-                "completed_at": str(item.get("completed_at") or item.get("updated_at") or "").strip(),
-                "updated_at": str(item.get("updated_at") or "").strip(),
+                "completed_at": str((payload.get("completed_at") or payload.get("updated_at") or "")).strip(),
+                "updated_at": str(payload.get("updated_at") or "").strip(),
             }
         )
     return completed
@@ -555,13 +568,31 @@ def _normalize_step_status(value: Any, *, default: str = "") -> str:
 def normalize_task_state(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
+    plan_items = normalize_task_plan_items(raw.get("plan_items") or raw.get("plan") or [])
+    completed_steps = _derive_completed_steps(
+        plan_items,
+        raw.get("completed_steps") or [],
+        str(raw.get("updated_at") or "").strip(),
+    )
+    raw_current_step_id = str(raw.get("current_step_id") or "").strip()
+    known_step_ids = {str(item.get("id") or "").strip() for item in plan_items if str(item.get("id") or "").strip()}
+    current_step_id = raw_current_step_id if raw_current_step_id in known_step_ids else derive_current_step_id(plan_items)
+    raw_status = _normalize_step_status(raw.get("status"), default=str(raw.get("status") or "idle").strip() or "idle")
+    if plan_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in plan_items):
+        status = "completed"
+    elif raw_status in {"blocked", "failed", "cancelled"}:
+        status = raw_status
+    elif plan_items:
+        status = raw_status if raw_status in {"in_progress", "pending"} else "in_progress"
+    else:
+        status = raw_status or "idle"
     return {
         "task_id": str(raw.get("task_id") or "").strip(),
         "goal": str(raw.get("goal") or "").strip(),
-        "status": str(raw.get("status") or "idle").strip() or "idle",
-        "plan_items": normalize_task_plan_items(raw.get("plan_items") or raw.get("plan") or []),
-        "current_step_id": str(raw.get("current_step_id") or "").strip(),
-        "completed_steps": _normalize_completed_steps(raw.get("completed_steps") or []),
+        "status": status,
+        "plan_items": plan_items,
+        "current_step_id": current_step_id,
+        "completed_steps": completed_steps,
         "failed_attempts": _normalize_failed_attempts(raw.get("failed_attempts") or []),
         "blocked_reason": str(raw.get("blocked_reason") or "").strip(),
         "next_required_action": str(raw.get("next_required_action") or raw.get("next_action") or "").strip(),
@@ -594,6 +625,35 @@ def derive_current_step_id(plan_items: Any) -> str:
         if status not in _TASK_STEP_COMPLETED_STATUSES and status not in _TASK_STEP_FAILED_STATUSES:
             return str(item.get("id") or "").strip()
     return ""
+
+
+def _derive_completed_steps(plan_items: Any, previous_completed: Any, now: str = "") -> list[dict[str, Any]]:
+    items = normalize_task_plan_items(plan_items)
+    prior_items = _normalize_completed_steps(previous_completed or [])
+    prior_by_id = {str(item.get("id") or "").strip(): item for item in prior_items if str(item.get("id") or "").strip()}
+    prior_by_step = {
+        str(item.get("step") or "").strip().lower(): item
+        for item in prior_items
+        if str(item.get("step") or "").strip()
+    }
+    completed: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES:
+            continue
+        step = str(item.get("step") or "").strip()
+        step_id = str(item.get("id") or _stable_step_id(step, index)).strip()
+        prior = prior_by_id.get(step_id) or prior_by_step.get(step.lower())
+        completed.append(
+            {
+                "id": step_id,
+                "step": step,
+                "completed_at": str(item.get("completed_at") or ((prior or {}).get("completed_at")) or now or "").strip(),
+                "updated_at": str(item.get("updated_at") or ((prior or {}).get("updated_at")) or now or "").strip(),
+                "progress_basis": _as_text_list(item.get("progress_basis") or ((prior or {}).get("progress_basis")), limit=8),
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs") or ((prior or {}).get("evidence_refs")), limit=12),
+            }
+        )
+    return completed
 
 
 def _normalize_task_state_step_updates(raw: Any) -> list[dict[str, Any]]:
@@ -961,253 +1021,56 @@ def merge_task_state_delta(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     now = _now_iso()
     state = normalize_task_state(previous)
-    merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
+    merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan or state.get("plan_items") or [])
     delta_payload = normalize_task_state_delta(delta)
-    warnings: list[dict[str, Any]] = []
-    completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
-    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
-    failed_attempts = _normalize_failed_attempts(state.get("failed_attempts") or [])
-    failed_keys = {
-        "|".join([str(item.get("tool") or ""), str(item.get("step_id") or ""), str(item.get("summary") or "")])
-        for item in failed_attempts
-    }
+    completed_steps = _derive_completed_steps(merged_items, state.get("completed_steps") or [], now)
+    failed_attempts = _normalize_failed_attempts(
+        list(state.get("failed_attempts") or []) + list(delta_payload.get("failed_attempts") or [])
+    )
     progress_basis = _merge_text_lists(state.get("progress_basis"), delta_payload.get("progress_basis"), limit=8)
     evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), delta_payload.get("evidence_refs"), limit=12)
-    step_ids = {str(item.get("id") or "").strip() for item in merged_items if str(item.get("id") or "").strip()}
-    applied_step_updates: list[str] = []
-    rejected_step_updates: list[str] = []
-
-    for update in list(delta_payload.get("step_updates") or []):
-        step_id = str(update.get("step_id") or "").strip()
-        if not step_id or step_id not in step_ids:
-            warnings.append(
-                _task_warning(
-                    "unknown_step_id",
-                    f"Rejected task_state_delta update for unknown step_id: {step_id or '(empty)'}",
-                    step_id=step_id,
-                    created_at=now,
-                )
-            )
-            rejected_step_updates.append(step_id)
-            continue
-        item = next((candidate for candidate in merged_items if str(candidate.get("id") or "") == step_id), None)
-        if item is None:
-            continue
-        target_status = _normalize_step_status(update.get("status"), default=str(item.get("status") or "pending"))
-        candidate_events = _resolve_evidence_events(tool_events, update.get("evidence_refs"))
-        step_kind = _step_kind(item.get("step"))
-        if target_status in {"completed", "failed", "blocked"} and not update.get("evidence_refs"):
-            warnings.append(
-                _task_warning(
-                    "missing_evidence_refs",
-                    f"Rejected {target_status} transition for {step_id} because evidence_refs were missing.",
-                    step_id=step_id,
-                    created_at=now,
-                )
-            )
-            rejected_step_updates.append(step_id)
-            continue
-        if target_status == "completed":
-            if _events_include_failure(candidate_events):
-                warnings.append(
-                    _task_warning(
-                        "completed_step_has_failed_evidence",
-                        f"Rejected completed transition for {step_id} because referenced evidence includes failed tool results.",
-                        step_id=step_id,
-                        created_at=now,
-                    )
-                )
-                item["status"] = "in_progress"
-                rejected_step_updates.append(step_id)
-                continue
-            if not _events_support_step(step_kind, candidate_events):
-                warnings.append(
-                    _task_warning(
-                        f"insufficient_{step_kind}_evidence",
-                        f"Rejected completed transition for {step_id} because the referenced evidence does not validate a {step_kind} step.",
-                        step_id=step_id,
-                        created_at=now,
-                    )
-                )
-                item["status"] = "in_progress"
-                rejected_step_updates.append(step_id)
-                continue
-            item["status"] = "completed"
-            item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
-            item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
-            item["completed_at"] = str(item.get("completed_at") or now)
-            item["updated_at"] = now
-            progress_basis = _merge_text_lists(progress_basis, item.get("progress_basis"), limit=8)
-            evidence_refs = _merge_evidence_refs(evidence_refs, item.get("evidence_refs"), limit=12)
-            if step_id not in completed_ids:
-                completed_steps.append(
-                    {
-                        "id": step_id,
-                        "step": str(item.get("step") or "").strip(),
-                        "completed_at": str(item.get("completed_at") or now),
-                        "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
-                        "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
-                    }
-                )
-                completed_ids.add(step_id)
-            applied_step_updates.append(step_id)
-            continue
-        if target_status in {"failed", "blocked"}:
-            if not candidate_events or not _events_include_failure(candidate_events):
-                warnings.append(
-                    _task_warning(
-                        "missing_failure_evidence",
-                        f"Rejected {target_status} transition for {step_id} because the referenced evidence does not contain a failed tool result.",
-                        step_id=step_id,
-                        created_at=now,
-                    )
-                )
-                rejected_step_updates.append(step_id)
-                continue
-            item["status"] = target_status
-            item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
-            item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
-            item["updated_at"] = now
-            progress_basis = _merge_text_lists(progress_basis, item.get("progress_basis"), limit=8)
-            evidence_refs = _merge_evidence_refs(evidence_refs, item.get("evidence_refs"), limit=12)
-            summary = str(update.get("summary") or update.get("blocked_reason") or f"{target_status} step").strip()[:500]
-            key = "|".join(["task_state_delta", step_id, summary])
-            if summary and key not in failed_keys:
-                failed_keys.add(key)
-                failed_attempts.append(
-                    {
-                        "tool": "task_state_delta",
-                        "summary": summary,
-                        "step_id": step_id,
-                        "evidence_refs": _normalize_evidence_refs(update.get("evidence_refs"), limit=12),
-                        "created_at": now,
-                    }
-                )
-            applied_step_updates.append(step_id)
-            continue
-        item["status"] = target_status or str(item.get("status") or "pending")
-        item["progress_basis"] = _merge_text_lists(item.get("progress_basis"), update.get("progress_basis"), limit=8)
-        item["evidence_refs"] = _merge_evidence_refs(item.get("evidence_refs"), update.get("evidence_refs"), limit=12)
-        item["updated_at"] = now
-        applied_step_updates.append(step_id)
-
-    for attempt in list(delta_payload.get("failed_attempts") or []):
-        step_id = str(attempt.get("step_id") or "").strip()
-        if not step_id or step_id not in step_ids:
-            warnings.append(
-                _task_warning(
-                    "unknown_failed_attempt_step",
-                    f"Rejected failed_attempt for unknown step_id: {step_id or '(empty)'}",
-                    step_id=step_id,
-                    created_at=now,
-                )
-            )
-            continue
-        refs = _normalize_evidence_refs(attempt.get("evidence_refs"), limit=12)
-        candidate_events = _resolve_evidence_events(tool_events, refs)
-        if not refs or not candidate_events or not _events_include_failure(candidate_events):
-            warnings.append(
-                _task_warning(
-                    "invalid_failed_attempt_evidence",
-                    f"Rejected failed_attempt for {step_id} because it does not reference a failed tool result.",
-                    step_id=step_id,
-                    created_at=now,
-                )
-            )
-            continue
-        tool_name = str(attempt.get("tool") or _event_tool_name(candidate_events[0]) or "task_state_delta").strip()
-        summary = str(attempt.get("summary") or "Failed attempt").strip()[:500]
-        key = "|".join([tool_name, step_id, summary])
-        if key in failed_keys:
-            continue
-        failed_keys.add(key)
-        failed_attempts.append(
-            {
-                "tool": tool_name,
-                "summary": summary,
-                "step_id": step_id,
-                "evidence_refs": refs,
-                "created_at": str(attempt.get("created_at") or now),
-            }
-        )
-
     current_step_id = str(delta_payload.get("current_step_id") or "").strip()
-    if current_step_id and current_step_id not in step_ids:
-        warnings.append(
-            _task_warning(
-                "invalid_current_step_id",
-                f"Ignored task_state_delta current_step_id because it does not exist in plan_items: {current_step_id}",
-                step_id=current_step_id,
-                created_at=now,
-            )
-        )
+    known_step_ids = {str(item.get("id") or "").strip() for item in merged_items if str(item.get("id") or "").strip()}
+    if current_step_id and current_step_id not in known_step_ids:
         current_step_id = ""
     if not current_step_id:
         current_step_id = derive_current_step_id(merged_items)
 
     next_required_action = str(delta_payload.get("next_required_action") or "").strip()
-    if _looks_generic_next_action(next_required_action):
-        fallback_next = _fallback_next_required_action(merged_items, current_step_id)
-        if next_required_action:
-            warnings.append(
-                _task_warning(
-                    "generic_next_required_action",
-                    f"Rejected generic next_required_action and replaced it with: {fallback_next or '(empty)'}",
-                    step_id=current_step_id,
-                    created_at=now,
-                )
-            )
-        next_required_action = fallback_next
     if not next_required_action:
         next_required_action = _pending_user_action(pending_user_input) or _fallback_next_required_action(merged_items, current_step_id)
-
     blocked_reason = str(delta_payload.get("blocked_reason") or "").strip()
     turn_status_text = str(turn_status or "").strip()
     runtime_summary = _runtime_error_summary(runtime_error)
     normalized_delta_status = str(delta_payload.get("status") or "").strip()
-    if normalized_delta_status == "completed" and any(
-        str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES
-        for item in merged_items
-    ):
-        warnings.append(
-            _task_warning(
-                "invalid_task_status_transition",
-                "Rejected completed task status because not all plan_items are completed.",
-                step_id=current_step_id,
-                created_at=now,
-            )
-        )
-        normalized_delta_status = "in_progress"
-    if turn_status_text in {"blocked", "needs_user_input"}:
+    if normalized_delta_status in {"blocked", "failed", "cancelled"}:
+        status = normalized_delta_status
+    elif turn_status_text in {"blocked", "needs_user_input"} and blocked_reason:
         status = "blocked"
-    elif turn_status_text == "failed":
+    elif turn_status_text == "failed" and (blocked_reason or runtime_summary or failed_attempts):
         status = "failed"
     elif turn_status_text == "cancelled":
         status = "cancelled"
-    elif normalized_delta_status in {"completed", "blocked", "failed", "in_progress", "pending"}:
-        status = "completed" if normalized_delta_status == "pending" and not merged_items else normalized_delta_status
     elif merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
         status = "completed"
-    elif state.get("goal") or merged_items:
+    elif merged_items or state.get("goal"):
         status = "in_progress"
     else:
         status = state.get("status") or "idle"
 
     if status in {"blocked", "failed"} and not blocked_reason:
         blocked_reason = runtime_summary
-    if runtime_summary and status in {"blocked", "failed"}:
-        key = "|".join(["runtime", current_step_id, runtime_summary])
-        if key not in failed_keys:
-            failed_keys.add(key)
-            failed_attempts.append(
-                {
-                    "tool": "runtime",
-                    "summary": runtime_summary,
-                    "step_id": current_step_id,
-                    "evidence_refs": [{"source": "runtime_error"}],
-                    "created_at": now,
-                }
-            )
+    if runtime_summary and status in {"blocked", "failed"} and not failed_attempts:
+        failed_attempts = _normalize_failed_attempts(
+            list(failed_attempts)
+            + [{
+                "tool": "runtime",
+                "summary": runtime_summary,
+                "step_id": current_step_id,
+                "evidence_refs": [{"source": "runtime_error"}],
+                "created_at": now,
+            }]
+        )
 
     next_state = normalize_task_state(
         {
@@ -1221,16 +1084,11 @@ def merge_task_state_delta(
             "next_required_action": next_required_action,
             "progress_basis": progress_basis,
             "evidence_refs": evidence_refs,
-            "validation_warnings": warnings,
+            "validation_warnings": [],
             "updated_at": now,
         }
     )
-    return next_state, {
-        "accepted": bool(applied_step_updates) and not rejected_step_updates,
-        "applied_step_ids": applied_step_updates,
-        "rejected_step_ids": rejected_step_updates,
-        "validation_warnings": _normalize_validation_warnings(warnings),
-    }
+    return next_state, {}
 
 
 def merge_task_state_after_turn(
@@ -1245,133 +1103,21 @@ def merge_task_state_after_turn(
     now = _now_iso()
     state = normalize_task_state(previous)
     merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
-    warnings = _normalize_validation_warnings(state.get("validation_warnings") or [])
-
     current_step_id = derive_current_step_id(merged_items)
-    completed_steps = _normalize_completed_steps(state.get("completed_steps") or [])
-    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
-    newly_completed = [
-        item
-        for item in merged_items
-        if str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES
-        and str(item.get("id") or "").strip()
-        and str(item.get("id") or "").strip() not in completed_ids
-    ]
-    progress_target_id = (
-        str(newly_completed[-1].get("id") or "").strip()
-        if newly_completed
-        else current_step_id
-    )
-
+    completed_steps = _derive_completed_steps(merged_items, state.get("completed_steps") or [], now)
     progress_basis = _merge_text_lists(state.get("progress_basis"), limit=8)
     evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), limit=12)
     failed_attempts = _normalize_failed_attempts(state.get("failed_attempts") or [])
-    failed_keys = {
-        "|".join([str(item.get("tool") or ""), str(item.get("step_id") or ""), str(item.get("summary") or "")])
-        for item in failed_attempts
-    }
-
-    target_item = next((item for item in merged_items if str(item.get("id") or "") == progress_target_id), None)
-    for raw_event in list(tool_events or []):
-        if not isinstance(raw_event, dict):
-            continue
-        event = dict(raw_event)
-        tool_name = str(event.get("name") or event.get("tool") or "").strip()
-        status = str(event.get("status") or "").strip().lower()
-        basis = _tool_event_progress(event)
-        refs = _tool_event_evidence(event)
-        if tool_name == "update_plan":
-            if status in {"error", "failed", "failure", "blocked"}:
-                warnings.append(
-                    _task_warning(
-                        "update_plan_validation_error",
-                        str(event.get("summary") or event.get("error") or event.get("output_preview") or "update_plan validation failed").strip()[:500],
-                        step_id=progress_target_id or current_step_id,
-                        created_at=now,
-                    )
-                )
-            continue
-        if status in {"ok", "success", "completed", "complete", "done"}:
-            progress_basis = _merge_text_lists(progress_basis, [basis], limit=8)
-            evidence_refs = _merge_evidence_refs(evidence_refs, refs, limit=12)
-            if target_item is not None:
-                target_item["progress_basis"] = _merge_text_lists(target_item.get("progress_basis"), [basis], limit=8)
-                target_item["evidence_refs"] = _merge_evidence_refs(target_item.get("evidence_refs"), refs, limit=12)
-                target_item["updated_at"] = now
-            continue
-        if status in {"error", "failed", "failure", "blocked"}:
-            summary = str(event.get("summary") or event.get("error") or event.get("output_preview") or "Tool failed").strip()[:500]
-            step_id = progress_target_id or current_step_id
-            key = "|".join([tool_name, step_id, summary])
-            if key not in failed_keys:
-                failed_keys.add(key)
-                failed_attempts.append(
-                    {
-                        "tool": tool_name,
-                        "summary": summary,
-                        "step_id": step_id,
-                        "evidence_refs": refs,
-                        "created_at": now,
-                    }
-                )
-
-    for raw_signal in list(progress_signals or []):
-        if not isinstance(raw_signal, dict):
-            continue
-        summary = str(raw_signal.get("summary") or raw_signal.get("detail") or raw_signal.get("message") or "").strip()
-        if summary:
-            progress_basis = _merge_text_lists(progress_basis, [summary[:500]], limit=8)
-
-    completed_steps = _normalize_completed_steps(completed_steps)
-    completed_ids = {str(item.get("id") or "").strip() for item in completed_steps if str(item.get("id") or "").strip()}
-    for item in merged_items:
-        if str(item.get("status") or "").strip() not in _TASK_STEP_COMPLETED_STATUSES:
-            continue
-        step_id = str(item.get("id") or "").strip()
-        if not step_id or step_id in completed_ids:
-            continue
-        item["completed_at"] = str(item.get("completed_at") or now)
-        item["updated_at"] = str(item.get("updated_at") or now)
-        completed_steps.append(
-            {
-                "id": step_id,
-                "step": str(item.get("step") or "").strip(),
-                "completed_at": str(item.get("completed_at") or now),
-                "progress_basis": _as_text_list(item.get("progress_basis"), limit=8),
-                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs"), limit=12),
-            }
-        )
-        completed_ids.add(step_id)
 
     turn_status_text = str(turn_status or "").strip()
     runtime_summary = _runtime_error_summary(runtime_error)
     pending_action = _pending_user_action(pending_user_input)
-    if turn_status_text in {"blocked", "needs_user_input"}:
-        status = "blocked"
-    elif turn_status_text == "failed":
-        status = "failed"
-    elif turn_status_text == "cancelled":
-        status = "cancelled"
-    elif merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
+    if merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
         status = "completed"
-    elif state.get("goal") or merged_items:
+    elif merged_items or state.get("goal"):
         status = "in_progress"
     else:
         status = state.get("status") or "idle"
-
-    if runtime_summary and status in {"blocked", "failed"}:
-        step_id = current_step_id or progress_target_id
-        key = "|".join(["runtime", step_id, runtime_summary])
-        if key not in failed_keys:
-            failed_attempts.append(
-                {
-                    "tool": "runtime",
-                    "summary": runtime_summary,
-                    "step_id": step_id,
-                    "evidence_refs": [{"source": "runtime_error"}],
-                    "created_at": now,
-                }
-            )
 
     next_item = next(
         (
@@ -1383,8 +1129,6 @@ def merge_task_state_after_turn(
         None,
     )
     next_required_action = pending_action or (str(next_item.get("step") or "").strip() if next_item else "")
-    if not next_required_action and status in {"blocked", "failed"}:
-        next_required_action = runtime_summary or state.get("next_required_action") or ""
 
     return normalize_task_state(
         {
@@ -1394,11 +1138,11 @@ def merge_task_state_after_turn(
             "current_step_id": current_step_id,
             "completed_steps": completed_steps,
             "failed_attempts": failed_attempts,
-            "blocked_reason": runtime_summary if status in {"blocked", "failed"} and runtime_summary else (state.get("blocked_reason") if status in {"blocked", "failed"} else ""),
+            "blocked_reason": state.get("blocked_reason") or "",
             "next_required_action": next_required_action,
             "progress_basis": progress_basis,
             "evidence_refs": evidence_refs,
-            "validation_warnings": warnings,
+            "validation_warnings": [],
             "updated_at": now,
         }
     )

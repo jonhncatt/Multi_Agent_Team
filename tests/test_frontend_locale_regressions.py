@@ -446,7 +446,7 @@ def test_early_activity_copy_and_visibility_are_updated() -> None:
     assert '"activity.status.waiting_model": "等待模型返回"' in locales
     assert '"activity.status.waiting_model_slow": "模型响应较慢，仍在等待返回"' in locales
     assert "|| activity.started_at" in script
-    assert "|| activity.status" in script
+    assert "|| displayActivity.status" in script
 
 
 def test_frontend_progress_projection_uses_canonical_tool_names_only() -> None:
@@ -600,6 +600,7 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "const frozenElapsedMs = isActivityTerminalStatus(item.status)" in script
     assert "const shouldTickActivityClock = hasRunningActivity || sending || Boolean(activeRunId) || Boolean(activeRunThreadId);" in script
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
+    assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now())" in script
     assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
     assert "startedAt: clientSubmittedAtMs," in script
 
@@ -667,7 +668,7 @@ def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
         "startedAt: activeRunStartedAt,",
         "setActiveRunThreadId(next.activeRunThreadId);",
         "setActiveRunStartedAt(next.startedAt);",
-        "activeRunThreadId: \"\", startedAt: 0, stoppingRun: false",
+        "activeRunThreadId: \"\", startedAt: 0, lastLiveProgressAt: 0, stoppingRun: false",
     )
     for token in required_tokens:
         assert token in script, token
@@ -685,6 +686,9 @@ def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
         'status: "validating"',
         'status: "waiting_model"',
         'status: "waiting_tool"',
+        "const progressIsStale = Boolean(",
+        "(nowMs - lastProgressAtMs) >= LIVE_PROGRESS_STALE_AFTER_MS",
+        'status = "background_running";',
     )
     for token in required_tokens:
         assert token in script, token
@@ -779,6 +783,33 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     assert "started_at" not in run_started_body
 
 
+def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const previewPendingAssistant = (options = {}) => {" in script
+    assert 'status: String(activity.status || options.status || "running").trim() || "running"' in script
+
+    run_finished_match = re.search(
+        r'else if \(event === "run_finished"\) \{(?P<body>.*?)\n            \} else if \(event === "run_failed"\)',
+        script,
+        re.S,
+    )
+    assert run_finished_match, "run_finished handler not found"
+    run_finished_body = run_finished_match.group("body")
+    assert "previewPendingAssistant({" in run_finished_body
+    assert "stabilizePendingAssistant({" not in run_finished_body
+
+    turn_completed_match = re.search(
+        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
+        script,
+        re.S,
+    )
+    assert turn_completed_match, "turn/completed handler not found"
+    turn_completed_body = turn_completed_match.group("body")
+    assert "previewPendingAssistant({" in turn_completed_body
+    assert "stabilizePendingAssistant({" not in turn_completed_body
+
+
 def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
@@ -800,7 +831,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert run_finished_match, "run_finished branch not found"
     run_finished_body = run_finished_match.group("body")
-    assert "stabilizePendingAssistant({" in run_finished_body
+    assert "previewPendingAssistant({" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
     assert "activeRunId: \"\"" not in run_finished_body
@@ -812,7 +843,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert turn_completed_match, "turn/completed branch not found"
     turn_completed_body = turn_completed_match.group("body")
-    assert "stabilizePendingAssistant({" in turn_completed_body
+    assert "previewPendingAssistant({" in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
@@ -1078,7 +1109,7 @@ def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
     assert match, "renderMessageActivity function not found"
     body = match.group("body")
 
-    assert 'const pendingFallback = pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now());' in body
+    assert 'const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());' in body
     assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? pendingFallback.text : "",' in body
     assert "visibleItems.map((entry) => {" in script
 

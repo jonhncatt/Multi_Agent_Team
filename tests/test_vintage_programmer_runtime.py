@@ -661,14 +661,16 @@ def test_agent_docs_prefer_project_venv_python() -> None:
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
     assert "不要默认写死 `python3`" in tools_doc
-    assert "<task_state_delta>" in agent_doc
     assert "update_plan" in agent_doc
     assert "不要为每个请求都创建计划" in agent_doc
     assert "多步骤、多文件、需要代码修改、需要调试、需要测试" in agent_doc
     assert "简单直接回答、单步检查或琐碎命令" in agent_doc
-    assert "<task_state_delta>" in tools_doc
+    assert "唯一的 checklist 协议" in agent_doc
+    assert "可选补充信息" in agent_doc
     assert "不要为每个请求都调用 `update_plan`" in tools_doc
     assert "如果任务在执行中从简单变成多步骤" in tools_doc
+    assert "唯一的 LLM-facing checklist 工具" in tools_doc
+    assert "不要再用它更新 checklist step 状态" in tools_doc
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:
@@ -2799,7 +2801,7 @@ def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) ->
     assert checkpoint["active_files"] == [str(image_path)]
     assert checkpoint["active_attachments"][0]["id"] == "img-1"
     assert checkpoint["last_completed_step"] == ""
-    assert result["task_state"]["progress_basis"][0].startswith("image_read:")
+    assert result["task_state"]["progress_basis"] == []
 
 
 def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path: Path) -> None:
@@ -2830,9 +2832,7 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
             _FakeMessage(
                 content=(
                     "Patched the task_state merge path.\n"
-                    "<task_state_delta>{\"step_updates\":[{\"step_id\":\"step-123\",\"status\":\"completed\","
-                    "\"evidence_refs\":[{\"tool\":\"apply_patch\",\"ref\":\"app/session_context.py\"}],"
-                    "\"progress_basis\":[\"apply_patch: app/session_context.py\"]}],"
+                    "<task_state_delta>{\"progress_basis\":[\"apply_patch: app/session_context.py\"],"
                     "\"next_required_action\":\"Run focused tests\"}</task_state_delta>"
                 )
             ),
@@ -2863,10 +2863,11 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
     )
 
     assert result["text"] == "Patched the task_state merge path."
-    assert result["task_state_delta"]["step_updates"][0]["step_id"] == "step-123"
-    assert result["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge path"
-    assert result["task_state"]["next_required_action"] == "Run focused tests"
-    assert result["inspector"]["run_state"]["task_state_validation"]["accepted"] is True
+    assert result["task_state_delta"]["next_required_action"] == "Run focused tests"
+    assert result["task_state"]["completed_steps"] == []
+    assert result["task_state"]["next_required_action"] == ""
+    assert result["task_state"]["progress_basis"] == []
+    assert "task_state_validation" not in result["inspector"]["run_state"]
 
 
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:

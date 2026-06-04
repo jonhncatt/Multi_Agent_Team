@@ -2515,11 +2515,7 @@ def _process_chat_request(
         has_delta = isinstance(runtime_task_state_delta, dict) and bool(runtime_task_state_delta)
         is_continue_like = session_context_impl.message_likely_continues_task(req.message, session=session)
         should_create_new_task_state = has_successful_update_plan and not has_previous_task
-        should_update_existing_task_state = has_previous_task and (
-            has_successful_update_plan
-            or has_delta
-            or is_continue_like
-        )
+        should_update_existing_task_state = has_previous_task and has_successful_update_plan
         should_track_task = should_create_new_task_state or should_update_existing_task_state
 
         previous_goal = str(previous_task_state.get("goal") or "").strip()
@@ -2553,6 +2549,8 @@ def _process_chat_request(
             runtime_task_state_delta = {}
             has_delta = False
             task_state_notes.append("ignored_task_state_delta_without_task_mode")
+        elif has_delta and not has_successful_update_plan:
+            task_state_notes.append("ignored_task_state_delta_without_update_plan")
 
         task_state_validation = {}
         if should_track_task:
@@ -2565,17 +2563,7 @@ def _process_chat_request(
                 "goal": derived_task_goal,
                 "plan_items": list(previous_task_state.get("plan_items") or []),
             }
-            if has_delta:
-                next_task_state, task_state_validation = session_context_impl.merge_task_state_delta(
-                    task_state_base,
-                    plan_from_runtime,
-                    runtime_task_state_delta,
-                    tool_events,
-                    turn_status,
-                    fallback_error_for_task,
-                    pending_user_input,
-                )
-            else:
+            if has_successful_update_plan:
                 next_task_state = session_context_impl.merge_task_state_after_turn(
                     task_state_base,
                     plan_from_runtime,
@@ -2585,14 +2573,8 @@ def _process_chat_request(
                     fallback_error_for_task,
                     pending_user_input,
                 )
-                validation_warnings = list(next_task_state.get("validation_warnings") or [])
-                if validation_warnings:
-                    task_state_validation = {
-                        "accepted": False,
-                        "applied_step_ids": [],
-                        "rejected_step_ids": [],
-                        "validation_warnings": validation_warnings,
-                    }
+            else:
+                next_task_state = session_context_impl.normalize_task_state(task_state_base)
             if not next_task_state.get("task_id"):
                 next_task_state["task_id"] = base_task_id or str(uuid.uuid4())
             if not next_task_state.get("goal") and derived_task_goal:

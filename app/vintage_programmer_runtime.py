@@ -66,10 +66,9 @@ from app.serialization import dump_model, safe_model_dump
 from app.session_context import (
     compat_task_checkpoint_from_focus,
     focus_from_work_cursor_task_state,
-    merge_task_state_delta,
     merge_task_state_after_turn,
-    normalize_task_state_delta,
     normalize_task_state,
+    normalize_task_state_delta,
     normalize_work_cursor,
 )
 from app.tool_name_normalizer import normalize_tool_name
@@ -551,14 +550,13 @@ class VintageProgrammerRuntime:
             "- For simple direct answers, one-step checks, or trivial commands, answer directly or take the single action without update_plan.\n"
             "- If a task starts simple but becomes multi-step during execution, create or refresh the plan at that point.\n"
             "- When a plan exists, keep it current after meaningful progress, failure, blocking, or a change of direction.\n"
-            "- For non-trivial execution tasks, you must create or refresh a plan with update_plan before claiming meaningful progress.\n"
-            "- End a non-trivial execution turn with exactly one task_state_delta JSON block inside <task_state_delta>...</task_state_delta>.\n"
-            "- task_state_delta must be a small proposed delta only. Never restate or overwrite the full task_state.\n"
-            "- Completed or failed steps in task_state_delta must include evidence_refs from the current turn.\n"
-            "- If no step completed, still emit task_state_delta with the current_step_id, next_required_action, and any progress_basis or failed_attempts gathered this turn.\n"
-            "- Preferred task_state_delta shape: {\"current_step_id\":\"...\",\"step_updates\":[{\"step_id\":\"...\",\"status\":\"completed|failed|blocked|in_progress\",\"progress_basis\":[\"...\"],\"evidence_refs\":[{\"tool\":\"...\",\"ref\":\"...\"}]}],\"failed_attempts\":[...],\"next_required_action\":\"...\",\"progress_basis\":[...],\"evidence_refs\":[...]}\n"
-            "- A non-trivial execution turn without task_state_delta is incomplete.\n"
-            "- Keep the user-visible answer outside the task_state_delta block.\n"
+            "- For non-trivial execution tasks, use update_plan as the only checklist protocol before or during meaningful progress.\n"
+            "- update_plan should send the full current checklist using only human-readable step text plus status.\n"
+            "- Preferred update_plan shape: {\"explanation\":\"optional\",\"plan\":[{\"step\":\"Create Python script that prints 1+1\",\"status\":\"completed\"},{\"step\":\"Run the script and confirm output\",\"status\":\"in_progress\"}]}\n"
+            "- Do not rely on internal step ids, evidence refs, or progress metadata in update_plan.\n"
+            "- task_state_delta is optional and supplemental only. If you emit it, use it for blocked_reason, next_required_action, runtime notes, or failed_attempts. Do not use task_state_delta to manage checklist step completion.\n"
+            "- Never emit a full task_state overwrite.\n"
+            "- Keep the user-visible answer outside any optional task_state_delta block.\n"
             "[context_priority]\n"
             "- The current user message has highest priority.\n"
             "- Task memory helps maintain long-running work.\n"
@@ -592,8 +590,10 @@ class VintageProgrammerRuntime:
             "- For simple direct answers, one-step checks, or trivial commands, answer directly or call the concrete tool needed now without update_plan.\n"
             "- If a task starts simple but becomes multi-step, create or refresh the plan at that point.\n"
             "- When a plan exists, keep it current after meaningful progress, failure, blocking, or a change of direction.\n"
-            "- For non-trivial coding tasks, you must keep the plan and task_state_delta aligned: update_plan manages the checklist, and task_state_delta proposes only validated step progress.\n"
-            "- Never emit a full task_state overwrite. Emit only task_state_delta at the end of the turn, and include evidence_refs for every completed, failed, or blocked step update.\n"
+            "- For non-trivial coding tasks, update_plan is the only checklist protocol. Send the full current checklist with step + status only.\n"
+            "- If a plan item uses placeholder text like step1/step2, provide the real human-readable step in description or step. Prefer putting the real text directly in step.\n"
+            "- task_state_delta is optional supplemental metadata only. Do not use task_state_delta step updates to drive the checklist.\n"
+            "- Never emit a full task_state overwrite.\n"
             f"- When running Python commands, prefer the project virtual environment when available (for example ./.venv/bin/python on macOS/Linux or .venv\\Scripts\\python.exe on Windows). Otherwise use the detected interpreter command ({detected_python}). Do not assume python3 exists. Prefer project-level module execution via the selected interpreter with -m ...\n"
             "- When using exec_command, prefer cwd/workdir instead of `cd dir && command`. If a compound shell command is still necessary, keep it simple and avoid command substitution, heredoc, downloaded scripts piped to shell, sudo destructive commands, or broad deletion commands.\n"
             "- If runtime permission is truly required, use the structured request_user_input/approval channel. Do not ask for approval in ordinary assistant prose.\n"
@@ -5594,29 +5594,25 @@ class VintageProgrammerRuntime:
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
         runtime_phase = "running" if turn_status == "running" else turn_status
-        if task_state_delta:
-            final_task_state, task_state_validation = merge_task_state_delta(
-                {
-                    **dict(task_state or {}),
-                    "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
-                    "goal": current_goal or task_state.get("goal") or "",
-                    "plan_items": plan_state or task_state.get("plan_items") or [],
-                },
-                plan_state,
-                task_state_delta,
-                [dump_model(item) for item in tool_events],
-                turn_status,
-                runtime_error,
-                pending_user_input,
-            )
-        else:
+        base_task_state = {
+            **dict(task_state or {}),
+            "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
+            "goal": current_goal or task_state.get("goal") or "",
+            "plan_items": plan_state or task_state.get("plan_items") or [],
+        }
+        has_successful_update_plan = any(
+            str(getattr(item, "name", "") or "").strip().lower() == "update_plan"
+            and str(getattr(item, "status", "") or "").strip().lower() in {"ok", "success", "completed", "complete", "done"}
+            for item in list(tool_events or [])
+        )
+        has_existing_task = bool(
+            str(base_task_state.get("task_id") or "").strip()
+            or str(base_task_state.get("goal") or "").strip()
+            or list(base_task_state.get("plan_items") or [])
+        )
+        if has_successful_update_plan:
             final_task_state = merge_task_state_after_turn(
-                {
-                    **dict(task_state or {}),
-                    "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
-                    "goal": current_goal or task_state.get("goal") or "",
-                    "plan_items": plan_state or task_state.get("plan_items") or [],
-                },
+                base_task_state,
                 plan_state,
                 [dump_model(item) for item in tool_events],
                 progress_signals,
@@ -5624,18 +5620,9 @@ class VintageProgrammerRuntime:
                 runtime_error,
                 pending_user_input,
             )
-            task_state_validation = {
-                "accepted": False,
-                "applied_step_ids": [],
-                "rejected_step_ids": [],
-                "validation_warnings": [],
-            }
-        if list(task_state_validation.get("validation_warnings") or []):
-            notes.extend(
-                f"task_state_validation_warning:{str(item.get('code') or '')}"
-                for item in list(task_state_validation.get("validation_warnings") or [])
-                if isinstance(item, dict)
-            )
+        else:
+            final_task_state = normalize_task_state(base_task_state if has_existing_task else {})
+        task_state_validation = {}
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -5645,8 +5632,6 @@ class VintageProgrammerRuntime:
                 "turn_status": turn_status,
                 "plan": plan_state,
                 "task_state": dict(final_task_state),
-                "task_state_delta": dict(task_state_delta),
-                "task_state_validation": dict(task_state_validation),
                 "pending_user_input": pending_user_input,
                 "pending_approval": {},
                 "write_authorization_state": dict(write_authorization_state),
@@ -5725,8 +5710,6 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "task_state": dict(final_task_state),
-                "task_state_delta": dict(task_state_delta),
-                "task_state_validation": dict(task_state_validation),
                 "history_turn_count": len(list(context_payload.get("history_turns") or [])),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
                 "phase_timings": dict(phase_timings),
@@ -5746,8 +5729,14 @@ class VintageProgrammerRuntime:
         activity_summary = " · ".join(
             [str(item.get("title") or "") for item in trace_events if str(item.get("title") or "").strip()][-5:]
         )[:400]
+        if isinstance(task_state_delta, dict) and task_state_delta:
+            inspector["run_state"]["task_state_delta"] = dict(task_state_delta)
+            inspector["session"]["task_state_delta"] = dict(task_state_delta)
+        if isinstance(task_state_validation, dict) and task_state_validation:
+            inspector["run_state"]["task_state_validation"] = dict(task_state_validation)
+            inspector["session"]["task_state_validation"] = dict(task_state_validation)
 
-        return {
+        result = {
             "ok": True,
             "agent_id": spec.agent_id,
             "agent_title": spec.title,
@@ -5776,8 +5765,6 @@ class VintageProgrammerRuntime:
             ],
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "task_state": dict(final_task_state),
-            "task_state_delta": dict(task_state_delta),
-            "task_state_validation": dict(task_state_validation),
             "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_boundary": dump_model(turn_runtime_boundary),
             "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),
@@ -5845,7 +5832,12 @@ class VintageProgrammerRuntime:
                 "cwd": effective_cwd,
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
-                "task_state_delta": dict(task_state_delta),
-                "task_state_validation": dict(task_state_validation),
             },
         }
+        if isinstance(task_state_delta, dict) and task_state_delta:
+            result["task_state_delta"] = dict(task_state_delta)
+            result["route_state"]["task_state_delta"] = dict(task_state_delta)
+        if isinstance(task_state_validation, dict) and task_state_validation:
+            result["task_state_validation"] = dict(task_state_validation)
+            result["route_state"]["task_state_validation"] = dict(task_state_validation)
+        return result

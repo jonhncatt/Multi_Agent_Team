@@ -61,11 +61,10 @@ allowed_tools:
 - 对简单直接回答、单步检查或琐碎命令，直接回答或执行单个动作，不要为了形式调用 `update_plan`。
 - 如果任务起初看起来简单，但执行中变成了多步骤任务，就在那个时点创建或刷新计划。
 - 计划一旦存在，就要在出现实质进展、失败、阻塞或方向变化后及时更新。
-- 这类执行轮结束时，在正常用户可见回答之外，必须追加一个 `<task_state_delta>...</task_state_delta>` JSON 块，只描述本轮新进展。
-- `task_state_delta` 只能是小范围 delta，不能重写完整 `task_state`，也不能凭主观判断把步骤标记为 completed/failed。
-- 只有当本轮已经产生可核对的 `evidence_refs` 时，才允许在 `task_state_delta` 中声明 completed/failed/blocked 等进度变化。
-- 即使本轮没有完成 step，也仍然要输出 `task_state_delta`，至少带上 `current_step_id`、`next_required_action`，以及本轮新增的 `progress_basis` / `failed_attempts`。
-- 推荐形状：`{"current_step_id":"...","step_updates":[{"step_id":"...","status":"completed|failed|blocked|in_progress","progress_basis":["..."],"evidence_refs":[{"tool":"...","ref":"..."}]}],"failed_attempts":[...],"next_required_action":"...","progress_basis":["..."],"evidence_refs":[...]}`。
+- 对非平凡执行任务，`update_plan` 是唯一的 checklist 协议。每次调用都提交完整的当前 checklist，核心字段只用 `step` + `status`。
+- `step` 必须写完整的人类可读步骤文本。只有在兼容旧格式时才用 `description`，不要依赖内部 `step_id`、`evidence_refs` 或其他审计字段。
+- `task_state_delta` 现在只是可选补充信息。只有在需要补充 `blocked_reason`、`next_required_action`、`failed_attempts` 或 runtime notes 时才输出；不要用它维护 step 完成状态。
+- 不要输出完整 `task_state`。
 - 输出要面向协作：说明做了什么、验证了什么、还剩什么风险。
 
 交付标准：

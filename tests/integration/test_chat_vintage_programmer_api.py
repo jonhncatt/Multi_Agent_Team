@@ -861,14 +861,8 @@ class _DeltaTaskStateRuntime(_FakeVintageRuntime):
             }
         ]
         payload["task_state_delta"] = {
-            "step_updates": [
-                {
-                    "step_id": "step-1",
-                    "status": "completed",
-                    "progress_basis": ["apply_patch: app/session_context.py"],
-                    "evidence_refs": [{"tool": "apply_patch", "ref": "app/session_context.py"}],
-                }
-            ],
+            "progress_basis": ["apply_patch: app/session_context.py"],
+            "evidence_refs": [{"tool": "apply_patch", "ref": "app/session_context.py"}],
             "next_required_action": "Run focused tests",
         }
         payload["task_state"] = {
@@ -890,14 +884,14 @@ class _NoDeltaTaskStateRuntime(_FakeVintageRuntime):
         payload["plan"] = [{"step": "Inspect workspace", "status": "completed"}]
         payload["tool_events"] = [
             {
-                "name": "read_file",
-                "input": {"path": "README.md"},
-                "output_preview": "ok",
+                "name": "update_plan",
+                "input": {"plan": list(payload["plan"])},
+                "result_preview": {"ok": True, "plan": list(payload["plan"])},
+                "output_preview": "plan updated",
                 "status": "ok",
-                "group": "read",
+                "group": "control",
                 "source": "native",
-                "summary": "Read README.md",
-                "source_refs": ["README.md"],
+                "summary": "plan updated (1 step)",
             }
         ]
         payload["task_state"] = {
@@ -960,9 +954,9 @@ class _UpdatePlanCreatesTaskRuntime(_DirectAnswerNoTaskRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         payload = super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
         payload["plan"] = [
-            {"step_id": "step_1", "step": "Inspect current update_plan schema", "status": "completed"},
-            {"step_id": "step_2", "step": "Align update_plan schema with task_state plan_items", "status": "in_progress"},
-            {"step_id": "step_3", "step": "Add tests for greetings, continue requests, and update_plan step_id", "status": "pending"},
+            {"step": "Inspect current update_plan schema", "status": "completed"},
+            {"step": "Align update_plan schema with task_state plan_items", "status": "in_progress"},
+            {"step": "Add tests for greetings, continue requests, and update_plan behavior", "status": "pending"},
         ]
         payload["tool_events"] = [
             {
@@ -1867,7 +1861,7 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     assert all("llm_exchanges" not in str(turn or "") for turn in clean_turns)
 
 
-def test_chat_endpoint_prefers_task_state_delta_merge_over_runtime_task_state(monkeypatch, tmp_path: Path) -> None:
+def test_chat_endpoint_keeps_task_state_canonical_on_update_plan_without_delta_merge(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DeltaTaskStateRuntime())
     client = TestClient(main_app.app)
@@ -1919,26 +1913,30 @@ def test_chat_endpoint_prefers_task_state_delta_merge_over_runtime_task_state(mo
 
     assert response.status_code == 200
     payload = response.json()
-    assert delta_calls["count"] == 1
+    assert delta_calls["count"] == 0
     assert fallback_calls["count"] == 0
-    assert payload["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
-    assert payload["task_state_validation"]["accepted"] is True
+    assert payload["task_state_delta"]["next_required_action"] == "Run focused tests"
     assert payload["task_state"]["task_id"] != "wrong-task"
-    assert payload["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
-    assert payload["task_state"]["next_required_action"] == "Run focused tests"
+    assert payload["task_state"]["completed_steps"] == []
+    assert payload["task_state"]["progress_basis"] == []
+    assert payload["task_state"]["next_required_action"] == ""
+    assert payload["task_state"]["plan_items"][0]["status"] == "in_progress"
+    assert "task_state_validation" not in payload
 
     saved = main_app.session_store.load(session["id"], default_project=main_app.project_store.ensure_default_project())
     assert saved is not None
-    assert saved["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
+    assert saved["task_state"]["completed_steps"] == []
     assert saved["task_state"]["task_id"] != "wrong-task"
+    assert saved["task_state"]["progress_basis"] == []
+    assert saved["task_state"]["next_required_action"] == ""
     assistant_turn = saved["turns"][-1]
     full_turn_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=full")
     assert full_turn_response.status_code == 200
     full_turn = full_turn_response.json()
-    assert full_turn["run_artifact"]["task_state"]["completed_steps"][-1]["step"] == "Patch task_state merge"
-    assert full_turn["run_artifact"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
-    assert full_turn["run_artifact"]["task_state_validation"]["accepted"] is True
-    assert full_turn["run_artifact"]["inspector"]["run_state"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
+    assert full_turn["run_artifact"]["task_state"]["completed_steps"] == []
+    assert full_turn["run_artifact"]["task_state_delta"]["next_required_action"] == "Run focused tests"
+    assert "task_state_validation" not in full_turn["run_artifact"]
+    assert full_turn["run_artifact"]["inspector"]["run_state"]["task_state_delta"]["next_required_action"] == "Run focused tests"
 
 
 def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch, tmp_path: Path) -> None:

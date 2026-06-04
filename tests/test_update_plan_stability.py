@@ -26,7 +26,7 @@ def test_update_plan_accepts_primary_plan_argument(tmp_path: Path) -> None:
     result = executor.update_plan(plan=[{"step": "Inspect", "status": "completed"}])
 
     assert result["ok"] is True
-    assert result["plan"][0]["step"] == "Inspect"
+    assert result["plan"][0] == {"step": "Inspect", "status": "completed"}
 
 
 def test_update_plan_accepts_steps_alias(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_update_plan_accepts_steps_alias(tmp_path: Path) -> None:
     result = executor.update_plan(steps=[{"step": "Patch", "status": "in_progress"}])
 
     assert result["ok"] is True
-    assert result["plan"][0]["step"] == "Patch"
+    assert result["plan"][0] == {"step": "Patch", "status": "in_progress"}
 
 
 def test_update_plan_missing_plan_returns_structured_error(tmp_path: Path) -> None:
@@ -49,27 +49,25 @@ def test_update_plan_missing_plan_returns_structured_error(tmp_path: Path) -> No
     assert "plan" in result["error"]["message"]
 
 
-def test_update_plan_accepts_step_id_and_alias_fields(tmp_path: Path) -> None:
+def test_update_plan_accepts_description_compatibility_for_placeholder_step(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
 
     result = executor.update_plan(
         plan=[
             {
-                "step_id": "step_1",
-                "title": "Inspect schema",
+                "step": "step1",
+                "description": "Create Python script that prints 1+1",
                 "status": "completed",
-                "progress_basis": "Read current validator",
-                "evidence_refs": [{"tool": "read_file", "ref": "app/local_tools.py"}],
             }
         ],
-        explanation="Multi-step fix",
+        explanation="Simple two-step task",
     )
 
     assert result["ok"] is True
-    assert result["plan"][0]["step_id"] == "step_1"
-    assert result["plan"][0]["step"] == "Inspect schema"
-    assert result["plan"][0]["progress_basis"] == ["Read current validator"]
-    assert result["plan"][0]["evidence_refs"][0]["tool"] == "read_file"
+    assert result["plan"][0] == {
+        "step": "Create Python script that prints 1+1",
+        "status": "completed",
+    }
 
 
 def test_update_plan_accepts_list_of_strings_and_normalizes_to_pending_steps(tmp_path: Path) -> None:
@@ -84,7 +82,7 @@ def test_update_plan_accepts_list_of_strings_and_normalizes_to_pending_steps(tmp
     ]
 
 
-def test_update_plan_schema_allows_step_id_in_public_tool_spec(tmp_path: Path) -> None:
+def test_update_plan_schema_accepts_description_without_internal_ids(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     spec = next(item for item in executor.tool_specs if str(item.get("name") or "") == "update_plan")
 
@@ -92,8 +90,8 @@ def test_update_plan_schema_allows_step_id_in_public_tool_spec(tmp_path: Path) -
         {
             "plan": [
                 {
-                    "step_id": "step_1",
-                    "step": "Inspect code",
+                    "step": "step1",
+                    "description": "Inspect code",
                     "status": "in_progress",
                 }
             ]
@@ -102,3 +100,17 @@ def test_update_plan_schema_allows_step_id_in_public_tool_spec(tmp_path: Path) -
     )
 
     assert validation["status"] == "valid"
+
+
+def test_update_plan_allows_multiple_in_progress_items_without_rejecting(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+
+    result = executor.update_plan(
+        plan=[
+            {"step": "Inspect code", "status": "in_progress"},
+            {"step": "Patch code", "status": "in_progress"},
+        ]
+    )
+
+    assert result["ok"] is True
+    assert [item["status"] for item in result["plan"]] == ["in_progress", "in_progress"]
