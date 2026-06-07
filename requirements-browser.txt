@@ -1,0 +1,4 @@
+# Draft split produced by the OSS dependency audit.
+# Browser automation should be installed only where local browser control is needed.
+
+playwright>=1.52.0

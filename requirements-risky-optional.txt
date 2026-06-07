@@ -1,0 +1,5 @@
+# Draft split produced by the OSS dependency audit.
+# These packages need OSS/legal review before company-wide introduction.
+
+extract-msg>=0.48.0
+pillow-heif>=0.18.0

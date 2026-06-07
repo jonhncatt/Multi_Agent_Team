@@ -1,0 +1,5 @@
+# Draft split produced by the OSS dependency audit.
+# OCR pulls large native/ML runtime dependencies; keep it optional.
+
+rapidocr_onnxruntime
+onnxruntime

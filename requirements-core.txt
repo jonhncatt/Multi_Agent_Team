@@ -1,0 +1,13 @@
+# Draft split produced by the OSS dependency audit.
+# These packages keep the minimum app server + model client + image handling path.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+openai>=1.55.0
+langchain-core>=1.4.0
+langchain-openai>=0.3.0
+pydantic>=2.7.0
+Pillow>=10.4.0
+PyYAML>=6.0.3
+tiktoken>=0.13.0

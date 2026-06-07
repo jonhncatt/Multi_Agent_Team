@@ -1,0 +1,5 @@
+timestamp_utc: 2026-06-07T17:01:23Z
+timestamp_local: 2026-06-08T02:01:23+09:00
+os: macOS-26.5-arm64-arm-64bit
+python: 3.11.7
+pip: pip 26.1.2 from /Users/dalizhou/Desktop/new_validation_agent/audit/.venv-build/lib/python3.11/site-packages/pip (python 3.11)

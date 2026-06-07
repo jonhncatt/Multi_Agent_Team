@@ -1,0 +1,53 @@
+# Imported third-party modules
+
+## Runtime files
+- `PIL` -> `Pillow`
+  - `app/attachment_evidence.py`
+  - `app/attachments.py`
+  - `app/local_tools.py`
+- `docx` -> `python-docx`
+  - `app/attachments.py`
+- `extract_msg` -> `extract-msg`
+  - `app/attachments.py`
+  - `app/local_tools.py`
+- `fastapi` -> `fastapi`
+  - `app/main.py`
+  - `app/storage.py`
+- `langchain_core` -> `langchain-core`
+  - `app/vp_runtime_backend.py`
+- `langchain_openai` -> `langchain-openai`
+  - `app/vp_runtime_backend.py`
+- `openpyxl` -> `openpyxl`
+  - `app/attachments.py`
+  - `app/local_tools.py`
+- `pdfplumber` -> `pdfplumber`
+  - `app/document_text.py`
+- `pillow_heif` -> `pillow-heif`
+  - `app/attachments.py`
+  - `app/local_tools.py`
+- `playwright` -> `playwright`
+  - `app/browser_runtime.py`
+- `pydantic` -> `pydantic`
+  - `app/action_validator.py`
+  - `app/context_pack.py`
+  - `app/models.py`
+  - `app/runtime_boundary.py`
+  - `app/vp_runtime_backend.py`
+- `pypdf` -> `pypdf`
+  - `app/document_text.py`
+- `tiktoken` -> `tiktoken`
+  - `app/context_meter.py`
+- `yaml` -> `PyYAML`
+  - `app/workbench.py`
+
+## Test-only files
+- `fastapi` -> `fastapi`
+  - `tests/integration/test_chat_vintage_programmer_api.py`
+- `pydantic` -> `pydantic`
+  - `tests/test_serialization.py`
+- `pytest` -> `pytest`
+  - `tests/test_context_pack.py`
+  - `tests/test_local_tools_exec_command.py`
+  - `tests/test_upload_store.py`
+  - `tests/test_vintage_programmer_runtime.py`
+  - `tests/test_vp_env_config.py`
