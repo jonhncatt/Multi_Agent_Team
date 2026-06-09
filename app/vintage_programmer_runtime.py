@@ -3166,6 +3166,7 @@ class VintageProgrammerRuntime:
         locale: str,
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
+        run_id: str = "",
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3186,6 +3187,8 @@ class VintageProgrammerRuntime:
             kwargs["permission_profile"] = permission_profile
         if runtime_boundary is not None and self._callable_accepts_kwarg(setter, "runtime_boundary"):
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
+        if self._callable_accepts_kwarg(setter, "run_id"):
+            kwargs["run_id"] = run_id
         setter(**kwargs)
 
     @staticmethod
@@ -4111,6 +4114,7 @@ class VintageProgrammerRuntime:
             locale=locale,
             permission_profile=turn_runtime_boundary.permission_profile,
             runtime_boundary=turn_runtime_boundary,
+            run_id=run_id,
         )
 
         ai_msg: Any = None
@@ -4220,6 +4224,7 @@ class VintageProgrammerRuntime:
                     locale=locale,
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
+                    run_id=run_id,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -4792,6 +4797,7 @@ class VintageProgrammerRuntime:
                         locale=locale,
                         permission_profile=turn_runtime_boundary.permission_profile,
                         runtime_boundary=turn_runtime_boundary,
+                        run_id=run_id,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -4854,6 +4860,97 @@ class VintageProgrammerRuntime:
                                     "plan": plan_state,
                                     "explanation": str(result.get("explanation") or ""),
                                     "run_snapshot": plan_snapshot,
+                                }
+                            )
+                    if name == "exec_command" and bool(result.get("tainted_execution_approved")):
+                        approved_payload = dict(result.get("tainted_execution_approved") or {})
+                        approved_files = [
+                            dict(item)
+                            for item in list(approved_payload.get("files") or [])
+                            if isinstance(item, dict)
+                        ]
+                        approved_labels = [
+                            Path(str(item.get("path") or "")).name or str(item.get("path") or "")
+                            for item in approved_files[:3]
+                        ]
+                        detail = "Approved execution of network-origin code"
+                        if approved_labels:
+                            detail = f"{detail}: {', '.join(approved_labels)}"
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="approval.approved",
+                            title=trace_label(locale, "approval.approved"),
+                            detail=detail,
+                            status="success",
+                            payload={"tainted_execution_approved": safe_preview(approved_payload)},
+                            trace_events=trace_events,
+                        )
+                    if name == "exec_command" and bool(result.get("approval_required")):
+                        approval_request = dict(result.get("approval_request") or {})
+                        approval_token = str(approval_request.get("approval_token") or "")
+                        command_text = str(approval_request.get("command") or arguments.get("cmd") or "").strip()
+                        files = [dict(item) for item in list(approval_request.get("files") or []) if isinstance(item, dict)]
+                        file_labels = [
+                            f"{Path(str(item.get('path') or '')).name or str(item.get('path') or '')} ({str(item.get('source_domain') or 'network')})"
+                            for item in files[:3]
+                        ]
+                        summary = "Approval required to execute network-origin code"
+                        if file_labels:
+                            summary = f"{summary}: {', '.join(file_labels)}"
+                        pending_user_input = {
+                            "summary": summary,
+                            "approval_request": approval_request,
+                            "questions": [
+                                {
+                                    "header": "Run Code",
+                                    "id": "tainted_code_execution",
+                                    "question": (
+                                        "The command would execute code that originated from the network. "
+                                        f"Command: {command_text}. "
+                                        f"Single-use approval token: {approval_token or '(missing)'}"
+                                    ),
+                                    "options": [
+                                        {
+                                            "label": "Cancel",
+                                            "description": "Do not run the network-origin code.",
+                                        },
+                                        {
+                                            "label": "Approve once",
+                                            "description": "Allow exactly this command once if file hashes still match.",
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                        turn_status = "needs_user_input"
+                        halt_for_user_input = True
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="approval.required",
+                            title=trace_label(locale, "approval.required"),
+                            detail=summary,
+                            status="blocked",
+                            payload={"approval_request": safe_preview(approval_request)},
+                            trace_events=trace_events,
+                        )
+                        if progress_cb is not None:
+                            progress_cb(
+                                {
+                                    "event": "request_user_input",
+                                    "pending_user_input": pending_user_input,
+                                    "turn_status": turn_status,
+                                    "run_snapshot": self._build_run_snapshot(
+                                        goal=current_goal,
+                                        current_task_focus=current_task_focus,
+                                        turn_status=turn_status,
+                                        plan_state=plan_state,
+                                        pending_user_input=pending_user_input,
+                                        effective_cwd=effective_cwd,
+                                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                        tool_events=tool_events,
+                                    ),
                                 }
                             )
                     if name == "request_user_input" and bool(result.get("ok")):
@@ -5394,6 +5491,7 @@ class VintageProgrammerRuntime:
                     locale=locale,
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
+                    run_id=run_id,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))

@@ -826,8 +826,8 @@ v2.9.20 renames the product permission model to product trust levels: `Default /
 - Canonical runtime values are now `default`, `auto`, and `full_access`.
 - Legacy values such as `chat`, `code`, and `full_dev` remain accepted as compatibility aliases.
 - `Default` is current-project read-only: read/search tools only, no shell, no writes, and no network.
-- `Auto` is the normal development mode: current-project read/write, safe commands inside the project, and network enabled.
-- `Full Access` is the maximum-trust mode: broader configured read/write/command scope and network enabled, while dangerous-command protection remains active.
+- `Auto` is the normal development mode: current-project read/write and safe commands inside the project, with network disabled.
+- `Full Access` is the maximum-trust mode: broader configured read/write/command scope and network enabled. Downloaded or extracted network-origin files are marked tainted and require one-time command approval before execution; dangerous-command protection remains active.
 - The composer selector uses neutral box styling with only subtle text color differences by mode.
 - The selector remains lightweight: no background polling, no backend hover calls, and no approval prompt system.
 
@@ -957,8 +957,8 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 权限 profile 分为三类：
 
 - `Default`：只读安全模式，仅允许读取/搜索工具，不允许文件写入，不允许 shell，network 关闭。
-- `Auto`：默认自动开发模式，允许读写当前项目、在当前项目内运行安全命令，network 开启。
-- `Full Access`：最大信任模式，可按系统配置使用更大范围的读写和命令作用域，network 开启；但仍受 path boundary、command allowlist 与危险命令拦截约束。
+- `Auto`：默认自动开发模式，允许读写当前项目、在当前项目内运行安全命令，network 关闭。
+- `Full Access`：最大信任模式，可按系统配置使用更大范围的读写和命令作用域，network 开启；网络下载或解压得到的文件会标记为 tainted，执行前需要一次性命令确认；仍受 path boundary、command allowlist 与危险命令拦截约束。
 
 `VP_EXTRA_ALLOWED_ROOTS` 是显式授权入口；Downloads、Desktop/workbench、workspace sibling root 不再作为默认访问范围。命令安全不只检查 `cwd`，也检查路径参数，例如 `rg /etc`、`git -C /tmp status`、`python /tmp/a.py`、`cp app/main.py /tmp/main.py`。
 

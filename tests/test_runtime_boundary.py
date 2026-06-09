@@ -99,7 +99,7 @@ def test_permission_profiles_shape_runtime_boundary(tmp_path: Path) -> None:
 
     assert auto.workspace_write_allowed is True
     assert auto.shell_allowed is True
-    assert auto.network_allowed is True
+    assert auto.network_allowed is False
     assert auto.command_allowed_roots == [str(tmp_path.resolve())]
     assert str(extra_root.resolve()) not in auto.allowed_roots
 
@@ -125,7 +125,7 @@ def test_runtime_contract_profiles_apply_capabilities(tmp_path: Path) -> None:
     assert default.network_allowed is False
     assert auto.workspace_write_allowed is True
     assert auto.shell_allowed is True
-    assert auto.network_allowed is True
+    assert auto.network_allowed is False
     assert full.workspace_write_allowed is True
     assert full.shell_allowed is True
     assert full.network_allowed is True

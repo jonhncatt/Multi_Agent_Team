@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
@@ -100,10 +102,25 @@ def _tool_specs() -> list[dict]:
             },
         },
         {
+            "name": "write_stdin",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "integer", "minimum": 1},
+                    "chars": {"type": "string", "default": ""},
+                },
+                "required": ["session_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "web_fetch",
             "parameters": {
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 12000},
+                },
                 "required": ["url"],
                 "additionalProperties": False,
             },
@@ -224,6 +241,24 @@ def test_exec_command_safe_command_allowed_when_shell_enabled(tmp_path: Path) ->
     assert result.allowed
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "python -m pip install pytest",
+        "git pull",
+        "git -C . fetch",
+    ],
+)
+def test_exec_command_supply_chain_flows_rejected(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path).validate_tool_call({"name": "exec_command", "args": {"cmd": command, "cwd": "."}})
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+
+
 def test_exec_command_simple_compound_chain_allowed_when_paths_are_safe(tmp_path: Path) -> None:
     (tmp_path / "app").mkdir()
 
@@ -318,6 +353,26 @@ def test_python_script_outside_project_rejected(tmp_path: Path) -> None:
 
     assert not result.allowed
     assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_write_stdin_zero_session_id_rejected(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "write_stdin", "args": {"session_id": 0, "chars": ""}}
+    )
+
+    assert not result.allowed
+    assert result.code == "invalid_arguments"
+    assert "session_id" in result.message
+
+
+def test_web_fetch_max_chars_is_clamped_to_schema_limit(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "web_fetch", "args": {"url": "https://example.com", "max_chars": 30000}}
+    )
+
+    assert result.allowed
+    assert result.normalized_arguments["max_chars"] == 12000
+    assert "max_chars:30000->12000" in result.normalization_notes
 
 
 def test_network_tool_rejected_when_network_disabled(tmp_path: Path) -> None:

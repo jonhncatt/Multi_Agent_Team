@@ -262,6 +262,8 @@ def normalize_tool_arguments(
             return (updated_items if changed else value), notes
 
         if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if normalized_name == "write_stdin" and _path_note(path) == "session_id":
+                return value, []
             minimum = schema_node.get("minimum")
             maximum = schema_node.get("maximum")
             next_value: Any = value

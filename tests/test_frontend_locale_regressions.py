@@ -492,7 +492,7 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert '"settings.permission_profile.default": "默认"' in locales
     assert '"settings.permission_profile.auto": "自动"' in locales
     assert '"settings.permission_profile.full_access": "完全访问"' in locales
-    assert '"settings.permission_profile.full_access.help": "更大范围读写，可执行安全命令，网络开启。请在信任任务时使用。"' in locales
+    assert '"settings.permission_profile.full_access.help": "更大范围读写，可执行安全命令，网络开启；执行网络来源代码需要单次确认。请在信任任务时使用。"' in locales
     assert "settings: {\n            ...chatSettings," in script
     assert 'className="drawer-input"\n                      value=${chatSettings.permission_profile || "code"}' not in script
     assert '|| "code",' not in script

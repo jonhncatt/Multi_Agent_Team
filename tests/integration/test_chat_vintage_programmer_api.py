@@ -1123,7 +1123,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert runtime_payload["project_id"] == bootstrap_payload["default_project_id"]
     assert runtime_payload["runtime_status"]["workspace_label"]
     assert runtime_payload["runtime_status"]["workspace_boundary"]["model_view"]["permission_profile"] == "auto"
-    assert runtime_payload["runtime_status"]["workspace_boundary"]["model_view"]["network_reason"] == "enabled"
+    assert runtime_payload["runtime_status"]["workspace_boundary"]["model_view"]["network_reason"] == "profile_disabled"
     assert "emergency_max_tool_calls_per_turn" not in runtime_payload["runtime_status"]["loop_safeguards"]
     assert "max_total_tool_calls_per_turn" not in runtime_payload["runtime_status"]["loop_safeguards"]
     assert runtime_payload["runtime_status"]["loop_safeguards"]["max_turn_seconds"] > 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -193,6 +194,246 @@ def test_chat_profile_denies_shell_before_execution(
 
     assert result["ok"] is False
     assert "Shell execution is not allowed" in result["error"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "python -m pip install pytest",
+        "git pull",
+    ],
+)
+def test_exec_command_blocks_supply_chain_flows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+
+    result = manager.exec_command(cmd=command, cwd=".")
+
+    assert result["ok"] is False
+    assert "blocked" in result["error"].lower() or "not allowed" in result["error"].lower()
+
+
+def test_exec_command_blocks_tainted_python_file_until_single_use_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "downloaded.py"
+    script.write_text("print('network code ran')\n", encoding="utf-8")
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        script,
+        source_url="https://example.com/downloaded.py",
+        source_tool="web_download",
+        content_type="text/x-python",
+    )
+
+    blocked = manager.exec_command(cmd="python downloaded.py", cwd=".", yield_time_ms=300)
+
+    assert blocked["ok"] is False
+    assert blocked["error_kind"] == "tainted_code_approval_required"
+    assert blocked["approval_required"] is True
+    token = blocked["approval_request"]["approval_token"]
+    assert token
+
+    approved = manager.exec_command(
+        cmd="python downloaded.py",
+        cwd=".",
+        yield_time_ms=2000,
+        tainted_approval_token=token,
+    )
+
+    assert approved["ok"] is True
+    assert approved["tainted_execution_approved"]["approved"] is True
+    assert "network code ran" in str(approved["output"])
+
+    reused = manager.exec_command(
+        cmd="python downloaded.py",
+        cwd=".",
+        yield_time_ms=300,
+        tainted_approval_token=token,
+    )
+
+    assert reused["ok"] is False
+    assert reused["error_kind"] == "tainted_code_approval_required"
+    assert "already used" in reused["error"]
+
+
+def test_web_download_marks_downloaded_file_tainted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    downloaded = tmp_path / "downloaded.py"
+
+    def fake_download_impl(**kwargs: object) -> dict[str, object]:
+        downloaded.write_text("print('downloaded')\n", encoding="utf-8")
+        return {
+            "ok": True,
+            "path": str(downloaded),
+            "url": str(kwargs.get("url") or ""),
+            "content_type": "text/x-python",
+        }
+
+    monkeypatch.setattr(manager, "_web_download_impl", fake_download_impl)
+
+    result = manager.web_download(url="https://example.com/downloaded.py", dst_path="downloaded.py")
+
+    assert result["ok"] is True
+    assert result["taint"]["tainted"] is True
+    assert result["taint"]["source_url"] == "https://example.com/downloaded.py"
+    blocked = manager.exec_command(cmd="python downloaded.py", cwd=".", yield_time_ms=300)
+    assert blocked["error_kind"] == "tainted_code_approval_required"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "command"),
+    [
+        ("downloaded.js", "console.log('network js')\n", "node downloaded.js"),
+        ("downloaded.sh", "printf 'network shell\\n'\n", "sh downloaded.sh"),
+        ("downloaded.sh", "printf 'network source\\n'\n", "source ./downloaded.sh"),
+        ("downloaded", "#!/bin/sh\nprintf 'network exe\\n'\n", "./downloaded"),
+    ],
+)
+def test_exec_command_blocks_common_tainted_runners(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    filename: str,
+    content: str,
+    command: str,
+) -> None:
+    script = tmp_path / filename
+    script.write_text(content, encoding="utf-8")
+    if command.startswith("./"):
+        script.chmod(0o755)
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        script,
+        source_url=f"https://example.com/{filename}",
+        source_tool="web_download",
+        content_type="application/octet-stream",
+    )
+
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=300)
+
+    assert blocked["ok"] is False
+    assert blocked["error_kind"] == "tainted_code_approval_required"
+    assert blocked["approval_request"]["command"] == command
+    assert blocked["approval_request"]["files"][0]["source_url"] == f"https://example.com/{filename}"
+
+
+def test_tainted_direct_executable_runs_once_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "downloaded"
+    script.write_text("#!/bin/sh\nprintf 'direct approved\\n'\n", encoding="utf-8")
+    script.chmod(0o755)
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        script,
+        source_url="https://example.com/downloaded",
+        source_tool="web_download",
+        content_type="application/octet-stream",
+    )
+    blocked = manager.exec_command(cmd="./downloaded", cwd=".", yield_time_ms=300)
+    token = blocked["approval_request"]["approval_token"]
+
+    approved = manager.exec_command(cmd="./downloaded", cwd=".", yield_time_ms=2000, tainted_approval_token=token)
+
+    assert approved["ok"] is True
+    assert "direct approved" in str(approved["output"])
+    assert approved["tainted_execution_approved"]["approved"] is True
+
+
+def test_tainted_source_command_runs_once_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "downloaded.sh"
+    script.write_text("printf 'source approved\\n'\n", encoding="utf-8")
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        script,
+        source_url="https://example.com/downloaded.sh",
+        source_tool="web_download",
+        content_type="text/x-shellscript",
+    )
+    blocked = manager.exec_command(cmd="source ./downloaded.sh", cwd=".", yield_time_ms=300)
+    token = blocked["approval_request"]["approval_token"]
+
+    approved = manager.exec_command(cmd="source ./downloaded.sh", cwd=".", yield_time_ms=2000, tainted_approval_token=token)
+
+    assert approved["ok"] is True
+    assert "source approved" in str(approved["output"])
+    assert approved["tainted_execution_approved"]["approved"] is True
+
+
+def test_tainted_execution_approval_fails_when_file_hash_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "downloaded.py"
+    script.write_text("print('v1')\n", encoding="utf-8")
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        script,
+        source_url="https://example.com/downloaded.py",
+        source_tool="web_download",
+        content_type="text/x-python",
+    )
+    blocked = manager.exec_command(cmd="python downloaded.py", cwd=".", yield_time_ms=300)
+    token = blocked["approval_request"]["approval_token"]
+
+    script.write_text("print('v2')\n", encoding="utf-8")
+    result = manager.exec_command(
+        cmd="python downloaded.py",
+        cwd=".",
+        yield_time_ms=300,
+        tainted_approval_token=token,
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "tainted_code_approval_required"
+    assert "hashes" in result["error"]
+
+
+def test_archive_extract_marks_children_of_tainted_zip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "payload.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("run.py", "print('from zip')\n")
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        archive,
+        source_url="https://example.com/payload.zip",
+        source_tool="web_download",
+        content_type="application/zip",
+    )
+
+    extracted = manager.archive_extract(zip_path="payload.zip", dst_dir="payload")
+
+    assert extracted["ok"] is True
+    assert extracted["tainted_files"]
+    child = tmp_path / "payload" / "run.py"
+    blocked = manager.exec_command(cmd="python payload/run.py", cwd=".", yield_time_ms=300)
+    assert child.exists()
+    assert blocked["ok"] is False
+    assert blocked["error_kind"] == "tainted_code_approval_required"
 
 
 def test_exec_command_compound_cd_and_pwd_runs_raw_command(
