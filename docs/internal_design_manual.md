@@ -975,8 +975,8 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 - `app/static/locales.js`
 - `app/tool_trace_summary.py`
 - `app/config.py`
-- `agents/vintage_programmer/agent.md`
-- `agents/vintage_programmer/tools.md`
+- `agents/vintage_programmer/locales/zh-CN/agent.md`
+- `agents/vintage_programmer/locales/zh-CN/tools.md`
 - `app/vp_runtime_backend.py`
 
 ### 待确认点

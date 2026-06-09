@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5K-blue)
+![Version](https://img.shields.io/badge/version-3.1.5L-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5K`
+Current stable release: `3.1.5L`
 
 ## Stable Runtime
 
-3.1.5K folds in the post-3.1.5J stability work: live-run timer and heartbeat behavior stay visible even during quiet SSE gaps, and the reviewed Python dependency set is now pinned to reduce install drift across machines.
+3.1.5L is an enterprise-oriented safety boundary release: Chat/Default and Code/Auto stay offline, Full Access owns network access, risky network/supply-chain commands must pass the allowlist before one-time approval, and downloaded or extracted tainted files require confirmation before host execution.
 
-Compared with 3.1.5J, this release rolls the post-release live-run observability hardening and dependency pinning into a new stable cut.
+Compared with 3.1.5K, this release adds auditable command approval, tainted-code execution protection, sticky Auto permission selection, locale-parity agent specs for zh-CN/ja-JP/en, and restores the larger `web_fetch` body budget for better news and web summaries.
 
 ## Max Output Tokens
 
@@ -220,17 +220,13 @@ The browser UI talks to these local app endpoints.
 ## Agent Specs
 
 The default main agent is `vintage_programmer`.
-Its core Markdown specs are:
+Its core Markdown specs are stored by locale:
 
-- `agents/vintage_programmer/soul.md`
-- `agents/vintage_programmer/identity.md`
-- `agents/vintage_programmer/agent.md`
-- `agents/vintage_programmer/tools.md`
-
-Localized copies live under:
-
+- `agents/vintage_programmer/locales/zh-CN/`
 - `agents/vintage_programmer/locales/en/`
 - `agents/vintage_programmer/locales/ja-JP/`
+
+Each directory contains `soul.md`, `identity.md`, `agent.md`, and `tools.md`. Root-level copies are only a legacy workspace fallback.
 
 ## Local Skills
 

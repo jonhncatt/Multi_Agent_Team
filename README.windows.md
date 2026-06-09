@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5K`。
+当前稳定版本：`3.1.5L`。
 
 ## Stable Runtime
 
-3.1.5K 收口了 3.1.5J 之后的稳定性修复：运行中的计时和 live heartbeat 在 SSE 安静时仍保持可见，同时固定了一组已审查的 Python 依赖版本，减少不同机器上的安装漂移。
-它不改变 canonical task checkpoint 规则，也不改变既有的 stick-to-bottom 滚动策略。
+3.1.5L 是一次面向企业推广的安全边界发布：Chat/Code 默认离线，Full Dev 才开放网络；风险网络/供应链命令必须先通过 allowlist，再由用户批准一次；网络下载或解压出的 tainted 文件执行前也需要确认。
+它补齐了审批弹窗、tainted 文件 hash 校验、Auto 模式选择保持和三语 agent spec 同级化；这不是 OS sandbox，批准后命令会在 host 环境实际执行。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

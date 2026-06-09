@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5K-blue)
+![Version](https://img.shields.io/badge/version-3.1.5L-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5K`
+当前稳定版本：`3.1.5L`
 
 ## Stable Runtime
 
-3.1.5K 收口了 3.1.5J 之后的稳定性修复：运行中的前端计时和 live heartbeat 继续硬化，长时间没有 SSE 新事件时也能保持可见进展；同时固定了一组已审查的 Python 依赖版本，减少不同机器上的安装漂移。
+3.1.5L 是一次面向企业推广的安全边界发布：Chat/Default 与 Code/Auto 保持离线，Full Access 才开放网络；风险网络/供应链命令必须先通过 allowlist，再由用户 Approve once；网络下载或解压出的 tainted 文件在执行前也需要单次确认。
 
-相对 3.1.5J，本版本把 post-release 的 live-run 可观察性修复和依赖版本收口进新的稳定发布。
+相对 3.1.5K，本版本新增了可审计的命令审批、tainted 文件执行保护、Auto 模式选择保持、中文/日文/英文 agent spec 同级化，并恢复 `web_fetch` 正文抓取预算以改善“今日新闻”等联网摘要质量。
 
 ## Max Output Tokens
 
@@ -222,17 +222,13 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ## Agent 规范
 
 默认主 agent 是 `vintage_programmer`。
-它的核心 Markdown 规范文件是：
+它的核心 Markdown 规范文件按 locale 存放：
 
-- `agents/vintage_programmer/soul.md`
-- `agents/vintage_programmer/identity.md`
-- `agents/vintage_programmer/agent.md`
-- `agents/vintage_programmer/tools.md`
-
-本地化版本位于：
-
+- `agents/vintage_programmer/locales/zh-CN/`
 - `agents/vintage_programmer/locales/en/`
 - `agents/vintage_programmer/locales/ja-JP/`
+
+每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
 
 ## 本地 Skills
 

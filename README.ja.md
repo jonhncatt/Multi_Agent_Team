@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5K-blue)
+![Version](https://img.shields.io/badge/version-3.1.5L-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5K`
+現在の安定版: `3.1.5L`
 
 ## Stable Runtime
 
-3.1.5K では、3.1.5J 以降の安定化作業を取り込みました。live-run の timer と heartbeat は SSE がしばらく静かな間も可視状態を保ち、あわせて確認済みの Python 依存バージョンを固定して環境差によるインストールぶれを減らしています。
+3.1.5L は企業展開に向けた safety boundary リリースです。Chat/Default と Code/Auto はオフラインのままにし、Full Access のみ network access を持ちます。危険な network/supply-chain コマンドは allowlist を通過したうえで一度限りの承認を要求し、download または extract された tainted file は host で実行する前に確認が必要です。
 
-3.1.5J と比べて、post-release の live-run 可観測性強化と依存バージョン固定を新しい安定版としてまとめたリリースです。
+3.1.5K と比べて、監査可能な command approval、tainted-code execution protection、Auto permission selection の保持、zh-CN/ja-JP/en の agent spec 同階層化、news/web summary 品質改善のための `web_fetch` 本文取得予算復元を含みます。
 
 ## Max Output Tokens
 
@@ -222,17 +222,13 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ## Agent Specs
 
 既定のメイン agent は `vintage_programmer` です。
-コアとなる Markdown spec は次の 4 つです。
+コアとなる Markdown spec は locale ごとに配置されています。
 
-- `agents/vintage_programmer/soul.md`
-- `agents/vintage_programmer/identity.md`
-- `agents/vintage_programmer/agent.md`
-- `agents/vintage_programmer/tools.md`
-
-ローカライズ版:
-
+- `agents/vintage_programmer/locales/zh-CN/`
 - `agents/vintage_programmer/locales/en/`
 - `agents/vintage_programmer/locales/ja-JP/`
+
+各ディレクトリには `soul.md`、`identity.md`、`agent.md`、`tools.md` が含まれます。root-level の同名ファイルは旧 workspace 向け fallback です。
 
 ## Local Skills
 
