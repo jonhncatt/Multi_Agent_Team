@@ -1,10 +1,10 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5J`。
+当前稳定版本：`3.1.5K`。
 
 ## Stable Runtime
 
-3.1.5J 主要修 UI 运行体验：执行计时改为本地每秒刷新，长命令期间不会再卡在旧秒数；当 plan/checklist 占主视图时，Run 面板会单独显示当前步骤、当前工具、当前动作、命令和最近事件，便于确认后台仍在运行。
+3.1.5K 收口了 3.1.5J 之后的稳定性修复：运行中的计时和 live heartbeat 在 SSE 安静时仍保持可见，同时固定了一组已审查的 Python 依赖版本，减少不同机器上的安装漂移。
 它不改变 canonical task checkpoint 规则，也不改变既有的 stick-to-bottom 滚动策略。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
@@ -12,6 +12,8 @@
 ## Python Version
 
 稳定的 v2.9.x 运行时推荐 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同机器上可能出现兼容性差异。
+
+如果你已经确认当前 `python` 指向的是受支持版本，也可以直接使用 `python -m venv .venv`。如果不确定当前默认版本，优先使用 `py -3.11 -m venv .venv`；没有 `3.11` 时再考虑 `py -3.12 -m venv .venv`。
 
 ## Max Output Tokens
 
@@ -37,7 +39,10 @@ VP_MAX_OUTPUT_TOKENS=4096
 
 ```powershell
 cd C:\path\to\new_validation_agent
+# 推荐：显式指定 Python 3.11
 py -3.11 -m venv .venv
+# 可选：如果当前 python 已经是受支持版本（推荐 3.11，可接受 3.12）
+# python -m venv .venv
 Copy-Item .env.example .env
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt

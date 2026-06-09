@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5J-blue)
+![Version](https://img.shields.io/badge/version-3.1.5K-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5J`
+Current stable release: `3.1.5K`
 
 ## Stable Runtime
 
-3.1.5J tightens live-run observability in the frontend: the elapsed timer now advances locally every second instead of waiting for SSE updates, and plan/checklist mode gets a separate execution-progress panel that keeps showing the current step, current tool, action, command, and latest event.
+3.1.5K folds in the post-3.1.5J stability work: live-run timer and heartbeat behavior stay visible even during quiet SSE gaps, and the reviewed Python dependency set is now pinned to reduce install drift across machines.
 
-Compared with 3.1.5i, this closes the “looks frozen while still running” gap and the occasional loss of live run metadata after thread switches, while keeping the existing stick-to-bottom scroll behavior intact.
+Compared with 3.1.5J, this release rolls the post-release live-run observability hardening and dependency pinning into a new stable cut.
 
 ## Max Output Tokens
 

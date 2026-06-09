@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5J-blue)
+![Version](https://img.shields.io/badge/version-3.1.5K-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5J`
+当前稳定版本：`3.1.5K`
 
 ## Stable Runtime
 
-3.1.5J 收紧了运行中的前端可观察性：执行计时现在由本地 interval 每秒刷新，不再依赖 SSE 事件跳秒；plan/checklist 模式下新增独立的“执行进展”区域，持续显示当前步骤、当前工具、当前动作、命令和最近事件。
+3.1.5K 收口了 3.1.5J 之后的稳定性修复：运行中的前端计时和 live heartbeat 继续硬化，长时间没有 SSE 新事件时也能保持可见进展；同时固定了一组已审查的 Python 依赖版本，减少不同机器上的安装漂移。
 
-相对 3.1.5i，这个版本补上了“运行中看起来像卡死”和“切线程后 live run 元数据偶发消失”的体验缺口，同时保留既有的 stick-to-bottom 滚动逻辑。
+相对 3.1.5J，本版本把 post-release 的 live-run 可观察性修复和依赖版本收口进新的稳定发布。
 
 ## Max Output Tokens
 

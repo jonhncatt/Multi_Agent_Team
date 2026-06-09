@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5J-blue)
+![Version](https://img.shields.io/badge/version-3.1.5K-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5J`
+現在の安定版: `3.1.5K`
 
 ## Stable Runtime
 
-3.1.5J では、実行中 UI の可観測性を強化しました。経過時間は SSE 更新待ちではなくフロントエンドのローカル interval で毎秒進み、plan/checklist モードには現在のステップ・ツール・アクション・コマンド・直近イベントを分けて出す専用の実行進捗パネルが追加されます。
+3.1.5K では、3.1.5J 以降の安定化作業を取り込みました。live-run の timer と heartbeat は SSE がしばらく静かな間も可視状態を保ち、あわせて確認済みの Python 依存バージョンを固定して環境差によるインストールぶれを減らしています。
 
-3.1.5i と比べて、「まだ動いているのに止まって見える」問題と、スレッド切り替え後に live run メタデータが欠けることがある問題を塞ぎつつ、既存の stick-to-bottom スクロール挙動は維持しています。
+3.1.5J と比べて、post-release の live-run 可観測性強化と依存バージョン固定を新しい安定版としてまとめたリリースです。
 
 ## Max Output Tokens
 
