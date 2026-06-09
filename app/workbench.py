@@ -126,8 +126,6 @@ class WorkbenchStore:
         return path
 
     def _localized_spec_path(self, spec_name: str, locale: str) -> Path:
-        if locale == BASE_SPEC_LOCALE:
-            return self._base_spec_path(spec_name)
         path = (self._agent_dir / "locales" / locale / spec_name).resolve()
         self._ensure_within(path, self._agent_dir)
         return path
@@ -144,7 +142,7 @@ class WorkbenchStore:
                 "validation_status": "valid",
             }
         base_path = self._base_spec_path(spec_name)
-        if normalized_locale != BASE_SPEC_LOCALE and base_path.is_file():
+        if base_path.is_file():
             return {
                 "locale": normalized_locale,
                 "path": str(target_path),

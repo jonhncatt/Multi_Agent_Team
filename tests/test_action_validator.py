@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.action_validator import ActionValidator, ValidationResult, validation_observation
 from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
@@ -100,10 +102,25 @@ def _tool_specs() -> list[dict]:
             },
         },
         {
+            "name": "write_stdin",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "integer", "minimum": 1},
+                    "chars": {"type": "string", "default": ""},
+                },
+                "required": ["session_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "web_fetch",
             "parameters": {
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer", "minimum": 512, "maximum": 500000, "default": 120000},
+                },
                 "required": ["url"],
                 "additionalProperties": False,
             },
@@ -111,7 +128,7 @@ def _tool_specs() -> list[dict]:
     ]
 
 
-def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
+def _validator(tmp_path: Path, allowed_commands: list[str] | None = None, **boundary_overrides) -> ActionValidator:
     boundary = RuntimeBoundary(
         allowed_roots=[str(tmp_path)],
         writable_roots=[str(tmp_path / "writable")],
@@ -124,7 +141,7 @@ def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
     return ActionValidator(
         tool_specs=_tool_specs(),
         allowed_tools=[item["name"] for item in _tool_specs()],
-        allowed_commands=_ALLOWED_COMMANDS,
+        allowed_commands=allowed_commands or _ALLOWED_COMMANDS,
         boundary=boundary,
         locale="en",
     )
@@ -224,6 +241,96 @@ def test_exec_command_safe_command_allowed_when_shell_enabled(tmp_path: Path) ->
     assert result.allowed
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "python -m pip install pytest",
+        "git pull",
+        "git -C . fetch",
+    ],
+)
+def test_exec_command_supply_chain_flows_rejected(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path, permission_profile="auto", network_allowed=False).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "git pull",
+        "git -C . fetch",
+    ],
+)
+def test_exec_command_supply_chain_flows_allowed_for_full_access_approval(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert result.allowed
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pip install pytest",
+        "pip install pytest",
+        "curl https://example.com",
+        "wget https://example.com/file.txt",
+        "npx cowsay hi",
+    ],
+)
+def test_exec_command_supply_chain_flows_reject_missing_allowlist_even_full_access(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_allowed"),
+    [
+        ("python -m pip install pytest", ["pip"]),
+        ("pip install pytest", ["pip"]),
+        ("curl https://example.com", ["curl"]),
+        ("wget https://example.com/file.txt", ["wget"]),
+        ("npx cowsay hi", ["npx"]),
+    ],
+)
+def test_exec_command_supply_chain_flows_allow_approval_when_explicitly_allowlisted(
+    tmp_path: Path,
+    command: str,
+    extra_allowed: list[str],
+) -> None:
+    result = _validator(
+        tmp_path,
+        allowed_commands=[*_ALLOWED_COMMANDS, *extra_allowed],
+        permission_profile="full_access",
+        network_allowed=True,
+    ).validate_tool_call({"name": "exec_command", "args": {"cmd": command, "cwd": "."}})
+
+    assert result.allowed
+
+
+def test_exec_command_direct_executable_path_reaches_executor_for_taint_check(tmp_path: Path) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "./downloaded-tool", "cwd": "."}}
+    )
+
+    assert result.allowed
+
+
 def test_exec_command_simple_compound_chain_allowed_when_paths_are_safe(tmp_path: Path) -> None:
     (tmp_path / "app").mkdir()
 
@@ -318,6 +425,26 @@ def test_python_script_outside_project_rejected(tmp_path: Path) -> None:
 
     assert not result.allowed
     assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_write_stdin_zero_session_id_rejected(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "write_stdin", "args": {"session_id": 0, "chars": ""}}
+    )
+
+    assert not result.allowed
+    assert result.code == "invalid_arguments"
+    assert "session_id" in result.message
+
+
+def test_web_fetch_max_chars_allows_main_branch_news_fetch_budget(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "web_fetch", "args": {"url": "https://example.com", "max_chars": 30000}}
+    )
+
+    assert result.allowed
+    assert result.normalized_arguments["max_chars"] == 30000
+    assert not any("max_chars:30000->12000" in item for item in result.normalization_notes)
 
 
 def test_network_tool_rejected_when_network_disabled(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@
 - ファイルと文書の読み取り: 小さいファイルや全体コンテキストが必要なときは `read_file`、既知ファイル内の文字列検索は `search_contents_in_file`、同一ファイル内で複数クエリを試すときは `search_contents_in_file_multi`、見出し単位の精読は `read_section`、表は `table_extract`、根拠確認は `fact_check_file`、リポジトリ全体のコード検索は `search_codebase` を使う。
 - ブラウザとページ証拠: 実際の Web 操作、ページ構造、スクリーンショットが必要な場合は `browser_open`、`browser_click`、`browser_type`、`browser_wait`、`browser_snapshot`、`browser_screenshot` を優先する。
 - 画像とスクリーンショット: ローカル画像の基本情報は `image_inspect`、可視文字の読み取り、OCR 風転記、画像内容理解は `image_read` を優先する。
-- ネットワーク情報: 明示ツール契約を守る。まず `web_search` でソースを探し、必要なら `web_fetch` で本文を読む。リモートの PDF/ZIP/画像/MSG をローカルワークフローに入れるには `web_download` を使う。「今日」「最新」「最近」が含まれるときは先にネット接続する。
+- ネットワーク情報: 明示ツール契約を守る。まず `web_search` でソースを探し、必要なら `web_fetch` で本文を読む。リモートの PDF/ZIP/画像/MSG をローカルワークフローに入れるには `web_download` を使う。「今日」「最新」「最近」が含まれるときは先にネット接続する。「今日のニュース」「最新見出し」「概要」のような軽量リクエストでは、まず 1 回の `web_search` を優先し、追加の `web_fetch` は権威ある 1 ソースまでにする。深掘り調査を求められていない限り、大きなページを連続取得しない。
 - 履歴コンテキスト: 以前の thread を見返す必要があるときは `sessions_list` と `sessions_history` を優先する。
 - メールと内容展開: `.msg` 本文はまず `read_file`、Outlook `.msg` の添付は `mail_extract_attachments`、ZIP は `archive_extract` を優先する。
 - Python コマンド: `python3` を固定で書かない。プロジェクトルートに `./.venv/bin/python`（Windows では `.venv\\Scripts\\python.exe`）があれば、まずそれでプロジェクトのテスト、スクリプト、モジュール実行を行う。`.venv` がない場合は runtime context の `python_command` を優先し、プロジェクト単位のモジュール実行は `<python_command> -m ...` を優先する。Windows では `python` が使えない場合だけ `py -m ...` を検討する。

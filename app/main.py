@@ -1547,6 +1547,7 @@ def _build_run_snapshot(
     cwd: str,
     plan: list[dict[str, Any]] | None = None,
     pending_user_input: dict[str, Any] | None = None,
+    pending_approval: dict[str, Any] | None = None,
     tool_count: int = 0,
     evidence_status: str = "not_needed",
     context_meter: dict[str, Any] | None = None,
@@ -1591,6 +1592,7 @@ def _build_run_snapshot(
         "task_state": normalized_task_state,
         "plan": [dict(item) for item in list(plan or []) if isinstance(item, dict)][:12],
         "pending_user_input": dict(pending_user_input or {}),
+        "pending_approval": dict(pending_approval or {}),
         "tool_count": int(tool_count or 0),
         "evidence_status": str(evidence_status or "not_needed"),
         "context_meter": dict(context_meter or {}),
@@ -2318,6 +2320,11 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_user_input"), dict)
             else {}
         )
+        pending_approval = (
+            dict(runtime_result.get("pending_approval") or {})
+            if isinstance(runtime_result.get("pending_approval"), dict)
+            else {}
+        )
         activity = dict(runtime_result.get("activity") or {})
         inspector = dict(runtime_result.get("inspector") or {})
         runtime_phase_timings = dict(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("phase_timings") or {})
@@ -2369,6 +2376,7 @@ def _process_chat_request(
                 cwd=str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
                 plan=plan,
                 pending_user_input=pending_user_input,
+                pending_approval=pending_approval,
                 tool_count=len(tool_events),
                 evidence_status=str(((inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}).get("status") or "not_needed"),
                 context_meter=agent_run_done_context_meter,
@@ -2587,6 +2595,7 @@ def _process_chat_request(
             "permission_profile": permission_profile,
             "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
             "pending_user_input": dict(inspector_run_state.get("pending_user_input") or pending_user_input),
+            "pending_approval": dict(inspector_run_state.get("pending_approval") or pending_approval),
             "phase": str(inspector_run_state.get("phase") or "report"),
             "last_run_id": run_id,
             "last_provider": requested_provider,
@@ -2665,6 +2674,7 @@ def _process_chat_request(
         inspector_run_state["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_run_state["task_state"] = dict(session.get("task_state") or {})
+        inspector_run_state["pending_approval"] = dict(inspector_run_state.get("pending_approval") or pending_approval)
         if response_task_state_delta:
             inspector_run_state["task_state_delta"] = dict(response_task_state_delta)
         else:
@@ -2753,6 +2763,7 @@ def _process_chat_request(
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
                 pending_user_input=pending_user_input,
+                pending_approval=pending_approval,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
@@ -2851,6 +2862,7 @@ def _process_chat_request(
             turn_status=turn_status,
             plan=plan,
             pending_user_input=pending_user_input,
+            pending_approval=pending_approval,
             current_task_focus=session_context_impl.compat_task_checkpoint_from_focus(current_task_focus),
             work_cursor=dict(session.get("work_cursor") or {}),
             task_state=dict(session.get("task_state") or {}),
@@ -2885,6 +2897,7 @@ def _process_chat_request(
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
                 pending_user_input=pending_user_input,
+                pending_approval=pending_approval,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
@@ -2915,6 +2928,7 @@ def _process_chat_request(
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
                 pending_user_input=pending_user_input,
+                pending_approval=pending_approval,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,
@@ -2943,6 +2957,7 @@ def _process_chat_request(
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
                 pending_user_input=pending_user_input,
+                pending_approval=pending_approval,
                 tool_count=len(tool_events),
                 evidence_status=str(inspector_evidence.get("status") or "not_needed"),
                 context_meter=context_meter,

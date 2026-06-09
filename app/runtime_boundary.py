@@ -116,7 +116,7 @@ class RuntimeBoundary(BaseModel):
     def network_reason(self) -> str:
         if self.network_allowed:
             return "enabled"
-        if normalize_permission_profile(self.permission_profile) == "default":
+        if normalize_permission_profile(self.permission_profile) != "full_access":
             return "profile_disabled"
         return "global_disabled"
 
@@ -189,7 +189,7 @@ def build_turn_runtime_boundary(
     allowed_roots = _dedup_paths([any_root] if allow_any_path else [root, *imported_roots, *extra_roots])
     workspace_write_allowed = bool(contract.workspace_write_allowed) and profile in {"auto", "full_access"}
     shell_allowed = bool(contract.shell_allowed) and profile in {"auto", "full_access"}
-    network_allowed = bool(contract.network_allowed) and profile in {"auto", "full_access"}
+    network_allowed = bool(contract.network_allowed) and profile == "full_access"
     browser_allowed = network_allowed
     if workspace_write_allowed:
         writable_roots = _dedup_paths([any_root] if allow_any_path else ([root, *extra_roots] if profile == "full_access" else [root]))

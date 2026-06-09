@@ -723,6 +723,7 @@ class VintageProgrammerRuntime:
         model_draft: str = "",
         final_answer: str = "",
         runtime_error: dict[str, Any] | None = None,
+        pending_approval: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "goal": str(goal or "").strip(),
@@ -731,6 +732,7 @@ class VintageProgrammerRuntime:
             "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
             "plan": [dict(item) for item in list(plan_state or [])[:12] if isinstance(item, dict)],
             "pending_user_input": dict(pending_user_input or {}),
+            "pending_approval": dict(pending_approval or {}),
             "tool_count": len(tool_events),
             "evidence_status": str(evidence_status or "not_needed"),
         }
@@ -3166,6 +3168,7 @@ class VintageProgrammerRuntime:
         locale: str,
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
+        run_id: str = "",
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3186,6 +3189,8 @@ class VintageProgrammerRuntime:
             kwargs["permission_profile"] = permission_profile
         if runtime_boundary is not None and self._callable_accepts_kwarg(setter, "runtime_boundary"):
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
+        if self._callable_accepts_kwarg(setter, "run_id"):
+            kwargs["run_id"] = run_id
         setter(**kwargs)
 
     @staticmethod
@@ -3926,6 +3931,7 @@ class VintageProgrammerRuntime:
         effective_model = requested_model
         plan_state: list[dict[str, Any]] = []
         pending_user_input: dict[str, Any] = {}
+        pending_approval: dict[str, Any] = {}
         turn_status = "running"
         forced_text = ""
         model_action: dict[str, Any] = {}
@@ -4111,7 +4117,129 @@ class VintageProgrammerRuntime:
             locale=locale,
             permission_profile=turn_runtime_boundary.permission_profile,
             runtime_boundary=turn_runtime_boundary,
+            run_id=run_id,
         )
+
+        user_input_response = (
+            dict(context_payload.get("user_input_response") or {})
+            if isinstance(context_payload.get("user_input_response"), dict)
+            else {}
+        )
+        if str(user_input_response.get("type") or "").strip() == "command_execution":
+            approval_action = str(user_input_response.get("action") or "").strip()
+            approval_command = str(user_input_response.get("command") or "").strip()
+            approval_cwd = str(user_input_response.get("cwd") or effective_cwd or project_root or "").strip()
+            approval_token = str(user_input_response.get("approval_token") or "").strip()
+            pending_approval = {}
+            if approval_action == "cancel":
+                notes.append("approval.cancelled:command_execution")
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="approval.cancelled",
+                    title="Command approval cancelled",
+                    detail=approval_command or "Command execution approval was cancelled.",
+                    status="cancelled",
+                    payload={
+                        "type": "command_execution",
+                        "command": approval_command,
+                        "cwd": approval_cwd,
+                    },
+                    trace_events=trace_events,
+                )
+                messages.append(
+                    self._backend._SystemMessage(
+                        content="[command_execution_cancelled]\n"
+                        + json.dumps(
+                            {
+                                "type": "command_execution",
+                                "action": "cancel",
+                                "command": approval_command,
+                                "cwd": approval_cwd,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+            elif approval_action == "approve_once":
+                approval_arguments = {
+                    "cmd": approval_command,
+                    "cwd": approval_cwd,
+                    "approval_token": approval_token,
+                    "tainted_approval_token": approval_token,
+                }
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="approval.approving",
+                    title="Command approval accepted",
+                    detail=approval_command,
+                    status="running",
+                    payload={
+                        "type": "command_execution",
+                        "command": approval_command,
+                        "cwd": approval_cwd,
+                        "approval_token": approval_token,
+                    },
+                    trace_events=trace_events,
+                )
+                started_at = time.monotonic()
+                try:
+                    approval_result = self._backend.tools.execute("exec_command", approval_arguments)
+                except Exception as exc:
+                    approval_result = self._structured_tool_error_result("exec_command", exc)
+                duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
+                approval_event = self._build_tool_event(
+                    name="exec_command",
+                    arguments=approval_arguments,
+                    result=approval_result,
+                    locale=locale,
+                    raw_tool_call={
+                        "id": f"{spec.agent_id}_command_approval",
+                        "name": "exec_command",
+                        "arguments": approval_arguments,
+                        "source": "user_input_response",
+                    },
+                    validation_result={
+                        "allowed": True,
+                        "code": "approval_token_supplied",
+                        "message": "User approved this exact command once.",
+                        "normalized_arguments": approval_arguments,
+                    },
+                    raw_arguments=approval_arguments,
+                )
+                tool_events.append(approval_event)
+                if bool(approval_result.get("approval_required")):
+                    pending_approval = dict(approval_result.get("approval_request") or {})
+                    pending_user_input = {
+                        "summary": str(approval_result.get("summary") or "Command execution still requires approval."),
+                        "approval_request": pending_approval,
+                        "questions": [],
+                    }
+                    turn_status = "needs_user_input"
+                approval_trace_payload = {
+                    "tool_name": "exec_command",
+                    "command": approval_command,
+                    "cwd": approval_cwd,
+                    "result_preview": safe_preview(approval_result, limit=4000),
+                }
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="approval.approved" if bool(approval_result.get("command_execution_approved") or approval_result.get("tainted_execution_approved")) else "approval.rejected",
+                    title=trace_label(locale, "approval.approved") if bool(approval_result.get("command_execution_approved") or approval_result.get("tainted_execution_approved")) else "Command approval rejected",
+                    detail=str(approval_result.get("summary") or approval_result.get("error") or approval_command),
+                    status="success" if bool(approval_result.get("command_execution_approved") or approval_result.get("tainted_execution_approved")) else "blocked",
+                    duration_ms=duration_ms,
+                    payload=approval_trace_payload,
+                    trace_events=trace_events,
+                )
+                messages.append(
+                    self._backend._SystemMessage(
+                        content="[approved_command_execution_result]\n"
+                        + json.dumps(safe_preview(approval_result, limit=12000), ensure_ascii=False)
+                    )
+                )
 
         ai_msg: Any = None
         try:
@@ -4220,6 +4348,7 @@ class VintageProgrammerRuntime:
                     locale=locale,
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
+                    run_id=run_id,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -4792,6 +4921,7 @@ class VintageProgrammerRuntime:
                         locale=locale,
                         permission_profile=turn_runtime_boundary.permission_profile,
                         runtime_boundary=turn_runtime_boundary,
+                        run_id=run_id,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -4854,6 +4984,108 @@ class VintageProgrammerRuntime:
                                     "plan": plan_state,
                                     "explanation": str(result.get("explanation") or ""),
                                     "run_snapshot": plan_snapshot,
+                                }
+                            )
+                    if name == "exec_command" and bool(result.get("tainted_execution_approved")):
+                        approved_payload = dict(result.get("tainted_execution_approved") or {})
+                        approved_files = [
+                            dict(item)
+                            for item in list(approved_payload.get("files") or [])
+                            if isinstance(item, dict)
+                        ]
+                        approved_labels = [
+                            Path(str(item.get("path") or "")).name or str(item.get("path") or "")
+                            for item in approved_files[:3]
+                        ]
+                        detail = "Approved execution of network-origin code"
+                        if approved_labels:
+                            detail = f"{detail}: {', '.join(approved_labels)}"
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="approval.approved",
+                            title=trace_label(locale, "approval.approved"),
+                            detail=detail,
+                            status="success",
+                            payload={"tainted_execution_approved": safe_preview(approved_payload)},
+                            trace_events=trace_events,
+                        )
+                    if name == "exec_command" and bool(result.get("approval_required")):
+                        approval_request = dict(result.get("approval_request") or {})
+                        approval_token = str(approval_request.get("approval_token") or "")
+                        command_text = str(approval_request.get("command") or arguments.get("cmd") or "").strip()
+                        files = [dict(item) for item in list(approval_request.get("files") or []) if isinstance(item, dict)]
+                        risks = [dict(item) for item in list(approval_request.get("risks") or []) if isinstance(item, dict)]
+                        file_labels = [
+                            f"{Path(str(item.get('path') or '')).name or str(item.get('path') or '')} ({str(item.get('source_domain') or 'network')})"
+                            for item in files[:3]
+                        ]
+                        risk_labels = [
+                            str(item.get("message") or item.get("kind") or "").strip()
+                            for item in risks[:2]
+                            if str(item.get("message") or item.get("kind") or "").strip()
+                        ]
+                        summary = "Approval required to run this command"
+                        if file_labels:
+                            summary = f"{summary}: {', '.join(file_labels)}"
+                        elif risk_labels:
+                            summary = f"{summary}: {', '.join(risk_labels)}"
+                        pending_approval = approval_request
+                        pending_user_input = {
+                            "summary": summary,
+                            "approval_request": approval_request,
+                            "questions": [
+                                {
+                                    "header": "Run Command",
+                                    "id": "command_execution",
+                                    "question": (
+                                        "The command requires one-time approval before host execution. "
+                                        f"Command: {command_text}. "
+                                        f"Single-use approval token: {approval_token or '(missing)'}"
+                                    ),
+                                    "options": [
+                                        {
+                                            "label": "Cancel",
+                                            "description": "Do not run this command.",
+                                        },
+                                        {
+                                            "label": "Approve once",
+                                            "description": "Allow exactly this command once if the approval details still match.",
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                        turn_status = "needs_user_input"
+                        halt_for_user_input = True
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="approval.required",
+                            title=trace_label(locale, "approval.required"),
+                            detail=summary,
+                            status="blocked",
+                            payload={"approval_request": safe_preview(approval_request)},
+                            trace_events=trace_events,
+                        )
+                        if progress_cb is not None:
+                            progress_cb(
+                                {
+                                    "event": "request_user_input",
+                                    "pending_user_input": pending_user_input,
+                                    "pending_approval": pending_approval,
+                                    "turn_status": turn_status,
+                                    "run_snapshot": self._build_run_snapshot(
+                                        goal=current_goal,
+                                        current_task_focus=current_task_focus,
+                                        turn_status=turn_status,
+                                        plan_state=plan_state,
+                                        pending_user_input=pending_user_input,
+                                        pending_approval=pending_approval,
+                                        effective_cwd=effective_cwd,
+                                        evidence_status="collected" if any(item.status == "ok" for item in tool_events) else "not_needed",
+                                        tool_events=tool_events,
+                                    ),
                                 }
                             )
                     if name == "request_user_input" and bool(result.get("ok")):
@@ -5394,6 +5626,7 @@ class VintageProgrammerRuntime:
                     locale=locale,
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
+                    run_id=run_id,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -5633,7 +5866,7 @@ class VintageProgrammerRuntime:
                 "plan": plan_state,
                 "task_state": dict(final_task_state),
                 "pending_user_input": pending_user_input,
-                "pending_approval": {},
+                "pending_approval": pending_approval,
                 "write_authorization_state": dict(write_authorization_state),
                 "blocked_reason": blocked_reason,
                 "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
@@ -5749,7 +5982,7 @@ class VintageProgrammerRuntime:
             "turn_status": turn_status,
             "plan": plan_state,
             "pending_user_input": pending_user_input,
-            "pending_approval": {},
+            "pending_approval": pending_approval,
             "write_authorization_state": dict(write_authorization_state),
             "blocked_reason": blocked_reason,
             "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),

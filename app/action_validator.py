@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from app.config import normalize_permission_profile
 from app.runtime_boundary import RuntimeBoundary, build_runtime_boundary
 from app.serialization import dump_model
 from app.tool_metadata import get_tool_metadata
@@ -199,6 +200,74 @@ def _is_path_like_token(token: str) -> bool:
 def _command_base(argv0: str) -> str:
     text = str(argv0 or "").replace("\\", "/").strip()
     return text.rsplit("/", 1)[-1].lower()
+
+
+def blocked_supply_chain_command(argv: list[str]) -> dict[str, Any] | None:
+    """Return a policy violation for host-network/supply-chain command flows."""
+    if not argv:
+        return None
+    base = _command_base(str(argv[0] or ""))
+    args = [str(item or "").strip() for item in list(argv[1:] or []) if str(item or "").strip()]
+
+    def block(reason: str, argument: str = "", required_allowed_commands: list[str] | None = None) -> dict[str, Any]:
+        return {
+            "kind": "blocked_supply_chain_command",
+            "message": reason,
+            "base_command": base,
+            "blocked_argument": argument,
+            "required_allowed_commands": list(required_allowed_commands or [base]),
+        }
+
+    if base in {"curl", "wget"}:
+        return block(f"Command is blocked because {base} can fetch and execute untrusted network content.")
+    if base == "npx":
+        return block("Command is blocked because npx can execute remote package code.")
+    if base in {"pip", "pip3"} and any(arg == "install" for arg in args):
+        return block("Command is blocked because pip install can execute package setup code.", "install")
+    if base in {"python", "python3", "py", "python.exe"}:
+        for index, arg in enumerate(args):
+            if arg in {"-c", "--command"}:
+                return block("Command is blocked because inline Python execution bypasses file provenance checks.", arg)
+            if arg == "-m" and index + 1 < len(args) and args[index + 1] in {"pip", "pip3"}:
+                if any(item == "install" for item in args[index + 2:]):
+                    pip_command = str(args[index + 1] or "pip").strip()
+                    return block(
+                        "Command is blocked because python -m pip install can execute package setup code.",
+                        "-m pip install",
+                        [base, pip_command],
+                    )
+    if base in {"node", "node.exe"}:
+        for arg in args:
+            if arg in {"-e", "--eval", "--print", "-p"}:
+                return block("Command is blocked because inline Node.js execution bypasses file provenance checks.", arg)
+    if base == "npm":
+        blocked = {"install", "i", "add", "update", "exec"}
+        for arg in args:
+            if arg in blocked:
+                return block(f"Command is blocked because npm {arg} can fetch or execute package code.", arg)
+    if base == "git":
+        blocked = {"clone", "fetch", "pull", "submodule"}
+        for arg in args:
+            if arg in blocked:
+                return block(f"Command is blocked because git {arg} can fetch remote code.", arg)
+    return None
+
+
+def missing_supply_chain_allowed_commands(
+    block: dict[str, Any] | None,
+    allowed_commands: set[str] | list[str] | tuple[str, ...],
+) -> list[str]:
+    if not block:
+        return []
+    allowed = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
+    if not allowed:
+        return []
+    required = [
+        _command_base(str(item or ""))
+        for item in list(block.get("required_allowed_commands") or [block.get("base_command")])
+        if str(item or "").strip()
+    ]
+    return [item for item in required if item not in allowed]
 
 
 def _shell_parse_error(
@@ -552,6 +621,7 @@ def validate_compound_shell_command(
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
     allowed_commands: list[str] | set[str] | tuple[str, ...] | None = None,
+    allow_supply_chain_commands: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     parsed = parse_compound_shell_command(command)
     if not parsed.get("ok"):
@@ -599,6 +669,7 @@ def validate_compound_shell_command(
                 )
             effective_cwd = resolved
             continue
+        supply_chain_block = blocked_supply_chain_command(argv)
         if allowed_base_commands and base not in allowed_base_commands:
             return False, _compound_subcommand_rejection(
                 index=index,
@@ -611,6 +682,30 @@ def validate_compound_shell_command(
                     "base_command": base,
                     "allowed_commands": sorted(allowed_base_commands),
                 },
+            )
+        missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, allowed_base_commands)
+        if missing_supply_chain_commands:
+            missing_label = ", ".join(missing_supply_chain_commands)
+            return False, _compound_subcommand_rejection(
+                index=index,
+                subcommand=text,
+                reason=f"Command not allowed: {missing_label}. Allowed: {', '.join(sorted(allowed_base_commands))}",
+                parsed_subcommands=parsed_subcommands,
+                detail={
+                    "kind": "command_not_allowed",
+                    "message": f"Command not allowed: {missing_label}. Allowed: {', '.join(sorted(allowed_base_commands))}",
+                    "base_command": missing_supply_chain_commands[0],
+                    "allowed_commands": sorted(allowed_base_commands),
+                    "required_allowed_commands": list(supply_chain_block.get("required_allowed_commands") or []) if supply_chain_block else [],
+                },
+            )
+        if supply_chain_block is not None and not allow_supply_chain_commands:
+            return False, _compound_subcommand_rejection(
+                index=index,
+                subcommand=text,
+                reason=str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy."),
+                parsed_subcommands=parsed_subcommands,
+                detail=supply_chain_block,
             )
         ok, detail = validate_single_command_for_compound_shell(
             argv,
@@ -660,6 +755,10 @@ class ActionValidator:
         self._locale = str(locale or "en")
         self._normalize_tool_name = normalize_tool_name or (lambda value: str(value or "").strip())
         self._argument_rewriter = argument_rewriter
+
+    def _supply_chain_approval_allowed(self) -> bool:
+        profile = normalize_permission_profile(getattr(self._boundary, "permission_profile", "auto"))
+        return profile == "full_access" and bool(getattr(self._boundary, "network_allowed", False))
 
     def validate_tool_call(self, raw_call: dict[str, Any]) -> ValidationResult:
         call = dict(raw_call or {})
@@ -988,6 +1087,7 @@ class ActionValidator:
                         command_allowed_roots=command_roots,
                         writable_roots=self._writable_roots(),
                         allowed_commands=self._allowed_commands,
+                        allow_supply_chain_commands=self._supply_chain_approval_allowed(),
                     )
                     if not ok:
                         error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
@@ -999,12 +1099,21 @@ class ActionValidator:
                                 return "command_path_outside_allowed_roots", str(detail.get("reason") or detail.get("message") or "Command path argument is outside command allowed roots.")
                             if isinstance(nested, dict) and str(nested.get("kind") or "") == "command_not_allowed":
                                 return "command_not_allowed", str(detail.get("reason") or detail.get("message") or "Command is not allowed.")
+                            if isinstance(nested, dict) and str(nested.get("kind") or "") == "blocked_supply_chain_command":
+                                return "command_not_allowed", str(detail.get("reason") or detail.get("message") or "Command is blocked by supply-chain policy.")
                             return "invalid_arguments", str(detail.get("reason") or detail.get("message") or "Compound shell command could not be validated safely.")
                         return "invalid_arguments", str(detail.get("message") or "Compound shell command could not be validated safely.")
                 else:
                     argv, split_error = split_command_safely(command)
                     if split_error:
                         return "invalid_arguments", split_error
+                    supply_chain_block = blocked_supply_chain_command(argv)
+                    missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, self._allowed_commands)
+                    if missing_supply_chain_commands:
+                        missing_label = ", ".join(missing_supply_chain_commands)
+                        return "command_not_allowed", f"Command not allowed: {missing_label}. Allowed: {', '.join(sorted(self._allowed_commands))}"
+                    if supply_chain_block is not None and not self._supply_chain_approval_allowed():
+                        return "command_not_allowed", str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
                     ok, detail = validate_command_path_args(
                         argv,
                         cwd=cwd_path,

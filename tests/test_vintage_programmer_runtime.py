@@ -248,6 +248,63 @@ class _FailingTools(_FakeTools):
         raise RuntimeError("boom")
 
 
+class _ApprovalRequiredTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": False,
+            "command": str(arguments.get("cmd") or ""),
+            "cwd": str(arguments.get("cwd") or ""),
+            "returncode": 126,
+            "error": "Command execution requires approval.",
+            "error_kind": "command_execution_approval_required",
+            "approval_required": True,
+            "approval_request": {
+                "type": "command_execution",
+                "approval_token": "approval-token-1",
+                "command": str(arguments.get("cmd") or ""),
+                "cwd": str(arguments.get("cwd") or ""),
+                "risks": [
+                    {
+                        "kind": "supply_chain_command",
+                        "category": "supply_chain",
+                        "message": "Command can execute network-origin package code.",
+                        "base_command": "python",
+                        "blocked_argument": "-c",
+                    }
+                ],
+                "files": [],
+                "single_use": True,
+                "default_action": "cancel",
+            },
+            "summary": "Command execution requires explicit approval.",
+        }
+
+
+class _ApprovedCommandTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": True,
+            "session_id": 7,
+            "status": "completed",
+            "running": False,
+            "returncode": 0,
+            "output": "approved command output\n",
+            "command": str(arguments.get("cmd") or ""),
+            "cwd": str(arguments.get("cwd") or ""),
+            "command_execution_approved": {
+                "approved": True,
+                "approval_token": str(arguments.get("approval_token") or ""),
+                "command": str(arguments.get("cmd") or ""),
+                "cwd": str(arguments.get("cwd") or ""),
+                "risks": [],
+                "files": [],
+            },
+            "summary": "command exited with 0",
+        }
+
+
 class _FakeBackend:
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         self.tools = _FakeTools()
@@ -652,8 +709,9 @@ def test_runtime_activity_copy_has_locale_parity() -> None:
 
 
 def test_agent_docs_prefer_project_venv_python() -> None:
-    agent_doc = (REPO_ROOT / "agents" / "vintage_programmer" / "agent.md").read_text(encoding="utf-8")
-    tools_doc = (REPO_ROOT / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8")
+    zh_spec_dir = REPO_ROOT / "agents" / "vintage_programmer" / "locales" / "zh-CN"
+    agent_doc = (zh_spec_dir / "agent.md").read_text(encoding="utf-8")
+    tools_doc = (zh_spec_dir / "tools.md").read_text(encoding="utf-8")
 
     assert "./.venv/bin/python" in agent_doc
     assert ".venv\\Scripts\\python.exe" in agent_doc
@@ -665,6 +723,9 @@ def test_agent_docs_prefer_project_venv_python() -> None:
     assert "不要为每个请求都创建计划" in agent_doc
     assert "多步骤、多文件、需要代码修改、需要调试、需要测试" in agent_doc
     assert "简单直接回答、单步检查或琐碎命令" in agent_doc
+    assert "先 `web_search` 找来源，再按需用 `web_fetch` 读正文" in tools_doc
+    assert "最多再 `web_fetch` 1 个权威来源" not in tools_doc
+    assert "优先 1 次 `web_search`" not in tools_doc
     assert "唯一的 checklist 协议" in agent_doc
     assert "可选补充信息" in agent_doc
     assert "不要为每个请求都调用 `update_plan`" in tools_doc
@@ -957,6 +1018,105 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert "tool.finished" in trace_types
     assert "run.finished" in trace_types
     assert result["inspector"]["run_state"]["model_action"]["action_type"] == result["model_action"]["action_type"]
+
+
+def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    tools = _ApprovalRequiredTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-approval",
+                        "name": "exec_command",
+                        "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                    }
+                ],
+            )
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="run risky command",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-command-approval",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["turn_status"] == "needs_user_input"
+    assert result["pending_approval"]["type"] == "command_execution"
+    assert result["pending_approval"]["approval_token"] == "approval-token-1"
+    assert result["pending_user_input"]["approval_request"]["type"] == "command_execution"
+    assert result["inspector"]["run_state"]["pending_approval"]["command"] == "python -c \"print('x')\""
+    request_event = next(item for item in progress_events if str(item.get("event") or "") == "request_user_input")
+    assert request_event["pending_approval"]["type"] == "command_execution"
+    assert request_event["run_snapshot"]["pending_approval"]["approval_token"] == "approval-token-1"
+
+
+def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    tools = _ApprovedCommandTools()
+    backend = _FakeBackendWithTools([_FakeMessage(content="approved summary")], tools)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="Approve once",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-command-approval-resume",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "approve_once",
+                "approval_token": "approval-token-1",
+                "command": "python -c \"print('x')\"",
+                "cwd": str(tmp_path),
+            },
+        },
+    )
+
+    assert tools.calls[0] == (
+        "exec_command",
+        {
+            "cmd": "python -c \"print('x')\"",
+            "cwd": str(tmp_path),
+            "approval_token": "approval-token-1",
+            "tainted_approval_token": "approval-token-1",
+        },
+    )
+    assert result["text"] == "approved summary"
+    assert result["tool_events"][0]["name"] == "exec_command"
+    assert result["tool_events"][0]["status"] == "ok"
+    assert result["inspector"]["run_state"]["pending_approval"] == {}
+    assert any(item["type"] == "approval.approved" for item in result["inspector"]["trace_events"])
 
 
 def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Path) -> None:

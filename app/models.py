@@ -277,6 +277,7 @@ class ChatResponse(BaseModel):
     turn_status: str = "completed"
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
+    pending_approval: dict[str, Any] = Field(default_factory=dict)
     current_task_focus: dict[str, Any] = Field(default_factory=dict)
     work_cursor: dict[str, Any] = Field(default_factory=dict)
     task_state: dict[str, Any] = Field(default_factory=dict)

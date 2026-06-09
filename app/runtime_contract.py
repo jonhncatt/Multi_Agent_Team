@@ -71,7 +71,7 @@ def build_full_auto_runtime_contract(
         tools_available=True,
         workspace_write_allowed=True,
         shell_allowed=True,
-        network_allowed=True,
+        network_allowed=False,
         permission_profile="auto",
         hint_source="",
     )

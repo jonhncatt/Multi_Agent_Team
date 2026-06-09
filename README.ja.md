@@ -51,7 +51,7 @@ v2.9.15 でも、モデルに送る prompt は `ModelContext` だけを render �
 
 ## Permission Profiles
 
-既定の permission profile は `Code` です。現在のプロジェクトと imported files を読み取り、現在のプロジェクト内に書き込み、現在のプロジェクト内で安全なコマンドを実行できます。network は既定で off です。`Chat` は読み取り専用で、ファイル書き込みと shell 実行は無効です。`Full Dev` は明示設定された extra roots を読み取り、global config に従って network を有効化できますが、path boundary、command allowlist、危険コマンドブロックは維持されます。
+既定の permission profile は `Code` です。現在のプロジェクトと imported files を読み取り、現在のプロジェクト内に書き込み、現在のプロジェクト内で安全なコマンドを実行できます。network は off です。`Chat` は読み取り専用で、ファイル書き込み、shell 実行、network は無効です。`Full Dev` は明示設定された extra roots を読み取り、global config に従って network を有効化できます。download または archive extract 由来のコードは tainted として記録され、実行には1回限りの確認が必要です。path boundary、command allowlist、危険コマンドブロックは維持されます。
 
 ## これは何か
 

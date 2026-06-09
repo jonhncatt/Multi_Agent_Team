@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import importlib
 import re
+import secrets
 import shlex
 import shutil
 import ssl
@@ -24,7 +25,9 @@ from typing import Any, Callable
 from PIL import Image, ImageEnhance, ImageOps
 
 from app.action_validator import (
+    blocked_supply_chain_command,
     is_dangerous_command,
+    missing_supply_chain_allowed_commands,
     parse_compound_shell_command,
     shell_command_uses_compound_syntax,
     validate_compound_shell_command as validate_compound_shell_command_shared,
@@ -1110,12 +1113,16 @@ class LocalToolExecutor:
         self._runtime_ctx = threading.local()
         self._web_cache_lock = threading.Lock()
         self._docker_cache_lock = threading.Lock()
+        self._taint_registry_lock = threading.Lock()
         self._command_sessions_lock = threading.Lock()
         self._command_sessions: dict[int, dict[str, Any]] = {}
         self._command_session_ids = itertools.count(1)
         self._docker_sandbox_cache: dict[tuple[str, ...], DockerSandboxManager] = {}
         self._web_cache_dir = (config.workspace_root / "app" / "data" / "web_cache").resolve()
         self._web_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_data_dir = (config.workspace_root / "app" / "data" / "runtime").resolve()
+        self._runtime_data_dir.mkdir(parents=True, exist_ok=True)
+        self._taint_registry_path = (self._runtime_data_dir / "taint_registry.json").resolve()
         self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
         self._browser_manager = BrowserToolManager(
             artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve()
@@ -1145,6 +1152,7 @@ class LocalToolExecutor:
         locale: str | None = None,
         permission_profile: str | None = None,
         runtime_boundary: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1156,6 +1164,7 @@ class LocalToolExecutor:
         self._runtime_ctx.project_root = str(project_root or "").strip()
         self._runtime_ctx.cwd = str(cwd or "").strip()
         self._runtime_ctx.model = str(model or "").strip()
+        self._runtime_ctx.run_id = str(run_id or "").strip()
         self._runtime_ctx.locale = normalize_locale(locale, self.config.default_locale)
         self._runtime_ctx.permission_profile = normalize_permission_profile(
             permission_profile or getattr(self.config, "permission_profile", "auto")
@@ -1163,7 +1172,7 @@ class LocalToolExecutor:
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "locale", "permission_profile", "runtime_boundary"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1196,6 +1205,9 @@ class LocalToolExecutor:
 
     def _current_model_hint(self) -> str:
         return str(getattr(self._runtime_ctx, "model", "") or "").strip()
+
+    def _current_run_id(self) -> str:
+        return str(getattr(self._runtime_ctx, "run_id", "") or "").strip()
 
     def _current_locale_hint(self) -> str:
         fallback_locale = str(getattr(self.config, "default_locale", "ja-JP") or "ja-JP")
@@ -1543,10 +1555,24 @@ class LocalToolExecutor:
         boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
         if isinstance(boundary, dict) and "shell_allowed" in boundary:
             return bool(boundary.get("shell_allowed"))
-        profile = normalize_permission_profile(
+        return self._current_permission_profile() != "default"
+
+    def _current_permission_profile(self) -> str:
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict) and str(boundary.get("permission_profile") or "").strip():
+            return normalize_permission_profile(str(boundary.get("permission_profile") or ""))
+        return normalize_permission_profile(
             str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "auto"))
         )
-        return profile != "default"
+
+    def _current_network_allowed(self) -> bool:
+        boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+        if isinstance(boundary, dict) and "network_allowed" in boundary:
+            return bool(boundary.get("network_allowed"))
+        return self._current_permission_profile() == "full_access"
+
+    def _supply_chain_approval_allowed(self) -> bool:
+        return self._current_permission_profile() == "full_access" and self._current_network_allowed()
 
     def _resolve_path(self, raw_path: str) -> Path:
         return _resolve_workspace_path(
@@ -1594,6 +1620,597 @@ class LocalToolExecutor:
         payload.setdefault("cwd", str(payload.get("path") or self._current_cwd_hint() or project_root))
         payload.setdefault("project_id", self._current_project_id())
         return payload
+
+    @staticmethod
+    def _utc_timestamp() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _load_taint_registry_unlocked(self) -> dict[str, Any]:
+        if not self._taint_registry_path.exists():
+            return {"version": 1, "files": {}, "approvals": {}}
+        try:
+            payload = json.loads(self._taint_registry_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"version": 1, "files": {}, "approvals": {}}
+        if not isinstance(payload, dict):
+            return {"version": 1, "files": {}, "approvals": {}}
+        if not isinstance(payload.get("files"), dict):
+            payload["files"] = {}
+        if not isinstance(payload.get("approvals"), dict):
+            payload["approvals"] = {}
+        payload["version"] = 1
+        return payload
+
+    def _save_taint_registry_unlocked(self, payload: dict[str, Any]) -> None:
+        self._taint_registry_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._taint_registry_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(self._taint_registry_path)
+
+    def _register_tainted_file(
+        self,
+        path: Path,
+        *,
+        source_url: str,
+        source_tool: str,
+        content_type: str = "",
+        parent_path: str = "",
+        parent_sha256: str = "",
+        entry_name: str = "",
+    ) -> dict[str, Any]:
+        resolved = path.expanduser().resolve()
+        if not resolved.exists() or not resolved.is_file():
+            return {}
+        parsed = urllib.parse.urlparse(str(source_url or ""))
+        record = {
+            "path": str(resolved),
+            "sha256": self._sha256_file(resolved),
+            "size": int(resolved.stat().st_size),
+            "source_url": str(source_url or "").strip(),
+            "source_domain": str(parsed.hostname or "").lower(),
+            "source_tool": str(source_tool or "").strip(),
+            "content_type": str(content_type or "").strip(),
+            "parent_path": str(parent_path or "").strip(),
+            "parent_sha256": str(parent_sha256 or "").strip(),
+            "entry_name": str(entry_name or "").strip(),
+            "session_id": self._current_session_id(),
+            "project_id": self._current_project_id(),
+            "run_id": self._current_run_id(),
+            "marked_at": self._utc_timestamp(),
+        }
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            registry.setdefault("files", {})[str(resolved)] = record
+            self._save_taint_registry_unlocked(registry)
+        return dict(record)
+
+    def _taint_record_for_path(self, path: Path) -> dict[str, Any] | None:
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            return None
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            raw = dict((registry.get("files") or {}).get(str(resolved)) or {})
+        if not raw:
+            return None
+        raw["path"] = str(resolved)
+        if resolved.exists() and resolved.is_file():
+            try:
+                raw["current_sha256"] = self._sha256_file(resolved)
+                raw["current_size"] = int(resolved.stat().st_size)
+            except Exception:
+                raw["current_sha256"] = ""
+        else:
+            raw["missing"] = True
+            raw["current_sha256"] = ""
+        return raw
+
+    @staticmethod
+    def _approval_file_records(tainted_files: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return [
+            {
+                "path": str(item.get("path") or ""),
+                "sha256": str(item.get("current_sha256") or item.get("sha256") or ""),
+            }
+            for item in tainted_files
+        ]
+
+    @staticmethod
+    def _approval_risk_records(risks: list[dict[str, Any]]) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        for item in list(risks or []):
+            if not isinstance(item, dict):
+                continue
+            records.append(
+                {
+                    "kind": str(item.get("kind") or ""),
+                    "category": str(item.get("category") or ""),
+                    "message": str(item.get("message") or ""),
+                    "base_command": str(item.get("base_command") or ""),
+                    "blocked_argument": str(item.get("blocked_argument") or ""),
+                    "subcommand": str(item.get("subcommand") or ""),
+                }
+            )
+        return records
+
+    def _create_command_execution_approval(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+    ) -> str:
+        file_records = self._approval_file_records(tainted_files)
+        risk_records = self._approval_risk_records(risks)
+        token = secrets.token_urlsafe(24)
+        approval = {
+            "type": "command_execution",
+            "token": token,
+            "command": str(command or "").strip(),
+            "cwd": str(cwd or "").strip(),
+            "risks": risk_records,
+            "files": file_records,
+            "session_id": self._current_session_id(),
+            "project_id": self._current_project_id(),
+            "run_id": self._current_run_id(),
+            "created_at": self._utc_timestamp(),
+            "used": False,
+        }
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            registry.setdefault("approvals", {})[token] = approval
+            self._save_taint_registry_unlocked(registry)
+        return token
+
+    def _create_tainted_execution_approval(self, *, command: str, tainted_files: list[dict[str, Any]]) -> str:
+        return self._create_command_execution_approval(
+            command=command,
+            cwd=self._current_cwd_hint(),
+            risks=[],
+            tainted_files=tainted_files,
+        )
+
+    @staticmethod
+    def _sorted_approval_file_signature(files: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        return sorted(
+            (
+                str(item.get("path") or ""),
+                str(item.get("current_sha256") or item.get("sha256") or ""),
+            )
+            for item in files
+        )
+
+    @staticmethod
+    def _sorted_approval_risk_signature(risks: list[dict[str, Any]]) -> list[str]:
+        records = LocalToolExecutor._approval_risk_records(risks)
+        return sorted(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in records)
+
+    def _consume_command_execution_approval(
+        self,
+        *,
+        token: str,
+        command: str,
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        normalized_token = str(token or "").strip()
+        if not normalized_token:
+            return False, "A command execution approval token is required."
+        current_files = self._sorted_approval_file_signature(tainted_files)
+        current_risks = self._sorted_approval_risk_signature(risks)
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            approvals = registry.setdefault("approvals", {})
+            approval = dict(approvals.get(normalized_token) or {})
+            if not approval:
+                return False, "Command execution approval token was not found."
+            if bool(approval.get("used")):
+                return False, "Command execution approval token was already used."
+            if str(approval.get("type") or "tainted_code_execution") not in {"command_execution", "tainted_code_execution"}:
+                return False, "Command execution approval token type is not supported."
+            approval_session_id = str(approval.get("session_id") or "").strip()
+            current_session_id = self._current_session_id()
+            if approval_session_id and current_session_id and approval_session_id != current_session_id:
+                return False, "Command execution approval token does not match this session."
+            approval_project_id = str(approval.get("project_id") or "").strip()
+            current_project_id = self._current_project_id()
+            if approval_project_id and current_project_id and approval_project_id != current_project_id:
+                return False, "Command execution approval token does not match this project."
+            if str(approval.get("command") or "").strip() != str(command or "").strip():
+                return False, "Command execution approval token does not match this command."
+            approval_cwd = str(approval.get("cwd") or "").strip()
+            if approval_cwd and approval_cwd != str(cwd or "").strip():
+                return False, "Command execution approval token does not match this cwd."
+            approved_files = sorted(
+                (
+                    str(item.get("path") or ""),
+                    str(item.get("sha256") or ""),
+                )
+                for item in list(approval.get("files") or [])
+                if isinstance(item, dict)
+            )
+            if approved_files != current_files:
+                return False, "Command execution approval token does not match the current file hashes."
+            approved_risks = sorted(
+                json.dumps(dict(item), ensure_ascii=False, sort_keys=True)
+                for item in list(approval.get("risks") or [])
+                if isinstance(item, dict)
+            )
+            if approved_risks != current_risks:
+                return False, "Command execution approval token does not match these risk details."
+            approval["used"] = True
+            approval["used_at"] = self._utc_timestamp()
+            approval["used_run_id"] = self._current_run_id()
+            approvals[normalized_token] = approval
+            self._save_taint_registry_unlocked(registry)
+        return True, ""
+
+    def _consume_tainted_execution_approval(
+        self,
+        *,
+        token: str,
+        command: str,
+        tainted_files: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        return self._consume_command_execution_approval(
+            token=token,
+            command=command,
+            cwd=self._current_cwd_hint(),
+            risks=[],
+            tainted_files=tainted_files,
+        )
+
+    @staticmethod
+    def _resolve_command_file_candidate(raw: str, *, cwd: Path) -> Path:
+        candidate = Path(str(raw or "")).expanduser()
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        return candidate.resolve(strict=False)
+
+    @staticmethod
+    def _command_base_name(raw: str) -> str:
+        return str(raw or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    @classmethod
+    def _is_direct_path_command(cls, raw: str) -> bool:
+        text = str(raw or "").strip()
+        return bool(text) and (text.startswith(("/", "./", "../", "~")) or "/" in text or "\\" in text)
+
+    @classmethod
+    def _is_source_builtin_command(cls, raw: str) -> bool:
+        return cls._command_base_name(raw) in {"source", "."}
+
+    @staticmethod
+    def _is_python_command(argv0: str) -> bool:
+        return LocalToolExecutor._command_base_name(argv0) in {"python", "python3", "py", "python.exe"}
+
+    @staticmethod
+    def _is_node_command(argv0: str) -> bool:
+        return LocalToolExecutor._command_base_name(argv0) in {"node", "node.exe"}
+
+    @staticmethod
+    def _is_shell_command(argv0: str) -> bool:
+        return LocalToolExecutor._command_base_name(argv0) in {"sh", "bash", "zsh"}
+
+    def _candidate_execution_paths_from_argv(self, argv: list[str], *, cwd: Path) -> list[Path]:
+        if not argv:
+            return []
+        candidates: list[Path] = []
+        base = str(argv[0] or "").strip()
+        base_name = self._command_base_name(base)
+        if self._is_direct_path_command(base):
+            candidates.append(self._resolve_command_file_candidate(base, cwd=cwd))
+
+        args = [str(item or "").strip() for item in list(argv[1:] or []) if str(item or "").strip()]
+        if self._is_python_command(base) or self._is_node_command(base) or self._is_shell_command(base):
+            skip_next = False
+            for arg in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg in {"-m", "-c", "-e", "--eval", "--command"}:
+                    skip_next = arg in {"-c", "-e", "--eval", "--command"}
+                    if arg == "-m":
+                        break
+                    continue
+                if arg.startswith("-"):
+                    continue
+                candidates.append(self._resolve_command_file_candidate(arg, cwd=cwd))
+                break
+        elif base_name == "pytest":
+            for arg in args:
+                if arg.startswith("-"):
+                    continue
+                candidates.append(self._resolve_command_file_candidate(arg, cwd=cwd))
+        elif base_name in {"source", "."} and args:
+            candidates.append(self._resolve_command_file_candidate(args[0], cwd=cwd))
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        return unique
+
+    def _tainted_execution_matches_for_argv(self, argv: list[str], *, cwd: Path) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        for candidate in self._candidate_execution_paths_from_argv(argv, cwd=cwd):
+            record = self._taint_record_for_path(candidate)
+            if record is not None:
+                matches.append(record)
+        return matches
+
+    def _tainted_execution_matches(
+        self,
+        *,
+        argv: list[str],
+        cwd: Path,
+        compound_validation: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        if compound_validation:
+            for item in list(compound_validation.get("subcommands") or []):
+                if not isinstance(item, dict):
+                    continue
+                sub_argv = [str(token) for token in list(item.get("argv") or []) if str(token or "").strip()]
+                sub_cwd = Path(str(item.get("effective_cwd") or cwd)).expanduser().resolve()
+                matches.extend(self._tainted_execution_matches_for_argv(sub_argv, cwd=sub_cwd))
+        else:
+            matches.extend(self._tainted_execution_matches_for_argv(argv, cwd=cwd))
+
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in matches:
+            key = str(item.get("path") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return unique
+
+    def _tainted_file_path_validation_error(self, tainted_files: list[dict[str, Any]]) -> dict[str, Any] | None:
+        command_roots = [root.expanduser().resolve() for root in self._current_command_roots()]
+        for item in tainted_files:
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                resolved = Path(raw_path).expanduser().resolve(strict=False)
+            except Exception:
+                continue
+            boundary_path = resolved if resolved.exists() else resolved.parent
+            if any(_is_within(boundary_path, root) for root in command_roots):
+                continue
+            return {
+                "kind": "command_path_outside_allowed_roots",
+                "message": "Tainted executable path is outside command allowed roots.",
+                "argument": raw_path,
+                "resolved_path": str(resolved),
+                "command_allowed_roots": [str(root) for root in command_roots],
+                }
+        return None
+
+    @staticmethod
+    def _approval_files_public_payload(tainted_files: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return [
+            {
+                "path": str(item.get("path") or ""),
+                "sha256": str(item.get("current_sha256") or item.get("sha256") or ""),
+                "source_url": str(item.get("source_url") or ""),
+                "source_domain": str(item.get("source_domain") or ""),
+                "source_tool": str(item.get("source_tool") or ""),
+                "content_type": str(item.get("content_type") or ""),
+            }
+            for item in tainted_files
+        ]
+
+    def _tainted_execution_risks(self, tainted_files: list[dict[str, Any]]) -> list[dict[str, str]]:
+        if not tainted_files:
+            return []
+        return [
+            {
+                "kind": "tainted_code_execution",
+                "category": "tainted_code",
+                "message": "Command would execute code that originated from the network.",
+                "base_command": "",
+                "blocked_argument": "",
+                "subcommand": "",
+            }
+        ]
+
+    @staticmethod
+    def _supply_chain_risk_from_block(
+        block: dict[str, Any],
+        *,
+        subcommand: str = "",
+        cwd: str = "",
+    ) -> dict[str, str]:
+        return {
+            "kind": "supply_chain_command",
+            "category": "supply_chain",
+            "message": str(block.get("message") or "Command can fetch or execute network-origin package/code."),
+            "base_command": str(block.get("base_command") or ""),
+            "blocked_argument": str(block.get("blocked_argument") or ""),
+            "subcommand": str(subcommand or ""),
+            "cwd": str(cwd or ""),
+        }
+
+    def _supply_chain_risks(
+        self,
+        *,
+        argv: list[str],
+        cwd: Path,
+        compound_validation: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        risks: list[dict[str, str]] = []
+        if compound_validation:
+            for item in list(compound_validation.get("subcommands") or []):
+                if not isinstance(item, dict):
+                    continue
+                sub_argv = [str(token) for token in list(item.get("argv") or []) if str(token or "").strip()]
+                block = blocked_supply_chain_command(sub_argv)
+                if block is None:
+                    continue
+                risks.append(
+                    self._supply_chain_risk_from_block(
+                        block,
+                        subcommand=str(item.get("text") or ""),
+                        cwd=str(item.get("effective_cwd") or cwd),
+                    )
+                )
+        else:
+            block = blocked_supply_chain_command(argv)
+            if block is not None:
+                risks.append(self._supply_chain_risk_from_block(block, cwd=str(cwd)))
+
+        unique: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in risks:
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return unique
+
+    def _command_execution_approval_failure_result(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+        token_error: str = "",
+    ) -> dict[str, Any]:
+        all_risks = [*list(risks or []), *self._tainted_execution_risks(tainted_files)]
+        approval_token = "" if token_error else self._create_command_execution_approval(
+            command=command,
+            cwd=cwd,
+            risks=all_risks,
+            tainted_files=tainted_files,
+        )
+        files = self._approval_files_public_payload(tainted_files)
+        has_tainted = bool(files)
+        message = token_error or (
+            "Execution requires approval because the command can fetch or execute network-origin code."
+            if all_risks and not has_tainted
+            else "Execution blocked because the command would run code that originated from the network."
+        )
+        approval_request = {
+            "type": "command_execution",
+            "approval_token": approval_token,
+            "command": str(command or "").strip(),
+            "cwd": str(cwd or "").strip(),
+            "risks": [dict(item) for item in all_risks],
+            "files": files,
+            "single_use": True,
+            "default_action": "cancel",
+        }
+        payload = self._command_failure_result(
+            command=command,
+            cwd=cwd,
+            error=message,
+            stderr=message,
+            error_kind="tainted_code_approval_required" if has_tainted else "command_execution_approval_required",
+            error_detail={
+                "approval_token": approval_token,
+                "command": str(command or "").strip(),
+                "cwd": str(cwd or "").strip(),
+                "risks": [dict(item) for item in all_risks],
+                "files": files,
+                "single_use": True,
+            },
+        )
+        payload.update(
+            {
+                "approval_required": True,
+                "approval_request": approval_request,
+                "summary": "Command execution requires explicit approval.",
+            }
+        )
+        return payload
+
+    def _tainted_execution_failure_result(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        tainted_files: list[dict[str, Any]],
+        token_error: str = "",
+    ) -> dict[str, Any]:
+        return self._command_execution_approval_failure_result(
+            command=command,
+            cwd=cwd,
+            risks=[],
+            tainted_files=tainted_files,
+            token_error=token_error,
+        )
+
+    def _mark_extracted_files_tainted_from_parent(
+        self,
+        *,
+        source_path: str,
+        extracted_files: list[Any],
+    ) -> list[dict[str, Any]]:
+        try:
+            parent_path = self._resolve_source_path(source_path)
+        except Exception:
+            return []
+        parent_taint = self._taint_record_for_path(parent_path)
+        if not parent_taint:
+            return []
+        source_url = str(parent_taint.get("source_url") or "")
+        parent_sha256 = str(parent_taint.get("current_sha256") or parent_taint.get("sha256") or "")
+        marked: list[dict[str, Any]] = []
+        for item in extracted_files:
+            raw_path = ""
+            entry_name = ""
+            if isinstance(item, dict):
+                raw_path = str(item.get("path") or item.get("resolved_path") or "")
+                entry_name = str(item.get("entry_name") or item.get("name") or "")
+            else:
+                raw_path = str(item or "")
+            if not raw_path:
+                continue
+            try:
+                record = self._register_tainted_file(
+                    Path(raw_path),
+                    source_url=source_url,
+                    source_tool="archive_extract",
+                    content_type=str(parent_taint.get("content_type") or ""),
+                    parent_path=str(parent_path),
+                    parent_sha256=parent_sha256,
+                    entry_name=entry_name,
+                )
+            except Exception:
+                record = {}
+            if record:
+                marked.append(
+                    {
+                        "path": record.get("path"),
+                        "sha256": record.get("sha256"),
+                        "source_url": record.get("source_url"),
+                        "source_domain": record.get("source_domain"),
+                        "entry_name": record.get("entry_name"),
+                    }
+                )
+        return marked
 
     def _project_python_candidates(self) -> list[Path]:
         project_root = self._current_project_root()
@@ -1669,7 +2286,13 @@ class LocalToolExecutor:
         normalized[0] = self._preferred_python_command(execution_mode=execution_mode)
         return normalized
 
-    def _safe_split_command(self, command: str, *, for_session: bool = False) -> tuple[list[str], str | None]:
+    def _safe_split_command(
+        self,
+        command: str,
+        *,
+        for_session: bool = False,
+        allow_supply_chain_commands: bool = False,
+    ) -> tuple[list[str], str | None]:
         raw = str(command or "").strip()
         if not raw:
             return [], "Empty command"
@@ -1684,8 +2307,14 @@ class LocalToolExecutor:
         execution_mode = self._current_execution_mode()
         argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
         base_cmd = argv[0]
+        supply_chain_block = blocked_supply_chain_command(argv)
         if not self._is_allowed_command(base_cmd):
             return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
+        missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, set(self.config.allowed_commands))
+        if missing_supply_chain_commands:
+            return [], f"Command not allowed: {', '.join(missing_supply_chain_commands)}. Allowed: {', '.join(self.config.allowed_commands)}"
+        if supply_chain_block is not None and not allow_supply_chain_commands:
+            return [], str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
         if for_session and execution_mode == "docker":
             return [], "Interactive exec_command sessions are only supported in host mode."
         return argv, None
@@ -1703,6 +2332,7 @@ class LocalToolExecutor:
             command_allowed_roots=self._current_command_roots(),
             writable_roots=[Path(item) for item in self._current_writable_roots()],
             allowed_commands=self.config.allowed_commands,
+            allow_supply_chain_commands=self._supply_chain_approval_allowed(),
         )
         if not ok:
             return False, dict(detail)
@@ -1857,6 +2487,8 @@ class LocalToolExecutor:
             tty = bool(session.get("tty"))
             compound_shell = bool(session.get("compound_shell"))
             compound_validation = dict(session.get("compound_validation") or {}) if compound_shell else {}
+            command_execution_approved = dict(session.get("command_execution_approved") or {})
+            tainted_execution_approved = dict(session.get("tainted_execution_approved") or {})
         returncode = proc.poll() if isinstance(proc, subprocess.Popen) else 0
         status = "running" if returncode is None else "completed"
         payload: dict[str, Any] = {
@@ -1874,6 +2506,10 @@ class LocalToolExecutor:
         if compound_shell:
             payload["compound_shell"] = True
             payload["compound_validation"] = compound_validation
+        if command_execution_approved:
+            payload["command_execution_approved"] = command_execution_approved
+        if tainted_execution_approved:
+            payload["tainted_execution_approved"] = tainted_execution_approved
         if returncode is not None:
             payload["summary"] = f"command exited with {returncode}"
         return payload
@@ -1952,6 +2588,16 @@ class LocalToolExecutor:
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
                         "tty": {"type": "boolean", "default": False},
+                        "approval_token": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Single-use token required to run an approved high-risk command execution.",
+                        },
+                        "tainted_approval_token": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Deprecated alias for approval_token when running network-origin tainted files.",
+                        },
                     },
                     "required": ["cmd"],
                     "additionalProperties": False,
@@ -1964,7 +2610,7 @@ class LocalToolExecutor:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "session_id": {"type": "integer"},
+                        "session_id": {"type": "integer", "minimum": 1},
                         "chars": {"type": "string", "default": ""},
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
@@ -2559,6 +3205,8 @@ class LocalToolExecutor:
         yield_time_ms: int = 1000,
         max_output_chars: int = 12000,
         tty: bool = False,
+        approval_token: str = "",
+        tainted_approval_token: str = "",
     ) -> dict[str, Any]:
         if not self._current_shell_allowed():
             return self._command_failure_result(command=cmd, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
@@ -2583,6 +3231,10 @@ class LocalToolExecutor:
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
         compound_shell = self._is_compound_shell_command(cmd)
         compound_validation: dict[str, Any] = {}
+        tainted_matches: list[dict[str, Any]] = []
+        supply_chain_risks: list[dict[str, Any]] = []
+        path_args_validated = False
+        allow_supply_chain_commands = self._supply_chain_approval_allowed()
         if compound_shell:
             ok, detail = self._validate_compound_shell_command(cmd, real_cwd)
             if not ok:
@@ -2598,23 +3250,118 @@ class LocalToolExecutor:
             compound_validation = {
                 "ok": True,
                 "parsed_subcommands": [str(item) for item in list(detail.get("parsed_subcommands") or []) if str(item or "").strip()],
+                "subcommands": list(detail.get("subcommands") or []),
             }
             argv = self._shell_argv_for_compound_command(cmd)
         else:
-            argv, error = self._safe_split_command(cmd, for_session=True)
+            raw_argv: list[str] = []
+            try:
+                raw_argv = shlex.split(str(cmd or "").strip())
+            except Exception:
+                raw_argv = []
+            raw_tainted_matches = self._tainted_execution_matches_for_argv(raw_argv, cwd=real_cwd) if raw_argv else []
+            argv, error = self._safe_split_command(
+                cmd,
+                for_session=True,
+                allow_supply_chain_commands=allow_supply_chain_commands,
+            )
             if error:
-                return self._command_failure_result(command=cmd, cwd=cwd, error=error)
-            path_error = self._command_path_validation_error(argv, cwd=real_cwd)
-            if path_error:
-                message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
-                return self._command_failure_result(
+                if not raw_tainted_matches:
+                    return self._command_failure_result(command=cmd, cwd=cwd, error=error)
+                supply_chain_block = blocked_supply_chain_command(raw_argv)
+                if supply_chain_block is not None:
+                    message = str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
+                    return self._command_failure_result(
+                        command=cmd,
+                        cwd=str(real_cwd),
+                        error=message,
+                        stderr=message,
+                        error_kind="blocked_supply_chain_command",
+                        error_detail=supply_chain_block,
+                    )
+                tainted_path_error = self._tainted_file_path_validation_error(raw_tainted_matches)
+                if tainted_path_error:
+                    message = str(tainted_path_error.get("message") or "Tainted executable path is outside command allowed roots.")
+                    return self._command_failure_result(
+                        command=cmd,
+                        cwd=str(real_cwd),
+                        error=message,
+                        stderr=message,
+                        error_kind="command_path_outside_allowed_roots",
+                        error_detail=tainted_path_error,
+                    )
+                path_error = self._command_path_validation_error(raw_argv, cwd=real_cwd)
+                if path_error:
+                    message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
+                    return self._command_failure_result(
+                        command=cmd,
+                        cwd=str(real_cwd),
+                        error=message,
+                        stderr=message,
+                        error_kind="command_path_outside_allowed_roots",
+                        error_detail=path_error,
+                    )
+                argv = self._shell_argv_for_compound_command(cmd) if self._is_source_builtin_command(raw_argv[0]) else raw_argv
+                tainted_matches = raw_tainted_matches
+                path_args_validated = True
+            if not path_args_validated:
+                path_error = self._command_path_validation_error(argv, cwd=real_cwd)
+                if path_error:
+                    message = str(path_error.get("message") or "Command path argument is outside command allowed roots.")
+                    return self._command_failure_result(
+                        command=cmd,
+                        cwd=str(real_cwd),
+                        error=message,
+                        stderr=message,
+                        error_kind="command_path_outside_allowed_roots",
+                        error_detail=path_error,
+                    )
+
+        if not tainted_matches:
+            tainted_matches = self._tainted_execution_matches(
+                argv=argv,
+                cwd=real_cwd,
+                compound_validation=compound_validation if compound_shell else None,
+            )
+        supply_chain_risks = self._supply_chain_risks(
+            argv=argv,
+            cwd=real_cwd,
+            compound_validation=compound_validation if compound_shell else None,
+        )
+        approval_risks = [*supply_chain_risks, *self._tainted_execution_risks(tainted_matches)]
+        approval_token_value = str(approval_token or tainted_approval_token or "").strip()
+        command_execution_approval_payload: dict[str, Any] = {}
+        tainted_approval_payload: dict[str, Any] = {}
+        if approval_risks:
+            approved, approval_error = self._consume_command_execution_approval(
+                token=approval_token_value,
+                command=str(cmd or "").strip(),
+                cwd=str(real_cwd),
+                risks=approval_risks,
+                tainted_files=tainted_matches,
+            )
+            if not approved:
+                return self._command_execution_approval_failure_result(
                     command=cmd,
                     cwd=str(real_cwd),
-                    error=message,
-                    stderr=message,
-                    error_kind="command_path_outside_allowed_roots",
-                    error_detail=path_error,
+                    risks=supply_chain_risks,
+                    tainted_files=tainted_matches,
+                    token_error="" if not approval_token_value else approval_error,
                 )
+            command_execution_approval_payload = {
+                "approved": True,
+                "approval_token": approval_token_value,
+                "command": str(cmd or "").strip(),
+                "cwd": str(real_cwd),
+                "risks": [dict(item) for item in approval_risks],
+                "files": self._approval_files_public_payload(tainted_matches),
+            }
+        if tainted_matches and command_execution_approval_payload:
+            tainted_approval_payload = {
+                "approved": True,
+                "approval_token": approval_token_value,
+                "files": self._approval_files_public_payload(tainted_matches),
+            }
 
         try:
             proc = subprocess.Popen(
@@ -2640,12 +3387,20 @@ class LocalToolExecutor:
                 "execution_mode": execution_mode,
                 "tty": bool(tty),
             }
+            if command_execution_approval_payload:
+                self._command_sessions[session_id]["command_execution_approved"] = dict(command_execution_approval_payload)
+            if tainted_approval_payload:
+                self._command_sessions[session_id]["tainted_execution_approved"] = dict(tainted_approval_payload)
             if compound_shell:
                 self._command_sessions[session_id]["compound_shell"] = True
                 self._command_sessions[session_id]["compound_validation"] = dict(compound_validation)
         self._spawn_command_reader(session_id, proc)
         time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
         payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)
+        if command_execution_approval_payload:
+            payload["command_execution_approved"] = dict(command_execution_approval_payload)
+        if tainted_approval_payload:
+            payload["tainted_execution_approved"] = dict(tainted_approval_payload)
         payload.setdefault("summary", "command started")
         return payload
 
@@ -2999,6 +3754,24 @@ class LocalToolExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "web_download failed: invalid result"}
         payload = dict(result)
+        if bool(payload.get("ok")) and str(payload.get("path") or "").strip():
+            try:
+                taint = self._register_tainted_file(
+                    Path(str(payload.get("path") or "")),
+                    source_url=str(payload.get("url") or url or ""),
+                    source_tool="web_download",
+                    content_type=str(payload.get("content_type") or ""),
+                )
+                if taint:
+                    payload["taint"] = {
+                        "tainted": True,
+                        "path": taint.get("path"),
+                        "sha256": taint.get("sha256"),
+                        "source_url": taint.get("source_url"),
+                        "source_domain": taint.get("source_domain"),
+                    }
+            except Exception as exc:
+                payload["taint_warning"] = f"failed to mark downloaded file as tainted: {exc}"
         payload.setdefault("tool_name", "web_download")
         return payload
 
@@ -3264,6 +4037,11 @@ class LocalToolExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "archive_extract failed: invalid result"}
         payload = dict(result)
+        if bool(payload.get("ok")):
+            payload["tainted_files"] = self._mark_extracted_files_tainted_from_parent(
+                source_path=zip_path,
+                extracted_files=list(payload.get("entries") or []),
+            )
         payload.setdefault("tool_name", "archive_extract")
         return payload
 
@@ -4419,6 +5197,7 @@ class LocalToolExecutor:
             extracted_files = 0
             skipped_files = 0
             extracted_bytes = 0
+            entries: list[dict[str, Any]] = []
 
             with zipfile.ZipFile(zip_real, "r") as zf:
                 infos = zf.infolist()
@@ -4463,7 +5242,16 @@ class LocalToolExecutor:
                     with zf.open(info, "r") as src, open(target, "wb") as out:
                         shutil.copyfileobj(src, out)
                     extracted_files += 1
-                    extracted_bytes += int(target.stat().st_size)
+                    size = int(target.stat().st_size)
+                    extracted_bytes += size
+                    if len(entries) < 1000:
+                        entries.append(
+                            {
+                                "entry_name": name,
+                                "path": str(target),
+                                "size": size,
+                            }
+                        )
 
             return {
                 "ok": True,
@@ -4472,6 +5260,7 @@ class LocalToolExecutor:
                 "files_extracted": extracted_files,
                 "files_skipped": skipped_files,
                 "bytes_extracted": extracted_bytes,
+                "entries": entries,
                 "overwrite": bool(overwrite),
             }
         except zipfile.BadZipFile:

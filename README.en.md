@@ -51,7 +51,7 @@ In v2.9.15, the model prompt still renders only `ModelContext`, which has six ex
 
 ## Permission Profiles
 
-The default permission profile is `Code`: read the current project and imported files, write inside the current project, run safe commands inside the current project, and keep network access off by default. `Chat` is read-only analysis with no file writes or shell commands. `Full Dev` can read explicitly configured extra roots and can enable network according to global config, but it is still bounded by path checks, the command allowlist, and dangerous-command blocking.
+The default permission profile is `Code`: read the current project and imported files, write inside the current project, run safe commands inside the current project, and keep network access off. `Chat` is read-only analysis with no file writes, shell commands, or network. `Full Dev` can read explicitly configured extra roots and can enable network according to global config. Downloaded or extracted network-origin code is marked tainted and requires one-time confirmation before execution; all modes remain bounded by path checks, the command allowlist, and dangerous-command blocking.
 
 ## What it is
 
