@@ -253,10 +253,31 @@ def test_exec_command_safe_command_allowed_when_shell_enabled(tmp_path: Path) ->
     ],
 )
 def test_exec_command_supply_chain_flows_rejected(tmp_path: Path, command: str) -> None:
-    result = _validator(tmp_path).validate_tool_call({"name": "exec_command", "args": {"cmd": command, "cwd": "."}})
+    result = _validator(tmp_path, permission_profile="auto", network_allowed=False).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
 
     assert not result.allowed
     assert result.code == "command_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "python -m pip install pytest",
+        "git pull",
+        "git -C . fetch",
+    ],
+)
+def test_exec_command_supply_chain_flows_allowed_for_full_access_approval(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert result.allowed
 
 
 def test_exec_command_simple_compound_chain_allowed_when_paths_are_safe(tmp_path: Path) -> None:

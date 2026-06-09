@@ -482,6 +482,8 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert "selectedPermissionProfile.replaceAll(\"_\", \"-\")" in script
     assert "title=${selectedPermissionDescription}" in script
     assert 'aria-label=${selectedPermissionAriaLabel}' in script
+    assert "permissionProfileTouched || permissionProfileInitializedRef.current" in script
+    assert "setPermissionProfileTouched(true)" in script
     assert '<option value="default" title=${t("settings.permission_profile.default.help")}' in script
     assert '<option value="auto" title=${t("settings.permission_profile.auto.help")}' in script
     assert '<option value="full_access" title=${t("settings.permission_profile.full_access.help")}' in script
@@ -506,6 +508,25 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert "font-weight: 400;" in body
     assert "font-weight: 600" not in body
     assert "font-weight: 700" not in body
+
+
+def test_command_execution_approval_modal_and_payload_are_wired() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'String(candidate.type || "") !== "command_execution"' in script
+    assert 'id="commandApprovalModal"' in script
+    assert 'handleCommandApproval("approve_once")' in script
+    assert 'handleCommandApproval("cancel")' in script
+    assert 'user_input_response: structuredUserInputResponse' in script
+    assert 'type: "command_execution"' in script
+    assert 'action: normalizedAction' in script
+    assert 'approval_token: approvalToken' in script
+    assert 'event === "request_user_input"' in script
+    assert 'pending_approval: nextApproval' in script
+    assert '"approval_modal.title": "确认命令执行"' in locales
+    assert '"approval_modal.approve_once": "批准一次"' in locales
+    assert '"approval_modal.default_cancel": "默认操作是取消。批准只对这一个精确命令生效一次。"' in locales
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
@@ -857,7 +878,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     handle_send_match = re.search(
-        r"async function handleSend\(overrideText\) \{(?P<body>.*?)\n  }\n\n  async function loadSpecDetail",
+        r"async function handleSend\(overrideText, userInputResponse\) \{(?P<body>.*?)\n  }\n\n  async function loadSpecDetail",
         script,
         re.S,
     )

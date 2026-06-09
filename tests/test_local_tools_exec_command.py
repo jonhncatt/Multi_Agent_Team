@@ -23,13 +23,21 @@ def _make_manager(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> LocalToolE
     return manager
 
 
-def _runtime_boundary(tmp_path: Path, *, shell_allowed: bool = True, write_allowed: bool = True) -> dict[str, object]:
+def _runtime_boundary(
+    tmp_path: Path,
+    *,
+    shell_allowed: bool = True,
+    write_allowed: bool = True,
+    permission_profile: str | None = None,
+    network_allowed: bool = False,
+) -> dict[str, object]:
+    profile = permission_profile or ("auto" if shell_allowed else "default")
     return {
-        "permission_profile": "auto" if shell_allowed else "default",
+        "permission_profile": profile,
         "workspace_read_allowed": True,
         "workspace_write_allowed": write_allowed,
         "shell_allowed": shell_allowed,
-        "network_allowed": False,
+        "network_allowed": network_allowed,
         "allowed_roots": [str(tmp_path.resolve())],
         "writable_roots": [str(tmp_path.resolve())] if write_allowed else [],
         "command_allowed_roots": [str(tmp_path.resolve())] if shell_allowed else [],
@@ -219,6 +227,138 @@ def test_exec_command_blocks_supply_chain_flows(
     assert "blocked" in result["error"].lower() or "not allowed" in result["error"].lower()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -c \"print('x')\"",
+        "node -e \"console.log('x')\"",
+        "npm install left-pad",
+        "python -m pip install pytest",
+        "git pull",
+        "curl https://example.com",
+        "wget https://example.com/file.txt",
+        "npx cowsay hi",
+    ],
+)
+def test_full_access_supply_chain_flows_request_single_command_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
+    )
+
+    result = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "command_execution_approval_required"
+    assert result["approval_required"] is True
+    assert result["approval_request"]["type"] == "command_execution"
+    assert result["approval_request"]["command"] == command
+    assert result["approval_request"]["cwd"] == str(tmp_path.resolve())
+    assert result["approval_request"]["single_use"] is True
+    assert result["approval_request"]["default_action"] == "cancel"
+    assert result["approval_request"]["approval_token"]
+    assert result["approval_request"]["risks"]
+
+
+def test_full_access_supply_chain_approval_runs_once_and_blocks_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
+    )
+    command = "python -c \"print('approved risky')\""
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    token = blocked["approval_request"]["approval_token"]
+
+    approved = manager.exec_command(cmd=command, cwd=".", yield_time_ms=2000, approval_token=token)
+
+    assert approved["ok"] is True
+    assert approved["command_execution_approved"]["approved"] is True
+    assert "approved risky" in str(approved["output"])
+
+    reused = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100, approval_token=token)
+
+    assert reused["ok"] is False
+    assert reused["error_kind"] == "command_execution_approval_required"
+    assert "already used" in reused["error"]
+
+
+def test_full_access_supply_chain_approval_rejects_command_or_cwd_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
+    )
+    command = "python -c \"print('v1')\""
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    token = blocked["approval_request"]["approval_token"]
+
+    changed_command = manager.exec_command(cmd="python -c \"print('v2')\"", cwd=".", yield_time_ms=100, approval_token=token)
+    changed_cwd = manager.exec_command(cmd=command, cwd=str(other), yield_time_ms=100, approval_token=token)
+
+    assert changed_command["ok"] is False
+    assert "does not match this command" in changed_command["error"]
+    assert changed_cwd["ok"] is False
+    assert "does not match this cwd" in changed_cwd["error"]
+
+
+def test_full_access_supply_chain_approval_rejects_session_or_project_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    boundary = _runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True)
+    manager.set_runtime_context(
+        session_id="session-a",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    command = "python -c \"print('bound approval')\""
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    token = blocked["approval_request"]["approval_token"]
+
+    manager.set_runtime_context(
+        session_id="session-b",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    changed_session = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100, approval_token=token)
+
+    manager.set_runtime_context(
+        session_id="session-a",
+        project_id="project-b",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    changed_project = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100, approval_token=token)
+
+    assert changed_session["ok"] is False
+    assert "does not match this session" in changed_session["error"]
+    assert changed_project["ok"] is False
+    assert "does not match this project" in changed_project["error"]
+
+
 def test_exec_command_blocks_tainted_python_file_until_single_use_approval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -239,6 +379,7 @@ def test_exec_command_blocks_tainted_python_file_until_single_use_approval(
     assert blocked["ok"] is False
     assert blocked["error_kind"] == "tainted_code_approval_required"
     assert blocked["approval_required"] is True
+    assert blocked["approval_request"]["type"] == "command_execution"
     token = blocked["approval_request"]["approval_token"]
     assert token
 

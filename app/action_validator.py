@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from app.config import normalize_permission_profile
 from app.runtime_boundary import RuntimeBoundary, build_runtime_boundary
 from app.serialization import dump_model
 from app.tool_metadata import get_tool_metadata
@@ -597,6 +598,7 @@ def validate_compound_shell_command(
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
     allowed_commands: list[str] | set[str] | tuple[str, ...] | None = None,
+    allow_supply_chain_commands: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     parsed = parse_compound_shell_command(command)
     if not parsed.get("ok"):
@@ -644,7 +646,12 @@ def validate_compound_shell_command(
                 )
             effective_cwd = resolved
             continue
-        if allowed_base_commands and base not in allowed_base_commands:
+        supply_chain_block = blocked_supply_chain_command(argv)
+        if (
+            allowed_base_commands
+            and base not in allowed_base_commands
+            and not (allow_supply_chain_commands and supply_chain_block is not None)
+        ):
             return False, _compound_subcommand_rejection(
                 index=index,
                 subcommand=text,
@@ -657,8 +664,7 @@ def validate_compound_shell_command(
                     "allowed_commands": sorted(allowed_base_commands),
                 },
             )
-        supply_chain_block = blocked_supply_chain_command(argv)
-        if supply_chain_block is not None:
+        if supply_chain_block is not None and not allow_supply_chain_commands:
             return False, _compound_subcommand_rejection(
                 index=index,
                 subcommand=text,
@@ -714,6 +720,10 @@ class ActionValidator:
         self._locale = str(locale or "en")
         self._normalize_tool_name = normalize_tool_name or (lambda value: str(value or "").strip())
         self._argument_rewriter = argument_rewriter
+
+    def _supply_chain_approval_allowed(self) -> bool:
+        profile = normalize_permission_profile(getattr(self._boundary, "permission_profile", "auto"))
+        return profile == "full_access" and bool(getattr(self._boundary, "network_allowed", False))
 
     def validate_tool_call(self, raw_call: dict[str, Any]) -> ValidationResult:
         call = dict(raw_call or {})
@@ -1042,6 +1052,7 @@ class ActionValidator:
                         command_allowed_roots=command_roots,
                         writable_roots=self._writable_roots(),
                         allowed_commands=self._allowed_commands,
+                        allow_supply_chain_commands=self._supply_chain_approval_allowed(),
                     )
                     if not ok:
                         error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
@@ -1062,7 +1073,7 @@ class ActionValidator:
                     if split_error:
                         return "invalid_arguments", split_error
                     supply_chain_block = blocked_supply_chain_command(argv)
-                    if supply_chain_block is not None:
+                    if supply_chain_block is not None and not self._supply_chain_approval_allowed():
                         return "command_not_allowed", str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
                     ok, detail = validate_command_path_args(
                         argv,

@@ -2430,6 +2430,10 @@ function mergeRunSnapshot(prev, snapshot) {
       next.pending_user_input && typeof next.pending_user_input === "object"
         ? next.pending_user_input
         : (prev.pending_user_input || {}),
+    pending_approval:
+      next.pending_approval && typeof next.pending_approval === "object"
+        ? next.pending_approval
+        : (prev.pending_approval || {}),
   };
 }
 
@@ -3179,6 +3183,7 @@ function App() {
     locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
   }));
   const [modelTouched, setModelTouched] = useState(false);
+  const [permissionProfileTouched, setPermissionProfileTouched] = useState(false);
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
   const [uiError, setUiError] = useState(null);
   const toolTimeline = appState.activeTurn.toolTimeline;
@@ -3227,6 +3232,7 @@ function App() {
   const contextMeterRef = useRef(null);
   const contextMeterCloseTimerRef = useRef(null);
   const bootReadyRef = useRef(false);
+  const permissionProfileInitializedRef = useRef(false);
   const composerDragDepthRef = useRef(0);
   const projectMenuRef = useRef(null);
   const projectLongPressRef = useRef({ timer: null, consumed: false });
@@ -3478,14 +3484,16 @@ function App() {
 
   useEffect(() => {
     if (!health) return;
+    if (permissionProfileTouched || permissionProfileInitializedRef.current) return;
     const serverProfile = normalizePermissionProfile(health.default_permission_profile || "auto");
     if (!["default", "auto", "full_access"].includes(serverProfile)) return;
+    permissionProfileInitializedRef.current = true;
     setChatSettings((prev) => (
-      !prev.permission_profile || prev.permission_profile === DEFAULT_SETTINGS.permission_profile
+      !prev.permission_profile || normalizePermissionProfile(prev.permission_profile) === DEFAULT_SETTINGS.permission_profile
         ? { ...prev, permission_profile: serverProfile }
         : prev
     ));
-  }, [health]);
+  }, [health, permissionProfileTouched]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;
@@ -5016,9 +5024,12 @@ function App() {
     }
   }
 
-  async function handleSend(overrideText) {
+  async function handleSend(overrideText, userInputResponse) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
+    const structuredUserInputResponse = userInputResponse && typeof userInputResponse === "object"
+      ? userInputResponse
+      : {};
     const clientSubmittedAtMs = Date.now();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
@@ -5075,6 +5086,7 @@ function App() {
         turn_status: "running",
         plan: [],
         pending_user_input: {},
+        pending_approval: {},
       };
       setMessages((prev) => {
         const nextMessages = [...prev, userMessage, pendingMessage];
@@ -5120,6 +5132,7 @@ function App() {
           message: messageText,
           client_submitted_at_ms: clientSubmittedAtMs,
           attachment_ids: readyAttachmentIds,
+          user_input_response: structuredUserInputResponse,
           settings: {
             ...chatSettings,
             provider: activeProvider,
@@ -5610,6 +5623,7 @@ function App() {
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
+        pending_approval: latestRunSnapshot.pending_approval || {},
         work_cursor: latestRunSnapshot.work_cursor || {},
         task_state: latestRunSnapshot.task_state || {},
         task_state_delta: latestRunSnapshot.task_state_delta || {},
@@ -5854,20 +5868,27 @@ function App() {
                 });
                 if (assistantText) completePendingText(assistantText);
               } else if (itemType === "userInputRequest") {
+                const itemApprovalRequest = item.approval_request && typeof item.approval_request === "object"
+                  ? item.approval_request
+                  : {};
                 const nextPending = {
                   summary: String(item.summary || ""),
                   questions: Array.isArray(item.questions) ? item.questions : [],
+                  approval_request: itemApprovalRequest,
                 };
+                const nextApproval = Object.keys(itemApprovalRequest).length ? itemApprovalRequest : {};
                 applySnapshot({
                   permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
+                  pending_approval: nextApproval,
                 });
                 updateOwnerSessionRuntimeState((prev) => ({
                   ...(prev || {}),
                   permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
+                  pending_approval: nextApproval,
                 }));
                 replacePendingText(String(nextPending.summary || t("labels.pending_input")));
                 updateOwnerLiveHeartbeat({
@@ -5881,6 +5902,35 @@ function App() {
               } else if (["toolCall", "commandExecution", "fileChange", "imageView"].includes(itemType)) {
                 recordToolItem(item);
               }
+            } else if (event === "request_user_input") {
+              const nextPending = payload.pending_user_input && typeof payload.pending_user_input === "object"
+                ? payload.pending_user_input
+                : {};
+              const nextApproval = payload.pending_approval && typeof payload.pending_approval === "object"
+                ? payload.pending_approval
+                : ((nextPending.approval_request && typeof nextPending.approval_request === "object") ? nextPending.approval_request : {});
+              applySnapshot({
+                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+                pending_approval: nextApproval,
+              });
+              updateOwnerSessionRuntimeState((prev) => ({
+                ...(prev || {}),
+                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                turn_status: String(payload.turn_status || "needs_user_input"),
+                pending_user_input: nextPending,
+                pending_approval: nextApproval,
+              }));
+              replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+              updateOwnerLiveHeartbeat({
+                status: "blocked",
+                action: String(nextPending.summary || t("labels.pending_input")),
+                recentEvent: String(nextPending.summary || t("labels.pending_input")),
+                source: "runtime",
+              });
+              pushLogWithLimit(setLogs, "system", String(nextPending.summary || "user input required"));
+              pushLiveLog("system", String(nextPending.summary || "user input required"));
             } else if (event === "stage") {
               const detail = String(payload.detail || payload.label || payload.code || t("labels.processing"));
               updateOwnerActiveTurn((prev) => ({
@@ -5987,6 +6037,7 @@ function App() {
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+          pending_approval: finalPayload.pending_approval || (((finalPayload.inspector || {}).run_state || {}).pending_approval) || {},
           work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
           task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
         }),
@@ -6024,6 +6075,7 @@ function App() {
           runtime_error: finalPayload.runtime_error || (((finalPayload.inspector || {}).run_state || {}).runtime_error) || {},
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
+          pending_approval: finalPayload.pending_approval || (((finalPayload.inspector || {}).run_state || {}).pending_approval) || {},
           phase: String((((finalPayload.inspector || {}).run_state || {}).phase) || "report"),
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
@@ -6334,6 +6386,51 @@ function App() {
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
       : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
+  const activePendingApproval = (() => {
+    const candidates = [
+      runState.pending_approval,
+      sessionRuntimeState.pending_approval,
+      activePendingInput.approval_request,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue;
+      if (String(candidate.type || "") !== "command_execution") continue;
+      if (!String(candidate.command || "").trim()) continue;
+      return candidate;
+    }
+    return {};
+  })();
+  const hasCommandApproval = Boolean(
+    activePendingApproval
+    && typeof activePendingApproval === "object"
+    && String(activePendingApproval.type || "") === "command_execution"
+    && String(activePendingApproval.command || "").trim(),
+  );
+  const commandApprovalRisks = hasCommandApproval && Array.isArray(activePendingApproval.risks)
+    ? activePendingApproval.risks
+    : [];
+  const commandApprovalFiles = hasCommandApproval && Array.isArray(activePendingApproval.files)
+    ? activePendingApproval.files
+    : [];
+  const handleCommandApproval = (action) => {
+    if (!hasCommandApproval || sending) return;
+    const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
+    const command = String(activePendingApproval.command || "").trim();
+    const cwd = String(activePendingApproval.cwd || "").trim();
+    const approvalToken = String(activePendingApproval.approval_token || "").trim();
+    if (!command) return;
+    if (normalizedAction === "approve_once" && !approvalToken) return;
+    const message = normalizedAction === "approve_once"
+      ? t("approval_modal.approve_message", { command })
+      : t("approval_modal.cancel_message", { command });
+    handleSend(message, {
+      type: "command_execution",
+      action: normalizedAction,
+      approval_token: approvalToken,
+      command,
+      cwd,
+    });
+  };
   const activeToolTimeline = hasLiveRuntimeState
     ? liveToolTimeline
     : (Array.isArray(lastInspector.tool_timeline) && lastInspector.tool_timeline.length
@@ -7351,6 +7448,7 @@ function App() {
                   onChange=${(event) => {
                     const target = event.currentTarget;
                     const nextValue = normalizePermissionProfile(target ? target.value : "auto");
+                    setPermissionProfileTouched(true);
                     setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
                   }}
                   disabled=${sending}
@@ -7478,11 +7576,70 @@ function App() {
             ${uiError ? html`<span className="status-alert" title=${uiError.summary}>${t("labels.status_error")}</span>` : null}
           </div>
         </section>
-      </main>
+	      </main>
 
-      ${projectDialogOpen
-        ? html`
-            <div className="project-modal-backdrop" id="projectModal">
+	      ${hasCommandApproval
+	        ? html`
+	            <div className="project-modal-backdrop" id="commandApprovalModal">
+	              <div className="project-modal">
+	                <div className="panel-title">${t("approval_modal.title")}</div>
+	                <div className="path-hint">${t("approval_modal.hint")}</div>
+	                <label className="form-field">
+	                  <span>${t("approval_modal.command")}</span>
+	                  <textarea className="drawer-textarea" readOnly rows="3" value=${String(activePendingApproval.command || "")}></textarea>
+	                </label>
+	                <label className="form-field">
+	                  <span>${t("approval_modal.cwd")}</span>
+	                  <input className="drawer-input" type="text" readOnly value=${String(activePendingApproval.cwd || "")} />
+	                </label>
+	                <div className="timeline-list">
+	                  ${commandApprovalRisks.length
+	                    ? commandApprovalRisks.map(
+	                        (risk, index) => html`
+	                          <div key=${`approval-risk-${index}`} className="timeline-row">
+	                            <div className="timeline-head">
+	                              <span>${String(risk.category || risk.kind || t("approval_modal.risk"))}</span>
+	                              <span>${String(risk.base_command || "")}</span>
+	                            </div>
+	                            <div className="timeline-detail">${String(risk.message || "")}</div>
+	                          </div>
+	                        `,
+	                      )
+	                    : html`
+	                        <div className="timeline-row">
+	                          <div className="timeline-detail">${t("approval_modal.no_risks")}</div>
+	                        </div>
+	                      `}
+	                  ${commandApprovalFiles.length
+	                    ? commandApprovalFiles.map(
+	                        (file, index) => html`
+	                          <div key=${`approval-file-${index}`} className="timeline-row">
+	                            <div className="timeline-head">
+	                              <span>${String(file.path || "")}</span>
+	                              <span>${String(file.source_domain || "network")}</span>
+	                            </div>
+	                            <div className="timeline-detail">${String(file.source_url || "")}</div>
+	                            <div className="timeline-detail">${t("approval_modal.sha256")}: ${String(file.sha256 || "")}</div>
+	                          </div>
+	                        `,
+	                      )
+	                    : null}
+	                </div>
+	                <div className="path-hint">${t("approval_modal.default_cancel")}</div>
+	                <div className="modal-actions">
+	                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${sending}>${t("approval_modal.cancel")}</button>
+	                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${sending || !String(activePendingApproval.approval_token || "").trim()}>
+	                    ${t("approval_modal.approve_once")}
+	                  </button>
+	                </div>
+	              </div>
+	            </div>
+	          `
+	        : null}
+
+	      ${projectDialogOpen
+	        ? html`
+	            <div className="project-modal-backdrop" id="projectModal">
               <div className="project-modal">
                 <div className="panel-title">${t("project_modal.title")}</div>
                 <label className="form-field">

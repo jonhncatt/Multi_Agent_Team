@@ -2576,4 +2576,17 @@ def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_
     base_response = client.get("/api/workbench/specs/tools.md", params={"locale": "zh-CN"})
     assert base_response.status_code == 200
     assert base_response.json()["content"] == "tools"
-    assert base_response.json()["fallback_from_base"] is False
+    assert base_response.json()["fallback_from_base"] is True
+    assert base_response.json()["path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
+    assert base_response.json()["resolved_path"].endswith("/agents/vintage_programmer/tools.md")
+
+    zh_update_response = client.put(
+        "/api/workbench/specs/tools.md?locale=zh-CN",
+        json={"content": "# 中文工具\n\nupdated"},
+    )
+    assert zh_update_response.status_code == 200
+    assert zh_update_response.json()["path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
+    assert zh_update_response.json()["resolved_path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
+    assert zh_update_response.json()["fallback_from_base"] is False
+    assert (tmp_path / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md").read_text(encoding="utf-8") == "# 中文工具\n\nupdated"
+    assert (tmp_path / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8") == "tools"
