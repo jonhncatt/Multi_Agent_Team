@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.config import list_provider_profiles, load_config, resolve_python_command
 from app.models import ChatSettings
 from app.openai_auth import OpenAIAuthManager
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_vp_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:
@@ -122,6 +126,14 @@ def test_web_fetch_budget_allows_large_configured_fetches(monkeypatch, tmp_path)
     config = load_config()
 
     assert config.web_fetch_max_chars == 500000
+
+
+def test_env_example_matches_web_fetch_budget_default() -> None:
+    env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    lines = {line.strip() for line in env_example.splitlines()}
+
+    assert "# VP_WEB_FETCH_MAX_CHARS=120000" in lines
+    assert "# VP_WEB_FETCH_MAX_CHARS=12000" not in lines
 
 
 def test_vp_allowed_commands_env_is_full_override(monkeypatch, tmp_path) -> None:

@@ -529,7 +529,7 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert "clearVisibleCommandApprovalState();" in script
     assert '"approval_modal.title": "确认命令执行"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
-    assert '"approval_modal.default_cancel": "默认操作是取消。批准只对这一个精确命令生效一次。"' in locales
+    assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；批准只对这一个精确命令生效一次。"' in locales
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:

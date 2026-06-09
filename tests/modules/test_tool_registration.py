@@ -18,12 +18,12 @@ def test_local_tool_executor_exposes_canonical_tools() -> None:
 def test_vintage_programmer_specs_only_expose_canonical_file_tool_names() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     spec_files = (
-        repo_root / "agents" / "vintage_programmer" / "agent.md",
-        repo_root / "agents" / "vintage_programmer" / "tools.md",
         repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "agent.md",
         repo_root / "agents" / "vintage_programmer" / "locales" / "en" / "tools.md",
         repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "agent.md",
         repo_root / "agents" / "vintage_programmer" / "locales" / "ja-JP" / "tools.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "agent.md",
+        repo_root / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md",
     )
 
     for path in spec_files:

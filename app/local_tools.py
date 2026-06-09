@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import importlib
 import re
+import secrets
 import shlex
 import shutil
 import ssl
@@ -26,6 +27,7 @@ from PIL import Image, ImageEnhance, ImageOps
 from app.action_validator import (
     blocked_supply_chain_command,
     is_dangerous_command,
+    missing_supply_chain_allowed_commands,
     parse_compound_shell_command,
     shell_command_uses_compound_syntax,
     validate_compound_shell_command as validate_compound_shell_command_shared,
@@ -1752,21 +1754,7 @@ class LocalToolExecutor:
     ) -> str:
         file_records = self._approval_file_records(tainted_files)
         risk_records = self._approval_risk_records(risks)
-        token_seed = json.dumps(
-            {
-                "type": "command_execution",
-                "command": str(command or ""),
-                "cwd": str(cwd or ""),
-                "risks": risk_records,
-                "files": file_records,
-                "session_id": self._current_session_id(),
-                "run_id": self._current_run_id(),
-                "created_at": time.time(),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        token = hashlib.sha256(token_seed.encode("utf-8")).hexdigest()[:32]
+        token = secrets.token_urlsafe(24)
         approval = {
             "type": "command_execution",
             "token": token,
@@ -2320,8 +2308,11 @@ class LocalToolExecutor:
         argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
         base_cmd = argv[0]
         supply_chain_block = blocked_supply_chain_command(argv)
-        if not self._is_allowed_command(base_cmd) and not (allow_supply_chain_commands and supply_chain_block is not None):
+        if not self._is_allowed_command(base_cmd):
             return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
+        missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, set(self.config.allowed_commands))
+        if missing_supply_chain_commands:
+            return [], f"Command not allowed: {', '.join(missing_supply_chain_commands)}. Allowed: {', '.join(self.config.allowed_commands)}"
         if supply_chain_block is not None and not allow_supply_chain_commands:
             return [], str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
         if for_session and execution_mode == "docker":

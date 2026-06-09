@@ -128,7 +128,7 @@ def _tool_specs() -> list[dict]:
     ]
 
 
-def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
+def _validator(tmp_path: Path, allowed_commands: list[str] | None = None, **boundary_overrides) -> ActionValidator:
     boundary = RuntimeBoundary(
         allowed_roots=[str(tmp_path)],
         writable_roots=[str(tmp_path / "writable")],
@@ -141,7 +141,7 @@ def _validator(tmp_path: Path, **boundary_overrides) -> ActionValidator:
     return ActionValidator(
         tool_specs=_tool_specs(),
         allowed_tools=[item["name"] for item in _tool_specs()],
-        allowed_commands=_ALLOWED_COMMANDS,
+        allowed_commands=allowed_commands or _ALLOWED_COMMANDS,
         boundary=boundary,
         locale="en",
     )
@@ -267,7 +267,6 @@ def test_exec_command_supply_chain_flows_rejected(tmp_path: Path, command: str) 
         "python -c \"print('x')\"",
         "node -e \"console.log('x')\"",
         "npm install left-pad",
-        "python -m pip install pytest",
         "git pull",
         "git -C . fetch",
     ],
@@ -275,6 +274,58 @@ def test_exec_command_supply_chain_flows_rejected(tmp_path: Path, command: str) 
 def test_exec_command_supply_chain_flows_allowed_for_full_access_approval(tmp_path: Path, command: str) -> None:
     result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
         {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert result.allowed
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pip install pytest",
+        "pip install pytest",
+        "curl https://example.com",
+        "wget https://example.com/file.txt",
+        "npx cowsay hi",
+    ],
+)
+def test_exec_command_supply_chain_flows_reject_missing_allowlist_even_full_access(tmp_path: Path, command: str) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_allowed"),
+    [
+        ("python -m pip install pytest", ["pip"]),
+        ("pip install pytest", ["pip"]),
+        ("curl https://example.com", ["curl"]),
+        ("wget https://example.com/file.txt", ["wget"]),
+        ("npx cowsay hi", ["npx"]),
+    ],
+)
+def test_exec_command_supply_chain_flows_allow_approval_when_explicitly_allowlisted(
+    tmp_path: Path,
+    command: str,
+    extra_allowed: list[str],
+) -> None:
+    result = _validator(
+        tmp_path,
+        allowed_commands=[*_ALLOWED_COMMANDS, *extra_allowed],
+        permission_profile="full_access",
+        network_allowed=True,
+    ).validate_tool_call({"name": "exec_command", "args": {"cmd": command, "cwd": "."}})
+
+    assert result.allowed
+
+
+def test_exec_command_direct_executable_path_reaches_executor_for_taint_check(tmp_path: Path) -> None:
+    result = _validator(tmp_path, permission_profile="full_access", network_allowed=True).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "./downloaded-tool", "cwd": "."}}
     )
 
     assert result.allowed
