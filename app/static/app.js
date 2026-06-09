@@ -2437,6 +2437,47 @@ function mergeRunSnapshot(prev, snapshot) {
   };
 }
 
+function isCommandExecutionApproval(value) {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && String(value.type || "") === "command_execution"
+    && String(value.command || "").trim(),
+  );
+}
+
+function clearCommandExecutionApprovalState(value) {
+  const state = value && typeof value === "object" ? value : {};
+  const next = { ...state };
+  if (isCommandExecutionApproval(next.pending_approval)) {
+    next.pending_approval = {};
+  }
+  const pendingInput = next.pending_user_input && typeof next.pending_user_input === "object"
+    ? next.pending_user_input
+    : {};
+  if (isCommandExecutionApproval(pendingInput.approval_request)) {
+    next.pending_user_input = {};
+  }
+  return next;
+}
+
+function clearCommandExecutionApprovalResponse(value) {
+  if (!value || typeof value !== "object") return value;
+  const next = clearCommandExecutionApprovalState(value);
+  const inspector = next.inspector && typeof next.inspector === "object" ? next.inspector : null;
+  const runState = inspector && inspector.run_state && typeof inspector.run_state === "object"
+    ? inspector.run_state
+    : null;
+  if (!runState) return next;
+  return {
+    ...next,
+    inspector: {
+      ...inspector,
+      run_state: clearCommandExecutionApprovalState(runState),
+    },
+  };
+}
+
 function toolTimelineSummary(item, locale) {
   if (!item || typeof item !== "object") return translateUi(locale, "labels.no_summary");
   const status = String(item.status || "").trim().toLowerCase();
@@ -6412,6 +6453,25 @@ function App() {
   const commandApprovalFiles = hasCommandApproval && Array.isArray(activePendingApproval.files)
     ? activePendingApproval.files
     : [];
+  const clearVisibleCommandApprovalState = () => {
+    setLiveTurnState((prev) => clearCommandExecutionApprovalState(prev));
+    setSessionRuntimeState((prev) => clearCommandExecutionApprovalState(prev));
+    setLastResponse((prev) => clearCommandExecutionApprovalResponse(prev));
+    const currentThreadId = String(sessionId || "").trim();
+    if (!currentThreadId) return;
+    updateThreadSnapshot(currentThreadId, (existing) => {
+      const activeTurn = normalizeThreadActiveTurn(existing.activeTurn || {});
+      return {
+        ...existing,
+        sessionRuntimeState: clearCommandExecutionApprovalState(existing.sessionRuntimeState || {}),
+        activeTurn: normalizeThreadActiveTurn({
+          ...activeTurn,
+          liveTurnState: clearCommandExecutionApprovalState(activeTurn.liveTurnState || {}),
+          lastResponse: clearCommandExecutionApprovalResponse(activeTurn.lastResponse),
+        }),
+      };
+    });
+  };
   const handleCommandApproval = (action) => {
     if (!hasCommandApproval || sending) return;
     const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
@@ -6423,6 +6483,7 @@ function App() {
     const message = normalizedAction === "approve_once"
       ? t("approval_modal.approve_message", { command })
       : t("approval_modal.cancel_message", { command });
+    clearVisibleCommandApprovalState();
     handleSend(message, {
       type: "command_execution",
       action: normalizedAction,

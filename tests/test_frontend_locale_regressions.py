@@ -524,6 +524,9 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert 'approval_token: approvalToken' in script
     assert 'event === "request_user_input"' in script
     assert 'pending_approval: nextApproval' in script
+    assert "function clearCommandExecutionApprovalState" in script
+    assert "function clearCommandExecutionApprovalResponse" in script
+    assert "clearVisibleCommandApprovalState();" in script
     assert '"approval_modal.title": "确认命令执行"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准只对这一个精确命令生效一次。"' in locales
