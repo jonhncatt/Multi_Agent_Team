@@ -723,6 +723,9 @@ def test_agent_docs_prefer_project_venv_python() -> None:
     assert "不要为每个请求都创建计划" in agent_doc
     assert "多步骤、多文件、需要代码修改、需要调试、需要测试" in agent_doc
     assert "简单直接回答、单步检查或琐碎命令" in agent_doc
+    assert "先 `web_search` 找来源，再按需用 `web_fetch` 读正文" in tools_doc
+    assert "最多再 `web_fetch` 1 个权威来源" not in tools_doc
+    assert "优先 1 次 `web_search`" not in tools_doc
     assert "唯一的 checklist 协议" in agent_doc
     assert "可选补充信息" in agent_doc
     assert "不要为每个请求都调用 `update_plan`" in tools_doc

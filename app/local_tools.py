@@ -2815,7 +2815,7 @@ class LocalToolExecutor:
                     "type": "object",
                     "properties": {
                         "url": {"type": "string"},
-                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 12000},
+                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 500000, "default": 120000},
                         "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
                     },
                     "required": ["url"],
@@ -3735,7 +3735,7 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "read_section")
         return payload
 
-    def web_fetch(self, url: str, max_chars: int = 12000, timeout_sec: int = 12) -> dict[str, Any]:
+    def web_fetch(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         result = self._web_fetch_impl(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
         if not isinstance(result, dict):
             return {"ok": False, "error": "web_fetch failed: invalid result"}
@@ -5813,7 +5813,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"web_download failed: {exc}"}
 
-    def _web_fetch_impl(self, url: str, max_chars: int = 12000, timeout_sec: int = 12) -> dict[str, Any]:
+    def _web_fetch_impl(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             return {"ok": False, "error": "Only http/https URLs are supported"}
@@ -5833,7 +5833,7 @@ class LocalToolExecutor:
             }
 
         timeout_val = max(3, min(30, timeout_sec))
-        limit = max(512, min(12000, max_chars, self.config.web_fetch_max_chars))
+        limit = max(512, min(500000, max_chars, self.config.web_fetch_max_chars))
         cache_key = {"url": request_url, "max_chars": limit}
         cached = self._load_web_cache("web_fetch", cache_key, max_age_sec=900)
         if cached:

@@ -119,7 +119,7 @@ def _tool_specs() -> list[dict]:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string"},
-                    "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 12000},
+                    "max_chars": {"type": "integer", "minimum": 512, "maximum": 500000, "default": 120000},
                 },
                 "required": ["url"],
                 "additionalProperties": False,
@@ -386,14 +386,14 @@ def test_write_stdin_zero_session_id_rejected(tmp_path: Path) -> None:
     assert "session_id" in result.message
 
 
-def test_web_fetch_max_chars_is_clamped_to_schema_limit(tmp_path: Path) -> None:
+def test_web_fetch_max_chars_allows_main_branch_news_fetch_budget(tmp_path: Path) -> None:
     result = _validator(tmp_path).validate_tool_call(
         {"name": "web_fetch", "args": {"url": "https://example.com", "max_chars": 30000}}
     )
 
     assert result.allowed
-    assert result.normalized_arguments["max_chars"] == 12000
-    assert "max_chars:30000->12000" in result.normalization_notes
+    assert result.normalized_arguments["max_chars"] == 30000
+    assert not any("max_chars:30000->12000" in item for item in result.normalization_notes)
 
 
 def test_network_tool_rejected_when_network_disabled(tmp_path: Path) -> None:

@@ -888,7 +888,7 @@ def load_config() -> AppConfig:
         (_env("VP_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
     )
     web_fetch_max_chars = int(
-        (_env("VP_WEB_FETCH_MAX_CHARS", default="12000") or "12000").strip()
+        (_env("VP_WEB_FETCH_MAX_CHARS", default="120000") or "120000").strip()
     )
     web_skip_tls_verify_raw = (
         _env("VP_WEB_SKIP_TLS_VERIFY", default="false") or "false"
@@ -1034,7 +1034,7 @@ def load_config() -> AppConfig:
         web_allowed_domains=web_allowed_domains,
         web_allow_all_domains=web_allow_all_domains,
         web_fetch_timeout_sec=max(3, min(30, web_fetch_timeout_sec)),
-        web_fetch_max_chars=max(2000, min(12000, web_fetch_max_chars)),
+        web_fetch_max_chars=max(2000, min(500000, web_fetch_max_chars)),
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
         llm_provider=llm_provider,
