@@ -2198,6 +2198,39 @@ function isCurrentThreadLiveRun({
   );
 }
 
+function hasLiveThreadMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    if (!message || typeof message !== "object") return false;
+    if (message.pending) return true;
+    const activity = normalizeMessageActivity(message.activity || {});
+    return Boolean(activity.turn_started_at || activity.started_at) && !isActivityTerminalStatus(activity.status);
+  });
+}
+
+function isThreadActiveTurnLive(threadId, activeTurn) {
+  const key = String(threadId || "").trim();
+  if (!key) return false;
+  const turn = normalizeThreadActiveTurn(activeTurn);
+  if (String(turn.activeRunThreadId || "").trim() !== key) return false;
+  return Boolean(
+    String(turn.activeRunId || "").trim()
+    || normalizeActivityTimestamp(turn.startedAt || 0)
+    || normalizeActivityTimestamp(turn.lastLiveProgressAt || 0)
+    || normalizeActivityTimestamp((turn.liveHeartbeat || {}).updatedAt || 0)
+    || Object.keys(turn.liveTurnState && typeof turn.liveTurnState === "object" ? turn.liveTurnState : {}).length
+    || (Array.isArray(turn.liveRunLogs) && turn.liveRunLogs.length)
+    || (Array.isArray(turn.stageTimeline) && turn.stageTimeline.length)
+  );
+}
+
+function isThreadSnapshotLive(threadId, snapshot) {
+  const item = snapshot && typeof snapshot === "object" ? snapshot : {};
+  return Boolean(
+    isThreadActiveTurnLive(threadId, item.activeTurn)
+    || hasLiveThreadMessages(item.messages)
+  );
+}
+
 function formatElapsedFromStartedAt(startedAt, nowMs = Date.now()) {
   const anchor = normalizeActivityTimestamp(startedAt || 0);
   if (!anchor) return "";
@@ -4023,12 +4056,23 @@ function App() {
   function rememberVisibleThreadSnapshot(targetThreadId = sessionId) {
     const key = threadCacheKey(targetThreadId);
     if (!key || isTempThreadId(key)) return null;
-    return updateThreadSnapshot(key, (existing) => ({
-      ...existing,
-      messages: Array.isArray(messages) ? messages : [],
-      sessionRuntimeState: sessionRuntimeState && typeof sessionRuntimeState === "object" ? sessionRuntimeState : {},
-      activeTurn: visibleThreadActiveTurnSnapshot(),
-    }));
+    return updateThreadSnapshot(key, (existing) => {
+      const currentMessages = Array.isArray(messages) ? messages : [];
+      const currentRuntimeState = sessionRuntimeState && typeof sessionRuntimeState === "object" ? sessionRuntimeState : {};
+      const currentActiveTurn = visibleThreadActiveTurnSnapshot();
+      const existingActiveTurn = normalizeThreadActiveTurn(existing.activeTurn);
+      const existingIsLive = isThreadSnapshotLive(key, existing);
+      const currentIsLive = isThreadActiveTurnLive(key, currentActiveTurn) || hasLiveThreadMessages(currentMessages);
+      const shouldPreserveLiveSnapshot = existingIsLive && !currentIsLive;
+      return {
+        ...existing,
+        messages: shouldPreserveLiveSnapshot ? (existing.messages || []) : currentMessages,
+        sessionRuntimeState: shouldPreserveLiveSnapshot && Object.keys(existing.sessionRuntimeState || {}).length
+          ? existing.sessionRuntimeState
+          : currentRuntimeState,
+        activeTurn: shouldPreserveLiveSnapshot ? existingActiveTurn : currentActiveTurn,
+      };
+    });
   }
 
   function applyVisibleThreadActiveTurn(activeTurnSnapshot) {
@@ -4666,15 +4710,18 @@ function App() {
       const existingActiveTurn = normalizeThreadActiveTurn((existingSnapshot && existingSnapshot.activeTurn) || {});
       const preserveLiveSnapshot = Boolean(
         existingSnapshot
-        && isCurrentThreadLiveRun({
-          sessionId: sid,
-          activeRunThreadId,
-          sending,
-          activeRunId: String(existingActiveTurn.activeRunId || activeRunId || "").trim(),
-          activeRunStartedAt: existingActiveTurn.startedAt || activeRunStartedAt || 0,
-          hasRunningActivity: Boolean(existingActiveTurn.startedAt || existingActiveTurn.lastLiveProgressAt || existingActiveTurn.liveHeartbeat.updatedAt),
-          liveTurnState: existingActiveTurn.liveTurnState || liveTurnState || {},
-        }),
+        && (
+          isThreadSnapshotLive(sid, existingSnapshot)
+          || isCurrentThreadLiveRun({
+            sessionId: sid,
+            activeRunThreadId,
+            sending,
+            activeRunId: String(existingActiveTurn.activeRunId || activeRunId || "").trim(),
+            activeRunStartedAt: existingActiveTurn.startedAt || activeRunStartedAt || 0,
+            hasRunningActivity: Boolean(existingActiveTurn.startedAt || existingActiveTurn.lastLiveProgressAt || existingActiveTurn.liveHeartbeat.updatedAt),
+            liveTurnState: existingActiveTurn.liveTurnState || liveTurnState || {},
+          })
+        ),
       );
       const snapshot = rememberThreadDetail(sid, data, {
         preserveActiveTurn: preserveLiveSnapshot,
@@ -5107,7 +5154,8 @@ function App() {
       }
       if (!sid) sid = await createSession(projectId);
       runOwnerThreadId = String(sid || "").trim();
-      setActiveRunThreadId(runOwnerThreadId);
+      ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
+      if (ownerThreadVisible()) setActiveRunThreadId(runOwnerThreadId);
 
       const userMessage = createMessage("user", messageText);
       pendingMessage = createMessage("assistant", t("labels.processing"), {
@@ -5127,39 +5175,49 @@ function App() {
         pending_user_input: {},
         pending_approval: {},
       };
-      setMessages((prev) => {
-        const nextMessages = [...prev, userMessage, pendingMessage];
-        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
-          ...existing,
-          messages: nextMessages,
-          sessionRuntimeState: existing.sessionRuntimeState || {},
-          activeTurn: normalizeThreadActiveTurn({
-            ...createEmptyThreadActiveTurn(),
-            activeRunThreadId: runOwnerThreadId,
-            startedAt: clientSubmittedAtMs,
-            lastLiveProgressAt: clientSubmittedAtMs,
-            liveHeartbeat: {
-              status: "waiting_model",
-              recentEvent: t("activity.status.waiting_model"),
-              updatedAt: clientSubmittedAtMs,
-              source: "model",
-            },
-            lastResponse: (existing.activeTurn && existing.activeTurn.lastResponse) || lastResponse || null,
-            liveTurnState: nextInitialRuntimeState,
-            liveEvidence: { status: "not_needed" },
-          }),
-        }));
-        return nextMessages;
-      });
-      setLiveTurnState(nextInitialRuntimeState);
-      setLiveEvidence({ status: "not_needed" });
-      setLastLiveProgressAt(clientSubmittedAtMs);
-      setLiveHeartbeat({
+      const initialLiveHeartbeat = normalizeLiveHeartbeat({
         status: "waiting_model",
         recentEvent: t("activity.status.waiting_model"),
         updatedAt: clientSubmittedAtMs,
         source: "model",
       });
+      const initialActiveTurn = (existingActiveTurn) => {
+        const existingTurn = normalizeThreadActiveTurn(existingActiveTurn);
+        return normalizeThreadActiveTurn({
+          ...createEmptyThreadActiveTurn(),
+          activeRunThreadId: runOwnerThreadId,
+          startedAt: clientSubmittedAtMs,
+          lastLiveProgressAt: clientSubmittedAtMs,
+          liveHeartbeat: initialLiveHeartbeat,
+          lastResponse: existingTurn.lastResponse || lastResponse || null,
+          liveTurnState: nextInitialRuntimeState,
+          liveEvidence: { status: "not_needed" },
+        });
+      };
+      const initialMessagesForRun = [...(Array.isArray(messages) ? messages : []), userMessage, pendingMessage];
+      updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+        ...existing,
+        messages: initialMessagesForRun,
+        sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, nextInitialRuntimeState),
+        activeTurn: initialActiveTurn(existing.activeTurn),
+      }));
+      if (ownerThreadVisible()) {
+        setMessages((prev) => {
+          if (!ownerThreadVisible()) return prev;
+          const nextMessages = [...prev, userMessage, pendingMessage];
+          updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+            ...existing,
+            messages: nextMessages,
+            sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, nextInitialRuntimeState),
+            activeTurn: initialActiveTurn(existing.activeTurn),
+          }));
+          return nextMessages;
+        });
+        setLiveTurnState(nextInitialRuntimeState);
+        setLiveEvidence({ status: "not_needed" });
+        setLastLiveProgressAt(clientSubmittedAtMs);
+        setLiveHeartbeat(initialLiveHeartbeat);
+      }
       if (overrideText == null) setDraft("");
 
       const res = await fetch("/api/chat/stream", {
