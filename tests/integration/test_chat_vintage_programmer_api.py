@@ -1069,7 +1069,7 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload == {
         "ok": True,
-        "app_version": "3.1.5L",
+        "app_version": main_app.APP_VERSION,
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
     }
@@ -1111,7 +1111,7 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert bootstrap_response.status_code == 200
     bootstrap_payload = bootstrap_response.json()
     assert bootstrap_payload["ok"] is True
-    assert bootstrap_payload["app_version"] == "3.1.5L"
+    assert bootstrap_payload["app_version"] == main_app.APP_VERSION
     assert bootstrap_payload["default_project_id"]
     assert bootstrap_payload["supported_locales"]
     assert bootstrap_payload["default_max_output_tokens"] == main_app.config.max_output_tokens

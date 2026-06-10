@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5M-blue)
+![Version](https://img.shields.io/badge/version-3.1.5N-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5M`
+現在の安定版: `3.1.5N`
 
 ## Stable Runtime
 
-3.1.5M は thread detail 読み込みの性能改善リリースです。履歴チャットを開くときは session を読み、messages を返すだけにし、default project/git metadata、Docker status、provider/model availability の同期チェックを行いません。detail 読み込み中はチャット画面に小さな spinner を表示し、permission state と context estimate は background または cached state から補完します。
+3.1.5N は thread detail 読み込みの安定性リリースです。履歴チャットは引き続き高速な session 読み取りパスを使い、新規 thread で送信後すぐに別 thread へ移動して戻ったときにチャット欄が空になる問題を修正しました。
 
-3.1.5L と比べて、既存の safety boundary を維持しつつ、thread detail の不要な startup cost を削減しました。provider/model availability は message 送信時に検証し、Docker status check は一時的に無効化しています。
+3.1.5M と比べて、送信開始時に live thread snapshot を同期保存し、detail refresh が一時的に空の backend response で実行中の messages を上書きしないようにしました。
 
 ## Max Output Tokens
 

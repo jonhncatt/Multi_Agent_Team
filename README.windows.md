@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5M`。
+当前稳定版本：`3.1.5N`。
 
 ## Stable Runtime
 
-3.1.5M 是一次 thread 详情加载性能发布：打开历史聊天时只读 session 并返回消息，不再同步检查 default project/git、Docker 或 provider/model 可用性；详情加载期间会显示小圆圈，权限状态和上下文估算改为由后台或已缓存状态补齐。
-它保留 3.1.5L 的审批弹窗、tainted 文件 hash 校验、Auto 模式选择保持和三语 agent spec 同级化；这不是 OS sandbox，批准后命令会在 host 环境实际执行。
+3.1.5N 是一次 thread 详情加载稳定性发布：打开历史聊天时继续走快速 session 读取路径，并修复新建 thread 发送消息后快速切换再切回时聊天区可能空白的问题。
+它保留 3.1.5M 的详情加载加速、审批弹窗、tainted 文件 hash 校验、Auto 模式选择保持和三语 agent spec 同级化；这不是 OS sandbox，批准后命令会在 host 环境实际执行。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

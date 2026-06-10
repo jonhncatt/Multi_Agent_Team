@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5M-blue)
+![Version](https://img.shields.io/badge/version-3.1.5N-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5M`
+当前稳定版本：`3.1.5N`
 
 ## Stable Runtime
 
-3.1.5M 是一次 thread 详情加载性能发布：打开历史聊天时只读 session 并返回消息，不再同步检查 default project/git、Docker 或 provider/model 可用性；详情加载期间会显示小圆圈，权限状态和上下文估算改为由后台或已缓存状态补齐。
+3.1.5N 是一次 thread 详情加载稳定性发布：打开历史聊天时继续走快速 session 读取路径，并修复新建 thread 发送消息后快速切换再切回时聊天区可能空白的问题。
 
-相对 3.1.5L，本版本保留既有安全边界，同时降低 thread detail 的无关启动成本；provider/model 是否可用改为发送消息时验证，Docker 状态检查暂时禁用。
+相对 3.1.5M，本版本会在发送瞬间同步保存运行中 thread 的前端快照，详情刷新遇到 live snapshot 时不会用暂时为空的后端响应覆盖正在运行的消息。
 
 ## Max Output Tokens
 

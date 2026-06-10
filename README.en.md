@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5M-blue)
+![Version](https://img.shields.io/badge/version-3.1.5N-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5M`
+Current stable release: `3.1.5N`
 
 ## Stable Runtime
 
-3.1.5M is a thread-detail loading performance release: opening historical chats now reads the session and returns messages without synchronously checking the default project/git metadata, Docker status, or provider/model availability. The chat pane shows a small spinner while detail loading is in flight, while permission state and context estimates are filled from background or cached state.
+3.1.5N is a thread-detail loading stability release: historical chats still use the fast session-read path, and the chat pane no longer goes blank when a newly created thread starts a run and the user quickly switches away and back.
 
-Compared with 3.1.5L, this release keeps the existing safety boundary while reducing unrelated thread-detail startup cost. Provider/model availability is validated when sending a message, and Docker status checks are temporarily disabled.
+Compared with 3.1.5M, this release synchronously saves the live thread snapshot when sending starts, and detail refreshes no longer overwrite live messages with a temporarily empty backend response.
 
 ## Max Output Tokens
 
