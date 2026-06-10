@@ -1275,13 +1275,18 @@ def test_runtime_status_uses_cached_provider_payload(monkeypatch, tmp_path: Path
         return {"available": True, "reason": "", "mode": "test", "provider": "test"}
 
     monkeypatch.setattr(main_app.OpenAIAuthManager, "auth_summary", counting_auth_summary)
+    monkeypatch.setattr(
+        main_app.vintage_programmer_runtime._backend.tools,
+        "docker_status",
+        lambda: (_ for _ in ()).throw(AssertionError("runtime-status should not check Docker")),
+    )
 
     first = client.get("/api/runtime-status")
     second = client.get("/api/runtime-status")
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert calls["auth_summary"] == 1
+    assert calls["auth_summary"] == 0
 
 
 def test_runtime_status_does_not_require_descriptor(monkeypatch, tmp_path: Path) -> None:
@@ -1472,6 +1477,55 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert full_turn["answer_bundle"]["summary"] == "done"
     assert full_turn["activity"]["llm_exchanges"][0]["round"] == 1
     assert full_turn["run_artifact"]["run_id"] == "run-1"
+
+
+def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    session_id = "legacy-fast-view"
+    session_path = tmp_path / "sessions" / f"{session_id}.json"
+    session_path.write_text(
+        json.dumps(
+            {
+                "id": session_id,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "turns": [
+                    {"id": "u1", "role": "user", "text": "hello", "created_at": "2026-01-01T00:00:00Z"},
+                    {"id": "a1", "role": "assistant", "text": "hi", "created_at": "2026-01-01T00:00:01Z"},
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    original_body = session_path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        main_app,
+        "_default_project",
+        lambda: (_ for _ in ()).throw(AssertionError("thread detail should not load default project")),
+    )
+    monkeypatch.setattr(
+        main_app.OpenAIAuthManager,
+        "auth_summary",
+        lambda self: (_ for _ in ()).throw(AssertionError("thread detail should not precheck provider auth")),
+    )
+    monkeypatch.setattr(
+        main_app.vintage_programmer_runtime._backend.tools,
+        "docker_status",
+        lambda: (_ for _ in ()).throw(AssertionError("thread detail should not check Docker")),
+    )
+
+    detail_response = client.get(f"/api/thread/{session_id}")
+    full_turn_response = client.get(f"/api/thread/{session_id}/turn/a1?view=full")
+
+    assert detail_response.status_code == 200
+    assert full_turn_response.status_code == 200
+    assert [item["text"] for item in detail_response.json()["turns"]] == ["hello", "hi"]
+    assert full_turn_response.json()["text"] == "hi"
+    assert session_path.read_text(encoding="utf-8") == original_body
 
 
 def test_thread_new_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp_path: Path) -> None:

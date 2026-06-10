@@ -258,11 +258,10 @@ def get_tool_executor() -> Any:
 
 def _runtime_meta_payload() -> dict[str, Any]:
     tools = get_tool_executor()
-    docker_ok, docker_msg = tools.docker_status()
     ocr_payload = tools.ocr_status() if hasattr(tools, "ocr_status") else {}
     return {
-        "docker_available": bool(docker_ok),
-        "docker_message": str(docker_msg or ""),
+        "docker_available": False,
+        "docker_message": "Docker status check disabled.",
         "ocr_status": dict(ocr_payload or {}),
     }
 
@@ -310,26 +309,18 @@ def _unregister_active_chat_run(run_id: str) -> None:
 
 def _build_provider_payload_uncached() -> dict[str, Any]:
     provider_options: list[dict[str, object]] = []
-    auth_summaries: dict[str, dict[str, Any]] = {}
     provider_options_started = time.perf_counter()
-    auth_summary_ms_total = 0
     for item in list_provider_profiles(config):
         provider = str(item.get("provider") or "").strip()
         if not provider:
             continue
         provider_config = build_provider_config(config, provider)
-        auth_started = time.perf_counter()
-        auth_summary = OpenAIAuthManager(provider_config).auth_summary()
-        auth_summary_ms_total += int((time.perf_counter() - auth_started) * 1000)
-        auth_summaries[provider] = dict(auth_summary)
         provider_options.append(
             {
                 "provider": provider,
                 "label": str(item.get("label") or provider),
                 "default_model": str(item.get("default_model") or provider_config.default_model or ""),
                 "model_options": list(item.get("model_options") or provider_config.model_options or []),
-                "auth_ready": bool(auth_summary.get("available")),
-                "auth_mode": str(auth_summary.get("mode") or ""),
             }
         )
     provider_options_ms = int((time.perf_counter() - provider_options_started) * 1000)
@@ -348,11 +339,16 @@ def _build_provider_payload_uncached() -> dict[str, Any]:
         "active_provider": dict(active_provider or {}),
         "active_provider_name": active_provider_name,
         "active_provider_config": active_provider_config,
-        "auth_summary": dict(auth_summaries.get(active_provider_name) or {}),
+        "auth_summary": {
+            "available": True,
+            "reason": "not_prechecked",
+            "mode": "unchecked",
+            "provider": active_provider_name,
+        },
         "created_at": time.monotonic(),
         "diagnostics": {
             "runtime_status_provider_options_ms": max(0, provider_options_ms),
-            "runtime_status_auth_summary_ms": max(0, auth_summary_ms_total),
+            "runtime_status_auth_summary_ms": 0,
         },
     }
 
@@ -507,6 +503,21 @@ def _context_bundle_for_session(
         last_compacted_at=last_compacted_at,
     )
     return build_context_meter_from_status(compaction_status), compaction_status
+
+
+def _cached_context_bundle_for_view(session: dict[str, Any], agent_state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    context_meter = {}
+    compaction_status = {}
+    for source in (agent_state, session):
+        if not isinstance(source, dict):
+            continue
+        if not context_meter and isinstance(source.get("context_meter"), dict):
+            context_meter = dict(source.get("context_meter") or {})
+        if not compaction_status and isinstance(source.get("compaction_status"), dict):
+            compaction_status = dict(source.get("compaction_status") or {})
+    if compaction_status and not context_meter:
+        context_meter = build_context_meter_from_status(compaction_status)
+    return context_meter, compaction_status
 
 
 def get_workbench_store() -> WorkbenchStore:
@@ -1020,19 +1031,15 @@ def _thread_detail_response_payload(
     view: str | None = "summary",
 ) -> ThreadDetailResponse:
     detail_view = _normalize_detail_view(view)
-    loaded = session_store.load(session_id, default_project=_default_project())
+    loaded = session_store.load_for_view(session_id)
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
     agent_state = dict(loaded.get("agent_state") or {})
-    selected_model = str(agent_state.get("last_model") or config.default_model or "").strip()
-    context_meter, compaction_status = _context_bundle_for_session(
-        session=loaded,
-        model=selected_model,
-        max_output_tokens=DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS,
-        last_compacted_at=str(agent_state.get("last_compacted_at") or ""),
-    )
-    agent_state["context_meter"] = dict(context_meter)
-    agent_state["compaction_status"] = dict(compaction_status)
+    context_meter, compaction_status = _cached_context_bundle_for_view(loaded, agent_state)
+    if context_meter:
+        agent_state.setdefault("context_meter", dict(context_meter))
+    if compaction_status:
+        agent_state.setdefault("compaction_status", dict(compaction_status))
     turns_raw = loaded.get("turns", [])
     if not isinstance(turns_raw, list):
         turns_raw = []
@@ -1193,7 +1200,7 @@ def get_thread(
 @app.get("/api/thread/{thread_id}/turn/{turn_id}", response_model=SessionTurn, response_model_exclude_defaults=True)
 def get_thread_turn(thread_id: str, turn_id: str, view: str = "full") -> SessionTurn:
     detail_view = _normalize_detail_view(view)
-    loaded = session_store.load(thread_id, default_project=_default_project())
+    loaded = session_store.load_for_view(thread_id)
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
     turns_raw = loaded.get("turns", [])
@@ -2655,6 +2662,8 @@ def _process_chat_request(
                 continue
             compaction_status[key] = value
         session["agent_state"]["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or last_compacted_at or "")
+        session["agent_state"]["context_meter"] = dict(context_meter)
+        session["agent_state"]["compaction_status"] = dict(compaction_status)
         response_task_state_delta = (
             session_context_impl.normalize_task_state_delta(runtime_task_state_delta)
             if isinstance(runtime_task_state_delta, dict) and runtime_task_state_delta

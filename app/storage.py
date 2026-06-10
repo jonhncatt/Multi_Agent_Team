@@ -803,6 +803,56 @@ class SessionStore:
             self.save(normalized, touch=False)
         return normalized
 
+    def load_for_view(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)
+        if not path.exists():
+            return None
+        try:
+            with self._lock:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(loaded, dict):
+            return None
+
+        payload = dict(loaded)
+        payload["id"] = str(payload.get("id") or session_id or "")
+        payload["created_at"] = str(payload.get("created_at") or "")
+        payload["updated_at"] = str(payload.get("updated_at") or "")
+        payload["title"] = str(payload.get("title") or "")
+        payload["summary"] = str(payload.get("summary") or "")
+        payload["project_id"] = str(payload.get("project_id") or "")
+        payload["project_title"] = str(payload.get("project_title") or "")
+        payload["project_root"] = str(payload.get("project_root") or "")
+        payload["git_branch"] = str(payload.get("git_branch") or "")
+        payload["cwd"] = str(payload.get("cwd") or payload.get("project_root") or "")
+        payload["turns"] = _coerce_turns(payload.get("turns"))
+
+        agent_state = payload.get("agent_state")
+        if not isinstance(agent_state, dict):
+            agent_state = {}
+        payload["agent_state"] = {**self._default_agent_state(), **dict(agent_state)}
+
+        work_cursor = payload.get("work_cursor")
+        if not isinstance(work_cursor, dict):
+            work_cursor = {}
+        payload["work_cursor"] = {**self._default_work_cursor(), **dict(work_cursor)}
+
+        task_state = payload.get("task_state")
+        if not isinstance(task_state, dict):
+            task_state = {}
+        payload["task_state"] = {**self._default_task_state(), **dict(task_state)}
+
+        if not isinstance(payload.get("thread_memory"), dict):
+            payload["thread_memory"] = {}
+        if not isinstance(payload.get("artifact_memory"), list):
+            payload["artifact_memory"] = []
+        if not isinstance(payload.get("compaction_state"), dict):
+            payload["compaction_state"] = {}
+        if not isinstance(payload.get("context_manager"), dict):
+            payload["context_manager"] = self._default_context_manager()
+        return payload
+
     def load_or_create(
         self,
         session_id: str | None,

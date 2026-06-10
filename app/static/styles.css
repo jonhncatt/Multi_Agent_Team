@@ -486,6 +486,33 @@ button {
   margin: 2px 0 12px;
 }
 
+.thread-loading-strip {
+  display: flex;
+  justify-content: center;
+  margin: 2px 0 12px;
+}
+
+.thread-loading-panel {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+}
+
+.thread-loading-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid rgba(90, 105, 122, 0.22);
+  border-top-color: var(--accent);
+  animation: thread-loading-spin 0.8s linear infinite;
+}
+
+@keyframes thread-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .jump-latest-row {
   position: sticky;
   bottom: 12px;

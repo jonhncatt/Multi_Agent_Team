@@ -4425,10 +4425,8 @@ function App() {
     closeProjectMenu();
     closeThreadMenu();
     clearUiError();
-    const [list] = await Promise.all([
-      refreshSessions(targetProjectId),
-      refreshRuntimeStatus(targetProjectId, { background: true }),
-    ]);
+    const list = await refreshSessions(targetProjectId);
+    refreshRuntimeStatus(targetProjectId, { background: true });
     const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
     const preferredSessionId =
       storedSessionId && list.some((item) => String(item.session_id || item.thread_id || "") === storedSessionId)
@@ -6516,10 +6514,11 @@ function App() {
     liveTurnState,
     nowMs: activityClockMs || Date.now(),
   });
-  const activeProviderAuthReady =
+  const activeProviderAuthValue =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
-      ? Boolean(activeProviderProfile.auth_ready)
-      : Boolean(runtimeStatus.auth_ready);
+      ? activeProviderProfile.auth_ready
+      : (Object.prototype.hasOwnProperty.call(runtimeStatus, "auth_ready") ? runtimeStatus.auth_ready : true);
+  const activeProviderAuthReady = activeProviderAuthValue !== false;
   const activeProviderAuthMode = String(
     (activeProviderProfile && activeProviderProfile.auth_mode) ||
     runtimeStatus.auth_mode ||
@@ -6566,6 +6565,7 @@ function App() {
     messages.length > 0 &&
     totalTurnsForCurrentThread > messages.length,
   );
+  const showThreadDetailLoading = Boolean(loadingSession && sessionId && !isTempThreadId(sessionId));
   const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId, uiLocale) : (workspaceLabel || t("labels.start_building"));
   const headBreadcrumb = [
     workspaceLabel || "",
@@ -7375,6 +7375,13 @@ function App() {
         </header>
 
         <section className="conversation-plane" id="messageList" ref=${chatListRef}>
+          ${showThreadDetailLoading && messages.length
+            ? html`
+                <div className="thread-loading-strip" role="status" aria-label="Loading thread">
+                  <span className="thread-loading-spinner" aria-hidden="true"></span>
+                </div>
+              `
+            : null}
           ${canLoadEarlierTurns
             ? html`
                 <div className="load-earlier-row">
@@ -7402,6 +7409,12 @@ function App() {
                   </article>
                 `,
               )
+            : showThreadDetailLoading
+              ? html`
+                  <section className="thread-loading-panel" role="status" aria-label="Loading thread">
+                    <span className="thread-loading-spinner" aria-hidden="true"></span>
+                  </section>
+                `
             : html`
                 <section className="empty-panel">
                   <div className="empty-kicker">Native Tools · Model-led Workspace</div>
