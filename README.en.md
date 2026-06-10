@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5L-blue)
+![Version](https://img.shields.io/badge/version-3.1.5M-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5L`
+Current stable release: `3.1.5M`
 
 ## Stable Runtime
 
-3.1.5L is an enterprise-oriented safety boundary release: Chat/Default and Code/Auto stay offline, Full Access owns network access, risky network/supply-chain commands must pass the allowlist before one-time approval, and downloaded or extracted tainted files require confirmation before host execution.
+3.1.5M is a thread-detail loading performance release: opening historical chats now reads the session and returns messages without synchronously checking the default project/git metadata, Docker status, or provider/model availability. The chat pane shows a small spinner while detail loading is in flight, while permission state and context estimates are filled from background or cached state.
 
-Compared with 3.1.5K, this release adds auditable command approval, tainted-code execution protection, sticky Auto permission selection, locale-parity agent specs for zh-CN/ja-JP/en, and restores the larger `web_fetch` body budget for better news and web summaries.
+Compared with 3.1.5L, this release keeps the existing safety boundary while reducing unrelated thread-detail startup cost. Provider/model availability is validated when sending a message, and Docker status checks are temporarily disabled.
 
 ## Max Output Tokens
 

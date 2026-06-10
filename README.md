@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5L-blue)
+![Version](https://img.shields.io/badge/version-3.1.5M-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5L`
+当前稳定版本：`3.1.5M`
 
 ## Stable Runtime
 
-3.1.5L 是一次面向企业推广的安全边界发布：Chat/Default 与 Code/Auto 保持离线，Full Access 才开放网络；风险网络/供应链命令必须先通过 allowlist，再由用户 Approve once；网络下载或解压出的 tainted 文件在执行前也需要单次确认。
+3.1.5M 是一次 thread 详情加载性能发布：打开历史聊天时只读 session 并返回消息，不再同步检查 default project/git、Docker 或 provider/model 可用性；详情加载期间会显示小圆圈，权限状态和上下文估算改为由后台或已缓存状态补齐。
 
-相对 3.1.5K，本版本新增了可审计的命令审批、tainted 文件执行保护、Auto 模式选择保持、中文/日文/英文 agent spec 同级化，并恢复 `web_fetch` 正文抓取预算以改善“今日新闻”等联网摘要质量。
+相对 3.1.5L，本版本保留既有安全边界，同时降低 thread detail 的无关启动成本；provider/model 是否可用改为发送消息时验证，Docker 状态检查暂时禁用。
 
 ## Max Output Tokens
 

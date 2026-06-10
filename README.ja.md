@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5L-blue)
+![Version](https://img.shields.io/badge/version-3.1.5M-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5L`
+現在の安定版: `3.1.5M`
 
 ## Stable Runtime
 
-3.1.5L は企業展開に向けた safety boundary リリースです。Chat/Default と Code/Auto はオフラインのままにし、Full Access のみ network access を持ちます。危険な network/supply-chain コマンドは allowlist を通過したうえで一度限りの承認を要求し、download または extract された tainted file は host で実行する前に確認が必要です。
+3.1.5M は thread detail 読み込みの性能改善リリースです。履歴チャットを開くときは session を読み、messages を返すだけにし、default project/git metadata、Docker status、provider/model availability の同期チェックを行いません。detail 読み込み中はチャット画面に小さな spinner を表示し、permission state と context estimate は background または cached state から補完します。
 
-3.1.5K と比べて、監査可能な command approval、tainted-code execution protection、Auto permission selection の保持、zh-CN/ja-JP/en の agent spec 同階層化、news/web summary 品質改善のための `web_fetch` 本文取得予算復元を含みます。
+3.1.5L と比べて、既存の safety boundary を維持しつつ、thread detail の不要な startup cost を削減しました。provider/model availability は message 送信時に検証し、Docker status check は一時的に無効化しています。
 
 ## Max Output Tokens
 
