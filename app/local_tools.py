@@ -1134,6 +1134,7 @@ class LocalToolExecutor:
             proxy_server=config.browser_proxy_server,
             ignore_https_errors=config.browser_ignore_https_errors,
             chromium_sandbox=config.browser_chromium_sandbox,
+            disable_password_manager=config.browser_disable_password_manager,
         )
         self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(

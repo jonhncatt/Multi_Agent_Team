@@ -138,6 +138,7 @@ def test_browser_chrome_profile_env_is_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_BROWSER_USER_DATA_DIR", "app/data/browser_profile")
     monkeypatch.setenv("VP_BROWSER_PROXY_SERVER", "http://proxy.example:8080")
     monkeypatch.setenv("VP_BROWSER_IGNORE_HTTPS_ERRORS", "true")
+    monkeypatch.setenv("VP_BROWSER_DISABLE_PASSWORD_MANAGER", "true")
 
     config = load_config()
 
@@ -148,6 +149,7 @@ def test_browser_chrome_profile_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.browser_proxy_server == "http://proxy.example:8080"
     assert config.browser_ignore_https_errors is True
     assert config.browser_chromium_sandbox is True
+    assert config.browser_disable_password_manager is True
 
 
 def test_env_example_matches_web_fetch_budget_default() -> None:
