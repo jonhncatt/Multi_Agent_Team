@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.browser_runtime import BrowserToolManager
+
+
+class _FakePage:
+    def close(self) -> None:
+        pass
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.pages = []
+
+    def new_page(self) -> _FakePage:
+        page = _FakePage()
+        self.pages.append(page)
+        return page
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeChromium:
+    def __init__(self) -> None:
+        self.persistent_calls: list[dict[str, object]] = []
+
+    def launch_persistent_context(self, user_data_dir: str, **kwargs: object) -> _FakeContext:
+        self.persistent_calls.append({"user_data_dir": user_data_dir, **kwargs})
+        return _FakeContext()
+
+
+class _FakePlaywright:
+    def __init__(self) -> None:
+        self.chromium = _FakeChromium()
+        self.stopped = False
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeSyncPlaywright:
+    def __init__(self, playwright: _FakePlaywright) -> None:
+        self._playwright = playwright
+
+    def __call__(self) -> "_FakeSyncPlaywright":
+        return self
+
+    def start(self) -> _FakePlaywright:
+        return self._playwright
+
+
+def test_chrome_profile_mode_launches_installed_chrome_with_persistent_profile(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    profile_dir = tmp_path / "profile"
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        channel="chrome",
+        headless=False,
+        user_data_dir=profile_dir,
+        proxy_server="http://proxy.example:8080",
+        ignore_https_errors=True,
+    )
+    manager._import_playwright = lambda: (_FakeSyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+
+    manager._ensure_session("session-a")  # noqa: SLF001 - focused launch regression
+
+    assert fake_playwright.chromium.persistent_calls == [
+        {
+            "user_data_dir": str(profile_dir.resolve()),
+            "viewport": {"width": 1440, "height": 960},
+            "locale": "zh-CN",
+            "ignore_https_errors": True,
+            "proxy": {"server": "http://proxy.example:8080"},
+            "headless": False,
+            "channel": "chrome",
+        }
+    ]

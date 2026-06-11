@@ -1125,7 +1125,14 @@ class LocalToolExecutor:
         self._taint_registry_path = (self._runtime_data_dir / "taint_registry.json").resolve()
         self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
         self._browser_manager = BrowserToolManager(
-            artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve()
+            artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve(),
+            mode=config.browser_mode,
+            channel=config.browser_channel,
+            headless=config.browser_headless,
+            user_data_dir=config.browser_user_data_dir,
+            executable_path=config.browser_executable_path,
+            proxy_server=config.browser_proxy_server,
+            ignore_https_errors=config.browser_ignore_https_errors,
         )
         self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(

@@ -17,9 +17,29 @@ class _BrowserSession:
 
 
 class BrowserToolManager:
-    def __init__(self, *, artifacts_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        artifacts_dir: Path,
+        mode: str = "playwright",
+        channel: str = "chrome",
+        headless: bool = True,
+        user_data_dir: Path | None = None,
+        executable_path: str = "",
+        proxy_server: str = "",
+        ignore_https_errors: bool = False,
+    ) -> None:
         self._artifacts_dir = artifacts_dir.resolve()
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self._mode = str(mode or "playwright").strip().lower()
+        if self._mode not in {"playwright", "chrome_profile"}:
+            self._mode = "playwright"
+        self._channel = str(channel or "chrome").strip()
+        self._headless = bool(headless)
+        self._user_data_dir = user_data_dir.expanduser().resolve() if user_data_dir is not None else None
+        self._executable_path = str(executable_path or "").strip()
+        self._proxy_server = str(proxy_server or "").strip()
+        self._ignore_https_errors = bool(ignore_https_errors)
         self._lock = threading.Lock()
         self._sessions: dict[str, _BrowserSession] = {}
 
@@ -52,6 +72,42 @@ class BrowserToolManager:
                 except Exception:
                     pass
 
+    def _context_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "viewport": {"width": 1440, "height": 960},
+            "locale": "zh-CN",
+            "ignore_https_errors": self._ignore_https_errors,
+        }
+        if self._proxy_server:
+            options["proxy"] = {"server": self._proxy_server}
+        return options
+
+    def _launch_playwright_context(self, playwright: Any) -> tuple[Any, Any, Any]:
+        context_options = self._context_options()
+        if self._mode == "chrome_profile":
+            user_data_dir = self._user_data_dir or (self._artifacts_dir / "chrome-profile")
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            launch_options: dict[str, Any] = {
+                **context_options,
+                "headless": self._headless,
+            }
+            if self._executable_path:
+                launch_options["executable_path"] = self._executable_path
+            elif self._channel:
+                launch_options["channel"] = self._channel
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(user_data_dir),
+                **launch_options,
+            )
+            pages = list(getattr(context, "pages", []) or [])
+            page = pages[0] if pages else context.new_page()
+            return getattr(context, "browser", None), context, page
+
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(**context_options)
+        page = context.new_page()
+        return browser, context, page
+
     def _ensure_session(self, session_id: str) -> _BrowserSession:
         sid = str(session_id or "__anon__").strip() or "__anon__"
         with self._lock:
@@ -63,12 +119,14 @@ class BrowserToolManager:
 
             sync_playwright, _ = self._import_playwright()
             playwright = sync_playwright().start()
-            browser = playwright.chromium.launch(headless=True)
-            context = browser.new_context(
-                viewport={"width": 1440, "height": 960},
-                locale="zh-CN",
-            )
-            page = context.new_page()
+            try:
+                browser, context, page = self._launch_playwright_context(playwright)
+            except Exception:
+                try:
+                    playwright.stop()
+                except Exception:
+                    pass
+                raise
             created = _BrowserSession(
                 playwright=playwright,
                 browser=browser,

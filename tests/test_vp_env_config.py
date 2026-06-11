@@ -128,6 +128,27 @@ def test_web_fetch_budget_allows_large_configured_fetches(monkeypatch, tmp_path)
     assert config.web_fetch_max_chars == 500000
 
 
+def test_browser_chrome_profile_env_is_loaded(monkeypatch, tmp_path) -> None:
+    profile_dir = tmp_path / "app" / "data" / "browser_profile"
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_BROWSER_MODE", "chrome_profile")
+    monkeypatch.setenv("VP_BROWSER_CHANNEL", "chrome")
+    monkeypatch.setenv("VP_BROWSER_HEADLESS", "false")
+    monkeypatch.setenv("VP_BROWSER_USER_DATA_DIR", "app/data/browser_profile")
+    monkeypatch.setenv("VP_BROWSER_PROXY_SERVER", "http://proxy.example:8080")
+    monkeypatch.setenv("VP_BROWSER_IGNORE_HTTPS_ERRORS", "true")
+
+    config = load_config()
+
+    assert config.browser_mode == "chrome_profile"
+    assert config.browser_channel == "chrome"
+    assert config.browser_headless is False
+    assert config.browser_user_data_dir == profile_dir.resolve()
+    assert config.browser_proxy_server == "http://proxy.example:8080"
+    assert config.browser_ignore_https_errors is True
+
+
 def test_env_example_matches_web_fetch_budget_default() -> None:
     env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     lines = {line.strip() for line in env_example.splitlines()}
