@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 from app.browser_runtime import BrowserToolManager
 
@@ -111,3 +112,15 @@ def test_closed_browser_page_reopens_with_same_profile(tmp_path: Path) -> None:
         str(item["user_data_dir"])
         for item in fake_playwright.chromium.persistent_calls
     } == {str(profile_dir.resolve())}
+
+
+def test_browser_operations_are_dispatched_to_one_worker_thread(tmp_path: Path) -> None:
+    manager = BrowserToolManager(artifacts_dir=tmp_path / "artifacts")
+
+    thread_ids = [
+        manager._run_on_worker(lambda: threading.get_ident()),  # noqa: SLF001 - worker threading regression
+        manager._run_on_worker(lambda: threading.get_ident()),  # noqa: SLF001 - worker threading regression
+    ]
+
+    assert thread_ids[0] == thread_ids[1]
+    assert thread_ids[0] != threading.get_ident()

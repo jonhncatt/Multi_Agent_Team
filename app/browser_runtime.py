@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import queue
 from dataclasses import dataclass
 from pathlib import Path
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -44,12 +45,46 @@ class BrowserToolManager:
         self._chromium_sandbox = bool(chromium_sandbox)
         self._lock = threading.Lock()
         self._sessions: dict[str, _BrowserSession] = {}
+        self._worker_lock = threading.Lock()
+        self._worker_queue: queue.Queue[tuple[Callable[[], Any], queue.Queue[tuple[bool, Any]]]] = queue.Queue()
+        self._worker_thread: threading.Thread | None = None
 
     def _import_playwright(self) -> tuple[Any, Any]:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
 
         return sync_playwright, PlaywrightTimeoutError
+
+    def _ensure_worker(self) -> None:
+        with self._worker_lock:
+            if self._worker_thread is not None and self._worker_thread.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._worker_loop,
+                name="vp-browser-tool-worker",
+                daemon=True,
+            )
+            self._worker_thread = worker
+            worker.start()
+
+    def _worker_loop(self) -> None:
+        while True:
+            func, result_queue = self._worker_queue.get()
+            try:
+                result_queue.put((True, func()))
+            except BaseException as exc:
+                result_queue.put((False, exc))
+
+    def _run_on_worker(self, func: Callable[[], Any]) -> Any:
+        if threading.current_thread() is self._worker_thread:
+            return func()
+        self._ensure_worker()
+        result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+        self._worker_queue.put((func, result_queue))
+        ok, value = result_queue.get()
+        if ok:
+            return value
+        raise value
 
     def _cleanup_stale_locked(self, *, ttl_sec: int = 1800) -> None:
         now = time.time()
@@ -164,31 +199,58 @@ class BrowserToolManager:
             return created
 
     def open(self, *, session_id: str, url: str, timeout_ms: int = 20000) -> dict[str, Any]:
+        return self._run_on_worker(lambda: self._open_impl(session_id=session_id, url=url, timeout_ms=timeout_ms))
+
+    def _open_impl(self, *, session_id: str, url: str, timeout_ms: int = 20000) -> dict[str, Any]:
         sync_playwright, PlaywrightTimeoutError = self._import_playwright()
         _ = sync_playwright
         session = self._ensure_session(session_id)
         try:
             session.page.goto(str(url), wait_until="domcontentloaded", timeout=max(1000, int(timeout_ms)))
             session.touched_at = time.time()
-            return self.snapshot(session_id=session_id, max_chars=6000)
+            return self._snapshot_impl(session_id=session_id, max_chars=6000)
         except PlaywrightTimeoutError as exc:
             return {"ok": False, "error": f"browser_open timed out: {exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"browser_open failed: {exc}"}
 
     def click(self, *, session_id: str, selector: str, timeout_ms: int = 12000) -> dict[str, Any]:
+        return self._run_on_worker(lambda: self._click_impl(session_id=session_id, selector=selector, timeout_ms=timeout_ms))
+
+    def _click_impl(self, *, session_id: str, selector: str, timeout_ms: int = 12000) -> dict[str, Any]:
         _, PlaywrightTimeoutError = self._import_playwright()
         session = self._ensure_session(session_id)
         try:
             session.page.locator(str(selector)).first.click(timeout=max(1000, int(timeout_ms)))
             session.touched_at = time.time()
-            return self.snapshot(session_id=session_id, max_chars=4000)
+            return self._snapshot_impl(session_id=session_id, max_chars=4000)
         except PlaywrightTimeoutError as exc:
             return {"ok": False, "error": f"browser_click timed out: {exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"browser_click failed: {exc}"}
 
     def type(
+        self,
+        *,
+        session_id: str,
+        selector: str,
+        text: str,
+        submit: bool = False,
+        clear: bool = True,
+        timeout_ms: int = 12000,
+    ) -> dict[str, Any]:
+        return self._run_on_worker(
+            lambda: self._type_impl(
+                session_id=session_id,
+                selector=selector,
+                text=text,
+                submit=submit,
+                clear=clear,
+                timeout_ms=timeout_ms,
+            )
+        )
+
+    def _type_impl(
         self,
         *,
         session_id: str,
@@ -209,13 +271,30 @@ class BrowserToolManager:
             if submit:
                 locator.press("Enter", timeout=max(1000, int(timeout_ms)))
             session.touched_at = time.time()
-            return self.snapshot(session_id=session_id, max_chars=4000)
+            return self._snapshot_impl(session_id=session_id, max_chars=4000)
         except PlaywrightTimeoutError as exc:
             return {"ok": False, "error": f"browser_type timed out: {exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"browser_type failed: {exc}"}
 
     def wait(
+        self,
+        *,
+        session_id: str,
+        selector: str = "",
+        timeout_ms: int = 5000,
+        state: str = "visible",
+    ) -> dict[str, Any]:
+        return self._run_on_worker(
+            lambda: self._wait_impl(
+                session_id=session_id,
+                selector=selector,
+                timeout_ms=timeout_ms,
+                state=state,
+            )
+        )
+
+    def _wait_impl(
         self,
         *,
         session_id: str,
@@ -235,13 +314,16 @@ class BrowserToolManager:
             else:
                 session.page.wait_for_timeout(timeout_value)
             session.touched_at = time.time()
-            return self.snapshot(session_id=session_id, max_chars=4000)
+            return self._snapshot_impl(session_id=session_id, max_chars=4000)
         except PlaywrightTimeoutError as exc:
             return {"ok": False, "error": f"browser_wait timed out: {exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"browser_wait failed: {exc}"}
 
     def snapshot(self, *, session_id: str, max_chars: int = 12000) -> dict[str, Any]:
+        return self._run_on_worker(lambda: self._snapshot_impl(session_id=session_id, max_chars=max_chars))
+
+    def _snapshot_impl(self, *, session_id: str, max_chars: int = 12000) -> dict[str, Any]:
         session = self._ensure_session(session_id)
         try:
             page = session.page
@@ -270,6 +352,21 @@ class BrowserToolManager:
             return {"ok": False, "error": f"browser_snapshot failed: {exc}"}
 
     def screenshot(
+        self,
+        *,
+        session_id: str,
+        target_path: Path,
+        full_page: bool = True,
+    ) -> dict[str, Any]:
+        return self._run_on_worker(
+            lambda: self._screenshot_impl(
+                session_id=session_id,
+                target_path=target_path,
+                full_page=full_page,
+            )
+        )
+
+    def _screenshot_impl(
         self,
         *,
         session_id: str,
