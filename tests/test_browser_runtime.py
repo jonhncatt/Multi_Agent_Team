@@ -6,8 +6,14 @@ from app.browser_runtime import BrowserToolManager
 
 
 class _FakePage:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def is_closed(self) -> bool:
+        return self.closed
+
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 class _FakeContext:
@@ -81,3 +87,27 @@ def test_chrome_profile_mode_launches_installed_chrome_with_persistent_profile(t
             "channel": "chrome",
         }
     ]
+
+
+def test_closed_browser_page_reopens_with_same_profile(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    profile_dir = tmp_path / "profile"
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        channel="chrome",
+        headless=False,
+        user_data_dir=profile_dir,
+    )
+    manager._import_playwright = lambda: (_FakeSyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+
+    first = manager._ensure_session("session-a")  # noqa: SLF001 - focused launch regression
+    first.page.close()
+    second = manager._ensure_session("session-a")  # noqa: SLF001 - focused launch regression
+
+    assert second is not first
+    assert len(fake_playwright.chromium.persistent_calls) == 2
+    assert {
+        str(item["user_data_dir"])
+        for item in fake_playwright.chromium.persistent_calls
+    } == {str(profile_dir.resolve())}

@@ -74,6 +74,27 @@ class BrowserToolManager:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _session_alive(item: _BrowserSession) -> bool:
+        try:
+            page = item.page
+            is_closed = getattr(page, "is_closed", None)
+            if callable(is_closed) and bool(is_closed()):
+                return False
+        except Exception:
+            return False
+
+        browser = item.browser
+        if browser is not None:
+            try:
+                is_connected = getattr(browser, "is_connected", None)
+                if callable(is_connected) and not bool(is_connected()):
+                    return False
+            except Exception:
+                return False
+
+        return True
+
     def _context_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
             "viewport": {"width": 1440, "height": 960},
@@ -117,8 +138,10 @@ class BrowserToolManager:
             self._cleanup_stale_locked()
             existing = self._sessions.get(sid)
             if existing is not None:
-                existing.touched_at = time.time()
-                return existing
+                if self._session_alive(existing):
+                    existing.touched_at = time.time()
+                    return existing
+                self._close_locked(sid)
 
             sync_playwright, _ = self._import_playwright()
             playwright = sync_playwright().start()
