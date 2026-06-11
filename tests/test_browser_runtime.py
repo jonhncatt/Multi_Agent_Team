@@ -63,6 +63,7 @@ def test_chrome_profile_mode_launches_installed_chrome_with_persistent_profile(t
         user_data_dir=profile_dir,
         proxy_server="http://proxy.example:8080",
         ignore_https_errors=True,
+        chromium_sandbox=True,
     )
     manager._import_playwright = lambda: (_FakeSyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
 
@@ -76,6 +77,7 @@ def test_chrome_profile_mode_launches_installed_chrome_with_persistent_profile(t
             "ignore_https_errors": True,
             "proxy": {"server": "http://proxy.example:8080"},
             "headless": False,
+            "chromium_sandbox": True,
             "channel": "chrome",
         }
     ]

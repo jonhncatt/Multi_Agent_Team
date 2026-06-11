@@ -28,6 +28,7 @@ class BrowserToolManager:
         executable_path: str = "",
         proxy_server: str = "",
         ignore_https_errors: bool = False,
+        chromium_sandbox: bool = False,
     ) -> None:
         self._artifacts_dir = artifacts_dir.resolve()
         self._artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -40,6 +41,7 @@ class BrowserToolManager:
         self._executable_path = str(executable_path or "").strip()
         self._proxy_server = str(proxy_server or "").strip()
         self._ignore_https_errors = bool(ignore_https_errors)
+        self._chromium_sandbox = bool(chromium_sandbox)
         self._lock = threading.Lock()
         self._sessions: dict[str, _BrowserSession] = {}
 
@@ -90,6 +92,7 @@ class BrowserToolManager:
             launch_options: dict[str, Any] = {
                 **context_options,
                 "headless": self._headless,
+                "chromium_sandbox": self._chromium_sandbox,
             }
             if self._executable_path:
                 launch_options["executable_path"] = self._executable_path

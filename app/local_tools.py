@@ -1133,6 +1133,7 @@ class LocalToolExecutor:
             executable_path=config.browser_executable_path,
             proxy_server=config.browser_proxy_server,
             ignore_https_errors=config.browser_ignore_https_errors,
+            chromium_sandbox=config.browser_chromium_sandbox,
         )
         self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(

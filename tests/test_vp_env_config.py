@@ -147,6 +147,7 @@ def test_browser_chrome_profile_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.browser_user_data_dir == profile_dir.resolve()
     assert config.browser_proxy_server == "http://proxy.example:8080"
     assert config.browser_ignore_https_errors is True
+    assert config.browser_chromium_sandbox is True
 
 
 def test_env_example_matches_web_fetch_budget_default() -> None:
