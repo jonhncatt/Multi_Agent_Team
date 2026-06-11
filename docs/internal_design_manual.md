@@ -210,6 +210,7 @@ Tool Guard（工具守卫）当前做的是执行边界检查，不做任务级�
 - `browser_click`
 - `browser_type`
 - `browser_wait`
+- `browser_scroll`
 - `browser_snapshot`
 - `browser_screenshot`
 

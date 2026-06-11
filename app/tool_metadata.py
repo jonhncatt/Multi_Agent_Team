@@ -361,6 +361,22 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "low",
         "summary": "wait in the browser runtime",
     },
+    "browser_scroll": {
+        "group": "browser",
+        "source": "adapter",
+        "read_only": True,
+        "requires_evidence": True,
+        "requires": {
+            "workspace_read": False,
+            "workspace_write": False,
+            "shell": False,
+            "network": True,
+            "browser": True,
+            "optional_dependency": [],
+        },
+        "risk": "low",
+        "summary": "scroll in the browser runtime",
+    },
     "browser_snapshot": {
         "group": "browser",
         "source": "adapter",

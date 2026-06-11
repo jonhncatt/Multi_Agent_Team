@@ -33,6 +33,7 @@ CANONICAL_TOOL_NAMES = (
     "browser_click",
     "browser_type",
     "browser_wait",
+    "browser_scroll",
     "browser_snapshot",
     "browser_screenshot",
     "image_inspect",

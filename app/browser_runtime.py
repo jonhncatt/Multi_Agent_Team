@@ -378,6 +378,67 @@ class BrowserToolManager:
         except Exception as exc:
             return {"ok": False, "error": f"browser_wait failed: {exc}"}
 
+    def scroll(
+        self,
+        *,
+        session_id: str,
+        direction: str = "down",
+        amount: int = 900,
+        selector: str = "",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        return self._run_async(
+            lambda: self._scroll_impl(
+                session_id=session_id,
+                direction=direction,
+                amount=amount,
+                selector=selector,
+                timeout_ms=timeout_ms,
+            )
+        )
+
+    async def _scroll_impl(
+        self,
+        *,
+        session_id: str,
+        direction: str = "down",
+        amount: int = 900,
+        selector: str = "",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        _, PlaywrightTimeoutError = self._import_playwright()
+        session = await self._ensure_session(session_id)
+        try:
+            timeout_value = max(250, int(timeout_ms))
+            selector_value = str(selector or "").strip()
+            if selector_value:
+                await session.page.locator(selector_value).first.scroll_into_view_if_needed(timeout=timeout_value)
+            else:
+                direction_value = str(direction or "down").strip().lower()
+                amount_value = max(1, min(5000, int(amount)))
+                deltas = {
+                    "down": (0, amount_value),
+                    "up": (0, -amount_value),
+                    "right": (amount_value, 0),
+                    "left": (-amount_value, 0),
+                }
+                if direction_value not in deltas:
+                    return {
+                        "ok": False,
+                        "error": f"browser_scroll failed: unsupported direction: {direction_value}",
+                    }
+                delta_x, delta_y = deltas[direction_value]
+                await session.page.mouse.wheel(delta_x, delta_y)
+                wait_for_timeout = getattr(session.page, "wait_for_timeout", None)
+                if callable(wait_for_timeout):
+                    await _maybe_await(wait_for_timeout(150))
+            session.touched_at = time.time()
+            return await self._snapshot_impl(session_id=session_id, max_chars=4000)
+        except PlaywrightTimeoutError as exc:
+            return {"ok": False, "error": f"browser_scroll timed out: {exc}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"browser_scroll failed: {exc}"}
+
     def snapshot(self, *, session_id: str, max_chars: int = 12000) -> dict[str, Any]:
         return self._run_async(lambda: self._snapshot_impl(session_id=session_id, max_chars=max_chars))
 

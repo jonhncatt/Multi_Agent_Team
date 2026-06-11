@@ -34,6 +34,7 @@ allowed_tools:
   - browser_click
   - browser_type
   - browser_wait
+  - browser_scroll
   - browser_snapshot
   - browser_screenshot
 ---
