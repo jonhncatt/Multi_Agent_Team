@@ -13,6 +13,8 @@ INTERNAL_MANUAL_PATH = REPO_ROOT / "docs" / "internal_design_manual.md"
 SUPPORTED_LOCALES = ("zh-CN", "ja-JP", "en")
 REQUIRED_CORE_KEYS = (
     "labels.payload",
+    "labels.copied",
+    "buttons.copy_message",
     "settings.locale",
     "settings.context_turns.help",
     "tool.failure.error",
@@ -240,6 +242,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
 
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
+    assert f'/static/styles.css?v={app_version}' in index
     assert 'src="/static/app.js"' not in index
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
@@ -1062,6 +1065,25 @@ def test_pending_assistant_body_uses_live_summary_fallback() -> None:
 
     assert 'return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;' in body
     assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
+
+
+def test_message_copy_button_is_rendered_in_message_meta() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "async function copyTextToClipboard(text)" in script
+    assert "function fallbackCopyText(text)" in script
+    assert "const [copiedMessageId, setCopiedMessageId] = useState(\"\");" in script
+    assert "const handleCopyMessage = async (item) => {" in script
+    assert 'const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");' in script
+    assert 'className=${`message-copy-btn ${copied ? "copied" : ""}`}' in script
+    assert 'onClick=${() => handleCopyMessage(item)}' in script
+    assert 'aria-label=${copyLabel}' in script
+    assert 'className="message-copy-icon"' in script
+    assert ".message-meta-actions" in styles
+    assert ".message-copy-btn" in styles
+    assert ".message-copy-icon::before" in styles
+    assert ".message-copy-icon::after" in styles
 
 
 def test_activity_debug_full_turn_loading_is_explicitly_lazy() -> None:

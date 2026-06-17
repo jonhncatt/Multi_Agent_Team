@@ -586,11 +586,73 @@ button {
   margin-bottom: 4px;
 }
 
+.message-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .message-role {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-faint);
+}
+
+.message-copy-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  opacity: 0.74;
+}
+
+.message-copy-btn:hover,
+.message-copy-btn:focus-visible {
+  background: rgba(17, 24, 39, 0.07);
+  color: var(--ink-soft);
+  opacity: 1;
+  outline: none;
+}
+
+.message-copy-btn.copied {
+  background: var(--accent-soft);
+  color: var(--accent);
+  opacity: 1;
+}
+
+.message-copy-icon {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.message-copy-icon::before,
+.message-copy-icon::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 11px;
+  border: 1.6px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+}
+
+.message-copy-icon::before {
+  left: 4px;
+  top: 1px;
+}
+
+.message-copy-icon::after {
+  left: 1px;
+  top: 4px;
 }
 
 .message-card {

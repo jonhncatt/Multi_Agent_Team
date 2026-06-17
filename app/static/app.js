@@ -492,6 +492,39 @@ function renderMessageHtml(text, messageId = "") {
   return htmlValue;
 }
 
+function fallbackCopyText(text) {
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = String(text || "");
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand("copy");
+    textarea.remove();
+    return Boolean(ok);
+  } catch {
+    return false;
+  }
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) return false;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      return fallbackCopyText(value);
+    }
+  }
+  return fallbackCopyText(value);
+}
+
 function stringifyErrorDetail(detail) {
   if (detail == null) return "";
   if (typeof detail === "string") return detail;
@@ -3311,6 +3344,7 @@ function App() {
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const autoScrollEnabledRef = useRef(true);
@@ -3342,6 +3376,7 @@ function App() {
   const runtimeStatusLastFetchedAtRef = useRef(0);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
+  const copiedMessageTimerRef = useRef(0);
   const setHealth = (value) => dispatch({ type: "update", path: ["bootstrap", "health"], value });
   const setProjects = (value) => dispatch({ type: "update", path: ["projectIndex", "projects"], value });
   const setProjectId = (value) => dispatch({ type: "update", path: ["projectIndex", "currentProjectId"], value });
@@ -3476,6 +3511,10 @@ function App() {
     document.documentElement.lang = uiLocale;
     document.title = translateUi(uiLocale, "app.title");
   }, [uiLocale]);
+
+  useEffect(() => () => {
+    if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;
@@ -7279,6 +7318,19 @@ function App() {
     return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;
   };
 
+  const handleCopyMessage = async (item) => {
+    const messageId = String((item && item.id) || "");
+    const text = String(messageBodyText(item) || "");
+    if (!messageId || !text.trim()) return;
+    const copied = await copyTextToClipboard(text);
+    if (!copied) return;
+    setCopiedMessageId(messageId);
+    if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
+    copiedMessageTimerRef.current = window.setTimeout(() => {
+      setCopiedMessageId((current) => (current === messageId ? "" : current));
+    }, 1400);
+  };
+
   return html`
     <div className="workspace-shell" id="appShell">
       <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
@@ -7479,21 +7531,37 @@ function App() {
             : null}
           ${messages.length
             ? messages.map(
-                (item) => html`
-                  <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
-                    <div className="message-meta">
-                      <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
-                      ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
-                    </div>
-                    <div className="message-card">
-                      ${renderMessageActivity(item)}
-                      <div
-                        className="message-card-body message-markdown"
-                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
-                      ></div>
-                    </div>
-                  </article>
-                `,
+                (item) => {
+                  const messageId = String(item.id || "");
+                  const copied = Boolean(messageId && copiedMessageId === messageId);
+                  const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");
+                  return html`
+                    <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
+                      <div className="message-meta">
+                        <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
+                        <div className="message-meta-actions">
+                          ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
+                          <button
+                            className=${`message-copy-btn ${copied ? "copied" : ""}`}
+                            type="button"
+                            onClick=${() => handleCopyMessage(item)}
+                            title=${copyLabel}
+                            aria-label=${copyLabel}
+                          >
+                            <span className="message-copy-icon" aria-hidden="true"></span>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="message-card">
+                        ${renderMessageActivity(item)}
+                        <div
+                          className="message-card-body message-markdown"
+                          dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
+                        ></div>
+                      </div>
+                    </article>
+                  `;
+                },
               )
             : showThreadDetailLoading
               ? html`
