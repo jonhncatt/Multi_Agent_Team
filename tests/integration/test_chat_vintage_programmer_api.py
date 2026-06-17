@@ -47,6 +47,26 @@ _FAKE_TOOL_DESCRIPTOR_BY_NAME = {
 _FAKE_ALLOWED_TOOLS = [str(item["name"]) for item in _FAKE_TOOL_SPECS]
 
 
+def test_activity_duration_uses_end_to_end_total_when_larger() -> None:
+    activity = main_app._activity_with_end_to_end_duration(
+        {"run_duration_ms": 11369, "final_elapsed_ms": 11000},
+        {"runtime_total_ms": 11369, "runtime_run_ms": 11369, "total_ms": 26183},
+    )
+
+    assert activity["run_duration_ms"] == 26183
+    assert activity["final_elapsed_ms"] == 26183
+
+
+def test_activity_duration_falls_back_to_runtime_total_without_request_total() -> None:
+    activity = main_app._activity_with_end_to_end_duration(
+        {"run_duration_ms": 0},
+        {"runtime_total_ms": 11369, "runtime_run_ms": 11360},
+    )
+
+    assert activity["run_duration_ms"] == 11369
+    assert activity["final_elapsed_ms"] == 11369
+
+
 class _FakeRuntimeStatusTools:
     def docker_status(self) -> tuple[bool, str]:
         return False, "stub"
@@ -1766,6 +1786,9 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert phase_timings["runtime_context_ms"] >= 0
     assert phase_timings["runtime_run_ms"] >= 0
     assert phase_timings["total_ms"] >= 0
+    assert response_payload["activity"]["run_duration_ms"] == phase_timings["total_ms"]
+    assert response_payload["activity"]["final_elapsed_ms"] == phase_timings["total_ms"]
+    assert run_finished_payload["duration_ms"] == response_payload["activity"]["run_duration_ms"]
 
 
 def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:

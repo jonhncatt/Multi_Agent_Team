@@ -143,6 +143,35 @@ def _merge_phase_timings(*payloads: Any) -> dict[str, int]:
     return merged
 
 
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _activity_with_end_to_end_duration(
+    activity: dict[str, Any] | None,
+    phase_timings: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(activity or {})
+    timings = phase_timings if isinstance(phase_timings, dict) else {}
+    runtime_duration_ms = max(
+        _nonnegative_int(payload.get("run_duration_ms")),
+        _nonnegative_int(timings.get("runtime_total_ms")),
+        _nonnegative_int(timings.get("runtime_run_ms")),
+    )
+    total_duration_ms = _nonnegative_int(timings.get("total_ms"))
+    final_duration_ms = max(runtime_duration_ms, total_duration_ms)
+    if final_duration_ms:
+        payload["run_duration_ms"] = final_duration_ms
+        payload["final_elapsed_ms"] = max(
+            _nonnegative_int(payload.get("final_elapsed_ms")),
+            final_duration_ms,
+        )
+    return payload
+
+
 def _git_value(*args: str) -> str:
     repo_root = Path(__file__).resolve().parent.parent
     try:
@@ -2430,6 +2459,7 @@ def _process_chat_request(
             "runtime_error": runtime_error,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
+        activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
         agent_run_done_context_meter, agent_run_done_compaction_status = _context_bundle_for_session(
             session=session,
             model=selected_model,
