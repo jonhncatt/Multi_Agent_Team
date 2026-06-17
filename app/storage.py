@@ -1261,6 +1261,24 @@ class ProjectStore:
         self._write(data)
         return payload
 
+    def touch_cached(self, project_id: str) -> dict[str, Any]:
+        data = self._read()
+        projects = data.setdefault("projects", {})
+        current = projects.get(project_id)
+        if not isinstance(current, dict):
+            default_project = self.get_cached(None) or self.ensure_default_project()
+            if default_project["project_id"] == project_id:
+                return default_project
+            raise FileNotFoundError(f"Project not found: {project_id}")
+        payload = dict(current)
+        payload.setdefault("project_id", project_id)
+        stamp = now_iso()
+        payload["updated_at"] = stamp
+        payload["last_opened_at"] = stamp
+        projects[project_id] = payload
+        self._write(data)
+        return payload
+
     def delete(self, project_id: str) -> None:
         data = self._read()
         default_project_id = str(data.get("default_project_id") or "").strip()

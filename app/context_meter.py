@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Callable
 
 import tiktoken
@@ -78,6 +79,7 @@ def resolve_context_window(
     return fallback, "fallback_budget"
 
 
+@lru_cache(maxsize=64)
 def _encoding_for_model(model: str | None) -> Any:
     candidates = _normalize_model_candidates(model)
     for item in candidates:
