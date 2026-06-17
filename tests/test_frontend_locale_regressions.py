@@ -1067,7 +1067,7 @@ def test_pending_assistant_body_uses_live_summary_fallback() -> None:
     assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
 
 
-def test_message_copy_button_is_rendered_in_message_meta() -> None:
+def test_message_copy_button_is_rendered_below_message_and_revealed_on_hover() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
@@ -1076,12 +1076,19 @@ def test_message_copy_button_is_rendered_in_message_meta() -> None:
     assert "const [copiedMessageId, setCopiedMessageId] = useState(\"\");" in script
     assert "const handleCopyMessage = async (item) => {" in script
     assert 'const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");' in script
+    assert '<div className="message-copy-row">' in script
     assert 'className=${`message-copy-btn ${copied ? "copied" : ""}`}' in script
     assert 'onClick=${() => handleCopyMessage(item)}' in script
     assert 'aria-label=${copyLabel}' in script
     assert 'className="message-copy-icon"' in script
-    assert ".message-meta-actions" in styles
+    assert ".message-meta-actions" not in styles
+    assert ".message-copy-row" in styles
+    assert ".message-article:hover .message-copy-row" in styles
+    assert ".message-article:focus-within .message-copy-row" in styles
+    assert "pointer-events: none;" in styles
     assert ".message-copy-btn" in styles
+    assert "width: 36px;" in styles
+    assert "border-radius: 12px;" in styles
     assert ".message-copy-icon::before" in styles
     assert ".message-copy-icon::after" in styles
 

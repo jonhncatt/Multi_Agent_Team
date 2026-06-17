@@ -7539,18 +7539,7 @@ function App() {
                     <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
                       <div className="message-meta">
                         <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
-                        <div className="message-meta-actions">
-                          ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
-                          <button
-                            className=${`message-copy-btn ${copied ? "copied" : ""}`}
-                            type="button"
-                            onClick=${() => handleCopyMessage(item)}
-                            title=${copyLabel}
-                            aria-label=${copyLabel}
-                          >
-                            <span className="message-copy-icon" aria-hidden="true"></span>
-                          </button>
-                        </div>
+                        ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
                       </div>
                       <div className="message-card">
                         ${renderMessageActivity(item)}
@@ -7558,6 +7547,17 @@ function App() {
                           className="message-card-body message-markdown"
                           dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
                         ></div>
+                      </div>
+                      <div className="message-copy-row">
+                        <button
+                          className=${`message-copy-btn ${copied ? "copied" : ""}`}
+                          type="button"
+                          onClick=${() => handleCopyMessage(item)}
+                          title=${copyLabel}
+                          aria-label=${copyLabel}
+                        >
+                          <span className="message-copy-icon" aria-hidden="true"></span>
+                        </button>
                       </div>
                     </article>
                   `;

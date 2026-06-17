@@ -574,8 +574,9 @@ button {
 }
 
 .message-article {
+  position: relative;
   width: 100%;
-  margin-bottom: 12px;
+  margin-bottom: 22px;
 }
 
 .message-meta {
@@ -586,13 +587,6 @@ button {
   margin-bottom: 4px;
 }
 
-.message-meta-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
 .message-role {
   font-size: 11px;
   letter-spacing: 0.08em;
@@ -600,24 +594,42 @@ button {
   color: var(--ink-faint);
 }
 
+.message-copy-row {
+  height: 0;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.message-article:hover .message-copy-row,
+.message-article:focus-within .message-copy-row {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
 .message-copy-btn {
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-faint);
-  opacity: 0.74;
+  border-radius: 12px;
+  background: rgba(240, 242, 245, 0.96);
+  color: #8e949d;
+  opacity: 1;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .message-copy-btn:hover,
 .message-copy-btn:focus-visible {
-  background: rgba(17, 24, 39, 0.07);
-  color: var(--ink-soft);
-  opacity: 1;
+  background: rgba(229, 232, 236, 0.98);
+  color: #737985;
   outline: none;
 }
 
@@ -629,8 +641,8 @@ button {
 
 .message-copy-icon {
   position: relative;
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   display: block;
 }
 
@@ -638,21 +650,21 @@ button {
 .message-copy-icon::after {
   content: "";
   position: absolute;
-  width: 9px;
-  height: 11px;
-  border: 1.6px solid currentColor;
-  border-radius: 3px;
+  width: 11px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-radius: 4px;
   background: transparent;
 }
 
 .message-copy-icon::before {
-  left: 4px;
+  left: 5px;
   top: 1px;
 }
 
 .message-copy-icon::after {
   left: 1px;
-  top: 4px;
+  top: 5px;
 }
 
 .message-card {
