@@ -613,14 +613,15 @@ button {
 }
 
 .message-copy-btn {
-  width: 36px;
-  height: 36px;
+  --message-copy-bg: rgba(240, 242, 245, 0.96);
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 12px;
-  background: rgba(240, 242, 245, 0.96);
+  border-radius: 9px;
+  background: var(--message-copy-bg);
   color: #8e949d;
   opacity: 1;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
@@ -628,21 +629,23 @@ button {
 
 .message-copy-btn:hover,
 .message-copy-btn:focus-visible {
-  background: rgba(229, 232, 236, 0.98);
+  --message-copy-bg: rgba(229, 232, 236, 0.98);
+  background: var(--message-copy-bg);
   color: #737985;
   outline: none;
 }
 
 .message-copy-btn.copied {
-  background: var(--accent-soft);
+  --message-copy-bg: var(--accent-soft);
+  background: var(--message-copy-bg);
   color: var(--accent);
   opacity: 1;
 }
 
 .message-copy-icon {
   position: relative;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   display: block;
 }
 
@@ -650,21 +653,21 @@ button {
 .message-copy-icon::after {
   content: "";
   position: absolute;
-  width: 11px;
-  height: 13px;
-  border: 2px solid currentColor;
+  width: 9px;
+  height: 11px;
+  border: 1.7px solid currentColor;
   border-radius: 4px;
-  background: transparent;
+  background: var(--message-copy-bg);
 }
 
 .message-copy-icon::before {
-  left: 5px;
+  left: 4px;
   top: 1px;
 }
 
 .message-copy-icon::after {
   left: 1px;
-  top: 5px;
+  top: 4px;
 }
 
 .message-card {

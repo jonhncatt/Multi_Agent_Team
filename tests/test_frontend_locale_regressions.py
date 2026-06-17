@@ -1087,8 +1087,12 @@ def test_message_copy_button_is_rendered_below_message_and_revealed_on_hover() -
     assert ".message-article:focus-within .message-copy-row" in styles
     assert "pointer-events: none;" in styles
     assert ".message-copy-btn" in styles
-    assert "width: 36px;" in styles
-    assert "border-radius: 12px;" in styles
+    assert "--message-copy-bg" in styles
+    assert "width: 28px;" in styles
+    assert "border-radius: 9px;" in styles
+    assert "background: var(--message-copy-bg);" in styles
+    assert "width: 15px;" in styles
+    assert "border: 1.7px solid currentColor;" in styles
     assert ".message-copy-icon::before" in styles
     assert ".message-copy-icon::after" in styles
 
