@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_JS_PATH = REPO_ROOT / "app" / "static" / "app.js"
+INDEX_HTML_PATH = REPO_ROOT / "app" / "static" / "index.html"
 LOCALES_JS_PATH = REPO_ROOT / "app" / "static" / "locales.js"
 STYLES_CSS_PATH = REPO_ROOT / "app" / "static" / "styles.css"
 INTERNAL_MANUAL_PATH = REPO_ROOT / "docs" / "internal_design_manual.md"
@@ -228,6 +229,18 @@ REQUIRED_CORE_KEYS = (
     "run.progress.recent_event_completed",
     "run.value.turn_status.failed",
 )
+
+
+def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
+    main_py = (REPO_ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    version_match = re.search(r'APP_VERSION = "([^"]+)"', main_py)
+    assert version_match, "APP_VERSION not found"
+    app_version = version_match.group(1)
+    index = INDEX_HTML_PATH.read_text(encoding="utf-8")
+
+    assert f'/static/app.js?v={app_version}' in index
+    assert f'/static/locales.js?v={app_version}' in index
+    assert 'src="/static/app.js"' not in index
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
 
