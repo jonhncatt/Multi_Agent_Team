@@ -1585,8 +1585,9 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const hasLiveItems = Boolean(liveItems.length);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
+  const finalAnswerText = String(item.final_answer || "").trim();
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
-  const hasAnswerReady = traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
+  const hasAnswerReady = Boolean(finalAnswerText) || traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerDelta = traces.some((trace) => String(trace.type || "").trim() === "answer.delta");
   const turnTerminalError = ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(item.status));
   if (hasStarted) {
@@ -2885,7 +2886,8 @@ function buildLiveDisplayActivity(activity, options = {}) {
   if (!isLiveRun) return item;
   const heartbeat = normalizeLiveHeartbeat(options.liveHeartbeat || {});
   const heartbeatStatus = normalizeProgressStatus(heartbeat.status);
-  const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed";
+  const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());
+  const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;
   const filteredTraceEvents = item.trace_events.filter((trace) => {
     const traceType = String((trace && trace.type) || "").trim();
     return !["run.finished", "answer.done", "answer.finished"].includes(traceType);
@@ -5476,10 +5478,11 @@ function App() {
         const detail = String(entry.detail || entry.summary || entry.title || entry.text || "").trim();
         const isCompleted = String(eventName || "").trim() === "item/completed";
         if (itemType === "agentMessage") {
+          const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === "completed";
           updateOwnerLiveHeartbeat({
-            status: "waiting_model",
-            action: detail || t("activity.live.answer_streaming"),
-            recentEvent: detail || t("activity.live.answer_streaming"),
+            status: agentMessageCompleted ? "completed" : "waiting_model",
+            action: t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
+            recentEvent: detail || t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
             source: "model",
           });
           return;
@@ -5553,6 +5556,12 @@ function App() {
         }
         return String(candidates.find((item) => String(item || "").trim()) || "").trim();
       };
+      const hasVisibleFinalAnswer = () => Boolean(String(
+        assistantText
+        || latestActivity.final_answer
+        || latestRunSnapshot.final_answer
+        || "",
+      ).trim());
       const stabilizePendingAssistant = (options = {}) => {
         const nextStatus = String(options.status || latestActivity.status || "running").trim() || "running";
         const durationMs = Math.max(0, Number(options.durationMs || 0) || 0);
@@ -5793,16 +5802,17 @@ function App() {
                 source: "model",
               });
             } else if (event === "run_finished") {
+              const hasVisibleAnswer = hasVisibleFinalAnswer();
               previewPendingAssistant({
-                status: latestActivity.status || "thinking",
+                status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
                 durationMs: Math.max(0, Number(payload.duration_ms || 0) || 0),
-                allowDraft: true,
-                fallbackLabel: t("buttons.saving"),
+                allowDraft: !hasVisibleAnswer,
+                fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
               updateOwnerLiveHeartbeat({
-                status: "waiting_model",
-                action: t("run.progress.waiting_model"),
-                recentEvent: t("run.progress.recent_event_waiting_model"),
+                status: hasVisibleAnswer ? "completed" : "waiting_model",
+                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("run.progress.waiting_model"),
+                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
                 source: "model",
               });
             } else if (event === "run_failed") {
@@ -5889,15 +5899,16 @@ function App() {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
+              const hasVisibleAnswer = hasVisibleFinalAnswer();
               previewPendingAssistant({
-                status: latestActivity.status || "thinking",
-                allowDraft: true,
-                fallbackLabel: t("buttons.saving"),
+                status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
+                allowDraft: !hasVisibleAnswer,
+                fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
               updateOwnerLiveHeartbeat({
-                status: "waiting_model",
-                action: t("buttons.saving"),
-                recentEvent: t("run.progress.recent_event_waiting_model"),
+                status: hasVisibleAnswer ? "completed" : "waiting_model",
+                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("buttons.saving"),
+                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
                 source: "model",
               });
             } else if (event === "item/started") {
@@ -5969,11 +5980,12 @@ function App() {
                 assistantMessageStarted = true;
                 assistantText = String(item.text || assistantText || "");
                 patchPendingActivity((activity) => mergeActivityState(activity, {
+                  status: "completed",
                   final_answer: assistantText,
                   model_draft: "",
                 }));
                 updateOwnerLiveHeartbeat({
-                  status: "waiting_model",
+                  status: "completed",
                   action: t("activity.live.answer_done"),
                   recentEvent: assistantText || t("activity.live.answer_done"),
                   source: "model",

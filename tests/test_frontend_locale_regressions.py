@@ -388,6 +388,8 @@ def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> Non
     assert '"activity.status.waiting_model_slow"' in body
     assert "MODEL_WAIT_SLOW_HINT_MS" in script
     assert "const llmStartedAt = latestTraceTimestampByTypes(traces, \"llm.started\");" in body
+    assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
+    assert "const hasAnswerReady = Boolean(finalAnswerText) || traces.some" in body
     assert '"answer.started"' in body
     assert "activity.status.direct_answer_no_tool" not in body
 
@@ -721,6 +723,8 @@ def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
         "const updateOwnerLiveHeartbeat = (value) => {",
         "const syncHeartbeatFromTrace = (trace) => {",
         "const syncHeartbeatFromStreamItem = (item, eventName = \"\") => {",
+        "const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === \"completed\";",
+        'status: agentMessageCompleted ? "completed" : "waiting_model"',
         'recentEvent: detail || t("run.progress.recent_event_waiting_model")',
         'recentEvent: detail || command || tool || t("run.progress.recent_event_background")',
         'source: "validator"',
@@ -737,6 +741,8 @@ def test_live_display_activity_overrides_latest_live_assistant_until_cleanup() -
     required_tokens = (
         "function buildLiveDisplayActivity(activity, options = {}) {",
         'return !["run.finished", "answer.done", "answer.finished"].includes(traceType);',
+        'const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());',
+        'const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;',
         "const isDisplayLiveAssistant = Boolean(",
         "&& liveAssistantMessageId",
         "String(item.id || \"\") === liveAssistantMessageId",
@@ -898,7 +904,10 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert run_finished_match, "run_finished branch not found"
     run_finished_body = run_finished_match.group("body")
+    assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in run_finished_body
     assert "previewPendingAssistant({" in run_finished_body
+    assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in run_finished_body
+    assert "allowDraft: !hasVisibleAnswer" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
     assert "activeRunId: \"\"" not in run_finished_body
@@ -910,7 +919,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert turn_completed_match, "turn/completed branch not found"
     turn_completed_body = turn_completed_match.group("body")
+    assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in turn_completed_body
     assert "previewPendingAssistant({" in turn_completed_body
+    assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
@@ -980,7 +991,8 @@ def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
 def test_agent_message_completion_clears_streaming_model_draft() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "final_answer: assistantText,\n                  model_draft: \"\"," in script
+    assert "status: \"completed\",\n                  final_answer: assistantText,\n                  model_draft: \"\"," in script
+    assert "status: \"completed\",\n                  action: t(\"activity.live.answer_done\")," in script
     assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
 
 
