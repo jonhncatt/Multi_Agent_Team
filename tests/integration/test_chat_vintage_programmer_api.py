@@ -1589,6 +1589,26 @@ def test_chat_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp
     assert loaded and loaded["project_id"] == "project_cached_chat"
 
 
+def test_thread_started_event_uses_session_snapshot_without_reload(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    session = main_app.session_store.create(main_app.project_store.get_cached(None) or {})
+    main_app.session_store.append_turn(session, role="user", text="介绍一下你自己")
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main_app,
+        "_thread_list_item_for_session_id",
+        lambda session_id: (_ for _ in ()).throw(AssertionError("thread started should not reload session")),
+    )
+
+    main_app._emit_thread_started(lambda payload: events.append(payload), session["id"], session=session)
+
+    assert events
+    assert events[0]["event"] == "thread/started"
+    thread = events[0]["thread"]
+    assert thread["thread_id"] == session["id"]
+    assert thread["title"] == "介绍一下你自己"
+
+
 def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)

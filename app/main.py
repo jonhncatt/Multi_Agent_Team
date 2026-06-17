@@ -892,6 +892,15 @@ def _thread_list_item_for_session_id(session_id: str) -> ThreadListItem | None:
     return _thread_list_item_from_session_row(hit)
 
 
+def _thread_list_item_from_session_snapshot(session: dict[str, Any]) -> ThreadListItem | None:
+    if not isinstance(session, dict):
+        return None
+    row = session_store.session_meta_store.metadata_from_session(session)
+    if not str(row.get("session_id") or "").strip():
+        return None
+    return _thread_list_item_from_session_row(row)
+
+
 def _bootstrap_response_payload(
     *,
     refresh_provider: bool = False,
@@ -1499,8 +1508,15 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
-def _emit_thread_started(progress_cb: Callable[[dict[str, Any]], None] | None, thread_id: str) -> None:
-    item = _thread_list_item_for_session_id(thread_id)
+def _emit_thread_started(
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    thread_id: str,
+    *,
+    session: dict[str, Any] | None = None,
+) -> None:
+    item = _thread_list_item_from_session_snapshot(session or {}) if session is not None else None
+    if item is None:
+        item = _thread_list_item_for_session_id(thread_id)
     if item is None:
         return
     _emit_progress(progress_cb, "thread/started", thread=dump_model(item))
@@ -2052,7 +2068,8 @@ def _process_chat_request(
                 run_snapshot=session_ready_snapshot,
             )
             request_phase_timer.record_offset_ms("session_ready_ms")
-            _emit_thread_started(progress_cb, session_id)
+            with request_phase_timer.measure("thread_started_emit_ms"):
+                _emit_thread_started(progress_cb, session_id, session=session)
         with request_phase_timer.measure("history_snapshot_ms"):
             history_turns_before = copy.deepcopy(session.get("turns", []))
             summary_before = str(session.get("summary", "") or "")
