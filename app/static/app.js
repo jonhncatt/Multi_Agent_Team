@@ -1697,7 +1697,10 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
     };
   });
   const modelDraftText = String(item.model_draft || "").trim();
+  const finalAnswerText = String(item.final_answer || "").trim();
   const showModelDraft = Boolean(modelDraftText) && (
+    !finalAnswerText
+  ) && (
     !isActivityTerminalStatus(item.status)
     || normalizeProgressStatus(item.status) === "failed"
   );
@@ -1754,7 +1757,8 @@ function liveCardSummaryText(card) {
 function resolveLiveSummary(activity, projection, locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const modelDraftText = String(item.model_draft || "").trim();
-  if (modelDraftText) {
+  const finalAnswerText = String(item.final_answer || "").trim();
+  if (modelDraftText && !finalAnswerText) {
     return {
       title: translateUi(locale, "runtime.model_draft.title"),
       label: translateUi(locale, "runtime.model_draft.title"),
@@ -2823,6 +2827,12 @@ function mergeActivityState(previous, patch = {}) {
   const nextRunDurationMs = Math.max(0, Number(
     nextPatch.run_duration_ms != null ? nextPatch.run_duration_ms : prev.run_duration_ms,
   ) || 0);
+  const nextModelDraft = Object.prototype.hasOwnProperty.call(nextPatch, "model_draft")
+    ? String(nextPatch.model_draft || "")
+    : String(prev.model_draft || "");
+  const nextFinalAnswer = Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")
+    ? String(nextPatch.final_answer || "")
+    : String(prev.final_answer || "");
   const nextFinalElapsedMs = isActivityTerminalStatus(nextStatus)
     ? Math.max(
       0,
@@ -2845,8 +2855,8 @@ function mergeActivityState(previous, patch = {}) {
     summary: String(nextPatch.summary || prev.summary || ""),
     full_loaded: Boolean(nextPatch.full_loaded || nextPatch.fullLoaded || prev.full_loaded),
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
-    model_draft: String(nextPatch.model_draft || prev.model_draft || ""),
-    final_answer: String(nextPatch.final_answer || prev.final_answer || ""),
+    model_draft: nextModelDraft,
+    final_answer: nextFinalAnswer,
     runtime_error: nextRuntimeErrorDefined ? nextRuntimeError : prev.runtime_error,
     tool_boundary_clean:
       typeof nextPatch.tool_boundary_clean === "boolean"
@@ -5561,7 +5571,9 @@ function App() {
           run_duration_ms: durationMs || activity.run_duration_ms || 0,
           final_elapsed_ms: durationMs || activity.final_elapsed_ms || activity.run_duration_ms || 0,
           final_answer: stableText || activity.final_answer || "",
-          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || ""),
+          model_draft: String(stableText || activity.final_answer || "").trim()
+            ? ""
+            : String(latestRunSnapshot.model_draft || activity.model_draft || ""),
         }));
         return Boolean(stableText);
       };
@@ -5577,7 +5589,9 @@ function App() {
         }
         patchPendingActivity((activity) => mergeActivityState(activity, {
           status: String(activity.status || options.status || "running").trim() || "running",
-          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
+          model_draft: String(activity.final_answer || "").trim()
+            ? ""
+            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
           final_answer: String(activity.final_answer || ""),
         }));
         return Boolean(stableText);
@@ -5956,6 +5970,7 @@ function App() {
                 assistantText = String(item.text || assistantText || "");
                 patchPendingActivity((activity) => mergeActivityState(activity, {
                   final_answer: assistantText,
+                  model_draft: "",
                 }));
                 updateOwnerLiveHeartbeat({
                   status: "waiting_model",

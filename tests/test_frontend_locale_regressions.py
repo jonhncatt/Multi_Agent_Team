@@ -953,9 +953,35 @@ def test_model_draft_live_cards_cover_non_terminal_activity_states() -> None:
     body = match.group("body")
 
     assert "const modelDraftText = String(item.model_draft || \"\").trim();" in body
+    assert "const finalAnswerText = String(item.final_answer || \"\").trim();" in body
+    assert "!finalAnswerText" in body
     assert "!isActivityTerminalStatus(item.status)" in body
     assert 'normalizeProgressStatus(item.status) === "failed"' in body
     assert 'cards.unshift({' in body
+
+
+def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildLiveDisplayActivity",
+        script,
+        re.S,
+    )
+    assert match, "mergeActivityState function not found"
+    body = match.group("body")
+
+    assert 'Object.prototype.hasOwnProperty.call(nextPatch, "model_draft")' in body
+    assert "model_draft: nextModelDraft," in body
+    assert 'Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")' in body
+    assert "final_answer: nextFinalAnswer," in body
+
+
+def test_agent_message_completion_clears_streaming_model_draft() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "final_answer: assistantText,\n                  model_draft: \"\"," in script
+    assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
 
 
 def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -> None:
@@ -970,6 +996,8 @@ def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -
     body = match.group("body")
 
     assert 'const modelDraftText = String(item.model_draft || "").trim();' in body
+    assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
+    assert "if (modelDraftText && !finalAnswerText)" in body
     assert 'const reversedCards = cards.slice().reverse();' in body
     assert "latestMeaningfulCurrentCard" in body
     assert "latestMeaningfulNonCompletedCard" in body
