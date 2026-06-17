@@ -16,6 +16,12 @@ REQUIRED_CORE_KEYS = (
     "labels.copied",
     "buttons.copy_message",
     "settings.locale",
+    "settings.theme_color",
+    "settings.theme_color.slate",
+    "settings.theme_color.blue",
+    "settings.theme_color.emerald",
+    "settings.theme_color.violet",
+    "settings.theme_color.rose",
     "settings.context_turns.help",
     "tool.failure.error",
     "tool.failure.stderr",
@@ -800,6 +806,44 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
     assert '"settings.context_turns.help": "本次请求构建模型上下文时，最多纳入的历史对话轮数；不是当前 thread 的总轮数。"' in locales
     assert '"settings.context_turns.help": "今回のモデル文脈に含める履歴ターン数の上限です。スレッド全体の総ターン数ではありません。"' in locales
     assert '"settings.context_turns.help": "Maximum historical turns considered for the current model context, not the total thread turn count."' in locales
+
+
+def test_settings_theme_color_selector_drives_accent_variables() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        'const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";',
+        "const THEME_COLOR_OPTIONS = [",
+        "function readStoredThemeColor() {",
+        "function applyThemeColor(value) {",
+        'root.style.setProperty("--accent", option.accent);',
+        'root.style.setProperty("--accent-ink", option.accentInk);',
+        'root.style.setProperty("--accent-soft", option.accentSoft);',
+        "const [themeColor, setThemeColor] = useState(readStoredThemeColor);",
+        "const selectedThemeColor = themeColorOptionById(themeColor).id;",
+        'className="theme-color-options"',
+        'className=${`theme-color-option ${selectedThemeColor === item.id ? "active" : ""}`}',
+        'onClick=${() => setThemeColor(item.id)}',
+        't("settings.theme_color")',
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    required_style_tokens = (
+        ".theme-color-options",
+        ".theme-color-option",
+        ".theme-color-option.active",
+        ".theme-color-swatch",
+        ".theme-color-name",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token
+
+    assert '"settings.theme_color": "主题色"' in locales
+    assert '"settings.theme_color": "テーマ色"' in locales
+    assert '"settings.theme_color": "Theme Color"' in locales
 
 
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:

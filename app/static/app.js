@@ -33,6 +33,7 @@ const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
 const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
+const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
@@ -49,6 +50,13 @@ const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
+const THEME_COLOR_OPTIONS = [
+  { id: "slate", accent: "#111827", accentInk: "#f9fafb", accentSoft: "#e9edf3", accentStrong: "#1f2937", accentDark: "#0f172a" },
+  { id: "blue", accent: "#2563eb", accentInk: "#ffffff", accentSoft: "#dbeafe", accentStrong: "#1d4ed8", accentDark: "#1e40af" },
+  { id: "emerald", accent: "#047857", accentInk: "#ffffff", accentSoft: "#d1fae5", accentStrong: "#059669", accentDark: "#065f46" },
+  { id: "violet", accent: "#7c3aed", accentInk: "#ffffff", accentSoft: "#ede9fe", accentStrong: "#6d28d9", accentDark: "#5b21b6" },
+  { id: "rose", accent: "#be123c", accentInk: "#ffffff", accentSoft: "#ffe4e6", accentStrong: "#e11d48", accentDark: "#9f1239" },
+];
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
   provider: "",
@@ -118,6 +126,32 @@ function readStoredLocale(supportedLocales) {
     window.localStorage.removeItem(LOCALE_STORAGE_KEY);
   }
   return normalized;
+}
+
+function themeColorOptionById(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return THEME_COLOR_OPTIONS.find((item) => item.id === normalized) || THEME_COLOR_OPTIONS[0];
+}
+
+function readStoredThemeColor() {
+  const raw = window.localStorage.getItem(THEME_COLOR_STORAGE_KEY) || "";
+  const option = themeColorOptionById(raw);
+  if (raw && raw !== option.id) {
+    window.localStorage.removeItem(THEME_COLOR_STORAGE_KEY);
+  }
+  return option.id;
+}
+
+function applyThemeColor(value) {
+  const option = themeColorOptionById(value);
+  const root = document.documentElement;
+  root.style.setProperty("--accent", option.accent);
+  root.style.setProperty("--accent-ink", option.accentInk);
+  root.style.setProperty("--accent-soft", option.accentSoft);
+  root.style.setProperty("--accent-strong", option.accentStrong);
+  root.style.setProperty("--accent-dark", option.accentDark);
+  root.dataset.themeColor = option.id;
+  return option;
 }
 
 function resolveInitialLocale({ supportedLocales, serverLocale, fallbackLocale }) {
@@ -3301,6 +3335,7 @@ function App() {
     ...DEFAULT_SETTINGS,
     locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
   }));
+  const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [modelTouched, setModelTouched] = useState(false);
   const [permissionProfileTouched, setPermissionProfileTouched] = useState(false);
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
@@ -3511,6 +3546,15 @@ function App() {
     document.documentElement.lang = uiLocale;
     document.title = translateUi(uiLocale, "app.title");
   }, [uiLocale]);
+
+  useEffect(() => {
+    const option = applyThemeColor(themeColor);
+    if (themeColor !== option.id) {
+      setThemeColor(option.id);
+      return;
+    }
+    window.localStorage.setItem(THEME_COLOR_STORAGE_KEY, option.id);
+  }, [themeColor]);
 
   useEffect(() => () => {
     if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
@@ -6520,6 +6564,7 @@ function App() {
     validation_warnings: Array.isArray(activeTaskState.validation_warnings) ? activeTaskState.validation_warnings : [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
+  const selectedThemeColor = themeColorOptionById(themeColor).id;
   const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
@@ -8383,6 +8428,28 @@ function App() {
                       `)}
                     </select>
                   </label>
+                  <div className="form-field">
+                    <span>${t("settings.theme_color")}</span>
+                    <div className="theme-color-options" role="group" aria-label=${t("settings.theme_color")}>
+                      ${THEME_COLOR_OPTIONS.map((item) => html`
+                        <button
+                          key=${item.id}
+                          className=${`theme-color-option ${selectedThemeColor === item.id ? "active" : ""}`}
+                          type="button"
+                          aria-pressed=${selectedThemeColor === item.id}
+                          title=${t(`settings.theme_color.${item.id}`)}
+                          onClick=${() => setThemeColor(item.id)}
+                          style=${{
+                            "--theme-option-color": item.accent,
+                            "--theme-option-soft": item.accentSoft,
+                          }}
+                        >
+                          <span className="theme-color-swatch" aria-hidden="true"></span>
+                          <span className="theme-color-name">${t(`settings.theme_color.${item.id}`)}</span>
+                        </button>
+                      `)}
+                    </div>
+                  </div>
                   <label className="form-field">
                     <span>${t("settings.model_name")}</span>
                     <input
