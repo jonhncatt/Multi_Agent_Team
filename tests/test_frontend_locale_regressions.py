@@ -1270,7 +1270,25 @@ def test_composer_submit_ignores_enter_during_ime_composition() -> None:
     assert "event.isComposing" in body
     assert "event.nativeEvent" in body
     assert "keyCode === 229" in body
+    assert "if (sending) return;" in body
     assert "handleSend();" in body
+
+
+def test_composer_textarea_remains_editable_while_run_is_active() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    frame_match = re.search(
+        r"<div className=\"composer-frame\">(?P<body>.*?)</div>\n          <div className=\"status-bar status-inline\"",
+        script,
+        re.S,
+    )
+    assert frame_match, "composer frame not found"
+    body = frame_match.group("body")
+    textarea_body = body.split("</textarea>", 1)[0]
+
+    assert 'value=${draft}' in textarea_body
+    assert "disabled=${sending}" not in textarea_body
+    assert "disabled=${sending || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
+    assert '${sending ? t("buttons.running")' in body
 
 
 def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:

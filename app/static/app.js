@@ -6390,6 +6390,7 @@ function App() {
     ) {
       return;
     }
+    if (sending) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSend();
@@ -7639,7 +7640,6 @@ function App() {
               onKeyDown=${handleComposerKeyDown}
               onPaste=${handleComposerPaste}
               placeholder=${t("composer.placeholder")}
-              disabled=${sending}
             ></textarea>
 	            <button
                 className="send-btn"
