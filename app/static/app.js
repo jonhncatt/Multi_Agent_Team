@@ -1466,7 +1466,25 @@ function formatToolTitle(locale, toolName) {
   );
 }
 
-function formatToolProgressLabel(locale, group) {
+function toolProgressPhaseFromStatus(status, type) {
+  const normalizedStatus = normalizeProgressStatus(status);
+  const normalizedType = String(type || "").trim();
+  if (["completed", "failed", "blocked", "cancelled", "waiting_model"].includes(normalizedStatus)) return "";
+  if (
+    normalizedStatus === "waiting_tool"
+    || normalizedStatus === "validating"
+    || normalizedType === "action.detected"
+    || normalizedType === "tool.call_detected"
+    || normalizedType === "action.validating"
+    || normalizedType === "action.allowed"
+  ) {
+    return "preparing";
+  }
+  if (normalizedStatus === "running" || normalizedType === "tool.started") return "active";
+  return "";
+}
+
+function formatToolProgressLabel(locale, group, options = {}) {
   const item = group && typeof group === "object" ? group : {};
   const toolName = String(item.tool_name || "").trim();
   const target = toolCallTargetFromSource(item);
@@ -1477,13 +1495,18 @@ function formatToolProgressLabel(locale, group) {
   const searchTools = new Set(["search_contents_in_file", "search_contents_in_file_multi", "search_codebase", "fact_check_file", "web_search", "web_fetch", "web_download"]);
   const commandTools = new Set(["exec_command", "run_command", "shell", "bash"]);
   const patchTools = new Set(["apply_patch"]);
-  if (readTools.has(toolName)) return translateUi(locale, "activity.progress.read", { target: labelValue });
-  if (listTools.has(toolName)) return translateUi(locale, "activity.progress.list_dir", { target: labelValue });
-  if (globTools.has(toolName)) return translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
-  if (searchTools.has(toolName)) return translateUi(locale, "activity.progress.search", { target: labelValue });
-  if (commandTools.has(toolName)) return translateUi(locale, "activity.progress.execute_command", { target: labelValue });
-  if (patchTools.has(toolName)) return translateUi(locale, "activity.progress.apply_patch", { target: labelValue });
-  return translateUi(locale, "activity.progress.use_tool", { tool: labelValue });
+  let label = "";
+  if (readTools.has(toolName)) label = translateUi(locale, "activity.progress.read", { target: labelValue });
+  else if (listTools.has(toolName)) label = translateUi(locale, "activity.progress.list_dir", { target: labelValue });
+  else if (globTools.has(toolName)) label = translateUi(locale, "activity.progress.glob_file_search", { target: labelValue });
+  else if (searchTools.has(toolName)) label = translateUi(locale, "activity.progress.search", { target: labelValue });
+  else if (commandTools.has(toolName)) label = translateUi(locale, "activity.progress.execute_command", { target: labelValue });
+  else if (patchTools.has(toolName)) label = translateUi(locale, "activity.progress.apply_patch", { target: labelValue });
+  else label = translateUi(locale, "activity.progress.use_tool", { tool: labelValue });
+  const phase = String(options.phase || toolProgressPhaseFromStatus(options.status || item.status, options.type || item.type)).trim();
+  if (phase === "preparing") return translateUi(locale, "activity.progress.preparing", { label });
+  if (phase === "active") return translateUi(locale, "activity.progress.active", { label });
+  return label;
 }
 
 function buildPlanChecklistItems(plan) {
@@ -1617,6 +1640,8 @@ function buildLiveAgentTimelineItems(activity, locale) {
   if (isActivityTerminalStatus(item.status)) return [];
   return item.live_items.map((liveItem) => {
     const tool = String(liveItem.tool || "").trim();
+    const liveStatus = normalizeProgressStatus(liveItem.status);
+    const liveType = String(liveItem.type || "").trim();
     const target = shortenActivityTarget(liveItem.detail || "");
     const toolLabel = tool
       ? formatToolProgressLabel(locale, {
@@ -1624,20 +1649,25 @@ function buildLiveAgentTimelineItems(activity, locale) {
           normalized_arguments: target ? { query: target } : {},
           arguments_preview: target,
           detail: target,
-        })
+        }, { status: liveStatus, type: liveType })
       : "";
+    const labelKeyLabel = liveItem.label_key ? translateUi(locale, liveItem.label_key, { tool }) : "";
+    const shouldPreferLabelKey = Boolean(tool && liveStatus === "waiting_model" && labelKeyLabel);
     const fallbackLabel = tool
       ? toolLabel
       : String(liveItem.type || "activity");
     const label = liveItem.label
-      || (toolLabel || (liveItem.label_key ? translateUi(locale, liveItem.label_key, { tool }) : ""))
+      || (shouldPreferLabelKey ? labelKeyLabel : (toolLabel || labelKeyLabel))
       || fallbackLabel;
     return {
       id: `live-${liveItem.id}`,
       label,
       detail: liveItem.detail,
-      status: normalizeProgressStatus(liveItem.status),
+      status: liveStatus,
       source: "live",
+      type: liveType,
+      tool,
+      target,
       live_item: liveItem,
     };
   });
@@ -1668,7 +1698,7 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   toolGroups.forEach((group) => {
     progressItems.push({
       id: `tool-${group.id}`,
-      label: formatToolProgressLabel(locale, group),
+      label: formatToolProgressLabel(locale, group, { status: group.status }),
       detail: group.detail || group.summary || "",
       status: normalizeProgressStatus(group.status),
       source: "tool",
@@ -1896,16 +1926,33 @@ function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
   const item = summary && typeof summary === "object" ? summary : {};
   const card = item.card && typeof item.card === "object" ? item.card : {};
   const rawRef = card.rawRef && typeof card.rawRef === "object" ? card.rawRef : {};
+  const liveItem = rawRef.live_item && typeof rawRef.live_item === "object" ? rawRef.live_item : {};
+  const toolGroup = rawRef.tool_group && typeof rawRef.tool_group === "object" ? rawRef.tool_group : {};
   const activityItem = normalizeMessageActivity(activity || {});
   const status = normalizeProgressStatus(activityItem.status || "");
   const title = String(card.title || card.label || item.title || item.label || "").trim();
-  const detail = String(card.detail || card.target || item.text || "").trim();
-  const tool = String(card.tool || rawRef.tool || rawRef.name || "").trim();
-  const type = String(card.type || rawRef.type || "").trim();
+  const tool = String(card.tool || rawRef.tool || liveItem.tool || toolGroup.tool_name || rawRef.name || "").trim();
+  const type = String(card.type || rawRef.type || liveItem.type || "").trim();
   const cardSource = String(card.source || rawRef.source || item.source || "").trim();
-  const cardStatus = normalizeProgressStatus(card.status || rawRef.status || "");
-  const hasActualTool = Boolean(tool || cardSource === "tool" || type === "toolCall" || type === "commandExecution" || type === "fileChange" || type === "imageView");
-  const toolIsActive = Boolean(hasActualTool && !["completed", "failed", "blocked", "cancelled"].includes(cardStatus) && status !== "waiting_model");
+  const cardStatus = normalizeProgressStatus(card.status || rawRef.status || liveItem.status || toolGroup.status || "");
+  const target = String(
+    card.target
+    || rawRef.target
+    || liveItem.detail
+    || toolCallTargetFromSource(toolGroup)
+    || "",
+  ).trim();
+  const detail = String(card.detail || target || item.text || "").trim();
+  const hasActualTool = Boolean(tool || cardSource === "tool" || (cardSource === "live" && liveItem.tool) || type === "toolCall" || type === "commandExecution" || type === "fileChange" || type === "imageView" || type.startsWith("tool.") || type.startsWith("action.") || type === "observation.returned");
+  const toolPhase = toolProgressPhaseFromStatus(cardStatus, type);
+  const toolAction = hasActualTool
+    ? formatToolProgressLabel(locale, {
+        tool_name: tool,
+        normalized_arguments: target ? { query: target } : {},
+        arguments_preview: target || detail,
+        detail: target || detail,
+      })
+    : "";
   const haystack = [
     item.source,
     title,
@@ -1921,10 +1968,20 @@ function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
       ? translateUi(locale, "run.live_agent.context_detail", { detail })
       : translateUi(locale, "run.live_agent.context");
   }
-  if (toolIsActive) {
-    return tool
-      ? translateUi(locale, "run.live_agent.tool_named", { tool })
-      : (detail ? translateUi(locale, "run.live_agent.tool_detail", { detail }) : translateUi(locale, "run.live_agent.tool"));
+  if (hasActualTool && toolPhase === "preparing") {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_preparing_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_preparing_named", { tool }) : translateUi(locale, "run.live_agent.tool_preparing"));
+  }
+  if (hasActualTool && toolPhase === "active") {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_running_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_running_named", { tool }) : translateUi(locale, "run.live_agent.tool_running"));
+  }
+  if (hasActualTool && (cardStatus === "waiting_model" || cardStatus === "completed" || type === "observation.returned" || type === "tool.finished")) {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_result_named", { tool }) : translateUi(locale, "run.live_agent.tool_result"));
   }
   if (/answer|stream|final|回复|回答|生成|結果|回答/.test(haystack)) {
     return detail

@@ -82,6 +82,15 @@ REQUIRED_CORE_KEYS = (
     "run.live_agent.context_detail",
     "run.live_agent.tool_named",
     "run.live_agent.tool_detail",
+    "run.live_agent.tool_preparing",
+    "run.live_agent.tool_preparing_named",
+    "run.live_agent.tool_preparing_detail",
+    "run.live_agent.tool_running",
+    "run.live_agent.tool_running_named",
+    "run.live_agent.tool_running_detail",
+    "run.live_agent.tool_result",
+    "run.live_agent.tool_result_named",
+    "run.live_agent.tool_result_detail",
     "run.live_agent.writing_detail",
     "run.live_agent.progress_detail",
     "runtime.error.title",
@@ -134,6 +143,8 @@ REQUIRED_CORE_KEYS = (
     "activity.progress.execute_command",
     "activity.progress.apply_patch",
     "activity.progress.use_tool",
+    "activity.progress.preparing",
+    "activity.progress.active",
     "activity.stage.model_action",
     "activity.stage.action_validation",
     "activity.stage.execution",
@@ -685,7 +696,8 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
     assert 'if (item.source === "execution_progress") return text;' in script
     assert '"run.live_panel.title": "Agent 正在处理"' in locales
     assert '"run.live_agent.understanding": "Agent 正在理解你的问题，并整理下一步。"' in locales
-    assert '"run.live_agent.tool_named": "Agent 正在用 {tool} 检查相关信息。"' in locales
+    assert '"run.live_agent.tool_running_detail": "Agent 正在执行工具：{detail}"' in locales
+    assert '"run.live_agent.tool_result": "Agent 已拿到工具结果，正在判断下一步。"' in locales
     assert '"run.live_panel.title": "Agent が処理中です"' in locales
     assert '"run.live_panel.title": "Agent is working"' in locales
 
@@ -1172,9 +1184,11 @@ def test_pending_agent_copy_uses_actual_tool_metadata_not_keywords() -> None:
     body = match.group("body")
 
     assert "const hasActualTool = Boolean(" in body
-    assert 'const toolIsActive = Boolean(hasActualTool && !["completed", "failed", "blocked", "cancelled"].includes(cardStatus) && status !== "waiting_model");' in body
-    assert "if (toolIsActive) {" in body
-    assert 'translateUi(locale, "run.live_agent.tool_named", { tool })' in body
+    assert "const toolPhase = toolProgressPhaseFromStatus(cardStatus, type);" in body
+    assert 'if (hasActualTool && toolPhase === "preparing") {' in body
+    assert 'if (hasActualTool && toolPhase === "active") {' in body
+    assert 'translateUi(locale, "run.live_agent.tool_running_detail", { detail: toolAction })' in body
+    assert 'translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })' in body
     assert 'translateUi(locale, "run.live_agent.understanding_detail", { detail })' in body
     assert "activityItem.activity_summary" not in body
 
