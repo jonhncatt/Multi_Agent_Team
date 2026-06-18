@@ -5570,6 +5570,15 @@ function App() {
           });
           return;
         }
+        if (itemType === "contextCompaction") {
+          updateOwnerLiveHeartbeat({
+            status: isCompleted ? "background_running" : "running",
+            action: detail || t(isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting"),
+            recentEvent: detail || t(isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting"),
+            source: "runtime",
+          });
+          return;
+        }
         if (itemType === "userInputRequest") {
           updateOwnerLiveHeartbeat({
             status: "blocked",
@@ -6743,10 +6752,26 @@ function App() {
     currentProjectBranch || "",
     loadedSkills.length ? `skills:${loadedSkills.length}` : "no skills",
   ].filter(Boolean).join(" · ");
-  const statusSummary = [
-    workspaceLabel || "-",
-    activeProviderLabel || activeProvider || "-",
-  ].filter(Boolean).join(" · ");
+  const currentThreadLive = isCurrentThreadLiveRun({
+    sessionId,
+    activeRunThreadId,
+    sending,
+    activeRunId,
+    activeRunStartedAt,
+    hasRunningActivity,
+    liveTurnState,
+  });
+  const statusSummary = currentThreadLive
+    ? [
+        runExecutionProgress.statusLabel || t("activity.running"),
+        runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running"),
+      ].filter(Boolean).join(" · ")
+    : [
+        workspaceLabel || "-",
+        activeProviderLabel || activeProvider || "-",
+      ].filter(Boolean).join(" · ");
+  const showEmptyLivePanel = Boolean(currentThreadLive && !messages.length && !showThreadDetailLoading);
+  const showRunLiveStrip = Boolean(currentThreadLive && messages.length && !showThreadDetailLoading);
   const runtimeStats = useMemo(() => buildRuntimeStatsSummary({
     locale: uiLocale,
     workspaceLabel,
@@ -7614,6 +7639,24 @@ function App() {
                     <span className="thread-loading-spinner" aria-hidden="true"></span>
                   </section>
                 `
+            : showEmptyLivePanel
+              ? html`
+                  <section className="empty-panel empty-live-panel" role="status" aria-live="polite">
+                    <div className="live-run-eyebrow">
+                      <span className=${`live-run-dot status-${runExecutionProgress.status || "running"}`} aria-hidden="true"></span>
+                      <span>${runExecutionProgress.statusLabel || t("activity.running")}</span>
+                    </div>
+                    <div className="empty-title">${t("run.live_panel.title")}</div>
+                    <div className="live-run-action">${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running")}</div>
+                    ${runExecutionProgress.command
+                      ? html`<code className="live-run-command">${runExecutionProgress.command}</code>`
+                      : null}
+                    <div className="live-run-meta">
+                      ${runExecutionProgress.currentTool ? html`<span>${formatRunFieldLabel(uiLocale, "current_tool")}: ${runExecutionProgress.currentTool}</span>` : null}
+                      ${runExecutionProgress.recentEvent ? html`<span>${runExecutionProgress.recentEvent}</span>` : null}
+                    </div>
+                  </section>
+                `
             : html`
                 <section className="empty-panel">
                   <div className="empty-kicker">Native Tools · Model-led Workspace</div>
@@ -7627,6 +7670,22 @@ function App() {
                   <div className="starter-list">${starterPromptChips(uiLocale, setDraft, handleSend)}</div>
                 </section>
               `}
+          ${showRunLiveStrip
+            ? html`
+                <section className="run-live-strip" role="status" aria-live="polite">
+                  <div className="run-live-strip-main">
+                    <span className=${`live-run-dot status-${runExecutionProgress.status || "running"}`} aria-hidden="true"></span>
+                    <div className="run-live-strip-copy">
+                      <span className="run-live-strip-title">${t("run.live_panel.title")} · ${runExecutionProgress.statusLabel || t("activity.running")}</span>
+                      <span className="run-live-strip-action">${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running")}</span>
+                    </div>
+                  </div>
+                  ${runExecutionProgress.currentTool
+                    ? html`<span className="run-live-strip-meta">${formatRunFieldLabel(uiLocale, "current_tool")}: ${runExecutionProgress.currentTool}</span>`
+                    : null}
+                </section>
+              `
+            : null}
           ${showJumpToLatest && messages.length
             ? html`
                 <div className="jump-latest-row">

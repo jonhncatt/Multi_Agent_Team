@@ -69,6 +69,7 @@ REQUIRED_CORE_KEYS = (
     "activity.live.waiting_next_model",
     "activity.live.answer_streaming",
     "activity.live.answer_done",
+    "run.live_panel.title",
     "runtime.error.title",
     "runtime.error.llm_request_failed",
     "runtime.error.llm_empty_response",
@@ -626,6 +627,51 @@ def test_context_meter_hover_close_uses_delayed_timer() -> None:
     )
     for token in required_tokens:
         assert token in script, token
+
+
+def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        'if (itemType === "contextCompaction") {',
+        'status: isCompleted ? "background_running" : "running",',
+        't(isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting")',
+        "const currentThreadLive = isCurrentThreadLiveRun({",
+        "const showEmptyLivePanel = Boolean(currentThreadLive && !messages.length && !showThreadDetailLoading);",
+        "const showRunLiveStrip = Boolean(currentThreadLive && messages.length && !showThreadDetailLoading);",
+        'className="empty-panel empty-live-panel"',
+        'className="run-live-strip"',
+        'className="run-live-strip-main"',
+        'className="run-live-strip-title"',
+        'className="live-run-eyebrow"',
+        'className=${`live-run-dot status-${runExecutionProgress.status || "running"}`}',
+        't("run.live_panel.title")',
+        "runExecutionProgress.currentAction || runExecutionProgress.recentEvent",
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    required_style_tokens = (
+        ".empty-live-panel",
+        ".live-run-eyebrow",
+        ".live-run-dot",
+        ".live-run-action",
+        ".live-run-command",
+        ".live-run-meta",
+        ".run-live-strip",
+        ".run-live-strip-main",
+        ".run-live-strip-action",
+        ".run-live-strip-meta",
+        "@keyframes live-run-pulse",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token
+
+    assert '"run.live_panel.title": "Agent 正在处理"' in locales
+    assert '"run.live_panel.title": "Agent が処理中です"' in locales
+    assert '"run.live_panel.title": "Agent is working"' in locales
 
 
 def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:

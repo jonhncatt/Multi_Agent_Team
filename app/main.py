@@ -2103,6 +2103,34 @@ def _process_chat_request(
             history_turns_before = copy.deepcopy(session.get("turns", []))
             summary_before = str(session.get("summary", "") or "")
         with request_phase_timer.measure("pre_turn_compaction_ms"):
+            pre_compaction_probe = _build_compaction_status_for_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+            )
+            pre_compaction_limit = int(pre_compaction_probe.get("auto_compact_token_limit") or 0)
+            pre_compaction_estimated = int(pre_compaction_probe.get("estimated_context_tokens") or 0)
+            pre_compaction_started_item = None
+            if pre_compaction_limit > 0 and pre_compaction_estimated >= pre_compaction_limit:
+                pre_compaction_started_item = {
+                    "id": f"{run_id}:context_compaction:pre_turn:{int(pre_compaction_probe.get('generation') or 0) + 1}",
+                    "type": "contextCompaction",
+                    "status": "inProgress",
+                    "phase": "pre_turn",
+                    "generation": int(pre_compaction_probe.get("generation") or 0) + 1,
+                    "reason": "context_limit",
+                    "before_tokens": pre_compaction_estimated,
+                    "after_tokens": 0,
+                    "summary": translate(locale, "chat.replacement_history_compacting"),
+                }
+                _emit_progress(
+                    progress_cb,
+                    "item/started",
+                    thread_id=session_id,
+                    turn_id=run_id,
+                    item=pre_compaction_started_item,
+                )
             llm_compactor = None
             if hasattr(provider_runtime, "compact_context"):
                 llm_compactor = lambda payload: provider_runtime.compact_context(
@@ -2147,7 +2175,11 @@ def _process_chat_request(
                 ),
             )
             compaction_item = {
-                "id": f"{run_id}:context_compaction:{compaction_after.get('generation') or 0}:{compaction_after.get('last_compacted_at') or ''}",
+                "id": (
+                    str(pre_compaction_started_item.get("id") or "")
+                    if pre_compaction_started_item
+                    else f"{run_id}:context_compaction:{compaction_after.get('generation') or 0}:{compaction_after.get('last_compacted_at') or ''}"
+                ),
                 "type": "contextCompaction",
                 "status": "completed",
                 "phase": str(compaction_after.get("last_compaction_phase") or compaction_after.get("phase") or "pre_turn"),
@@ -2162,19 +2194,32 @@ def _process_chat_request(
                     retained_turn_count=compaction_after.get("retained_turn_count") or 0,
                 ),
             }
-            _emit_progress(
-                progress_cb,
-                "item/started",
-                thread_id=session_id,
-                turn_id=run_id,
-                item={**compaction_item, "status": "inProgress"},
-            )
+            if not pre_compaction_started_item:
+                _emit_progress(
+                    progress_cb,
+                    "item/started",
+                    thread_id=session_id,
+                    turn_id=run_id,
+                    item={**compaction_item, "status": "inProgress"},
+                )
             _emit_progress(
                 progress_cb,
                 "item/completed",
                 thread_id=session_id,
                 turn_id=run_id,
                 item=compaction_item,
+            )
+        elif pre_compaction_started_item:
+            _emit_progress(
+                progress_cb,
+                "item/completed",
+                thread_id=session_id,
+                turn_id=run_id,
+                item={
+                    **pre_compaction_started_item,
+                    "status": "completed",
+                    "summary": translate(locale, "chat.replacement_history_compaction_checked"),
+                },
             )
         with request_phase_timer.measure("session_memory_sync_ms"):
             session_context_impl.sync_session_memory_state(session)

@@ -565,6 +565,7 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
 
 class _ContextCapturingRuntime(_FakeVintageRuntime):
     def __init__(self) -> None:
+        super().__init__()
         self.seen_contexts: list[dict[str, object]] = []
 
     def run(self, *, message, settings, context, progress_cb=None):
@@ -1715,6 +1716,75 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["agent_state"]["compaction_status"]["mode"] == "token_budget"
     assert session_payload["context_meter"]["auto_compact_token_limit"] > 0
     assert session_payload["compaction_status"]["mode"] == "token_budget"
+
+
+def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    capture_runtime = _ContextCapturingRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", capture_runtime)
+    client = TestClient(main_app.app)
+
+    project = main_app.project_store.ensure_default_project()
+    session = main_app.session_store.create(project)
+    for index in range(18):
+        words = " ".join(f"legacy_{index}_{item}" for item in range(650))
+        main_app.session_store.append_turn(
+            session,
+            role="user" if index % 2 == 0 else "assistant",
+            text=f"需要保留但可压缩的旧上下文 {index}: {words}",
+        )
+    main_app.session_store.save(session)
+
+    pre_status = main_app._build_compaction_status_for_session(
+        session=session,
+        model="moonshot-v1-8k",
+        max_output_tokens=1024,
+        pending_message="继续总结",
+    )
+    assert pre_status["estimated_context_tokens"] >= pre_status["auto_compact_token_limit"]
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "继续总结",
+            "settings": {
+                "model": "moonshot-v1-8k",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compaction_status"]["generation"] >= 1
+    assert payload["compaction_status"]["compacted_history_present"] is True
+    assert payload["compaction_status"]["last_compaction_phase"] == "pre_turn"
+    assert payload["compaction_status"]["last_compaction_reason"].startswith("context_limit:")
+
+    loaded = main_app.session_store.load(session["id"], default_project=project)
+    assert loaded is not None
+    assert loaded["compaction_state"]["generation"] >= 1
+    assert loaded["compaction_state"]["compacted_history"]
+    assert loaded["summary"] == loaded["compaction_state"]["compacted_history"]
+    assert loaded["compaction_state"]["last_compaction_phase"] == "pre_turn"
+    assert loaded["compaction_state"]["reason"] == "context_limit"
+    assert loaded["compaction_state"]["compaction_source"] == "deterministic_fallback"
+    assert loaded["compaction_state"]["after_tokens"] > 0
+    assert len(loaded["compaction_state"]["retained_turn_ids"]) <= 12
+
+    assert capture_runtime.seen_contexts
+    seen = capture_runtime.seen_contexts[0]
+    assert seen["summary"] == loaded["compaction_state"]["compacted_history"]
+    assert seen["compaction_status"]["generation"] == loaded["compaction_state"]["generation"]
+    assert seen["compaction_status"]["last_compaction_phase"] == "pre_turn"
+    assert seen["compaction_status"]["reason"] == "context_limit"
+    assert seen["compaction_status"]["compaction_source"] == "deterministic_fallback"
+    assert 1 <= len(seen["history_turns"]) <= 12
+    assert all(turn["text"] != "继续总结" for turn in seen["history_turns"])
 
 
 def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tmp_path: Path) -> None:
