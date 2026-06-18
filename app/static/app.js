@@ -6761,17 +6761,11 @@ function App() {
     hasRunningActivity,
     liveTurnState,
   });
-  const statusSummary = currentThreadLive
-    ? [
-        runExecutionProgress.statusLabel || t("activity.running"),
-        runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running"),
-      ].filter(Boolean).join(" · ")
-    : [
-        workspaceLabel || "-",
-        activeProviderLabel || activeProvider || "-",
-      ].filter(Boolean).join(" · ");
+  const statusSummary = [
+    workspaceLabel || "-",
+    activeProviderLabel || activeProvider || "-",
+  ].filter(Boolean).join(" · ");
   const showEmptyLivePanel = Boolean(currentThreadLive && !messages.length && !showThreadDetailLoading);
-  const showRunLiveStrip = Boolean(currentThreadLive && messages.length && !showThreadDetailLoading);
   const runtimeStats = useMemo(() => buildRuntimeStatsSummary({
     locale: uiLocale,
     workspaceLabel,
@@ -7605,8 +7599,15 @@ function App() {
                   const messageId = String(item.id || "");
                   const copied = Boolean(messageId && copiedMessageId === messageId);
                   const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");
+                  const liveAgentMessage = Boolean(
+                    item.role === "assistant"
+                    && item.pending
+                    && hasLiveRuntimeState
+                    && liveAssistantMessageId
+                    && String(item.id || "") === liveAssistantMessageId
+                  );
                   return html`
-                    <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
+                    <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""} ${liveAgentMessage ? "live-agent-card" : ""}`}>
                       <div className="message-meta">
                         <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
                         ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
@@ -7670,22 +7671,6 @@ function App() {
                   <div className="starter-list">${starterPromptChips(uiLocale, setDraft, handleSend)}</div>
                 </section>
               `}
-          ${showRunLiveStrip
-            ? html`
-                <section className="run-live-strip" role="status" aria-live="polite">
-                  <div className="run-live-strip-main">
-                    <span className=${`live-run-dot status-${runExecutionProgress.status || "running"}`} aria-hidden="true"></span>
-                    <div className="run-live-strip-copy">
-                      <span className="run-live-strip-title">${t("run.live_panel.title")} · ${runExecutionProgress.statusLabel || t("activity.running")}</span>
-                      <span className="run-live-strip-action">${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running")}</span>
-                    </div>
-                  </div>
-                  ${runExecutionProgress.currentTool
-                    ? html`<span className="run-live-strip-meta">${formatRunFieldLabel(uiLocale, "current_tool")}: ${runExecutionProgress.currentTool}</span>`
-                    : null}
-                </section>
-              `
-            : null}
           ${showJumpToLatest && messages.length
             ? html`
                 <div className="jump-latest-row">
