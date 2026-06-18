@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5N-blue)
+![Version](https://img.shields.io/badge/version-3.1.5S-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5N`
+Current stable release: `3.1.5S`
 
 ## Stable Runtime
 
-3.1.5N is a thread-detail loading stability release: historical chats still use the fast session-read path, and the chat pane no longer goes blank when a newly created thread starts a run and the user quickly switches away and back.
+3.1.5S is a Windows startup feel and chat UX release: new-thread first-screen setup is lighter, completed runs settle their draft/cleanup state faster, and message copy, editable running input, and theme color selection are now available.
 
-Compared with 3.1.5M, this release synchronously saves the live thread snapshot when sending starts, and detail refreshes no longer overwrite live messages with a temporarily empty backend response.
+This release also keeps the 3.1.5N thread-detail stability fix: the frontend saves live thread snapshots when sending starts, and detail refreshes no longer overwrite live messages with a temporarily empty backend response.
 
 ## Max Output Tokens
 
