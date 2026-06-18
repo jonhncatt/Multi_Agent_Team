@@ -33,6 +33,7 @@ const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
 const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
+const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
@@ -49,6 +50,13 @@ const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
+const THEME_COLOR_OPTIONS = [
+  { id: "slate", accent: "#111827", accentInk: "#f9fafb", accentSoft: "#e9edf3", accentStrong: "#1f2937", accentDark: "#0f172a" },
+  { id: "blue", accent: "#2563eb", accentInk: "#ffffff", accentSoft: "#dbeafe", accentStrong: "#1d4ed8", accentDark: "#1e40af" },
+  { id: "emerald", accent: "#047857", accentInk: "#ffffff", accentSoft: "#d1fae5", accentStrong: "#059669", accentDark: "#065f46" },
+  { id: "violet", accent: "#7c3aed", accentInk: "#ffffff", accentSoft: "#ede9fe", accentStrong: "#6d28d9", accentDark: "#5b21b6" },
+  { id: "rose", accent: "#be123c", accentInk: "#ffffff", accentSoft: "#ffe4e6", accentStrong: "#e11d48", accentDark: "#9f1239" },
+];
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
   provider: "",
@@ -118,6 +126,32 @@ function readStoredLocale(supportedLocales) {
     window.localStorage.removeItem(LOCALE_STORAGE_KEY);
   }
   return normalized;
+}
+
+function themeColorOptionById(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return THEME_COLOR_OPTIONS.find((item) => item.id === normalized) || THEME_COLOR_OPTIONS[0];
+}
+
+function readStoredThemeColor() {
+  const raw = window.localStorage.getItem(THEME_COLOR_STORAGE_KEY) || "";
+  const option = themeColorOptionById(raw);
+  if (raw && raw !== option.id) {
+    window.localStorage.removeItem(THEME_COLOR_STORAGE_KEY);
+  }
+  return option.id;
+}
+
+function applyThemeColor(value) {
+  const option = themeColorOptionById(value);
+  const root = document.documentElement;
+  root.style.setProperty("--accent", option.accent);
+  root.style.setProperty("--accent-ink", option.accentInk);
+  root.style.setProperty("--accent-soft", option.accentSoft);
+  root.style.setProperty("--accent-strong", option.accentStrong);
+  root.style.setProperty("--accent-dark", option.accentDark);
+  root.dataset.themeColor = option.id;
+  return option;
 }
 
 function resolveInitialLocale({ supportedLocales, serverLocale, fallbackLocale }) {
@@ -490,6 +524,39 @@ function renderMessageHtml(text, messageId = "") {
   }
   rememberMessageHtml(cacheKey, htmlValue);
   return htmlValue;
+}
+
+function fallbackCopyText(text) {
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = String(text || "");
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand("copy");
+    textarea.remove();
+    return Boolean(ok);
+  } catch {
+    return false;
+  }
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value) return false;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      return fallbackCopyText(value);
+    }
+  }
+  return fallbackCopyText(value);
 }
 
 function stringifyErrorDetail(detail) {
@@ -1585,8 +1652,9 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const hasLiveItems = Boolean(liveItems.length);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
+  const finalAnswerText = String(item.final_answer || "").trim();
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
-  const hasAnswerReady = traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
+  const hasAnswerReady = Boolean(finalAnswerText) || traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerDelta = traces.some((trace) => String(trace.type || "").trim() === "answer.delta");
   const turnTerminalError = ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(item.status));
   if (hasStarted) {
@@ -1697,7 +1765,10 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
     };
   });
   const modelDraftText = String(item.model_draft || "").trim();
+  const finalAnswerText = String(item.final_answer || "").trim();
   const showModelDraft = Boolean(modelDraftText) && (
+    !finalAnswerText
+  ) && (
     !isActivityTerminalStatus(item.status)
     || normalizeProgressStatus(item.status) === "failed"
   );
@@ -1754,7 +1825,8 @@ function liveCardSummaryText(card) {
 function resolveLiveSummary(activity, projection, locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const modelDraftText = String(item.model_draft || "").trim();
-  if (modelDraftText) {
+  const finalAnswerText = String(item.final_answer || "").trim();
+  if (modelDraftText && !finalAnswerText) {
     return {
       title: translateUi(locale, "runtime.model_draft.title"),
       label: translateUi(locale, "runtime.model_draft.title"),
@@ -2823,6 +2895,12 @@ function mergeActivityState(previous, patch = {}) {
   const nextRunDurationMs = Math.max(0, Number(
     nextPatch.run_duration_ms != null ? nextPatch.run_duration_ms : prev.run_duration_ms,
   ) || 0);
+  const nextModelDraft = Object.prototype.hasOwnProperty.call(nextPatch, "model_draft")
+    ? String(nextPatch.model_draft || "")
+    : String(prev.model_draft || "");
+  const nextFinalAnswer = Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")
+    ? String(nextPatch.final_answer || "")
+    : String(prev.final_answer || "");
   const nextFinalElapsedMs = isActivityTerminalStatus(nextStatus)
     ? Math.max(
       0,
@@ -2845,8 +2923,8 @@ function mergeActivityState(previous, patch = {}) {
     summary: String(nextPatch.summary || prev.summary || ""),
     full_loaded: Boolean(nextPatch.full_loaded || nextPatch.fullLoaded || prev.full_loaded),
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
-    model_draft: String(nextPatch.model_draft || prev.model_draft || ""),
-    final_answer: String(nextPatch.final_answer || prev.final_answer || ""),
+    model_draft: nextModelDraft,
+    final_answer: nextFinalAnswer,
     runtime_error: nextRuntimeErrorDefined ? nextRuntimeError : prev.runtime_error,
     tool_boundary_clean:
       typeof nextPatch.tool_boundary_clean === "boolean"
@@ -2875,7 +2953,8 @@ function buildLiveDisplayActivity(activity, options = {}) {
   if (!isLiveRun) return item;
   const heartbeat = normalizeLiveHeartbeat(options.liveHeartbeat || {});
   const heartbeatStatus = normalizeProgressStatus(heartbeat.status);
-  const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed";
+  const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());
+  const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;
   const filteredTraceEvents = item.trace_events.filter((trace) => {
     const traceType = String((trace && trace.type) || "").trim();
     return !["run.finished", "answer.done", "answer.finished"].includes(traceType);
@@ -3256,6 +3335,7 @@ function App() {
     ...DEFAULT_SETTINGS,
     locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
   }));
+  const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [modelTouched, setModelTouched] = useState(false);
   const [permissionProfileTouched, setPermissionProfileTouched] = useState(false);
   const [selectedPresetModel, setSelectedPresetModel] = useState("");
@@ -3299,6 +3379,7 @@ function App() {
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState("");
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const autoScrollEnabledRef = useRef(true);
@@ -3330,6 +3411,7 @@ function App() {
   const runtimeStatusLastFetchedAtRef = useRef(0);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
+  const copiedMessageTimerRef = useRef(0);
   const setHealth = (value) => dispatch({ type: "update", path: ["bootstrap", "health"], value });
   const setProjects = (value) => dispatch({ type: "update", path: ["projectIndex", "projects"], value });
   const setProjectId = (value) => dispatch({ type: "update", path: ["projectIndex", "currentProjectId"], value });
@@ -3464,6 +3546,19 @@ function App() {
     document.documentElement.lang = uiLocale;
     document.title = translateUi(uiLocale, "app.title");
   }, [uiLocale]);
+
+  useEffect(() => {
+    const option = applyThemeColor(themeColor);
+    if (themeColor !== option.id) {
+      setThemeColor(option.id);
+      return;
+    }
+    window.localStorage.setItem(THEME_COLOR_STORAGE_KEY, option.id);
+  }, [themeColor]);
+
+  useEffect(() => () => {
+    if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;
@@ -5466,10 +5561,11 @@ function App() {
         const detail = String(entry.detail || entry.summary || entry.title || entry.text || "").trim();
         const isCompleted = String(eventName || "").trim() === "item/completed";
         if (itemType === "agentMessage") {
+          const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === "completed";
           updateOwnerLiveHeartbeat({
-            status: "waiting_model",
-            action: detail || t("activity.live.answer_streaming"),
-            recentEvent: detail || t("activity.live.answer_streaming"),
+            status: agentMessageCompleted ? "completed" : "waiting_model",
+            action: t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
+            recentEvent: detail || t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
             source: "model",
           });
           return;
@@ -5543,6 +5639,12 @@ function App() {
         }
         return String(candidates.find((item) => String(item || "").trim()) || "").trim();
       };
+      const hasVisibleFinalAnswer = () => Boolean(String(
+        assistantText
+        || latestActivity.final_answer
+        || latestRunSnapshot.final_answer
+        || "",
+      ).trim());
       const stabilizePendingAssistant = (options = {}) => {
         const nextStatus = String(options.status || latestActivity.status || "running").trim() || "running";
         const durationMs = Math.max(0, Number(options.durationMs || 0) || 0);
@@ -5561,7 +5663,9 @@ function App() {
           run_duration_ms: durationMs || activity.run_duration_ms || 0,
           final_elapsed_ms: durationMs || activity.final_elapsed_ms || activity.run_duration_ms || 0,
           final_answer: stableText || activity.final_answer || "",
-          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || ""),
+          model_draft: String(stableText || activity.final_answer || "").trim()
+            ? ""
+            : String(latestRunSnapshot.model_draft || activity.model_draft || ""),
         }));
         return Boolean(stableText);
       };
@@ -5577,7 +5681,9 @@ function App() {
         }
         patchPendingActivity((activity) => mergeActivityState(activity, {
           status: String(activity.status || options.status || "running").trim() || "running",
-          model_draft: String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
+          model_draft: String(activity.final_answer || "").trim()
+            ? ""
+            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
           final_answer: String(activity.final_answer || ""),
         }));
         return Boolean(stableText);
@@ -5779,16 +5885,17 @@ function App() {
                 source: "model",
               });
             } else if (event === "run_finished") {
+              const hasVisibleAnswer = hasVisibleFinalAnswer();
               previewPendingAssistant({
-                status: latestActivity.status || "thinking",
+                status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
                 durationMs: Math.max(0, Number(payload.duration_ms || 0) || 0),
-                allowDraft: true,
-                fallbackLabel: t("buttons.saving"),
+                allowDraft: !hasVisibleAnswer,
+                fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
               updateOwnerLiveHeartbeat({
-                status: "waiting_model",
-                action: t("run.progress.waiting_model"),
-                recentEvent: t("run.progress.recent_event_waiting_model"),
+                status: hasVisibleAnswer ? "completed" : "waiting_model",
+                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("run.progress.waiting_model"),
+                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
                 source: "model",
               });
             } else if (event === "run_failed") {
@@ -5875,15 +5982,16 @@ function App() {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
+              const hasVisibleAnswer = hasVisibleFinalAnswer();
               previewPendingAssistant({
-                status: latestActivity.status || "thinking",
-                allowDraft: true,
-                fallbackLabel: t("buttons.saving"),
+                status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
+                allowDraft: !hasVisibleAnswer,
+                fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
               updateOwnerLiveHeartbeat({
-                status: "waiting_model",
-                action: t("buttons.saving"),
-                recentEvent: t("run.progress.recent_event_waiting_model"),
+                status: hasVisibleAnswer ? "completed" : "waiting_model",
+                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("buttons.saving"),
+                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
                 source: "model",
               });
             } else if (event === "item/started") {
@@ -5955,10 +6063,12 @@ function App() {
                 assistantMessageStarted = true;
                 assistantText = String(item.text || assistantText || "");
                 patchPendingActivity((activity) => mergeActivityState(activity, {
+                  status: "completed",
                   final_answer: assistantText,
+                  model_draft: "",
                 }));
                 updateOwnerLiveHeartbeat({
-                  status: "waiting_model",
+                  status: "completed",
                   action: t("activity.live.answer_done"),
                   recentEvent: assistantText || t("activity.live.answer_done"),
                   source: "model",
@@ -6363,6 +6473,7 @@ function App() {
     ) {
       return;
     }
+    if (sending) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSend();
@@ -6453,6 +6564,7 @@ function App() {
     validation_warnings: Array.isArray(activeTaskState.validation_warnings) ? activeTaskState.validation_warnings : [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
+  const selectedThemeColor = themeColorOptionById(themeColor).id;
   const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
@@ -7251,6 +7363,19 @@ function App() {
     return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;
   };
 
+  const handleCopyMessage = async (item) => {
+    const messageId = String((item && item.id) || "");
+    const text = String(messageBodyText(item) || "");
+    if (!messageId || !text.trim()) return;
+    const copied = await copyTextToClipboard(text);
+    if (!copied) return;
+    setCopiedMessageId(messageId);
+    if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
+    copiedMessageTimerRef.current = window.setTimeout(() => {
+      setCopiedMessageId((current) => (current === messageId ? "" : current));
+    }, 1400);
+  };
+
   return html`
     <div className="workspace-shell" id="appShell">
       <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
@@ -7451,21 +7576,37 @@ function App() {
             : null}
           ${messages.length
             ? messages.map(
-                (item) => html`
-                  <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
-                    <div className="message-meta">
-                      <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
-                      ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
-                    </div>
-                    <div className="message-card">
-                      ${renderMessageActivity(item)}
-                      <div
-                        className="message-card-body message-markdown"
-                        dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
-                      ></div>
-                    </div>
-                  </article>
-                `,
+                (item) => {
+                  const messageId = String(item.id || "");
+                  const copied = Boolean(messageId && copiedMessageId === messageId);
+                  const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");
+                  return html`
+                    <article key=${item.id} className=${`message-article role-${item.role} ${item.pending ? "pending" : ""} ${item.error ? "error" : ""}`}>
+                      <div className="message-meta">
+                        <span className="message-role">${roleLabel(item.role, uiLocale)}</span>
+                        ${item.createdAt ? html`<span className="message-time">${formatTime(item.createdAt, uiLocale)}</span>` : null}
+                      </div>
+                      <div className="message-card">
+                        ${renderMessageActivity(item)}
+                        <div
+                          className="message-card-body message-markdown"
+                          dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
+                        ></div>
+                      </div>
+                      <div className="message-copy-row">
+                        <button
+                          className=${`message-copy-btn ${copied ? "copied" : ""}`}
+                          type="button"
+                          onClick=${() => handleCopyMessage(item)}
+                          title=${copyLabel}
+                          aria-label=${copyLabel}
+                        >
+                          <span className="message-copy-icon" aria-hidden="true"></span>
+                        </button>
+                      </div>
+                    </article>
+                  `;
+                },
               )
             : showThreadDetailLoading
               ? html`
@@ -7612,7 +7753,6 @@ function App() {
               onKeyDown=${handleComposerKeyDown}
               onPaste=${handleComposerPaste}
               placeholder=${t("composer.placeholder")}
-              disabled=${sending}
             ></textarea>
 	            <button
                 className="send-btn"
@@ -8288,6 +8428,28 @@ function App() {
                       `)}
                     </select>
                   </label>
+                  <div className="form-field">
+                    <span>${t("settings.theme_color")}</span>
+                    <div className="theme-color-options" role="group" aria-label=${t("settings.theme_color")}>
+                      ${THEME_COLOR_OPTIONS.map((item) => html`
+                        <button
+                          key=${item.id}
+                          className=${`theme-color-option ${selectedThemeColor === item.id ? "active" : ""}`}
+                          type="button"
+                          aria-pressed=${selectedThemeColor === item.id}
+                          title=${t(`settings.theme_color.${item.id}`)}
+                          onClick=${() => setThemeColor(item.id)}
+                          style=${{
+                            "--theme-option-color": item.accent,
+                            "--theme-option-soft": item.accentSoft,
+                          }}
+                        >
+                          <span className="theme-color-swatch" aria-hidden="true"></span>
+                          <span className="theme-color-name">${t(`settings.theme_color.${item.id}`)}</span>
+                        </button>
+                      `)}
+                    </div>
+                  </div>
                   <label className="form-field">
                     <span>${t("settings.model_name")}</span>
                     <input

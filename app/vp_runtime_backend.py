@@ -174,6 +174,13 @@ class BrowserWaitArgs(BaseModel):
     state: str = "visible"
 
 
+class BrowserScrollArgs(BaseModel):
+    direction: str = "down"
+    amount: int = Field(default=900, ge=1, le=5000)
+    selector: str = ""
+    timeout_ms: int = Field(default=5000, ge=250, le=60000)
+
+
 class BrowserSnapshotArgs(BaseModel):
     max_chars: int = Field(default=12000, ge=400, le=50000)
 
@@ -658,6 +665,12 @@ class VPRuntimeBackend:
                 func=self._browser_wait_tool,
             ),
             self._StructuredTool.from_function(
+                name="browser_scroll",
+                description="Scroll the current browser page or scroll one selector into view.",
+                args_schema=BrowserScrollArgs,
+                func=self._browser_scroll_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="browser_snapshot",
                 description="Capture the current browser page title, URL, text excerpt, and top links.",
                 args_schema=BrowserSnapshotArgs,
@@ -1068,6 +1081,23 @@ class VPRuntimeBackend:
 
     def _browser_wait_tool(self, selector: str = "", timeout_ms: int = 5000, state: str = "visible") -> str:
         return json.dumps(self.tools.browser_wait(selector=selector, timeout_ms=timeout_ms, state=state), ensure_ascii=False)
+
+    def _browser_scroll_tool(
+        self,
+        direction: str = "down",
+        amount: int = 900,
+        selector: str = "",
+        timeout_ms: int = 5000,
+    ) -> str:
+        return json.dumps(
+            self.tools.browser_scroll(
+                direction=direction,
+                amount=amount,
+                selector=selector,
+                timeout_ms=timeout_ms,
+            ),
+            ensure_ascii=False,
+        )
 
     def _browser_snapshot_tool(self, max_chars: int = 12000) -> str:
         return json.dumps(self.tools.browser_snapshot(max_chars=max_chars), ensure_ascii=False)

@@ -112,7 +112,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5N"
+APP_VERSION = "3.1.5S"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -141,6 +141,35 @@ def _merge_phase_timings(*payloads: Any) -> dict[str, int]:
                 continue
             merged[key] = max(0, value)
     return merged
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _activity_with_end_to_end_duration(
+    activity: dict[str, Any] | None,
+    phase_timings: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload = dict(activity or {})
+    timings = phase_timings if isinstance(phase_timings, dict) else {}
+    runtime_duration_ms = max(
+        _nonnegative_int(payload.get("run_duration_ms")),
+        _nonnegative_int(timings.get("runtime_total_ms")),
+        _nonnegative_int(timings.get("runtime_run_ms")),
+    )
+    total_duration_ms = _nonnegative_int(timings.get("total_ms"))
+    final_duration_ms = max(runtime_duration_ms, total_duration_ms)
+    if final_duration_ms:
+        payload["run_duration_ms"] = final_duration_ms
+        payload["final_elapsed_ms"] = max(
+            _nonnegative_int(payload.get("final_elapsed_ms")),
+            final_duration_ms,
+        )
+    return payload
 
 
 def _git_value(*args: str) -> str:
@@ -206,10 +235,15 @@ class AgentRunQueue:
         sid = str(session_id or "").strip() or "__anon__"
         started = time.monotonic()
         session_lock = self._get_session_lock(sid)
-        session_lock.acquire()
-        self._global_sem.acquire()
+        waited = False
+        if not session_lock.acquire(blocking=False):
+            waited = True
+            session_lock.acquire()
+        if not self._global_sem.acquire(blocking=False):
+            waited = True
+            self._global_sem.acquire()
         wait_ms = int((time.monotonic() - started) * 1000)
-        return _AgentRunQueueTicket(self._global_sem, session_lock, wait_ms)
+        return _AgentRunQueueTicket(self._global_sem, session_lock, wait_ms, waited=waited)
 
 
 class _AgentRunQueueTicket:
@@ -218,10 +252,12 @@ class _AgentRunQueueTicket:
         global_sem: threading.BoundedSemaphore,
         session_lock: threading.Lock,
         wait_ms: int,
+        waited: bool = False,
     ) -> None:
         self._global_sem = global_sem
         self._session_lock = session_lock
         self.wait_ms = max(0, int(wait_ms))
+        self.waited = bool(waited)
         self._released = False
 
     def release(self) -> None:
@@ -753,6 +789,37 @@ def _resolve_project_or_default(project_id: str | None) -> dict[str, Any]:
     return project
 
 
+def _cached_project_or_none(project_id: str | None) -> dict[str, Any] | None:
+    store = get_project_store()
+    if not hasattr(store, "get_cached"):
+        return None
+    try:
+        project = store.get_cached(project_id)
+    except Exception:
+        return None
+    return dict(project) if isinstance(project, dict) and project else None
+
+
+def _resolve_project_for_chat(project_id: str | None) -> dict[str, Any]:
+    wanted = str(project_id or "").strip()
+    cached = _cached_project_or_none(wanted)
+    if cached:
+        return cached
+    if wanted:
+        project = get_project_store().get(wanted)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {wanted}")
+        return project
+    return _default_project()
+
+
+def _touch_project_for_chat(project_id: str) -> dict[str, Any]:
+    store = get_project_store()
+    if hasattr(store, "touch_cached"):
+        return store.touch_cached(project_id)
+    return store.touch(project_id)
+
+
 def _resolve_project_for_thread_create(project_id: str | None) -> dict[str, Any]:
     wanted = str(project_id or "").strip()
     project = get_project_store().get_cached(wanted) if hasattr(get_project_store(), "get_cached") else None
@@ -852,6 +919,15 @@ def _thread_list_item_for_session_id(session_id: str) -> ThreadListItem | None:
     if hit is None:
         return None
     return _thread_list_item_from_session_row(hit)
+
+
+def _thread_list_item_from_session_snapshot(session: dict[str, Any]) -> ThreadListItem | None:
+    if not isinstance(session, dict):
+        return None
+    row = session_store.session_meta_store.metadata_from_session(session)
+    if not str(row.get("session_id") or "").strip():
+        return None
+    return _thread_list_item_from_session_row(row)
 
 
 def _bootstrap_response_payload(
@@ -1461,8 +1537,15 @@ def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: 
         pass
 
 
-def _emit_thread_started(progress_cb: Callable[[dict[str, Any]], None] | None, thread_id: str) -> None:
-    item = _thread_list_item_for_session_id(thread_id)
+def _emit_thread_started(
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+    thread_id: str,
+    *,
+    session: dict[str, Any] | None = None,
+) -> None:
+    item = _thread_list_item_from_session_snapshot(session or {}) if session is not None else None
+    if item is None:
+        item = _thread_list_item_for_session_id(thread_id)
     if item is None:
         return
     _emit_progress(progress_cb, "thread/started", thread=dump_model(item))
@@ -1771,11 +1854,11 @@ def _process_chat_request(
     if not bool(auth_summary.get("available")):
         fallback_goal = str(req.message or "").strip()[:160]
         fallback_phase_timings = request_phase_timer.snapshot(total_key="total_ms")
-        requested_project = _resolve_project_or_default(req.project_id)
+        requested_project = _resolve_project_for_chat(req.project_id)
         seed_session = session_store.load_or_create(
             req.session_id,
             project=requested_project,
-            default_project=_default_project(),
+            default_project=requested_project,
         )
         fallback_text = translate(locale, "chat.auth_missing")
         user_turn = session_store.append_turn(seed_session, role="user", text=req.message)
@@ -1920,12 +2003,12 @@ def _process_chat_request(
     )
     try:
         with request_phase_timer.measure("project_resolve_ms"):
-            requested_project = _resolve_project_or_default(req.project_id)
+            requested_project = _resolve_project_for_chat(req.project_id)
         with request_phase_timer.measure("session_seed_ms"):
             seed_session = session_store.load_or_create(
                 req.session_id,
                 project=requested_project,
-                default_project=_default_project(),
+                default_project=requested_project,
             )
         session_id = str(seed_session.get("id") or "")
         if not session_id:
@@ -1944,14 +2027,22 @@ def _process_chat_request(
                     run_id=run_id,
                 )
 
-            with request_phase_timer.measure("session_load_ms"):
-                session = session_store.load_or_create(
-                    session_id,
-                    project=requested_project,
-                    default_project=_default_project(),
-                )
-            session_project = get_project_store().get(str(session.get("project_id") or "")) or requested_project
-            get_project_store().touch(str(session_project.get("project_id") or ""))
+            if not bool(getattr(ticket, "waited", queue_wait_ms > 0)):
+                request_phase_timer.record_duration_ms("session_load_ms", 0)
+                session = seed_session
+            else:
+                with request_phase_timer.measure("session_load_ms"):
+                    session = session_store.load_or_create(
+                        session_id,
+                        project=requested_project,
+                        default_project=requested_project,
+                    )
+            with request_phase_timer.measure("session_project_resolve_ms"):
+                session_project = _cached_project_or_none(str(session.get("project_id") or "")) or requested_project
+            with request_phase_timer.measure("project_touch_ms"):
+                touched_project = _touch_project_for_chat(str(session_project.get("project_id") or ""))
+                if isinstance(touched_project, dict) and touched_project:
+                    session_project = {**session_project, **touched_project}
             session["project_id"] = str(session_project.get("project_id") or "")
             session["project_title"] = str(session_project.get("title") or "")
             session["project_root"] = str(session_project.get("root_path") or "")
@@ -1975,12 +2066,22 @@ def _process_chat_request(
                     message=translate(locale, "chat.focus_shift"),
                     run_id=run_id,
                 )
-            session_ready_context_meter, session_ready_compaction_status = _context_bundle_for_session(
-                session=session,
-                model=requested_model,
-                max_output_tokens=req.settings.max_output_tokens,
-                pending_message=req.message,
-            )
+            with request_phase_timer.measure("session_ready_context_bundle_ms"):
+                session_ready_context_meter, session_ready_compaction_status = _context_bundle_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                )
+            with request_phase_timer.measure("session_ready_snapshot_ms"):
+                session_ready_snapshot = _build_run_snapshot(
+                    goal=req.message,
+                    current_task_focus=session_context_impl.get_current_task_focus(session),
+                    turn_status="running",
+                    cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                    context_meter=session_ready_context_meter,
+                    compaction_status=session_ready_compaction_status,
+                )
             _emit_progress(
                 progress_cb,
                 "stage",
@@ -1993,19 +2094,14 @@ def _process_chat_request(
                 session_id=session_id,
                 thread_id=session_id,
                 queue_wait_ms=queue_wait_ms,
-                run_snapshot=_build_run_snapshot(
-                    goal=req.message,
-                    current_task_focus=session_context_impl.get_current_task_focus(session),
-                    turn_status="running",
-                    cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
-                    context_meter=session_ready_context_meter,
-                    compaction_status=session_ready_compaction_status,
-                ),
+                run_snapshot=session_ready_snapshot,
             )
             request_phase_timer.record_offset_ms("session_ready_ms")
-            _emit_thread_started(progress_cb, session_id)
-        history_turns_before = copy.deepcopy(session.get("turns", []))
-        summary_before = str(session.get("summary", "") or "")
+            with request_phase_timer.measure("thread_started_emit_ms"):
+                _emit_thread_started(progress_cb, session_id, session=session)
+        with request_phase_timer.measure("history_snapshot_ms"):
+            history_turns_before = copy.deepcopy(session.get("turns", []))
+            summary_before = str(session.get("summary", "") or "")
         with request_phase_timer.measure("pre_turn_compaction_ms"):
             llm_compactor = None
             if hasattr(provider_runtime, "compact_context"):
@@ -2080,7 +2176,8 @@ def _process_chat_request(
                 turn_id=run_id,
                 item=compaction_item,
             )
-        session_context_impl.sync_session_memory_state(session)
+        with request_phase_timer.measure("session_memory_sync_ms"):
+            session_context_impl.sync_session_memory_state(session)
 
         with request_phase_timer.measure("attachment_context_ms"):
             attachment_context = session_context_impl.resolve_attachment_context(
@@ -2104,14 +2201,25 @@ def _process_chat_request(
 
         with request_phase_timer.measure("attachment_load_ms"):
             attachments = upload_store.get_many(effective_attachment_ids)
-        attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
+        with request_phase_timer.measure("attachment_evidence_pack_ms"):
+            attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
         task_state_notes: list[str] = []
-        attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(
-            session=session,
-            model=requested_model,
-            max_output_tokens=req.settings.max_output_tokens,
-            pending_message=req.message,
-        )
+        with request_phase_timer.measure("attachments_context_bundle_ms"):
+            attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(
+                session=session,
+                model=requested_model,
+                max_output_tokens=req.settings.max_output_tokens,
+                pending_message=req.message,
+            )
+        with request_phase_timer.measure("attachments_ready_snapshot_ms"):
+            attachments_ready_snapshot = _build_run_snapshot(
+                goal=req.message,
+                current_task_focus=session_context_impl.get_current_task_focus(session),
+                turn_status="running",
+                cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
+                context_meter=attachments_context_meter,
+                compaction_status=attachments_compaction_status,
+            )
         _emit_progress(
             progress_cb,
             "stage",
@@ -2127,25 +2235,19 @@ def _process_chat_request(
                 resolved_count=len(attachments),
             ),
             run_id=run_id,
-            run_snapshot=_build_run_snapshot(
-                goal=req.message,
-                current_task_focus=session_context_impl.get_current_task_focus(session),
-                turn_status="running",
-                cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
-                context_meter=attachments_context_meter,
-                compaction_status=attachments_compaction_status,
-            ),
+            run_snapshot=attachments_ready_snapshot,
         )
         found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
         missing_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id not in found_attachment_ids]
         resolved_attachment_ids = [file_id for file_id in effective_attachment_ids if file_id in found_attachment_ids]
-        session_context_impl.apply_attachment_context_result(
-            session,
-            resolved_attachment_ids=resolved_attachment_ids,
-            attachment_context_mode=attachment_context_mode,
-            clear_attachment_context=clear_attachment_context,
-            requested_attachment_ids=requested_attachment_ids,
-        )
+        with request_phase_timer.measure("attachment_context_apply_ms"):
+            session_context_impl.apply_attachment_context_result(
+                session,
+                resolved_attachment_ids=resolved_attachment_ids,
+                attachment_context_mode=attachment_context_mode,
+                clear_attachment_context=clear_attachment_context,
+                requested_attachment_ids=requested_attachment_ids,
+            )
         resolved_attachment_context_key = attachment_context_key or ""
         if resolved_attachment_ids:
             resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
@@ -2178,12 +2280,13 @@ def _process_chat_request(
             )
             recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
             artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
-            compaction_status_for_runtime = _build_compaction_status_for_session(
-                session=session,
-                model=requested_model,
-                max_output_tokens=req.settings.max_output_tokens,
-                pending_message=req.message,
-            )
+            with request_phase_timer.measure("runtime_context_compaction_status_ms"):
+                compaction_status_for_runtime = _build_compaction_status_for_session(
+                    session=session,
+                    model=requested_model,
+                    max_output_tokens=req.settings.max_output_tokens,
+                    pending_message=req.message,
+                )
             context_meter_for_runtime = build_context_meter_from_status(compaction_status_for_runtime)
             recalled_context = copy.deepcopy({
                 "recalled_task": attachment_context.get("recalled_task") or {},
@@ -2356,6 +2459,7 @@ def _process_chat_request(
             "runtime_error": runtime_error,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
+        activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
         agent_run_done_context_meter, agent_run_done_compaction_status = _context_bundle_for_session(
             session=session,
             model=selected_model,

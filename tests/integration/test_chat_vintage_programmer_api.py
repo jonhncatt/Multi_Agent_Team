@@ -47,6 +47,26 @@ _FAKE_TOOL_DESCRIPTOR_BY_NAME = {
 _FAKE_ALLOWED_TOOLS = [str(item["name"]) for item in _FAKE_TOOL_SPECS]
 
 
+def test_activity_duration_uses_end_to_end_total_when_larger() -> None:
+    activity = main_app._activity_with_end_to_end_duration(
+        {"run_duration_ms": 11369, "final_elapsed_ms": 11000},
+        {"runtime_total_ms": 11369, "runtime_run_ms": 11369, "total_ms": 26183},
+    )
+
+    assert activity["run_duration_ms"] == 26183
+    assert activity["final_elapsed_ms"] == 26183
+
+
+def test_activity_duration_falls_back_to_runtime_total_without_request_total() -> None:
+    activity = main_app._activity_with_end_to_end_duration(
+        {"run_duration_ms": 0},
+        {"runtime_total_ms": 11369, "runtime_run_ms": 11360},
+    )
+
+    assert activity["run_duration_ms"] == 11369
+    assert activity["final_elapsed_ms"] == 11369
+
+
 class _FakeRuntimeStatusTools:
     def docker_status(self) -> tuple[bool, str]:
         return False, "stub"
@@ -1550,6 +1570,65 @@ def test_thread_new_uses_cached_project_without_live_metadata_refresh(monkeypatc
     assert loaded and loaded["project_id"] == "project_cached"
 
 
+def test_chat_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    project = {
+        "project_id": "project_cached_chat",
+        "title": "Cached Chat Project",
+        "root_path": str(tmp_path),
+        "git_branch": "cached-chat-branch",
+    }
+    touched: list[str] = []
+    monkeypatch.setattr(main_app.project_store, "get_cached", lambda project_id: dict(project) if project_id == "project_cached_chat" else None)
+    monkeypatch.setattr(main_app.project_store, "list_projects", lambda: (_ for _ in ()).throw(AssertionError("list_projects should not run")))
+    monkeypatch.setattr(main_app.project_store, "get", lambda project_id: (_ for _ in ()).throw(AssertionError("get should not run")))
+    monkeypatch.setattr(main_app.project_store, "touch", lambda project_id: (_ for _ in ()).throw(AssertionError("touch should not run")))
+    monkeypatch.setattr(main_app.project_store, "touch_cached", lambda project_id: touched.append(project_id) or dict(project))
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "project_id": "project_cached_chat",
+            "message": "介绍一下你自己",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["text"] == "single-agent response"
+    assert touched == ["project_cached_chat"]
+    loaded = main_app.session_store.load(payload["session_id"])
+    assert loaded and loaded["project_id"] == "project_cached_chat"
+
+
+def test_thread_started_event_uses_session_snapshot_without_reload(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    session = main_app.session_store.create(main_app.project_store.get_cached(None) or {})
+    main_app.session_store.append_turn(session, role="user", text="介绍一下你自己")
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        main_app,
+        "_thread_list_item_for_session_id",
+        lambda session_id: (_ for _ in ()).throw(AssertionError("thread started should not reload session")),
+    )
+
+    main_app._emit_thread_started(lambda payload: events.append(payload), session["id"], session=session)
+
+    assert events
+    assert events[0]["event"] == "thread/started"
+    thread = events[0]["thread"]
+    assert thread["thread_id"] == session["id"]
+    assert thread["title"] == "介绍一下你自己"
+
+
 def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
@@ -1707,6 +1786,9 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert phase_timings["runtime_context_ms"] >= 0
     assert phase_timings["runtime_run_ms"] >= 0
     assert phase_timings["total_ms"] >= 0
+    assert response_payload["activity"]["run_duration_ms"] == phase_timings["total_ms"]
+    assert response_payload["activity"]["final_elapsed_ms"] == phase_timings["total_ms"]
+    assert run_finished_payload["duration_ms"] == response_payload["activity"]["run_duration_ms"]
 
 
 def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:

@@ -6,13 +6,22 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_JS_PATH = REPO_ROOT / "app" / "static" / "app.js"
+INDEX_HTML_PATH = REPO_ROOT / "app" / "static" / "index.html"
 LOCALES_JS_PATH = REPO_ROOT / "app" / "static" / "locales.js"
 STYLES_CSS_PATH = REPO_ROOT / "app" / "static" / "styles.css"
 INTERNAL_MANUAL_PATH = REPO_ROOT / "docs" / "internal_design_manual.md"
 SUPPORTED_LOCALES = ("zh-CN", "ja-JP", "en")
 REQUIRED_CORE_KEYS = (
     "labels.payload",
+    "labels.copied",
+    "buttons.copy_message",
     "settings.locale",
+    "settings.theme_color",
+    "settings.theme_color.slate",
+    "settings.theme_color.blue",
+    "settings.theme_color.emerald",
+    "settings.theme_color.violet",
+    "settings.theme_color.rose",
     "settings.context_turns.help",
     "tool.failure.error",
     "tool.failure.stderr",
@@ -228,6 +237,19 @@ REQUIRED_CORE_KEYS = (
     "run.progress.recent_event_completed",
     "run.value.turn_status.failed",
 )
+
+
+def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
+    main_py = (REPO_ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    version_match = re.search(r'APP_VERSION = "([^"]+)"', main_py)
+    assert version_match, "APP_VERSION not found"
+    app_version = version_match.group(1)
+    index = INDEX_HTML_PATH.read_text(encoding="utf-8")
+
+    assert f'/static/app.js?v={app_version}' in index
+    assert f'/static/locales.js?v={app_version}' in index
+    assert f'/static/styles.css?v={app_version}' in index
+    assert 'src="/static/app.js"' not in index
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
 
@@ -388,6 +410,8 @@ def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> Non
     assert '"activity.status.waiting_model_slow"' in body
     assert "MODEL_WAIT_SLOW_HINT_MS" in script
     assert "const llmStartedAt = latestTraceTimestampByTypes(traces, \"llm.started\");" in body
+    assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
+    assert "const hasAnswerReady = Boolean(finalAnswerText) || traces.some" in body
     assert '"answer.started"' in body
     assert "activity.status.direct_answer_no_tool" not in body
 
@@ -721,6 +745,8 @@ def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
         "const updateOwnerLiveHeartbeat = (value) => {",
         "const syncHeartbeatFromTrace = (trace) => {",
         "const syncHeartbeatFromStreamItem = (item, eventName = \"\") => {",
+        "const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === \"completed\";",
+        'status: agentMessageCompleted ? "completed" : "waiting_model"',
         'recentEvent: detail || t("run.progress.recent_event_waiting_model")',
         'recentEvent: detail || command || tool || t("run.progress.recent_event_background")',
         'source: "validator"',
@@ -737,6 +763,8 @@ def test_live_display_activity_overrides_latest_live_assistant_until_cleanup() -
     required_tokens = (
         "function buildLiveDisplayActivity(activity, options = {}) {",
         'return !["run.finished", "answer.done", "answer.finished"].includes(traceType);',
+        'const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());',
+        'const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;',
         "const isDisplayLiveAssistant = Boolean(",
         "&& liveAssistantMessageId",
         "String(item.id || \"\") === liveAssistantMessageId",
@@ -778,6 +806,44 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
     assert '"settings.context_turns.help": "本次请求构建模型上下文时，最多纳入的历史对话轮数；不是当前 thread 的总轮数。"' in locales
     assert '"settings.context_turns.help": "今回のモデル文脈に含める履歴ターン数の上限です。スレッド全体の総ターン数ではありません。"' in locales
     assert '"settings.context_turns.help": "Maximum historical turns considered for the current model context, not the total thread turn count."' in locales
+
+
+def test_settings_theme_color_selector_drives_accent_variables() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        'const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";',
+        "const THEME_COLOR_OPTIONS = [",
+        "function readStoredThemeColor() {",
+        "function applyThemeColor(value) {",
+        'root.style.setProperty("--accent", option.accent);',
+        'root.style.setProperty("--accent-ink", option.accentInk);',
+        'root.style.setProperty("--accent-soft", option.accentSoft);',
+        "const [themeColor, setThemeColor] = useState(readStoredThemeColor);",
+        "const selectedThemeColor = themeColorOptionById(themeColor).id;",
+        'className="theme-color-options"',
+        'className=${`theme-color-option ${selectedThemeColor === item.id ? "active" : ""}`}',
+        'onClick=${() => setThemeColor(item.id)}',
+        't("settings.theme_color")',
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    required_style_tokens = (
+        ".theme-color-options",
+        ".theme-color-option",
+        ".theme-color-option.active",
+        ".theme-color-swatch",
+        ".theme-color-name",
+    )
+    for token in required_style_tokens:
+        assert token in styles, token
+
+    assert '"settings.theme_color": "主题色"' in locales
+    assert '"settings.theme_color": "テーマ色"' in locales
+    assert '"settings.theme_color": "Theme Color"' in locales
 
 
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
@@ -898,7 +964,10 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert run_finished_match, "run_finished branch not found"
     run_finished_body = run_finished_match.group("body")
+    assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in run_finished_body
     assert "previewPendingAssistant({" in run_finished_body
+    assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in run_finished_body
+    assert "allowDraft: !hasVisibleAnswer" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
     assert "activeRunId: \"\"" not in run_finished_body
@@ -910,7 +979,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     )
     assert turn_completed_match, "turn/completed branch not found"
     turn_completed_body = turn_completed_match.group("body")
+    assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in turn_completed_body
     assert "previewPendingAssistant({" in turn_completed_body
+    assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
@@ -953,9 +1024,36 @@ def test_model_draft_live_cards_cover_non_terminal_activity_states() -> None:
     body = match.group("body")
 
     assert "const modelDraftText = String(item.model_draft || \"\").trim();" in body
+    assert "const finalAnswerText = String(item.final_answer || \"\").trim();" in body
+    assert "!finalAnswerText" in body
     assert "!isActivityTerminalStatus(item.status)" in body
     assert 'normalizeProgressStatus(item.status) === "failed"' in body
     assert 'cards.unshift({' in body
+
+
+def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildLiveDisplayActivity",
+        script,
+        re.S,
+    )
+    assert match, "mergeActivityState function not found"
+    body = match.group("body")
+
+    assert 'Object.prototype.hasOwnProperty.call(nextPatch, "model_draft")' in body
+    assert "model_draft: nextModelDraft," in body
+    assert 'Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")' in body
+    assert "final_answer: nextFinalAnswer," in body
+
+
+def test_agent_message_completion_clears_streaming_model_draft() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "status: \"completed\",\n                  final_answer: assistantText,\n                  model_draft: \"\"," in script
+    assert "status: \"completed\",\n                  action: t(\"activity.live.answer_done\")," in script
+    assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
 
 
 def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -> None:
@@ -970,6 +1068,8 @@ def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -
     body = match.group("body")
 
     assert 'const modelDraftText = String(item.model_draft || "").trim();' in body
+    assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
+    assert "if (modelDraftText && !finalAnswerText)" in body
     assert 'const reversedCards = cards.slice().reverse();' in body
     assert "latestMeaningfulCurrentCard" in body
     assert "latestMeaningfulNonCompletedCard" in body
@@ -1009,6 +1109,36 @@ def test_pending_assistant_body_uses_live_summary_fallback() -> None:
 
     assert 'return pendingAssistantFallbackState(item, uiLocale, activityClockMs || Date.now()).text;' in body
     assert 'dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}' in script
+
+
+def test_message_copy_button_is_rendered_below_message_and_revealed_on_hover() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "async function copyTextToClipboard(text)" in script
+    assert "function fallbackCopyText(text)" in script
+    assert "const [copiedMessageId, setCopiedMessageId] = useState(\"\");" in script
+    assert "const handleCopyMessage = async (item) => {" in script
+    assert 'const copyLabel = copied ? t("labels.copied") : t("buttons.copy_message");' in script
+    assert '<div className="message-copy-row">' in script
+    assert 'className=${`message-copy-btn ${copied ? "copied" : ""}`}' in script
+    assert 'onClick=${() => handleCopyMessage(item)}' in script
+    assert 'aria-label=${copyLabel}' in script
+    assert 'className="message-copy-icon"' in script
+    assert ".message-meta-actions" not in styles
+    assert ".message-copy-row" in styles
+    assert ".message-article:hover .message-copy-row" in styles
+    assert ".message-article:focus-within .message-copy-row" in styles
+    assert "pointer-events: none;" in styles
+    assert ".message-copy-btn" in styles
+    assert "--message-copy-bg" in styles
+    assert "width: 28px;" in styles
+    assert "border-radius: 9px;" in styles
+    assert "background: var(--message-copy-bg);" in styles
+    assert "width: 15px;" in styles
+    assert "border: 1.7px solid currentColor;" in styles
+    assert ".message-copy-icon::before" in styles
+    assert ".message-copy-icon::after" in styles
 
 
 def test_activity_debug_full_turn_loading_is_explicitly_lazy() -> None:
@@ -1230,7 +1360,25 @@ def test_composer_submit_ignores_enter_during_ime_composition() -> None:
     assert "event.isComposing" in body
     assert "event.nativeEvent" in body
     assert "keyCode === 229" in body
+    assert "if (sending) return;" in body
     assert "handleSend();" in body
+
+
+def test_composer_textarea_remains_editable_while_run_is_active() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    frame_match = re.search(
+        r"<div className=\"composer-frame\">(?P<body>.*?)</div>\n          <div className=\"status-bar status-inline\"",
+        script,
+        re.S,
+    )
+    assert frame_match, "composer frame not found"
+    body = frame_match.group("body")
+    textarea_body = body.split("</textarea>", 1)[0]
+
+    assert 'value=${draft}' in textarea_body
+    assert "disabled=${sending}" not in textarea_body
+    assert "disabled=${sending || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
+    assert '${sending ? t("buttons.running")' in body
 
 
 def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:

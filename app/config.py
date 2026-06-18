@@ -347,6 +347,15 @@ class AppConfig:
     web_fetch_max_chars: int
     web_skip_tls_verify: bool
     web_ca_cert_path: str | None
+    browser_mode: str
+    browser_channel: str
+    browser_headless: bool
+    browser_user_data_dir: Path | None
+    browser_executable_path: str
+    browser_proxy_server: str
+    browser_ignore_https_errors: bool
+    browser_chromium_sandbox: bool
+    browser_disable_password_manager: bool
     llm_provider: str
     llm_primary_api_key_env: str
     llm_api_key_env_keys: list[str]
@@ -901,6 +910,34 @@ def load_config() -> AppConfig:
         )
         or ""
     ).strip() or None
+    browser_mode = (_env("VP_BROWSER_MODE", default="playwright") or "playwright").strip().lower()
+    if browser_mode not in {"playwright", "chrome_profile"}:
+        browser_mode = "playwright"
+    browser_channel = (_env("VP_BROWSER_CHANNEL", default="chrome") or "chrome").strip()
+    browser_headless_raw = (_env("VP_BROWSER_HEADLESS", default="true") or "true").strip().lower()
+    browser_headless = browser_headless_raw in {"1", "true", "yes", "on"}
+    browser_user_data_dir_raw = (_env("VP_BROWSER_USER_DATA_DIR", default="") or "").strip()
+    browser_user_data_dir: Path | None = None
+    if browser_user_data_dir_raw:
+        browser_user_data_dir_candidate = Path(browser_user_data_dir_raw).expanduser()
+        if not browser_user_data_dir_candidate.is_absolute():
+            browser_user_data_dir_candidate = workspace_root / browser_user_data_dir_candidate
+        browser_user_data_dir = browser_user_data_dir_candidate.resolve()
+    browser_executable_path = (_env("VP_BROWSER_EXECUTABLE_PATH", default="") or "").strip()
+    browser_proxy_server = (_env("VP_BROWSER_PROXY_SERVER", default="") or "").strip()
+    browser_ignore_https_raw = (_env("VP_BROWSER_IGNORE_HTTPS_ERRORS", default="false") or "false").strip().lower()
+    browser_ignore_https_errors = browser_ignore_https_raw in {"1", "true", "yes", "on"}
+    browser_sandbox_default = "true" if browser_mode == "chrome_profile" else "false"
+    browser_chromium_sandbox_raw = (
+        _env("VP_BROWSER_CHROMIUM_SANDBOX", default=browser_sandbox_default) or browser_sandbox_default
+    ).strip().lower()
+    browser_chromium_sandbox = browser_chromium_sandbox_raw in {"1", "true", "yes", "on"}
+    browser_password_manager_default = "true" if browser_mode == "chrome_profile" else "false"
+    browser_disable_password_manager_raw = (
+        _env("VP_BROWSER_DISABLE_PASSWORD_MANAGER", default=browser_password_manager_default)
+        or browser_password_manager_default
+    ).strip().lower()
+    browser_disable_password_manager = browser_disable_password_manager_raw in {"1", "true", "yes", "on"}
 
     allowed_roots: list[Path] = []
     seen: set[str] = set()
@@ -1037,6 +1074,15 @@ def load_config() -> AppConfig:
         web_fetch_max_chars=max(2000, min(500000, web_fetch_max_chars)),
         web_skip_tls_verify=web_skip_tls_verify,
         web_ca_cert_path=web_ca_cert_path,
+        browser_mode=browser_mode,
+        browser_channel=browser_channel,
+        browser_headless=browser_headless,
+        browser_user_data_dir=browser_user_data_dir,
+        browser_executable_path=browser_executable_path,
+        browser_proxy_server=browser_proxy_server,
+        browser_ignore_https_errors=browser_ignore_https_errors,
+        browser_chromium_sandbox=browser_chromium_sandbox,
+        browser_disable_password_manager=browser_disable_password_manager,
         llm_provider=llm_provider,
         llm_primary_api_key_env=llm_primary_api_key_env,
         llm_api_key_env_keys=llm_api_key_env_keys,

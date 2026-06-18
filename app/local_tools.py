@@ -1125,7 +1125,16 @@ class LocalToolExecutor:
         self._taint_registry_path = (self._runtime_data_dir / "taint_registry.json").resolve()
         self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
         self._browser_manager = BrowserToolManager(
-            artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve()
+            artifacts_dir=(config.workspace_root / "app" / "data" / "browser_artifacts").resolve(),
+            mode=config.browser_mode,
+            channel=config.browser_channel,
+            headless=config.browser_headless,
+            user_data_dir=config.browser_user_data_dir,
+            executable_path=config.browser_executable_path,
+            proxy_server=config.browser_proxy_server,
+            ignore_https_errors=config.browser_ignore_https_errors,
+            chromium_sandbox=config.browser_chromium_sandbox,
+            disable_password_manager=config.browser_disable_password_manager,
         )
         self._image_read_handler: Callable[..., dict[str, Any]] | None = None
         self._docker_sandbox = DockerSandboxManager(
@@ -3047,6 +3056,25 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "browser_scroll",
+                "description": "Scroll the current browser page or scroll one selector into view.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "direction": {
+                            "type": "string",
+                            "enum": ["down", "up", "left", "right"],
+                            "default": "down",
+                        },
+                        "amount": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 900},
+                        "selector": {"type": "string", "default": ""},
+                        "timeout_ms": {"type": "integer", "minimum": 250, "maximum": 60000, "default": 5000},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "browser_snapshot",
                 "description": "Capture the current browser page title, URL, text excerpt, and top links.",
                 "parameters": {
@@ -3168,6 +3196,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "browser_wait":
             result = self.browser_wait(**arguments)
+            return self._decorate_result(result)
+        if name == "browser_scroll":
+            result = self.browser_scroll(**arguments)
             return self._decorate_result(result)
         if name == "browser_snapshot":
             result = self.browser_snapshot(**arguments)
@@ -4250,6 +4281,21 @@ class LocalToolExecutor:
             selector=str(selector or "").strip(),
             timeout_ms=timeout_ms,
             state=str(state or "visible"),
+        )
+
+    def browser_scroll(
+        self,
+        direction: str = "down",
+        amount: int = 900,
+        selector: str = "",
+        timeout_ms: int = 5000,
+    ) -> dict[str, Any]:
+        return self._browser_manager.scroll(
+            session_id=self._browser_session_id(),
+            direction=str(direction or "down").strip(),
+            amount=amount,
+            selector=str(selector or "").strip(),
+            timeout_ms=timeout_ms,
         )
 
     def browser_snapshot(self, max_chars: int = 12000) -> dict[str, Any]:

@@ -57,6 +57,21 @@ v2.9.20 的模型输入仍只渲染 `ModelContext`，它由六个清晰部分组
 
 默认权限模式是 `Auto`：可读写当前项目、可在当前项目内运行安全命令，但网络关闭。`Default` 是只读安全模式，仅允许读取/搜索工具，不写文件、不运行 shell、不开网络；`Full Access` 是最大信任模式，可按系统配置使用更大范围的读写和命令作用域并启用网络。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；所有模式仍受路径边界、命令 allowlist 和危险命令拦截约束。
 
+## Browser With Local Chrome Profile
+
+默认 `browser_open` 仍使用 Playwright 管理的 headless Chromium。企业环境如果拦截 Chromium 安装或执行，可以改用本机已安装的 Google Chrome，并使用一个专用 profile 保存登录态：
+
+```env
+VP_BROWSER_MODE=chrome_profile
+VP_BROWSER_CHANNEL=chrome
+VP_BROWSER_HEADLESS=false
+VP_BROWSER_USER_DATA_DIR=app/data/browser_profile
+VP_BROWSER_CHROMIUM_SANDBOX=true
+VP_BROWSER_DISABLE_PASSWORD_MANAGER=true
+```
+
+首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。`app/data/browser_profile` 是 VP 专用目录；不要把个人主 Chrome profile 直接作为 `VP_BROWSER_USER_DATA_DIR`。`VP_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VP profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VP_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
+
 ## 这是什么
 
 Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent 是 `vintage_programmer`。
