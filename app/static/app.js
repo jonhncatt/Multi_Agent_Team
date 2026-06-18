@@ -1323,7 +1323,7 @@ function normalizeProgressStatus(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return "pending";
   if (["completed", "success", "done", "ok"].includes(normalized)) return "completed";
-  if (["in_progress", "inprogress", "running", "active", "working"].includes(normalized)) return "running";
+  if (["in_progress", "inprogress", "running", "active", "working", "tooling", "answering"].includes(normalized)) return "running";
   if (["validating", "checking", "guarding"].includes(normalized)) return "validating";
   if (["waiting_model", "waiting-model", "model_wait", "thinking"].includes(normalized)) return "waiting_model";
   if (["waiting_tool", "waiting-tool", "tool_wait", "waiting_result"].includes(normalized)) return "waiting_tool";
@@ -1507,6 +1507,48 @@ function formatToolProgressLabel(locale, group, options = {}) {
   if (phase === "preparing") return translateUi(locale, "activity.progress.preparing", { label });
   if (phase === "active") return translateUi(locale, "activity.progress.active", { label });
   return label;
+}
+
+function formatLiveAgentToolActionText(locale, options = {}) {
+  const item = options && typeof options === "object" ? options : {};
+  const tool = String(item.tool || item.tool_name || "").trim();
+  const type = String(item.type || "").trim();
+  const status = normalizeProgressStatus(item.status || "");
+  const target = String(item.target || item.detail || item.command || "").trim();
+  const hasActualTool = Boolean(
+    tool
+    || type === "toolCall"
+    || type === "commandExecution"
+    || type === "fileChange"
+    || type === "imageView"
+    || type.startsWith("tool.")
+    || type.startsWith("action.")
+    || type === "observation.returned"
+  );
+  if (!hasActualTool) return "";
+  const toolAction = formatToolProgressLabel(locale, {
+    tool_name: tool,
+    normalized_arguments: target ? { query: target } : {},
+    arguments_preview: target,
+    detail: target,
+  });
+  const phase = toolProgressPhaseFromStatus(status, type);
+  if (phase === "preparing") {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_preparing_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_preparing_named", { tool }) : translateUi(locale, "run.live_agent.tool_preparing"));
+  }
+  if (phase === "active") {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_running_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_running_named", { tool }) : translateUi(locale, "run.live_agent.tool_running"));
+  }
+  if (status === "waiting_model" || status === "completed" || type === "observation.returned" || type === "tool.finished") {
+    return toolAction
+      ? translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })
+      : (tool ? translateUi(locale, "run.live_agent.tool_result_named", { tool }) : translateUi(locale, "run.live_agent.tool_result"));
+  }
+  return "";
 }
 
 function buildPlanChecklistItems(plan) {
@@ -1856,6 +1898,42 @@ function resolveLiveSummary(activity, projection, locale = "zh-CN") {
   const item = normalizeMessageActivity(activity || {});
   const modelDraftText = String(item.model_draft || "").trim();
   const finalAnswerText = String(item.final_answer || "").trim();
+  const cards = Array.isArray(projection && projection.main_live_cards) ? projection.main_live_cards : [];
+  const reversedCards = cards.slice().reverse();
+  const executionCards = reversedCards.filter((card) => String(card && card.id || "") !== "model-draft");
+  const meaningful = (card) => Boolean(liveCardSummaryText(card));
+  const isToolProgressCard = (card) => {
+    const entry = card && typeof card === "object" ? card : {};
+    const rawRef = entry.rawRef && typeof entry.rawRef === "object" ? entry.rawRef : {};
+    const liveItem = rawRef.live_item && typeof rawRef.live_item === "object" ? rawRef.live_item : {};
+    const type = String(entry.type || rawRef.type || liveItem.type || "").trim();
+    const source = String(entry.source || rawRef.source || "").trim();
+    return Boolean(entry.tool || rawRef.tool || liveItem.tool || source === "tool" || type.startsWith("tool.") || type.startsWith("action.") || type === "observation.returned");
+  };
+  const latestMeaningfulCurrentCard = executionCards.find((card) => (
+    meaningful(card) && ["running", "failed"].includes(normalizeProgressStatus(card && card.status))
+  ));
+  const latestMeaningfulNonCompletedCard = executionCards.find((card) => (
+    meaningful(card) && normalizeProgressStatus(card && card.status) !== "completed"
+  ));
+  const latestMeaningfulToolResultCard = (!isActivityTerminalStatus(item.status) && !finalAnswerText)
+    ? executionCards.find((card) => meaningful(card) && normalizeProgressStatus(card && card.status) === "completed" && isToolProgressCard(card))
+    : null;
+  const selectedExecutionCard = (
+    latestMeaningfulCurrentCard
+    || latestMeaningfulNonCompletedCard
+    || latestMeaningfulToolResultCard
+  );
+  const selectedExecutionText = liveCardSummaryText(selectedExecutionCard);
+  if (selectedExecutionText) {
+    return {
+      title: translateUi(locale, "runtime.execution_progress.title"),
+      label: translateUi(locale, "runtime.execution_progress.title"),
+      text: selectedExecutionText,
+      source: "execution_progress",
+      card: selectedExecutionCard && typeof selectedExecutionCard === "object" ? selectedExecutionCard : {},
+    };
+  }
   if (modelDraftText && !finalAnswerText) {
     return {
       title: translateUi(locale, "runtime.model_draft.title"),
@@ -1864,27 +1942,11 @@ function resolveLiveSummary(activity, projection, locale = "zh-CN") {
       source: "model_draft",
     };
   }
-  const cards = Array.isArray(projection && projection.main_live_cards) ? projection.main_live_cards : [];
-  const reversedCards = cards.slice().reverse();
-  const meaningful = (card) => Boolean(liveCardSummaryText(card));
-  const latestMeaningfulCurrentCard = reversedCards.find((card) => (
-    meaningful(card) && ["running", "failed"].includes(normalizeProgressStatus(card && card.status))
-  ));
-  const latestMeaningfulNonCompletedCard = reversedCards.find((card) => (
-    meaningful(card) && normalizeProgressStatus(card && card.status) !== "completed"
-  ));
-  const latestMeaningfulCard = reversedCards.find((card) => meaningful(card));
-  const latestCurrentCard = reversedCards.find((card) => ["running", "failed"].includes(normalizeProgressStatus(card && card.status)));
-  const latestNonCompletedCard = reversedCards.find((card) => normalizeProgressStatus(card && card.status) !== "completed");
-  const latestCard = reversedCards[0] || null;
-  const selectedCard = (
-    latestMeaningfulCurrentCard
-    || latestMeaningfulNonCompletedCard
-    || latestMeaningfulCard
-    || latestCurrentCard
-    || latestNonCompletedCard
-    || latestCard
-  );
+  const latestMeaningfulCard = executionCards.find((card) => meaningful(card));
+  const latestCurrentCard = executionCards.find((card) => ["running", "failed"].includes(normalizeProgressStatus(card && card.status)));
+  const latestNonCompletedCard = executionCards.find((card) => normalizeProgressStatus(card && card.status) !== "completed");
+  const latestCard = executionCards[0] || reversedCards[0] || null;
+  const selectedCard = latestMeaningfulCard || latestCurrentCard || latestNonCompletedCard || latestCard;
   const selectedText = liveCardSummaryText(selectedCard);
   if (selectedText) {
     return {
@@ -2968,6 +3030,7 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   if (normalized.startsWith("activity.")) return "thinking";
   if (
     normalized === "tool.started" ||
+    normalized === "tool.finished" ||
     normalized === "tool.call_detected" ||
     normalized === "action.detected" ||
     normalized === "action.validating" ||
@@ -2977,6 +3040,7 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   if (normalized === "answer.started" || normalized === "answer.finished" || normalized === "answer.done" || normalized === "answer.delta") return "answering";
   if (normalized === "approval.required" || normalized === "blocked" || normalized === "action.blocked" || normalized === "loop.safeguard") return "blocked";
   if (normalized === "run.finished") return "completed";
+  if (normalized === "tool.failed") return "failed";
   if (normalized === "llm.failed") return "failed";
   if (normalized === "run.failed") return "failed";
   if (normalized === "cancelled") return "cancelled";
@@ -5582,6 +5646,7 @@ function App() {
         const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
         const traceType = String(item.type || "").trim();
         const detail = String(item.detail || item.title || payload.summary || "").trim();
+        const target = toolCallTargetFromSource(payload) || detail;
         const tool = String(
           payload.tool_name
           || payload.tool
@@ -5590,6 +5655,14 @@ function App() {
           || "",
         ).trim();
         const command = executionProgressCommandFromSource(payload);
+        const agentToolAction = (status) => formatLiveAgentToolActionText(uiLocale, {
+          tool,
+          type: traceType,
+          status,
+          target,
+          detail,
+          command,
+        });
         if (traceType === "run.finished" || traceType === "answer.done" || traceType === "answer.finished") {
           return;
         }
@@ -5630,11 +5703,12 @@ function App() {
           return;
         }
         if (traceType === "action.validating") {
+          const action = agentToolAction("validating");
           updateOwnerLiveHeartbeat({
             status: "validating",
             tool,
             command,
-            action: detail || t("run.progress.waiting_tool"),
+            action: action || detail || t("run.progress.waiting_tool"),
             recentEvent: detail || t("run.progress.recent_event_waiting_tool"),
             source: "validator",
             updatedAt: item.timestamp || Date.now(),
@@ -5642,11 +5716,13 @@ function App() {
           return;
         }
         if (traceType === "tool.started" || traceType === "action.allowed" || traceType === "action.detected" || traceType === "tool.call_detected") {
+          const nextStatus = traceType === "tool.started" ? "running" : "waiting_tool";
+          const action = agentToolAction(nextStatus);
           updateOwnerLiveHeartbeat({
-            status: traceType === "tool.started" ? "running" : "waiting_tool",
+            status: nextStatus,
             tool,
             command,
-            action: detail || command || t("run.progress.waiting_tool"),
+            action: action || detail || command || t("run.progress.waiting_tool"),
             recentEvent: detail || command || t("run.progress.recent_event_waiting_tool"),
             source: "tool",
             updatedAt: item.timestamp || Date.now(),
@@ -5654,11 +5730,12 @@ function App() {
           return;
         }
         if (traceType === "tool.finished") {
+          const action = agentToolAction("waiting_model");
           updateOwnerLiveHeartbeat({
-            status: "completed",
+            status: "waiting_model",
             tool,
             command,
-            action: detail || t("activity.live.tool_finished", { tool: tool || "tool" }),
+            action: action || detail || t("activity.live.tool_finished", { tool: tool || "tool" }),
             recentEvent: detail || t("run.progress.recent_event_waiting_model"),
             source: "tool",
             updatedAt: item.timestamp || Date.now(),
@@ -5666,11 +5743,12 @@ function App() {
           return;
         }
         if (traceType === "observation.returned" || traceType === "llm.finished") {
+          const action = traceType === "observation.returned" ? agentToolAction("waiting_model") : "";
           updateOwnerLiveHeartbeat({
             status: "waiting_model",
             tool,
             command,
-            action: detail || t("run.progress.waiting_model"),
+            action: action || detail || t("run.progress.waiting_model"),
             recentEvent: detail || t("run.progress.recent_event_waiting_model"),
             source: "model",
             updatedAt: item.timestamp || Date.now(),
@@ -5685,6 +5763,14 @@ function App() {
         const command = executionProgressCommandFromSource(entry);
         const detail = String(entry.detail || entry.summary || entry.title || entry.text || "").trim();
         const isCompleted = String(eventName || "").trim() === "item/completed";
+        const toolAction = formatLiveAgentToolActionText(uiLocale, {
+          tool,
+          type: itemType,
+          status: isCompleted ? normalizeProgressStatus(entry.status || "completed") : normalizeProgressStatus(entry.status || "running"),
+          target: detail,
+          detail,
+          command,
+        });
         if (itemType === "agentMessage") {
           const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === "completed";
           updateOwnerLiveHeartbeat({
@@ -5718,7 +5804,7 @@ function App() {
           status: isCompleted ? normalizeProgressStatus(entry.status || "completed") : normalizeProgressStatus(entry.status || "running"),
           tool,
           command,
-          action: detail || command || tool || t("run.progress.background_running"),
+          action: toolAction || detail || command || tool || t("run.progress.background_running"),
           recentEvent: detail || command || tool || t("run.progress.recent_event_background"),
           source: "tool",
         });

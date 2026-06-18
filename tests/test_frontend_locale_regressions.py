@@ -668,6 +668,8 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
         'className="empty-panel empty-live-panel"',
         'const liveAgentMessage = Boolean(',
         'liveAgentMessage ? "live-agent-card" : ""',
+        "const agentToolAction = (status) => formatLiveAgentToolActionText(uiLocale, {",
+        'action: action || detail || command || t("run.progress.waiting_tool")',
         'className="live-run-eyebrow"',
         'className=${`live-run-dot status-${runExecutionProgress.status || "running"}`}',
         't("run.live_panel.title")',
@@ -1144,6 +1146,10 @@ def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -
     assert 'const modelDraftText = String(item.model_draft || "").trim();' in body
     assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
     assert "if (modelDraftText && !finalAnswerText)" in body
+    assert 'String(card && card.id || "") !== "model-draft"' in body
+    assert body.index("if (selectedExecutionText)") < body.index("if (modelDraftText && !finalAnswerText)")
+    assert "latestMeaningfulToolResultCard" in body
+    assert 'type.startsWith("tool.")' in body
     assert 'const reversedCards = cards.slice().reverse();' in body
     assert "latestMeaningfulCurrentCard" in body
     assert "latestMeaningfulNonCompletedCard" in body
@@ -1191,6 +1197,22 @@ def test_pending_agent_copy_uses_actual_tool_metadata_not_keywords() -> None:
     assert 'translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })' in body
     assert 'translateUi(locale, "run.live_agent.understanding_detail", { detail })' in body
     assert "activityItem.activity_summary" not in body
+
+
+def test_frontend_normalizes_runtime_tooling_statuses() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function normalizeProgressStatus\(value\) \{(?P<body>.*?)\n}\n\nfunction latestActivityPayloadValue",
+        script,
+        re.S,
+    )
+    assert match, "normalizeProgressStatus function not found"
+    body = match.group("body")
+
+    assert '"tooling"' in body
+    assert '"answering"' in body
+    assert 'normalized === "tool.finished"' in script
+    assert 'normalized === "tool.failed"' in script
 
 
 def test_pending_assistant_body_uses_live_summary_fallback() -> None:
