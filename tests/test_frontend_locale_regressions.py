@@ -659,12 +659,15 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
         ".live-run-command",
         ".live-run-meta",
         ".message-article.live-agent-card .message-card",
-        ".message-article.live-agent-card .message-card::before",
+        ".message-article.live-agent-card .message-card-body",
+        ".message-article.live-agent-card .message-card-body::before",
         "@keyframes live-run-pulse",
     )
     for token in required_style_tokens:
         assert token in styles, token
 
+    assert ".message-article.live-agent-card .message-card::before" not in styles
+    assert 'if (item.source === "execution_progress") return text;' in script
     assert '"run.live_panel.title": "Agent 正在处理"' in locales
     assert '"run.live_panel.title": "Agent が処理中です"' in locales
     assert '"run.live_panel.title": "Agent is working"' in locales

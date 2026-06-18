@@ -1246,19 +1246,24 @@ button {
 }
 
 .message-article.live-agent-card .message-card {
-  position: relative;
-  padding-left: 34px;
   border-color: rgba(17, 24, 39, 0.14);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.9));
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
 }
 
-.message-article.live-agent-card .message-card::before {
+.message-article.live-agent-card .message-card-body {
+  position: relative;
+  padding-left: 18px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.message-article.live-agent-card .message-card-body::before {
   content: "";
   position: absolute;
-  left: 15px;
-  top: 18px;
+  left: 0;
+  top: 0.78em;
   width: 9px;
   height: 9px;
   border-radius: 999px;

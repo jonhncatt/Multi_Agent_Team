@@ -1887,6 +1887,7 @@ function formatLiveSummaryText(summary) {
   const title = String(item.title || item.label || "").trim();
   if (!text) return "";
   if (!title || item.source === "activity_summary") return text;
+  if (item.source === "execution_progress") return text;
   return `${title} · ${text}`;
 }
 
