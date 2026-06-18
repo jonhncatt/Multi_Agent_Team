@@ -1891,11 +1891,45 @@ function formatLiveSummaryText(summary) {
   return `${title} · ${text}`;
 }
 
+function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
+  const item = summary && typeof summary === "object" ? summary : {};
+  const activityItem = normalizeMessageActivity(activity || {});
+  const status = normalizeProgressStatus(activityItem.status || "");
+  const haystack = [
+    item.source,
+    item.title,
+    item.label,
+    item.text,
+    activityItem.activity_summary,
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  if (status === "blocked") return translateUi(locale, "run.live_agent.blocked");
+  if (status === "failed") return translateUi(locale, "run.live_agent.failed");
+  if (item.source === "model_draft") return translateUi(locale, "run.live_agent.writing");
+  if (/context|compaction|compact|上下文|压缩|コンテキスト/.test(haystack)) {
+    return translateUi(locale, "run.live_agent.context");
+  }
+  if (/tool|command|exec|shell|read_file|list_dir|search|工具|命令|実行|ツール/.test(haystack)) {
+    return translateUi(locale, "run.live_agent.tool");
+  }
+  if (/answer|stream|final|回复|回答|生成|結果|回答/.test(haystack)) {
+    return translateUi(locale, "run.live_agent.writing");
+  }
+  if (status === "waiting_model" || /model|thinking|理解|问题|request|モデル|問題/.test(haystack)) {
+    return translateUi(locale, "run.live_agent.understanding");
+  }
+  if (status === "background_running") return translateUi(locale, "run.live_agent.background");
+  if (status === "waiting_tool" || status === "validating" || status === "running") {
+    return translateUi(locale, "run.live_agent.default");
+  }
+  return "";
+}
+
 function pendingAssistantFallbackState(item, locale = "zh-CN", nowMs = Date.now()) {
   if (!item || item.role !== "assistant") {
     return {
       text: String((item && item.text) || ""),
       fromSummaryFallback: false,
+      suppressNoteText: "",
     };
   }
   const activity = normalizeMessageActivity(item.activity || {});
@@ -1904,19 +1938,31 @@ function pendingAssistantFallbackState(item, locale = "zh-CN", nowMs = Date.now(
     return {
       text: currentText,
       fromSummaryFallback: false,
+      suppressNoteText: "",
     };
   }
   const projection = buildActivityProjection(activity, locale, nowMs);
-  const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, locale));
+  const liveSummary = resolveLiveSummary(activity, projection, locale);
+  const liveSummaryText = formatLiveSummaryText(liveSummary);
+  const agentText = formatPendingAssistantAgentText(liveSummary, activity, locale);
+  if (agentText) {
+    return {
+      text: agentText,
+      fromSummaryFallback: true,
+      suppressNoteText: liveSummaryText,
+    };
+  }
   if (liveSummaryText) {
     return {
       text: liveSummaryText,
       fromSummaryFallback: true,
+      suppressNoteText: liveSummaryText,
     };
   }
   return {
     text: currentText,
     fromSummaryFallback: false,
+    suppressNoteText: "",
   };
 }
 
@@ -7340,7 +7386,7 @@ function App() {
         ${!isOpen
           ? renderActivityProgressList(projection, displayActivity, {
               preview: true,
-              suppressNoteText: pendingFallback.fromSummaryFallback ? pendingFallback.text : "",
+              suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",
             })
           : null}
         ${isOpen

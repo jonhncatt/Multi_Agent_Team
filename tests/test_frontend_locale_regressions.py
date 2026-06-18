@@ -70,6 +70,14 @@ REQUIRED_CORE_KEYS = (
     "activity.live.answer_streaming",
     "activity.live.answer_done",
     "run.live_panel.title",
+    "run.live_agent.understanding",
+    "run.live_agent.context",
+    "run.live_agent.tool",
+    "run.live_agent.writing",
+    "run.live_agent.background",
+    "run.live_agent.default",
+    "run.live_agent.blocked",
+    "run.live_agent.failed",
     "runtime.error.title",
     "runtime.error.llm_request_failed",
     "runtime.error.llm_empty_response",
@@ -646,6 +654,7 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
         'className="live-run-eyebrow"',
         'className=${`live-run-dot status-${runExecutionProgress.status || "running"}`}',
         't("run.live_panel.title")',
+        "function formatPendingAssistantAgentText(summary, activity, locale = \"zh-CN\")",
         "runExecutionProgress.currentAction || runExecutionProgress.recentEvent",
     )
     for token in required_script_tokens:
@@ -669,6 +678,7 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
     assert ".message-article.live-agent-card .message-card::before" not in styles
     assert 'if (item.source === "execution_progress") return text;' in script
     assert '"run.live_panel.title": "Agent 正在处理"' in locales
+    assert '"run.live_agent.understanding": "Agent 正在理解你的问题，并整理下一步。"' in locales
     assert '"run.live_panel.title": "Agent が処理中です"' in locales
     assert '"run.live_panel.title": "Agent is working"' in locales
 
@@ -1137,8 +1147,11 @@ def test_pending_assistant_fallback_state_prefers_live_summary_without_mutating_
     assert 'const currentText = String(item.text || "");' in body
     assert 'if (!item.pending || String(activity.final_answer || "").trim()) {' in body
     assert 'const projection = buildActivityProjection(activity, locale, nowMs);' in body
-    assert 'const liveSummaryText = formatLiveSummaryText(resolveLiveSummary(activity, projection, locale));' in body
+    assert 'const liveSummary = resolveLiveSummary(activity, projection, locale);' in body
+    assert 'const liveSummaryText = formatLiveSummaryText(liveSummary);' in body
+    assert 'const agentText = formatPendingAssistantAgentText(liveSummary, activity, locale);' in body
     assert 'fromSummaryFallback: true,' in body
+    assert 'suppressNoteText: liveSummaryText,' in body
 
 
 def test_pending_assistant_body_uses_live_summary_fallback() -> None:
@@ -1352,7 +1365,7 @@ def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
     body = match.group("body")
 
     assert 'const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());' in body
-    assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? pendingFallback.text : "",' in body
+    assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",' in body
     assert "visibleItems.map((entry) => {" in script
 
 
