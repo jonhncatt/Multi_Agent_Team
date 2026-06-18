@@ -78,6 +78,12 @@ REQUIRED_CORE_KEYS = (
     "run.live_agent.default",
     "run.live_agent.blocked",
     "run.live_agent.failed",
+    "run.live_agent.understanding_detail",
+    "run.live_agent.context_detail",
+    "run.live_agent.tool_named",
+    "run.live_agent.tool_detail",
+    "run.live_agent.writing_detail",
+    "run.live_agent.progress_detail",
     "runtime.error.title",
     "runtime.error.llm_request_failed",
     "runtime.error.llm_empty_response",
@@ -679,6 +685,7 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
     assert 'if (item.source === "execution_progress") return text;' in script
     assert '"run.live_panel.title": "Agent 正在处理"' in locales
     assert '"run.live_agent.understanding": "Agent 正在理解你的问题，并整理下一步。"' in locales
+    assert '"run.live_agent.tool_named": "Agent 正在用 {tool} 检查相关信息。"' in locales
     assert '"run.live_panel.title": "Agent が処理中です"' in locales
     assert '"run.live_panel.title": "Agent is working"' in locales
 
@@ -1152,6 +1159,24 @@ def test_pending_assistant_fallback_state_prefers_live_summary_without_mutating_
     assert 'const agentText = formatPendingAssistantAgentText(liveSummary, activity, locale);' in body
     assert 'fromSummaryFallback: true,' in body
     assert 'suppressNoteText: liveSummaryText,' in body
+
+
+def test_pending_agent_copy_uses_actual_tool_metadata_not_keywords() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function formatPendingAssistantAgentText\(summary, activity, locale = \"zh-CN\"\) \{(?P<body>.*?)\n}\n\nfunction pendingAssistantFallbackState",
+        script,
+        re.S,
+    )
+    assert match, "formatPendingAssistantAgentText function not found"
+    body = match.group("body")
+
+    assert "const hasActualTool = Boolean(" in body
+    assert 'const toolIsActive = Boolean(hasActualTool && !["completed", "failed", "blocked", "cancelled"].includes(cardStatus) && status !== "waiting_model");' in body
+    assert "if (toolIsActive) {" in body
+    assert 'translateUi(locale, "run.live_agent.tool_named", { tool })' in body
+    assert 'translateUi(locale, "run.live_agent.understanding_detail", { detail })' in body
+    assert "activityItem.activity_summary" not in body
 
 
 def test_pending_assistant_body_uses_live_summary_fallback() -> None:

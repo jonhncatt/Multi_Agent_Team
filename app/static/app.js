@@ -1862,6 +1862,7 @@ function resolveLiveSummary(activity, projection, locale = "zh-CN") {
       label: translateUi(locale, "runtime.execution_progress.title"),
       text: selectedText,
       source: "execution_progress",
+      card: selectedCard && typeof selectedCard === "object" ? selectedCard : {},
     };
   }
   const activitySummary = String(item.activity_summary || "").trim();
@@ -1893,33 +1894,53 @@ function formatLiveSummaryText(summary) {
 
 function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
   const item = summary && typeof summary === "object" ? summary : {};
+  const card = item.card && typeof item.card === "object" ? item.card : {};
+  const rawRef = card.rawRef && typeof card.rawRef === "object" ? card.rawRef : {};
   const activityItem = normalizeMessageActivity(activity || {});
   const status = normalizeProgressStatus(activityItem.status || "");
+  const title = String(card.title || card.label || item.title || item.label || "").trim();
+  const detail = String(card.detail || card.target || item.text || "").trim();
+  const tool = String(card.tool || rawRef.tool || rawRef.name || "").trim();
+  const type = String(card.type || rawRef.type || "").trim();
+  const cardSource = String(card.source || rawRef.source || item.source || "").trim();
+  const cardStatus = normalizeProgressStatus(card.status || rawRef.status || "");
+  const hasActualTool = Boolean(tool || cardSource === "tool" || type === "toolCall" || type === "commandExecution" || type === "fileChange" || type === "imageView");
+  const toolIsActive = Boolean(hasActualTool && !["completed", "failed", "blocked", "cancelled"].includes(cardStatus) && status !== "waiting_model");
   const haystack = [
     item.source,
-    item.title,
-    item.label,
-    item.text,
-    activityItem.activity_summary,
+    title,
+    detail,
+    type,
+    cardSource,
   ].map((value) => String(value || "").toLowerCase()).join(" ");
   if (status === "blocked") return translateUi(locale, "run.live_agent.blocked");
   if (status === "failed") return translateUi(locale, "run.live_agent.failed");
   if (item.source === "model_draft") return translateUi(locale, "run.live_agent.writing");
   if (/context|compaction|compact|上下文|压缩|コンテキスト/.test(haystack)) {
-    return translateUi(locale, "run.live_agent.context");
+    return detail
+      ? translateUi(locale, "run.live_agent.context_detail", { detail })
+      : translateUi(locale, "run.live_agent.context");
   }
-  if (/tool|command|exec|shell|read_file|list_dir|search|工具|命令|実行|ツール/.test(haystack)) {
-    return translateUi(locale, "run.live_agent.tool");
+  if (toolIsActive) {
+    return tool
+      ? translateUi(locale, "run.live_agent.tool_named", { tool })
+      : (detail ? translateUi(locale, "run.live_agent.tool_detail", { detail }) : translateUi(locale, "run.live_agent.tool"));
   }
   if (/answer|stream|final|回复|回答|生成|結果|回答/.test(haystack)) {
-    return translateUi(locale, "run.live_agent.writing");
+    return detail
+      ? translateUi(locale, "run.live_agent.writing_detail", { detail })
+      : translateUi(locale, "run.live_agent.writing");
   }
   if (status === "waiting_model" || /model|thinking|理解|问题|request|モデル|問題/.test(haystack)) {
-    return translateUi(locale, "run.live_agent.understanding");
+    return detail
+      ? translateUi(locale, "run.live_agent.understanding_detail", { detail })
+      : translateUi(locale, "run.live_agent.understanding");
   }
   if (status === "background_running") return translateUi(locale, "run.live_agent.background");
   if (status === "waiting_tool" || status === "validating" || status === "running") {
-    return translateUi(locale, "run.live_agent.default");
+    return detail
+      ? translateUi(locale, "run.live_agent.progress_detail", { detail })
+      : translateUi(locale, "run.live_agent.default");
   }
   return "";
 }
