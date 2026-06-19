@@ -182,6 +182,36 @@ def test_maybe_auto_compact_session_runs_exact_review_after_quick_crosses_thresh
     assert result["compacted"] is True
 
 
+def test_manual_compact_can_pack_short_history_with_smaller_retention() -> None:
+    session = {
+        "summary": "",
+        "turns": [
+            {"id": "turn-1", "role": "user", "text": "hi"},
+            {"id": "turn-2", "role": "assistant", "text": "Hi! How can I help you today?"},
+            {"id": "turn-3", "role": "user", "text": "介绍自己"},
+            {"id": "turn-4", "role": "assistant", "text": "我是 vintage_programmer。"},
+        ],
+    }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=16384,
+        phase="manual",
+        force=True,
+        trigger="manual",
+        retained_raw_turns=2,
+    )
+
+    assert result["compacted"] is True
+    assert result["compacted_turn_count"] == 2
+    assert session["compaction_state"]["reason"] == "manual"
+    assert session["compaction_state"]["compacted_until_turn_id"] == "turn-2"
+    runtime_view = build_runtime_context_payload(session=session)
+    assert [turn["id"] for turn in runtime_view["history_turns"]] == ["turn-3", "turn-4"]
+    assert "hi" in runtime_view["summary"]
+
+
 def test_current_long_user_input_does_not_trigger_history_noise_compaction() -> None:
     status = build_compaction_status(
         session={"summary": "", "turns": []},

@@ -1475,6 +1475,7 @@ def compact_session_endpoint(session_id: str, req: CompactRequest | None = None)
         max_output_tokens=int(config.max_output_tokens),
         pending_message="",
         phase="manual",
+        retained_raw_turns=2,
         llm_compactor=llm_compactor,
         force=True,
         trigger=trigger,
