@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5S-blue)
+![Version](https://img.shields.io/badge/version-3.1.5T-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5S`
+当前稳定版本：`3.1.5T`
 
 ## Stable Runtime
 
-3.1.5S 是一次 Windows 启动体感和聊天界面体验发布：新 thread 的首屏准备路径更轻，运行完成后的草稿/整理状态更快收束，并补齐消息复制、运行中输入和主题色选择。
+3.1.5T 是一次 Codex 风格 context 与长对话性能发布：Context 状态改为轻量常驻，`/status` 和 `/compact` 成为一等本地命令，长对话里发送短消息不再被 exact tokenizer 阻塞。
 
-本版本还保留 3.1.5N 的 thread 详情加载稳定性修复：发送瞬间会保存运行中 thread 的前端快照，详情刷新遇到 live snapshot 时不会用暂时为空的后端响应覆盖正在运行的消息。
+本版本还保留 3.1.5S 的 Windows 启动体感、聊天 UX、消息复制、运行中输入和主题色选择改进。
 
 ## Max Output Tokens
 

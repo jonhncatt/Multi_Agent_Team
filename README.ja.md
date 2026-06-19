@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5S-blue)
+![Version](https://img.shields.io/badge/version-3.1.5T-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5S`
+現在の安定版: `3.1.5T`
 
 ## Stable Runtime
 
-3.1.5S は Windows での起動体感とチャット UX のリリースです。新規 thread の初期表示準備を軽くし、完了後の draft/整理状態の収束を改善し、メッセージコピー、実行中入力、テーマ色選択を追加しました。
+3.1.5T は Codex 風の context 状態と長い thread の性能改善リリースです。Context 状態は軽量表示が既定になり、`/status` と `/compact` は一級のローカルコマンドになり、長い thread で短いメッセージを送るときに exact tokenizer で待たされにくくなりました。
 
-このリリースは 3.1.5N の thread detail 安定化も保持しています。送信開始時に live thread snapshot を保存し、detail refresh が一時的に空の backend response で実行中の messages を上書きしないようにしています。
+このリリースは 3.1.5S の Windows 起動体感、チャット UX、メッセージコピー、実行中入力、テーマ色選択の改善も保持しています。
 
 ## Max Output Tokens
 

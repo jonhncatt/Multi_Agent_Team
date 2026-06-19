@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5S-blue)
+![Version](https://img.shields.io/badge/version-3.1.5T-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5S`
+Current stable release: `3.1.5T`
 
 ## Stable Runtime
 
-3.1.5S is a Windows startup feel and chat UX release: new-thread first-screen setup is lighter, completed runs settle their draft/cleanup state faster, and message copy, editable running input, and theme color selection are now available.
+3.1.5T is a Codex-style context and long-thread performance release: context status is now lightweight by default, `/status` and `/compact` are first-class local commands, and short messages in long threads no longer block on exact tokenizer work.
 
-This release also keeps the 3.1.5N thread-detail stability fix: the frontend saves live thread snapshots when sending starts, and detail refreshes no longer overwrite live messages with a temporarily empty backend response.
+This release also keeps the 3.1.5S Windows startup feel, chat UX, message copy, editable running input, and theme color improvements.
 
 ## Max Output Tokens
 
