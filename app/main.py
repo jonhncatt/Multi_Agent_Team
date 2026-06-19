@@ -1440,7 +1440,7 @@ def get_session_context_status(
     model: str | None = None,
     max_output_tokens: int | None = None,
 ) -> CompactResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
     provider_config, _runtime_unused = _provider_runtime(config.llm_provider)
@@ -1456,7 +1456,7 @@ def get_session_context_status(
 
 @app.post("/api/sessions/{session_id}/compact", response_model=CompactResponse)
 def compact_session_endpoint(session_id: str, req: CompactRequest | None = None) -> CompactResponse:
-    loaded = session_store.load(session_id)
+    loaded = session_store.load(session_id, default_project=_default_project())
     if not loaded:
         raise HTTPException(status_code=404, detail="Session not found")
     trigger = str((req.trigger if req else "manual") or "manual")

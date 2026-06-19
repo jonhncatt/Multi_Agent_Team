@@ -250,7 +250,13 @@ REQUIRED_CORE_KEYS = (
     "context_meter.mode.docker",
     "context_meter.token_usage_value",
     "context_meter.unknown",
+    "slash.menu.label",
+    "slash.status.label",
+    "slash.status.description",
     "slash.status.summary",
+    "slash.status.failed",
+    "slash.compact.label",
+    "slash.compact.description",
     "slash.compact.started",
     "slash.compact.done",
     "slash.compact.skipped",
@@ -671,12 +677,16 @@ def test_context_meter_hover_close_uses_delayed_timer() -> None:
 
 def test_status_and_compact_slash_commands_are_local_only() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     required_tokens = (
-        'messageText === "/status"',
+        "function normalizeSlashCommandText(value)",
+        "const slashCommand = normalizeSlashCommandText(messageText);",
         "await handleStatusCommand();",
-        'messageText === "/compact"',
         "await handleCompactCommand();",
+        "const slashCommandSuggestions = slashCommandQuery",
+        'className="slash-command-menu"',
+        'className="slash-command-item"',
         '/api/sessions/${encodeURIComponent(sid)}/context-status',
         '/api/sessions/${encodeURIComponent(sid)}/compact',
         'type: "contextCompaction"',
@@ -684,7 +694,15 @@ def test_status_and_compact_slash_commands_are_local_only() -> None:
     for token in required_tokens:
         assert token in script, token
 
-    status_guard_index = script.index('messageText === "/status"')
+    for token in (
+        ".slash-command-menu",
+        ".slash-command-item",
+        ".slash-command-name",
+        ".slash-command-copy",
+    ):
+        assert token in styles, token
+
+    status_guard_index = script.index("const slashCommand = normalizeSlashCommandText(messageText);")
     chat_request_index = script.index("/api/chat/stream")
     assert status_guard_index < chat_request_index
 

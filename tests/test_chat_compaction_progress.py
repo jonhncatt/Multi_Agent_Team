@@ -50,6 +50,7 @@ def test_context_status_and_manual_compact_routes_exist() -> None:
         '@app.post("/api/sessions/{session_id}/compact", response_model=CompactResponse)',
         "def get_session_context_status(",
         "def compact_session_endpoint(",
+        "session_store.load(session_id, default_project=_default_project())",
         "force=True",
         "trigger=trigger",
     ):

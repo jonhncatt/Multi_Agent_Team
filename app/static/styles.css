@@ -1544,6 +1544,7 @@ button {
 }
 
 .composer-frame {
+  position: relative;
   display: flex;
   gap: 12px;
   align-items: flex-end;
@@ -1552,6 +1553,62 @@ button {
   border: 1px solid rgba(188, 198, 212, 0.86);
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+}
+
+.slash-command-menu {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+  padding: 8px;
+  border: 1px solid rgba(188, 198, 212, 0.92);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14);
+}
+
+.slash-command-item {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.slash-command-item:hover {
+  background: rgba(17, 24, 39, 0.06);
+}
+
+.slash-command-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.slash-command-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.slash-command-copy strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.slash-command-copy small {
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 .composer-shell.drag-active .composer-frame {

@@ -68,6 +68,23 @@ const DEFAULT_SETTINGS = {
   permission_profile: "auto",
   response_style: "normal",
 };
+const SLASH_COMMANDS = [
+  { command: "/status", labelKey: "slash.status.label", descriptionKey: "slash.status.description" },
+  { command: "/compact", labelKey: "slash.compact.label", descriptionKey: "slash.compact.description" },
+];
+
+function normalizeSlashCommandText(value) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("/") || /\s/.test(raw)) return "";
+  const command = raw.toLowerCase();
+  return SLASH_COMMANDS.some((item) => item.command === command) ? command : "";
+}
+
+function slashCommandQueryFromDraft(value) {
+  const raw = String(value || "").trimStart();
+  if (!raw.startsWith("/") || /[\s]/.test(raw)) return "";
+  return raw.toLowerCase();
+}
 
 function normalizePermissionProfile(raw) {
   const value = String(raw || "").trim().toLowerCase().replaceAll("-", "_");
@@ -4132,18 +4149,27 @@ function App() {
 
   async function handleStatusCommand() {
     if (sending) return;
-    if (draft.trim() === "/status") setDraft("");
     const sid = String(sessionId || activeSessionIdRef.current || "").trim();
     let data = null;
-    if (sid) {
-      const params = new URLSearchParams();
-      const modelName = String(activeModel || chatSettings.model || "").trim();
-      if (modelName) params.set("model", modelName);
-      params.set("max_output_tokens", String(chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens));
-      const query = params.toString();
-      data = await fetchJson(`/api/sessions/${encodeURIComponent(sid)}/context-status${query ? `?${query}` : ""}`);
-    } else {
-      data = await refreshRuntimeStatus(projectId, { background: false });
+    try {
+      if (sid && !isTempThreadId(sid)) {
+        const params = new URLSearchParams();
+        const modelName = String(activeModel || chatSettings.model || "").trim();
+        if (modelName) params.set("model", modelName);
+        params.set("max_output_tokens", String(chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens));
+        const query = params.toString();
+        data = await fetchJson(`/api/sessions/${encodeURIComponent(sid)}/context-status${query ? `?${query}` : ""}`);
+      } else {
+        data = await refreshRuntimeStatus(projectId, { background: false });
+      }
+    } catch (err) {
+      try {
+        data = await refreshRuntimeStatus(projectId, { background: false });
+      } catch {
+        const nextError = applyUiError(err, t("slash.status.failed"));
+        appendLocalAssistantMessage(nextError.summary || t("slash.status.failed"), { status: "failed" });
+        return;
+      }
     }
     const meter = (data && data.context_meter) || (health && health.context_meter) || {};
     const compaction = (data && data.compaction_status) || (health && health.compaction_status) || {};
@@ -4166,12 +4192,12 @@ function App() {
   async function handleCompactCommand() {
     if (sending) return;
     const sid = String(sessionId || activeSessionIdRef.current || "").trim();
-    if (!sid) {
+    if (!sid || isTempThreadId(sid)) {
       const summary = t("slash.compact.no_session");
       setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+      appendLocalAssistantMessage(summary, { status: "failed" });
       return;
     }
-    if (draft.trim() === "/compact") setDraft("");
     const compactionItemId = `local-context-compaction-${Date.now()}`;
     appendLocalAssistantMessage(t("slash.compact.started"), {
       status: "running",
@@ -4202,7 +4228,9 @@ function App() {
         compaction_status: data.compaction_status || (prev && prev.compaction_status) || {},
       }));
       setContextMeterOpen(true);
-      const summary = data.summary || (data.compacted ? t("slash.compact.done") : t("slash.compact.skipped"));
+      const summary = data.compacted
+        ? (data.summary || t("slash.compact.done"))
+        : t("slash.compact.skipped");
       appendLocalAssistantMessage(summary, {
         activity: {
           live_items: [{
@@ -5570,12 +5598,14 @@ function App() {
   async function handleSend(overrideText, userInputResponse) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
-    if (overrideText == null && messageText === "/status") {
-      await handleStatusCommand();
-      return;
-    }
-    if (overrideText == null && messageText === "/compact") {
-      await handleCompactCommand();
+    const slashCommand = normalizeSlashCommandText(messageText);
+    if (slashCommand) {
+      setDraft("");
+      if (slashCommand === "/status") {
+        await handleStatusCommand();
+      } else if (slashCommand === "/compact") {
+        await handleCompactCommand();
+      }
       return;
     }
     const structuredUserInputResponse = userInputResponse && typeof userInputResponse === "object"
@@ -7121,6 +7151,10 @@ function App() {
   const compactionReasonText = formatCompactionReason(uiLocale, activeCompactionStatus.last_compaction_reason);
   const contextMeterColor = resolveContextMeterColor(activeContextMeter);
   const contextStatusSummary = summarizeContextStatus(activeContextMeter, activeCompactionStatus);
+  const slashCommandQuery = slashCommandQueryFromDraft(draft);
+  const slashCommandSuggestions = slashCommandQuery
+    ? SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommandQuery))
+    : [];
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
@@ -8184,6 +8218,27 @@ function App() {
           </div>
 
           <div className="composer-frame">
+            ${slashCommandSuggestions.length
+              ? html`
+                <div className="slash-command-menu" role="listbox" aria-label=${t("slash.menu.label")}>
+                  ${slashCommandSuggestions.map((item) => html`
+                    <button
+                      key=${item.command}
+                      className="slash-command-item"
+                      type="button"
+                      onMouseDown=${(event) => event.preventDefault()}
+                      onClick=${() => handleSend(item.command)}
+                    >
+                      <span className="slash-command-name">${item.command}</span>
+                      <span className="slash-command-copy">
+                        <strong>${t(item.labelKey)}</strong>
+                        <small>${t(item.descriptionKey)}</small>
+                      </span>
+                    </button>
+                  `)}
+                </div>
+              `
+              : null}
             <textarea
               value=${draft}
               onInput=${(event) => setDraft(event.currentTarget.value)}
