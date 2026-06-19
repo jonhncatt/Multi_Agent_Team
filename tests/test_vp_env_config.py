@@ -119,6 +119,22 @@ def test_vp_max_user_request_chars_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.max_user_request_chars == 123456
 
 
+def test_vp_context_compaction_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_CONTEXT_AUTO_COMPACT_RATIO", "0.81")
+    monkeypatch.setenv("VP_CONTEXT_DANGER_COMPACT_RATIO", "0.96")
+    monkeypatch.setenv("VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", "234567")
+    monkeypatch.setenv("VP_CONTEXT_EXACT_STALE_SEC", "90")
+
+    config = load_config()
+
+    assert config.context_auto_compact_ratio == 0.81
+    assert config.context_danger_compact_ratio == 0.96
+    assert config.context_history_soft_limit_tokens == 234567
+    assert config.context_exact_stale_sec == 90
+
+
 def test_web_fetch_budget_matches_main_branch_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
@@ -169,6 +185,10 @@ def test_env_example_matches_web_fetch_budget_default() -> None:
     assert "# VP_MAX_OUTPUT_TOKENS=16384" in lines
     assert "# VP_MAX_USER_REQUEST_CHARS=4000000" in lines
     assert "# VP_MAX_ATTACHMENT_CHARS=1000000" in lines
+    assert "# VP_CONTEXT_AUTO_COMPACT_RATIO=0.8" in lines
+    assert "# VP_CONTEXT_DANGER_COMPACT_RATIO=0.95" in lines
+    assert "# VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000" in lines
+    assert "# VP_CONTEXT_EXACT_STALE_SEC=60" in lines
     assert "# VP_WEB_FETCH_MAX_CHARS=120000" in lines
     assert "# VP_WEB_FETCH_MAX_CHARS=12000" not in lines
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+import app.context_meter as context_meter_module
 from app.context_meter import (
     build_compaction_status,
     build_context_meter,
@@ -71,7 +74,7 @@ def test_build_context_meter_uses_fallback_budget_for_unknown_models() -> None:
     )
 
     assert meter["estimated_tokens"] > 0
-    assert meter["auto_compact_token_limit"] == int(256000 * 0.9)
+    assert meter["auto_compact_token_limit"] == int(256000 * 0.8)
     assert meter["threshold_source"] == "fallback_budget"
     assert meter["warning"]
     assert 0 <= meter["used_percent"] <= 100
@@ -102,6 +105,123 @@ def test_build_context_meter_from_status_reuses_existing_compaction_status() -> 
     assert meter["estimated_payload_tokens"] == status["estimated_payload_tokens"]
     assert meter["auto_compact_token_limit"] == status["auto_compact_token_limit"]
     assert meter["context_window"] == status["effective_context_window"]
+
+
+def test_quick_context_meter_marks_estimate_mode_without_forcing_stale() -> None:
+    meter = build_context_meter(
+        session={"turns": [{"role": "user", "text": "hello"}]},
+        model="gpt-5.4",
+        max_output_tokens=16384,
+        pending_message="continue",
+        estimate_mode="quick",
+    )
+
+    assert meter["estimate_mode"] == "quick"
+    assert meter["stale"] is False
+    assert meter["calculation_ms"] >= 0
+    assert meter["remaining_tokens"] > 0
+
+
+def test_maybe_auto_compact_session_skips_exact_when_quick_is_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_count_tokens(_text: str, _model: str | None = None) -> int:
+        raise AssertionError("exact tokenizer should not run below compact thresholds")
+
+    monkeypatch.setattr(context_meter_module, "count_tokens", fail_count_tokens)
+    session = {
+        "summary": "",
+        "turns": [
+            {"id": "turn-1", "role": "user", "text": "small question"},
+            {"id": "turn-2", "role": "assistant", "text": "small answer"},
+        ],
+    }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=16384,
+        pending_message="continue",
+        phase="pre_turn",
+    )
+
+    assert result["compacted"] is False
+    assert result["status_before"]["estimate_mode"] == "quick"
+    assert result["status_before"]["compact_recommendation"] == "none"
+
+
+def test_maybe_auto_compact_session_runs_exact_review_after_quick_crosses_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"count": 0}
+
+    def fake_count_tokens(_text: str, _model: str | None = None) -> int:
+        calls["count"] += 1
+        return 10000
+
+    monkeypatch.setattr(context_meter_module, "count_tokens", fake_count_tokens)
+    session = {
+        "summary": "",
+        "turns": [
+            {
+                "id": f"turn-{idx}",
+                "role": "user" if idx % 2 == 0 else "assistant",
+                "text": ("long history " if idx % 2 == 0 else "long answer ") + ("A" * 5000),
+            }
+            for idx in range(16)
+        ],
+    }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="moonshot-v1-8k",
+        max_output_tokens=2048,
+        pending_message="continue",
+        phase="pre_turn",
+    )
+
+    assert calls["count"] >= 1
+    assert result["status_before"]["estimate_mode"] == "exact"
+    assert result["status_before"]["compact_recommendation"] in {"suggested", "required"}
+    assert result["compacted"] is True
+
+
+def test_current_long_user_input_does_not_trigger_history_noise_compaction() -> None:
+    status = build_compaction_status(
+        session={"summary": "", "turns": []},
+        model="gpt-5.4",
+        max_output_tokens=16384,
+        pending_message="A" * 500_000,
+        estimate_mode="quick",
+    )
+
+    assert status["estimated_context_tokens"] > status["history_soft_limit_tokens"]
+    assert status["history_noise_tokens"] < status["history_soft_limit_tokens"]
+    assert status["compact_recommendation"] == "none"
+
+
+def test_old_history_noise_can_suggest_compaction_without_context_pressure() -> None:
+    session = {
+        "summary": "",
+        "turns": [
+            {
+                "id": f"turn-{idx}",
+                "role": "user" if idx % 2 == 0 else "assistant",
+                "text": ("old context " if idx % 2 == 0 else "tool output ") + ("B" * 3000),
+            }
+            for idx in range(32)
+        ],
+    }
+
+    status = build_compaction_status(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=16384,
+        pending_message="continue",
+        estimate_mode="quick",
+        history_soft_limit_tokens=2000,
+    )
+
+    assert status["estimated_context_tokens"] < status["auto_compact_token_limit"]
+    assert status["history_noise_tokens"] >= status["history_soft_limit_tokens"]
+    assert status["compact_recommendation"] == "suggested"
+    assert status["compact_reason"] == "history_soft_limit"
 
 
 def test_maybe_auto_compact_session_writes_replacement_history_state() -> None:

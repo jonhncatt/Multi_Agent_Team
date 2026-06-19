@@ -218,6 +218,10 @@ class ContextMeter(BaseModel):
     overhead_tokens: int = 0
     context_window: int = 0
     auto_compact_token_limit: int = 0
+    danger_compact_token_limit: int = 0
+    history_soft_limit_tokens: int = 0
+    history_noise_tokens: int = 0
+    remaining_tokens: int = 0
     used_ratio: float = 0.0
     remaining_ratio: float = 0.0
     used_percent: int = 0
@@ -226,6 +230,13 @@ class ContextMeter(BaseModel):
     context_window_known: bool = False
     compaction_enabled: bool = False
     last_compacted_at: str = ""
+    estimate_mode: str = ""
+    stale: bool = False
+    calculation_ms: int = 0
+    updated_at: str = ""
+    exact_updated_at: str = ""
+    compact_recommendation: str = "none"
+    compact_reason: str = ""
     warning: str = ""
 
 
@@ -243,12 +254,35 @@ class CompactionStatus(BaseModel):
     estimated_payload_tokens: int = 0
     effective_context_window: int = 0
     auto_compact_token_limit: int = 0
+    danger_compact_token_limit: int = 0
+    history_soft_limit_tokens: int = 0
+    history_noise_tokens: int = 0
     threshold_source: str = ""
     context_window_known: bool = False
     last_compacted_at: str = ""
     last_compaction_reason: str = ""
     last_compaction_phase: str = ""
+    estimate_mode: str = ""
+    context_estimate_updated_at: str = ""
+    context_exact_updated_at: str = ""
+    calculation_ms: int = 0
+    compact_recommendation: str = "none"
+    compact_reason: str = ""
     warning: str = ""
+
+
+class CompactRequest(BaseModel):
+    trigger: Literal["manual", "auto"] = "manual"
+
+
+class CompactResponse(BaseModel):
+    ok: bool = True
+    session_id: str = ""
+    thread_id: str = ""
+    compacted: bool = False
+    summary: str = ""
+    context_meter: ContextMeter = Field(default_factory=ContextMeter)
+    compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
 
 
 class ChatResponse(BaseModel):

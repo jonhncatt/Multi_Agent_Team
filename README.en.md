@@ -31,10 +31,16 @@ Recommended default:
 VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
+VP_CONTEXT_AUTO_COMPACT_RATIO=0.8
+VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VP_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 This is the per-call output cap, not the total task limit. The 16384 default fits long-material Q&A on large-context models such as GPT-5.4; long tasks should still complete through multiple model/tool-loop steps rather than one 128K-scale response.
 `VP_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
+
+Context status now follows the Codex-style lightweight pattern: the chat hot path uses cached or quick estimates instead of blocking on full tokenizer accounting every turn. `/status` reads the current thread context state and opens details; `/compact` manually compacts old history and records a context compaction event. Auto compaction exact-checks after the estimate reaches 80% of the model window and treats 95% as the danger line. `VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` applies only to old chat/tool-output noise, not the current user request or attachment source text.
 
 ## Python Commands
 

@@ -31,10 +31,16 @@
 VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
+VP_CONTEXT_AUTO_COMPACT_RATIO=0.8
+VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VP_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。16384 のデフォルトは GPT-5.4 のような大きな context window を持つモデルでの長文資料 Q&A に向いていますが、長いタスクは 128K 級の巨大な単発応答ではなく、複数回の model/tool loop で進めます。
 `VP_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
+
+Context 状態は Codex 風の軽量表示です。チャットの通常経路では cached/quick 見積もりを使い、毎ターン full tokenizer 計算でブロックしません。`/status` は現在の thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。自動整理は window の 80% で exact 確認、95% を危険ラインとして扱います。
 
 ## Python Commands
 

@@ -196,6 +196,12 @@ REQUIRED_CORE_KEYS = (
     "context_meter.compact_tokens_unknown",
     "context_meter.compact_elapsed_tools",
     "context_meter.compact_auto_compact",
+    "context_meter.status.enough",
+    "context_meter.status.tight",
+    "context_meter.status.updating",
+    "context_meter.compact.none",
+    "context_meter.compact.suggested",
+    "context_meter.compact.required",
     "context_meter.field.project",
     "context_meter.field.status",
     "context_meter.field.model",
@@ -216,6 +222,9 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.tool_rejected",
     "context_meter.field.tool_latest",
     "context_meter.field.context_usage",
+    "context_meter.field.remaining",
+    "context_meter.field.estimate_mode",
+    "context_meter.field.compact_recommendation",
     "context_meter.field.output_limit",
     "context_meter.field.context_window",
     "context_meter.field.token_usage",
@@ -241,6 +250,12 @@ REQUIRED_CORE_KEYS = (
     "context_meter.mode.docker",
     "context_meter.token_usage_value",
     "context_meter.unknown",
+    "slash.status.summary",
+    "slash.compact.started",
+    "slash.compact.done",
+    "slash.compact.skipped",
+    "slash.compact.failed",
+    "slash.compact.no_session",
     "run.execution_progress",
     "run.field.status",
     "run.field.current_step",
@@ -652,6 +667,26 @@ def test_context_meter_hover_close_uses_delayed_timer() -> None:
     )
     for token in required_tokens:
         assert token in script, token
+
+
+def test_status_and_compact_slash_commands_are_local_only() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    required_tokens = (
+        'messageText === "/status"',
+        "await handleStatusCommand();",
+        'messageText === "/compact"',
+        "await handleCompactCommand();",
+        '/api/sessions/${encodeURIComponent(sid)}/context-status',
+        '/api/sessions/${encodeURIComponent(sid)}/compact',
+        'type: "contextCompaction"',
+    )
+    for token in required_tokens:
+        assert token in script, token
+
+    status_guard_index = script.index('messageText === "/status"')
+    chat_request_index = script.index("/api/chat/stream")
+    assert status_guard_index < chat_request_index
 
 
 def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:

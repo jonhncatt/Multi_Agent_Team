@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -39,6 +40,8 @@ from app.models import (
     ChatResponse,
     ChatSettings,
     ClearStatsResponse,
+    CompactRequest,
+    CompactResponse,
     DeleteThreadResponse,
     DeleteSessionResponse,
     HealthResponse,
@@ -509,6 +512,7 @@ def _build_compaction_status_for_session(
     max_output_tokens: int | None = None,
     pending_message: str = "",
     last_compacted_at: str | None = None,
+    estimate_mode: str = "exact",
 ) -> dict[str, Any]:
     return build_compaction_status(
         session=session,
@@ -516,6 +520,10 @@ def _build_compaction_status_for_session(
         max_output_tokens=max_output_tokens,
         pending_message=pending_message,
         last_compacted_at=last_compacted_at or _session_last_compacted_at(session),
+        estimate_mode=estimate_mode,
+        auto_compact_ratio=config.context_auto_compact_ratio,
+        danger_compact_ratio=config.context_danger_compact_ratio,
+        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
     )
 
 
@@ -526,6 +534,7 @@ def _build_context_meter_for_session(
     max_output_tokens: int | None = None,
     pending_message: str = "",
     last_compacted_at: str | None = None,
+    estimate_mode: str = "exact",
 ) -> dict[str, Any]:
     return build_context_meter(
         session=session,
@@ -533,6 +542,10 @@ def _build_context_meter_for_session(
         max_output_tokens=max_output_tokens,
         pending_message=pending_message,
         last_compacted_at=last_compacted_at or _session_last_compacted_at(session),
+        estimate_mode=estimate_mode,
+        auto_compact_ratio=config.context_auto_compact_ratio,
+        danger_compact_ratio=config.context_danger_compact_ratio,
+        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
     )
 
 
@@ -543,6 +556,7 @@ def _context_bundle_for_session(
     max_output_tokens: int | None = None,
     pending_message: str = "",
     last_compacted_at: str | None = None,
+    estimate_mode: str = "exact",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     compaction_status = _build_compaction_status_for_session(
         session=session,
@@ -550,6 +564,7 @@ def _context_bundle_for_session(
         max_output_tokens=max_output_tokens,
         pending_message=pending_message,
         last_compacted_at=last_compacted_at,
+        estimate_mode=estimate_mode,
     )
     return build_context_meter_from_status(compaction_status), compaction_status
 
@@ -567,6 +582,61 @@ def _cached_context_bundle_for_view(session: dict[str, Any], agent_state: dict[s
     if compaction_status and not context_meter:
         context_meter = build_context_meter_from_status(compaction_status)
     return context_meter, compaction_status
+
+
+def _context_exact_is_stale(compaction_status: dict[str, Any]) -> bool:
+    raw_updated_at = str(compaction_status.get("context_exact_updated_at") or "").strip()
+    if not raw_updated_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(raw_updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() > float(config.context_exact_stale_sec)
+
+
+def _context_status_response_for_session(
+    *,
+    session_id: str,
+    session: dict[str, Any],
+    model: str | None,
+    max_output_tokens: int | None,
+) -> CompactResponse:
+    agent_state = session.get("agent_state") if isinstance(session.get("agent_state"), dict) else {}
+    context_meter, compaction_status = _cached_context_bundle_for_view(session, agent_state)
+    if compaction_status:
+        compaction_status = dict(compaction_status)
+        compaction_status["estimate_mode"] = "cached"
+        compaction_status["calculation_ms"] = 0
+        compaction_status["stale"] = _context_exact_is_stale(compaction_status)
+        context_meter = build_context_meter_from_status(compaction_status)
+    else:
+        context_meter, compaction_status = _context_bundle_for_session(
+            session=session,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            estimate_mode="quick",
+        )
+        compaction_status = dict(compaction_status)
+        compaction_status["stale"] = True
+        context_meter = build_context_meter_from_status(compaction_status)
+        session["context_meter"] = dict(context_meter)
+        session["compaction_status"] = dict(compaction_status)
+        agent_state["context_meter"] = dict(context_meter)
+        agent_state["compaction_status"] = dict(compaction_status)
+        session["agent_state"] = dict(agent_state)
+        session_store.save(session)
+    return CompactResponse(
+        ok=True,
+        session_id=session_id,
+        thread_id=session_id,
+        compacted=False,
+        summary="",
+        context_meter=context_meter,
+        compaction_status=compaction_status,
+    )
 
 
 def get_workbench_store() -> WorkbenchStore:
@@ -1059,6 +1129,7 @@ def _runtime_status_response_payload(
     context_meter, compaction_status = _context_bundle_for_session(
         model=active_model,
         max_output_tokens=max_output_tokens,
+        estimate_mode="quick",
     )
     return RuntimeStatusResponse(
         ok=True,
@@ -1361,6 +1432,84 @@ def get_stats() -> TokenStatsResponse:
 def clear_stats() -> ClearStatsResponse:
     token_stats_store.clear()
     return ClearStatsResponse(ok=True)
+
+
+@app.get("/api/sessions/{session_id}/context-status", response_model=CompactResponse)
+def get_session_context_status(
+    session_id: str,
+    model: str | None = None,
+    max_output_tokens: int | None = None,
+) -> CompactResponse:
+    loaded = session_store.load(session_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+    provider_config, _runtime_unused = _provider_runtime(config.llm_provider)
+    resolved_model = str(model or provider_config.default_model or config.default_model or "").strip()
+    resolved_max_output_tokens = int(max_output_tokens or config.max_output_tokens)
+    return _context_status_response_for_session(
+        session_id=session_id,
+        session=loaded,
+        model=resolved_model,
+        max_output_tokens=resolved_max_output_tokens,
+    )
+
+
+@app.post("/api/sessions/{session_id}/compact", response_model=CompactResponse)
+def compact_session_endpoint(session_id: str, req: CompactRequest | None = None) -> CompactResponse:
+    loaded = session_store.load(session_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+    trigger = str((req.trigger if req else "manual") or "manual")
+    provider_config, provider_runtime = _provider_runtime(config.llm_provider)
+    model = str(provider_config.default_model or config.default_model or "").strip()
+    llm_compactor = None
+    if hasattr(provider_runtime, "compact_context"):
+        llm_compactor = lambda payload: provider_runtime.compact_context(
+            payload,
+            model=model,
+            max_output_tokens=int(config.max_output_tokens),
+        )
+    result = maybe_auto_compact_session(
+        session=loaded,
+        model=model,
+        max_output_tokens=int(config.max_output_tokens),
+        pending_message="",
+        phase="manual",
+        llm_compactor=llm_compactor,
+        force=True,
+        trigger=trigger,
+        auto_compact_ratio=config.context_auto_compact_ratio,
+        danger_compact_ratio=config.context_danger_compact_ratio,
+        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+    )
+    context_meter, compaction_status = _context_bundle_for_session(
+        session=loaded,
+        model=model,
+        max_output_tokens=int(config.max_output_tokens),
+        estimate_mode="quick",
+    )
+    loaded["context_meter"] = dict(context_meter)
+    loaded["compaction_status"] = dict(compaction_status)
+    agent_state = loaded.get("agent_state") if isinstance(loaded.get("agent_state"), dict) else {}
+    agent_state["context_meter"] = dict(context_meter)
+    agent_state["compaction_status"] = dict(compaction_status)
+    agent_state["last_compacted_at"] = str(compaction_status.get("last_compacted_at") or "")
+    loaded["agent_state"] = agent_state
+    session_store.save(loaded)
+    compacted = bool(result.get("compacted"))
+    if compacted:
+        summary = translate(config.default_locale, "chat.replacement_history_compacted", generation=compaction_status.get("generation") or 0, retained_turn_count=compaction_status.get("retained_turn_count") or 0)
+    else:
+        summary = "No compactable history found."
+    return CompactResponse(
+        ok=True,
+        session_id=session_id,
+        thread_id=session_id,
+        compacted=compacted,
+        summary=summary,
+        context_meter=context_meter,
+        compaction_status=compaction_status,
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse, response_model_exclude_none=True)
@@ -2085,7 +2234,16 @@ def _process_chat_request(
                     model=requested_model,
                     max_output_tokens=req.settings.max_output_tokens,
                     pending_message=req.message,
+                    estimate_mode="quick",
                 )
+            request_phase_timer.record_duration_ms(
+                "context_quick_estimate_ms",
+                int(session_ready_compaction_status.get("calculation_ms") or 0),
+            )
+            request_phase_timer.record_duration_ms(
+                "context_snapshot_ms",
+                int(session_ready_compaction_status.get("calculation_ms") or 0),
+            )
             with request_phase_timer.measure("session_ready_snapshot_ms"):
                 session_ready_snapshot = _build_run_snapshot(
                     goal=req.message,
@@ -2121,18 +2279,20 @@ def _process_chat_request(
                 model=requested_model,
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message=req.message,
+                estimate_mode="quick",
             )
-            pre_compaction_limit = int(pre_compaction_probe.get("auto_compact_token_limit") or 0)
             pre_compaction_estimated = int(pre_compaction_probe.get("estimated_context_tokens") or 0)
+            pre_compaction_recommendation = str(pre_compaction_probe.get("compact_recommendation") or "none")
+            pre_compaction_reason = str(pre_compaction_probe.get("compact_reason") or "")
             pre_compaction_started_item = None
-            if pre_compaction_limit > 0 and pre_compaction_estimated >= pre_compaction_limit:
+            if pre_compaction_recommendation in {"suggested", "required"}:
                 pre_compaction_started_item = {
                     "id": f"{run_id}:context_compaction:pre_turn:{int(pre_compaction_probe.get('generation') or 0) + 1}",
                     "type": "contextCompaction",
                     "status": "inProgress",
                     "phase": "pre_turn",
                     "generation": int(pre_compaction_probe.get("generation") or 0) + 1,
-                    "reason": "context_limit",
+                    "reason": pre_compaction_reason or "context_limit",
                     "before_tokens": pre_compaction_estimated,
                     "after_tokens": 0,
                     "summary": translate(locale, "chat.replacement_history_compacting"),
@@ -2151,6 +2311,7 @@ def _process_chat_request(
                     model=requested_model,
                     max_output_tokens=req.settings.max_output_tokens,
                 )
+            context_compact_started = time.perf_counter()
             compaction_result = maybe_auto_compact_session(
                 session=session,
                 model=requested_model,
@@ -2158,7 +2319,22 @@ def _process_chat_request(
                 pending_message=req.message,
                 phase="pre_turn",
                 llm_compactor=llm_compactor,
+                auto_compact_ratio=config.context_auto_compact_ratio,
+                danger_compact_ratio=config.context_danger_compact_ratio,
+                history_soft_limit_tokens=config.context_history_soft_limit_tokens,
             )
+            request_phase_timer.record_duration_ms(
+                "context_compact_ms",
+                int((time.perf_counter() - context_compact_started) * 1000)
+                if bool(compaction_result.get("compacted"))
+                else 0,
+            )
+            compaction_probe_after = dict(compaction_result.get("status_before") or {})
+            if str(compaction_probe_after.get("estimate_mode") or "") == "exact":
+                request_phase_timer.record_duration_ms(
+                    "context_exact_tokenize_ms",
+                    int(compaction_probe_after.get("calculation_ms") or 0),
+                )
         summarized = bool(compaction_result.get("compacted"))
         if summarized:
             compaction_after = dict(compaction_result.get("status_after") or {})
@@ -2167,6 +2343,11 @@ def _process_chat_request(
                 model=requested_model,
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message=req.message,
+                estimate_mode="exact",
+            )
+            request_phase_timer.record_duration_ms(
+                "context_exact_tokenize_ms",
+                int(compacted_context_status.get("calculation_ms") or 0),
             )
             _emit_progress(
                 progress_cb,
@@ -2267,12 +2448,12 @@ def _process_chat_request(
             )
         task_state_notes: list[str] = []
         with request_phase_timer.measure("attachments_context_bundle_ms"):
-            attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(
-                session=session,
-                model=requested_model,
-                max_output_tokens=req.settings.max_output_tokens,
-                pending_message=req.message,
+            attachments_context_meter, attachments_compaction_status = (
+                (compacted_context_meter, compacted_context_status)
+                if summarized
+                else (session_ready_context_meter, session_ready_compaction_status)
             )
+        request_phase_timer.record_duration_ms("context_cache_ms", 0)
         with request_phase_timer.measure("attachments_ready_snapshot_ms"):
             attachments_ready_snapshot = _build_run_snapshot(
                 goal=req.message,
@@ -2343,12 +2524,7 @@ def _process_chat_request(
             recent_tasks_for_runtime = copy.deepcopy(list(thread_memory_for_runtime.get("recent_tasks") or []))
             artifact_memory_preview = copy.deepcopy(session_context_impl.get_artifact_memory_preview(session))
             with request_phase_timer.measure("runtime_context_compaction_status_ms"):
-                compaction_status_for_runtime = _build_compaction_status_for_session(
-                    session=session,
-                    model=requested_model,
-                    max_output_tokens=req.settings.max_output_tokens,
-                    pending_message=req.message,
-                )
+                compaction_status_for_runtime = dict(attachments_compaction_status)
             context_meter_for_runtime = build_context_meter_from_status(compaction_status_for_runtime)
             recalled_context = copy.deepcopy({
                 "recalled_task": attachment_context.get("recalled_task") or {},
@@ -2522,13 +2698,7 @@ def _process_chat_request(
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
-        agent_run_done_context_meter, agent_run_done_compaction_status = _context_bundle_for_session(
-            session=session,
-            model=selected_model,
-            max_output_tokens=req.settings.max_output_tokens,
-            pending_message=req.message,
-            last_compacted_at=_session_last_compacted_at(session),
-        )
+        agent_run_done_context_meter, agent_run_done_compaction_status = attachments_context_meter, attachments_compaction_status
 
         _emit_progress(
             progress_cb,
@@ -2817,6 +2987,7 @@ def _process_chat_request(
             model=selected_model,
             max_output_tokens=req.settings.max_output_tokens,
             last_compacted_at=last_compacted_at,
+            estimate_mode="quick",
         )
         runtime_compaction_status = (
             dict(inspector_run_state.get("compaction_status") or {})

@@ -377,6 +377,10 @@ class AppConfig:
     python_command_source: str
     max_user_request_chars: int
     max_attachment_chars: int
+    context_auto_compact_ratio: float
+    context_danger_compact_ratio: float
+    context_history_soft_limit_tokens: int
+    context_exact_stale_sec: int
     max_upload_mb: int
     default_locale: str
     tool_result_soft_trim_chars: int
@@ -1152,7 +1156,35 @@ def load_config() -> AppConfig:
                 ),
             ),
         ),
-    max_upload_mb=max(
+        context_auto_compact_ratio=max(
+            0.1,
+            min(
+                0.95,
+                float(_env("VP_CONTEXT_AUTO_COMPACT_RATIO", default="0.8") or "0.8"),
+            ),
+        ),
+        context_danger_compact_ratio=max(
+            0.2,
+            min(
+                0.99,
+                float(_env("VP_CONTEXT_DANGER_COMPACT_RATIO", default="0.95") or "0.95"),
+            ),
+        ),
+        context_history_soft_limit_tokens=max(
+            1000,
+            min(
+                1_000_000,
+                int(_env("VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", default="120000") or "120000"),
+            ),
+        ),
+        context_exact_stale_sec=max(
+            5,
+            min(
+                3600,
+                int(_env("VP_CONTEXT_EXACT_STALE_SEC", default="60") or "60"),
+            ),
+        ),
+        max_upload_mb=max(
             1,
             min(2048, int(_env("VP_MAX_UPLOAD_MB", default="200") or "200")),
         ),

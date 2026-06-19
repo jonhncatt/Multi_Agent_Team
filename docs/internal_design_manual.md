@@ -495,7 +495,9 @@ Context compaction（上下文压缩）的目标是：
 当前源码中可确认的行为：
 
 - context window（上下文窗口）会按模型信息或保守预算估算
-- `auto_compact_token_limit` 当前等于 `context_window * 0.9`
+- `auto_compact_token_limit` 当前等于 `context_window * 0.8`
+- `danger_compact_token_limit` 当前等于 `context_window * 0.95`
+- 旧聊天、工具输出、assistant 草稿等历史噪音超过 `VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 时可建议整理；当前用户输入和附件原文不按历史噪音处理
 - live loop（运行中循环）在超过预算时会把较早工具结果压缩成系统摘要
 - mid-turn compaction（同一轮内压缩）会保留最近一段消息，并把更早的工具结果合并为摘要
 
@@ -889,12 +891,24 @@ Default:
 VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
+VP_CONTEXT_AUTO_COMPACT_RATIO=0.8
+VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
+VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
+VP_CONTEXT_EXACT_STALE_SEC=60
 ```
 
 This value is a per-call upper bound, not the whole task limit. The default is intentionally below the 128K model maximum so ordinary runs avoid unnecessary latency, cost, and context reserve.
 The current user request is now packed by model-aware token budget first and clamped by `VP_MAX_USER_REQUEST_CHARS`; long attachment previews are likewise budgeted from the active model context window.
 
 Long tasks should be completed through multiple model calls and tool loops, not by setting a very large output cap for every request.
+
+Context status follows the Codex-style command model:
+
+- the chat hot path uses cached or quick estimates and does not run full tokenizer accounting every turn;
+- `/status` reads the current thread context snapshot and opens the detail panel without entering the model loop;
+- `/compact` triggers manual context compaction and records a `contextCompaction` progress item;
+- auto compact exact-checks only after a quick/cached estimate reaches the 80% candidate line or the history-noise soft limit;
+- the 120K history soft limit applies only to old chat/tool noise, not current user input or attachment source text.
 
 Future dynamic policy may use:
 

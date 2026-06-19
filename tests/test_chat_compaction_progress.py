@@ -13,8 +13,9 @@ def test_pre_turn_compaction_emits_started_before_running_compactor() -> None:
 
     required_tokens = (
         "pre_compaction_probe = _build_compaction_status_for_session(",
-        'pre_compaction_limit = int(pre_compaction_probe.get("auto_compact_token_limit") or 0)',
-        "pre_compaction_estimated >= pre_compaction_limit",
+        'pre_compaction_recommendation = str(pre_compaction_probe.get("compact_recommendation") or "none")',
+        'pre_compaction_reason = str(pre_compaction_probe.get("compact_reason") or "")',
+        'pre_compaction_recommendation in {"suggested", "required"}',
         '\"type\": \"contextCompaction\"',
         '\"status\": \"inProgress\"',
         '\"summary\": translate(locale, \"chat.replacement_history_compacting\")',
@@ -39,3 +40,17 @@ def test_pre_turn_compaction_progress_strings_are_localized() -> None:
         "chat.replacement_history_compaction_checked",
     ):
         assert source.count(f'"{key}"') == 3
+
+
+def test_context_status_and_manual_compact_routes_exist() -> None:
+    source = MAIN_PY_PATH.read_text(encoding="utf-8")
+
+    for token in (
+        '@app.get("/api/sessions/{session_id}/context-status", response_model=CompactResponse)',
+        '@app.post("/api/sessions/{session_id}/compact", response_model=CompactResponse)',
+        "def get_session_context_status(",
+        "def compact_session_endpoint(",
+        "force=True",
+        "trigger=trigger",
+    ):
+        assert token in source, token

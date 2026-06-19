@@ -374,8 +374,8 @@ function normalizeContextMeter(raw) {
   const limit = Math.max(0, Number(meter.auto_compact_token_limit || 0) || 0);
   const contextWindow = Math.max(0, Number(meter.context_window || 0) || 0);
   const rawRatio = Number(meter.used_ratio || 0);
-  const usedRatio = limit > 0
-    ? Math.min(1, Math.max(0, Number.isFinite(rawRatio) ? rawRatio : (estimated / limit)))
+  const usedRatio = contextWindow > 0
+    ? Math.min(1, Math.max(0, Number.isFinite(rawRatio) ? rawRatio : (estimated / contextWindow)))
     : 0;
   const remainingRatio = Math.max(0, 1 - usedRatio);
   const usedPercent = Math.max(0, Math.min(100, Math.round(Number(meter.used_percent || (usedRatio * 100)) || 0)));
@@ -385,6 +385,10 @@ function normalizeContextMeter(raw) {
     estimated_payload_tokens: payload,
     overhead_tokens: overhead,
     auto_compact_token_limit: limit,
+    danger_compact_token_limit: Math.max(0, Number(meter.danger_compact_token_limit || 0) || 0),
+    history_soft_limit_tokens: Math.max(0, Number(meter.history_soft_limit_tokens || 0) || 0),
+    history_noise_tokens: Math.max(0, Number(meter.history_noise_tokens || 0) || 0),
+    remaining_tokens: Math.max(0, Number(meter.remaining_tokens || 0) || 0),
     context_window: contextWindow,
     used_ratio: usedRatio,
     remaining_ratio: remainingRatio,
@@ -394,6 +398,13 @@ function normalizeContextMeter(raw) {
     context_window_known: Boolean(meter.context_window_known),
     compaction_enabled: Boolean(meter.compaction_enabled),
     last_compacted_at: String(meter.last_compacted_at || "").trim(),
+    estimate_mode: String(meter.estimate_mode || "").trim(),
+    stale: Boolean(meter.stale),
+    calculation_ms: Math.max(0, Number(meter.calculation_ms || 0) || 0),
+    updated_at: String(meter.updated_at || "").trim(),
+    exact_updated_at: String(meter.exact_updated_at || "").trim(),
+    compact_recommendation: String(meter.compact_recommendation || "none").trim(),
+    compact_reason: String(meter.compact_reason || "").trim(),
     warning: String(meter.warning || "").trim(),
   };
 }
@@ -414,11 +425,20 @@ function normalizeCompactionStatus(raw) {
     estimated_payload_tokens: Math.max(0, Number(status.estimated_payload_tokens || 0) || 0),
     effective_context_window: Math.max(0, Number(status.effective_context_window || 0) || 0),
     auto_compact_token_limit: Math.max(0, Number(status.auto_compact_token_limit || 0) || 0),
+    danger_compact_token_limit: Math.max(0, Number(status.danger_compact_token_limit || 0) || 0),
+    history_soft_limit_tokens: Math.max(0, Number(status.history_soft_limit_tokens || 0) || 0),
+    history_noise_tokens: Math.max(0, Number(status.history_noise_tokens || 0) || 0),
     threshold_source: String(status.threshold_source || "").trim(),
     context_window_known: Boolean(status.context_window_known),
     last_compacted_at: String(status.last_compacted_at || "").trim(),
     last_compaction_reason: String(status.last_compaction_reason || "").trim(),
     last_compaction_phase: String(status.last_compaction_phase || "").trim(),
+    estimate_mode: String(status.estimate_mode || "").trim(),
+    context_estimate_updated_at: String(status.context_estimate_updated_at || "").trim(),
+    context_exact_updated_at: String(status.context_exact_updated_at || "").trim(),
+    calculation_ms: Math.max(0, Number(status.calculation_ms || 0) || 0),
+    compact_recommendation: String(status.compact_recommendation || "none").trim(),
+    compact_reason: String(status.compact_reason || "").trim(),
     warning: String(status.warning || "").trim(),
   };
 }
@@ -2673,6 +2693,9 @@ function buildRuntimeStatsSummary({
     ],
     context: [
       { key: "usage", label: translateUi(locale, "context_meter.field.context_usage"), value: contextUsage },
+      { key: "remaining", label: translateUi(locale, "context_meter.field.remaining"), value: formatTokenCount(safeContextMeter.remaining_tokens) },
+      { key: "estimate_mode", label: translateUi(locale, "context_meter.field.estimate_mode"), value: String(safeContextMeter.estimate_mode || "-") },
+      { key: "compact_recommendation", label: translateUi(locale, "context_meter.field.compact_recommendation"), value: String(safeContextMeter.compact_recommendation || "none") },
       { key: "output_limit", label: translateUi(locale, "context_meter.field.output_limit"), value: formatTokenCount(maxOutputTokens) },
       { key: "token_usage", label: translateUi(locale, "context_meter.field.token_usage"), value: formatRuntimeTokenUsage(locale, tokenUsage) },
       ...(safeContextMeter.context_window
@@ -4060,6 +4083,156 @@ function App() {
     }, 160);
   }
 
+  function summarizeContextStatus(meterLike, compactionLike) {
+    const meter = meterLike && typeof meterLike === "object" ? meterLike : {};
+    const compaction = compactionLike && typeof compactionLike === "object" ? compactionLike : {};
+    const recommendation = String(meter.compact_recommendation || compaction.compact_recommendation || "none");
+    const stale = Boolean(meter.stale);
+    const usedPercent = Math.max(0, Number(meter.used_percent || 0) || 0);
+    const used = formatTokenCount(meter.estimated_tokens || compaction.estimated_context_tokens || 0);
+    const total = formatTokenCount(meter.context_window || compaction.effective_context_window || 0);
+    const mode = String(meter.estimate_mode || compaction.estimate_mode || "quick");
+    const status = stale
+      ? t("context_meter.status.updating")
+      : (recommendation === "required" || recommendation === "suggested" || usedPercent >= 80)
+        ? t("context_meter.status.tight")
+        : t("context_meter.status.enough");
+    const compact = recommendation === "required"
+      ? t("context_meter.compact.required")
+      : recommendation === "suggested"
+        ? t("context_meter.compact.suggested")
+        : t("context_meter.compact.none");
+    return `${status} · ${compact} · ${used} / ${total} · ${mode}`;
+  }
+
+  function appendLocalAssistantMessage(text, options = {}) {
+    const baseActivity = {
+      status: String(options.status || "completed"),
+      final_answer: text,
+      started_at: Date.now(),
+      finished_at: Date.now(),
+    };
+    const message = createMessage("assistant", text, {
+      id: options.id,
+      activity: { ...baseActivity, ...((options && options.activity) || {}) },
+    });
+    setMessages((prev) => {
+      const nextMessages = [...prev, message];
+      const ownerId = String(sessionId || activeSessionIdRef.current || "").trim();
+      if (ownerId) {
+        updateThreadSnapshot(ownerId, (existing) => ({
+          ...existing,
+          messages: nextMessages,
+        }));
+      }
+      return nextMessages;
+    });
+    return message;
+  }
+
+  async function handleStatusCommand() {
+    if (sending) return;
+    if (draft.trim() === "/status") setDraft("");
+    const sid = String(sessionId || activeSessionIdRef.current || "").trim();
+    let data = null;
+    if (sid) {
+      const params = new URLSearchParams();
+      const modelName = String(activeModel || chatSettings.model || "").trim();
+      if (modelName) params.set("model", modelName);
+      params.set("max_output_tokens", String(chatSettings.max_output_tokens || DEFAULT_SETTINGS.max_output_tokens));
+      const query = params.toString();
+      data = await fetchJson(`/api/sessions/${encodeURIComponent(sid)}/context-status${query ? `?${query}` : ""}`);
+    } else {
+      data = await refreshRuntimeStatus(projectId, { background: false });
+    }
+    const meter = (data && data.context_meter) || (health && health.context_meter) || {};
+    const compaction = (data && data.compaction_status) || (health && health.compaction_status) || {};
+    if (data && (data.context_meter || data.compaction_status)) {
+      setHealth((prev) => (
+        prev
+          ? { ...prev, context_meter: data.context_meter || prev.context_meter, compaction_status: data.compaction_status || prev.compaction_status }
+          : prev
+      ));
+      updateOwnerSessionRuntimeState((prev) => ({
+        ...(prev || {}),
+        context_meter: data.context_meter || (prev && prev.context_meter) || {},
+        compaction_status: data.compaction_status || (prev && prev.compaction_status) || {},
+      }));
+    }
+    setContextMeterOpen(true);
+    appendLocalAssistantMessage(t("slash.status.summary", { summary: summarizeContextStatus(meter, compaction) }));
+  }
+
+  async function handleCompactCommand() {
+    if (sending) return;
+    const sid = String(sessionId || activeSessionIdRef.current || "").trim();
+    if (!sid) {
+      const summary = t("slash.compact.no_session");
+      setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+      return;
+    }
+    if (draft.trim() === "/compact") setDraft("");
+    const compactionItemId = `local-context-compaction-${Date.now()}`;
+    appendLocalAssistantMessage(t("slash.compact.started"), {
+      status: "running",
+      activity: {
+        live_items: [{
+          id: compactionItemId,
+          type: "contextCompaction",
+          status: "inProgress",
+          phase: "manual",
+          summary: t("slash.compact.started"),
+        }],
+      },
+    });
+    try {
+      const data = await fetchJson(`/api/sessions/${encodeURIComponent(sid)}/compact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trigger: "manual" }),
+      });
+      setHealth((prev) => (
+        prev
+          ? { ...prev, context_meter: data.context_meter || prev.context_meter, compaction_status: data.compaction_status || prev.compaction_status }
+          : prev
+      ));
+      updateOwnerSessionRuntimeState((prev) => ({
+        ...(prev || {}),
+        context_meter: data.context_meter || (prev && prev.context_meter) || {},
+        compaction_status: data.compaction_status || (prev && prev.compaction_status) || {},
+      }));
+      setContextMeterOpen(true);
+      const summary = data.summary || (data.compacted ? t("slash.compact.done") : t("slash.compact.skipped"));
+      appendLocalAssistantMessage(summary, {
+        activity: {
+          live_items: [{
+            id: compactionItemId,
+            type: "contextCompaction",
+            status: "completed",
+            phase: "manual",
+            generation: Number(((data.compaction_status || {}).generation) || 0),
+            summary,
+          }],
+        },
+      });
+    } catch (err) {
+      const nextError = applyUiError(err, t("slash.compact.failed"));
+      const summary = nextError.summary || t("slash.compact.failed");
+      appendLocalAssistantMessage(summary, {
+        status: "failed",
+        activity: {
+          live_items: [{
+            id: compactionItemId,
+            type: "contextCompaction",
+            status: "failed",
+            phase: "manual",
+            summary,
+          }],
+        },
+      });
+    }
+  }
+
   function updateModelSelection(nextModel, options = {}) {
     const normalized = String(nextModel || "").trim();
     if (options.markTouched !== false) setModelTouched(true);
@@ -5397,6 +5570,14 @@ function App() {
   async function handleSend(overrideText, userInputResponse) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText || sending) return;
+    if (overrideText == null && messageText === "/status") {
+      await handleStatusCommand();
+      return;
+    }
+    if (overrideText == null && messageText === "/compact") {
+      await handleCompactCommand();
+      return;
+    }
     const structuredUserInputResponse = userInputResponse && typeof userInputResponse === "object"
       ? userInputResponse
       : {};
@@ -6939,6 +7120,7 @@ function App() {
   const compactionWarningText = formatCompactionWarning(uiLocale, activeCompactionStatus, activeContextMeter);
   const compactionReasonText = formatCompactionReason(uiLocale, activeCompactionStatus.last_compaction_reason);
   const contextMeterColor = resolveContextMeterColor(activeContextMeter);
+  const contextStatusSummary = summarizeContextStatus(activeContextMeter, activeCompactionStatus);
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
@@ -8052,7 +8234,7 @@ function App() {
                       "--meter-color": contextMeterColor,
                     }}
                   ></span>
-                  <span className="status-model-label">${activeModel || "-"}</span>
+                  <span className="status-model-label">${contextStatusSummary}</span>
                 </button>
                 ${contextMeterOpen
                   ? html`

@@ -1763,7 +1763,11 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     assert payload["compaction_status"]["generation"] >= 1
     assert payload["compaction_status"]["compacted_history_present"] is True
     assert payload["compaction_status"]["last_compaction_phase"] == "pre_turn"
-    assert payload["compaction_status"]["last_compaction_reason"].startswith("context_limit:")
+    assert payload["compaction_status"]["last_compaction_reason"].split(":", 1)[0] in {
+        "context_auto_limit",
+        "context_danger_limit",
+        "history_soft_limit",
+    }
 
     loaded = main_app.session_store.load(session["id"], default_project=project)
     assert loaded is not None
@@ -1771,7 +1775,11 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     assert loaded["compaction_state"]["compacted_history"]
     assert loaded["summary"] == loaded["compaction_state"]["compacted_history"]
     assert loaded["compaction_state"]["last_compaction_phase"] == "pre_turn"
-    assert loaded["compaction_state"]["reason"] == "context_limit"
+    assert loaded["compaction_state"]["reason"] in {
+        "context_auto_limit",
+        "context_danger_limit",
+        "history_soft_limit",
+    }
     assert loaded["compaction_state"]["compaction_source"] == "deterministic_fallback"
     assert loaded["compaction_state"]["after_tokens"] > 0
     assert len(loaded["compaction_state"]["retained_turn_ids"]) <= 12
@@ -1781,7 +1789,7 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     assert seen["summary"] == loaded["compaction_state"]["compacted_history"]
     assert seen["compaction_status"]["generation"] == loaded["compaction_state"]["generation"]
     assert seen["compaction_status"]["last_compaction_phase"] == "pre_turn"
-    assert seen["compaction_status"]["reason"] == "context_limit"
+    assert seen["compaction_status"]["reason"] == loaded["compaction_state"]["reason"]
     assert seen["compaction_status"]["compaction_source"] == "deterministic_fallback"
     assert 1 <= len(seen["history_turns"]) <= 12
     assert all(turn["text"] != "继续总结" for turn in seen["history_turns"])
