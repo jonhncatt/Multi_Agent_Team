@@ -11,6 +11,7 @@ from app.config import load_config
 from app.i18n import translate
 from app.models import ChatSettings, ToolEvent
 from app.answer_stream_state import new_answer_stream_state
+from app import vintage_programmer_runtime as runtime_module
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -880,6 +881,9 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
         "runtime_boundary_ms",
         "runtime_project_contract_ms",
         "runtime_model_context_ms",
+        "runtime_context_manager_normalize_ms",
+        "runtime_user_request_limit_ms",
+        "runtime_context_pack_ms",
         "runtime_render_messages_ms",
         "runtime_initial_trace_ms",
         "runtime_tools_context_ms",
@@ -892,6 +896,41 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
     assert phase_timings["model_first_text_delta_ms"] >= phase_timings["model_first_event_ms"]
     assert phase_timings["answer_ready_ms"] >= phase_timings["model_first_text_delta_ms"]
     assert phase_timings["runtime_total_ms"] >= phase_timings["answer_ready_ms"]
+
+
+def test_runtime_model_context_short_input_skips_exact_tokenizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="你好，有什么我可以帮你？")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    def fail_count_tokens(_text: str, _model: str | None = None) -> int:
+        raise AssertionError("short user requests should not require exact tokenizer")
+
+    monkeypatch.setattr(runtime_module, "count_tokens", fail_count_tokens)
+
+    result = runtime.run(
+        message="你好",
+        settings=ChatSettings(model="gpt-test", enable_tools=False, response_style="short"),
+        context={
+            "session_id": "s-short-tokenizer",
+            "run_id": "run-short-tokenizer",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "context_manager": {
+                "clean_turns": [{"role": "user", "text": f"old-{index}"} for index in range(5000)]
+            },
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "你好，有什么我可以帮你？"
+    phase_timings = dict(dict((result.get("inspector") or {}).get("run_state") or {}).get("phase_timings") or {})
+    assert phase_timings["runtime_user_request_limit_ms"] >= 0
 
 
 def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: Path) -> None:

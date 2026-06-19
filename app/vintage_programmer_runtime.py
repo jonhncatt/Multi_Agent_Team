@@ -36,7 +36,7 @@ from app.context_pack import (
     render_compaction_summary,
     render_model_context,
 )
-from app.context_meter import count_tokens, resolve_context_window
+from app.context_meter import count_tokens, quick_count_tokens, resolve_context_window
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.llm_exchange import (
     MAX_EXCHANGES_PER_TURN,
@@ -635,10 +635,17 @@ class VintageProgrammerRuntime:
         runtime_boundary: RuntimeBoundary | None = None,
         model: str | None = None,
         max_output_tokens: int | None = None,
+        phase_timer: PhaseTimer | None = None,
     ) -> ModelContext:
+        started_at = time.perf_counter()
         context_manager = ContextManager.from_payload(
             context.get("context_manager") if isinstance(context.get("context_manager"), dict) else {}
         )
+        if phase_timer is not None:
+            phase_timer.record_duration_ms(
+                "runtime_context_manager_normalize_ms",
+                int((time.perf_counter() - started_at) * 1000),
+            )
         project_payload = dict(context.get("project") or {})
         project_root = str(project_payload.get("project_root") or project_payload.get("root") or self._config.workspace_root)
         boundary = runtime_boundary or build_turn_runtime_boundary(
@@ -647,7 +654,19 @@ class VintageProgrammerRuntime:
             cwd=str(project_payload.get("cwd") or project_root or ""),
             attachments=list(context.get("attachments") or []),
         )
-        return build_model_context(
+        started_at = time.perf_counter()
+        user_request_char_limit = self._user_request_char_limit_for_model(
+            message=message,
+            model=model,
+            max_output_tokens=max_output_tokens,
+        )
+        if phase_timer is not None:
+            phase_timer.record_duration_ms(
+                "runtime_user_request_limit_ms",
+                int((time.perf_counter() - started_at) * 1000),
+            )
+        started_at = time.perf_counter()
+        model_context = build_model_context(
             user_request=message,
             context_manager=context_manager,
             runtime_boundary=boundary,
@@ -663,12 +682,14 @@ class VintageProgrammerRuntime:
                 if isinstance(context.get("work_cursor"), dict)
                 else {}
             ),
-            user_request_char_limit=self._user_request_char_limit_for_model(
-                message=message,
-                model=model,
-                max_output_tokens=max_output_tokens,
-            ),
+            user_request_char_limit=user_request_char_limit,
         )
+        if phase_timer is not None:
+            phase_timer.record_duration_ms(
+                "runtime_context_pack_ms",
+                int((time.perf_counter() - started_at) * 1000),
+            )
+        return model_context
 
     def _user_request_char_limit_for_model(
         self,
@@ -695,7 +716,7 @@ class VintageProgrammerRuntime:
         output_reserve = max(0, int(max_output_tokens or getattr(self._config, "max_output_tokens", 16384) or 16384))
         reserved_tokens = max(16_000, output_reserve * 2 + 12_000)
         token_budget = max(4000, int(context_window * 0.85) - reserved_tokens)
-        message_tokens = count_tokens(text, model)
+        message_tokens = quick_count_tokens(text)
         if message_tokens <= token_budget:
             return min(hard_cap, max(4000, len(text)))
         proportional_chars = int(len(text) * (float(token_budget) / float(max(1, message_tokens))))
@@ -3960,6 +3981,7 @@ class VintageProgrammerRuntime:
                 runtime_boundary=turn_runtime_boundary,
                 model=requested_model,
                 max_output_tokens=int(settings.max_output_tokens),
+                phase_timer=phase_timer,
             )
         with phase_timer.measure("runtime_render_messages_ms"):
             messages: list[Any] = [

@@ -278,7 +278,11 @@ def _clean_text(text: Any, *, limit: int = 1200) -> str:
 def _normalize_clean_turns(raw_turns: Any, *, current_message: Any, limit: int = 8) -> list[dict[str, Any]]:
     current_text = _clean_text(current_message, limit=20000)
     selected: list[dict[str, Any]] = []
-    for item in reversed(list(raw_turns or [])):
+    if isinstance(raw_turns, (list, tuple)):
+        iterator = reversed(raw_turns)
+    else:
+        iterator = reversed(list(raw_turns or []))
+    for item in iterator:
         if not isinstance(item, dict):
             continue
         role = _truncate(item.get("role"), 40)
@@ -302,7 +306,8 @@ def _normalize_clean_turns(raw_turns: Any, *, current_message: Any, limit: int =
 
 def _normalize_recent_observations(raw_values: Any) -> list[RecentObservation]:
     observations: list[RecentObservation] = []
-    for item in list(raw_values or []):
+    iterable = raw_values if isinstance(raw_values, (list, tuple)) else list(raw_values or [])
+    for item in iterable:
         if not isinstance(item, dict):
             continue
         summary = _truncate(item.get("summary") or item.get("message") or item.get("text") or item.get("error"), 500)
