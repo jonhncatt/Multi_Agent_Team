@@ -3599,6 +3599,7 @@ function App() {
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
+  const [slashCommandActiveIndex, setSlashCommandActiveIndex] = useState(0);
   const [projectMenu, setProjectMenu] = useState(null);
   const [threadMenu, setThreadMenu] = useState(null);
   const [renameDialog, setRenameDialog] = useState(null);
@@ -3801,6 +3802,10 @@ function App() {
   useEffect(() => {
     activeSessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    setSlashCommandActiveIndex(0);
+  }, [draft]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return;
@@ -4147,6 +4152,23 @@ function App() {
     return message;
   }
 
+  function updateCurrentSessionRuntimeState(value) {
+    const ownerId = String(sessionId || activeSessionIdRef.current || "").trim();
+    const resolveNextState = (current) => resolveStateValue(
+      current && typeof current === "object" ? current : {},
+      value,
+    );
+    if (ownerId) {
+      updateThreadSnapshot(ownerId, (existing) => ({
+        ...existing,
+        sessionRuntimeState: resolveNextState(existing.sessionRuntimeState),
+      }));
+    }
+    if (!ownerId || String(activeSessionIdRef.current || "").trim() === ownerId) {
+      setSessionRuntimeState((prev) => resolveNextState(prev));
+    }
+  }
+
   async function handleStatusCommand() {
     if (sending) return;
     const sid = String(sessionId || activeSessionIdRef.current || "").trim();
@@ -4179,7 +4201,7 @@ function App() {
           ? { ...prev, context_meter: data.context_meter || prev.context_meter, compaction_status: data.compaction_status || prev.compaction_status }
           : prev
       ));
-      updateOwnerSessionRuntimeState((prev) => ({
+      updateCurrentSessionRuntimeState((prev) => ({
         ...(prev || {}),
         context_meter: data.context_meter || (prev && prev.context_meter) || {},
         compaction_status: data.compaction_status || (prev && prev.compaction_status) || {},
@@ -4222,7 +4244,7 @@ function App() {
           ? { ...prev, context_meter: data.context_meter || prev.context_meter, compaction_status: data.compaction_status || prev.compaction_status }
           : prev
       ));
-      updateOwnerSessionRuntimeState((prev) => ({
+      updateCurrentSessionRuntimeState((prev) => ({
         ...(prev || {}),
         context_meter: data.context_meter || (prev && prev.context_meter) || {},
         compaction_status: data.compaction_status || (prev && prev.compaction_status) || {},
@@ -6905,6 +6927,35 @@ function App() {
       return;
     }
     if (sending) return;
+    if (slashCommandSuggestions.length) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSlashCommandActiveIndex((prev) => (prev + 1) % slashCommandSuggestions.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashCommandActiveIndex((prev) => (
+          (prev - 1 + slashCommandSuggestions.length) % slashCommandSuggestions.length
+        ));
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDraft("");
+        setSlashCommandActiveIndex(0);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        const selectedIndex = Math.min(
+          Math.max(0, slashCommandActiveIndex),
+          slashCommandSuggestions.length - 1,
+        );
+        handleSend(slashCommandSuggestions[selectedIndex].command);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       handleSend();
@@ -7155,6 +7206,9 @@ function App() {
   const slashCommandSuggestions = slashCommandQuery
     ? SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommandQuery))
     : [];
+  const slashCommandSelectedIndex = slashCommandSuggestions.length
+    ? Math.min(Math.max(0, slashCommandActiveIndex), slashCommandSuggestions.length - 1)
+    : 0;
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
   const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
@@ -8224,9 +8278,12 @@ function App() {
                   ${slashCommandSuggestions.map((item) => html`
                     <button
                       key=${item.command}
-                      className="slash-command-item"
+                      className=${`slash-command-item ${slashCommandSuggestions[slashCommandSelectedIndex] === item ? "is-active" : ""}`}
                       type="button"
+                      role="option"
+                      aria-selected=${slashCommandSuggestions[slashCommandSelectedIndex] === item ? "true" : "false"}
                       onMouseDown=${(event) => event.preventDefault()}
+                      onMouseEnter=${() => setSlashCommandActiveIndex(slashCommandSuggestions.indexOf(item))}
                       onClick=${() => handleSend(item.command)}
                     >
                       <span className="slash-command-name">${item.command}</span>

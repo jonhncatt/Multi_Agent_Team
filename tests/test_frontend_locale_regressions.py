@@ -681,12 +681,18 @@ def test_status_and_compact_slash_commands_are_local_only() -> None:
 
     required_tokens = (
         "function normalizeSlashCommandText(value)",
+        "function updateCurrentSessionRuntimeState(value)",
         "const slashCommand = normalizeSlashCommandText(messageText);",
         "await handleStatusCommand();",
         "await handleCompactCommand();",
         "const slashCommandSuggestions = slashCommandQuery",
+        'event.key === "ArrowDown"',
+        'event.key === "ArrowUp"',
+        'event.key === "Escape"',
+        "slashCommandSelectedIndex",
         'className="slash-command-menu"',
-        'className="slash-command-item"',
+        'className=${`slash-command-item ${slashCommandSuggestions[slashCommandSelectedIndex] === item ? "is-active" : ""}`}',
+        'aria-selected=${slashCommandSuggestions[slashCommandSelectedIndex] === item ? "true" : "false"}',
         '/api/sessions/${encodeURIComponent(sid)}/context-status',
         '/api/sessions/${encodeURIComponent(sid)}/compact',
         'type: "contextCompaction"',
@@ -697,6 +703,7 @@ def test_status_and_compact_slash_commands_are_local_only() -> None:
     for token in (
         ".slash-command-menu",
         ".slash-command-item",
+        ".slash-command-item.is-active",
         ".slash-command-name",
         ".slash-command-copy",
     ):

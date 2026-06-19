@@ -1585,7 +1585,8 @@ button {
   text-align: left;
 }
 
-.slash-command-item:hover {
+.slash-command-item:hover,
+.slash-command-item.is-active {
   background: rgba(17, 24, 39, 0.06);
 }
 
