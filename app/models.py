@@ -9,7 +9,7 @@ class ChatSettings(BaseModel):
     provider: str | None = None
     model: str | None = None
     locale: str = "ja-JP"
-    max_output_tokens: int = Field(default=4096, ge=120, le=128000)
+    max_output_tokens: int = Field(default=16384, ge=120, le=128000)
     max_context_turns: int = Field(
         default=2000,
         ge=2,
@@ -563,7 +563,7 @@ class BootstrapResponse(BaseModel):
     workspace_root: str = ""
     allowed_roots: list[str] = Field(default_factory=list)
     default_permission_profile: str = "auto"
-    default_max_output_tokens: int = 4096
+    default_max_output_tokens: int = 16384
     max_upload_mb: int = 0
     web_allow_all_domains: bool = True
     web_allowed_domains: list[str] = Field(default_factory=list)

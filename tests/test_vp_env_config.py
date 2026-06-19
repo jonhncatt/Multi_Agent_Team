@@ -90,13 +90,13 @@ def test_vp_default_locale_can_be_configured(monkeypatch, tmp_path, locale: str)
     assert config.default_locale == locale
 
 
-def test_vp_max_output_tokens_defaults_to_stable_4096(monkeypatch, tmp_path) -> None:
+def test_vp_max_output_tokens_defaults_to_large_context_default(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
 
     config = load_config()
 
-    assert config.max_output_tokens == 4096
+    assert config.max_output_tokens == 16384
 
 
 def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
@@ -166,6 +166,9 @@ def test_env_example_matches_web_fetch_budget_default() -> None:
     env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     lines = {line.strip() for line in env_example.splitlines()}
 
+    assert "# VP_MAX_OUTPUT_TOKENS=16384" in lines
+    assert "# VP_MAX_USER_REQUEST_CHARS=4000000" in lines
+    assert "# VP_MAX_ATTACHMENT_CHARS=1000000" in lines
     assert "# VP_WEB_FETCH_MAX_CHARS=120000" in lines
     assert "# VP_WEB_FETCH_MAX_CHARS=12000" not in lines
 

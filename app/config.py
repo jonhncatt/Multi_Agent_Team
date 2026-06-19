@@ -1110,7 +1110,7 @@ def load_config() -> AppConfig:
             120,
             min(
                 128000,
-                int(_env("VP_MAX_OUTPUT_TOKENS", default="4096") or "4096"),
+                int(_env("VP_MAX_OUTPUT_TOKENS", default="16384") or "16384"),
             ),
         ),
         summary_trigger_turns=max(

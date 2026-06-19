@@ -692,7 +692,7 @@ class VintageProgrammerRuntime:
         if not text:
             return 4000
         context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
-        output_reserve = max(0, int(max_output_tokens or getattr(self._config, "max_output_tokens", 4096) or 4096))
+        output_reserve = max(0, int(max_output_tokens or getattr(self._config, "max_output_tokens", 16384) or 16384))
         reserved_tokens = max(16_000, output_reserve * 2 + 12_000)
         token_budget = max(4000, int(context_window * 0.85) - reserved_tokens)
         message_tokens = count_tokens(text, model)

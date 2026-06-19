@@ -28,10 +28,13 @@
 推奨デフォルト:
 
 ```env
-VP_MAX_OUTPUT_TOKENS=4096
+VP_MAX_OUTPUT_TOKENS=16384
+VP_MAX_USER_REQUEST_CHARS=4000000
+VP_MAX_ATTACHMENT_CHARS=1000000
 ```
 
-これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。長いタスクは 1 回の巨大な応答ではなく、複数回の model/tool loop で完了させます。
+これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。16384 のデフォルトは GPT-5.4 のような大きな context window を持つモデルでの長文資料 Q&A に向いていますが、長いタスクは 128K 級の巨大な単発応答ではなく、複数回の model/tool loop で進めます。
+`VP_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
 
 ## Python Commands
 

@@ -28,10 +28,13 @@
 推荐默认设置：
 
 ```env
-VP_MAX_OUTPUT_TOKENS=4096
+VP_MAX_OUTPUT_TOKENS=16384
+VP_MAX_USER_REQUEST_CHARS=4000000
+VP_MAX_ATTACHMENT_CHARS=1000000
 ```
 
-这个值是单次模型调用的输出上限，不是整个任务的总上限。长任务应通过多轮 model/tool loop 完成，而不是依赖一次超大回复。
+这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
+`VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
 ## Python Commands
 

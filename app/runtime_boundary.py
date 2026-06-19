@@ -25,7 +25,7 @@ class RuntimeBoundary(BaseModel):
     command_allowed_roots: list[str] = Field(default_factory=list)
     cwd: str = "."
     project_root: str = "."
-    max_output_tokens: int = 4096
+    max_output_tokens: int = 16384
     timeout_sec: int = 120
 
     def to_model_view(self) -> dict[str, Any]:
@@ -213,7 +213,7 @@ def build_turn_runtime_boundary(
         command_allowed_roots=[str(path) for path in command_roots],
         cwd=str(current_cwd),
         project_root=str(root),
-        max_output_tokens=int(getattr(config, "max_output_tokens", 4096) or 4096),
+        max_output_tokens=int(getattr(config, "max_output_tokens", 16384) or 16384),
     )
 
 

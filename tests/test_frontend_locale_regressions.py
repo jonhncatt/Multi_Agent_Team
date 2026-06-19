@@ -865,10 +865,10 @@ def test_summary_reload_preserves_live_heartbeat_for_active_owner_thread() -> No
         assert token in script, token
 
 
-def test_frontend_uses_stable_default_max_output_tokens_and_server_bootstrap_override() -> None:
+def test_frontend_uses_large_context_default_max_output_tokens_and_server_bootstrap_override() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "max_output_tokens: 4096" in script
+    assert "max_output_tokens: 16384" in script
     assert "health.default_max_output_tokens" in script
     assert "setChatSettings((prev) =>" in script
 

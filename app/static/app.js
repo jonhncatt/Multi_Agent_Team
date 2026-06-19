@@ -62,7 +62,7 @@ const DEFAULT_SETTINGS = {
   provider: "",
   model: "",
   locale: "",
-  max_output_tokens: 4096,
+  max_output_tokens: 16384,
   max_context_turns: 2000,
   enable_tools: true,
   permission_profile: "auto",

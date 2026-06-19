@@ -28,10 +28,13 @@ This release also keeps the 3.1.5N thread-detail stability fix: the frontend sav
 Recommended default:
 
 ```env
-VP_MAX_OUTPUT_TOKENS=4096
+VP_MAX_OUTPUT_TOKENS=16384
+VP_MAX_USER_REQUEST_CHARS=4000000
+VP_MAX_ATTACHMENT_CHARS=1000000
 ```
 
-This is the per-call output cap, not the total task limit. Long tasks should complete through multiple model/tool-loop steps rather than one extremely large response.
+This is the per-call output cap, not the total task limit. The 16384 default fits long-material Q&A on large-context models such as GPT-5.4; long tasks should still complete through multiple model/tool-loop steps rather than one 128K-scale response.
+`VP_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
 
 ## Python Commands
 

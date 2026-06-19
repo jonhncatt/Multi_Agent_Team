@@ -886,12 +886,12 @@ v2.9.0 uses a conservative default output cap.
 Default:
 
 ```env
-VP_MAX_OUTPUT_TOKENS=4096
+VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
 ```
 
-This value is a per-call upper bound, not the whole task limit.
+This value is a per-call upper bound, not the whole task limit. The default is intentionally below the 128K model maximum so ordinary runs avoid unnecessary latency, cost, and context reserve.
 The current user request is now packed by model-aware token budget first and clamped by `VP_MAX_USER_REQUEST_CHARS`; long attachment previews are likewise budgeted from the active model context window.
 
 Long tasks should be completed through multiple model calls and tool loops, not by setting a very large output cap for every request.
@@ -899,10 +899,10 @@ Long tasks should be completed through multiple model calls and tool loops, not 
 Future dynamic policy may use:
 
 - simple chat: 1024
-- default answer: 4096
-- plan/design document: 6144
-- long report: 8192
-- hard upper limit: 12000
+- default answer: 16384
+- plan/design document: 24576
+- long report: 32768
+- manual hard upper limit: 128000
 
 ## 25. Context Turns
 
