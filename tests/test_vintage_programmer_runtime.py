@@ -875,7 +875,19 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
     phase_timings = dict(dict((result.get("inspector") or {}).get("run_state") or {}).get("phase_timings") or {})
     assert phase_timings["agent_spec_load_ms"] >= 0
     assert phase_timings["skills_load_ms"] >= 0
+    for key in (
+        "runtime_contract_ms",
+        "runtime_boundary_ms",
+        "runtime_project_contract_ms",
+        "runtime_model_context_ms",
+        "runtime_render_messages_ms",
+        "runtime_initial_trace_ms",
+        "runtime_tools_context_ms",
+        "runtime_pre_model_ms",
+    ):
+        assert phase_timings[key] >= 0
     assert phase_timings["model_request_start_ms"] >= 0
+    assert phase_timings["model_request_start_ms"] >= phase_timings["runtime_pre_model_ms"]
     assert phase_timings["model_first_event_ms"] >= phase_timings["model_request_start_ms"]
     assert phase_timings["model_first_text_delta_ms"] >= phase_timings["model_first_event_ms"]
     assert phase_timings["answer_ready_ms"] >= phase_timings["model_first_text_delta_ms"]

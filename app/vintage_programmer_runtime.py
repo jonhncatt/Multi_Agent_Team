@@ -908,6 +908,30 @@ class VintageProgrammerRuntime:
         return str(trace.get("id") or "")
 
     @staticmethod
+    def _model_context_trace_summary(model_context: ModelContext) -> dict[str, Any]:
+        """Small runtime trace preview; the full sent_to_model stays in the final inspector."""
+        task = getattr(model_context, "task", None)
+        workspace = getattr(model_context, "workspace", None)
+        memory = getattr(model_context, "memory", None)
+        plan = getattr(model_context, "plan", None)
+        conversation = getattr(model_context, "conversation", None)
+        recent_turns = list(getattr(conversation, "recent_turns", []) or [])
+        recent_observations = list(getattr(memory, "recent_observations", []) or [])
+        plan_items = list(getattr(plan, "items", []) or [])
+        model_visible_paths = list(getattr(workspace, "model_visible_paths", []) or [])
+        return {
+            "full_context_deferred": True,
+            "user_request_chars": len(str(getattr(task, "user_request", "") or "")),
+            "goal": str(getattr(task, "goal", "") or "")[:160],
+            "cwd": str(getattr(workspace, "cwd", "") or ""),
+            "recent_turn_count": len(recent_turns),
+            "clean_summary_chars": len(str(getattr(memory, "clean_summary", "") or "")),
+            "recent_observation_count": len(recent_observations),
+            "plan_item_count": len(plan_items),
+            "model_visible_path_count": len(model_visible_paths),
+        }
+
+    @staticmethod
     def _emit_message_item_event(
         progress_cb: Callable[[dict[str, Any]], None] | None,
         *,
@@ -3820,6 +3844,7 @@ class VintageProgrammerRuntime:
             if not bool(auth_summary.get("available")):
                 raise RuntimeError(str(auth_summary.get("reason") or "LLM credentials are required"))
 
+        pre_model_started_perf = time.perf_counter()
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         run_id = str(context_payload.get("run_id") or "")
         session_id = str(context_payload.get("session_id") or "")
@@ -3850,11 +3875,12 @@ class VintageProgrammerRuntime:
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
             if isinstance(item, dict)
         ]
-        runtime_contract = build_full_auto_runtime_contract(
-            settings=settings,
-            config=self._config,
-            context=context_payload,
-        )
+        with phase_timer.measure("runtime_contract_ms"):
+            runtime_contract = build_full_auto_runtime_contract(
+                settings=settings,
+                config=self._config,
+                context=context_payload,
+            )
         tools_available = bool(runnable_tools)
         tool_count = len(runnable_tools)
         project_context = dict(context_payload.get("project") or {})
@@ -3910,66 +3936,69 @@ class VintageProgrammerRuntime:
         current_task_focus["goal"] = current_goal
         if current_task_focus.get("cwd"):
             effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
-        turn_runtime_boundary = build_turn_runtime_boundary(
-            config=self._config,
-            runtime_contract=runtime_contract,
-            project_root=project_root or self._config.workspace_root,
-            cwd=effective_cwd or project_root or self._config.workspace_root,
-            attachments=attachment_metas,
-        )
-        write_authorization_state = self._write_authorization_state(
-            prompt_message,
-            project_root=project_root,
-            workspace_write_allowed=turn_runtime_boundary.workspace_write_allowed,
-        )
+        with phase_timer.measure("runtime_boundary_ms"):
+            turn_runtime_boundary = build_turn_runtime_boundary(
+                config=self._config,
+                runtime_contract=runtime_contract,
+                project_root=project_root or self._config.workspace_root,
+                cwd=effective_cwd or project_root or self._config.workspace_root,
+                attachments=attachment_metas,
+            )
+            write_authorization_state = self._write_authorization_state(
+                prompt_message,
+                project_root=project_root,
+                workspace_write_allowed=turn_runtime_boundary.workspace_write_allowed,
+            )
         write_authorized = bool(write_authorization_state.get("authorized"))
         blocked_reason = ""
-        project_contract_text = self._load_project_contract_text(project_root)
-        turn_model_context = self._build_model_context(
-            message=prompt_message,
-            context=context_payload,
-            runtime_boundary=turn_runtime_boundary,
-            model=requested_model,
-            max_output_tokens=int(settings.max_output_tokens),
-        )
-
-        messages: list[Any] = [
-            self._backend._SystemMessage(
-                content=self._render_system_prompt(
-                    settings,
-                    spec=spec,
-                    loaded_skills=loaded_skills,
-                    project_contract_text=project_contract_text,
-                )
-            ),
-        ]
-        if attachment_guidance:
-            messages.append(self._backend._SystemMessage(content=attachment_guidance))
-        attachment_manifest = self._attachment_manifest_for_model(attachment_metas)
-        if attachment_manifest:
-            messages.append(
-                self._backend._SystemMessage(
-                    content="[current_attachments]\n" + json.dumps(attachment_manifest, ensure_ascii=False)
-                )
-            )
-        model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(
-            attachment_evidence_pack,
-            preview_limit=self._attachment_preview_char_limit_for_model(
+        with phase_timer.measure("runtime_project_contract_ms"):
+            project_contract_text = self._load_project_contract_text(project_root)
+        with phase_timer.measure("runtime_model_context_ms"):
+            turn_model_context = self._build_model_context(
+                message=prompt_message,
+                context=context_payload,
+                runtime_boundary=turn_runtime_boundary,
                 model=requested_model,
                 max_output_tokens=int(settings.max_output_tokens),
-            ),
-        )
-        if model_visible_attachment_evidence:
-            messages.append(
+            )
+        with phase_timer.measure("runtime_render_messages_ms"):
+            messages: list[Any] = [
                 self._backend._SystemMessage(
-                    content="[attachment_evidence_pack]\n" + json.dumps(model_visible_attachment_evidence, ensure_ascii=False)
+                    content=self._render_system_prompt(
+                        settings,
+                        spec=spec,
+                        loaded_skills=loaded_skills,
+                        project_contract_text=project_contract_text,
+                    )
+                ),
+            ]
+            if attachment_guidance:
+                messages.append(self._backend._SystemMessage(content=attachment_guidance))
+            attachment_manifest = self._attachment_manifest_for_model(attachment_metas)
+            if attachment_manifest:
+                messages.append(
+                    self._backend._SystemMessage(
+                        content="[current_attachments]\n" + json.dumps(attachment_manifest, ensure_ascii=False)
+                    )
+                )
+            model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(
+                attachment_evidence_pack,
+                preview_limit=self._attachment_preview_char_limit_for_model(
+                    model=requested_model,
+                    max_output_tokens=int(settings.max_output_tokens),
+                ),
+            )
+            if model_visible_attachment_evidence:
+                messages.append(
+                    self._backend._SystemMessage(
+                        content="[attachment_evidence_pack]\n" + json.dumps(model_visible_attachment_evidence, ensure_ascii=False)
+                    )
+                )
+            messages.append(
+                self._backend._HumanMessage(
+                    content=render_model_context(turn_model_context)
                 )
             )
-        messages.append(
-            self._backend._HumanMessage(
-                content=render_model_context(turn_model_context)
-            )
-        )
 
         usage_total = self._backend._empty_usage()
         notes: list[str] = [
@@ -4060,71 +4089,72 @@ class VintageProgrammerRuntime:
                 "harness_interpretation": {},
             }
 
-        self._emit_trace(
-            progress_cb,
-            run_id=run_id,
-            type="run.started",
-            title=trace_label(locale, "run.started"),
-            status="running",
-            payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "auto")},
-            trace_events=trace_events,
-        )
-        emit_runtime_activity(
-            "activity.started",
-            "request_analysis",
-            "Inspecting the request, restored task focus, attachment context, and runtime contract.",
-            payload={
-                "attachments": len(attachment_metas),
-                "tools_available": tools_available,
-                "tool_count": tool_count,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
-                "model_context": "task/workspace/memory/plan/permissions/conversation",
-                "sent_to_model": dump_model(turn_model_context),
-                "runtime_boundary": dump_model(turn_runtime_boundary),
-            },
-            visible=False,
-        )
-        self._emit_trace(
-            progress_cb,
-            run_id=run_id,
-            type="runtime_contract.selected",
-            title=trace_label(locale, "runtime_contract.selected"),
-            detail=trace_label(locale, "runtime_contract.detail"),
-            status="success",
-            payload=runtime_contract.as_payload(),
-            visible=False,
-            trace_events=trace_events,
-        )
-        emit_runtime_activity(
-            "activity.done",
-            "request_analysis",
-            self._activity_detail(
-                task_type=turn_activity_context.get("task_type"),
-                primary_intent=turn_activity_context.get("primary_intent"),
-                execution_policy=turn_activity_context.get("execution_policy"),
-                output_mode=turn_activity_context.get("output_mode"),
-            ),
-            status="success",
-            payload={
-                "attachments": len(attachment_metas),
-                "tools_available": tools_available,
-                "tool_count": tool_count,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
-                "runtime_boundary": dump_model(turn_runtime_boundary),
-            },
-            visible=False,
-        )
-        emit_runtime_activity(
-            "activity.started",
-            "model_action",
-            "Waiting for the model to choose the next action.",
-            payload={
-                "tools_available": tools_available,
-                "tool_count": tool_count,
-                "inline_document": inline_document,
-                "runtime_boundary": dump_model(turn_runtime_boundary),
-            },
-        )
+        with phase_timer.measure("runtime_initial_trace_ms"):
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="run.started",
+                title=trace_label(locale, "run.started"),
+                status="running",
+                payload={"permission_profile": str(turn_runtime_boundary.permission_profile or "auto")},
+                trace_events=trace_events,
+            )
+            emit_runtime_activity(
+                "activity.started",
+                "request_analysis",
+                "Inspecting the request, restored task focus, attachment context, and runtime contract.",
+                payload={
+                    "attachments": len(attachment_metas),
+                    "tools_available": tools_available,
+                    "tool_count": tool_count,
+                    "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
+                    "model_context": "task/workspace/memory/plan/permissions/conversation",
+                    "sent_to_model": self._model_context_trace_summary(turn_model_context),
+                    "runtime_boundary": turn_runtime_boundary.to_model_view(),
+                },
+                visible=False,
+            )
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="runtime_contract.selected",
+                title=trace_label(locale, "runtime_contract.selected"),
+                detail=trace_label(locale, "runtime_contract.detail"),
+                status="success",
+                payload=runtime_contract.as_payload(),
+                visible=False,
+                trace_events=trace_events,
+            )
+            emit_runtime_activity(
+                "activity.done",
+                "request_analysis",
+                self._activity_detail(
+                    task_type=turn_activity_context.get("task_type"),
+                    primary_intent=turn_activity_context.get("primary_intent"),
+                    execution_policy=turn_activity_context.get("execution_policy"),
+                    output_mode=turn_activity_context.get("output_mode"),
+                ),
+                status="success",
+                payload={
+                    "attachments": len(attachment_metas),
+                    "tools_available": tools_available,
+                    "tool_count": tool_count,
+                    "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
+                    "runtime_boundary": turn_runtime_boundary.to_model_view(),
+                },
+                visible=False,
+            )
+            emit_runtime_activity(
+                "activity.started",
+                "model_action",
+                "Waiting for the model to choose the next action.",
+                payload={
+                    "tools_available": tools_available,
+                    "tool_count": tool_count,
+                    "inline_document": inline_document,
+                    "runtime_boundary": turn_runtime_boundary.to_model_view(),
+                },
+            )
 
         def refresh_model_step(ai_msg: Any, *, event_type: str = "activity.done") -> None:
             nonlocal current_step_index
@@ -4169,18 +4199,19 @@ class VintageProgrammerRuntime:
                 },
             )
 
-        self._set_tools_runtime_context(
-            execution_mode=settings.execution_mode,
-            session_id=str(context_payload.get("session_id") or ""),
-            project_id=project_id,
-            project_root=project_root,
-            cwd=effective_cwd,
-            model=requested_model,
-            locale=locale,
-            permission_profile=turn_runtime_boundary.permission_profile,
-            runtime_boundary=turn_runtime_boundary,
-            run_id=run_id,
-        )
+        with phase_timer.measure("runtime_tools_context_ms"):
+            self._set_tools_runtime_context(
+                execution_mode=settings.execution_mode,
+                session_id=str(context_payload.get("session_id") or ""),
+                project_id=project_id,
+                project_root=project_root,
+                cwd=effective_cwd,
+                model=requested_model,
+                locale=locale,
+                permission_profile=turn_runtime_boundary.permission_profile,
+                runtime_boundary=turn_runtime_boundary,
+                run_id=run_id,
+            )
 
         user_input_response = (
             dict(context_payload.get("user_input_response") or {})
@@ -4326,6 +4357,10 @@ class VintageProgrammerRuntime:
                     "tools_available": bool(runnable_tools),
                 },
                 trace_events=trace_events,
+            )
+            phase_timer.record_duration_ms(
+                "runtime_pre_model_ms",
+                int((time.perf_counter() - pre_model_started_perf) * 1000),
             )
             phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
             initial_invoke_ok = False
