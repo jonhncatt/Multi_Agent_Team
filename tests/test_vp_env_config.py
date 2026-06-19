@@ -109,6 +109,16 @@ def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.max_output_tokens == 2048
 
 
+def test_vp_max_user_request_chars_env_is_loaded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_MAX_USER_REQUEST_CHARS", "123456")
+
+    config = load_config()
+
+    assert config.max_user_request_chars == 123456
+
+
 def test_web_fetch_budget_matches_main_branch_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))

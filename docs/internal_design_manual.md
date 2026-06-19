@@ -887,9 +887,12 @@ Default:
 
 ```env
 VP_MAX_OUTPUT_TOKENS=4096
+VP_MAX_USER_REQUEST_CHARS=4000000
+VP_MAX_ATTACHMENT_CHARS=1000000
 ```
 
 This value is a per-call upper bound, not the whole task limit.
+The current user request is now packed by model-aware token budget first and clamped by `VP_MAX_USER_REQUEST_CHARS`; long attachment previews are likewise budgeted from the active model context window.
 
 Long tasks should be completed through multiple model calls and tool loops, not by setting a very large output cap for every request.
 

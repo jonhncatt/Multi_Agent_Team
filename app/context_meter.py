@@ -22,6 +22,9 @@ from app.context_pack import (
 
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-5.5": 1_000_000,
+    "gpt-5.4": 1_000_000,
+    "gpt-5.4-mini": 400_000,
     "moonshot-v1-8k": 8 * 1024,
     "moonshot-v1-32k": 32 * 1024,
     "moonshot-v1-128k": 128 * 1024,

@@ -2013,6 +2013,53 @@ def test_runtime_sends_attachment_evidence_pack_to_model_messages(tmp_path: Path
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
 
+def test_runtime_model_context_uses_openai_large_context_budget(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    long_request = "会议转录：" + ("重要内容" * 2000)
+
+    context = runtime._build_model_context(
+        message=long_request,
+        context={
+            "project": {
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+            },
+        },
+        model="gpt-5.4",
+        max_output_tokens=8192,
+    )
+
+    assert context.task.user_request == long_request
+
+
+def test_runtime_attachment_evidence_preview_uses_large_context_budget(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    config = _isolated_config(tmp_path)
+    config.max_attachment_chars = 80_000
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    preview = "A" * 20_000
+
+    packed = runtime._attachment_evidence_pack_for_model(
+        [{"id": "a1", "name": "meeting.txt", "preview": preview}],
+        preview_limit=runtime._attachment_preview_char_limit_for_model(model="gpt-5.4", max_output_tokens=8192),
+    )
+
+    assert len(packed[0]["preview"]) > 10_000
+
+
 def test_runtime_can_continue_past_legacy_max_tool_rounds_with_internal_budget(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

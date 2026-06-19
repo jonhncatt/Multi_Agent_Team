@@ -375,6 +375,7 @@ class AppConfig:
     max_context_turns: int
     python_command: str
     python_command_source: str
+    max_user_request_chars: int
     max_attachment_chars: int
     max_upload_mb: int
     default_locale: str
@@ -1131,6 +1132,16 @@ def load_config() -> AppConfig:
         ),
         python_command=python_command,
         python_command_source=python_command_source,
+        max_user_request_chars=max(
+            4000,
+            min(
+                4000000,
+                int(
+                    _env("VP_MAX_USER_REQUEST_CHARS", default="4000000")
+                    or "4000000"
+                ),
+            ),
+        ),
         max_attachment_chars=max(
             2000,
             min(

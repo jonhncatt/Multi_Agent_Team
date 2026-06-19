@@ -27,6 +27,7 @@ from app.context_meter import (
     build_runtime_context_payload,
     ensure_compaction_state,
     maybe_auto_compact_session,
+    resolve_context_window,
 )
 from app.context_pack import ContextManager, classify_assistant_output
 from app.i18n import normalize_locale, supported_locales, translate
@@ -118,6 +119,18 @@ APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
 session_store.rebuild_metadata_index(default_project=default_project)
+
+
+def _attachment_preview_chars_for_model(model: str | None, max_output_tokens: int | None) -> int:
+    context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
+    per_attachment_token_budget = max(3000, int(context_window * 0.10))
+    return max(
+        12_000,
+        min(
+            int(config.max_attachment_chars),
+            per_attachment_token_budget * 4,
+        ),
+    )
 _provider_runtime_lock = threading.Lock()
 _provider_runtime_cache: dict[str, VintageProgrammerRuntime] = {}
 _provider_payload_lock = threading.Lock()
@@ -2247,7 +2260,11 @@ def _process_chat_request(
         with request_phase_timer.measure("attachment_load_ms"):
             attachments = upload_store.get_many(effective_attachment_ids)
         with request_phase_timer.measure("attachment_evidence_pack_ms"):
-            attachment_evidence_pack = build_attachment_evidence_pack(attachments, locale=locale)
+            attachment_evidence_pack = build_attachment_evidence_pack(
+                attachments,
+                locale=locale,
+                preview_chars=_attachment_preview_chars_for_model(requested_model, req.settings.max_output_tokens),
+            )
         task_state_notes: list[str] = []
         with request_phase_timer.measure("attachments_context_bundle_ms"):
             attachments_context_meter, attachments_compaction_status = _context_bundle_for_session(

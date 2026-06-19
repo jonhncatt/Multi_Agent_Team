@@ -36,7 +36,7 @@ from app.context_pack import (
     render_compaction_summary,
     render_model_context,
 )
-from app.context_meter import count_tokens
+from app.context_meter import count_tokens, resolve_context_window
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.llm_exchange import (
     MAX_EXCHANGES_PER_TURN,
@@ -633,6 +633,8 @@ class VintageProgrammerRuntime:
         message: str,
         context: dict[str, Any],
         runtime_boundary: RuntimeBoundary | None = None,
+        model: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> ModelContext:
         context_manager = ContextManager.from_payload(
             context.get("context_manager") if isinstance(context.get("context_manager"), dict) else {}
@@ -661,7 +663,54 @@ class VintageProgrammerRuntime:
                 if isinstance(context.get("work_cursor"), dict)
                 else {}
             ),
+            user_request_char_limit=self._user_request_char_limit_for_model(
+                message=message,
+                model=model,
+                max_output_tokens=max_output_tokens,
+            ),
         )
+
+    def _user_request_char_limit_for_model(
+        self,
+        *,
+        message: str,
+        model: str | None,
+        max_output_tokens: int | None,
+    ) -> int:
+        text = str(message or "")
+        hard_cap = max(
+            4000,
+            int(
+                getattr(
+                    self._config,
+                    "max_user_request_chars",
+                    getattr(self._config, "max_attachment_chars", 1_000_000),
+                )
+                or 1_000_000
+            ),
+        )
+        if not text:
+            return 4000
+        context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
+        output_reserve = max(0, int(max_output_tokens or getattr(self._config, "max_output_tokens", 4096) or 4096))
+        reserved_tokens = max(16_000, output_reserve * 2 + 12_000)
+        token_budget = max(4000, int(context_window * 0.85) - reserved_tokens)
+        message_tokens = count_tokens(text, model)
+        if message_tokens <= token_budget:
+            return min(hard_cap, max(4000, len(text)))
+        proportional_chars = int(len(text) * (float(token_budget) / float(max(1, message_tokens))))
+        return min(hard_cap, max(4000, proportional_chars))
+
+    def _attachment_preview_char_limit_for_model(
+        self,
+        *,
+        model: str | None,
+        max_output_tokens: int | None,
+    ) -> int:
+        hard_cap = max(4000, int(getattr(self._config, "max_attachment_chars", 1_000_000) or 1_000_000))
+        context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
+        per_attachment_token_budget = max(3000, int(context_window * 0.10))
+        return min(hard_cap, max(12_000, per_attachment_token_budget * 4))
 
     def _build_human_payload(
         self,
@@ -674,6 +723,8 @@ class VintageProgrammerRuntime:
             message=message,
             context=context,
             runtime_boundary=runtime_boundary,
+            model=None,
+            max_output_tokens=None,
         )
         return render_model_context(model_context)
 
@@ -1678,8 +1729,9 @@ class VintageProgrammerRuntime:
         return manifest[:8]
 
     @classmethod
-    def _attachment_evidence_pack_for_model(cls, evidence_pack: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _attachment_evidence_pack_for_model(cls, evidence_pack: list[dict[str, Any]], *, preview_limit: int = 4000) -> list[dict[str, Any]]:
         compacted: list[dict[str, Any]] = []
+        normalized_preview_limit = max(4000, int(preview_limit or 4000))
         for item in evidence_pack:
             if not isinstance(item, dict):
                 continue
@@ -1687,7 +1739,7 @@ class VintageProgrammerRuntime:
             for key in ("id", "name", "mime", "kind", "path", "source_format", "exists", "size", "has_more"):
                 if key in item:
                     compact_item[str(key)] = dump_model(item.get(key))
-            for key, limit in (("summary", 700), ("preview", 4000), ("text_preview", 4000)):
+            for key, limit in (("summary", 700), ("preview", normalized_preview_limit), ("text_preview", normalized_preview_limit)):
                 value = cls._truncate_attachment_debug_text(item.get(key), limit)
                 if value:
                     compact_item[key] = value
@@ -3877,6 +3929,8 @@ class VintageProgrammerRuntime:
             message=prompt_message,
             context=context_payload,
             runtime_boundary=turn_runtime_boundary,
+            model=requested_model,
+            max_output_tokens=int(settings.max_output_tokens),
         )
 
         messages: list[Any] = [
@@ -3898,7 +3952,13 @@ class VintageProgrammerRuntime:
                     content="[current_attachments]\n" + json.dumps(attachment_manifest, ensure_ascii=False)
                 )
             )
-        model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(attachment_evidence_pack)
+        model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(
+            attachment_evidence_pack,
+            preview_limit=self._attachment_preview_char_limit_for_model(
+                model=requested_model,
+                max_output_tokens=int(settings.max_output_tokens),
+            ),
+        )
         if model_visible_attachment_evidence:
             messages.append(
                 self._backend._SystemMessage(

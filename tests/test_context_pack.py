@@ -104,6 +104,28 @@ def test_model_context_has_six_question_sections(tmp_path: Path) -> None:
     assert payload["conversation"]["recent_turns"] == [{"role": "assistant", "text": "上一轮已经完成工具入口定位。"}]
 
 
+def test_model_context_preserves_large_current_request_when_budget_allows(tmp_path: Path) -> None:
+    boundary = build_turn_runtime_boundary(
+        config=load_config(),
+        runtime_contract=RuntimeContract(permission_profile="auto", shell_allowed=True),
+        project_root=tmp_path,
+        cwd=tmp_path,
+        attachments=[],
+    )
+    long_request = "会议转录：" + ("重要内容" * 1500)
+
+    model_context = build_model_context(
+        user_request=long_request,
+        context_manager=ContextManager(),
+        runtime_boundary=boundary,
+        project_root=tmp_path,
+        cwd=tmp_path,
+        user_request_char_limit=len(long_request),
+    )
+
+    assert model_context.task.user_request == long_request
+
+
 def test_model_context_prefers_task_state_checkpoint_when_present(tmp_path: Path) -> None:
     boundary = build_turn_runtime_boundary(
         config=load_config(),

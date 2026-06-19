@@ -89,20 +89,21 @@ def _image_probe(path: Path) -> dict[str, Any]:
         return {"warning": f"image metadata unavailable: {exc}"}
 
 
-def _extract_document_preview(path: Path, *, locale: str) -> tuple[str, dict[str, Any]]:
+def _extract_document_preview(path: Path, *, locale: str, preview_chars: int = _PREVIEW_CHARS) -> tuple[str, dict[str, Any]]:
     suffix = path.suffix.lower()
+    max_chars = max(1000, int(preview_chars or _PREVIEW_CHARS))
     try:
         if suffix == ".msg":
             from app.attachments import extract_outlook_msg_payload
 
-            payload = extract_outlook_msg_payload(str(path), max_chars=_PREVIEW_CHARS, locale=locale) or {}
+            payload = extract_outlook_msg_payload(str(path), max_chars=max_chars, locale=locale) or {}
             return str(payload.get("content") or ""), {
                 "email_meta": dict(payload.get("email_meta") or {}),
                 "attachment_list": list(payload.get("attachment_list") or []),
             }
         from app.attachments import extract_document_text
 
-        return str(extract_document_text(str(path), max_chars=_PREVIEW_CHARS, locale=locale) or ""), {}
+        return str(extract_document_text(str(path), max_chars=max_chars, locale=locale) or ""), {}
     except Exception as exc:
         return "", {"warning": f"document preview failed: {exc}"}
 
@@ -112,8 +113,10 @@ def build_attachment_evidence_pack(
     *,
     locale: str = "zh-CN",
     max_items: int = _MAX_EVIDENCE_ITEMS,
+    preview_chars: int = _PREVIEW_CHARS,
 ) -> list[dict[str, Any]]:
     pack: list[dict[str, Any]] = []
+    normalized_preview_chars = max(1000, int(preview_chars or _PREVIEW_CHARS))
     for meta in list(attachments or [])[: max(1, int(max_items))]:
         if not isinstance(meta, dict):
             continue
@@ -172,10 +175,10 @@ def build_attachment_evidence_pack(
                 }
                 pack.append(item)
                 continue
-            preview, extra = _extract_document_preview(path, locale=locale)
+            preview, extra = _extract_document_preview(path, locale=locale, preview_chars=normalized_preview_chars)
             item.update(extra)
             item["source_format"] = _source_format_for_suffix(suffix)
-            item["preview"] = _compact_text(preview, _PREVIEW_CHARS)
+            item["preview"] = _compact_text(preview, normalized_preview_chars)
             total_len = len(preview or "")
             if suffix == ".msg" and item.get("email_meta"):
                 subject = str((item.get("email_meta") or {}).get("subject") or "").strip()
@@ -183,7 +186,7 @@ def build_attachment_evidence_pack(
             else:
                 first_line = next((line.strip() for line in str(preview or "").splitlines() if line.strip()), "")
                 item["summary"] = _compact_text(f"{name or path.name} · {item['source_format']} · {first_line}", _SUMMARY_CHARS)
-            item["has_more"] = bool(total_len >= _PREVIEW_CHARS or int(item.get("size") or 0) > _PREVIEW_CHARS)
+            item["has_more"] = bool(total_len >= normalized_preview_chars or int(item.get("size") or 0) > normalized_preview_chars)
             item["read_hint"] = {
                 "tool": "read_file",
                 "path": str(path),

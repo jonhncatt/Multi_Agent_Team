@@ -937,7 +937,7 @@ def _task_context_from_state(
             500,
         )
     return TaskContext(
-        user_request=_clean_text(user_request, limit=4000),
+        user_request=_clean_text(user_request, limit=max(4000, len(str(user_request or "")))),
         goal=_truncate(normalized_task.get("goal") or normalize_user_message_preview(user_request, limit=140), 500),
         status=_truncate(normalized_task.get("status"), 80),
         current_step_id=_truncate(current_step_id, 120),
@@ -962,6 +962,7 @@ def build_model_context(
     cwd: Path | str | None = None,
     task_state: dict[str, Any] | None = None,
     work_cursor: dict[str, Any] | None = None,
+    user_request_char_limit: int | None = None,
 ) -> ModelContext:
     boundary_model_view = runtime_boundary.to_model_view() if hasattr(runtime_boundary, "to_model_view") else dict(runtime_boundary or {})
     normalized_task = normalize_task_state(task_state or {})
@@ -978,7 +979,10 @@ def build_model_context(
         or boundary_model_view.get("cwd")
         or resolved_project_root
     )
-    clean_user_request = _clean_text(user_request, limit=4000)
+    clean_user_request = _clean_text(
+        user_request,
+        limit=max(4000, int(user_request_char_limit or 4000)),
+    )
     active_files = _unique_strings(
         [*list(normalized_cursor.get("active_files") or []), *context_manager.active_files],
         limit=10,

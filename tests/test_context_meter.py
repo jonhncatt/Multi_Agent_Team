@@ -17,6 +17,18 @@ def test_resolve_context_window_prefers_explicit_model_registry() -> None:
     assert source == "model_registry"
 
 
+def test_resolve_context_window_matches_openai_large_context_models() -> None:
+    window, source = resolve_context_window("gpt-5.4", max_output_tokens=128000)
+
+    assert window == 1_000_000
+    assert source == "model_registry"
+
+    mini_window, mini_source = resolve_context_window("openai/gpt-5.4-mini", max_output_tokens=128000)
+
+    assert mini_window == 400_000
+    assert mini_source == "model_registry"
+
+
 def test_resolve_context_window_uses_model_name_hint() -> None:
     window, source = resolve_context_window("mixtral-8x7b-32768", max_output_tokens=4096)
 
