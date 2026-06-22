@@ -4384,7 +4384,12 @@ class VintageProgrammerRuntime:
                 "runtime_pre_model_ms",
                 int((time.perf_counter() - pre_model_started_perf) * 1000),
             )
-            phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+            initial_model_request_started_perf = time.perf_counter()
+            phase_timer.record_offset_ms(
+                "model_request_start_ms",
+                perf_value=initial_model_request_started_perf,
+                if_missing=True,
+            )
             initial_invoke_ok = False
             initial_exchange = begin_llm_exchange("initial", requested_model, messages)
             try:
@@ -4443,6 +4448,10 @@ class VintageProgrammerRuntime:
                     },
                     trace_events=trace_events,
                 )
+            finally:
+                initial_response_ms = int((time.perf_counter() - initial_model_request_started_perf) * 1000)
+                phase_timer.record_duration_ms("model_initial_response_ms", initial_response_ms)
+                phase_timer.record_duration_ms("model_last_response_ms", initial_response_ms)
             if initial_invoke_ok:
                 self._emit_trace(
                     progress_cb,
@@ -5548,7 +5557,12 @@ class VintageProgrammerRuntime:
                     },
                     trace_events=trace_events,
                 )
-                phase_timer.record_offset_ms("model_request_start_ms", if_missing=True)
+                followup_model_request_started_perf = time.perf_counter()
+                phase_timer.record_offset_ms(
+                    "model_request_start_ms",
+                    perf_value=followup_model_request_started_perf,
+                    if_missing=True,
+                )
                 self._assert_tool_message_invariants(
                     messages,
                     phase="before_followup_llm",
@@ -5582,7 +5596,13 @@ class VintageProgrammerRuntime:
                             phase_timer=phase_timer,
                         ),
                     )
+                    followup_response_ms = int((time.perf_counter() - followup_model_request_started_perf) * 1000)
+                    phase_timer.record_duration_ms("model_followup_response_ms", followup_response_ms)
+                    phase_timer.record_duration_ms("model_last_response_ms", followup_response_ms)
                 except Exception as exc:
+                    followup_response_ms = int((time.perf_counter() - followup_model_request_started_perf) * 1000)
+                    phase_timer.record_duration_ms("model_followup_response_ms", followup_response_ms)
+                    phase_timer.record_duration_ms("model_last_response_ms", followup_response_ms)
                     error_message = safe_error_message(exc)
                     failure_payload = self._llm_failure_payload(
                         exc,
@@ -5617,6 +5637,7 @@ class VintageProgrammerRuntime:
                             trace_events=trace_events,
                         )
                         retry_exchange = begin_llm_exchange("post_tool_response_retry", effective_model or requested_model, messages)
+                        retry_model_request_started_perf = time.perf_counter()
                         try:
                             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                                 self._backend._invoke_with_runner_recovery,
@@ -5640,6 +5661,9 @@ class VintageProgrammerRuntime:
                                     phase_timer=phase_timer,
                                 ),
                             )
+                            retry_response_ms = int((time.perf_counter() - retry_model_request_started_perf) * 1000)
+                            phase_timer.record_duration_ms("model_retry_response_ms", retry_response_ms)
+                            phase_timer.record_duration_ms("model_last_response_ms", retry_response_ms)
                             self._emit_trace(
                                 progress_cb,
                                 run_id=run_id,
@@ -5657,6 +5681,9 @@ class VintageProgrammerRuntime:
                             )
                             completed_exchange = retry_exchange
                         except Exception as retry_exc:
+                            retry_response_ms = int((time.perf_counter() - retry_model_request_started_perf) * 1000)
+                            phase_timer.record_duration_ms("model_retry_response_ms", retry_response_ms)
+                            phase_timer.record_duration_ms("model_last_response_ms", retry_response_ms)
                             retry_payload = self._llm_failure_payload(
                                 retry_exc,
                                 messages=messages,

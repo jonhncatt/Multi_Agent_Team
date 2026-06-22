@@ -201,6 +201,7 @@ function createEmptyLiveHeartbeat() {
   return {
     status: "",
     tool: "",
+    model: "",
     action: "",
     command: "",
     recentEvent: "",
@@ -216,6 +217,7 @@ function normalizeLiveHeartbeat(raw) {
     ...item,
     status: String(item.status || "").trim(),
     tool: String(item.tool || "").trim(),
+    model: String(item.model || "").trim(),
     action: String(item.action || "").trim(),
     command: String(item.command || "").trim(),
     recentEvent: String(item.recentEvent || item.recent_event || "").trim(),
@@ -890,7 +892,7 @@ function liveRunItemFromTrace(trace) {
       status: "waiting_model",
       label: item.title || "",
       label_key: "activity.live.model_thinking",
-      detail: item.detail || String(payload.model || ""),
+      detail: item.detail || "",
       started_at: item.timestamp,
       raw: item,
     });
@@ -1083,6 +1085,8 @@ function normalizeMessageActivity(raw) {
     run_duration_ms: runDurationMs,
     final_elapsed_ms: finalElapsedMs,
     activity_summary: String(item.activity_summary || ""),
+    live_model_started: Boolean(item.live_model_started || item.liveModelStarted),
+    live_model: String(item.live_model || item.liveModel || "").trim(),
     trace_ref: String(item.trace_ref || item.traceRef || ""),
     tool_count: Math.max(0, Number(item.tool_count || item.toolCount || 0) || 0),
     triggering_user_message: String(item.triggering_user_message || item.triggeringUserMessage || ""),
@@ -1714,6 +1718,27 @@ function latestTraceTimestampByTypes(traces, types) {
   return 0;
 }
 
+function hasTraceType(traces, types) {
+  const wanted = new Set((Array.isArray(types) ? types : [types]).map((item) => String(item || "").trim()).filter(Boolean));
+  if (!wanted.size) return false;
+  return (Array.isArray(traces) ? traces : []).some((trace) => wanted.has(String((trace && trace.type) || "").trim()));
+}
+
+function latestModelNameFromTraces(traces) {
+  const items = Array.isArray(traces) ? traces : [];
+  for (const trace of items.slice().reverse()) {
+    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    const model = String(payload.effective_model || payload.model || "").trim();
+    if (model) return model;
+  }
+  return "";
+}
+
+function liveModelNameFromActivity(activity) {
+  const item = activity && typeof activity === "object" ? activity : {};
+  return String(item.live_model || item.liveModel || latestModelNameFromTraces(item.trace_events) || "").trim();
+}
+
 function buildLiveAgentTimelineItems(activity, locale) {
   const item = normalizeMessageActivity(activity || {});
   if (isActivityTerminalStatus(item.status)) return [];
@@ -1761,6 +1786,12 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const hasLiveItems = Boolean(liveItems.length);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
+  const modelWaitStartedAt = llmStartedAt || (
+    item.live_model_started
+      ? (normalizeActivityTimestamp(item.turn_started_at || item.started_at) || nowMs)
+      : 0
+  );
+  const modelStarted = Boolean(item.live_model_started || llmStartedAt);
   const finalAnswerText = String(item.final_answer || "").trim();
   const hasAnswerStarted = traces.some((trace) => ["answer.started", "answer.delta", "answer.done", "answer.finished"].includes(String(trace.type || "").trim()));
   const hasAnswerReady = Boolean(finalAnswerText) || traces.some((trace) => ["answer.done", "answer.finished", "run.finished"].includes(String(trace.type || "").trim()));
@@ -1787,19 +1818,19 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   liveItems.forEach((entry) => {
     progressItems.push(entry);
   });
-  if (!hasLiveItems && !toolGroups.length && !llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  if (!hasLiveItems && !toolGroups.length && !modelStarted && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
-      id: "request-understanding",
-      label: translateUi(locale, "activity.status.request_understanding"),
+      id: "request-preparing",
+      label: translateUi(locale, "activity.status.preparing_request"),
       status: "running",
       source: "fallback",
     });
-  } else if (!hasLiveItems && !toolGroups.length && llmStartedAt && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  } else if (!hasLiveItems && !toolGroups.length && modelStarted && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "waiting-model",
       label: translateUi(
         locale,
-        nowMs - llmStartedAt >= MODEL_WAIT_SLOW_HINT_MS
+        modelWaitStartedAt && nowMs - modelWaitStartedAt >= MODEL_WAIT_SLOW_HINT_MS
           ? "activity.status.waiting_model_slow"
           : "activity.status.waiting_model",
       ),
@@ -1848,6 +1879,9 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
     const status = normalizeProgressStatus(entry.status);
     const toolGroup = entry.tool_group && typeof entry.tool_group === "object" ? entry.tool_group : {};
     const trace = traceItems[index] && typeof traceItems[index] === "object" ? traceItems[index] : {};
+    const source = String(entry.source || trace.source || "").trim();
+    const liveItem = entry.live_item && typeof entry.live_item === "object" ? entry.live_item : {};
+    const type = String(entry.type || liveItem.type || trace.type || "").trim();
     const tool = String(entry.tool || toolGroup.tool_name || trace.tool_name || "").trim();
     const target = String(
       entry.target
@@ -1858,8 +1892,9 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
     ).trim();
     const title = String(entry.label || entry.title || trace.title || (tool ? formatToolTitle(locale, tool) : "") || "").trim()
       || translateUiOrFallback(locale, "activity.tool_title.use_tool", "调用工具");
+    const hasToolSignal = Boolean(tool || source === "tool" || type === "toolCall" || type === "commandExecution" || type === "fileChange" || type === "imageView" || type.startsWith("tool.") || type.startsWith("action.") || type === "observation.returned");
     const detail = String(entry.detail || trace.detail || target || "").trim()
-      || translateUiOrFallback(locale, "activity.detail.recorded_arguments", "参数已记录");
+      || (hasToolSignal ? translateUiOrFallback(locale, "activity.detail.recorded_arguments", "参数已记录") : "");
     return {
       id: String(entry.id || trace.id || `main-live-${index}`),
       title,
@@ -1868,6 +1903,8 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
       detail,
       tool,
       target,
+      source,
+      type,
       durationMs: Number(trace.duration_ms || 0) || 0,
       collapsible: true,
       rawRef: entry,
@@ -2029,6 +2066,8 @@ function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
   const toolGroup = rawRef.tool_group && typeof rawRef.tool_group === "object" ? rawRef.tool_group : {};
   const activityItem = normalizeMessageActivity(activity || {});
   const status = normalizeProgressStatus(activityItem.status || "");
+  const modelStarted = Boolean(activityItem.live_model_started || hasTraceType(activityItem.trace_events, ["llm.started", "answer.started", "answer.delta"]));
+  const modelName = liveModelNameFromActivity(activityItem);
   const title = String(card.title || card.label || item.title || item.label || "").trim();
   const tool = String(card.tool || rawRef.tool || liveItem.tool || toolGroup.tool_name || rawRef.name || "").trim();
   const type = String(card.type || rawRef.type || liveItem.type || "").trim();
@@ -2059,10 +2098,17 @@ function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
     type,
     cardSource,
   ].map((value) => String(value || "").toLowerCase()).join(" ");
+  const isContextCompactionActivity = Boolean(
+    type === "contextCompaction"
+    || type === "context.compacted"
+    || type.startsWith("compaction.")
+    || cardSource === "contextCompaction"
+    || item.source === "contextCompaction"
+  );
   if (status === "blocked") return translateUi(locale, "run.live_agent.blocked");
   if (status === "failed") return translateUi(locale, "run.live_agent.failed");
   if (item.source === "model_draft") return translateUi(locale, "run.live_agent.writing");
-  if (/context|compaction|compact|上下文|压缩|コンテキスト/.test(haystack)) {
+  if (isContextCompactionActivity) {
     return detail
       ? translateUi(locale, "run.live_agent.context_detail", { detail })
       : translateUi(locale, "run.live_agent.context");
@@ -2082,17 +2128,19 @@ function formatPendingAssistantAgentText(summary, activity, locale = "zh-CN") {
       ? translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })
       : (tool ? translateUi(locale, "run.live_agent.tool_result_named", { tool }) : translateUi(locale, "run.live_agent.tool_result"));
   }
+  if (status === "waiting_model") {
+    return modelStarted
+      ? (modelName
+        ? translateUi(locale, "run.live_agent.model_detail", { detail: modelName })
+        : translateUi(locale, "run.live_agent.model"))
+      : translateUi(locale, "run.live_agent.preparing");
+  }
+  if (status === "background_running") return translateUi(locale, "run.live_agent.preparing");
   if (/answer|stream|final|回复|回答|生成|結果|回答/.test(haystack)) {
     return detail
       ? translateUi(locale, "run.live_agent.writing_detail", { detail })
       : translateUi(locale, "run.live_agent.writing");
   }
-  if (status === "waiting_model" || /model|thinking|理解|问题|request|モデル|問題/.test(haystack)) {
-    return detail
-      ? translateUi(locale, "run.live_agent.understanding_detail", { detail })
-      : translateUi(locale, "run.live_agent.understanding");
-  }
-  if (status === "background_running") return translateUi(locale, "run.live_agent.background");
   if (status === "waiting_tool" || status === "validating" || status === "running") {
     return detail
       ? translateUi(locale, "run.live_agent.progress_detail", { detail })
@@ -2938,6 +2986,8 @@ function buildRunExecutionProgress({
   const heartbeat = normalizeLiveHeartbeat(liveHeartbeat);
   const liveItems = normalizeLiveRunItems(activity.live_items);
   const traces = Array.isArray(activity.trace_events) ? activity.trace_events : [];
+  const modelStarted = hasTraceType(traces, ["llm.started", "answer.started", "answer.delta"]) || String(heartbeat.source || "") === "model";
+  const modelName = String(heartbeat.model || liveModelNameFromActivity(activity) || "").trim();
   const liveToolEntry = Array.isArray(liveToolTimeline) && liveToolTimeline.length
     ? ((liveToolTimeline[0] && typeof liveToolTimeline[0] === "object") ? liveToolTimeline[0] : {})
     : {};
@@ -3013,6 +3063,9 @@ function buildRunExecutionProgress({
       status = normalizeProgressStatus(activity.status || "");
     }
   }
+  if (status === "waiting_model" && !modelStarted && !toolName && String(heartbeat.source || "") !== "tool") {
+    status = "background_running";
+  }
   const progressIsStale = Boolean(
     isCurrentThreadActiveRun
     && lastProgressAtMs
@@ -3030,6 +3083,18 @@ function buildRunExecutionProgress({
     } else {
       status = "background_running";
     }
+  }
+  if (status === "waiting_model" && !modelStarted && !toolName && String(heartbeat.source || "") !== "tool") {
+    status = "background_running";
+  }
+  if (status === "waiting_model" && modelStarted) {
+    currentAction = translateUi(locale, "activity.status.waiting_model");
+    recentEvent = modelName
+      ? translateUi(locale, "run.live_agent.model_detail", { detail: modelName })
+      : translateUi(locale, "run.live_agent.model");
+  } else if (status === "background_running" && !modelStarted) {
+    currentAction = translateUi(locale, "activity.status.preparing_request");
+    recentEvent = translateUi(locale, "run.live_agent.preparing");
   }
   if (!currentAction) {
     if (status === "waiting_model") {
@@ -3068,6 +3133,7 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   const normalized = String(type || "").trim();
   if (!normalized) return fallback;
   if (normalized.startsWith("activity.")) return "thinking";
+  if (normalized === "llm.started") return "waiting_model";
   if (
     normalized === "tool.started" ||
     normalized === "tool.finished" ||
@@ -3152,6 +3218,8 @@ function mergeActivityState(previous, patch = {}) {
     summary: String(nextPatch.summary || prev.summary || ""),
     full_loaded: Boolean(nextPatch.full_loaded || nextPatch.fullLoaded || prev.full_loaded),
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
+    live_model_started: Boolean(nextPatch.live_model_started || nextPatch.liveModelStarted || prev.live_model_started),
+    live_model: String(nextPatch.live_model || nextPatch.liveModel || prev.live_model || ""),
     model_draft: nextModelDraft,
     final_answer: nextFinalAnswer,
     runtime_error: nextRuntimeErrorDefined ? nextRuntimeError : prev.runtime_error,
@@ -3182,6 +3250,8 @@ function buildLiveDisplayActivity(activity, options = {}) {
   if (!isLiveRun) return item;
   const heartbeat = normalizeLiveHeartbeat(options.liveHeartbeat || {});
   const heartbeatStatus = normalizeProgressStatus(heartbeat.status);
+  const heartbeatSource = String(heartbeat.source || "").trim();
+  const heartbeatCanOwnLiveStatus = ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus);
   const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());
   const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;
   const filteredTraceEvents = item.trace_events.filter((trace) => {
@@ -3190,9 +3260,9 @@ function buildLiveDisplayActivity(activity, options = {}) {
   });
   return normalizeMessageActivity({
     ...item,
-    status: shouldSuppressTerminalDisplay
+    status: shouldSuppressTerminalDisplay || heartbeatCanOwnLiveStatus
       ? (
-        ["validating", "running", "waiting_tool", "waiting_model", "background_running"].includes(heartbeatStatus)
+        ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus)
           ? heartbeatStatus
           : "running"
       )
@@ -3201,6 +3271,8 @@ function buildLiveDisplayActivity(activity, options = {}) {
     turn_started_at: item.turn_started_at || options.activeRunStartedAt || item.started_at || 0,
     finished_at: shouldSuppressTerminalDisplay ? 0 : item.finished_at,
     final_elapsed_ms: shouldSuppressTerminalDisplay ? 0 : item.final_elapsed_ms,
+    live_model_started: Boolean(item.live_model_started || (heartbeatStatus === "waiting_model" && heartbeatSource === "model")),
+    live_model: String(item.live_model || heartbeat.model || "").trim(),
     trace_events: filteredTraceEvents,
   });
 }
@@ -3238,6 +3310,7 @@ function appendActivityTrace(activity, trace, options = {}) {
     ? normalizeRuntimeErrorPayload(payload)
     : normalizeRuntimeErrorPayload(payload.runtime_error);
   const payloadRuntimeErrorDefined = Object.values(payloadRuntimeError).some((value) => value !== "" && value !== null && value !== 0);
+  const traceModel = String(payload.effective_model || payload.model || "").trim();
   return {
     ...current,
     run_id: String(normalizedTrace.run_id || current.run_id || ""),
@@ -3255,6 +3328,8 @@ function appendActivityTrace(activity, trace, options = {}) {
     model_draft: String(payload.model_draft || current.model_draft || ""),
     final_answer: String(payload.final_answer || current.final_answer || ""),
     runtime_error: payloadRuntimeErrorDefined ? payloadRuntimeError : current.runtime_error,
+    live_model_started: Boolean(current.live_model_started || normalizedTrace.type === "llm.started"),
+    live_model: traceModel || current.live_model,
     tool_boundary_clean:
       typeof payload.tool_boundary_clean === "boolean"
         ? payload.tool_boundary_clean
@@ -3474,6 +3549,11 @@ function normalizeThreadDetailPayload(data) {
   };
 }
 
+function threadListItemId(item) {
+  const value = item && typeof item === "object" ? item : {};
+  return String(value.session_id || value.thread_id || "").trim();
+}
+
 function starterPromptChips(locale, setDraft, handleSend) {
   return translateUiList(locale, "starter.prompts").map((text) =>
     html`
@@ -3589,6 +3669,9 @@ function App() {
   const [specEditor, setSpecEditor] = useState("");
   const [savingWorkbench, setSavingWorkbench] = useState(false);
   const [mobileThreadsOpen, setMobileThreadsOpen] = useState(false);
+  const [selectedThreadIds, setSelectedThreadIds] = useState(() => new Set());
+  const [threadSelectionAnchorId, setThreadSelectionAnchorId] = useState("");
+  const [bulkDeletingThreads, setBulkDeletingThreads] = useState(false);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectPathDraft, setProjectPathDraft] = useState("");
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
@@ -3855,6 +3938,19 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [threadMenu]);
+
+  useEffect(() => {
+    const availableIds = new Set((Array.isArray(sessions) ? sessions : []).map(
+      (item) => String(item.session_id || item.thread_id || "").trim(),
+    ).filter(Boolean));
+    setSelectedThreadIds((prev) => {
+      const current = prev instanceof Set ? prev : new Set();
+      const next = new Set([...current].filter((id) => availableIds.has(String(id || "").trim())));
+      if (next.size === current.size && [...next].every((id) => current.has(id))) return current;
+      return next;
+    });
+    setThreadSelectionAnchorId((current) => (availableIds.has(String(current || "").trim()) ? current : ""));
+  }, [sessions]);
 
   useEffect(() => {
     if (!health) return;
@@ -4731,6 +4827,7 @@ function App() {
   function removeThreadRow(targetThreadId) {
     const normalizedThreadId = String(targetThreadId || "").trim();
     if (!normalizedThreadId) return;
+    threadDetailCacheRef.current.delete(threadCacheKey(normalizedThreadId));
     setSessions((prev) => (Array.isArray(prev) ? prev : []).filter(
       (entry) => String(entry.thread_id || entry.session_id || "").trim() !== normalizedThreadId,
     ));
@@ -4888,6 +4985,16 @@ function App() {
       event.preventDefault();
       return;
     }
+    const sid = String(targetSessionId || "").trim();
+    if (!sid) return;
+    if (event && event.shiftKey) {
+      event.preventDefault();
+      closeThreadMenu();
+      selectThreadRange(sid);
+      return;
+    }
+    setThreadSelectionAnchorId(sid);
+    if (selectedThreadIds.size) setSelectedThreadIds(new Set());
     loadSession(targetSessionId);
   }
 
@@ -5353,6 +5460,87 @@ function App() {
     }
   }
 
+  function selectThreadRange(targetThreadId) {
+    const sid = String(targetThreadId || "").trim();
+    if (!sid || isTempThreadId(sid)) return;
+    const selectable = sessions.map(threadListItemId).filter((id) => id && !isTempThreadId(id));
+    if (!selectable.length) return;
+    const anchorCandidate = String(threadSelectionAnchorId || sessionId || "").trim();
+    const anchor = selectable.includes(anchorCandidate) ? anchorCandidate : sid;
+    const anchorIndex = selectable.indexOf(anchor);
+    const targetIndex = selectable.indexOf(sid);
+    if (anchorIndex < 0 || targetIndex < 0) {
+      setSelectedThreadIds(new Set([sid]));
+      setThreadSelectionAnchorId(sid);
+      return;
+    }
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    setSelectedThreadIds(new Set(selectable.slice(start, end + 1)));
+    setThreadSelectionAnchorId(anchor);
+  }
+
+  function toggleAllVisibleThreadsSelected() {
+    setSelectedThreadIds((prev) => {
+      const current = prev instanceof Set ? prev : new Set();
+      const selectable = sessions.map(threadListItemId).filter((id) => id && !isTempThreadId(id));
+      const allSelected = Boolean(selectable.length && selectable.every((id) => current.has(id)));
+      if (allSelected) return new Set();
+      return new Set(selectable);
+    });
+  }
+
+  async function handleBulkDeleteThreads() {
+    const selectedIds = [...selectedThreadIds].filter((id) => id && !isTempThreadId(id));
+    if (!selectedIds.length || sending || bulkDeletingThreads) return;
+    if (!window.confirm(t("confirm.delete_threads", { count: selectedIds.length }))) return;
+    setBulkDeletingThreads(true);
+    try {
+      for (const sid of selectedIds) {
+        await fetchJson(`/api/thread/${encodeURIComponent(sid)}`, { method: "DELETE" });
+      }
+      const deleted = new Set(selectedIds);
+      selectedIds.forEach((sid) => {
+        removeThreadRow(sid);
+        threadDetailCacheRef.current.delete(threadCacheKey(sid));
+      });
+      const storageKey = sessionStorageKeyForProject(projectId);
+      const remaining = sessions.filter((entry) => !deleted.has(threadListItemId(entry)));
+      const deletedCurrentThread = deleted.has(String(sessionId || "").trim());
+      if (deletedCurrentThread) {
+        if (remaining.length) {
+          const nextId = threadListItemId(remaining[0]);
+          if (nextId) {
+            window.localStorage.setItem(storageKey, nextId);
+            await loadSession(nextId, { projectIdOverride: projectId });
+          }
+        } else {
+          window.localStorage.removeItem(storageKey);
+          setSessionId("");
+          resetItemDomain();
+          setSessionRuntimeState({});
+          clearLiveRunUi();
+        }
+      } else {
+        const stored = window.localStorage.getItem(storageKey) || "";
+        if (deleted.has(stored)) {
+          if (remaining.length) window.localStorage.setItem(storageKey, threadListItemId(remaining[0]));
+          else window.localStorage.removeItem(storageKey);
+        }
+      }
+      setSelectedThreadIds(new Set());
+      setThreadSelectionAnchorId("");
+      closeThreadMenu();
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", t("log.threads_deleted", { count: selectedIds.length }));
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.delete_threads_failed"));
+      pushLogWithLimit(setLogs, "error", nextError.summary || t("errors.delete_threads_failed"));
+    } finally {
+      setBulkDeletingThreads(false);
+    }
+  }
+
   async function handleRenameSession() {
     const sid = String((renameDialog && renameDialog.sessionId) || "").trim();
     if (!sid || renamingThread) return;
@@ -5675,12 +5863,19 @@ function App() {
       if (ownerThreadVisible()) setActiveRunThreadId(runOwnerThreadId);
 
       const userMessage = createMessage("user", messageText);
+      const runModelName = String(
+        chatSettings.model ||
+        (activeProviderProfile && activeProviderProfile.default_model) ||
+        (health && health.default_model) ||
+        "",
+      ).trim();
       pendingMessage = createMessage("assistant", t("labels.processing"), {
         pending: true,
         activity: {
-          status: "thinking",
+          status: "background_running",
           started_at: clientSubmittedAtMs,
           turn_started_at: clientSubmittedAtMs,
+          live_model: runModelName,
           trace_events: [],
         },
       });
@@ -5693,10 +5888,12 @@ function App() {
         pending_approval: {},
       };
       const initialLiveHeartbeat = normalizeLiveHeartbeat({
-        status: "waiting_model",
-        recentEvent: t("activity.status.waiting_model"),
+        status: "background_running",
+        action: t("activity.status.preparing_request"),
+        recentEvent: t("run.live_agent.preparing"),
+        model: runModelName,
         updatedAt: clientSubmittedAtMs,
-        source: "model",
+        source: "runtime",
       });
       const initialActiveTurn = (existingActiveTurn) => {
         const existingTurn = normalizeThreadActiveTurn(existingActiveTurn);
@@ -5784,6 +5981,7 @@ function App() {
       let buffer = "";
       let finalPayload = null;
       let assistantMessageStarted = false;
+      let modelRequestStarted = false;
       let assistantText = "";
       let latestThreadId = String(sid || "");
       let latestRunSnapshot = {};
@@ -5907,6 +6105,22 @@ function App() {
             action: detail || t("activity.failed"),
             recentEvent: detail || t("activity.failed"),
             source: "runtime",
+            updatedAt: item.timestamp || Date.now(),
+          });
+          return;
+        }
+        if (traceType === "llm.started") {
+          const traceModel = String(payload.effective_model || payload.model || runModelName || "").trim();
+          updateOwnerLiveHeartbeat({
+            status: "waiting_model",
+            tool,
+            model: traceModel,
+            command,
+            action: t("activity.status.waiting_model"),
+            recentEvent: traceModel
+              ? t("run.live_agent.model_detail", { detail: traceModel })
+              : t("run.live_agent.model"),
+            source: "model",
             updatedAt: item.timestamp || Date.now(),
           });
           return;
@@ -6045,6 +6259,7 @@ function App() {
 
       const replacePendingText = (text, options = {}) => {
         if (options.onlyWhileWaiting && assistantMessageStarted) return;
+        if (options.skipAfterModelStarted && modelRequestStarted) return;
         updateOwnerMessages((prev) =>
           prev.map((item) => (item.id === pendingMessage.id ? { ...item, text } : item)),
         );
@@ -6326,15 +6541,22 @@ function App() {
               applySnapshot(payload.run_snapshot);
             }
             if (event === "run_started") {
+              modelRequestStarted = true;
               patchPendingActivity((activity) => mergeActivityState(activity, {
                 run_id: String(payload.run_id || ""),
-                status: "thinking",
+                status: "waiting_model",
+                live_model_started: true,
+                live_model: runModelName,
               }));
+              replacePendingText(t("activity.status.waiting_model"), { onlyWhileWaiting: true });
               updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || ""), lastLiveProgressAt: Date.now() }));
               updateOwnerLiveHeartbeat({
                 status: "waiting_model",
-                action: t("run.progress.waiting_model"),
-                recentEvent: t("activity.status.waiting_model"),
+                model: runModelName,
+                action: t("activity.status.waiting_model"),
+                recentEvent: runModelName
+                  ? t("run.live_agent.model_detail", { detail: runModelName })
+                  : t("run.live_agent.model"),
                 source: "model",
               });
             } else if (event === "run_finished") {
@@ -6365,6 +6587,10 @@ function App() {
             } else if (event === "trace_event") {
               const trace = normalizeTraceEvent(payload.trace || {});
               if (trace.id) {
+                if (String(trace.type || "").trim() === "llm.started") {
+                  modelRequestStarted = true;
+                  replacePendingText(t("activity.status.waiting_model"), { onlyWhileWaiting: true });
+                }
                 const nextStatus = activityStatusFromTraceType(trace.type, latestActivity.status || "thinking");
                 patchPendingActivity((activity) => appendActivityTrace(activity, trace, { status: nextStatus }));
                 syncHeartbeatFromTrace(trace);
@@ -6405,8 +6631,8 @@ function App() {
               });
               updateOwnerLiveHeartbeat({
                 status: "background_running",
-                action: t("run.progress.background_running"),
-                recentEvent: t("run.progress.recent_event_background"),
+                action: t("activity.status.preparing_request"),
+                recentEvent: t("run.live_agent.preparing"),
                 source: "runtime",
               });
             } else if (event === "turn/plan/updated") {
@@ -6611,11 +6837,17 @@ function App() {
                 status: ["validating", "running", "waiting_tool", "waiting_model", "background_running"].includes(normalizeProgressStatus(prev.status))
                   ? prev.status
                   : "background_running",
-                action: detail,
-                recentEvent: detail,
-                source: "stage",
+                action: normalizeProgressStatus(prev.status) === "waiting_model" && String(prev.source || "") === "model"
+                  ? (prev.action || t("activity.status.waiting_model"))
+                  : detail,
+                recentEvent: normalizeProgressStatus(prev.status) === "waiting_model" && String(prev.source || "") === "model"
+                  ? (prev.recentEvent || t("run.live_agent.model"))
+                  : detail,
+                source: normalizeProgressStatus(prev.status) === "waiting_model" && String(prev.source || "") === "model"
+                  ? prev.source
+                  : "stage",
               }));
-              replacePendingText(detail, { onlyWhileWaiting: true });
+              replacePendingText(detail, { onlyWhileWaiting: true, skipAfterModelStarted: true });
               pushLogWithLimit(setLogs, "stage", detail);
               pushLiveLog("stage", detail);
             } else if (event === "trace") {
@@ -7218,6 +7450,10 @@ function App() {
   const appUpdateCommands = Array.isArray(appUpdateResult && appUpdateResult.commands) ? appUpdateResult.commands : [];
   const appUpdateErrorText = appUpdateState.error ? String(appUpdateState.error.detail || appUpdateState.error.summary || "") : "";
   const currentThread = sessions.find((item) => String(item.session_id || item.thread_id || "") === String(sessionId || "")) || null;
+  const selectableThreadIds = sessions.map(threadListItemId).filter((id) => id && !isTempThreadId(id));
+  const selectedThreadIdList = [...selectedThreadIds].filter((id) => selectableThreadIds.includes(id));
+  const selectedThreadCount = selectedThreadIdList.length;
+  const allVisibleThreadsSelected = Boolean(selectableThreadIds.length && selectedThreadCount === selectableThreadIds.length);
   const totalTurnsForCurrentThread = Math.max(0, Number((currentThread && currentThread.turn_count) || 0) || 0);
   const canLoadEarlierTurns = Boolean(
     sessionId &&
@@ -7985,29 +8221,56 @@ function App() {
           : null}
 
         <section className="rail-section rail-section-fill">
-          <div className="section-head">
+          <div className="section-head thread-section-head">
             <span>Threads</span>
-            <span className="section-meta">${workspaceLabel || "-"}</span>
+            <div className="thread-bulk-actions">
+              ${selectedThreadCount
+                ? html`
+                    <button className="ghost-btn compact-btn" type="button" onClick=${toggleAllVisibleThreadsSelected} disabled=${bulkDeletingThreads || !selectableThreadIds.length}>
+                      ${allVisibleThreadsSelected ? t("buttons.clear_thread_selection") : t("buttons.select_all_threads")}
+                    </button>
+                    <button className="ghost-btn compact-btn danger-btn" type="button" onClick=${handleBulkDeleteThreads} disabled=${bulkDeletingThreads || !selectedThreadCount}>
+                      ${bulkDeletingThreads ? t("buttons.deleting") : t("buttons.delete_selected_threads", { count: selectedThreadCount })}
+                    </button>
+                    <button className="ghost-btn compact-btn" type="button" onClick=${() => setSelectedThreadIds(new Set())} disabled=${bulkDeletingThreads}>
+                      ${t("buttons.cancel")}
+                    </button>
+                  `
+                : html`<span className="section-meta">${workspaceLabel || "-"}</span>`}
+            </div>
           </div>
+          ${selectedThreadCount
+            ? html`<div className="thread-selection-summary">${t("threads.selected_count", { count: selectedThreadCount })}</div>`
+            : null}
           <div className="thread-list">
                 ${sessions.length
                   ? sessions.map(
-                      (item) => html`
+                      (item) => {
+                        const itemId = threadListItemId(item);
+                        const itemSelected = selectedThreadIds.has(itemId);
+                        return html`
                         <button
-                          key=${item.session_id}
-                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""}`}
+                          key=${itemId || item.session_id}
+                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""}`}
                           type="button"
-                          onClick=${(event) => handleThreadClick(event, item.session_id)}
+                          onClick=${(event) => handleThreadClick(event, itemId)}
                           onContextMenu=${(event) => handleThreadContextMenu(event, item)}
                           onTouchStart=${(event) => handleThreadTouchStart(event, item)}
                           onTouchEnd=${cancelThreadLongPress}
                           onTouchMove=${cancelThreadLongPress}
                           onTouchCancel=${cancelThreadLongPress}
+                          aria-pressed=${selectedThreadCount ? itemSelected : undefined}
                         >
-                          <div className="thread-row-title">${item.title || t("labels.new_thread")}</div>
-                          <div className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</div>
+                          ${selectedThreadCount
+                            ? html`<span className="thread-select-box" role="checkbox" aria-checked=${itemSelected}>${itemSelected ? "✓" : ""}</span>`
+                            : null}
+                          <span className="thread-row-body">
+                            <span className="thread-row-title">${item.title || t("labels.new_thread")}</span>
+                            <span className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</span>
+                          </span>
                         </button>
-                  `,
+                      `;
+                      },
                 )
               : html`<div className="thread-empty">${workspaceLabel ? t("threads.none_for_project", { workspace: workspaceLabel }) : t("threads.select_project_first")}</div>`}
           </div>

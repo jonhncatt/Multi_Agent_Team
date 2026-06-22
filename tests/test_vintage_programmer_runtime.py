@@ -888,6 +888,8 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
         "runtime_initial_trace_ms",
         "runtime_tools_context_ms",
         "runtime_pre_model_ms",
+        "model_initial_response_ms",
+        "model_last_response_ms",
     ):
         assert phase_timings[key] >= 0
     assert phase_timings["model_request_start_ms"] >= 0

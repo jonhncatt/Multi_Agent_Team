@@ -36,6 +36,10 @@ REQUIRED_CORE_KEYS = (
     "settings.model_name",
     "settings.response_style",
     "buttons.save",
+    "buttons.deleting",
+    "buttons.select_all_threads",
+    "buttons.clear_thread_selection",
+    "buttons.delete_selected_threads",
     "tabs.settings",
     "activity.title",
     "activity.running",
@@ -70,6 +74,7 @@ REQUIRED_CORE_KEYS = (
     "activity.live.answer_streaming",
     "activity.live.answer_done",
     "run.live_panel.title",
+    "run.live_agent.preparing",
     "run.live_agent.understanding",
     "run.live_agent.context",
     "run.live_agent.tool",
@@ -79,6 +84,8 @@ REQUIRED_CORE_KEYS = (
     "run.live_agent.blocked",
     "run.live_agent.failed",
     "run.live_agent.understanding_detail",
+    "run.live_agent.model",
+    "run.live_agent.model_detail",
     "run.live_agent.context_detail",
     "run.live_agent.tool_named",
     "run.live_agent.tool_detail",
@@ -167,6 +174,10 @@ REQUIRED_CORE_KEYS = (
     "activity.status.answer_generating",
     "activity.status.answer_streaming",
     "activity.status.answer_ready",
+    "confirm.delete_threads",
+    "threads.selected_count",
+    "log.threads_deleted",
+    "errors.delete_threads_failed",
     "update.button",
     "update.running",
     "update.success",
@@ -452,11 +463,18 @@ def test_no_tool_progress_projection_uses_request_and_model_wait_states() -> Non
     body = match.group("body")
 
     assert 'label: translateUi(locale, "activity.status.request_understood")' in body
-    assert 'label: translateUi(locale, "activity.status.request_understanding")' in body
+    assert 'id: "request-preparing"' in body
+    assert 'label: translateUi(locale, "activity.status.preparing_request")' in body
+    assert 'label: translateUi(locale, "activity.status.request_understanding")' not in body
     assert '"activity.status.waiting_model"' in body
     assert '"activity.status.waiting_model_slow"' in body
     assert "MODEL_WAIT_SLOW_HINT_MS" in script
     assert "const llmStartedAt = latestTraceTimestampByTypes(traces, \"llm.started\");" in body
+    assert "const modelWaitStartedAt = llmStartedAt || (" in body
+    assert "item.live_model_started" in body
+    assert "const modelStarted = Boolean(item.live_model_started || llmStartedAt);" in body
+    assert "!modelStarted && !hasAnswerStarted" in body
+    assert "modelStarted && !hasAnswerStarted" in body
     assert 'const finalAnswerText = String(item.final_answer || "").trim();' in body
     assert "const hasAnswerReady = Boolean(finalAnswerText) || traces.some" in body
     assert '"answer.started"' in body
@@ -513,9 +531,11 @@ def test_early_activity_copy_and_visibility_are_updated() -> None:
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert '"activity.status.request_understood": "开始处理请求"' in locales
-    assert '"activity.status.request_understanding": "正在理解问题"' in locales
-    assert '"activity.status.waiting_model": "等待模型返回"' in locales
+    assert '"activity.status.request_understanding": "正在准备请求"' in locales
+    assert '"activity.status.preparing_request": "正在准备请求"' in locales
+    assert '"activity.status.waiting_model": "模型正在分析"' in locales
     assert '"activity.status.waiting_model_slow": "模型响应较慢，仍在等待返回"' in locales
+    assert '"activity.status.thinking": "正在准备请求"' in locales
     assert "|| activity.started_at" in script
     assert "|| displayActivity.status" in script
 
@@ -757,7 +777,11 @@ def test_home_live_panel_and_compaction_heartbeat_are_wired() -> None:
     assert ".message-article.live-agent-card .message-card::before" not in styles
     assert 'if (item.source === "execution_progress") return text;' in script
     assert '"run.live_panel.title": "Agent 正在处理"' in locales
-    assert '"run.live_agent.understanding": "Agent 正在理解你的问题，并整理下一步。"' in locales
+    assert '"run.live_agent.preparing": "Agent 正在准备请求。"' in locales
+    assert '"run.live_agent.understanding": "Agent 正在准备请求。"' in locales
+    assert '"run.live_agent.understanding_detail": "Agent 正在准备请求：{detail}"' in locales
+    assert '"run.live_agent.model": "Agent 已发送请求，正在等待回应。"' in locales
+    assert '"run.live_agent.model_detail": "Agent 已发送请求，正在等待回应: {detail}。"' in locales
     assert '"run.live_agent.tool_running_detail": "Agent 正在执行工具：{detail}"' in locales
     assert '"run.live_agent.tool_result": "Agent 已拿到工具结果，正在判断下一步。"' in locales
     assert '"run.live_panel.title": "Agent が処理中です"' in locales
@@ -901,6 +925,9 @@ def test_live_display_activity_overrides_latest_live_assistant_until_cleanup() -
         'return !["run.finished", "answer.done", "answer.finished"].includes(traceType);',
         'const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());',
         'const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;',
+        'const heartbeatSource = String(heartbeat.source || "").trim();',
+        'const heartbeatCanOwnLiveStatus = ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus);',
+        'live_model_started: Boolean(item.live_model_started || (heartbeatStatus === "waiting_model" && heartbeatSource === "model")),',
         "const isDisplayLiveAssistant = Boolean(",
         "&& liveAssistantMessageId",
         "String(item.id || \"\") === liveAssistantMessageId",
@@ -1048,7 +1075,14 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     )
     assert run_started_match, "run_started handler not found"
     run_started_body = run_started_match.group("body")
-    assert 'status: "thinking"' in run_started_body
+    assert "modelRequestStarted = true;" in run_started_body
+    assert 'status: "waiting_model"' in run_started_body
+    assert "live_model_started: true" in run_started_body
+    assert "live_model: runModelName" in run_started_body
+    assert "model: runModelName" in run_started_body
+    assert 't("run.live_agent.model_detail", { detail: runModelName })' in run_started_body
+    assert 'replacePendingText(t("activity.status.waiting_model"), { onlyWhileWaiting: true });' in run_started_body
+    assert 'source: "model"' in run_started_body
     assert "started_at" not in run_started_body
 
 
@@ -1253,9 +1287,22 @@ def test_pending_agent_copy_uses_actual_tool_metadata_not_keywords() -> None:
     assert "const toolPhase = toolProgressPhaseFromStatus(cardStatus, type);" in body
     assert 'if (hasActualTool && toolPhase === "preparing") {' in body
     assert 'if (hasActualTool && toolPhase === "active") {' in body
+    assert "const isContextCompactionActivity = Boolean(" in body
+    assert 'if (isContextCompactionActivity) {' in body
+    assert "/context|compaction|compact|上下文|压缩|コンテキスト/" not in body
     assert 'translateUi(locale, "run.live_agent.tool_running_detail", { detail: toolAction })' in body
     assert 'translateUi(locale, "run.live_agent.tool_result_detail", { detail: toolAction })' in body
-    assert 'translateUi(locale, "run.live_agent.understanding_detail", { detail })' in body
+    assert 'if (status === "waiting_model") {' in body
+    assert "const modelName = liveModelNameFromActivity(activityItem);" in body
+    assert 'translateUi(locale, "run.live_agent.model_detail", { detail: modelName })' in body
+    assert ': translateUi(locale, "run.live_agent.model"))' in body
+    assert ': translateUi(locale, "run.live_agent.preparing")' in body
+    assert 'if (status === "background_running") return translateUi(locale, "run.live_agent.preparing");' in body
+    assert 'translateUi(locale, "run.live_agent.understanding_detail", { detail })' not in body
+    assert 'translateUi(locale, "run.live_agent.understanding")' not in body
+    assert "/model|thinking|理解|问题|request|モデル|問題/" not in body
+    assert 'if (status === "waiting_model" || /model|thinking|理解|问题|request|モデル|問題/.test(haystack))' not in body
+    assert 'translateUi(locale, "run.live_agent.model_detail", { detail })' not in body
     assert "activityItem.activity_summary" not in body
 
 
@@ -1399,6 +1446,49 @@ def test_running_thread_browse_state_is_thread_scoped_in_cache() -> None:
     thread_block = script.split('className=${`thread-row', 1)[1].split("</button>", 1)[0]
     assert 'disabled=${sending}' not in thread_block
     assert "window.prompt" not in script
+
+
+def test_thread_sidebar_supports_bulk_select_and_delete() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    required_script_tokens = (
+        "const [selectedThreadIds, setSelectedThreadIds] = useState(() => new Set());",
+        'const [threadSelectionAnchorId, setThreadSelectionAnchorId] = useState("");',
+        "const [bulkDeletingThreads, setBulkDeletingThreads] = useState(false);",
+        "function selectThreadRange(targetThreadId)",
+        "if (event && event.shiftKey) {",
+        "selectThreadRange(sid);",
+        "function toggleAllVisibleThreadsSelected()",
+        "async function handleBulkDeleteThreads()",
+        'window.confirm(t("confirm.delete_threads", { count: selectedIds.length }))',
+        'await fetchJson(`/api/thread/${encodeURIComponent(sid)}`, { method: "DELETE" });',
+        'className="thread-select-box"',
+        'aria-checked=${itemSelected}',
+        't("buttons.delete_selected_threads", { count: selectedThreadCount })',
+    )
+    for token in required_script_tokens:
+        assert token in script, token
+
+    for token in (
+        ".thread-bulk-actions",
+        ".thread-selection-summary",
+        ".thread-row.selected",
+        ".thread-select-box",
+    ):
+        assert token in styles, token
+
+    for token in (
+        '"buttons.select_all_threads": "全选"',
+        '"buttons.delete_selected_threads": "删除 {count} 个"',
+        '"confirm.delete_threads": "删除选中的 {count} 个线程？此操作不可恢复。"',
+        '"threads.selected_count": "已选择 {count} 个线程"',
+    ):
+        assert token in locales, token
+
+    assert 't("buttons.select_threads")' not in script
+    assert "toggleThreadSelectionMode" not in script
 
 
 def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
@@ -1608,3 +1698,29 @@ def test_handle_send_includes_client_submission_timestamp() -> None:
 
     assert "const clientSubmittedAtMs = Date.now();" in script
     assert "client_submitted_at_ms: clientSubmittedAtMs," in script
+
+
+def test_llm_started_promotes_pending_message_to_model_waiting() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'if (normalized === "llm.started") return "waiting_model";' in script
+    assert "let modelRequestStarted = false;" in script
+    assert "modelRequestStarted = true;" in script
+    assert 'replacePendingText(t("activity.status.waiting_model"), { onlyWhileWaiting: true });' in script
+    assert "skipAfterModelStarted" in script
+    assert '"activity.status.waiting_model": "模型正在分析"' in locales
+
+
+def test_run_progress_waits_for_llm_started_before_model_copy() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'const modelStarted = hasTraceType(traces, ["llm.started", "answer.started", "answer.delta"]) || String(heartbeat.source || "") === "model";' in script
+    assert 'if (status === "waiting_model" && !modelStarted && !toolName && String(heartbeat.source || "") !== "tool") {' in script
+    assert 'status = "background_running";' in script
+    assert 'currentAction = translateUi(locale, "activity.status.preparing_request");' in script
+    assert 'recentEvent = translateUi(locale, "run.live_agent.preparing");' in script
+    assert 'currentAction = translateUi(locale, "activity.status.waiting_model");' in script
+    assert 'const modelName = String(heartbeat.model || liveModelNameFromActivity(activity) || "").trim();' in script
+    assert 'translateUi(locale, "run.live_agent.model_detail", { detail: modelName })' in script
+    assert 'detail: item.detail || "",' in script
