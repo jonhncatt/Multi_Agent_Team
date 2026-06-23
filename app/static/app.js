@@ -6220,10 +6220,11 @@ function App() {
         });
         if (itemType === "agentMessage") {
           const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === "completed";
+          if (agentMessageCompleted) return;
           updateOwnerLiveHeartbeat({
-            status: agentMessageCompleted ? "completed" : "waiting_model",
-            action: t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
-            recentEvent: detail || t(agentMessageCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming"),
+            status: "waiting_model",
+            action: t("activity.live.answer_streaming"),
+            recentEvent: detail || t("activity.live.answer_streaming"),
             source: "model",
           });
           return;
@@ -6567,12 +6568,14 @@ function App() {
                 allowDraft: !hasVisibleAnswer,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              updateOwnerLiveHeartbeat({
-                status: hasVisibleAnswer ? "completed" : "waiting_model",
-                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("run.progress.waiting_model"),
-                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
-                source: "model",
-              });
+              if (!hasVisibleAnswer) {
+                updateOwnerLiveHeartbeat({
+                  status: "waiting_model",
+                  action: t("run.progress.waiting_model"),
+                  recentEvent: t("run.progress.recent_event_waiting_model"),
+                  source: "model",
+                });
+              }
             } else if (event === "run_failed") {
               stabilizePendingAssistant({
                 status: "failed",
@@ -6667,12 +6670,14 @@ function App() {
                 allowDraft: !hasVisibleAnswer,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              updateOwnerLiveHeartbeat({
-                status: hasVisibleAnswer ? "completed" : "waiting_model",
-                action: hasVisibleAnswer ? t("activity.live.answer_done") : t("buttons.saving"),
-                recentEvent: hasVisibleAnswer ? t("run.progress.recent_event_completed") : t("run.progress.recent_event_waiting_model"),
-                source: "model",
-              });
+              if (!hasVisibleAnswer) {
+                updateOwnerLiveHeartbeat({
+                  status: "waiting_model",
+                  action: t("buttons.saving"),
+                  recentEvent: t("run.progress.recent_event_waiting_model"),
+                  source: "model",
+                });
+              }
             } else if (event === "item/started") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
               if (item.id) {
@@ -6746,12 +6751,6 @@ function App() {
                   final_answer: assistantText,
                   model_draft: "",
                 }));
-                updateOwnerLiveHeartbeat({
-                  status: "completed",
-                  action: t("activity.live.answer_done"),
-                  recentEvent: assistantText || t("activity.live.answer_done"),
-                  source: "model",
-                });
                 if (assistantText) completePendingText(assistantText);
               } else if (itemType === "userInputRequest") {
                 const itemApprovalRequest = item.approval_request && typeof item.approval_request === "object"
@@ -6863,12 +6862,6 @@ function App() {
               }
             } else if (event === "final") {
               finalPayload = payload.response || null;
-              updateOwnerLiveHeartbeat({
-                status: String(((payload.response || {}).turn_status) || "completed").trim() || "completed",
-                action: t("activity.live.answer_done"),
-                recentEvent: t("run.progress.recent_event_completed"),
-                source: "runtime",
-              });
             } else if (event === "error") {
               throw errorWithUiError(normalizeUiError(uiLocale, payload, t("errors.request_failed")));
             }
@@ -6912,13 +6905,12 @@ function App() {
       updateOwnerActiveTurn((prev) => ({
         ...prev,
         activeRunId: "",
+        activeRunThreadId: "",
+        startedAt: 0,
+        lastLiveProgressAt: 0,
         lastResponse: finalPayload,
-        liveHeartbeat: normalizeLiveHeartbeat({
-          status: String(finalPayload.turn_status || "completed").trim() || "completed",
-          recentEvent: t("run.progress.recent_event_completed"),
-          updatedAt: Date.now(),
-          source: "runtime",
-        }),
+        liveHeartbeat: createEmptyLiveHeartbeat(),
+        stoppingRun: false,
         liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
           ...(((finalPayload.inspector || {}).run_state) || {}),
           permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),

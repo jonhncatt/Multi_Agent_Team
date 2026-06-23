@@ -906,7 +906,7 @@ def test_live_trace_progress_covers_guard_and_waiting_states() -> None:
         "const syncHeartbeatFromTrace = (trace) => {",
         "const syncHeartbeatFromStreamItem = (item, eventName = \"\") => {",
         "const agentMessageCompleted = isCompleted || normalizeProgressStatus(entry.status) === \"completed\";",
-        'status: agentMessageCompleted ? "completed" : "waiting_model"',
+        "if (agentMessageCompleted) return;",
         'recentEvent: detail || t("run.progress.recent_event_waiting_model")',
         'recentEvent: detail || command || tool || t("run.progress.recent_event_background")',
         'source: "validator"',
@@ -1101,6 +1101,8 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     run_finished_body = run_finished_match.group("body")
     assert "previewPendingAssistant({" in run_finished_body
     assert "stabilizePendingAssistant({" not in run_finished_body
+    assert "if (!hasVisibleAnswer) {" in run_finished_body
+    assert 'status: hasVisibleAnswer ? "completed"' not in run_finished_body.split("if (!hasVisibleAnswer) {", 1)[1]
 
     turn_completed_match = re.search(
         r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
@@ -1111,6 +1113,8 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     turn_completed_body = turn_completed_match.group("body")
     assert "previewPendingAssistant({" in turn_completed_body
     assert "stabilizePendingAssistant({" not in turn_completed_body
+    assert "if (!hasVisibleAnswer) {" in turn_completed_body
+    assert 'status: hasVisibleAnswer ? "completed"' not in turn_completed_body.split("if (!hasVisibleAnswer) {", 1)[1]
 
 
 def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> None:
@@ -1138,6 +1142,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "previewPendingAssistant({" in run_finished_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in run_finished_body
     assert "allowDraft: !hasVisibleAnswer" in run_finished_body
+    assert "if (!hasVisibleAnswer) {" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
     assert "activeRunId: \"\"" not in run_finished_body
@@ -1152,10 +1157,13 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in turn_completed_body
     assert "previewPendingAssistant({" in turn_completed_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in turn_completed_body
+    assert "if (!hasVisibleAnswer) {" in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
     assert "await cleanupRunUi();" in body
+    assert "activeRunThreadId: \"\",\n        startedAt: 0,\n        lastLiveProgressAt: 0," in body
+    assert "liveHeartbeat: createEmptyLiveHeartbeat(),\n        stoppingRun: false," in body
     assert "if (!uiFinalized) {" in body
 
 
@@ -1222,7 +1230,21 @@ def test_agent_message_completion_clears_streaming_model_draft() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "status: \"completed\",\n                  final_answer: assistantText,\n                  model_draft: \"\"," in script
-    assert "status: \"completed\",\n                  action: t(\"activity.live.answer_done\")," in script
+    event_completed_match = re.search(
+        r'else if \(event === "item/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "request_user_input"\)',
+        script,
+        re.S,
+    )
+    assert event_completed_match, "item/completed event branch not found"
+    item_completed_match = re.search(
+        r'if \(itemType === "agentMessage"\) \{(?P<body>.*?)\n              \} else if \(itemType === "userInputRequest"\)',
+        event_completed_match.group("body"),
+        re.S,
+    )
+    assert item_completed_match, "agentMessage item/completed branch not found"
+    item_completed_body = item_completed_match.group("body")
+    assert 'status: "completed"' in item_completed_body
+    assert 'updateOwnerLiveHeartbeat({' not in item_completed_body
     assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
 
 
