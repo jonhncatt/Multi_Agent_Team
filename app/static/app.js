@@ -6390,6 +6390,26 @@ function App() {
           });
         });
       };
+      const collapseLiveRunUi = () => {
+        if (updateOwnerActiveTurn) {
+          updateOwnerActiveTurn((prev) => ({
+            ...prev,
+            activeRunId: "",
+            activeRunThreadId: "",
+            startedAt: 0,
+            lastLiveProgressAt: 0,
+            liveHeartbeat: createEmptyLiveHeartbeat(),
+            stoppingRun: false,
+          }));
+        } else {
+          setActiveRunId("");
+          setActiveRunThreadId("");
+          setActiveRunStartedAt(0);
+          setLastLiveProgressAt(0);
+          setLiveHeartbeat(createEmptyLiveHeartbeat());
+          setStoppingRun(false);
+        }
+      };
       const pushLiveLog = (type, text) => {
         const progressAt = Date.now();
         updateOwnerActiveTurn((prev) => ({
@@ -6568,7 +6588,9 @@ function App() {
                 allowDraft: !hasVisibleAnswer,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              if (!hasVisibleAnswer) {
+              if (hasVisibleAnswer) {
+                collapseLiveRunUi();
+              } else {
                 updateOwnerLiveHeartbeat({
                   status: "waiting_model",
                   action: t("run.progress.waiting_model"),
@@ -6670,7 +6692,9 @@ function App() {
                 allowDraft: !hasVisibleAnswer,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              if (!hasVisibleAnswer) {
+              if (hasVisibleAnswer) {
+                collapseLiveRunUi();
+              } else {
                 updateOwnerLiveHeartbeat({
                   status: "waiting_model",
                   action: t("buttons.saving"),
@@ -6752,6 +6776,7 @@ function App() {
                   model_draft: "",
                 }));
                 if (assistantText) completePendingText(assistantText);
+                if (assistantText) collapseLiveRunUi();
               } else if (itemType === "userInputRequest") {
                 const itemApprovalRequest = item.approval_request && typeof item.approval_request === "object"
                   ? item.approval_request
@@ -7789,6 +7814,7 @@ function App() {
     const suppressNoteText = String(options.suppressNoteText || "").trim();
     const isTerminal = isActivityTerminalStatus(item.status);
     const normalizedStatus = normalizeProgressStatus(item.status);
+    const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";
     const visibleItems = preview
       ? (isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
       : progressItems;
@@ -7797,10 +7823,11 @@ function App() {
       : 0;
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now());
     const liveSummary = resolveLiveSummary(item, projection, uiLocale);
+    const liveSummaryText = suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
     const note = String(
       (projection && projection.revision_badge)
-      || (normalizedStatus === "completed" ? completionSummary.label : "")
-      || formatLiveSummaryText(liveSummary)
+      || (normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : "")
+      || liveSummaryText
       || item.activity_summary
       || "",
     ).trim();
@@ -8048,6 +8075,7 @@ function App() {
         ${!isOpen
           ? renderActivityProgressList(projection, displayActivity, {
               preview: true,
+              suppressCompletedPreview: Boolean(!item.pending && String(displayActivity.final_answer || item.text || "").trim()),
               suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",
             })
           : null}

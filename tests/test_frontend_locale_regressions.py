@@ -1101,8 +1101,10 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     run_finished_body = run_finished_match.group("body")
     assert "previewPendingAssistant({" in run_finished_body
     assert "stabilizePendingAssistant({" not in run_finished_body
-    assert "if (!hasVisibleAnswer) {" in run_finished_body
-    assert 'status: hasVisibleAnswer ? "completed"' not in run_finished_body.split("if (!hasVisibleAnswer) {", 1)[1]
+    assert "collapseLiveRunUi();" in run_finished_body
+    assert "if (hasVisibleAnswer) {" in run_finished_body
+    assert "} else {" in run_finished_body
+    assert 'status: hasVisibleAnswer ? "completed"' not in run_finished_body.split("} else {", 1)[1]
 
     turn_completed_match = re.search(
         r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
@@ -1113,8 +1115,10 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     turn_completed_body = turn_completed_match.group("body")
     assert "previewPendingAssistant({" in turn_completed_body
     assert "stabilizePendingAssistant({" not in turn_completed_body
-    assert "if (!hasVisibleAnswer) {" in turn_completed_body
-    assert 'status: hasVisibleAnswer ? "completed"' not in turn_completed_body.split("if (!hasVisibleAnswer) {", 1)[1]
+    assert "collapseLiveRunUi();" in turn_completed_body
+    assert "if (hasVisibleAnswer) {" in turn_completed_body
+    assert "} else {" in turn_completed_body
+    assert 'status: hasVisibleAnswer ? "completed"' not in turn_completed_body.split("} else {", 1)[1]
 
 
 def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> None:
@@ -1130,6 +1134,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
 
     assert "const stabilizePendingAssistant = (options = {}) => {" in body
     assert "const cleanupRunUi = async () => {" in body
+    assert "const collapseLiveRunUi = () => {" in body
 
     run_finished_match = re.search(
         r'else if \(event === "run_finished"\) \{(?P<body>.*?)\n            \} else if \(event === "run_failed"\)',
@@ -1142,7 +1147,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "previewPendingAssistant({" in run_finished_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in run_finished_body
     assert "allowDraft: !hasVisibleAnswer" in run_finished_body
-    assert "if (!hasVisibleAnswer) {" in run_finished_body
+    assert "collapseLiveRunUi();" in run_finished_body
+    assert "if (hasVisibleAnswer) {" in run_finished_body
+    assert "} else {" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
     assert "activeRunId: \"\"" not in run_finished_body
@@ -1157,7 +1164,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in turn_completed_body
     assert "previewPendingAssistant({" in turn_completed_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in turn_completed_body
-    assert "if (!hasVisibleAnswer) {" in turn_completed_body
+    assert "collapseLiveRunUi();" in turn_completed_body
+    assert "if (hasVisibleAnswer) {" in turn_completed_body
+    assert "} else {" in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
@@ -1245,6 +1254,7 @@ def test_agent_message_completion_clears_streaming_model_draft() -> None:
     item_completed_body = item_completed_match.group("body")
     assert 'status: "completed"' in item_completed_body
     assert 'updateOwnerLiveHeartbeat({' not in item_completed_body
+    assert "if (assistantText) collapseLiveRunUi();" in item_completed_body
     assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
 
 
@@ -1581,6 +1591,9 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     body = match.group("body")
 
     assert 'const suppressNoteText = String(options.suppressNoteText || "").trim();' in body
+    assert 'const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";' in body
+    assert 'const liveSummaryText = suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
+    assert 'normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
     assert 'if (!visibleItems.length && !overflowCount && !showNote) return null;' in body
     assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
@@ -1599,6 +1612,7 @@ def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
 
     assert 'const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());' in body
     assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",' in body
+    assert 'suppressCompletedPreview: Boolean(!item.pending && String(displayActivity.final_answer || item.text || "").trim()),' in body
     assert "visibleItems.map((entry) => {" in script
 
 
