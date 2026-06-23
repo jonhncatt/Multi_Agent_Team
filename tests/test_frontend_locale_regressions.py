@@ -1302,6 +1302,8 @@ def test_pending_assistant_fallback_state_prefers_live_summary_without_mutating_
 
     assert 'const activity = normalizeMessageActivity(item.activity || {});' in body
     assert 'const currentText = String(item.text || "");' in body
+    assert 'const modelDraftText = String(activity.model_draft || "").trim();' in body
+    assert 'if (item.pending && modelDraftText && currentText.trim()) {' in body
     assert 'if (!item.pending || String(activity.final_answer || "").trim()) {' in body
     assert 'const projection = buildActivityProjection(activity, locale, nowMs);' in body
     assert 'const liveSummary = resolveLiveSummary(activity, projection, locale);' in body
@@ -1597,9 +1599,12 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     body = match.group("body")
 
     assert 'const suppressNoteText = String(options.suppressNoteText || "").trim();' in body
+    assert 'const suppressPreview = Boolean(options.suppressPreview) && preview;' in body
     assert 'const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";' in body
-    assert 'const liveSummaryText = suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
-    assert 'normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
+    assert 'const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
+    assert 'suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT)' in body
+    assert '!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
+    assert '|| (suppressPreview ? "" : item.activity_summary)' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
     assert 'if (!visibleItems.length && !overflowCount && !showNote) return null;' in body
     assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
@@ -1617,6 +1622,10 @@ def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
     body = match.group("body")
 
     assert 'const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());' in body
+    assert "const hasVisibleAnswerContent = Boolean(String(" in body
+    assert "displayActivity.model_draft" in body
+    assert "(!item.pending ? item.text : \"\")" in body
+    assert "suppressPreview: hasVisibleAnswerContent," in body
     assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",' in body
     assert 'suppressCompletedPreview: Boolean(!item.pending && String(displayActivity.final_answer || item.text || "").trim()),' in body
     assert "visibleItems.map((entry) => {" in script

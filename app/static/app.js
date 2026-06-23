@@ -2159,6 +2159,14 @@ function pendingAssistantFallbackState(item, locale = "zh-CN", nowMs = Date.now(
   }
   const activity = normalizeMessageActivity(item.activity || {});
   const currentText = String(item.text || "");
+  const modelDraftText = String(activity.model_draft || "").trim();
+  if (item.pending && modelDraftText && currentText.trim()) {
+    return {
+      text: currentText,
+      fromSummaryFallback: false,
+      suppressNoteText: "",
+    };
+  }
   if (!item.pending || String(activity.final_answer || "").trim()) {
     return {
       text: currentText,
@@ -7831,21 +7839,22 @@ function App() {
     const suppressNoteText = String(options.suppressNoteText || "").trim();
     const isTerminal = isActivityTerminalStatus(item.status);
     const normalizedStatus = normalizeProgressStatus(item.status);
+    const suppressPreview = Boolean(options.suppressPreview) && preview;
     const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";
     const visibleItems = preview
-      ? (isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
+      ? (suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
       : progressItems;
-    const overflowCount = preview && !isTerminal
+    const overflowCount = preview && !suppressPreview && !isTerminal
       ? Math.max(0, mainLiveCards.length - visibleItems.length)
       : 0;
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now());
     const liveSummary = resolveLiveSummary(item, projection, uiLocale);
-    const liveSummaryText = suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
+    const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
     const note = String(
-      (projection && projection.revision_badge)
-      || (normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : "")
+      (suppressPreview ? "" : (projection && projection.revision_badge))
+      || (!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : "")
       || liveSummaryText
-      || item.activity_summary
+      || (suppressPreview ? "" : item.activity_summary)
       || "",
     ).trim();
     const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);
@@ -8078,6 +8087,12 @@ function App() {
     const tone = activityToneClass(displayActivity.status);
     const pillLabel = activityPillLabel(uiLocale, displayActivity, activityClockMs || Date.now());
     const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());
+    const hasVisibleAnswerContent = Boolean(String(
+      displayActivity.final_answer
+      || displayActivity.model_draft
+      || (!item.pending ? item.text : "")
+      || "",
+    ).trim());
     return html`
       <div className=${`message-activity tone-${tone} ${isOpen ? "open" : ""}`}>
         <button
@@ -8092,6 +8107,7 @@ function App() {
         ${!isOpen
           ? renderActivityProgressList(projection, displayActivity, {
               preview: true,
+              suppressPreview: hasVisibleAnswerContent,
               suppressCompletedPreview: Boolean(!item.pending && String(displayActivity.final_answer || item.text || "").trim()),
               suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",
             })
