@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5T-blue)
+![Version](https://img.shields.io/badge/version-3.1.5U-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5T`
+現在の安定版: `3.1.5U`
 
 ## Stable Runtime
 
-3.1.5T は Codex 風の context 状態と長い thread の性能改善リリースです。Context 状態は軽量表示が既定になり、`/status` と `/compact` は一級のローカルコマンドになり、長い thread で短いメッセージを送るときに exact tokenizer で待たされにくくなりました。
+3.1.5U は Agent の実行状態表示と回答完了時の収束を整えるリリースです。リクエスト送信後はより早くモデル待機状態に移り、表示可能な回答本文が出た時点で live UI をすぐ閉じるため、完了済み回答の上に実行パネルが残りにくくなりました。
 
-このリリースは 3.1.5S の Windows 起動体感、チャット UX、メッセージコピー、実行中入力、テーマ色選択の改善も保持しています。
+このリリースは 3.1.5T の Codex 風 context 状態、`/status`、`/compact`、長い thread での短文送信高速化に加え、3.1.5S の Windows 起動体感、チャット UX、メッセージコピー、実行中入力、テーマ色選択の改善も保持しています。
 
 ## Max Output Tokens
 

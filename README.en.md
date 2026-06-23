@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5T-blue)
+![Version](https://img.shields.io/badge/version-3.1.5U-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5T`
+Current stable release: `3.1.5U`
 
 ## Stable Runtime
 
-3.1.5T is a Codex-style context and long-thread performance release: context status is now lightweight by default, `/status` and `/compact` are first-class local commands, and short messages in long threads no longer block on exact tokenizer work.
+3.1.5U is an agent activity and answer-collapse polish release: after a request is sent, the UI moves to model-waiting state sooner, and once visible answer content is available the live UI collapses immediately instead of lingering above the completed response.
 
-This release also keeps the 3.1.5S Windows startup feel, chat UX, message copy, editable running input, and theme color improvements.
+This release keeps the 3.1.5T Codex-style context status, `/status`, `/compact`, long-thread short-message acceleration, plus the 3.1.5S Windows startup feel, chat UX, message copy, editable running input, and theme color improvements.
 
 ## Max Output Tokens
 

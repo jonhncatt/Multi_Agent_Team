@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5T-blue)
+![Version](https://img.shields.io/badge/version-3.1.5U-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5T`
+当前稳定版本：`3.1.5U`
 
 ## Stable Runtime
 
-3.1.5T 是一次 Codex 风格 context 与长对话性能发布：Context 状态改为轻量常驻，`/status` 和 `/compact` 成为一等本地命令，长对话里发送短消息不再被 exact tokenizer 阻塞。
+3.1.5U 是一次 Agent 运行状态与回答收束体验修复发布：发送后状态更快切到模型等待，正文已出现时立即收起 live UI，减少 Windows 上答案已显示但上方执行面板继续停留的问题。
 
-本版本还保留 3.1.5S 的 Windows 启动体感、聊天 UX、消息复制、运行中输入和主题色选择改进。
+本版本继续保留 3.1.5T 的 Codex 风格 context 状态、`/status`、`/compact`、长对话短输入加速，以及 3.1.5S 的 Windows 启动体感、聊天 UX、消息复制、运行中输入和主题色选择改进。
 
 ## Max Output Tokens
 

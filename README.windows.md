@@ -1,11 +1,11 @@
 # Vintage Programmer Windows 指南
 
-当前稳定版本：`3.1.5T`。
+当前稳定版本：`3.1.5U`。
 
 ## Stable Runtime
 
-3.1.5T 是一次 Codex 风格 context 与长对话性能发布：Context 状态改为轻量常驻，`/status` 和 `/compact` 成为一等本地命令，长对话里发送短消息不再被 exact tokenizer 阻塞。
-它保留 3.1.5S 的 Windows 启动体感、聊天 UX、消息复制、运行中输入、主题色选择、审批弹窗、tainted 文件 hash 校验、Auto 模式选择保持和三语 agent spec 同级化；这不是 OS sandbox，批准后命令会在 host 环境实际执行。
+3.1.5U 是一次 Agent 运行状态与回答收束体验修复发布：发送后状态更快切到模型等待，正文已出现时立即收起 live UI，减少 Windows 上答案已显示但上方执行面板继续停留的问题。
+它继续保留 3.1.5T 的 Codex 风格 context 状态、`/status`、`/compact`、长对话短输入加速，以及 3.1.5S 的 Windows 启动体感、聊天 UX、消息复制、运行中输入、主题色选择、审批弹窗、tainted 文件 hash 校验、Auto 模式选择保持和三语 agent spec 同级化；这不是 OS sandbox，批准后命令会在 host 环境实际执行。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 
