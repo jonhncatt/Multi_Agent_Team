@@ -6341,20 +6341,35 @@ function App() {
       const previewPendingAssistant = (options = {}) => {
         const fallbackLabel = String(options.fallbackLabel || "").trim();
         const stableText = resolveStableAssistantText({ allowDraft: Boolean(options.allowDraft) });
+        const completeWhenStable = Boolean(options.completeWhenStable);
         if (stableText) {
           assistantText = stableText;
           assistantMessageStarted = true;
-          replacePendingText(stableText, { onlyWhileWaiting: false });
+          if (completeWhenStable) {
+            completePendingText(stableText);
+          } else {
+            replacePendingText(stableText, { onlyWhileWaiting: false });
+          }
         } else if (fallbackLabel) {
           replacePendingText(fallbackLabel, { onlyWhileWaiting: false });
         }
-        patchPendingActivity((activity) => mergeActivityState(activity, {
-          status: String(activity.status || options.status || "running").trim() || "running",
-          model_draft: String(activity.final_answer || "").trim()
-            ? ""
-            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
-          final_answer: String(activity.final_answer || ""),
-        }));
+        patchPendingActivity((activity) => {
+          const nextStatus = String(
+            completeWhenStable && stableText
+              ? "completed"
+              : (activity.status || options.status || "running"),
+          ).trim() || "running";
+          const nextFinalAnswer = completeWhenStable && stableText
+            ? stableText
+            : String(activity.final_answer || "");
+          return mergeActivityState(activity, {
+            status: nextStatus,
+            final_answer: nextFinalAnswer,
+            model_draft: String(nextFinalAnswer).trim()
+              ? ""
+              : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),
+          });
+        });
         return Boolean(stableText);
       };
       const cleanupRunUi = async () => {
@@ -6582,13 +6597,14 @@ function App() {
               });
             } else if (event === "run_finished") {
               const hasVisibleAnswer = hasVisibleFinalAnswer();
-              previewPendingAssistant({
+              const displayedAnswer = previewPendingAssistant({
                 status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
                 durationMs: Math.max(0, Number(payload.duration_ms || 0) || 0),
                 allowDraft: !hasVisibleAnswer,
+                completeWhenStable: true,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              if (hasVisibleAnswer) {
+              if (hasVisibleAnswer || displayedAnswer) {
                 collapseLiveRunUi();
               } else {
                 updateOwnerLiveHeartbeat({
@@ -6687,12 +6703,13 @@ function App() {
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
               const hasVisibleAnswer = hasVisibleFinalAnswer();
-              previewPendingAssistant({
+              const displayedAnswer = previewPendingAssistant({
                 status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
                 allowDraft: !hasVisibleAnswer,
+                completeWhenStable: true,
                 fallbackLabel: hasVisibleAnswer ? "" : t("buttons.saving"),
               });
-              if (hasVisibleAnswer) {
+              if (hasVisibleAnswer || displayedAnswer) {
                 collapseLiveRunUi();
               } else {
                 updateOwnerLiveHeartbeat({

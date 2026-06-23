@@ -1090,7 +1090,9 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "const previewPendingAssistant = (options = {}) => {" in script
-    assert 'status: String(activity.status || options.status || "running").trim() || "running"' in script
+    assert "const completeWhenStable = Boolean(options.completeWhenStable);" in script
+    assert 'completeWhenStable && stableText\n              ? "completed"' in script
+    assert "const nextFinalAnswer = completeWhenStable && stableText" in script
 
     run_finished_match = re.search(
         r'else if \(event === "run_finished"\) \{(?P<body>.*?)\n            \} else if \(event === "run_failed"\)',
@@ -1101,8 +1103,9 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     run_finished_body = run_finished_match.group("body")
     assert "previewPendingAssistant({" in run_finished_body
     assert "stabilizePendingAssistant({" not in run_finished_body
+    assert "completeWhenStable: true" in run_finished_body
     assert "collapseLiveRunUi();" in run_finished_body
-    assert "if (hasVisibleAnswer) {" in run_finished_body
+    assert "if (hasVisibleAnswer || displayedAnswer) {" in run_finished_body
     assert "} else {" in run_finished_body
     assert 'status: hasVisibleAnswer ? "completed"' not in run_finished_body.split("} else {", 1)[1]
 
@@ -1115,8 +1118,9 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     turn_completed_body = turn_completed_match.group("body")
     assert "previewPendingAssistant({" in turn_completed_body
     assert "stabilizePendingAssistant({" not in turn_completed_body
+    assert "completeWhenStable: true" in turn_completed_body
     assert "collapseLiveRunUi();" in turn_completed_body
-    assert "if (hasVisibleAnswer) {" in turn_completed_body
+    assert "if (hasVisibleAnswer || displayedAnswer) {" in turn_completed_body
     assert "} else {" in turn_completed_body
     assert 'status: hasVisibleAnswer ? "completed"' not in turn_completed_body.split("} else {", 1)[1]
 
@@ -1147,8 +1151,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "previewPendingAssistant({" in run_finished_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in run_finished_body
     assert "allowDraft: !hasVisibleAnswer" in run_finished_body
+    assert "completeWhenStable: true" in run_finished_body
     assert "collapseLiveRunUi();" in run_finished_body
-    assert "if (hasVisibleAnswer) {" in run_finished_body
+    assert "if (hasVisibleAnswer || displayedAnswer) {" in run_finished_body
     assert "} else {" in run_finished_body
     assert "setSending(false)" not in run_finished_body
     assert "setActiveRunThreadId(\"\")" not in run_finished_body
@@ -1164,8 +1169,9 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "const hasVisibleAnswer = hasVisibleFinalAnswer();" in turn_completed_body
     assert "previewPendingAssistant({" in turn_completed_body
     assert 'status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking")' in turn_completed_body
+    assert "completeWhenStable: true" in turn_completed_body
     assert "collapseLiveRunUi();" in turn_completed_body
-    assert "if (hasVisibleAnswer) {" in turn_completed_body
+    assert "if (hasVisibleAnswer || displayedAnswer) {" in turn_completed_body
     assert "} else {" in turn_completed_body
     assert "setSending(false)" not in turn_completed_body
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
@@ -1255,7 +1261,7 @@ def test_agent_message_completion_clears_streaming_model_draft() -> None:
     assert 'status: "completed"' in item_completed_body
     assert 'updateOwnerLiveHeartbeat({' not in item_completed_body
     assert "if (assistantText) collapseLiveRunUi();" in item_completed_body
-    assert "String(activity.final_answer || \"\").trim()\n            ? \"\"\n            : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || \"\")" in script
+    assert 'model_draft: String(nextFinalAnswer).trim()\n              ? ""\n              : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),' in script
 
 
 def test_live_summary_prefers_latest_meaningful_card_and_uses_progress_label() -> None:
