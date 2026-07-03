@@ -228,6 +228,7 @@ function normalizeLiveHeartbeat(raw) {
 
 function createEmptyThreadActiveTurn() {
   return {
+    sending: false,
     activeRunId: "",
     activeRunThreadId: "",
     startedAt: 0,
@@ -249,6 +250,7 @@ function normalizeThreadActiveTurn(raw) {
   return {
     ...createEmptyThreadActiveTurn(),
     ...item,
+    sending: Boolean(item.sending || item.isSending || item.is_sending),
     activeRunId: String(item.activeRunId || item.active_run_id || ""),
     activeRunThreadId: String(item.activeRunThreadId || item.active_run_thread_id || ""),
     startedAt: normalizeActivityTimestamp(item.startedAt || item.started_at || item.runStartedAt || item.run_started_at || 0),
@@ -2583,6 +2585,21 @@ function isThreadSnapshotLive(threadId, snapshot) {
   );
 }
 
+function isThreadActiveTurnBusy(threadId, activeTurn) {
+  const key = String(threadId || "").trim();
+  if (!key) return false;
+  const turn = normalizeThreadActiveTurn(activeTurn);
+  return Boolean(turn.sending || isThreadActiveTurnLive(key, turn));
+}
+
+function isThreadSnapshotBusy(threadId, snapshot) {
+  const item = snapshot && typeof snapshot === "object" ? snapshot : {};
+  return Boolean(
+    isThreadActiveTurnBusy(threadId, item.activeTurn)
+    || hasLiveThreadMessages(item.messages)
+  );
+}
+
 function formatElapsedFromStartedAt(startedAt, nowMs = Date.now()) {
   const anchor = normalizeActivityTimestamp(startedAt || 0);
   if (!anchor) return "";
@@ -3721,6 +3738,7 @@ function App() {
   const activeThreadRequestSeqRef = useRef(0);
   const activeThreadAbortRef = useRef(null);
   const threadDetailCacheRef = useRef(new Map());
+  const activeSendThreadIdsRef = useRef(new Set());
   const fullTurnRequestRef = useRef(new Set());
   const activeSessionIdRef = useRef("");
   const pendingThreadCreationPromiseRef = useRef(null);
@@ -3754,6 +3772,18 @@ function App() {
     }),
     [messages],
   );
+  const currentThreadBusy = isThreadSnapshotBusy(sessionId, {
+    activeTurn: appState.activeTurn,
+    messages,
+  });
+  const anyThreadBusy = (() => {
+    if (currentThreadBusy) return true;
+    for (const [threadId, snapshot] of threadDetailCacheRef.current.entries()) {
+      if (String(threadId || "").trim() === String(sessionId || "").trim()) continue;
+      if (isThreadSnapshotBusy(threadId, snapshot)) return true;
+    }
+    return false;
+  })();
   const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
   const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
   const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
@@ -4085,7 +4115,7 @@ function App() {
   useEffect(() => {
     const shouldTickActivityClock = (
       hasRunningActivity
-      || sending
+      || currentThreadBusy
       || Boolean(activeRunId)
       || Boolean(activeRunThreadId)
       || Boolean(activeRunStartedAt)
@@ -4098,7 +4128,7 @@ function App() {
     setActivityClockMs(Date.now());
     const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
     return () => window.clearInterval(intervalId);
-  }, [activeRunId, activeRunThreadId, activeRunStartedAt, hasRunningActivity, sending, liveTurnState]);
+  }, [activeRunId, activeRunThreadId, activeRunStartedAt, currentThreadBusy, hasRunningActivity, liveTurnState]);
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -4168,7 +4198,7 @@ function App() {
     if (!bootReadyRef.current || document.visibilityState === "hidden") return undefined;
     refreshRuntimeStatus(projectId, { background: true });
     const intervalMs = nextRuntimeStatusPollIntervalMs({
-      sending,
+      sending: anyThreadBusy,
       activeRunId,
       drawerView,
       contextMeterOpen,
@@ -4179,7 +4209,7 @@ function App() {
       refreshRuntimeStatus(projectId, { background: true });
     }, intervalMs);
     return () => window.clearInterval(intervalId);
-  }, [projectId, chatSettings.model, chatSettings.max_output_tokens, sending, activeRunId, drawerView, contextMeterOpen]);
+  }, [projectId, chatSettings.model, chatSettings.max_output_tokens, anyThreadBusy, activeRunId, drawerView, contextMeterOpen]);
 
   function clearUiError() {
     setUiError(null);
@@ -4274,7 +4304,7 @@ function App() {
   }
 
   async function handleStatusCommand() {
-    if (sending) return;
+    if (currentThreadBusy) return;
     const sid = String(sessionId || activeSessionIdRef.current || "").trim();
     let data = null;
     try {
@@ -4316,7 +4346,7 @@ function App() {
   }
 
   async function handleCompactCommand() {
-    if (sending) return;
+    if (currentThreadBusy) return;
     const sid = String(sessionId || activeSessionIdRef.current || "").trim();
     if (!sid || isTempThreadId(sid)) {
       const summary = t("slash.compact.no_session");
@@ -4526,7 +4556,7 @@ function App() {
   }
 
   async function handleAppUpdate() {
-    if (appUpdateState.status === "running") return;
+    if (appUpdateState.status === "running" || anyThreadBusy) return;
     setAppUpdateState({ status: "running", result: null, error: null });
     try {
       const data = await fetchJson("/api/app/update", { method: "POST" });
@@ -4588,6 +4618,7 @@ function App() {
   }
 
   function clearLiveRunUi() {
+    setSending(false);
     setLastResponse(null);
     setToolTimeline([]);
     setLiveToolTimeline([]);
@@ -4613,6 +4644,7 @@ function App() {
 
   function visibleThreadActiveTurnSnapshot() {
     return normalizeThreadActiveTurn({
+      sending,
       activeRunId,
       activeRunThreadId,
       startedAt: activeRunStartedAt,
@@ -4688,6 +4720,7 @@ function App() {
 
   function applyVisibleThreadActiveTurn(activeTurnSnapshot) {
     const next = normalizeThreadActiveTurn(activeTurnSnapshot);
+    setSending(next.sending);
     setLastResponse(next.lastResponse);
     setToolTimeline(next.toolTimeline);
     setLiveToolTimeline(next.liveToolTimeline);
@@ -4901,7 +4934,7 @@ function App() {
   }
 
   function openProjectMenuAt(position, item) {
-    if (!item || sending || item.is_default) return;
+    if (!item || currentThreadBusy || item.is_default) return;
     closeThreadMenu();
     setProjectMenu({
       projectId: String(item.project_id || ""),
@@ -4917,7 +4950,7 @@ function App() {
   }
 
   function handleProjectTouchStart(event, item) {
-    if (sending || (item && item.is_default)) return;
+    if (currentThreadBusy || (item && item.is_default)) return;
     cancelProjectLongPress();
     const touch = (event.touches && event.touches[0]) || null;
     projectLongPressRef.current = {
@@ -5423,7 +5456,10 @@ function App() {
 
   async function handleDeleteSession(targetSessionId) {
     const sid = String(targetSessionId || "").trim();
-    if (!sid || sending || isTempThreadId(sid)) return;
+    const targetBusy = String(sid || "").trim() === String(sessionId || "").trim()
+      ? currentThreadBusy
+      : isThreadSnapshotBusy(sid, threadDetailCacheRef.current.get(sid) || {});
+    if (!sid || targetBusy || isTempThreadId(sid)) return;
     const item = sessions.find((entry) => String(entry.session_id || entry.thread_id || "") === sid) || null;
     const title = String((item && item.title) || t("labels.new_thread")).trim() || t("labels.new_thread");
     if (!window.confirm(t("confirm.delete_thread", { title }))) {
@@ -5500,7 +5536,12 @@ function App() {
 
   async function handleBulkDeleteThreads() {
     const selectedIds = [...selectedThreadIds].filter((id) => id && !isTempThreadId(id));
-    if (!selectedIds.length || sending || bulkDeletingThreads) return;
+    const selectedHasBusyThread = selectedIds.some((sid) => (
+      String(sid || "").trim() === String(sessionId || "").trim()
+        ? currentThreadBusy
+        : isThreadSnapshotBusy(sid, threadDetailCacheRef.current.get(sid) || {})
+    ));
+    if (!selectedIds.length || selectedHasBusyThread || bulkDeletingThreads) return;
     if (!window.confirm(t("confirm.delete_threads", { count: selectedIds.length }))) return;
     setBulkDeletingThreads(true);
     try {
@@ -5602,7 +5643,7 @@ function App() {
 
   async function handleDeleteProject(targetProjectId) {
     const pid = String(targetProjectId || "").trim();
-    if (!pid || sending) return;
+    if (!pid || anyThreadBusy) return;
     const item = projects.find((entry) => String(entry.project_id || "") === pid) || null;
     if (!item || item.is_default) {
       closeProjectMenu();
@@ -5796,7 +5837,7 @@ function App() {
 
   async function handleStopRun() {
     const runId = String(activeRunId || "").trim();
-    if (!runId || !sending || stoppingRun || String(activeRunThreadId || "").trim() !== String(sessionId || "").trim()) return;
+    if (!runId || !currentThreadBusy || stoppingRun || String(activeRunThreadId || "").trim() !== String(sessionId || "").trim()) return;
     setStoppingRun(true);
     try {
       const payload = await fetchJson(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, {
@@ -5815,7 +5856,7 @@ function App() {
 
   async function handleSend(overrideText, userInputResponse) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
-    if (!messageText || sending) return;
+    if (!messageText || currentThreadBusy) return;
     const slashCommand = normalizeSlashCommandText(messageText);
     if (slashCommand) {
       setDraft("");
@@ -5841,7 +5882,6 @@ function App() {
       .filter((item) => item && !item.uploadFailed && !item.uploading && !String(item.id || "").startsWith("pending-"))
       .map((item) => item.id);
 
-    setSending(true);
     setContextMeterOpen(false);
     setStoppingRun(false);
     setActiveRunId("");
@@ -5861,6 +5901,7 @@ function App() {
     let updateOwnerMessages = null;
     let updateOwnerSessionRuntimeState = null;
     let updateOwnerActiveTurn = null;
+    let lockedRunOwnerThreadId = "";
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -5868,7 +5909,17 @@ function App() {
       if (!sid) sid = await createSession(projectId);
       runOwnerThreadId = String(sid || "").trim();
       ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
-      if (ownerThreadVisible()) setActiveRunThreadId(runOwnerThreadId);
+      const ownerSnapshot = threadDetailCacheRef.current.get(runOwnerThreadId);
+      const ownerBusy = ownerThreadVisible()
+        ? isThreadSnapshotBusy(runOwnerThreadId, { activeTurn: visibleThreadActiveTurnSnapshot(), messages })
+        : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
+      if (ownerBusy || activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;
+      activeSendThreadIdsRef.current.add(runOwnerThreadId);
+      lockedRunOwnerThreadId = runOwnerThreadId;
+      if (ownerThreadVisible()) {
+        setSending(true);
+        setActiveRunThreadId(runOwnerThreadId);
+      }
 
       const userMessage = createMessage("user", messageText);
       const runModelName = String(
@@ -5907,6 +5958,7 @@ function App() {
         const existingTurn = normalizeThreadActiveTurn(existingActiveTurn);
         return normalizeThreadActiveTurn({
           ...createEmptyThreadActiveTurn(),
+          sending: true,
           activeRunThreadId: runOwnerThreadId,
           startedAt: clientSubmittedAtMs,
           lastLiveProgressAt: clientSubmittedAtMs,
@@ -6037,13 +6089,22 @@ function App() {
           (cachedSnapshot && cachedSnapshot.activeTurn)
           || (ownerThreadVisible() ? currentVisible : createEmptyThreadActiveTurn()),
         );
+        const resolvedCandidate = resolveStateValue(base, value);
+        const resolvedTurn = resolvedCandidate && typeof resolvedCandidate === "object" ? resolvedCandidate : base;
+        const resolvedActiveRunThreadId = Object.prototype.hasOwnProperty.call(resolvedTurn, "activeRunThreadId")
+          ? String(resolvedTurn.activeRunThreadId || "")
+          : runOwnerThreadId;
+        const resolvedStartedAt = Object.prototype.hasOwnProperty.call(resolvedTurn, "startedAt")
+          ? (Number(resolvedTurn.startedAt || 0) || 0)
+          : (Number(base.startedAt || clientSubmittedAtMs || 0) || 0);
         const nextTurn = normalizeThreadActiveTurn({
-          ...resolveStateValue(base, value),
-          activeRunThreadId: runOwnerThreadId,
-          startedAt: Number(base.startedAt || clientSubmittedAtMs || 0) || 0,
+          ...resolvedTurn,
+          activeRunThreadId: resolvedActiveRunThreadId,
+          startedAt: resolvedStartedAt,
         });
         updateThreadSnapshot(runOwnerThreadId, (existing) => ({ ...existing, activeTurn: nextTurn }));
         if (!ownerThreadVisible()) return;
+        setSending(nextTurn.sending);
         setLastResponse(nextTurn.lastResponse);
         setToolTimeline(nextTurn.toolTimeline);
         setLiveToolTimeline(nextTurn.liveToolTimeline);
@@ -6388,6 +6449,7 @@ function App() {
             if (updateOwnerActiveTurn) {
               updateOwnerActiveTurn((prev) => ({
                 ...prev,
+                sending: false,
                 activeRunId: "",
                 activeRunThreadId: "",
                 startedAt: 0,
@@ -6401,14 +6463,9 @@ function App() {
               setActiveRunStartedAt(0);
               setLastLiveProgressAt(0);
               setLiveHeartbeat(createEmptyLiveHeartbeat());
+              setSending(false);
               setStoppingRun(false);
             }
-            setSending(false);
-            setStoppingRun(false);
-            setActiveRunThreadId("");
-            setActiveRunStartedAt(0);
-            setLastLiveProgressAt(0);
-            setLiveHeartbeat(createEmptyLiveHeartbeat());
             resolve();
           });
         });
@@ -6954,6 +7011,7 @@ function App() {
       }
       updateOwnerActiveTurn((prev) => ({
         ...prev,
+        sending: false,
         activeRunId: "",
         activeRunThreadId: "",
         startedAt: 0,
@@ -7048,6 +7106,7 @@ function App() {
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({
             ...prev,
+            sending: false,
             activeRunId: "",
             activeRunThreadId: "",
             startedAt: 0,
@@ -7061,14 +7120,12 @@ function App() {
           setActiveRunStartedAt(0);
           setLastLiveProgressAt(0);
           setLiveHeartbeat(createEmptyLiveHeartbeat());
+          setSending(false);
           setStoppingRun(false);
         }
-        setSending(false);
-        setStoppingRun(false);
-        setActiveRunThreadId("");
-        setActiveRunStartedAt(0);
-        setLastLiveProgressAt(0);
-        setLiveHeartbeat(createEmptyLiveHeartbeat());
+      }
+      if (lockedRunOwnerThreadId) {
+        activeSendThreadIdsRef.current.delete(lockedRunOwnerThreadId);
       }
     }
   }
@@ -7200,7 +7257,7 @@ function App() {
     ) {
       return;
     }
-    if (sending) return;
+    if (currentThreadBusy) return;
     if (slashCommandSuggestions.length) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -7397,7 +7454,7 @@ function App() {
     });
   };
   const handleCommandApproval = (action) => {
-    if (!hasCommandApproval || sending) return;
+    if (!hasCommandApproval || currentThreadBusy) return;
     const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
@@ -8181,12 +8238,12 @@ function App() {
         </div>
 
         <div className="rail-actions">
-          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${creatingThread || sending}>${t("buttons.new_thread")}</button>
+          <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${creatingThread}>${t("buttons.new_thread")}</button>
           <button
             className="ghost-btn"
             type="button"
             onClick=${handleAppUpdate}
-            disabled=${sending || appUpdateRunning}
+            disabled=${anyThreadBusy || appUpdateRunning}
             title=${t("update.discards_local_changes")}
           >
             ${appUpdateRunning ? t("update.running") : t("update.button")}
@@ -8245,7 +8302,7 @@ function App() {
                           onTouchEnd=${cancelProjectLongPress}
                           onTouchMove=${cancelProjectLongPress}
                           onTouchCancel=${cancelProjectLongPress}
-                          disabled=${sending}
+                          disabled=${currentThreadBusy}
                         >
                           <div className="project-row-title">${item.title || item.project_id}</div>
                           <div className="project-row-meta">
@@ -8550,7 +8607,7 @@ function App() {
 
           <div className="composer-toolbar">
             <div className="composer-toolbar-left">
-              <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${sending}>+</button>
+              <button className="icon-btn" type="button" onClick=${() => fileInputRef.current && fileInputRef.current.click()} disabled=${currentThreadBusy}>+</button>
               <input ref=${fileInputRef} type="file" multiple hidden onChange=${handleSelectFiles} />
               <label
                 className="composer-permission-profile"
@@ -8565,7 +8622,7 @@ function App() {
                     setPermissionProfileTouched(true);
                     setChatSettings((prev) => ({ ...prev, permission_profile: nextValue }));
                   }}
-                  disabled=${sending}
+                  disabled=${currentThreadBusy}
                   title=${selectedPermissionDescription}
                   aria-label=${selectedPermissionAriaLabel}
                 >
@@ -8576,7 +8633,7 @@ function App() {
               </label>
             </div>
             <div className="composer-toolbar-right">
-              ${sending && activeRunId && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+              ${currentThreadBusy && activeRunId && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
                 ? html`
                     <button className="ghost-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
                       ${stoppingRun ? t("buttons.stopping") : t("buttons.stop")}
@@ -8623,9 +8680,9 @@ function App() {
                 className="send-btn"
                 type="button"
                 onClick=${() => handleSend()}
-                disabled=${sending || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
+                disabled=${currentThreadBusy || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
               >
-	              ${sending ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send"))}
+	              ${currentThreadBusy ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send"))}
 	            </button>
           </div>
           <div className="status-bar status-inline" id="statusBar">
@@ -8764,8 +8821,8 @@ function App() {
 	                </div>
 	                <div className="path-hint">${t("approval_modal.default_cancel")}</div>
 	                <div className="modal-actions">
-	                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${sending}>${t("approval_modal.cancel")}</button>
-	                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${sending || !String(activePendingApproval.approval_token || "").trim()}>
+	                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${currentThreadBusy}>${t("approval_modal.cancel")}</button>
+	                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${currentThreadBusy || !String(activePendingApproval.approval_token || "").trim()}>
 	                    ${t("approval_modal.approve_once")}
 	                  </button>
 	                </div>

@@ -1680,7 +1680,7 @@ def test_composer_submit_ignores_enter_during_ime_composition() -> None:
     assert "event.isComposing" in body
     assert "event.nativeEvent" in body
     assert "keyCode === 229" in body
-    assert "if (sending) return;" in body
+    assert "if (currentThreadBusy) return;" in body
     assert "handleSend();" in body
 
 
@@ -1697,8 +1697,29 @@ def test_composer_textarea_remains_editable_while_run_is_active() -> None:
 
     assert 'value=${draft}' in textarea_body
     assert "disabled=${sending}" not in textarea_body
-    assert "disabled=${sending || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
-    assert '${sending ? t("buttons.running")' in body
+    assert "disabled=${currentThreadBusy || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
+    assert '${currentThreadBusy ? t("buttons.running")' in body
+
+
+def test_thread_runs_use_thread_scoped_busy_state() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    handle_send_match = re.search(
+        r"async function handleSend\(overrideText, userInputResponse\) \{(?P<body>.*?)\n  \}\n\n  async function loadSpecDetail",
+        script,
+        re.S,
+    )
+    assert handle_send_match, "handleSend function not found"
+    body = handle_send_match.group("body")
+
+    assert "sending: Boolean(item.sending || item.isSending || item.is_sending)" in script
+    assert "function isThreadSnapshotBusy(threadId, snapshot)" in script
+    assert "const activeSendThreadIdsRef = useRef(new Set());" in script
+    assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
+    assert "const anyThreadBusy = (() => {" in script
+    assert "if (!messageText || currentThreadBusy) return;" in body
+    assert "if (ownerBusy || activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;" in body
+    assert "setSending(false);" not in body.split("const cleanupRunUi = async () => {", 1)[0]
+    assert "disabled=${creatingThread || sending}" not in script
 
 
 def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
