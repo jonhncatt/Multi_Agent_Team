@@ -146,20 +146,26 @@ def build_openai_client(api_key: str, base_url: str = "", ca_cert_path: str = ""
 
 
 def probe_openai_sdk(api_key: str, base_url: str, ca_cert_path: str) -> dict[str, Any]:
-    name = "openai-sdk-import-and-responses-surface"
+    name = "openai-sdk-import-and-api-surfaces"
     try:
         openai = importlib.import_module("openai")
         client = build_openai_client(api_key=api_key, base_url=base_url, ca_cert_path=ca_cert_path)
         has_responses = hasattr(client, "responses")
-        signature = ""
+        has_chat_completions = hasattr(client, "chat") and hasattr(client.chat, "completions")
+        responses_signature = ""
+        chat_completions_signature = ""
         if has_responses:
-            signature = str(inspect.signature(client.responses.create))
+            responses_signature = str(inspect.signature(client.responses.create))
+        if has_chat_completions:
+            chat_completions_signature = str(inspect.signature(client.chat.completions.create))
         return ok(
             name,
             package="openai",
             version=package_version("openai") or getattr(openai, "__version__", ""),
             responses_available=has_responses,
-            responses_create_signature=signature,
+            chat_completions_available=has_chat_completions,
+            responses_create_signature=responses_signature,
+            chat_completions_create_signature=chat_completions_signature,
         )
     except Exception as exc:
         return fail(name, exc)
@@ -195,6 +201,40 @@ def probe_responses_api_live(api_key: str, base_url: str, ca_cert_path: str, mod
         return fail(name, exc)
 
 
+def probe_chat_completions_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
+    name = "chat-completions-live-text"
+    if not api_key:
+        return skip(name, "missing selected profile API key")
+    try:
+        client = build_openai_client(api_key=api_key, base_url=base_url, ca_cert_path=ca_cert_path)
+        started = time.monotonic()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a diagnostic probe. Return exactly PROBE_OK."},
+                {"role": "user", "content": "Return exactly PROBE_OK."},
+            ],
+            max_tokens=64,
+            timeout=timeout_sec,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        choices = list(getattr(response, "choices", []) or [])
+        first_message = getattr(choices[0], "message", None) if choices else None
+        content = getattr(first_message, "content", "") if first_message is not None else ""
+        usage = getattr(response, "usage", None)
+        return ok(
+            name,
+            model=model,
+            elapsed_ms=elapsed_ms,
+            response_id=str(getattr(response, "id", "") or ""),
+            content=short_text(content, limit=500),
+            finish_reason=str(getattr(choices[0], "finish_reason", "") or "") if choices else "",
+            usage=str(usage) if usage is not None else "",
+        )
+    except Exception as exc:
+        return fail(name, exc)
+
+
 def probe_langchain_responses_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
     name = "langchain-openai-use-responses-api-live"
     if not api_key:
@@ -209,6 +249,40 @@ def probe_langchain_responses_live(api_key: str, base_url: str, ca_cert_path: st
             "timeout": timeout_sec,
             "use_responses_api": True,
             "store": False,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        http_client = make_httpx_client(ca_cert_path)
+        if http_client is not None:
+            kwargs["http_client"] = http_client
+        llm = ChatOpenAI(**kwargs)
+        started = time.monotonic()
+        message = llm.invoke("Return exactly PROBE_OK.")
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return ok(
+            name,
+            model=model,
+            elapsed_ms=elapsed_ms,
+            content=short_text(getattr(message, "content", message), limit=500),
+            response_metadata=getattr(message, "response_metadata", {}),
+        )
+    except Exception as exc:
+        return fail(name, exc)
+
+
+def probe_langchain_chat_completions_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
+    name = "langchain-openai-chat-completions-live"
+    if not api_key:
+        return skip(name, "missing selected profile API key")
+    try:
+        from langchain_openai import ChatOpenAI
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "api_key": api_key,
+            "max_tokens": 64,
+            "timeout": timeout_sec,
+            "use_responses_api": False,
         }
         if base_url:
             kwargs["base_url"] = base_url
@@ -327,7 +401,7 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Probe whether this environment can use OpenAI Responses API, langchain-openai Responses transport, and OpenAI Agents SDK."
+        description="Probe whether this environment can use Chat Completions, Responses API, langchain-openai transports, and OpenAI Agents SDK."
     )
     parser.add_argument(
         "--live",
@@ -394,7 +468,21 @@ def main(argv: list[str]) -> int:
     if args.live:
         results.extend(
             [
+                probe_chat_completions_live(
+                    api_key=args.api_key,
+                    base_url=args.base_url,
+                    ca_cert_path=args.ca_cert_path,
+                    model=args.model,
+                    timeout_sec=args.timeout_sec,
+                ),
                 probe_responses_api_live(
+                    api_key=args.api_key,
+                    base_url=args.base_url,
+                    ca_cert_path=args.ca_cert_path,
+                    model=args.model,
+                    timeout_sec=args.timeout_sec,
+                ),
+                probe_langchain_chat_completions_live(
                     api_key=args.api_key,
                     base_url=args.base_url,
                     ca_cert_path=args.ca_cert_path,
@@ -420,7 +508,9 @@ def main(argv: list[str]) -> int:
     else:
         results.extend(
             [
+                skip("chat-completions-live-text", "pass --live to run a real API call"),
                 skip("responses-api-live-text", "pass --live to run a real API call"),
+                skip("langchain-openai-chat-completions-live", "pass --live to run a real API call"),
                 skip("langchain-openai-use-responses-api-live", "pass --live to run a real API call"),
                 skip("agents-sdk-live-agent-with-local-tool", "pass --live to run a real API call"),
             ]
