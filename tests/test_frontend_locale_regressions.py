@@ -1722,6 +1722,39 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "disabled=${creatingThread || sending}" not in script
 
 
+def test_completed_thread_runs_release_busy_state() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    handle_send_match = re.search(
+        r"async function handleSend\(overrideText, userInputResponse\) \{(?P<body>.*?)\n  \}\n\n  async function loadSpecDetail",
+        script,
+        re.S,
+    )
+    assert handle_send_match, "handleSend function not found"
+    body = handle_send_match.group("body")
+
+    live_messages_match = re.search(
+        r"function hasLiveThreadMessages\(messages\) \{(?P<body>.*?)\n}\n\nfunction isThreadActiveTurnLive",
+        script,
+        re.S,
+    )
+    assert live_messages_match, "hasLiveThreadMessages function not found"
+    live_messages_body = live_messages_match.group("body")
+    assert "if (message.pending) return !isActivityTerminalStatus(activity.status);" in live_messages_body
+
+    terminal_status_match = re.search(
+        r"function isActivityTerminalStatus\(status\) \{(?P<body>.*?)\n}\n\nfunction normalizeMessageActivity",
+        script,
+        re.S,
+    )
+    assert terminal_status_match, "isActivityTerminalStatus function not found"
+    assert "const normalized = normalizeProgressStatus(status);" in terminal_status_match.group("body")
+
+    assert "const finalActivitySourceStatus = normalizeProgressStatus(" in body
+    assert "const finalActivityStatus = isActivityTerminalStatus(finalActivitySourceStatus)" in body
+    assert "status: finalActivityStatus," in body
+    assert "finished_at: Date.now()," in body
+
+
 def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

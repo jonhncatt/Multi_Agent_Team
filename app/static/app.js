@@ -1051,7 +1051,7 @@ function liveRunItemFromTrace(trace) {
 }
 
 function isActivityTerminalStatus(status) {
-  const normalized = String(status || "").trim();
+  const normalized = normalizeProgressStatus(status);
   return normalized === "completed" || normalized === "failed" || normalized === "blocked" || normalized === "cancelled";
 }
 
@@ -2555,8 +2555,8 @@ function isCurrentThreadLiveRun({
 function hasLiveThreadMessages(messages) {
   return (Array.isArray(messages) ? messages : []).some((message) => {
     if (!message || typeof message !== "object") return false;
-    if (message.pending) return true;
     const activity = normalizeMessageActivity(message.activity || {});
+    if (message.pending) return !isActivityTerminalStatus(activity.status);
     return Boolean(activity.turn_started_at || activity.started_at) && !isActivityTerminalStatus(activity.status);
   });
 }
@@ -6982,7 +6982,21 @@ function App() {
         finalPayload = buildFallbackFinalPayload();
       }
       if (!finalPayload) throw new Error("missing final payload");
+      const finalActivitySourceStatus = normalizeProgressStatus(
+        finalPayload.turn_status
+        || (((finalPayload.inspector || {}).run_state || {}).turn_status)
+        || ((completedTurnPayload || {}).status)
+        || latestRunSnapshot.turn_status
+        || ((finalPayload.activity || {}).status)
+        || latestActivity.status
+        || "",
+      );
+      const finalActivityStatus = isActivityTerminalStatus(finalActivitySourceStatus)
+        ? finalActivitySourceStatus
+        : "completed";
       const finalActivity = mergeActivityState(finalPayload.activity || latestActivity, {
+        status: finalActivityStatus,
+        finished_at: Date.now(),
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : (Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : []),
         plan_explanation: String(latestActivity.plan_explanation || ""),
         tool_items: latestActivity.tool_items,
