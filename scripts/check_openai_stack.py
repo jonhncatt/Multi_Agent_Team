@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any
 
 
@@ -35,6 +36,60 @@ def env_first(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def normalize_profile(value: str) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if raw in {"openai", "openai_compatible"}:
+        return raw
+    return "openai_compatible"
+
+
+def profile_env_defaults(profile: str) -> dict[str, str]:
+    normalized = normalize_profile(profile)
+    if normalized == "openai":
+        return {
+            "profile": "openai",
+            "api_key": env_first("VP_OPENAI_API_KEY", "OPENAI_API_KEY"),
+            "base_url": env_first("VP_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+            "ca_cert_path": env_first("VP_OPENAI_CA_CERT_PATH", "OPENAI_CA_CERT_PATH"),
+            "model": env_first("VP_OPENAI_DEFAULT_MODEL", "OPENAI_MODEL"),
+        }
+    return {
+        "profile": "openai_compatible",
+        "api_key": env_first("VP_OPENAI_COMPAT_API_KEY"),
+        "base_url": env_first("VP_OPENAI_COMPAT_BASE_URL"),
+        "ca_cert_path": env_first("VP_OPENAI_COMPAT_CA_CERT_PATH"),
+        "model": env_first("VP_OPENAI_COMPAT_DEFAULT_MODEL"),
+    }
+
+
+def apply_ca_cert_env(ca_cert_path: str) -> dict[str, Any]:
+    path = str(ca_cert_path or "").strip()
+    if not path:
+        return {"configured": False, "exists": False, "path": ""}
+    resolved = str(Path(path).expanduser())
+    os.environ["SSL_CERT_FILE"] = resolved
+    os.environ["REQUESTS_CA_BUNDLE"] = resolved
+    return {
+        "configured": True,
+        "exists": Path(resolved).exists(),
+        "path": resolved,
+    }
+
+
+def make_httpx_client(ca_cert_path: str, *, async_client: bool = False) -> Any:
+    path = str(ca_cert_path or "").strip()
+    if not path:
+        return None
+    resolved = Path(path).expanduser()
+    if not resolved.exists():
+        raise FileNotFoundError(f"CA cert path does not exist: {resolved}")
+    import httpx
+
+    if async_client:
+        return httpx.AsyncClient(verify=str(resolved))
+    return httpx.Client(verify=str(resolved))
 
 
 def package_version(package_name: str) -> str:
@@ -78,20 +133,23 @@ def fail(name: str, exc: BaseException, *, include_traceback: bool = False, **de
     return payload
 
 
-def build_openai_client(api_key: str, base_url: str = "") -> Any:
+def build_openai_client(api_key: str, base_url: str = "", ca_cert_path: str = "") -> Any:
     from openai import OpenAI
 
     kwargs: dict[str, Any] = {"api_key": api_key or "sk-probe-local-only"}
     if base_url:
         kwargs["base_url"] = base_url
+    http_client = make_httpx_client(ca_cert_path)
+    if http_client is not None:
+        kwargs["http_client"] = http_client
     return OpenAI(**kwargs)
 
 
-def probe_openai_sdk(api_key: str, base_url: str) -> dict[str, Any]:
+def probe_openai_sdk(api_key: str, base_url: str, ca_cert_path: str) -> dict[str, Any]:
     name = "openai-sdk-import-and-responses-surface"
     try:
         openai = importlib.import_module("openai")
-        client = build_openai_client(api_key=api_key, base_url=base_url)
+        client = build_openai_client(api_key=api_key, base_url=base_url, ca_cert_path=ca_cert_path)
         has_responses = hasattr(client, "responses")
         signature = ""
         if has_responses:
@@ -107,12 +165,12 @@ def probe_openai_sdk(api_key: str, base_url: str) -> dict[str, Any]:
         return fail(name, exc)
 
 
-def probe_responses_api_live(api_key: str, base_url: str, model: str, timeout_sec: float) -> dict[str, Any]:
+def probe_responses_api_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
     name = "responses-api-live-text"
     if not api_key:
-        return skip(name, "missing OPENAI_API_KEY or VP_OPENAI_API_KEY")
+        return skip(name, "missing selected profile API key")
     try:
-        client = build_openai_client(api_key=api_key, base_url=base_url)
+        client = build_openai_client(api_key=api_key, base_url=base_url, ca_cert_path=ca_cert_path)
         started = time.monotonic()
         response = client.responses.create(
             model=model,
@@ -137,10 +195,10 @@ def probe_responses_api_live(api_key: str, base_url: str, model: str, timeout_se
         return fail(name, exc)
 
 
-def probe_langchain_responses_live(api_key: str, base_url: str, model: str, timeout_sec: float) -> dict[str, Any]:
+def probe_langchain_responses_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
     name = "langchain-openai-use-responses-api-live"
     if not api_key:
-        return skip(name, "missing OPENAI_API_KEY or VP_OPENAI_API_KEY")
+        return skip(name, "missing selected profile API key")
     try:
         from langchain_openai import ChatOpenAI
 
@@ -154,6 +212,9 @@ def probe_langchain_responses_live(api_key: str, base_url: str, model: str, time
         }
         if base_url:
             kwargs["base_url"] = base_url
+        http_client = make_httpx_client(ca_cert_path)
+        if http_client is not None:
+            kwargs["http_client"] = http_client
         llm = ChatOpenAI(**kwargs)
         started = time.monotonic()
         message = llm.invoke("Return exactly PROBE_OK.")
@@ -189,17 +250,29 @@ def probe_agents_sdk_import() -> dict[str, Any]:
         return fail(name, exc)
 
 
-def probe_agents_sdk_live(api_key: str, model: str, timeout_sec: float) -> dict[str, Any]:
+def probe_agents_sdk_live(api_key: str, base_url: str, ca_cert_path: str, model: str, timeout_sec: float) -> dict[str, Any]:
     name = "agents-sdk-live-agent-with-local-tool"
     if not api_key:
-        return skip(name, "missing OPENAI_API_KEY or VP_OPENAI_API_KEY")
+        return skip(name, "missing selected profile API key")
     try:
         os.environ.setdefault("OPENAI_API_KEY", api_key)
+        if base_url:
+            os.environ["OPENAI_BASE_URL"] = base_url
         os.environ.setdefault("OPENAI_AGENTS_DISABLE_TRACING", "true")
 
-        from agents import Agent, RunConfig, Runner, function_tool, set_tracing_disabled
+        from openai import AsyncOpenAI
+
+        from agents import Agent, RunConfig, Runner, function_tool, set_default_openai_api, set_default_openai_client, set_tracing_disabled
 
         set_tracing_disabled(True)
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        async_http_client = make_httpx_client(ca_cert_path, async_client=True)
+        if async_http_client is not None:
+            client_kwargs["http_client"] = async_http_client
+        set_default_openai_client(AsyncOpenAI(**client_kwargs), use_for_tracing=False)
+        set_default_openai_api("responses")
 
         @function_tool
         def local_probe_echo(text: str) -> str:
@@ -267,47 +340,55 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Exit non-zero if live probes are skipped because credentials are missing.",
     )
     parser.add_argument(
+        "--profile",
+        default="",
+        help="Credential profile to read from .env. Defaults to openai_compatible.",
+    )
+    parser.add_argument(
         "--model",
         default="",
-        help="Model for live probes. Defaults to OPENAI_API_PROBE_MODEL, VP_OPENAI_DEFAULT_MODEL, VP_OPENAI_COMPAT_DEFAULT_MODEL, OPENAI_MODEL, or gpt-5-mini.",
+        help="Model for live probes. Defaults to OPENAI_API_PROBE_MODEL or selected profile default_model.",
     )
     parser.add_argument(
         "--api-key",
         default="",
-        help="API key for live probes. Defaults to OPENAI_API_KEY, VP_OPENAI_API_KEY, or VP_OPENAI_COMPAT_API_KEY.",
+        help="API key for live probes. Defaults to selected profile API key.",
     )
     parser.add_argument(
         "--base-url",
         default="",
-        help="Optional OpenAI-compatible base URL for SDK probes. Defaults to OPENAI_BASE_URL, VP_OPENAI_BASE_URL, or VP_OPENAI_COMPAT_BASE_URL.",
+        help="Optional base URL for SDK probes. Defaults to selected profile base URL.",
+    )
+    parser.add_argument(
+        "--ca-cert-path",
+        default="",
+        help="Optional CA certificate bundle path. Defaults to selected profile CA_CERT_PATH.",
     )
     parser.add_argument("--env-file", default=".env", help="Optional env file to load before resolving defaults.")
     parser.add_argument("--timeout-sec", type=float, default=30.0)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON only.")
     args = parser.parse_args(argv)
     load_env_file(args.env_file)
+    selected_profile = normalize_profile(args.profile or "openai_compatible")
+    defaults = profile_env_defaults(selected_profile)
+    args.profile = defaults["profile"]
     args.model = (
         str(args.model or "").strip()
-        or env_first("OPENAI_API_PROBE_MODEL", "VP_OPENAI_DEFAULT_MODEL", "VP_OPENAI_COMPAT_DEFAULT_MODEL", "OPENAI_MODEL")
+        or env_first("OPENAI_API_PROBE_MODEL")
+        or defaults["model"]
         or "gpt-5-mini"
     )
-    args.api_key = str(args.api_key or "").strip() or env_first(
-        "OPENAI_API_KEY",
-        "VP_OPENAI_API_KEY",
-        "VP_OPENAI_COMPAT_API_KEY",
-    )
-    args.base_url = str(args.base_url or "").strip() or env_first(
-        "OPENAI_BASE_URL",
-        "VP_OPENAI_BASE_URL",
-        "VP_OPENAI_COMPAT_BASE_URL",
-    )
+    args.api_key = str(args.api_key or "").strip() or defaults["api_key"]
+    args.base_url = str(args.base_url or "").strip() or defaults["base_url"]
+    args.ca_cert_path = str(args.ca_cert_path or "").strip() or defaults["ca_cert_path"]
+    args.ca_cert = apply_ca_cert_env(args.ca_cert_path)
     return args
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     results = [
-        probe_openai_sdk(api_key=args.api_key, base_url=args.base_url),
+        probe_openai_sdk(api_key=args.api_key, base_url=args.base_url, ca_cert_path=args.ca_cert_path),
         probe_agents_sdk_import(),
     ]
     if args.live:
@@ -316,17 +397,21 @@ def main(argv: list[str]) -> int:
                 probe_responses_api_live(
                     api_key=args.api_key,
                     base_url=args.base_url,
+                    ca_cert_path=args.ca_cert_path,
                     model=args.model,
                     timeout_sec=args.timeout_sec,
                 ),
                 probe_langchain_responses_live(
                     api_key=args.api_key,
                     base_url=args.base_url,
+                    ca_cert_path=args.ca_cert_path,
                     model=args.model,
                     timeout_sec=args.timeout_sec,
                 ),
                 probe_agents_sdk_live(
                     api_key=args.api_key,
+                    base_url=args.base_url,
+                    ca_cert_path=args.ca_cert_path,
                     model=args.model,
                     timeout_sec=args.timeout_sec,
                 ),
@@ -343,16 +428,19 @@ def main(argv: list[str]) -> int:
 
     payload = summarize(results)
     payload["model"] = args.model
+    payload["profile"] = args.profile
     payload["live"] = bool(args.live)
     payload["base_url_configured"] = bool(args.base_url)
     payload["api_key_configured"] = bool(args.api_key)
+    payload["ca_cert"] = dict(args.ca_cert)
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
     else:
-        print(f"OpenAI stack probe | model={args.model} | live={bool(args.live)}")
+        print(f"OpenAI stack probe | profile={args.profile} | model={args.model} | live={bool(args.live)}")
         print(f"API key configured: {bool(args.api_key)}")
         print(f"Base URL configured: {bool(args.base_url)}")
+        print(f"CA cert configured: {bool(args.ca_cert.get('configured'))} | exists: {bool(args.ca_cert.get('exists'))}")
         print()
         for item in results:
             status = str(item.get("status") or "").upper()
