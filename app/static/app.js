@@ -5934,7 +5934,10 @@ function App() {
       const ownerBusy = ownerThreadVisible()
         ? isThreadSnapshotBusy(runOwnerThreadId, { activeTurn: visibleThreadActiveTurnSnapshot(), messages })
         : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
-      if (ownerBusy || activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;
+      if (ownerBusy) return;
+      if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
+        activeSendThreadIdsRef.current.delete(runOwnerThreadId);
+      }
       activeSendThreadIdsRef.current.add(runOwnerThreadId);
       lockedRunOwnerThreadId = runOwnerThreadId;
       if (ownerThreadVisible()) {
@@ -6465,6 +6468,9 @@ function App() {
       const cleanupRunUi = async () => {
         if (uiFinalized) return;
         uiFinalized = true;
+        if (runOwnerThreadId) {
+          activeSendThreadIdsRef.current.delete(runOwnerThreadId);
+        }
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({
             ...prev,

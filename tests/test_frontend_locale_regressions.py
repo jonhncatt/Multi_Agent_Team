@@ -1721,7 +1721,9 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
     assert "const anyThreadBusy = (() => {" in script
     assert "if (!messageText || currentThreadBusy) return;" in body
-    assert "if (ownerBusy || activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;" in body
+    assert "if (ownerBusy) return;" in body
+    assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {" in body
+    assert "activeSendThreadIdsRef.current.delete(runOwnerThreadId);" in body
     assert "setSending(false);" not in body.split("const cleanupRunUi = async () => {", 1)[0]
     assert "disabled=${creatingThread || sending}" not in script
 
@@ -1772,6 +1774,7 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "finished_at: Date.now()," in body
     cleanup_body = body.split("const cleanupRunUi = async () => {", 1)[1].split("      const collapseLiveRunUi = () => {", 1)[0]
     assert "window.requestAnimationFrame" not in cleanup_body
+    assert "activeSendThreadIdsRef.current.delete(runOwnerThreadId);" in cleanup_body
     assert "sending: false," in cleanup_body
     assert "activeRunThreadId: \"\"," in cleanup_body
 
