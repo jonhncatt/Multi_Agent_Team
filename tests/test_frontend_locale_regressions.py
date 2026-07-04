@@ -1711,7 +1711,11 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert handle_send_match, "handleSend function not found"
     body = handle_send_match.group("body")
 
-    assert "sending: Boolean(item.sending || item.isSending || item.is_sending)" in script
+    assert 'const sendingSource = has("sending")' in script
+    assert 'const activeRunIdSource = has("activeRunId") ? item.activeRunId : item.active_run_id;' in script
+    assert 'const activeRunThreadIdSource = has("activeRunThreadId") ? item.activeRunThreadId : item.active_run_thread_id;' in script
+    assert "sending: Boolean(sendingSource)" in script
+    assert "activeRunId: String(activeRunIdSource || \"\")" in script
     assert "function isThreadSnapshotBusy(threadId, snapshot)" in script
     assert "const activeSendThreadIdsRef = useRef(new Set());" in script
     assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
@@ -1743,6 +1747,16 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "function hasBusyThreadMessages(messages)" in script
     assert "if (!message || typeof message !== \"object\" || !message.pending) return false;" in script
     assert "|| hasBusyThreadMessages(item.messages)" in script
+    active_turn_busy_match = re.search(
+        r"function isThreadActiveTurnBusy\(threadId, activeTurn\) \{(?P<body>.*?)\n}\n\nfunction isThreadSnapshotBusy",
+        script,
+        re.S,
+    )
+    assert active_turn_busy_match, "isThreadActiveTurnBusy function not found"
+    active_turn_busy_body = active_turn_busy_match.group("body")
+    assert "if (turn.sending) return true;" in active_turn_busy_body
+    assert "return Boolean(String(turn.activeRunId || \"\").trim());" in active_turn_busy_body
+    assert "isThreadActiveTurnLive" not in active_turn_busy_body
 
     terminal_status_match = re.search(
         r"function isActivityTerminalStatus\(status\) \{(?P<body>.*?)\n}\n\nfunction normalizeMessageActivity",

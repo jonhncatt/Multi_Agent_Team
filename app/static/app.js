@@ -247,16 +247,27 @@ function createEmptyThreadActiveTurn() {
 
 function normalizeThreadActiveTurn(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(item, key);
+  const sendingSource = has("sending")
+    ? item.sending
+    : (has("isSending") ? item.isSending : item.is_sending);
+  const activeRunIdSource = has("activeRunId") ? item.activeRunId : item.active_run_id;
+  const activeRunThreadIdSource = has("activeRunThreadId") ? item.activeRunThreadId : item.active_run_thread_id;
+  const startedAtSource = has("startedAt")
+    ? item.startedAt
+    : (has("started_at") ? item.started_at : (has("runStartedAt") ? item.runStartedAt : item.run_started_at));
+  const lastLiveProgressAtSource = has("lastLiveProgressAt") ? item.lastLiveProgressAt : item.last_live_progress_at;
+  const stoppingRunSource = has("stoppingRun") ? item.stoppingRun : item.stopping_run;
   return {
     ...createEmptyThreadActiveTurn(),
     ...item,
-    sending: Boolean(item.sending || item.isSending || item.is_sending),
-    activeRunId: String(item.activeRunId || item.active_run_id || ""),
-    activeRunThreadId: String(item.activeRunThreadId || item.active_run_thread_id || ""),
-    startedAt: normalizeActivityTimestamp(item.startedAt || item.started_at || item.runStartedAt || item.run_started_at || 0),
-    lastLiveProgressAt: normalizeActivityTimestamp(item.lastLiveProgressAt || item.last_live_progress_at || 0),
+    sending: Boolean(sendingSource),
+    activeRunId: String(activeRunIdSource || ""),
+    activeRunThreadId: String(activeRunThreadIdSource || ""),
+    startedAt: normalizeActivityTimestamp(startedAtSource || 0),
+    lastLiveProgressAt: normalizeActivityTimestamp(lastLiveProgressAtSource || 0),
     liveHeartbeat: normalizeLiveHeartbeat(item.liveHeartbeat || item.live_heartbeat || {}),
-    stoppingRun: Boolean(item.stoppingRun || item.stopping_run),
+    stoppingRun: Boolean(stoppingRunSource),
     lastResponse: item.lastResponse && typeof item.lastResponse === "object" ? item.lastResponse : null,
     toolTimeline: Array.isArray(item.toolTimeline) ? item.toolTimeline : [],
     liveToolTimeline: Array.isArray(item.liveToolTimeline) ? item.liveToolTimeline : [],
@@ -2597,7 +2608,9 @@ function isThreadActiveTurnBusy(threadId, activeTurn) {
   const key = String(threadId || "").trim();
   if (!key) return false;
   const turn = normalizeThreadActiveTurn(activeTurn);
-  return Boolean(turn.sending || isThreadActiveTurnLive(key, turn));
+  if (turn.sending) return true;
+  if (String(turn.activeRunThreadId || "").trim() !== key) return false;
+  return Boolean(String(turn.activeRunId || "").trim());
 }
 
 function isThreadSnapshotBusy(threadId, snapshot) {
