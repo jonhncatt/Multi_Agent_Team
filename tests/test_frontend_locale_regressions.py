@@ -1740,6 +1740,9 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert live_messages_match, "hasLiveThreadMessages function not found"
     live_messages_body = live_messages_match.group("body")
     assert "if (message.pending) return !isActivityTerminalStatus(activity.status);" in live_messages_body
+    assert "function hasBusyThreadMessages(messages)" in script
+    assert "if (!message || typeof message !== \"object\" || !message.pending) return false;" in script
+    assert "|| hasBusyThreadMessages(item.messages)" in script
 
     terminal_status_match = re.search(
         r"function isActivityTerminalStatus\(status\) \{(?P<body>.*?)\n}\n\nfunction normalizeMessageActivity",
@@ -1753,6 +1756,10 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "const finalActivityStatus = isActivityTerminalStatus(finalActivitySourceStatus)" in body
     assert "status: finalActivityStatus," in body
     assert "finished_at: Date.now()," in body
+    cleanup_body = body.split("const cleanupRunUi = async () => {", 1)[1].split("      const collapseLiveRunUi = () => {", 1)[0]
+    assert "window.requestAnimationFrame" not in cleanup_body
+    assert "sending: false," in cleanup_body
+    assert "activeRunThreadId: \"\"," in cleanup_body
 
 
 def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:

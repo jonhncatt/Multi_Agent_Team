@@ -2561,6 +2561,14 @@ function hasLiveThreadMessages(messages) {
   });
 }
 
+function hasBusyThreadMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    if (!message || typeof message !== "object" || !message.pending) return false;
+    const activity = normalizeMessageActivity(message.activity || {});
+    return !isActivityTerminalStatus(activity.status);
+  });
+}
+
 function isThreadActiveTurnLive(threadId, activeTurn) {
   const key = String(threadId || "").trim();
   if (!key) return false;
@@ -2596,7 +2604,7 @@ function isThreadSnapshotBusy(threadId, snapshot) {
   const item = snapshot && typeof snapshot === "object" ? snapshot : {};
   return Boolean(
     isThreadActiveTurnBusy(threadId, item.activeTurn)
-    || hasLiveThreadMessages(item.messages)
+    || hasBusyThreadMessages(item.messages)
   );
 }
 
@@ -6444,31 +6452,26 @@ function App() {
       const cleanupRunUi = async () => {
         if (uiFinalized) return;
         uiFinalized = true;
-        await new Promise((resolve) => {
-          window.requestAnimationFrame(() => {
-            if (updateOwnerActiveTurn) {
-              updateOwnerActiveTurn((prev) => ({
-                ...prev,
-                sending: false,
-                activeRunId: "",
-                activeRunThreadId: "",
-                startedAt: 0,
-                lastLiveProgressAt: 0,
-                liveHeartbeat: createEmptyLiveHeartbeat(),
-                stoppingRun: false,
-              }));
-            } else {
-              setActiveRunId("");
-              setActiveRunThreadId("");
-              setActiveRunStartedAt(0);
-              setLastLiveProgressAt(0);
-              setLiveHeartbeat(createEmptyLiveHeartbeat());
-              setSending(false);
-              setStoppingRun(false);
-            }
-            resolve();
-          });
-        });
+        if (updateOwnerActiveTurn) {
+          updateOwnerActiveTurn((prev) => ({
+            ...prev,
+            sending: false,
+            activeRunId: "",
+            activeRunThreadId: "",
+            startedAt: 0,
+            lastLiveProgressAt: 0,
+            liveHeartbeat: createEmptyLiveHeartbeat(),
+            stoppingRun: false,
+          }));
+        } else {
+          setActiveRunId("");
+          setActiveRunThreadId("");
+          setActiveRunStartedAt(0);
+          setLastLiveProgressAt(0);
+          setLiveHeartbeat(createEmptyLiveHeartbeat());
+          setSending(false);
+          setStoppingRun(false);
+        }
       };
       const collapseLiveRunUi = () => {
         if (updateOwnerActiveTurn) {
