@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5U-blue)
+![Version](https://img.shields.io/badge/version-3.1.5V-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5U`
+現在の安定版: `3.1.5V`
 
 ## Stable Runtime
 
-3.1.5U は Agent の実行状態表示と回答完了時の収束を整えるリリースです。リクエスト送信後はより早くモデル待機状態に移り、表示可能な回答本文が出た時点で live UI をすぐ閉じるため、完了済み回答の上に実行パネルが残りにくくなりました。
+3.1.5V は thread 単位の Agent 並行実行リリースです。異なる thread では同時に agent を実行でき、同一 thread 内では履歴書き込みの衝突を避けるため直列実行を維持します。
 
-このリリースは 3.1.5T の Codex 風 context 状態、`/status`、`/compact`、長い thread での短文送信高速化に加え、3.1.5S の Windows 起動体感、チャット UX、メッセージコピー、実行中入力、テーマ色選択の改善も保持しています。
+このリリースでは thread 一覧の実行インジケーターも追加しました。実行中の thread はスピナー、完了後は青いドットで表示され、thread をクリックすると通知が消えます。さらに、完了後に古い実行状態や stale send lock によって composer がロックされる問題を修正しました。
 
 ## Max Output Tokens
 

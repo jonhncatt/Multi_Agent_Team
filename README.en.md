@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5U-blue)
+![Version](https://img.shields.io/badge/version-3.1.5V-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5U`
+Current stable release: `3.1.5V`
 
 ## Stable Runtime
 
-3.1.5U is an agent activity and answer-collapse polish release: after a request is sent, the UI moves to model-waiting state sooner, and once visible answer content is available the live UI collapses immediately instead of lingering above the completed response.
+3.1.5V is a thread-scoped agent concurrency release: different threads can run agents at the same time, while each individual thread still runs serially to avoid history-write conflicts.
 
-This release keeps the 3.1.5T Codex-style context status, `/status`, `/compact`, long-thread short-message acceleration, plus the 3.1.5S Windows startup feel, chat UX, message copy, editable running input, and theme color improvements.
+This release adds thread-list run indicators: running threads show a spinner, completed runs show a blue dot, and clicking the thread clears the attention marker. It also fixes composer lockups caused by stale run state or stale per-thread send locks after a run completes.
 
 ## Max Output Tokens
 
