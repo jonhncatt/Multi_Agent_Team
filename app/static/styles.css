@@ -351,6 +351,7 @@ button {
 
 .thread-row-body {
   display: block;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -391,6 +392,31 @@ button {
   display: block;
   margin-top: 4px;
   font-size: 11px;
+}
+
+.thread-run-indicator {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  margin-left: auto;
+  border-radius: 999px;
+}
+
+.thread-run-indicator.status-running {
+  border: 2px solid rgba(37, 99, 235, 0.18);
+  border-top-color: #2563eb;
+  animation: thread-run-indicator-spin 0.9s linear infinite;
+}
+
+.thread-run-indicator.status-completed_unread {
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13);
+}
+
+@keyframes thread-run-indicator-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .thread-empty {

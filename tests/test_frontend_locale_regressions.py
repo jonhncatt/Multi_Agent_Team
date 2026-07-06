@@ -1728,6 +1728,45 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "disabled=${creatingThread || sending}" not in script
 
 
+def test_thread_run_indicators_show_running_and_completed_attention() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    handle_send_match = re.search(
+        r"async function handleSend\(overrideText, userInputResponse\) \{(?P<body>.*?)\n  \}\n\n  async function loadSpecDetail",
+        script,
+        re.S,
+    )
+    assert handle_send_match, "handleSend function not found"
+    body = handle_send_match.group("body")
+    cleanup_body = body.split("const cleanupRunUi = async () => {", 1)[1].split("      const collapseLiveRunUi = () => {", 1)[0]
+    thread_click_body = re.search(
+        r"function handleThreadClick\(event, targetSessionId\) \{(?P<body>.*?)\n  \}\n\n  function openRenameThreadDialog",
+        script,
+        re.S,
+    )
+    assert thread_click_body, "handleThreadClick function not found"
+
+    assert "const [threadRunIndicators, setThreadRunIndicators] = useState({});" in script
+    assert "function markThreadRunIndicator(targetThreadId, status)" in script
+    assert "function clearThreadRunIndicator(targetThreadId)" in script
+    assert "function threadRunIndicatorStatus(targetThreadId)" in script
+    assert 'markThreadRunIndicator(runOwnerThreadId, "running");' in body
+    assert 'markThreadRunIndicator(runOwnerThreadId, "completed_unread");' in cleanup_body
+    assert "markThreadRunIndicator(lockedRunOwnerThreadId, \"completed_unread\");" in body
+    assert "clearThreadRunIndicator(sid);" in thread_click_body.group("body")
+    assert "const indicatorStatus = threadRunIndicatorStatus(itemId);" in script
+    assert "thread-run-indicator status-${indicatorStatus}" in script
+    assert "indicator-${indicatorStatus}" in script
+
+    for token in (
+        ".thread-run-indicator",
+        ".thread-run-indicator.status-running",
+        ".thread-run-indicator.status-completed_unread",
+        "@keyframes thread-run-indicator-spin",
+    ):
+        assert token in styles, token
+
+
 def test_completed_thread_runs_release_busy_state() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     handle_send_match = re.search(

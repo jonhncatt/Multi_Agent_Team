@@ -3739,6 +3739,7 @@ function App() {
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState("");
+  const [threadRunIndicators, setThreadRunIndicators] = useState({});
   const fileInputRef = useRef(null);
   const chatListRef = useRef(null);
   const autoScrollEnabledRef = useRef(true);
@@ -3817,6 +3818,53 @@ function App() {
   const setLastLiveProgressAt = (value) => dispatch({ type: "update", path: ["activeTurn", "lastLiveProgressAt"], value });
   const setLiveHeartbeat = (value) => dispatch({ type: "update", path: ["activeTurn", "liveHeartbeat"], value });
   const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
+
+  function markThreadRunIndicator(targetThreadId, status) {
+    const key = String(targetThreadId || "").trim();
+    const nextStatus = String(status || "").trim();
+    if (!key) return;
+    setThreadRunIndicators((prev) => {
+      const current = prev && typeof prev === "object" ? prev : {};
+      if (!nextStatus) {
+        if (!Object.prototype.hasOwnProperty.call(current, key)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      return {
+        ...current,
+        [key]: {
+          status: nextStatus,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  }
+
+  function clearThreadRunIndicator(targetThreadId) {
+    const key = String(targetThreadId || "").trim();
+    if (!key) return;
+    setThreadRunIndicators((prev) => {
+      const current = prev && typeof prev === "object" ? prev : {};
+      const indicator = current[key];
+      if (!indicator || indicator.status !== "completed_unread") return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function threadRunIndicatorStatus(targetThreadId) {
+    const key = String(targetThreadId || "").trim();
+    if (!key) return "";
+    const cachedSnapshot = threadDetailCacheRef.current.get(key) || {};
+    const rowBusy = key === String(sessionId || "").trim()
+      ? currentThreadBusy
+      : isThreadSnapshotBusy(key, cachedSnapshot);
+    if (rowBusy) return "running";
+    const indicator = threadRunIndicators[key];
+    return indicator && indicator.status === "completed_unread" ? "completed_unread" : "";
+  }
   const setWorkbenchTools = (value) => dispatch({ type: "update", path: ["panelCache", "tools", "data"], value });
   const setPanelStatus = (panel, value) => dispatch({ type: "update", path: ["panelCache", panel, "status"], value });
   const setSkills = (value) => dispatch({ type: "update", path: ["panelCache", "skills", "data"], value });
@@ -5057,6 +5105,7 @@ function App() {
     }
     setThreadSelectionAnchorId(sid);
     if (selectedThreadIds.size) setSelectedThreadIds(new Set());
+    clearThreadRunIndicator(sid);
     loadSession(targetSessionId);
   }
 
@@ -5940,6 +5989,7 @@ function App() {
       }
       activeSendThreadIdsRef.current.add(runOwnerThreadId);
       lockedRunOwnerThreadId = runOwnerThreadId;
+      markThreadRunIndicator(runOwnerThreadId, "running");
       if (ownerThreadVisible()) {
         setSending(true);
         setActiveRunThreadId(runOwnerThreadId);
@@ -6470,6 +6520,7 @@ function App() {
         uiFinalized = true;
         if (runOwnerThreadId) {
           activeSendThreadIdsRef.current.delete(runOwnerThreadId);
+          markThreadRunIndicator(runOwnerThreadId, "completed_unread");
         }
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({
@@ -7139,6 +7190,9 @@ function App() {
       }
     } finally {
       if (!uiFinalized) {
+        if (lockedRunOwnerThreadId) {
+          markThreadRunIndicator(lockedRunOwnerThreadId, "completed_unread");
+        }
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({
             ...prev,
@@ -8394,10 +8448,11 @@ function App() {
                       (item) => {
                         const itemId = threadListItemId(item);
                         const itemSelected = selectedThreadIds.has(itemId);
+                        const indicatorStatus = threadRunIndicatorStatus(itemId);
                         return html`
                         <button
                           key=${itemId || item.session_id}
-                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""}`}
+                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""} ${indicatorStatus ? `has-run-indicator indicator-${indicatorStatus}` : ""}`}
                           type="button"
                           onClick=${(event) => handleThreadClick(event, itemId)}
                           onContextMenu=${(event) => handleThreadContextMenu(event, item)}
@@ -8414,6 +8469,9 @@ function App() {
                             <span className="thread-row-title">${item.title || t("labels.new_thread")}</span>
                             <span className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</span>
                           </span>
+                          ${indicatorStatus
+                            ? html`<span className=${`thread-run-indicator status-${indicatorStatus}`} aria-hidden="true"></span>`
+                            : null}
                         </button>
                       `;
                       },
