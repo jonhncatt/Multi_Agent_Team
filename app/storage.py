@@ -1043,10 +1043,36 @@ def _git_output(root: Path, *args: str) -> str:
 
 
 def _git_metadata(root: Path) -> dict[str, Any]:
-    git_root = _git_output(root, "rev-parse", "--show-toplevel")
-    branch = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
-    git_dir = _git_output(root, "rev-parse", "--path-format=absolute", "--git-dir")
-    common_dir = _git_output(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--show-toplevel",
+                "--abbrev-ref",
+                "HEAD",
+                "--path-format=absolute",
+                "--git-dir",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        proc = None
+    lines = (proc.stdout or "").splitlines() if proc is not None and proc.returncode == 0 else []
+    if len(lines) >= 4:
+        git_root, branch, git_dir, common_dir = [str(item or "").strip() for item in lines[:4]]
+    else:
+        git_root = _git_output(root, "rev-parse", "--show-toplevel")
+        branch = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+        git_dir = _git_output(root, "rev-parse", "--path-format=absolute", "--git-dir")
+        common_dir = _git_output(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     return {
         "git_root": git_root,
         "git_branch": branch,
@@ -1055,10 +1081,14 @@ def _git_metadata(root: Path) -> dict[str, Any]:
 
 
 class ProjectStore:
+    _GIT_METADATA_TTL_SEC = 5.0
+
     def __init__(self, registry_path: Path, *, default_root: Path) -> None:
         self.registry_path = registry_path
         self.default_root = default_root.resolve()
         self._lock = threading.Lock()
+        self._git_metadata_lock = threading.Lock()
+        self._git_metadata_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.registry_path.exists():
             self._write({"projects": {}, "default_project_id": "", "updated_at": now_iso()})
@@ -1076,9 +1106,33 @@ class ProjectStore:
         with self._lock:
             self.registry_path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _cached_git_metadata(self, root_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+        cache_key = str(root_path)
+        now = time.monotonic()
+        with self._git_metadata_lock:
+            cached = self._git_metadata_cache.get(cache_key)
+            if cached and now - float(cached[0] or 0.0) < self._GIT_METADATA_TTL_SEC:
+                cached_meta = dict(cached[1])
+                payload_git_root = str(payload.get("git_root") or "")
+                payload_git_branch = str(payload.get("git_branch") or "")
+                payload_has_worktree = "is_worktree" in payload
+                payload_matches_cache = (
+                    (not payload_git_root or payload_git_root == str(cached_meta.get("git_root") or ""))
+                    and (not payload_git_branch or payload_git_branch == str(cached_meta.get("git_branch") or ""))
+                    and (
+                        not payload_has_worktree
+                        or bool(payload.get("is_worktree")) == bool(cached_meta.get("is_worktree"))
+                    )
+                )
+                if payload_matches_cache:
+                    return cached_meta
+            meta = _git_metadata(root_path)
+            self._git_metadata_cache[cache_key] = (now, dict(meta))
+            return dict(meta)
+
     def _normalize_record(self, payload: dict[str, Any]) -> dict[str, Any]:
         root_path = Path(str(payload.get("root_path") or self.default_root)).expanduser().resolve()
-        git_meta = _git_metadata(root_path)
+        git_meta = self._cached_git_metadata(root_path, payload)
         return {
             "project_id": str(payload.get("project_id") or _project_id_for_root(root_path)),
             "title": str(payload.get("title") or root_path.name or str(root_path)).strip() or (root_path.name or str(root_path)),

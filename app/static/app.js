@@ -4237,7 +4237,7 @@ function App() {
           if (!disposed) setBootState({ active: true, phase: "thread" });
           await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });
         } else {
-          await refreshRuntimeStatus("", { background: true });
+          refreshRuntimeStatus("", { background: true });
         }
       } finally {
         if (!disposed) {
@@ -4925,13 +4925,32 @@ function App() {
     if (!threadKey) return;
     setSessions((prev) => {
       const previousList = Array.isArray(prev) ? prev : [];
-      const withoutTemp = previousList.filter(
-        (entry) => String(entry.thread_id || entry.session_id || "").trim() !== tempKey,
-      );
-      const withoutReal = withoutTemp.filter(
-        (entry) => String(entry.thread_id || entry.session_id || "").trim() !== threadKey,
-      );
-      return [{ ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) }, ...withoutReal];
+      const hasTemp = previousList.some((entry) => String(entry.thread_id || entry.session_id || "").trim() === tempKey);
+      const merged = { ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) };
+      if (hasTemp) {
+        const next = [];
+        let inserted = false;
+        previousList.forEach((entry) => {
+          const key = String(entry.thread_id || entry.session_id || "").trim();
+          if (key === tempKey) {
+            if (!inserted) {
+              next.push(merged);
+              inserted = true;
+            }
+            return;
+          }
+          if (key === threadKey) return;
+          next.push(entry);
+        });
+        return next;
+      }
+      const realIndex = previousList.findIndex((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey);
+      if (realIndex >= 0) {
+        const next = previousList.slice();
+        next[realIndex] = merged;
+        return next;
+      }
+      return [merged, ...previousList];
     });
   }
 
@@ -4948,13 +4967,21 @@ function App() {
     if (activeProjectId && normalized.project_id && String(normalized.project_id || "").trim() !== activeProjectId) {
       return;
     }
-    const promote = options.promote !== false;
+    const promote = options.promote === true;
     setSessions((prev) => {
       const previousList = Array.isArray(prev) ? prev : [];
-      const existing = previousList.find((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey) || {};
+      const existingIndex = previousList.findIndex((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey);
+      const existing = existingIndex >= 0 ? previousList[existingIndex] : {};
       const merged = { ...existing, ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) };
-      const remainder = previousList.filter((entry) => String(entry.thread_id || entry.session_id || "").trim() !== threadKey);
-      return promote ? [merged, ...remainder] : [...remainder, merged];
+      if (existingIndex >= 0) {
+        const remainder = previousList.filter((_, index) => index !== existingIndex);
+        return promote ? [merged, ...remainder] : [
+          ...previousList.slice(0, existingIndex),
+          merged,
+          ...previousList.slice(existingIndex + 1),
+        ];
+      }
+      return promote ? [merged, ...previousList] : [...previousList, merged];
     });
   }
 
@@ -5219,19 +5246,14 @@ function App() {
     closeThreadMenu();
     clearUiError();
     const list = await refreshSessions(targetProjectId);
-    const runtimeStatusPromise = refreshRuntimeStatus(targetProjectId, { background: true });
+    refreshRuntimeStatus(targetProjectId, { background: true });
     const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
     const preferredSessionId =
       storedSessionId && list.some((item) => String(item.session_id || item.thread_id || "") === storedSessionId)
         ? storedSessionId
         : String((((list || [])[0] || {}).session_id) || (((list || [])[0] || {}).thread_id) || "").trim();
     if (preferredSessionId) {
-      const loaded = await loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
-      if (options.fromBoot) await runtimeStatusPromise;
-      return loaded;
-    }
-    if (options.fromBoot) {
-      await runtimeStatusPromise;
+      return loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
     }
     if (!options.fromBoot) {
       pushLogWithLimit(setLogs, "system", t("log.project_switched", { project_id: targetProjectId.slice(0, 8) }));
@@ -6809,11 +6831,11 @@ function App() {
                 pushLiveLog("trace", detail);
               }
             } else if (event === "thread/started") {
-              if (payload.thread) upsertThreadRow(payload.thread, { promote: true });
+              if (payload.thread) upsertThreadRow(payload.thread);
             } else if (event === "thread/status/changed") {
               updateThreadStatus(payload.thread_id, ((payload.status || {}).type) || "idle");
             } else if (event === "thread/updated") {
-              if (payload.thread) upsertThreadRow(payload.thread, { promote: true });
+              if (payload.thread) upsertThreadRow(payload.thread);
             } else if (event === "thread/tokenUsage/updated") {
               latestTokenUsage = payload.token_usage && typeof payload.token_usage === "object" ? payload.token_usage : latestTokenUsage;
               latestSessionTokenTotals = payload.session_token_totals && typeof payload.session_token_totals === "object"

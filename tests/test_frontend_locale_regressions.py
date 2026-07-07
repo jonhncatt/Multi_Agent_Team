@@ -327,7 +327,7 @@ def test_index_renders_static_boot_loading_fallback() -> None:
         assert token in styles, token
 
 
-def test_react_boot_overlay_waits_for_workspace_and_thread_load() -> None:
+def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_status() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
@@ -335,8 +335,9 @@ def test_react_boot_overlay_waits_for_workspace_and_thread_load() -> None:
     assert 'const [bootState, setBootState] = useState({ active: true, phase: "workspace" });' in script
     assert 'setBootState({ active: true, phase: "thread" });' in script
     assert "await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });" in script
-    assert "const runtimeStatusPromise = refreshRuntimeStatus(targetProjectId, { background: true });" in script
-    assert "if (options.fromBoot) await runtimeStatusPromise;" in script
+    assert "refreshRuntimeStatus(targetProjectId, { background: true });" in script
+    assert "runtimeStatusPromise" not in script
+    assert "await runtimeStatus" not in script
     assert "setBootState((prev) => ({ ...prev, active: false }));" in script
     assert 'className="app-boot-screen app-boot-screen-overlay"' in script
     assert 't("boot.loading_workspace")' in script
@@ -1809,6 +1810,26 @@ def test_thread_run_indicators_show_running_and_completed_attention() -> None:
         assert token in styles, token
     assert "@keyframes thread-run-indicator-spin" not in styles
     assert "animation: thread-run-indicator-spin" not in styles
+
+
+def test_thread_run_updates_do_not_reorder_existing_thread_rows() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    upsert_match = re.search(
+        r"function upsertThreadRow\(rawItem, options = \{\}\) \{(?P<body>.*?)\n  \}\n\n  function removeThreadRow",
+        script,
+        re.S,
+    )
+    assert upsert_match, "upsertThreadRow function not found"
+    body = upsert_match.group("body")
+
+    assert "const promote = options.promote === true;" in body
+    assert "const existingIndex = previousList.findIndex" in body
+    assert "...previousList.slice(0, existingIndex)," in body
+    assert "merged," in body
+    assert "...previousList.slice(existingIndex + 1)," in body
+    assert "return promote ? [merged, ...previousList] : [...previousList, merged];" in body
+    assert 'if (payload.thread) upsertThreadRow(payload.thread);' in script
+    assert 'upsertThreadRow(payload.thread, { promote: true })' not in script
 
 
 def test_completed_thread_runs_release_busy_state() -> None:

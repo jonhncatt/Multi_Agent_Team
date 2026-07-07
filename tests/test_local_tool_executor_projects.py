@@ -108,3 +108,31 @@ def test_project_store_list_projects_prefers_live_git_metadata_and_persists_regi
     assert saved_payload["projects"]["project_repo"]["git_branch"] == "feature/live-refresh"
     assert saved_payload["projects"]["project_repo"]["git_root"] == str(repo_root)
     assert saved_payload["projects"]["project_repo"]["is_worktree"] is True
+
+
+def test_project_store_caches_git_metadata_during_repeated_project_loads(tmp_path: Path, monkeypatch) -> None:
+    app_root = tmp_path / "app-root"
+    repo_root = tmp_path / "repo-root"
+    app_root.mkdir(parents=True, exist_ok=True)
+    repo_root.mkdir(parents=True, exist_ok=True)
+    store = ProjectStore(tmp_path / "projects.json", default_root=app_root)
+    calls: list[Path] = []
+
+    def fake_git_metadata(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return {
+            "git_root": str(root),
+            "git_branch": "feature/cached-git",
+            "is_worktree": False,
+        }
+
+    monkeypatch.setattr(storage_mod, "_git_metadata", fake_git_metadata)
+    store.create(root_path=str(repo_root), title="Repo Root")
+
+    first = store.list_projects()
+    second = store.list_projects()
+
+    assert [item["git_branch"] for item in first] == ["feature/cached-git", "feature/cached-git"]
+    assert [item["git_branch"] for item in second] == ["feature/cached-git", "feature/cached-git"]
+    assert calls.count(app_root.resolve()) == 1
+    assert calls.count(repo_root.resolve()) == 1

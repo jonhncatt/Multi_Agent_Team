@@ -232,10 +232,9 @@ class VPRuntimeBackend:
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
             from langchain_core.tools import StructuredTool
-            from langchain_openai import ChatOpenAI
         except Exception as exc:
             raise RuntimeError(
-                "Missing dependency: langchain_openai. Install with `pip install langchain-openai`."
+                "Missing dependency: langchain_core. Install the project dependencies and retry."
             ) from exc
 
         self._AIMessage = AIMessage
@@ -243,7 +242,8 @@ class VPRuntimeBackend:
         self._SystemMessage = SystemMessage
         self._ToolMessage = ToolMessage
         self._StructuredTool = StructuredTool
-        self._ChatOpenAI = ChatOpenAI
+        self._ChatOpenAI = None
+        self._chat_openai_lock = threading.Lock()
         _ = kernel_runtime
         self._lc_tools = self._build_langchain_tools()
         self._lc_tool_map = {
@@ -267,6 +267,21 @@ class VPRuntimeBackend:
     def _ensure_openai_ca_env(self, ca_cert_path: str) -> None:
         os.environ.setdefault("SSL_CERT_FILE", ca_cert_path)
         os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_cert_path)
+
+    def _chat_openai_cls(self):
+        if self._ChatOpenAI is not None:
+            return self._ChatOpenAI
+        with self._chat_openai_lock:
+            if self._ChatOpenAI is not None:
+                return self._ChatOpenAI
+            try:
+                from langchain_openai import ChatOpenAI
+            except Exception as exc:
+                raise RuntimeError(
+                    "Missing dependency: langchain_openai. Install with `pip install langchain-openai`."
+                ) from exc
+            self._ChatOpenAI = ChatOpenAI
+            return self._ChatOpenAI
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         auth = self._auth_manager.require()
@@ -311,7 +326,7 @@ class VPRuntimeBackend:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:
             self._ensure_openai_ca_env(self.config.openai_ca_cert_path)
-        return self._ChatOpenAI(**kwargs)
+        return self._chat_openai_cls()(**kwargs)
 
     def _invoke_chat_with_runner(
         self,
