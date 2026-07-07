@@ -3854,6 +3854,16 @@ function App() {
     });
   }
 
+  function finishThreadRunIndicator(targetThreadId) {
+    const key = String(targetThreadId || "").trim();
+    if (!key) return;
+    if (String(activeSessionIdRef.current || "").trim() === key) {
+      markThreadRunIndicator(key, "");
+      return;
+    }
+    markThreadRunIndicator(key, "completed_unread");
+  }
+
   function threadRunIndicatorStatus(targetThreadId) {
     const key = String(targetThreadId || "").trim();
     if (!key) return "";
@@ -3862,6 +3872,7 @@ function App() {
       ? currentThreadBusy
       : isThreadSnapshotBusy(key, cachedSnapshot);
     if (rowBusy) return "running";
+    if (key === String(activeSessionIdRef.current || "").trim()) return "";
     const indicator = threadRunIndicators[key];
     return indicator && indicator.status === "completed_unread" ? "completed_unread" : "";
   }
@@ -6520,7 +6531,7 @@ function App() {
         uiFinalized = true;
         if (runOwnerThreadId) {
           activeSendThreadIdsRef.current.delete(runOwnerThreadId);
-          markThreadRunIndicator(runOwnerThreadId, "completed_unread");
+          finishThreadRunIndicator(runOwnerThreadId);
         }
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({
@@ -7191,7 +7202,7 @@ function App() {
     } finally {
       if (!uiFinalized) {
         if (lockedRunOwnerThreadId) {
-          markThreadRunIndicator(lockedRunOwnerThreadId, "completed_unread");
+          finishThreadRunIndicator(lockedRunOwnerThreadId);
         }
         if (updateOwnerActiveTurn) {
           updateOwnerActiveTurn((prev) => ({

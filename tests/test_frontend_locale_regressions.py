@@ -1749,10 +1749,14 @@ def test_thread_run_indicators_show_running_and_completed_attention() -> None:
     assert "const [threadRunIndicators, setThreadRunIndicators] = useState({});" in script
     assert "function markThreadRunIndicator(targetThreadId, status)" in script
     assert "function clearThreadRunIndicator(targetThreadId)" in script
+    assert "function finishThreadRunIndicator(targetThreadId)" in script
     assert "function threadRunIndicatorStatus(targetThreadId)" in script
     assert 'markThreadRunIndicator(runOwnerThreadId, "running");' in body
-    assert 'markThreadRunIndicator(runOwnerThreadId, "completed_unread");' in cleanup_body
-    assert "markThreadRunIndicator(lockedRunOwnerThreadId, \"completed_unread\");" in body
+    assert "finishThreadRunIndicator(runOwnerThreadId);" in cleanup_body
+    assert "finishThreadRunIndicator(lockedRunOwnerThreadId);" in body
+    assert 'markThreadRunIndicator(key, "");' in script
+    assert 'markThreadRunIndicator(key, "completed_unread");' in script
+    assert 'if (key === String(activeSessionIdRef.current || "").trim()) return "";' in script
     assert "clearThreadRunIndicator(sid);" in thread_click_body.group("body")
     assert "const indicatorStatus = threadRunIndicatorStatus(itemId);" in script
     assert "thread-run-indicator status-${indicatorStatus}" in script
