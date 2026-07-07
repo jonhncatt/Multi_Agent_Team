@@ -2,9 +2,7 @@
 id: vintage_programmer
 title: Vintage Programmer
 spec_version: 2
-model_family: gpt-5-class
 api_surface: chat_completions
-default_model: gpt-5.1-chat
 tool_policy: all
 network_mode: explicit_tools
 approval_policy: on_failure_or_high_impact

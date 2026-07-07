@@ -176,7 +176,7 @@ Copy `.env.example` to `.env`, then keep one provider profile enabled.
 ```env
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=your_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
 Vintage Programmer now uses explicit provider API key configuration only. It no longer falls back to local account-based auth files automatically.
@@ -188,7 +188,7 @@ VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=your_gateway_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
 VP_OPENAI_COMPAT_CA_CERT_PATH=/absolute/path/to/your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 ### OpenRouter

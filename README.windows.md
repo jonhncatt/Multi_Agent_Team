@@ -70,7 +70,7 @@ OpenAI 官方：
 ```env
 VP_LLM_PROVIDER=openai
 VP_OPENAI_API_KEY=你的_key
-VP_OPENAI_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_DEFAULT_MODEL=gpt-5.4
 ```
 
 Vintage Programmer 现在只使用显式 provider API key 配置，不再从本机账号认证文件自动回退。
@@ -82,7 +82,7 @@ VP_LLM_PROVIDER=openai_compatible
 VP_OPENAI_COMPAT_API_KEY=你的网关_key
 VP_OPENAI_COMPAT_BASE_URL=https://your-gateway.example.com/v1
 VP_OPENAI_COMPAT_CA_CERT_PATH=C:\certs\your-root-ca.pem
-VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.1-chat
+VP_OPENAI_COMPAT_DEFAULT_MODEL=gpt-5.4
 ```
 
 OpenRouter：

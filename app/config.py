@@ -79,15 +79,15 @@ def _strip_optional_quotes(value: str) -> str:
 _LLM_PROVIDER_PRESETS: dict[str, dict[str, object]] = {
     "openai": {
         "api_key_env": "VP_OPENAI_API_KEY",
-        "default_model": "gpt-5.1-chat",
-        "model_options": ["gpt-5.1-chat", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
+        "default_model": "gpt-5.4",
+        "model_options": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
         "base_url": "",
         "use_responses_api": False,
     },
     "openai_compatible": {
         "api_key_env": "VP_OPENAI_COMPAT_API_KEY",
-        "default_model": "gpt-5.1-chat",
-        "model_options": ["gpt-5.1-chat", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
+        "default_model": "gpt-5.4",
+        "model_options": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.1", "gpt-5-mini", "gpt-4.1"],
         "base_url": "",
         "use_responses_api": False,
     },
@@ -504,9 +504,7 @@ def _resolve_provider_runtime_settings(
     ).strip().lower()
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
-    provider_default_model = (
-        str(llm_provider_preset.get("default_model") or "gpt-5.1-chat").strip() or "gpt-5.1-chat"
-    )
+    provider_default_model = str(llm_provider_preset.get("default_model") or "gpt-5.4").strip() or "gpt-5.4"
     include_global_model_keys = normalized_provider == _normalize_llm_provider(active_provider)
     default_model_keys = list(_provider_specific_default_model_keys(normalized_provider))
     fallback_model_keys = list(_provider_specific_model_fallback_keys(normalized_provider))
@@ -1052,7 +1050,7 @@ def load_config() -> AppConfig:
     openai_ca_cert_path = provider_runtime.get("openai_ca_cert_path") if "openai_ca_cert_path" in provider_runtime else openai_ca_cert_path
     openai_temperature = provider_runtime.get("openai_temperature") if "openai_temperature" in provider_runtime else openai_temperature
     openai_use_responses_api = bool(provider_runtime.get("openai_use_responses_api"))
-    provider_default_model = str(llm_provider_preset.get("default_model") or "gpt-5.1-chat").strip() or "gpt-5.1-chat"
+    provider_default_model = str(llm_provider_preset.get("default_model") or "gpt-5.4").strip() or "gpt-5.4"
     model_fallbacks = list(provider_runtime.get("model_fallbacks") or model_fallbacks)
     resolved_default_model = str(provider_runtime.get("default_model") or provider_default_model).strip() or provider_default_model
     resolved_model_options = list(provider_runtime.get("model_options") or [resolved_default_model])

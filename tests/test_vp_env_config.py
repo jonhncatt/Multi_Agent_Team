@@ -25,7 +25,9 @@ def test_vp_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:
     assert config.llm_primary_api_key_env == "VP_OPENAI_COMPAT_API_KEY"
     assert config.openai_base_url == "https://gateway.example.com/v1"
     assert config.default_model in config.model_options
-    assert "gpt-5.1-chat" in config.model_options
+    assert config.default_model == "gpt-5.4"
+    assert "gpt-5.4-mini" in config.model_options
+    assert "gpt-5.4-nano" in config.model_options
     assert resolved.mode == "api_key"
 
 

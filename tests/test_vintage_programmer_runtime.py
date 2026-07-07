@@ -716,6 +716,8 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
 
     assert "spec_version: 2" in agent_doc
     assert "api_surface: chat_completions" in agent_doc
+    assert "model_family:" not in agent_doc
+    assert "default_model:" not in agent_doc
     assert "outcome_first" in agent_doc
     assert "工具调用就是行动" in agent_doc
     assert "当前消息内容" in agent_doc
