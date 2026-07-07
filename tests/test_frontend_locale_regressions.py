@@ -1762,9 +1762,12 @@ def test_thread_run_indicators_show_running_and_completed_attention() -> None:
         ".thread-run-indicator",
         ".thread-run-indicator.status-running",
         ".thread-run-indicator.status-completed_unread",
-        "@keyframes thread-run-indicator-spin",
+        "conic-gradient(from -35deg",
+        "-webkit-mask: radial-gradient",
     ):
         assert token in styles, token
+    assert "@keyframes thread-run-indicator-spin" not in styles
+    assert "animation: thread-run-indicator-spin" not in styles
 
 
 def test_completed_thread_runs_release_busy_state() -> None:

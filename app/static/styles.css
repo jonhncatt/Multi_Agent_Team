@@ -403,20 +403,17 @@ button {
 }
 
 .thread-run-indicator.status-running {
-  border: 2px solid rgba(37, 99, 235, 0.18);
-  border-top-color: #2563eb;
-  animation: thread-run-indicator-spin 0.9s linear infinite;
+  width: 14px;
+  height: 14px;
+  flex-basis: 14px;
+  background: conic-gradient(from -35deg, #5f666f 0 112deg, #cfd4d9 112deg 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 0);
 }
 
 .thread-run-indicator.status-completed_unread {
   background: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13);
-}
-
-@keyframes thread-run-indicator-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .thread-empty {
