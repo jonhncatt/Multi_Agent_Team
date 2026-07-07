@@ -325,6 +325,26 @@ def test_index_renders_static_boot_loading_fallback() -> None:
         "conic-gradient(from -35deg",
     ):
         assert token in styles, token
+
+
+def test_react_boot_overlay_waits_for_workspace_and_thread_load() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'const [bootState, setBootState] = useState({ active: true, phase: "workspace" });' in script
+    assert 'setBootState({ active: true, phase: "thread" });' in script
+    assert "await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });" in script
+    assert "const runtimeStatusPromise = refreshRuntimeStatus(targetProjectId, { background: true });" in script
+    assert "if (options.fromBoot) await runtimeStatusPromise;" in script
+    assert "setBootState((prev) => ({ ...prev, active: false }));" in script
+    assert 'className="app-boot-screen app-boot-screen-overlay"' in script
+    assert 't("boot.loading_workspace")' in script
+    assert 't("boot.loading_thread")' in script
+    assert ".app-root-frame" in styles
+    assert ".app-boot-screen-overlay" in styles
+    assert '"boot.loading_workspace": "Loading workspace..."' in locales
+    assert '"boot.loading_thread": "Loading thread..."' in locales
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
 

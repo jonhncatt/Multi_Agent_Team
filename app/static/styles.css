@@ -44,11 +44,24 @@ body {
   min-height: 100vh;
 }
 
+.app-root-frame {
+  min-height: 100vh;
+}
+
 .app-boot-screen {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 24px;
+}
+
+.app-boot-screen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 30%),
+    linear-gradient(180deg, #f7f8fa 0%, #eef1f5 100%);
 }
 
 .app-boot-card {

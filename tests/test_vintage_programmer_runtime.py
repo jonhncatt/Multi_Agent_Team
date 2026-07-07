@@ -709,30 +709,31 @@ def test_runtime_activity_copy_has_locale_parity() -> None:
             assert translate(locale, key) != key, f"{locale} missing {key}"
 
 
-def test_agent_docs_prefer_project_venv_python() -> None:
+def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
     zh_spec_dir = REPO_ROOT / "agents" / "vintage_programmer" / "locales" / "zh-CN"
     agent_doc = (zh_spec_dir / "agent.md").read_text(encoding="utf-8")
     tools_doc = (zh_spec_dir / "tools.md").read_text(encoding="utf-8")
 
-    assert "./.venv/bin/python" in agent_doc
-    assert ".venv\\Scripts\\python.exe" in agent_doc
-    assert "不要假定 `python3`" in agent_doc
+    assert "spec_version: 2" in agent_doc
+    assert "api_surface: chat_completions" in agent_doc
+    assert "outcome_first" in agent_doc
+    assert "工具调用就是行动" in agent_doc
+    assert "当前消息内容" in agent_doc
+    assert "本地 skills 是可选覆盖层" in agent_doc
+    assert "不要为每个请求都创建计划" in agent_doc
+    assert "多步骤、多文件、代码修改、调试、测试" in agent_doc
+    assert "简单直接回答、单步检查或琐碎命令" in agent_doc
+    assert "唯一 checklist 协议" in agent_doc
+    assert "可选补充信息" in agent_doc
+    assert "不要输出完整 `task_state`" in agent_doc
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
-    assert "不要默认写死 `python3`" in tools_doc
+    assert "不要假定 `python3`" in tools_doc
     assert "update_plan" in agent_doc
-    assert "不要为每个请求都创建计划" in agent_doc
-    assert "多步骤、多文件、需要代码修改、需要调试、需要测试" in agent_doc
-    assert "简单直接回答、单步检查或琐碎命令" in agent_doc
-    assert "先 `web_search` 找来源，再按需用 `web_fetch` 读正文" in tools_doc
-    assert "最多再 `web_fetch` 1 个权威来源" not in tools_doc
-    assert "优先 1 次 `web_search`" not in tools_doc
-    assert "唯一的 checklist 协议" in agent_doc
-    assert "可选补充信息" in agent_doc
-    assert "不要为每个请求都调用 `update_plan`" in tools_doc
-    assert "如果任务在执行中从简单变成多步骤" in tools_doc
-    assert "唯一的 LLM-facing checklist 工具" in tools_doc
-    assert "不要再用它更新 checklist step 状态" in tools_doc
+    assert "网络信息先用 `web_search` 找来源，再按需用 `web_fetch` 读取正文" in tools_doc
+    assert "优先一次 `web_search`，最多再读取一个权威来源" in tools_doc
+    assert "`update_plan` 只用于非平凡任务的 checklist" in tools_doc
+    assert "工具用于取得证据、执行动作或验证结果" in tools_doc
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:

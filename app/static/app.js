@@ -3725,6 +3725,7 @@ function App() {
   const [savingProject, setSavingProject] = useState(false);
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
+  const [bootState, setBootState] = useState({ active: true, phase: "workspace" });
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
@@ -4220,22 +4221,34 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
     async function boot() {
-      const [bootstrapData, projectsList] = await Promise.all([refreshBootstrap(), refreshProjects()]);
-      const storedProjectId = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
-      const storedProjectExists = (projectsList || []).some((item) => String(item.project_id || "") === storedProjectId);
-      const initialProjectId =
-        (storedProjectExists ? storedProjectId : "") ||
-        String((bootstrapData && bootstrapData.default_project_id) || "").trim() ||
-        String(((projectsList || [])[0] || {}).project_id || "").trim();
-      bootReadyRef.current = true;
-      if (initialProjectId) {
-        await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });
-      } else {
-        await refreshRuntimeStatus("", { background: true });
+      setBootState({ active: true, phase: "workspace" });
+      try {
+        const [bootstrapData, projectsList] = await Promise.all([refreshBootstrap(), refreshProjects()]);
+        const storedProjectId = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
+        const storedProjectExists = (projectsList || []).some((item) => String(item.project_id || "") === storedProjectId);
+        const initialProjectId =
+          (storedProjectExists ? storedProjectId : "") ||
+          String((bootstrapData && bootstrapData.default_project_id) || "").trim() ||
+          String(((projectsList || [])[0] || {}).project_id || "").trim();
+        bootReadyRef.current = true;
+        if (initialProjectId) {
+          if (!disposed) setBootState({ active: true, phase: "thread" });
+          await selectProject(initialProjectId, { silentNotFound: true, fromBoot: true });
+        } else {
+          await refreshRuntimeStatus("", { background: true });
+        }
+      } finally {
+        if (!disposed) {
+          setBootState((prev) => ({ ...prev, active: false }));
+        }
       }
     }
     boot();
+    return () => {
+      disposed = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -5206,18 +5219,23 @@ function App() {
     closeThreadMenu();
     clearUiError();
     const list = await refreshSessions(targetProjectId);
-    refreshRuntimeStatus(targetProjectId, { background: true });
+    const runtimeStatusPromise = refreshRuntimeStatus(targetProjectId, { background: true });
     const storedSessionId = window.localStorage.getItem(sessionStorageKeyForProject(targetProjectId)) || "";
     const preferredSessionId =
       storedSessionId && list.some((item) => String(item.session_id || item.thread_id || "") === storedSessionId)
         ? storedSessionId
         : String((((list || [])[0] || {}).session_id) || (((list || [])[0] || {}).thread_id) || "").trim();
     if (preferredSessionId) {
-      await loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
-      return true;
+      const loaded = await loadSession(preferredSessionId, { silentNotFound: Boolean(options.silentNotFound), projectIdOverride: targetProjectId });
+      if (options.fromBoot) await runtimeStatusPromise;
+      return loaded;
+    }
+    if (options.fromBoot) {
+      await runtimeStatusPromise;
     }
     if (!options.fromBoot) {
       pushLogWithLimit(setLogs, "system", t("log.project_switched", { project_id: targetProjectId.slice(0, 8) }));
+      return true;
     }
     return true;
   }
@@ -7662,6 +7680,8 @@ function App() {
     totalTurnsForCurrentThread > messages.length,
   );
   const showThreadDetailLoading = Boolean(loadingSession && sessionId && !isTempThreadId(sessionId));
+  const bootLoadingActive = Boolean(bootState.active);
+  const bootLoadingText = bootState.phase === "thread" ? t("boot.loading_thread") : t("boot.loading_workspace");
   const headTitle = sessionId ? sessionTitleFromList(sessions, sessionId, uiLocale) : (workspaceLabel || t("labels.start_building"));
   const headBreadcrumb = [
     workspaceLabel || "",
@@ -8324,7 +8344,8 @@ function App() {
   };
 
   return html`
-    <div className="workspace-shell" id="appShell">
+    <div className="app-root-frame">
+    <div className="workspace-shell" id="appShell" aria-hidden=${bootLoadingActive ? "true" : undefined}>
       <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
         <div className="rail-brand">
           <div className="brand-mark">VP</div>
@@ -9548,6 +9569,23 @@ function App() {
           : null}
       </aside>`
         : null}
+    </div>
+    ${bootLoadingActive
+      ? html`
+          <main className="app-boot-screen app-boot-screen-overlay" role="status" aria-live="polite" aria-label=${bootLoadingText}>
+            <div className="app-boot-card">
+              <div className="app-boot-mark" aria-hidden="true">VP</div>
+              <div className="app-boot-copy">
+                <div className="app-boot-title">Vintage Programmer</div>
+                <div className="app-boot-status">
+                  <span className="app-boot-ring" aria-hidden="true"></span>
+                  <span>${bootLoadingText}</span>
+                </div>
+              </div>
+            </div>
+          </main>
+        `
+      : null}
     </div>
   `;
 }

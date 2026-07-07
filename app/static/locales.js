@@ -15,6 +15,8 @@
   const CATALOG = {
     "zh-CN": {
       "bootstrap.vendor_error": "前端资源加载失败。请刷新页面；如果问题持续，请检查 /static/vendor 下的本地脚本是否可访问。",
+      "boot.loading_workspace": "Loading workspace...",
+      "boot.loading_thread": "Loading thread...",
       "app.title": "Vintage Programmer",
       "role.user": "你",
       "role.assistant": "Vintage Programmer",
@@ -574,6 +576,8 @@
     },
     "ja-JP": {
       "bootstrap.vendor_error": "フロントエンドのリソース読み込みに失敗しました。ページを再読み込みしてください。解消しない場合は /static/vendor 配下のローカルスクリプトにアクセスできるか確認してください。",
+      "boot.loading_workspace": "Loading workspace...",
+      "boot.loading_thread": "Loading thread...",
       "app.title": "Vintage Programmer",
       "role.user": "あなた",
       "role.assistant": "Vintage Programmer",
@@ -1133,6 +1137,8 @@
     },
     en: {
       "bootstrap.vendor_error": "Failed to load frontend resources. Refresh the page. If the problem persists, verify the local scripts under /static/vendor are reachable.",
+      "boot.loading_workspace": "Loading workspace...",
+      "boot.loading_thread": "Loading thread...",
       "app.title": "Vintage Programmer",
       "role.user": "You",
       "role.assistant": "Vintage Programmer",
