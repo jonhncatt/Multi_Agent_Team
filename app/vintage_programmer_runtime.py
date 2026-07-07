@@ -240,7 +240,7 @@ class VintageProgrammerSpec:
     agent_id: str
     title: str
     default_model: str
-    tool_policy: str
+    tool_scope: str
     network_mode: str
     approval_policy: str
     evidence_policy: str
@@ -250,6 +250,11 @@ class VintageProgrammerSpec:
     agent_text: str
     tools_text: str
     spec_files: tuple[str, ...]
+
+    @property
+    def tool_policy(self) -> str:
+        """Compatibility alias for older API consumers and test fixtures."""
+        return self.tool_scope
 
     def descriptor(self) -> dict[str, object]:
         identity_sections = _parse_labeled_sections(self.identity_text)
@@ -266,7 +271,8 @@ class VintageProgrammerSpec:
             "document": self.agent_text,
         }
         policies = {
-            "tool_policy": self.tool_policy,
+            "tool_scope": self.tool_scope,
+            "tool_policy": self.tool_scope,
             "approval_policy": self.approval_policy,
             "evidence_policy": self.evidence_policy,
         }
@@ -287,7 +293,8 @@ class VintageProgrammerSpec:
             "agent_id": self.agent_id,
             "title": self.title,
             "default_model": self.default_model,
-            "tool_policy": self.tool_policy,
+            "tool_scope": self.tool_scope,
+            "tool_policy": self.tool_scope,
             "loop_safeguards": default_loop_safeguards(),
             "allowed_tools": list(self.allowed_tools),
             "spec_files": list(self.spec_files),
@@ -356,13 +363,13 @@ class VintageProgrammerRuntime:
                 return path.read_text(encoding="utf-8").strip()
         raise RuntimeError(f"Missing required agent spec file: {self._agent_dir / name}")
 
-    def _resolve_allowed_tools(self, *, tool_policy: str, explicit_tools: list[str]) -> tuple[str, ...]:
+    def _resolve_allowed_tools(self, *, tool_scope: str, explicit_tools: list[str]) -> tuple[str, ...]:
         if explicit_tools:
             names = [name for name in explicit_tools if name in self._tool_specs_by_name]
             return tuple(names)
-        if tool_policy == "none":
+        if tool_scope == "none":
             return ()
-        if tool_policy == "read_only":
+        if tool_scope == "read_only":
             return tuple(name for name in self._tool_specs_by_name if name in _READ_ONLY_TOOL_NAMES)
         return tuple(self._tool_specs_by_name.keys())
 
@@ -387,16 +394,16 @@ class VintageProgrammerRuntime:
         agent_id = str(frontmatter.get("id") or "vintage_programmer").strip() or "vintage_programmer"
         title = str(frontmatter.get("title") or "Vintage Programmer").strip() or "Vintage Programmer"
         default_model = str(self._config.default_model or frontmatter.get("default_model") or "").strip() or self._config.default_model
-        tool_policy = str(frontmatter.get("tool_policy") or "all").strip().lower() or "all"
-        if tool_policy not in {"all", "read_only", "none"}:
-            tool_policy = "all"
+        tool_scope = str(frontmatter.get("tool_scope") or frontmatter.get("tool_policy") or "all").strip().lower() or "all"
+        if tool_scope not in {"all", "read_only", "none"}:
+            tool_scope = "all"
         network_mode = str(frontmatter.get("network_mode") or "explicit_tools").strip().lower() or "explicit_tools"
         approval_policy = str(frontmatter.get("approval_policy") or "on_failure_or_high_impact").strip() or "on_failure_or_high_impact"
         evidence_policy = str(frontmatter.get("evidence_policy") or "required_for_external_or_runtime_facts").strip() or "required_for_external_or_runtime_facts"
         explicit_tools = []
         if isinstance(frontmatter.get("allowed_tools"), list):
             explicit_tools = [str(item or "").strip() for item in frontmatter["allowed_tools"] if str(item or "").strip()]
-        allowed_tools = self._resolve_allowed_tools(tool_policy=tool_policy, explicit_tools=explicit_tools)
+        allowed_tools = self._resolve_allowed_tools(tool_scope=tool_scope, explicit_tools=explicit_tools)
 
         spec_files = ["soul.md", "identity.md", "agent.md"]
         if tools_text:
@@ -406,7 +413,7 @@ class VintageProgrammerRuntime:
             agent_id=agent_id,
             title=title,
             default_model=default_model,
-            tool_policy=tool_policy,
+            tool_scope=tool_scope,
             network_mode=network_mode,
             approval_policy=approval_policy,
             evidence_policy=evidence_policy,
@@ -4025,7 +4032,7 @@ class VintageProgrammerRuntime:
         usage_total = self._backend._empty_usage()
         notes: list[str] = [
             f"agent_id:{spec.agent_id}",
-            f"tool_policy:{spec.tool_policy}",
+            f"tool_scope:{spec.tool_scope}",
             f"permission_profile:{turn_runtime_boundary.permission_profile}",
         ]
         if inline_document:
@@ -6190,6 +6197,7 @@ class VintageProgrammerRuntime:
             "answer_bundle": answer_bundle,
             "route_state": {
                 "agent_id": spec.agent_id,
+                "tool_scope": spec.tool_scope,
                 "tool_policy": spec.tool_policy,
                 "phase": runtime_phase,
                 "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),

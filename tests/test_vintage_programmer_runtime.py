@@ -527,7 +527,7 @@ def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: b
         "id: vintage_programmer\n"
         "title: Vintage Programmer\n"
         "default_model: gpt-test\n"
-        "tool_policy: read_only\n"
+        "tool_scope: read_only\n"
         "network_mode: explicit_tools\n"
         "approval_policy: on_failure_or_high_impact\n"
         "evidence_policy: required_for_external_or_runtime_facts\n"
@@ -596,6 +596,7 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     prompt = runtime._render_system_prompt(ChatSettings(model="gpt-test"), spec=spec, loaded_skills=[])
 
     assert descriptor["agent_id"] == "vintage_programmer"
+    assert descriptor["tool_scope"] == "read_only"
     assert descriptor["tool_policy"] == "read_only"
     assert descriptor["network"]["mode"] == "explicit_tools"
     assert descriptor["network"]["web_tool_contract"] == ["web_search", "web_fetch", "web_download"]
@@ -612,6 +613,27 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "For simple direct answers, one-step checks, or trivial commands" in prompt
     assert "If a task starts simple but becomes multi-step during execution" in prompt
     assert "Execution must happen through tool calls." not in prompt
+
+
+def test_runtime_accepts_legacy_tool_policy_frontmatter(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_policy: read_only"),
+        encoding="utf-8",
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+
+    descriptor = runtime.descriptor()
+
+    assert descriptor["tool_scope"] == "read_only"
+    assert descriptor["tool_policy"] == "read_only"
 
 
 def test_descriptor_uses_cache_until_explicit_invalidation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -716,17 +738,21 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
 
     assert "spec_version: 2" in agent_doc
     assert "api_surface: chat_completions" in agent_doc
+    assert "tool_scope options: all | read_only | none" in agent_doc
+    assert "tool_scope: all" in agent_doc
+    assert "tool_policy:" not in agent_doc
+    assert "allowed_tools:" not in agent_doc
     assert "model_family:" not in agent_doc
     assert "default_model:" not in agent_doc
     assert "outcome_first" in agent_doc
-    assert "工具调用就是行动" in agent_doc
-    assert "当前消息内容" in agent_doc
-    assert "本地 skills 是可选覆盖层" in agent_doc
+    assert "以用户目标为主线" in agent_doc
+    assert "当前输入优先" in agent_doc
+    assert "本地 skills 只是覆盖层" in agent_doc
     assert "不要为每个请求都创建计划" in agent_doc
     assert "多步骤、多文件、代码修改、调试、测试" in agent_doc
-    assert "简单直接回答、单步检查或琐碎命令" in agent_doc
+    assert "简单问答、单步检查或琐碎命令" in agent_doc
     assert "唯一 checklist 协议" in agent_doc
-    assert "可选补充信息" in agent_doc
+    assert "补充状态" in agent_doc
     assert "不要输出完整 `task_state`" in agent_doc
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
@@ -734,7 +760,9 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
     assert "update_plan" in agent_doc
     assert "网络信息先用 `web_search` 找来源，再按需用 `web_fetch` 读取正文" in tools_doc
     assert "优先一次 `web_search`，最多再读取一个权威来源" in tools_doc
-    assert "`update_plan` 只用于非平凡任务的 checklist" in tools_doc
+    assert "## 状态和用户输入工具" in tools_doc
+    assert "`update_plan` 只在需要维护多步任务状态时使用" in tools_doc
+    assert "具体计划规则以 `agent.md` 为准" in tools_doc
     assert "工具用于取得证据、执行动作或验证结果" in tools_doc
 
 
@@ -1046,6 +1074,7 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert backend.tools.calls[0][0] == "web_search"
     assert backend.tools.last_runtime_context["project_id"] == "project_demo"
     assert backend.tools.last_runtime_context["model"] == "gpt-test"
+    assert result["inspector"]["agent"]["tool_scope"] == "read_only"
     assert result["inspector"]["agent"]["tool_policy"] == "read_only"
     assert result["inspector"]["run_state"]["permission_profile"] == "full_access"
     assert result["inspector"]["run_state"]["turn_status"] == "completed"
@@ -1080,7 +1109,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     tools = _ApprovalRequiredTools()
     backend = _FakeBackendWithTools(
         [
@@ -1131,7 +1160,7 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     tools = _ApprovedCommandTools()
     backend = _FakeBackendWithTools([_FakeMessage(content="approved summary")], tools)
     runtime = VintageProgrammerRuntime(
@@ -1995,7 +2024,7 @@ def test_authorized_write_final_answer_is_not_runtime_steered(tmp_path: Path) ->
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     backend = _FakeBackend(
         [
             _FakeMessage(content="如果你确认要我修改，我可以给你补丁。请回一句补。"),
@@ -2035,7 +2064,7 @@ def test_repeated_confirmation_text_is_model_final_answer_not_runtime_block(tmp_
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     backend = _FakeBackend(
         [
             _FakeMessage(content="请确认，我再 apply_patch。"),
@@ -2534,7 +2563,7 @@ def test_runtime_guard_safe_downgrades_command_substitution_before_counting_reje
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     backend = _FakeBackendWithTools(
         [
             _FakeMessage(
@@ -2597,7 +2626,7 @@ def test_runtime_replan_prompt_for_compound_shell_forbids_repeat_and_demands_sim
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     backend = _FakeBackend(
         [
             _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "for file in *.py; do python \"$file\"; done"}}]),
@@ -3138,7 +3167,7 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
-    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_policy: read_only", "tool_policy: all"), encoding="utf-8")
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
     tools = _PatchTools()
     backend = _FakeBackendWithTools(
         [

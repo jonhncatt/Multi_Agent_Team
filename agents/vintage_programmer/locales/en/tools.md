@@ -39,11 +39,8 @@
 - Use `archive_extract` for ZIPs and archives.
 - Use `sessions_list` and `sessions_history` when prior threads matter.
 
-## Progress, Input, And Closeout
+## State And User Input Tools
 
-- Use `update_plan` only for non-trivial task checklists, not for simple Q&A or one-step actions.
-- Use `request_user_input` only when a critical choice is missing, continuing would create real risk, or the user must provide information.
-- If a tool returns approval, permission, or safety blocking, use the structured channel; do not imply approval in ordinary prose.
-- When tool results support the conclusion, summarize the evidence briefly.
-- When evidence is incomplete, mark the uncertainty boundary.
-- Test after changes when feasible; if not feasible, say why.
+- Use `update_plan` only when multi-step task state needs to be maintained; the concrete planning rules live in `agent.md`.
+- Use `request_user_input` only when a key choice, permission, or user-only information is missing.
+- When a tool returns approval, permission, or safety blocking, use the structured channel; do not imply approval in ordinary prose.
