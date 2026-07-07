@@ -8,7 +8,20 @@
     <link rel="stylesheet" href="/static/styles.css?v=3.1.5V" />
   </head>
   <body>
-    <div id="root" data-app="vintage-programmer"></div>
+    <div id="root" data-app="vintage-programmer">
+      <main class="app-boot-screen" role="status" aria-live="polite">
+        <div class="app-boot-card">
+          <div class="app-boot-mark" aria-hidden="true">VP</div>
+          <div class="app-boot-copy">
+            <div class="app-boot-title">Vintage Programmer</div>
+            <div class="app-boot-status">
+              <span class="app-boot-ring" aria-hidden="true"></span>
+              <span>Loading workspace...</span>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
     <noscript>このページを使うには JavaScript を有効にしてください。</noscript>
     <script src="/static/vendor/react.production.min.js"></script>
     <script src="/static/vendor/react-dom.production.min.js"></script>

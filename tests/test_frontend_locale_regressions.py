@@ -308,6 +308,23 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
     assert 'src="/static/app.js"' not in index
+
+
+def test_index_renders_static_boot_loading_fallback() -> None:
+    index = INDEX_HTML_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert '<div id="root" data-app="vintage-programmer">' in index
+    assert 'class="app-boot-screen"' in index
+    assert 'role="status"' in index
+    assert "Loading workspace..." in index
+    for token in (
+        ".app-boot-screen",
+        ".app-boot-card",
+        ".app-boot-ring",
+        "conic-gradient(from -35deg",
+    ):
+        assert token in styles, token
 REQUIRED_LIST_KEYS = ("starter.prompts",)
 
 
