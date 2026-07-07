@@ -1450,6 +1450,57 @@ def test_runtime_records_tool_and_followup_llm_exchanges(tmp_path: Path) -> None
     assert followup_exchange["harness_interpretation"]["decision"] == "final_answer"
 
 
+def test_runtime_blocks_when_followup_model_action_is_empty_after_successful_local_file_tool(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    (tmp_path / "notes.txt").write_text("local context", encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-empty-followup", "name": "read_file", "args": {"path": "notes.txt"}}]),
+            _FakeMessage(content=""),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="读取 notes.txt 后继续处理",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", locale="zh-CN"),
+        context={
+            "session_id": "s-empty-followup-after-tool",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["final_answer"] == ""
+    assert result["runtime_error"] == {}
+    assert result["blocked_reason"] == "model_action_empty"
+    assert "模型没有给出可执行的下一步" in result["text"]
+    assert backend.tools.calls == [("read_file", {"path": "notes.txt"})]
+    assert result["tool_events"][0]["status"] == "ok"
+    assert result["blocked_stop_diagnostics"]["blocked_reason"] == "model_action_empty"
+
+    exchanges = result["activity"]["llm_exchanges"]
+    assert len(exchanges) == 2
+    initial_exchange, followup_exchange = exchanges
+    assert initial_exchange["harness_interpretation"]["decision"] == "tool_call"
+    assert followup_exchange["phase"] == "post_tool_response"
+    assert followup_exchange["status"] == "completed"
+    assert followup_exchange["model_returned_exact"]["content"] == ""
+    assert followup_exchange["harness_interpretation"]["decision"] == "empty"
+    assert followup_exchange["harness_interpretation"]["turn_status_after_round"] == "blocked"
+    assert result["model_action"]["action_type"] == "empty"
+    assert result["model_action"]["accepted"] is False
+    assert result["execution_trace"][-1]["payload"]["response_kind"] == "empty_response"
+
+
 def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

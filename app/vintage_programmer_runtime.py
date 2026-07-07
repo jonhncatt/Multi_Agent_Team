@@ -4553,6 +4553,7 @@ class VintageProgrammerRuntime:
                         final_answer = ai_text
                     if not step_accepted:
                         blocked_reason = blocked_reason or "model_action_empty"
+                        turn_status = "blocked"
                     execution_entry = ExecutionTraceEntry(
                         step_index=int(model_action.get("step_index") or current_step_index),
                         action_type=step_action_type,
