@@ -340,10 +340,13 @@ def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_statu
     assert "await runtimeStatus" not in script
     assert "setBootState((prev) => ({ ...prev, active: false }));" in script
     assert 'className="app-boot-screen app-boot-screen-overlay"' in script
+    assert script.index('className="workspace-shell"') < script.index('className="app-boot-screen app-boot-screen-overlay"')
     assert 't("boot.loading_workspace")' in script
     assert 't("boot.loading_thread")' in script
     assert ".app-root-frame" in styles
     assert ".app-boot-screen-overlay" in styles
+    assert "background: rgba(248, 250, 252, 0.38);" in styles
+    assert "backdrop-filter: blur(2px) saturate(1.02);" in styles
     assert '"boot.loading_workspace": "Loading workspace..."' in locales
     assert '"boot.loading_thread": "Loading thread..."' in locales
 REQUIRED_LIST_KEYS = ("starter.prompts",)
