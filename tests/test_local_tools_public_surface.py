@@ -54,6 +54,8 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "mail_extract_attachments",
         "update_plan",
         "request_user_input",
+        "load_skill",
+        "save_skill",
     }.issubset(tool_names)
     assert {
         "read_text_file",

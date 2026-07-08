@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5V-blue)
+![Version](https://img.shields.io/badge/version-3.1.5W-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5V`
+当前稳定版本：`3.1.5W`
 
 ## Stable Runtime
 
-3.1.5V 是一次 thread 级 Agent 并发发布：不同 thread 可以同时运行 agent，同一个 thread 仍保持串行，避免历史写入冲突。
+3.1.5W 是 VP Skills v1 发布：支持只读内置 skills 和用户可编辑 workspace skills，runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
 
-本版本新增 thread 列表运行提示：运行中的 thread 显示低动效空心圆，完成且未读时显示蓝点，点击 thread 后清除提示；同时修复了完成后 composer 被旧运行状态或 stale send lock 锁住的问题。启动阶段的 `Loading workspace...` / `Loading thread...` 现在作为前景遮罩显示在实际页面上方，避免加载完成时从纯白背景突然跳到真实页面。
+本版本新增 `save_skill` 工具，agent 可以把可复用流程沉淀到 `workspace/skills/<name>/SKILL.md`；同时内置 `create-workspace-skill`，用于指导 agent 生成高质量 workspace skill。thread 级 agent 并发、低动效运行提示和前景加载遮罩继续保留。
 
 ## Max Output Tokens
 
@@ -91,7 +91,7 @@ Vintage Programmer 是一个本地运行的 AI Agent 工作台，默认主 agent
 - 可观察的 activity timeline（执行时间线）和 progress checklist（进度清单）
 - harness 侧的工具验证与执行
 - 可直接编辑的本地 Markdown agent 规范
-- 可启用、可绑定到主 agent 的本地 skills
+- 内置 skills 与 workspace skills，按需加载完整 `SKILL.md`
 - 面向 `zh-CN`、`ja-JP`、`en` 的多语言文案层
 
 它不是一个只包一层聊天界面的壳，而是一个偏工程化、可观察、可调试的本地 Agent 工作台。
@@ -121,7 +121,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 - **可编辑 Agent 规范**  
   主 agent 的行为由本地 Markdown 文件定义，可直接查看和修改。
 - **本地 Skills 系统**  
-  可以在工作区内新增、启用、关闭和绑定 skills。
+  可以在工作区内新增、启用和关闭 workspace skills；内置 skills 随仓库发布，只读。
 - **经过源码验证的 provider 配置**  
   README 和 `.env.example` 给出 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama 的常用配置示例；源码 provider presets 还覆盖 DeepSeek、Qwen、Moonshot 和 Groq。
 - **多语言 UI 和文档**  
@@ -270,15 +270,44 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 `agent.md` 的 frontmatter 使用 `tool_scope` 表达 agent 的候选工具范围，当前可选值是 `all | read_only | none`。具体工具清单不再写在 `agent.md` 的 `allowed_tools` 里，而是来自 runtime/backend 的工具注册表，并继续受 `.env`、permission profile、RuntimeBoundary 和 ActionValidator 约束。
 
-## 本地 Skills
+## Skills
 
-本地 skills 固定放在：
+VP 当前支持两类 skills：
 
 ```text
-workspace/skills/<skill_id>/SKILL.md
+agents/vintage_programmer/skills/<skill>/SKILL.md   # 内置，只读，随仓库发布
+workspace/skills/<skill>/SKILL.md                   # 用户可编辑，已被 .gitignore 忽略
 ```
 
-只有 `enabled: true` 且 `bind_to` 包含 `vintage_programmer` 的 skill，才会注入主 agent。
+仓库内置了一个启用的 system skill，用来指导 agent 创建 workspace skill：
+
+- `agents/vintage_programmer/skills/create-workspace-skill/SKILL.md`
+
+仓库还保留了一个禁用的 workspace sample，展示用户可编辑 skill 的写法：
+
+- `workspace/skills/sample-workspace-skill/SKILL.md`
+
+`workspace/skills/sample-workspace-skill/SKILL.md` 是 `.gitignore` 的显式例外；其它 workspace skill 仍默认不进入 Git。
+
+`SKILL.md` 只支持一个规范格式：
+
+```markdown
+---
+name: repo-triage
+description: Use when the user wants to inspect repository structure, recent changes, risks, or prepare a code investigation plan.
+enabled: true
+---
+
+# Repo Triage
+
+完整 skill 指令写在这里。
+```
+
+必填字段是 `name` 和 `description`；`enabled` 可省略，默认启用。不再支持旧字段 `id`、`title`、`summary`、`bind_to`。
+
+runtime 启动和每次 run 默认只读取轻量 metadata，并把 `[available_skills]` 放入模型上下文。完整 `SKILL.md` 只会在用户显式写 `$skill-name` / `$scope:skill-name`，或模型调用只读工具 `load_skill({ key })` 后读取。skill key 形如 `system:repo-triage` 或 `workspace:repo-triage`；未带 scope 的显式引用优先匹配 workspace skill。
+
+agent 也可以在用户目标允许时调用 `save_skill` 创建或更新 workspace skill。这个工具只写 `workspace/skills/<name>/SKILL.md`，不允许修改内置 system skill；默认不会覆盖同名 skill，除非显式传入 `overwrite: true`。
 
 ## Inline Code
 

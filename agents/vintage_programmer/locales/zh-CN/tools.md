@@ -39,6 +39,11 @@
 - ZIP 或归档内容用 `archive_extract`。
 - 需要回看之前 thread 时用 `sessions_list` 和 `sessions_history`。
 
+## Skills
+
+- `load_skill` 只在轻量 skill 列表命中后读取完整 `SKILL.md`。
+- `save_skill` 只创建或更新 workspace skill。只有当流程确实可复用、触发条件清楚、用户目标允许写入时才使用；不要修改内置 system skill。
+
 ## 状态和用户输入工具
 
 - `update_plan` 只在需要维护多步任务状态时使用；具体计划规则以 `agent.md` 为准。

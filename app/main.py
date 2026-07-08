@@ -116,7 +116,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5V"
+APP_VERSION = "3.1.5W"
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -770,14 +770,14 @@ def delete_project(project_id: str) -> ProjectDeleteResponse:
 
 @app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
 def workbench_skill_catalog() -> WorkbenchSkillsResponse:
-    skills = get_workbench_store().list_skill_entries()
+    skills = get_workbench_store().list_skill_entries(include_content=False)
     return WorkbenchSkillsResponse(skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)])
 
 
-@app.get("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
-def workbench_skill_detail(skill_id: str) -> SkillDescriptor:
+@app.get("/api/workbench/skills/{skill_name}", response_model=SkillDescriptor)
+def workbench_skill_detail(skill_name: str, scope: str = "workspace") -> SkillDescriptor:
     try:
-        return SkillDescriptor(**get_workbench_store().get_skill(skill_id))
+        return SkillDescriptor(**get_workbench_store().get_skill(skill_name, scope=scope))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -796,20 +796,22 @@ def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
     return created
 
 
-@app.put("/api/workbench/skills/{skill_id}", response_model=SkillDescriptor)
-def workbench_update_skill(skill_id: str, req: SkillUpsertRequest) -> SkillDescriptor:
+@app.put("/api/workbench/skills/{skill_name}", response_model=SkillDescriptor)
+def workbench_update_skill(skill_name: str, req: SkillUpsertRequest, scope: str = "workspace") -> SkillDescriptor:
     try:
-        updated = SkillDescriptor(**get_workbench_store().save_skill(skill_id, req.content))
+        updated = SkillDescriptor(**get_workbench_store().save_skill(skill_name, req.content, scope=scope))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _invalidate_runtime_descriptor_caches()
     return updated
 
 
-@app.post("/api/workbench/skills/{skill_id}/toggle", response_model=SkillDescriptor)
-def workbench_set_skill_enabled(skill_id: str, req: ToggleSkillRequest) -> SkillDescriptor:
+@app.post("/api/workbench/skills/{skill_name}/toggle", response_model=SkillDescriptor)
+def workbench_set_skill_enabled(skill_name: str, req: ToggleSkillRequest, scope: str = "workspace") -> SkillDescriptor:
     try:
-        updated = SkillDescriptor(**get_workbench_store().set_skill_enabled(skill_id, enabled=req.enabled))
+        updated = SkillDescriptor(**get_workbench_store().set_skill_enabled(skill_name, enabled=req.enabled, scope=scope))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -818,16 +820,18 @@ def workbench_set_skill_enabled(skill_id: str, req: ToggleSkillRequest) -> Skill
     return updated
 
 
-@app.delete("/api/workbench/skills/{skill_id}", response_model=SkillDeleteResponse)
-def workbench_delete_skill(skill_id: str) -> SkillDeleteResponse:
+@app.delete("/api/workbench/skills/{skill_name}", response_model=SkillDeleteResponse)
+def workbench_delete_skill(skill_name: str, scope: str = "workspace") -> SkillDeleteResponse:
     try:
-        get_workbench_store().delete_skill(skill_id)
+        get_workbench_store().delete_skill(skill_name, scope=scope)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _invalidate_runtime_descriptor_caches()
-    return SkillDeleteResponse(ok=True, skill_id=skill_id)
+    return SkillDeleteResponse(ok=True, skill_id=skill_name)
 
 
 @app.get("/api/workbench/specs", response_model=WorkbenchSpecsResponse)
@@ -2949,10 +2953,15 @@ def _process_chat_request(
             "last_compacted_at": last_compacted_at,
             "tool_count": len(tool_hits),
             "evidence_status": str(inspector_evidence.get("status") or "not_needed"),
-            "enabled_skill_ids": [
-                str(item.get("id") or "")
+            "enabled_skill_keys": [
+                str(item.get("key") or "")
                 for item in inspector_loaded_skills
-                if isinstance(item, dict) and str(item.get("id") or "").strip()
+                if isinstance(item, dict) and str(item.get("key") or "").strip()
+            ],
+            "enabled_skill_ids": [
+                str(item.get("name") or item.get("id") or "")
+                for item in inspector_loaded_skills
+                if isinstance(item, dict) and str(item.get("name") or item.get("id") or "").strip()
             ],
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }

@@ -525,14 +525,18 @@ class ToolDescriptor(BaseModel):
 
 
 class SkillDescriptor(BaseModel):
-    id: str
-    title: str
+    key: str = ""
+    scope: str = "workspace"
+    name: str = ""
+    description: str = ""
     path: str
     enabled: bool = False
-    bind_to: list[str] = Field(default_factory=list)
-    summary: str = ""
+    read_only: bool = False
     validation_status: str = "valid"
     content: str = ""
+    id: str = ""
+    title: str = ""
+    summary: str = ""
 
 
 class SpecDescriptor(BaseModel):

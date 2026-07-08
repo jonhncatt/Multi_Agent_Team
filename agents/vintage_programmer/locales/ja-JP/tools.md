@@ -39,6 +39,11 @@
 - ZIP やアーカイブは `archive_extract`。
 - 過去 thread が必要な場合は `sessions_list` と `sessions_history` を使う。
 
+## Skills
+
+- `load_skill` は軽量 skill リストで関連 skill が見つかった後にだけ使う。
+- `save_skill` は workspace skill の作成または更新にだけ使う。ワークフローが本当に再利用可能で、トリガー条件が明確で、ユーザー目標が書き込みを許す場合に使う。内蔵 system skill は変更しない。
+
 ## 状態とユーザー入力ツール
 
 - `update_plan` は複数ステップのタスク状態を維持する必要がある場合だけ使う。具体的な計画ルールは `agent.md` に従う。

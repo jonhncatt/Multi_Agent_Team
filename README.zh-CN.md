@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5V-blue)
+![Version](https://img.shields.io/badge/version-3.1.5W-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
 
-当前稳定版本：`3.1.5V`
+当前稳定版本：`3.1.5W`
 
 ## Stable Runtime
 
-3.1.5V 是一次 thread 级 Agent 并发发布：不同 thread 可以同时运行 agent，同一个 thread 仍保持串行，避免历史写入冲突。
+3.1.5W 是 VP Skills v1 发布：支持只读内置 skills 和用户可编辑 workspace skills，runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
 
-本版本新增 thread 列表运行提示：运行中的 thread 显示旋转圆圈，完成后显示蓝点，点击 thread 后清除提示；同时修复了完成后 composer 被旧运行状态或 stale send lock 锁住的问题。
+本版本新增 `save_skill` 工具，agent 可以把可复用流程沉淀到 `workspace/skills/<name>/SKILL.md`；同时内置 `create-workspace-skill`，用于指导 agent 生成高质量 workspace skill。thread 级 agent 并发、低动效运行提示和前景加载遮罩继续保留。
 
 ## Max Output Tokens
 

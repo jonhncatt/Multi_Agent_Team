@@ -199,6 +199,18 @@ class RequestUserInputArgs(BaseModel):
     questions: list[dict[str, Any]]
 
 
+class LoadSkillArgs(BaseModel):
+    key: str
+
+
+class SaveSkillArgs(BaseModel):
+    name: str
+    description: str
+    body: str
+    enabled: bool = True
+    overwrite: bool = False
+
+
 class SessionsListArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=200)
 
@@ -656,6 +668,18 @@ class VPRuntimeBackend:
                 func=self._request_user_input_tool,
             ),
             self._StructuredTool.from_function(
+                name="load_skill",
+                description="Load the full SKILL.md content for one enabled skill selected from the available skills list.",
+                args_schema=LoadSkillArgs,
+                func=self._load_skill_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="save_skill",
+                description="Create or update a workspace skill using the strict VP SKILL.md format.",
+                args_schema=SaveSkillArgs,
+                func=self._save_skill_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="browser_open",
                 description="Open a webpage in a headless browser session and capture the current page state.",
                 args_schema=BrowserOpenArgs,
@@ -871,6 +895,28 @@ class VPRuntimeBackend:
 
     def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
         return json.dumps(self.tools.sessions_history(session_id=session_id, max_turns=max_turns), ensure_ascii=False)
+
+    def _load_skill_tool(self, key: str) -> str:
+        return json.dumps(self.tools.load_skill(key=key), ensure_ascii=False)
+
+    def _save_skill_tool(
+        self,
+        name: str,
+        description: str,
+        body: str,
+        enabled: bool = True,
+        overwrite: bool = False,
+    ) -> str:
+        return json.dumps(
+            self.tools.save_skill(
+                name=name,
+                description=description,
+                body=body,
+                enabled=enabled,
+                overwrite=overwrite,
+            ),
+            ensure_ascii=False,
+        )
 
     def _image_inspect_tool(self, path: str) -> str:
         return json.dumps(self.tools.image_inspect(path=path), ensure_ascii=False)

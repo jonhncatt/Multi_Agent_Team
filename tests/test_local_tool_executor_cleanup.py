@@ -36,6 +36,8 @@ CANONICAL_TOOL_NAMES = {
     "mail_extract_attachments",
     "update_plan",
     "request_user_input",
+    "load_skill",
+    "save_skill",
 }
 
 FORBIDDEN_PUBLIC_METHODS = {

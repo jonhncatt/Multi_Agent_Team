@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5V-blue)
+![Version](https://img.shields.io/badge/version-3.1.5W-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@
 
 [中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
 
-現在の安定版: `3.1.5V`
+現在の安定版: `3.1.5W`
 
 ## Stable Runtime
 
-3.1.5V は thread 単位の Agent 並行実行リリースです。異なる thread では同時に agent を実行でき、同一 thread 内では履歴書き込みの衝突を避けるため直列実行を維持します。
+3.1.5W は VP Skills v1 リリースです。読み取り専用の built-in skills と、ユーザーが編集できる workspace skills をサポートし、runtime は既定で軽量な `[available_skills]` だけを注入します。完全な `SKILL.md` は、明示的な `$skill` 参照または `load_skill` によって必要なときだけ読み込まれます。
 
-このリリースでは thread 一覧の実行インジケーターも追加しました。実行中の thread はスピナー、完了後は青いドットで表示され、thread をクリックすると通知が消えます。さらに、完了後に古い実行状態や stale send lock によって composer がロックされる問題を修正しました。
+このリリースでは `save_skill` tool も追加し、agent が再利用可能な手順を `workspace/skills/<name>/SKILL.md` に保存できるようにしました。高品質な workspace skill 作成を案内する built-in `create-workspace-skill` も同梱しています。thread 単位の agent 並行実行、低モーションの実行インジケーター、前景 loading overlay は引き続き維持します。
 
 ## Max Output Tokens
 

@@ -37,6 +37,8 @@ _FAKE_TOOL_SPECS = [
     {"name": "mail_extract_attachments", "description": "extract mail attachments"},
     {"name": "update_plan", "description": "sync checklist"},
     {"name": "request_user_input", "description": "request structured input"},
+    {"name": "load_skill", "description": "load selected skill instructions"},
+    {"name": "save_skill", "description": "save workspace skill"},
 ]
 _FAKE_TOOL_DESCRIPTORS = build_tool_descriptors(_FAKE_TOOL_SPECS)
 _FAKE_TOOL_DESCRIPTOR_BY_NAME = {
@@ -107,7 +109,7 @@ class _FakeVintageRuntime:
                 "tools": [dict(item) for item in tools],
             },
             "tools": [dict(item) for item in tools],
-            "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
+            "loaded_skills": [{"key": "workspace:example-refactor-helper", "scope": "workspace", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example"}],
         }
 
     def invalidate_descriptor_cache(self) -> None:
@@ -197,7 +199,7 @@ class _FakeVintageRuntime:
                 "agent_id": "vintage_programmer",
                 "phase": "completed",
                 "evidence_status": "collected",
-                "loaded_skill_ids": ["example_refactor_helper"],
+                "loaded_skill_ids": ["example-refactor-helper"],
                 "model_action": {
                     "step_index": 1,
                     "action_type": "tool_call",
@@ -306,7 +308,7 @@ class _FakeVintageRuntime:
                     "attachment_count": 0,
                 },
                 "token_usage": {"total_tokens": 18},
-                "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
+                "loaded_skills": [{"key": "workspace:example-refactor-helper", "scope": "workspace", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example"}],
             },
         }
 
@@ -474,7 +476,7 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
                 "agent_id": "vintage_programmer",
                 "phase": "failed",
                 "evidence_status": "collected",
-                "loaded_skill_ids": ["example_refactor_helper"],
+                "loaded_skill_ids": ["example-refactor-helper"],
                 "model_draft": "I already inspected the skill files and was preparing the summary.",
                 "runtime_error": {
                     "kind": "llm_empty_response",
@@ -558,7 +560,7 @@ class _FailedResultVintageRuntime(_FakeVintageRuntime):
                     "attachment_count": 0,
                 },
                 "token_usage": {"total_tokens": 11},
-                "loaded_skills": [{"id": "example_refactor_helper", "title": "Example Refactor Helper", "summary": "Starter", "path": "/tmp/example"}],
+                "loaded_skills": [{"key": "workspace:example-refactor-helper", "scope": "workspace", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example"}],
             },
         }
 
@@ -938,7 +940,7 @@ class _DirectAnswerNoTaskRuntime(_FakeVintageRuntime):
             "agent_id": "vintage_programmer",
             "phase": "completed",
             "evidence_status": "not_needed",
-            "loaded_skill_ids": ["example_refactor_helper"],
+            "loaded_skill_ids": ["example-refactor-helper"],
         }
         payload["inspector"]["run_state"]["goal"] = str(message or "").strip()
         payload["inspector"]["run_state"]["plan"] = []
@@ -1014,12 +1016,9 @@ def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        "id: example_refactor_helper\n"
-        "title: Example Refactor Helper\n"
+        "name: example_refactor_helper\n"
+        "description: Starter\n"
         "enabled: false\n"
-        "bind_to:\n"
-        "  - vintage_programmer\n"
-        "summary: Starter\n"
         "---\n\n"
         "# Example\n",
         encoding="utf-8",
@@ -1342,7 +1341,7 @@ def test_workbench_writes_invalidate_descriptor_cache(monkeypatch, tmp_path: Pat
     create_response = client.post(
         "/api/workbench/skills",
         json={
-            "content": "---\nid: new_skill\ntitle: New Skill\nenabled: true\nbind_to:\n  - vintage_programmer\nsummary: cache invalidation test\n---\n\n# Skill\n"
+            "content": "---\nname: new_skill\ndescription: cache invalidation test\nenabled: true\n---\n\n# Skill\n"
         },
     )
     assert create_response.status_code == 200
@@ -1710,7 +1709,7 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["agent_state"]["permission_profile"] == "auto"
     assert session_payload["agent_state"]["turn_status"] == "completed"
     assert session_payload["agent_state"]["evidence_status"] == "collected"
-    assert session_payload["agent_state"]["enabled_skill_ids"] == ["example_refactor_helper"]
+    assert session_payload["agent_state"]["enabled_skill_ids"] == ["example-refactor-helper"]
     assert session_payload["agent_state"]["task_checkpoint"]["task_id"] == "task-fake-1"
     assert session_payload["agent_state"]["context_meter"]["auto_compact_token_limit"] > 0
     assert session_payload["agent_state"]["compaction_status"]["mode"] == "token_budget"
@@ -2721,11 +2720,12 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200
     assert skills_response.json()["skills"][0]["id"] == "example_refactor_helper"
+    assert skills_response.json()["skills"][0]["content"] == ""
 
     create_response = client.post(
         "/api/workbench/skills",
         json={
-            "content": "---\nid: repo_triage\ntitle: Repo Triage\nenabled: false\nbind_to:\n  - vintage_programmer\nsummary: triage skill\n---\n\n# Repo Triage\n"
+            "content": "---\nname: repo_triage\ndescription: triage skill\nenabled: false\n---\n\n# Repo Triage\n"
         },
     )
     assert create_response.status_code == 200
@@ -2742,6 +2742,41 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     after_delete = client.get("/api/workbench/skills")
     assert after_delete.status_code == 200
     assert "repo_triage" not in {item["id"] for item in after_delete.json()["skills"]}
+
+
+def test_workbench_skill_endpoints_include_read_only_system_skills(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    system_skill_dir = tmp_path / "agents" / "vintage_programmer" / "skills" / "system_helper"
+    system_skill_dir.mkdir(parents=True, exist_ok=True)
+    (system_skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: system_helper\n"
+        "description: built in helper\n"
+        "enabled: true\n"
+        "---\n\n"
+        "# System Helper\n",
+        encoding="utf-8",
+    )
+    client = TestClient(main_app.app)
+
+    skills_response = client.get("/api/workbench/skills")
+    assert skills_response.status_code == 200
+    system_entry = next(item for item in skills_response.json()["skills"] if item["key"] == "system:system_helper")
+    assert system_entry["read_only"] is True
+    assert system_entry["content"] == ""
+
+    detail_response = client.get("/api/workbench/skills/system_helper?scope=system")
+    assert detail_response.status_code == 200
+    assert "# System Helper" in detail_response.json()["content"]
+
+    update_response = client.put(
+        "/api/workbench/skills/system_helper?scope=system",
+        json={"content": "---\nname: system_helper\ndescription: x\nenabled: true\n---\n\n# X\n"},
+    )
+    assert update_response.status_code == 403
+
+    delete_response = client.delete("/api/workbench/skills/system_helper?scope=system")
+    assert delete_response.status_code == 403
 
 
 def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_path: Path) -> None:

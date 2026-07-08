@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5V-blue)
+![Version](https://img.shields.io/badge/version-3.1.5W-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,13 +15,13 @@ Instead of hiding the process, it exposes the loop:
 
 [Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
 
-Current stable release: `3.1.5V`
+Current stable release: `3.1.5W`
 
 ## Stable Runtime
 
-3.1.5V is a thread-scoped agent concurrency release: different threads can run agents at the same time, while each individual thread still runs serially to avoid history-write conflicts.
+3.1.5W is the VP Skills v1 release: it supports read-only built-in skills and user-editable workspace skills, while the runtime injects only the lightweight `[available_skills]` list by default. Full `SKILL.md` content is loaded on demand through explicit `$skill` references or `load_skill`.
 
-This release adds thread-list run indicators: running threads show a spinner, completed runs show a blue dot, and clicking the thread clears the attention marker. It also fixes composer lockups caused by stale run state or stale per-thread send locks after a run completes.
+This release adds the `save_skill` tool so the agent can preserve reusable workflows in `workspace/skills/<name>/SKILL.md`. It also ships the built-in `create-workspace-skill` skill to guide high-quality workspace skill creation. Thread-scoped agent concurrency, low-motion run indicators, and the foreground loading overlay remain in place.
 
 ## Max Output Tokens
 

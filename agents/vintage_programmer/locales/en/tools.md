@@ -39,6 +39,11 @@
 - Use `archive_extract` for ZIPs and archives.
 - Use `sessions_list` and `sessions_history` when prior threads matter.
 
+## Skills
+
+- Use `load_skill` only after the lightweight skill list indicates a relevant skill.
+- Use `save_skill` only to create or update workspace skills. Use it when the workflow is genuinely reusable, the trigger is clear, and the user goal allows writing; never use it to modify built-in system skills.
+
 ## State And User Input Tools
 
 - Use `update_plan` only when multi-step task state needs to be maintained; the concrete planning rules live in `agent.md`.

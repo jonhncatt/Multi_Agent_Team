@@ -110,6 +110,7 @@ _READ_ONLY_TOOL_NAMES = {
     "image_inspect",
     "update_plan",
     "request_user_input",
+    "load_skill",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -161,6 +162,21 @@ _WRITE_INTENT_HINTS = (
     "更新",
     "改成",
     "改为",
+    "创建 skill",
+    "创建workspace skill",
+    "创建 workspace skill",
+    "生成 skill",
+    "生成workspace skill",
+    "生成 workspace skill",
+    "保存 skill",
+    "保存成 skill",
+    "制作 skill",
+    "新建 skill",
+    "写个 skill",
+    "做个 skill",
+    "做成 skill",
+    "总结成 skill",
+    "沉淀成 skill",
     "apply_patch",
     "patch",
     "fix",
@@ -168,11 +184,23 @@ _WRITE_INTENT_HINTS = (
     "modify",
     "update",
     "change",
+    "create skill",
+    "create workspace skill",
+    "generate skill",
+    "generate workspace skill",
+    "save skill",
+    "write skill",
+    "make a skill",
+    "new skill",
+    "summarize as a skill",
+    "turn this into a skill",
     "補完",
     "修正",
     "変更",
     "実装",
     "追加",
+    "skill を作成",
+    "skill に保存",
     "直して",
 )
 
@@ -204,6 +232,7 @@ _WRITE_TOOL_NAMES = {
     "web_download",
     "archive_extract",
     "mail_extract_attachments",
+    "save_skill",
 }
 
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
@@ -428,6 +457,114 @@ class VintageProgrammerRuntime:
     def _enabled_skills(self, agent_id: str) -> list[dict[str, Any]]:
         return self._workbench.enabled_skills_for_agent(agent_id)
 
+    @staticmethod
+    def _skill_descriptor_for_model(item: dict[str, Any], *, include_content: bool = False) -> dict[str, Any]:
+        row = {
+            "key": str(item.get("key") or ""),
+            "scope": str(item.get("scope") or ""),
+            "name": str(item.get("name") or item.get("id") or ""),
+            "description": str(item.get("description") or item.get("summary") or ""),
+            "path": str(item.get("path") or ""),
+        }
+        if include_content:
+            row["content"] = str(item.get("content") or "")
+        return row
+
+    @staticmethod
+    def _skill_key_set(items: list[dict[str, Any]]) -> set[str]:
+        return {str(item.get("key") or "").strip() for item in items if str(item.get("key") or "").strip()}
+
+    def _render_available_skills_prompt(self, available_skills: list[dict[str, Any]]) -> str:
+        valid = [
+            self._skill_descriptor_for_model(item)
+            for item in list(available_skills or [])
+            if str(item.get("key") or "").strip()
+        ]
+        if not valid:
+            return "[available_skills]\nNo enabled skills are currently available."
+        lines = [
+            "[available_skills]",
+            "Only lightweight skill metadata is listed here. If a skill is useful, call load_skill with its key before following its full instructions. Explicit user references like $skill may already be preloaded below.",
+        ]
+        char_budget = 8000
+        used = sum(len(line) + 1 for line in lines)
+        omitted = 0
+        for item in valid:
+            line = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if used + len(line) + 1 > char_budget:
+                omitted += 1
+                continue
+            lines.append(line)
+            used += len(line) + 1
+        if omitted:
+            lines.append(f"... omitted {omitted} skill(s) because the available skill list exceeded the prompt budget.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _explicit_skill_references(message: str) -> list[str]:
+        refs: list[str] = []
+        pattern = re.compile(r"(?<![\w.-])\$((?:(?:system|workspace):)?[a-z0-9][a-z0-9_-]{0,63})\b")
+        for match in pattern.finditer(str(message or "").lower()):
+            ref = str(match.group(1) or "").strip()
+            if ref and ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _preload_explicit_skills(self, message: str, *, agent_id: str) -> list[dict[str, Any]]:
+        loaded: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for ref in self._explicit_skill_references(message):
+            try:
+                item = self._workbench.load_skill(ref, agent_id=agent_id)
+            except Exception:
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            loaded.append(item)
+        return loaded
+
+    def _make_skill_loader(self, *, agent_id: str, loaded_skills: list[dict[str, Any]]) -> Callable[[str], dict[str, Any]]:
+        def _loader(key: str) -> dict[str, Any]:
+            item = self._workbench.load_skill(str(key or ""), agent_id=agent_id)
+            skill_key = str(item.get("key") or "").strip()
+            if skill_key and skill_key not in self._skill_key_set(loaded_skills):
+                loaded_skills.append(item)
+            return {
+                "ok": True,
+                **self._skill_descriptor_for_model(item, include_content=True),
+                "summary": f"loaded skill: {str(item.get('name') or skill_key)}",
+            }
+
+        return _loader
+
+    def _make_skill_writer(self) -> Callable[..., dict[str, Any]]:
+        def _writer(
+            *,
+            name: str,
+            description: str,
+            body: str,
+            enabled: bool = True,
+            overwrite: bool = False,
+        ) -> dict[str, Any]:
+            item = self._workbench.save_skill_from_parts(
+                name=name,
+                description=description,
+                body=body,
+                enabled=enabled,
+                overwrite=overwrite,
+            )
+            self.invalidate_descriptor_cache()
+            descriptor = self._skill_descriptor_for_model(item, include_content=False)
+            return {
+                "ok": True,
+                **descriptor,
+                "summary": f"saved workspace skill: {str(item.get('name') or name)}",
+            }
+
+        return _writer
+
     def invalidate_descriptor_cache(self) -> None:
         with self._descriptor_lock:
             self._descriptor_cache.clear()
@@ -441,7 +578,7 @@ class VintageProgrammerRuntime:
                 if isinstance(cached, dict):
                     return copy.deepcopy(cached)
         spec = self._load_spec(locale=locale)
-        loaded_skills = self._enabled_skills(spec.agent_id)
+        available_skills = self._enabled_skills(spec.agent_id)
         payload = spec.descriptor()
         allowed_tool_descriptors = [
             dict(self._tool_descriptors_by_name.get(name) or {"name": name, "group": "", "source": "", "enabled": True, "read_only": False, "requires_evidence": False, "summary": ""})
@@ -452,15 +589,8 @@ class VintageProgrammerRuntime:
         payload["capabilities"]["tool_groups"] = sorted({str(item.get("group") or "") for item in allowed_tool_descriptors if str(item.get("group") or "")})
         payload["tool_count"] = len(spec.allowed_tools)
         payload["tools"] = allowed_tool_descriptors
-        payload["loaded_skills"] = [
-            {
-                "id": str(item.get("id") or ""),
-                "title": str(item.get("title") or ""),
-                "summary": str(item.get("summary") or ""),
-                "path": str(item.get("path") or ""),
-            }
-            for item in loaded_skills
-        ]
+        payload["available_skills"] = [self._skill_descriptor_for_model(item) for item in available_skills]
+        payload["loaded_skills"] = [self._skill_descriptor_for_model(item) for item in available_skills]
         with self._descriptor_lock:
             self._descriptor_cache[cache_key] = copy.deepcopy(payload)
         return copy.deepcopy(payload)
@@ -471,6 +601,7 @@ class VintageProgrammerRuntime:
         *,
         spec: VintageProgrammerSpec,
         loaded_skills: list[dict[str, Any]],
+        available_skills: list[dict[str, Any]] | None = None,
         project_contract_text: str = "",
     ) -> str:
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
@@ -483,8 +614,9 @@ class VintageProgrammerRuntime:
             parts.append(f"[AGENTS.md]\n{project_contract_text}")
         if spec.tools_text:
             parts.append(f"[tools.md]\n{spec.tools_text}")
+        parts.append(self._render_available_skills_prompt(list(available_skills if available_skills is not None else loaded_skills)))
         for skill in loaded_skills:
-            skill_id = str(skill.get("id") or "").strip()
+            skill_id = str(skill.get("key") or skill.get("name") or skill.get("id") or "").strip()
             skill_content = str(skill.get("content") or "").strip()
             if skill_id and skill_content:
                 parts.append(f"[skill:{skill_id}]\n{skill_content}")
@@ -3275,6 +3407,8 @@ class VintageProgrammerRuntime:
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
+        skill_loader: Callable[[str], dict[str, Any]] | None = None,
+        skill_writer: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3297,6 +3431,10 @@ class VintageProgrammerRuntime:
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
         if self._callable_accepts_kwarg(setter, "run_id"):
             kwargs["run_id"] = run_id
+        if self._callable_accepts_kwarg(setter, "skill_loader"):
+            kwargs["skill_loader"] = skill_loader
+        if self._callable_accepts_kwarg(setter, "skill_writer"):
+            kwargs["skill_writer"] = skill_writer
         setter(**kwargs)
 
     @staticmethod
@@ -3885,7 +4023,10 @@ class VintageProgrammerRuntime:
         with phase_timer.measure("agent_spec_load_ms"):
             spec = self._load_spec(locale=locale)
         with phase_timer.measure("skills_load_ms"):
-            loaded_skills = self._enabled_skills(spec.agent_id)
+            available_skills = self._enabled_skills(spec.agent_id)
+            loaded_skills = self._preload_explicit_skills(prompt_message, agent_id=spec.agent_id)
+        skill_loader = self._make_skill_loader(agent_id=spec.agent_id, loaded_skills=loaded_skills)
+        skill_writer = self._make_skill_writer()
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
@@ -3997,6 +4138,7 @@ class VintageProgrammerRuntime:
                         settings,
                         spec=spec,
                         loaded_skills=loaded_skills,
+                        available_skills=available_skills,
                         project_contract_text=project_contract_text,
                     )
                 ),
@@ -4240,6 +4382,8 @@ class VintageProgrammerRuntime:
                 permission_profile=turn_runtime_boundary.permission_profile,
                 runtime_boundary=turn_runtime_boundary,
                 run_id=run_id,
+                skill_loader=skill_loader,
+                skill_writer=skill_writer,
             )
 
         user_input_response = (
@@ -4484,6 +4628,8 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
+                    skill_loader=skill_loader,
+                    skill_writer=skill_writer,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -4931,6 +5077,10 @@ class VintageProgrammerRuntime:
                             round_idx=round_idx,
                             call_idx=call_idx,
                         )
+                        if name == "load_skill" and bool(result.get("ok")):
+                            loaded_key = str(result.get("key") or "").strip()
+                            if loaded_key and loaded_key not in self._skill_key_set(loaded_skills):
+                                loaded_skills.append(dict(result))
                     else:
                         guard_rejection_count += 1
                         result = validation_observation(validation, tool=name or raw_name)
@@ -5058,6 +5208,8 @@ class VintageProgrammerRuntime:
                         permission_profile=turn_runtime_boundary.permission_profile,
                         runtime_boundary=turn_runtime_boundary,
                         run_id=run_id,
+                        skill_loader=skill_loader,
+                        skill_writer=skill_writer,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -5781,6 +5933,8 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
+                    skill_loader=skill_loader,
+                    skill_writer=skill_writer,
                 )
                 notes.extend(invoke_notes)
                 usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
@@ -6102,15 +6256,8 @@ class VintageProgrammerRuntime:
                 "phase_timings": dict(phase_timings),
             },
             "token_usage": dict(usage_total),
-            "loaded_skills": [
-                {
-                    "id": str(item.get("id") or ""),
-                    "title": str(item.get("title") or ""),
-                    "summary": str(item.get("summary") or ""),
-                    "path": str(item.get("path") or ""),
-                }
-                for item in loaded_skills
-            ],
+            "available_skills": [self._skill_descriptor_for_model(item) for item in available_skills],
+            "loaded_skills": [self._skill_descriptor_for_model(item) for item in loaded_skills],
             "notes": self._dedup_notes(notes),
         }
         activity_summary = " · ".join(
@@ -6205,7 +6352,8 @@ class VintageProgrammerRuntime:
                 "network_mode": spec.network_mode,
                 "evidence_status": evidence_status,
                 "tool_count": len(tool_events),
-                "loaded_skill_ids": [str(item.get("id") or "") for item in loaded_skills],
+                "loaded_skill_keys": [str(item.get("key") or "") for item in loaded_skills],
+                "loaded_skill_ids": [str(item.get("name") or item.get("id") or "") for item in loaded_skills],
                 "inline_document": inline_document,
                 "route_state_input": dict(route_state_input),
                 "model_action": dict(model_action),

@@ -183,10 +183,38 @@ class _FakeTools:
             {"name": "apply_patch", "description": "apply patch", "parameters": {}},
             {"name": "update_plan", "description": "update plan", "parameters": {}},
             {"name": "request_user_input", "description": "request user input", "parameters": {}},
+            {
+                "name": "load_skill",
+                "description": "load selected skill instructions",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"key": {"type": "string"}},
+                    "required": ["key"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "save_skill",
+                "description": "save workspace skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "body": {"type": "string"},
+                        "enabled": {"type": "boolean"},
+                        "overwrite": {"type": "boolean"},
+                    },
+                    "required": ["name", "description", "body"],
+                    "additionalProperties": False,
+                },
+            },
         ]
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.runtime_context: dict[str, Any] | None = None
         self.last_runtime_context: dict[str, Any] | None = None
+        self.skill_loader: Any | None = None
+        self.skill_writer: Any | None = None
 
     def set_runtime_context(
         self,
@@ -197,7 +225,11 @@ class _FakeTools:
         project_root: str | None = None,
         cwd: str | None = None,
         model: str | None = None,
+        skill_loader: Any | None = None,
+        skill_writer: Any | None = None,
     ) -> None:
+        self.skill_loader = skill_loader
+        self.skill_writer = skill_writer
         payload = {
             "execution_mode": execution_mode,
             "session_id": session_id,
@@ -214,6 +246,10 @@ class _FakeTools:
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
+        if name == "load_skill" and callable(self.skill_loader):
+            return self.skill_loader(str(arguments.get("key") or ""))
+        if name == "save_skill" and callable(self.skill_writer):
+            return self.skill_writer(**arguments)
         return {
             "ok": True,
             "name": name,
@@ -3301,12 +3337,9 @@ def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
-        "id: inline_helper\n"
-        "title: Inline Helper\n"
+        "name: inline_helper\n"
+        "description: Helps with inline pasted code.\n"
         "enabled: true\n"
-        "bind_to:\n"
-        "  - vintage_programmer\n"
-        "summary: Helps with inline pasted code.\n"
         "---\n\n"
         "# Inline Helper\n\n"
         "When the user pastes code directly, analyze it in place.\n",
@@ -3321,7 +3354,7 @@ def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(
     )
 
     result = runtime.run(
-        message="请直接分析这段代码，不要去 workspace 里再找：\n```python\nclass A:\n    def run(self):\n        return 1\n```\n这里哪里有问题？",
+        message="$inline_helper 请直接分析这段代码，不要去 workspace 里再找：\n```python\nclass A:\n    def run(self):\n        return 1\n```\n这里哪里有问题？",
         settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
         context={"session_id": "s-inline", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
     )
@@ -3329,7 +3362,144 @@ def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(
     assert result["text"] == "inline analysis complete"
     assert result["inspector"]["run_state"]["inline_document"] is True
     assert result["tool_events"] == []
-    assert result["inspector"]["loaded_skills"][0]["id"] == "inline_helper"
+    assert result["inspector"]["loaded_skills"][0]["key"] == "workspace:inline_helper"
+
+
+def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    skill_dir = tmp_path / "workspace" / "skills" / "repo_triage"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: repo_triage\n"
+        "description: Use for repository triage.\n"
+        "enabled: true\n"
+        "---\n\n"
+        "# Repo Triage\n\n"
+        "Full secret instruction body.\n",
+        encoding="utf-8",
+    )
+    backend = _FakeBackend([_FakeMessage(content="done")])
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    runtime.run(
+        message="帮我看一下仓库状态",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={"session_id": "s-skills-light", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
+    )
+
+    system_prompt = str(backend.invocations[0]["messages"][0].content)
+    assert "[available_skills]" in system_prompt
+    assert "workspace:repo_triage" in system_prompt
+    assert "Use for repository triage." in system_prompt
+    assert "Full secret instruction body." not in system_prompt
+
+
+def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    skill_dir = tmp_path / "workspace" / "skills" / "repo_triage"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: repo_triage\n"
+        "description: Use for repository triage.\n"
+        "enabled: true\n"
+        "---\n\n"
+        "# Repo Triage\n\n"
+        "Full skill instruction body.\n",
+        encoding="utf-8",
+    )
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-load-skill", "name": "load_skill", "args": {"key": "workspace:repo_triage"}}]),
+            _FakeMessage(content="skill loaded"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="帮我看一下仓库状态",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={"session_id": "s-load-skill", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
+    )
+
+    assert backend.tools.calls == [("load_skill", {"key": "workspace:repo_triage"})]
+    assert result["tool_events"][0]["name"] == "load_skill"
+    assert "Full skill instruction body." in str(result["tool_events"][0]["result_preview"])
+    assert result["inspector"]["loaded_skills"][0]["key"] == "workspace:repo_triage"
+
+
+def test_runtime_save_skill_tool_creates_workspace_skill(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-save-skill",
+                        "name": "save_skill",
+                        "args": {
+                            "name": "repo-triage",
+                            "description": "Use when investigating repository structure.",
+                            "body": "# Repo Triage\n\nInspect entry points before editing.",
+                            "enabled": True,
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="skill saved"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="把这次仓库排查流程总结成 skill",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={"session_id": "s-save-skill", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
+    )
+
+    skill_path = tmp_path / "workspace" / "skills" / "repo-triage" / "SKILL.md"
+    assert backend.tools.calls == [
+        (
+            "save_skill",
+            {
+                "name": "repo-triage",
+                "description": "Use when investigating repository structure.",
+                "body": "# Repo Triage\n\nInspect entry points before editing.",
+                "enabled": True,
+            },
+        )
+    ]
+    assert result["tool_events"][0]["name"] == "save_skill"
+    assert skill_path.is_file()
+    content = skill_path.read_text(encoding="utf-8")
+    assert content.startswith("---\nname: repo-triage\n")
+    assert "description: Use when investigating repository structure." in content
+    assert "Inspect entry points before editing." in content
 
 
 def test_runtime_treats_short_pasted_code_as_direct_context_even_with_fix_language(tmp_path: Path) -> None:

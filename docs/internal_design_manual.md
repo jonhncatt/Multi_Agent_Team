@@ -1,4 +1,4 @@
-# 内部设计手册（v3.1.5V）
+# 内部设计手册（v3.1.5W）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，也不推测外部未公开实现。
 
@@ -77,6 +77,26 @@
 - `tools.md`：工具路由和工具使用原则。
 
 `agent.md` 的 frontmatter 使用 `tool_scope` 描述候选工具范围，当前取值为 `all | read_only | none`。旧字段 `tool_policy` 仍被 runtime 作为兼容别名读取，但新 spec 不再使用它。具体工具清单不写在 `agent.md` 的 `allowed_tools` 中，实际可用工具来自 backend tool registry，并继续受 `.env`、permission profile、RuntimeBoundary 和 ActionValidator 约束。
+
+### Skills（能力说明书）
+
+当前实现支持两个 skill scope：
+
+- `system`：`agents/vintage_programmer/skills/<skill>/SKILL.md`，内置只读，随仓库发布。
+- `workspace`：`workspace/skills/<skill>/SKILL.md`，用户可编辑，并由 `.gitignore` 排除。
+
+仓库包含一个启用的 system skill：`agents/vintage_programmer/skills/create-workspace-skill/SKILL.md`，用于指导 agent 调用 `save_skill` 创建或更新 workspace skill。仓库还包含一个禁用的 workspace 示例：`workspace/skills/sample-workspace-skill/SKILL.md`。workspace sample 是 `.gitignore` 的显式例外，其它 workspace skill 仍默认本地私有。
+
+`SKILL.md` 的唯一有效 frontmatter 是 `name`、`description`、可选 `enabled`。旧字段 `id`、`title`、`summary`、`bind_to` 不再作为有效 skill 格式读取；本轮所有 skill 默认属于 `vintage_programmer`。
+
+runtime 不再把所有启用 skill 的完整正文拼进 system prompt。每次 run 只注入 `[available_skills]` 轻量列表，包含 `key/scope/name/description/path`。完整 `SKILL.md` 只在两种情况下读取：
+
+- 用户显式写 `$skill-name` 或 `$scope:skill-name`，runtime 在首轮模型调用前预加载。
+- 模型根据轻量列表调用只读工具 `load_skill({ key })`。
+
+模型也可以调用写入工具 `save_skill` 创建或更新 workspace skill。该工具只写 `workspace/skills/<name>/SKILL.md`，复用 WorkbenchStore 的严格格式校验，默认不覆盖同名 skill，且不能写 system skill。
+
+因此 `loaded_skills` 表示本轮真正读取了完整内容的 skills；`available_skills` 表示当前可用但尚未必然读取全文的轻量目录。
 
 ## 3. Turn 设计
 
@@ -859,6 +879,17 @@ v3.1.5V keeps the model-led tool loop and adds thread-scoped run concurrency plu
 - `soul.md`, `identity.md`, `agent.md`, and `tools.md` have separate responsibilities: style, position, execution protocol, and tool routing.
 - `agent.md` uses `tool_scope` for candidate tool scope and no longer carries an explicit `allowed_tools` registry.
 - The descriptor and route state still expose `tool_policy` as a compatibility alias for older consumers, but new documentation and specs should use `tool_scope`.
+
+## 20.16 v3.1.5W VP Skills v1 Notes
+
+v3.1.5W adds scoped skills and progressive disclosure to keep the normal model prompt small while still allowing task-specific instructions to be loaded on demand.
+
+- System skills live under `agents/vintage_programmer/skills/<skill>/SKILL.md`, are read-only through the Workbench API, and may be disabled with workspace overrides.
+- Workspace skills live under `workspace/skills/<skill>/SKILL.md`, are user-editable, and remain local by default.
+- Skill frontmatter is strict: only `name`, `description`, and optional `enabled` are valid.
+- The initial prompt receives `[available_skills]` metadata only. Full skill bodies load through explicit `$skill` references or the `load_skill` tool.
+- The `save_skill` tool lets the agent create or update workspace skills using the same validation path as WorkbenchStore.
+- The built-in `create-workspace-skill` system skill guides the agent to turn reusable workflows into high-quality workspace skills.
 
 ## 21. v2.9.0 Stability Decision
 

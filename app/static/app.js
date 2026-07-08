@@ -1130,12 +1130,9 @@ function normalizeMessageActivity(raw) {
 function defaultSkillTemplate(locale) {
   return [
     "---",
-    "id: new_skill",
-    `title: ${translateUi(locale, "skill_template.title")}`,
-    "enabled: false",
-    "bind_to:",
-    "  - vintage_programmer",
-    `summary: ${translateUi(locale, "skill_template.summary")}`,
+    "name: new-skill",
+    `description: ${translateUi(locale, "skill_template.summary")}`,
+    "enabled: true",
     "---",
     "",
     `# ${translateUi(locale, "skill_template.title")}`,
@@ -1178,7 +1175,56 @@ function workbenchSpecUrl(specName, locale) {
 }
 
 function shallowSkillList(skills) {
-  return Array.isArray(skills) ? skills : [];
+  return Array.isArray(skills) ? skills.map(normalizeSkillDescriptor) : [];
+}
+
+function normalizeSkillDescriptor(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const scope = String(item.scope || "workspace").trim() || "workspace";
+  const name = String(item.name || item.id || "").trim();
+  const key = String(item.key || (name ? `${scope}:${name}` : "")).trim();
+  return {
+    ...item,
+    key,
+    scope,
+    name,
+    description: String(item.description || item.summary || "").trim(),
+    read_only: Boolean(item.read_only),
+  };
+}
+
+function skillKey(item) {
+  return String((item && (item.key || "")) || "").trim();
+}
+
+function skillName(item) {
+  return String((item && (item.name || item.id || "")) || "").trim();
+}
+
+function skillScope(item) {
+  return String((item && (item.scope || "")) || "workspace").trim() || "workspace";
+}
+
+function workbenchSkillUrl(itemOrName, scope) {
+  const name = typeof itemOrName === "string" ? itemOrName : skillName(itemOrName);
+  const resolvedScope = scope || (typeof itemOrName === "string" ? "workspace" : skillScope(itemOrName));
+  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}?scope=${encodeURIComponent(String(resolvedScope || "workspace").trim())}`;
+}
+
+function workbenchSkillActionUrl(itemOrName, scope, action) {
+  const name = typeof itemOrName === "string" ? itemOrName : skillName(itemOrName);
+  const resolvedScope = scope || (typeof itemOrName === "string" ? "workspace" : skillScope(itemOrName));
+  const suffix = String(action || "").trim();
+  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}/${encodeURIComponent(suffix)}?scope=${encodeURIComponent(String(resolvedScope || "workspace").trim())}`;
+}
+
+function groupSkillsByScope(skills) {
+  const grouped = { system: [], workspace: [] };
+  shallowSkillList(skills).forEach((item) => {
+    const scope = skillScope(item) === "system" ? "system" : "workspace";
+    grouped[scope].push(item);
+  });
+  return grouped;
 }
 
 function groupTools(tools) {
@@ -4679,24 +4725,36 @@ function App() {
     setSkillSelectionState("", content, { draft: true });
   }
 
-  function selectSkillFromList(skillId, list = skills) {
+  async function selectSkillFromList(skillId, list = skills) {
     const sid = String(skillId || "").trim();
     if (!sid) {
       startNewSkillDraft();
       return false;
     }
-    const hit = shallowSkillList(list).find((item) => String(item.id || "") === sid);
+    const safeList = shallowSkillList(list);
+    const hit = safeList.find((item) => skillKey(item) === sid || skillName(item) === sid);
     if (!hit) return false;
     clearUiError();
-    setSkillSelectionState(sid, String(hit.content || ""));
+    const hitKey = skillKey(hit);
+    setSkillSelectionState(hitKey, String(hit.content || ""));
+    if (!String(hit.content || "").trim()) {
+      try {
+        const payload = normalizeSkillDescriptor(await fetchJson(workbenchSkillUrl(hit)));
+        setSkills(safeList.map((item) => (skillKey(item) === hitKey ? { ...item, ...payload } : item)));
+        setSkillSelectionState(skillKey(payload) || hitKey, String(payload.content || ""));
+      } catch (err) {
+        const nextError = applyUiError(err, t("errors.read_skill_failed"));
+        pushLogWithLimit(setLogs, "error", t("errors.read_skill_failed"));
+      }
+    }
     return true;
   }
 
-  function syncSkillSelection(list, preferredSkillId) {
+  async function syncSkillSelection(list, preferredSkillId) {
     const safeList = shallowSkillList(list);
     const explicitPreferred = typeof preferredSkillId === "string" ? String(preferredSkillId).trim() : null;
     const activeSkillId = explicitPreferred !== null ? explicitPreferred : String(selectedSkillIdRef.current || "").trim();
-    if (activeSkillId && selectSkillFromList(activeSkillId, safeList)) {
+    if (activeSkillId && await selectSkillFromList(activeSkillId, safeList)) {
       return;
     }
     if ((explicitPreferred === "" || (explicitPreferred === null && skillDraftModeRef.current)) && !activeSkillId) {
@@ -4704,7 +4762,7 @@ function App() {
       return;
     }
     if (safeList.length) {
-      selectSkillFromList(String(safeList[0].id || ""), safeList);
+      await selectSkillFromList(skillKey(safeList[0]), safeList);
       return;
     }
     startNewSkillDraft(skillEditor || defaultSkillTemplate(uiLocale));
@@ -5287,7 +5345,7 @@ function App() {
       if (requestSeq !== skillsRequestSeqRef.current) return list;
       clearUiError();
       setSkills(list);
-      syncSkillSelection(list, preferredSkillId);
+      await syncSkillSelection(list, preferredSkillId);
       setPanelStatus("skills", "fresh");
       return list;
     } catch (err) {
@@ -7217,7 +7275,7 @@ function App() {
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
           loaded_skills: Array.isArray((finalPayload.inspector || {}).loaded_skills) ? finalPayload.inspector.loaded_skills : sessionLoadedSkills,
           enabled_skill_ids: Array.isArray((finalPayload.inspector || {}).loaded_skills)
-            ? finalPayload.inspector.loaded_skills.map((item) => item.id)
+            ? finalPayload.inspector.loaded_skills.map((item) => item.key || item.name || item.id)
             : [],
         },
       });
@@ -7289,21 +7347,27 @@ function App() {
     if (!skillEditor.trim()) return;
     setSavingWorkbench(true);
     try {
-      const targetSkillId = String(selectedSkillIdRef.current || "").trim();
-      const method = targetSkillId ? "PUT" : "POST";
-      const url = targetSkillId
-        ? `/api/workbench/skills/${encodeURIComponent(targetSkillId)}`
+      const targetSkillKey = String(selectedSkillIdRef.current || "").trim();
+      const targetSkill = shallowSkillList(skills).find((item) => skillKey(item) === targetSkillKey) || null;
+      if (targetSkill && targetSkill.read_only) {
+        throw new Error(t("errors.skill_read_only"));
+      }
+      const targetName = targetSkill ? skillName(targetSkill) : "";
+      const method = targetName ? "PUT" : "POST";
+      const url = targetName
+        ? workbenchSkillUrl(targetName, "workspace")
         : "/api/workbench/skills";
       const payload = await fetchJson(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: skillEditor }),
       });
-      const nextSkillId = String(payload.id || targetSkillId || "").trim();
+      const nextSkill = normalizeSkillDescriptor(payload);
+      const nextSkillId = skillKey(nextSkill) || targetSkillKey || "";
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
       await refreshSkills(nextSkillId);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", t("log.skill_saved", { skill_id: nextSkillId || "new_skill" }));
+      pushLogWithLimit(setLogs, "system", t("log.skill_saved", { skill_id: skillName(nextSkill) || "new-skill" }));
     } catch (err) {
       const nextError = applyUiError(err, t("errors.save_skill_failed"));
       pushLogWithLimit(setLogs, "error", t("errors.save_skill_failed"));
@@ -7313,16 +7377,20 @@ function App() {
   }
 
   async function toggleSelectedSkill(nextEnabled) {
-    const targetSkillId = String(selectedSkillIdRef.current || "").trim();
-    if (!targetSkillId) return;
+    const targetSkillKey = String(selectedSkillIdRef.current || "").trim();
+    const targetSkill = shallowSkillList(skills).find((item) => skillKey(item) === targetSkillKey) || null;
+    if (!targetSkill) return;
+    const targetName = skillName(targetSkill);
+    if (!targetName) return;
     setSavingWorkbench(true);
     try {
-      const payload = await fetchJson(`/api/workbench/skills/${encodeURIComponent(targetSkillId)}/toggle`, {
+      const payload = await fetchJson(workbenchSkillActionUrl(targetName, skillScope(targetSkill), "toggle"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: nextEnabled }),
       });
-      const nextSkillId = String(payload.id || targetSkillId || "").trim();
+      const nextSkill = normalizeSkillDescriptor(payload);
+      const nextSkillId = skillKey(nextSkill) || targetSkillKey;
       setSkillSelectionState(nextSkillId, String(payload.content || ""));
       await refreshSkills(nextSkillId);
       clearUiError();
@@ -7331,7 +7399,7 @@ function App() {
         "system",
         t("log.skill_toggled", {
           status: payload.enabled ? t("skills.status.enabled") : t("skills.status.disabled"),
-          skill_id: nextSkillId,
+          skill_id: skillName(nextSkill) || targetName,
         }),
       );
     } catch (err) {
@@ -7343,24 +7411,29 @@ function App() {
   }
 
   async function handleDeleteSelectedSkill() {
-    const targetSkillId = String(selectedSkillIdRef.current || "").trim();
-    if (!targetSkillId) return;
-    const currentIndex = skills.findIndex((item) => String(item.id || "") === targetSkillId);
+    const targetSkillKey = String(selectedSkillIdRef.current || "").trim();
+    if (!targetSkillKey) return;
+    const safeSkills = shallowSkillList(skills);
+    const targetSkill = safeSkills.find((item) => skillKey(item) === targetSkillKey) || null;
+    if (!targetSkill || targetSkill.read_only) return;
+    const targetName = skillName(targetSkill);
+    if (!targetName) return;
+    const currentIndex = safeSkills.findIndex((item) => skillKey(item) === targetSkillKey);
     const fallbackSkillId =
-      String(((currentIndex >= 0 ? skills[currentIndex + 1] : null) || {}).id || "").trim() ||
-      String(((currentIndex > 0 ? skills[currentIndex - 1] : null) || {}).id || "").trim();
-    if (!window.confirm(t("confirm.delete_skill", { skill_id: targetSkillId }))) {
+      skillKey((currentIndex >= 0 ? safeSkills[currentIndex + 1] : null) || {}) ||
+      skillKey((currentIndex > 0 ? safeSkills[currentIndex - 1] : null) || {});
+    if (!window.confirm(t("confirm.delete_skill", { skill_id: targetName }))) {
       return;
     }
     setSavingWorkbench(true);
     try {
-      await fetchJson(`/api/workbench/skills/${encodeURIComponent(targetSkillId)}`, { method: "DELETE" });
+      await fetchJson(workbenchSkillUrl(targetName, "workspace"), { method: "DELETE" });
       if (fallbackSkillId) {
         skillDraftModeRef.current = false;
       }
       await refreshSkills(fallbackSkillId);
       clearUiError();
-      pushLogWithLimit(setLogs, "system", t("log.skill_deleted", { skill_id: targetSkillId }));
+      pushLogWithLimit(setLogs, "system", t("log.skill_deleted", { skill_id: targetName }));
     } catch (err) {
       const nextError = applyUiError(err, t("errors.delete_skill_failed"));
       pushLogWithLimit(setLogs, "error", t("errors.delete_skill_failed"));
@@ -7682,7 +7755,9 @@ function App() {
     ? Math.min(Math.max(0, slashCommandActiveIndex), slashCommandSuggestions.length - 1)
     : 0;
   const groupedTools = useMemo(() => groupTools(workbenchTools), [workbenchTools]);
-  const selectedSkill = skills.find((item) => item.id === selectedSkillId) || null;
+  const groupedSkills = useMemo(() => groupSkillsByScope(skills), [skills]);
+  const selectedSkill = shallowSkillList(skills).find((item) => skillKey(item) === selectedSkillId) || null;
+  const selectedSkillReadOnly = Boolean(selectedSkill && selectedSkill.read_only);
   const selectedSpec = specs.find((item) => String(item.name || "") === selectedSpecName) || null;
   const displayVersion = normalizeReleaseVersion((health && health.app_version) || "");
   const appUpdateRunning = appUpdateState.status === "running";
@@ -9334,7 +9409,7 @@ function App() {
                       <button className="ghost-btn" type="button" onClick=${() => {
                         startNewSkillDraft();
                       }}>${t("buttons.new")}</button>
-                      <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || !skillEditor.trim()}>${t("buttons.save")}</button>
+                      <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || selectedSkillReadOnly || !skillEditor.trim()}>${t("buttons.save")}</button>
                       ${selectedSkill
                         ? html`
                             <button
@@ -9349,7 +9424,7 @@ function App() {
                               className="ghost-btn danger-btn"
                               type="button"
                               onClick=${handleDeleteSelectedSkill}
-                              disabled=${savingWorkbench}
+                              disabled=${savingWorkbench || selectedSkillReadOnly}
                             >
                               ${t("buttons.delete")}
                             </button>
@@ -9360,19 +9435,33 @@ function App() {
 
                   <div className="resource-list">
                     ${skills.length
-                      ? skills.map(
-                          (item) => html`
-                            <button
-                              key=${item.id}
-                              className=${`resource-row ${selectedSkillId === item.id ? "active" : ""}`}
-                              type="button"
-                              onClick=${() => selectSkillFromList(item.id)}
-                            >
-                              <div className="resource-row-title">${item.title || item.id}</div>
-                              <div className="resource-row-meta">${item.enabled ? t("skills.status.enabled") : t("skills.status.disabled")} · ${formatValidationStatus(uiLocale, item.validation_status)}</div>
-                            </button>
-                          `,
-                        )
+                      ? ["system", "workspace"].map((scope) => {
+                          const scopedItems = groupedSkills[scope] || [];
+                          if (!scopedItems.length) return null;
+                          return html`
+                            <div key=${scope} className="resource-group-label">${scope === "system" ? t("skills.group.system") : t("skills.group.workspace")}</div>
+                            ${scopedItems.map(
+                              (item) => {
+                                const itemKey = skillKey(item);
+                                return html`
+                                  <button
+                                    key=${itemKey}
+                                    className=${`resource-row ${selectedSkillId === itemKey ? "active" : ""}`}
+                                    type="button"
+                                    onClick=${() => selectSkillFromList(itemKey)}
+                                  >
+                                    <div className="resource-row-title">${skillName(item)}</div>
+                                    <div className="resource-row-meta">
+                                      ${item.enabled ? t("skills.status.enabled") : t("skills.status.disabled")}
+                                      · ${item.read_only ? t("skills.read_only") : t("skills.editable")}
+                                      · ${formatValidationStatus(uiLocale, item.validation_status)}
+                                    </div>
+                                  </button>
+                                `;
+                              },
+                            )}
+                          `;
+                        })
                       : html`<div className="empty-inline">${t("skills.none")}</div>`}
                   </div>
 
@@ -9381,6 +9470,7 @@ function App() {
                     value=${skillEditor}
                     onInput=${(event) => setSkillEditor(event.currentTarget.value)}
                     placeholder=${t("skills.placeholder")}
+                    readOnly=${selectedSkillReadOnly}
                   ></textarea>
                 </section>
               </div>

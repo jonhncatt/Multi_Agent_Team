@@ -2127,6 +2127,14 @@ button {
   margin-bottom: 12px;
 }
 
+.resource-group-label {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+}
+
 .resource-row {
   border-radius: 14px;
   text-align: left;

@@ -1162,6 +1162,8 @@ class LocalToolExecutor:
         permission_profile: str | None = None,
         runtime_boundary: dict[str, Any] | None = None,
         run_id: str | None = None,
+        skill_loader: Any | None = None,
+        skill_writer: Any | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1179,9 +1181,11 @@ class LocalToolExecutor:
             permission_profile or getattr(self.config, "permission_profile", "auto")
         )
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
+        self._runtime_ctx.skill_loader = skill_loader
+        self._runtime_ctx.skill_writer = skill_writer
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_loader", "skill_writer"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -2997,6 +3001,49 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "load_skill",
+                "description": "Load the full SKILL.md content for one enabled skill after it is selected from the available skills list.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Skill key such as workspace:repo-triage or system:repo-triage."},
+                    },
+                    "required": ["key"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "save_skill",
+                "description": "Create or update a workspace skill using the strict VP SKILL.md format. This never writes built-in system skills.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Workspace skill name, e.g. repo-triage. Use lowercase letters, digits, hyphens, or underscores.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Trigger description that tells the model when this skill should be used.",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Markdown instruction body only. Do not include YAML frontmatter.",
+                        },
+                        "enabled": {"type": "boolean", "default": True},
+                        "overwrite": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Set true to replace an existing workspace skill with the same name.",
+                        },
+                    },
+                    "required": ["name", "description", "body"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "browser_open",
                 "description": "Open a webpage in a headless browser session and capture the current page state.",
                 "parameters": {
@@ -3184,6 +3231,12 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "request_user_input":
             result = self.request_user_input(**arguments)
+            return self._decorate_result(result)
+        if name == "load_skill":
+            result = self.load_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "save_skill":
+            result = self.save_skill(**arguments)
             return self._decorate_result(result)
         if name == "browser_open":
             result = self.browser_open(**arguments)
@@ -3592,6 +3645,126 @@ class LocalToolExecutor:
             "questions": normalized_questions,
             "summary": "user input required",
         }
+
+    def load_skill(self, key: str) -> dict[str, Any]:
+        skill_key = str(key or "").strip()
+        if not skill_key:
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_skill_key",
+                    "tool": "load_skill",
+                    "message": "skill key is required",
+                },
+                "summary": "skill key is required",
+            }
+        loader = getattr(self._runtime_ctx, "skill_loader", None)
+        if not callable(loader):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "skill_loader_unavailable",
+                    "tool": "load_skill",
+                    "message": "No skill loader is available for the current run.",
+                },
+                "summary": "skill loader unavailable",
+            }
+        try:
+            payload = loader(skill_key)
+        except Exception as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "skill_load_failed",
+                    "tool": "load_skill",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_skill_payload",
+                    "tool": "load_skill",
+                    "message": "Skill loader returned an invalid payload.",
+                },
+                "summary": "invalid skill payload",
+            }
+        return payload if "ok" in payload else {"ok": True, **payload}
+
+    def save_skill(
+        self,
+        name: str,
+        description: str,
+        body: str,
+        enabled: bool = True,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        skill_name = str(name or "").strip()
+        if not skill_name:
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_skill_name",
+                    "tool": "save_skill",
+                    "message": "skill name is required",
+                },
+                "summary": "skill name is required",
+            }
+        writer = getattr(self._runtime_ctx, "skill_writer", None)
+        if not callable(writer):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "skill_writer_unavailable",
+                    "tool": "save_skill",
+                    "message": "No skill writer is available for the current run.",
+                },
+                "summary": "skill writer unavailable",
+            }
+        try:
+            payload = writer(
+                name=skill_name,
+                description=str(description or ""),
+                body=str(body or ""),
+                enabled=bool(enabled),
+                overwrite=bool(overwrite),
+            )
+        except FileExistsError as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "skill_already_exists",
+                    "tool": "save_skill",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        except Exception as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "skill_save_failed",
+                    "tool": "save_skill",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_skill_payload",
+                    "tool": "save_skill",
+                    "message": "Skill writer returned an invalid payload.",
+                },
+                "summary": "invalid skill payload",
+            }
+        return payload if "ok" in payload else {"ok": True, **payload}
 
     def web_search(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
         result = self._web_search_impl(query=query, max_results=max_results, timeout_sec=timeout_sec)
