@@ -1053,7 +1053,7 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
 def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v3.0.0）")
+    assert manual.startswith("# 内部设计手册（v3.1.5V）")
     assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
     assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
     assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
@@ -1073,6 +1073,12 @@ def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
     assert "## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes" in manual
     assert "## 20.13 v2.9.20 Permission Mode Notes" in manual
     assert "## 20.14 v3.0.0 ModelContext Minimal Core Refactor Notes" in manual
+    assert "## 20.15 v3.1.5V Thread Runtime and Agent Spec Notes" in manual
+    assert "`tool_scope`" in manual
+    assert "`emergency_max_tool_calls_per_turn`: `1000`" not in manual
+    assert "Streaming is postponed for v2.9.0" not in manual
+    assert "90% 自动压缩预算" not in manual
+    assert "`ToolGuardResult`" not in manual
     assert "## 25. Context Turns" in manual
     assert "## 26. Python Command Handling" in manual
     assert "## 27. Python Version Recommendation" in manual

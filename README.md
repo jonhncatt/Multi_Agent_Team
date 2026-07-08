@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
-![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20%7C%20OpenRouter%20%7C%20Ollama-purple)
+![Providers](https://img.shields.io/badge/providers-OpenAI%20%7C%20compatible%20ecosystem%20%7C%20Ollama-purple)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 一个本地优先的 AI Agent 工作台，重点是可观察的 activity tracing（执行过程追踪）、可编辑 agent specs（Agent 规范）和 harness-validated execution（由 harness 验证的执行链路）。
@@ -21,7 +21,7 @@
 
 3.1.5V 是一次 thread 级 Agent 并发发布：不同 thread 可以同时运行 agent，同一个 thread 仍保持串行，避免历史写入冲突。
 
-本版本新增 thread 列表运行提示：运行中的 thread 显示旋转圆圈，完成后显示蓝点，点击 thread 后清除提示；同时修复了完成后 composer 被旧运行状态或 stale send lock 锁住的问题。
+本版本新增 thread 列表运行提示：运行中的 thread 显示低动效空心圆，完成且未读时显示蓝点，点击 thread 后清除提示；同时修复了完成后 composer 被旧运行状态或 stale send lock 锁住的问题。启动阶段的 `Loading workspace...` / `Loading thread...` 现在作为前景遮罩显示在实际页面上方，避免加载完成时从纯白背景突然跳到真实页面。
 
 ## Max Output Tokens
 
@@ -48,15 +48,15 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Python Version
 
-稳定的 v2.9.x 运行时推荐使用 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同平台上可能出现兼容性问题。
+当前稳定运行时推荐使用 Python `3.11`。Python `3.12` 也可接受。Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同平台上可能出现兼容性问题。
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.20 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数；高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
 
 ## ModelContext
 
-v2.9.20 的模型输入仍只渲染 `ModelContext`，它由六个清晰部分组成：`task`、`workspace`、`memory`、`plan`、`permissions`、`conversation`。`RuntimeTrace`、raw tool output、model draft、旧的 route/agent state 只用于调试或迁移，不再作为正常模型上下文来源。
+当前模型输入的正常路径只渲染 `ModelContext`，它由六个清晰部分组成：`task`、`workspace`、`memory`、`plan`、`permissions`、`conversation`。`RuntimeTrace`、raw tool output、model draft、旧的 route/agent state 只用于调试或迁移，不再作为正常模型上下文来源。
 
 ## Manual Update
 
@@ -123,7 +123,7 @@ Vintage Programmer 更关注回答背后的执行过程。
 - **本地 Skills 系统**  
   可以在工作区内新增、启用、关闭和绑定 skills。
 - **经过源码验证的 provider 配置**  
-  当前 `.env.example` 和源码确认支持 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama。
+  README 和 `.env.example` 给出 OpenAI、OpenAI-compatible 网关、OpenRouter 和本地 Ollama 的常用配置示例；源码 provider presets 还覆盖 DeepSeek、Qwen、Moonshot 和 Groq。
 - **多语言 UI 和文档**  
   用户可见文本通过 locale layer（本地化层）支持 `zh-CN`、`ja-JP`、`en`。
 
@@ -233,12 +233,15 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 更多选项见 [.env.example](.env.example)。
 
-## 接口说明
+## 常用接口
 
 这些都是本地应用自己的 HTTP 接口，不是 OpenAI 官方 API：
 
 - `GET /api/health`
+- `GET /api/bootstrap`
 - `GET /api/runtime-status`
+- `GET /api/projects`
+- `GET /api/threads`
 - `POST /api/chat`
 - `POST /api/chat/stream`
 - `GET /api/workbench/tools`
@@ -257,6 +260,15 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 - `agents/vintage_programmer/locales/ja-JP/`
 
 每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
+
+四个文件的职责边界是：
+
+- `soul.md`：agent 的工作风格，例如工程化、结果导向、证据优先。
+- `identity.md`：agent 在工作台里的岗位和职责边界。
+- `agent.md`：执行协议，说明收到任务后如何判断、取证、修改、计划和交付。
+- `tools.md`：工具路由和工具使用原则，说明什么时候使用 `read_file`、`search_codebase`、`apply_patch` 等工具。
+
+`agent.md` 的 frontmatter 使用 `tool_scope` 表达 agent 的候选工具范围，当前可选值是 `all | read_only | none`。具体工具清单不再写在 `agent.md` 的 `allowed_tools` 里，而是来自 runtime/backend 的工具注册表，并继续受 `.env`、permission profile、RuntimeBoundary 和 ActionValidator 约束。
 
 ## 本地 Skills
 

@@ -1,4 +1,4 @@
-# 内部设计手册（v3.0.0）
+# 内部设计手册（v3.1.5V）
 
 本文档面向项目 owner 与后续维护者，记录当前源码可确认的内部设计。本文只描述当前实现，不调整 runtime 行为，也不推测外部未公开实现。
 
@@ -67,6 +67,17 @@
 
 一个真实存在的工具，用来同步当前 turn 的轻量 checklist（检查清单）。
 
+### Agent spec v2（主 agent 本地规范）
+
+`vintage_programmer` 的本地规范按 locale 拆成四个 Markdown 文件：
+
+- `soul.md`：工作风格和长期行为倾向。
+- `identity.md`：工作台内的岗位、职责和边界。
+- `agent.md`：执行协议，描述收到任务后如何判断直接回答、取证、修改、验证、计划和交付。
+- `tools.md`：工具路由和工具使用原则。
+
+`agent.md` 的 frontmatter 使用 `tool_scope` 描述候选工具范围，当前取值为 `all | read_only | none`。旧字段 `tool_policy` 仍被 runtime 作为兼容别名读取，但新 spec 不再使用它。具体工具清单不写在 `agent.md` 的 `allowed_tools` 中，实际可用工具来自 backend tool registry，并继续受 `.env`、permission profile、RuntimeBoundary 和 ActionValidator 约束。
+
 ## 3. Turn 设计
 
 当前实现中，一个 user turn（用户一轮请求）可以包含多个 model round（模型轮次）。
@@ -110,7 +121,7 @@ Final answer
 ```text
 model output / tool call
 → tool guard
-→ accepted / normalized / rejected
+→ allowed / normalized / rejected
 → execute or return tool error
 → append tool result to messages
 → model continues
@@ -118,8 +129,8 @@ model output / tool call
 
 这里的关键点是：
 
-- accepted（接受）：工具名、参数、权限都通过，直接执行
-- normalized（归一化后接受）：参数经过保守修正后执行
+- allowed（允许）：工具名、参数、权限和边界都通过，直接执行
+- normalized（归一化后允许）：参数经过保守修正后执行
 - rejected（拒绝）：不执行工具，而是构造结构化 tool error（工具错误）回灌给模型
 
 为什么 rejected（拒绝）不应该直接让整个 turn 崩掉：
@@ -150,9 +161,11 @@ Tool Guard（工具守卫）当前做的是执行边界检查，不做任务级�
 - schema error（参数不符合 schema）：会返回结构化错误
 - forbidden operation（越界或不允许动作）：会被硬拒绝
 
-当前 guard 产出的是结构化的 `ToolGuardResult`，包含：
+当前 guard 产出的是结构化的 `ValidationResult`，核心字段包括：
 
-- `status`: `accepted | normalized | rejected`
+- `allowed`: 是否允许执行
+- `code`: `allowed`、`unknown_tool`、`tool_not_allowed`、`invalid_arguments`、`path_outside_allowed_roots` 等机器可读结果
+- `message`: 面向模型的修正说明或允许说明
 - `raw_tool_name`
 - `tool_name`
 - `raw_arguments`
@@ -160,11 +173,11 @@ Tool Guard（工具守卫）当前做的是执行边界检查，不做任务级�
 - `normalization_notes`
 - `checks`
 - `schema_validation`
-- `reason`
+- `requires_approval` / `approval_reason`
 
 ## 6. Canonical Tools（标准工具体系）
 
-当前模型可见的 canonical tools（标准工具名）来自实际 tool registry（工具注册表）。
+当前模型可见的 canonical tools（标准工具名）来自实际 tool registry（工具注册表），不是来自 `agent.md` 中的手写 `allowed_tools` 清单。
 
 ### 文件发现（File discovery）
 
@@ -369,10 +382,10 @@ checklist（检查清单）相关状态的来源分两层：
 
 ### Hard Limits（硬限制）
 
-- absolute tool call cap（绝对工具调用上限）
 - wall-clock timeout（墙钟时间上限）
 - user stop/cancel（用户停止 / 取消）
 - forbidden action rejection（危险或越界动作拒绝）
+- guard rejection limit（连续工具验证拒绝上限）
 
 ### Progress Guard（进展保护）
 
@@ -450,7 +463,6 @@ tool_name + stable_hash(normalized_arguments)
 
 以下为当前源码中可确认的默认值：
 
-- `emergency_max_tool_calls_per_turn`: `1000`
 - `max_same_action_repeats`: `4`
 - `no_progress_threshold_before_replan`: `3`
 - `no_progress_threshold_after_replan`: `2`
@@ -466,23 +478,11 @@ tool_name + stable_hash(normalized_arguments)
 
 这里必须特别说明：
 
-### emergency_max_tool_calls_per_turn 是什么
+### 不再使用固定工具调用总数上限
 
-`emergency_max_tool_calls_per_turn` 是一个 user turn（用户一轮请求）内的总工具调用绝对兜底上限。
+当前主路径不再把 `emergency_max_tool_calls_per_turn` 或 `max_total_tool_calls_per_turn` 暴露为默认 `loop_safeguards`，也不会因为一个旧的固定工具调用总数上限而中断仍在产生进展的长任务。
 
-它不是：
-
-- model round（模型轮次）上限
-- `max_tool_rounds`
-- 某一种工具的单独上限
-
-也就是说，它统计的是：
-
-- 从这一轮用户请求开始
-- 到这一轮最终结束
-- 整体一共尝试了多少次工具调用
-
-当前默认值 `1000` 是 emergency cap（紧急兜底上限），不是常规长任务保护。长任务的主要保护仍然是 progress-aware guard（进展感知保护）、same-action repeat（重复动作检测）、no-progress replan（无进展复盘）、context compaction（上下文压缩）、tool output truncation（工具输出截断）、wall-clock timeout（连续运行时间上限）、user cancel（用户停止）和 forbidden action rejection（越界/危险操作拒绝）。
+长任务的主要保护是 progress-aware guard（进展感知保护）、same-action repeat（重复动作检测）、no-progress replan（无进展复盘）、guard rejection limit（工具验证拒绝上限）、context compaction（上下文压缩）、tool output truncation（工具输出截断）、wall-clock timeout（连续运行时间上限）、user cancel（用户停止）和 forbidden action rejection（越界/危险操作拒绝）。
 
 ## 12. Context Compaction（上下文压缩）
 
@@ -519,8 +519,8 @@ Context compaction（上下文压缩）的目标是：
 
 不要过度推断的一点：
 
-- 当前源码明确了 compaction 的触发逻辑和 90% 自动压缩预算
-- 但并没有定义一个对所有 provider / 所有模型都同样精确的真实 token 计数来源
+- 当前源码明确了 80% 自动整理候选线和 95% 危险线
+- exact token 计数会按缓存、quick 估算和模型窗口来源选择不同路径，并没有定义一个对所有 provider / 所有模型都同样精确的真实 token 计数来源
 - 因此 context meter（上下文计量）有时会退回保守估算
 
 ## 13. Polling / Runtime Status（轮询和运行状态）
@@ -602,9 +602,9 @@ Context compaction（上下文压缩）的目标是：
 
 因为当前工具体系已经切到 canonical names（标准工具名），语义更明确，也便于 guard 和 UI 统一处理。
 
-### Q5. `emergency_max_tool_calls_per_turn = 1000` 是什么？
+### Q5. 当前还有固定工具调用总数上限吗？
 
-它是一个 user turn 内的总工具调用紧急兜底上限，不是 model round 数，也不是 `max_tool_rounds`。
+当前主路径没有暴露固定 `emergency_max_tool_calls_per_turn` / `max_total_tool_calls_per_turn` 默认上限。仍在产生新证据、新文件、新搜索命中或有效状态变化的长任务不会因为旧式固定工具调用数而提前中断。
 
 ### Q6. 长任务为什么不能完全无限？
 
@@ -846,6 +846,20 @@ v3.0.0 keeps the all-tool drain semantics and permission selector UI, but reduce
 - `RuntimeTrace` stays UI/debug only; only summarized observations may flow into clean memory.
 - `render_model_context()` remains a thin serializer with no legacy extraction, permission derivation, or debug formatting logic.
 
+## 20.15 v3.1.5V Thread Runtime and Agent Spec Notes
+
+v3.1.5V keeps the model-led tool loop and adds thread-scoped run concurrency plus a narrower agent spec contract.
+
+- Run ownership is thread-scoped: different threads may run agents concurrently, while each individual thread stays serial to avoid session history write conflicts.
+- Backend concurrency is still bounded by `AgentRunQueue` and `VP_MAX_CONCURRENT_RUNS`; `VP_MAX_CONCURRENT_RUNS=1` intentionally serializes runs across threads.
+- Frontend active-turn state is scoped per thread. A finishing run must only clear its owner thread state and must not unlock or overwrite another thread's live state.
+- Thread list ordering is stable during run start/update/finish. Existing threads are not promoted to the top merely because a run completed.
+- Running thread indicators use a low-motion outline ring; completed unread runs use a solid blue dot that clears when the thread is viewed.
+- Boot loading remains visible until workspace and thread data are ready, but the React overlay is translucent and sits above the real app shell rather than replacing it with a white screen.
+- `soul.md`, `identity.md`, `agent.md`, and `tools.md` have separate responsibilities: style, position, execution protocol, and tool routing.
+- `agent.md` uses `tool_scope` for candidate tool scope and no longer carries an explicit `allowed_tools` registry.
+- The descriptor and route state still expose `tool_policy` as a compatibility alias for older consumers, but new documentation and specs should use `tool_scope`.
+
 ## 21. v2.9.0 Stability Decision
 
 v2.9.0 restores the v2.7.8 LangChain-based runtime as the stable baseline.
@@ -861,8 +875,9 @@ The stable runtime must preserve:
 
 ## 22. Runtime Backend Policy
 
-The stable backend for v2.9.0 is the LangChain-based runtime.
-OpenAI native SDK and Responses API support are future adapter work. They must not become default until they pass the same regression tests as the LangChain runtime:
+当前稳定后端仍由 app-owned `VintageProgrammerRuntime` 组织 turn，并通过 `vp_runtime_backend` 的 LangChain `ChatOpenAI` / `bind_tools` 路径完成模型调用和工具绑定。Responses API 相关配置是 provider 适配开关和 405 恢复路径，不是当前稳定默认主路径。
+
+任何未来默认后端迁移都必须通过与当前 LangChain-backed runtime 相同的回归场景：
 
 - greeting without tools
 - file read
@@ -873,8 +888,9 @@ OpenAI native SDK and Responses API support are future adapter work. They must n
 
 ## 23. Streaming Policy
 
-Streaming is postponed for v2.9.0.
-Any future streaming implementation must preserve the existing model-led loop:
+`/api/chat/stream` 当前已经是前端主提交路径之一，用 SSE 输出 run events、answer deltas、final payload 和 done/error 事件。这里的 streaming 是 transport/UI 层能力，不改变 model-led tool loop。
+
+当前和未来的 streaming 实现都必须保留：
 
 1. tool calls must remain reliable;
 2. tool results must return to the model;
@@ -884,7 +900,7 @@ Any future streaming implementation must preserve the existing model-led loop:
 
 ## 24. Max Output Token Policy
 
-v2.9.0 uses a conservative default output cap.
+当前默认输出上限仍采用保守策略。
 Default:
 
 ```env
@@ -933,13 +949,13 @@ Future dynamic policy may use:
 ## 26. Python Command Handling
 
 当 runtime 需要执行 Python 项目命令时，不应假定 `python3` 一定存在。
-v2.9.x 的稳定策略是：
+当前稳定策略是：
 
 - 如果项目根目录存在 `./.venv/bin/python`（Windows 为 `.venv\Scripts\python.exe`），优先使用它执行项目测试、脚本和模块命令
 - 如果没有项目 `.venv`，优先使用 runtime 检测到的 `python_command`
 - 项目级模块执行优先 `<python_command> -m ...`
 - Windows 上如果 `python` 不可用，可退回 `py -m ...`
-- 这属于命令提示与轻量兼容处理，不改变稳定 LangChain runtime 的核心 tool loop
+- 这属于命令提示与轻量兼容处理，不改变当前 model-led tool loop
 
 推荐示例：
 
@@ -957,20 +973,20 @@ python -m compileall app packages tests
 
 ## 27. Python Version Recommendation
 
-稳定的 v2.9.x 运行时推荐使用 Python `3.11`。
+当前稳定运行时推荐使用 Python `3.11`。
 Python `3.12` 也可接受。
 Python `3.13` 目前还不是主要测试环境，OCR、ONNXRuntime、图片/PDF 处理等依赖在不同平台上可能出现 native wheel 兼容性问题。
 
 ## 28. Shell Command Allowlist
 
 `exec_command` 继续使用保守 allowlist。
-从 v2.9.3 开始，推荐的完整安全 `VP_ALLOWED_COMMANDS` 列表包含 `printf` 和 `dir`。
+当前推荐的完整安全 `VP_ALLOWED_COMMANDS` 列表包含 `printf` 和 `dir`。
 需要注意：`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加；如果自定义它，应包含完整安全列表。
-高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch`、`python -c`、`node -e` 等供应链或远程代码相关命令默认不在安全列表。若管理员显式加入 allowlist，Full Access 下仍需要单次命令审批。危险删除、`sudo rm`、下载脚本 pipe shell、`dd if=`、递归 chmod/chown 等模式是硬拒绝。
 
 ## 29. Workspace and Permission Profiles
 
-v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是当前项目与显式导入/上传文件；默认可写范围是当前项目；默认命令执行范围是当前项目。
+当前 `project_root` 是默认 workspace。默认可读范围是当前项目与显式导入/上传文件；默认可写范围是当前项目；默认命令执行范围是当前项目。
 
 权限 profile 分为三类：
 
@@ -985,20 +1001,24 @@ v2.9.13 将当前 `project_root` 作为默认 workspace。默认可读范围是�
 ### 本手册主要依据的源码
 
 - `app/vintage_programmer_runtime.py`
+- `app/vp_runtime_backend.py`
 - `app/local_tools.py`
+- `app/action_validator.py`
+- `app/runtime_boundary.py`
+- `app/runtime_contract.py`
 - `app/main.py`
 - `app/models.py`
 - `app/context_meter.py`
+- `app/workbench.py`
+- `app/update_manager.py`
 - `app/static/app.js`
 - `app/static/locales.js`
 - `app/tool_trace_summary.py`
 - `app/config.py`
 - `agents/vintage_programmer/locales/zh-CN/agent.md`
 - `agents/vintage_programmer/locales/zh-CN/tools.md`
-- `app/vp_runtime_backend.py`
 
 ### 待确认点
 
-1. `Responses API` 相关代码是否会在未来成为稳定主路径：当前仓库存在可选 runner，但不是本文主线。
-2. `1000` 作为 `emergency_max_tool_calls_per_turn` 是否仍然偏高或偏低：当前只记录现状，不做进一步行为调整。
-3. 是否需要在未来引入独立 `read_range`：当前源码没有该工具，局部读取由 `read_file` 参数承担。
+1. `Responses API` 相关配置是否会在未来成为稳定主路径：当前仓库存在可选 provider flag 和 405 fallback 路径，但不是本文主线。
+2. 是否需要在未来引入独立 `read_range`：当前源码没有该工具，局部读取由 `read_file` 参数承担。
