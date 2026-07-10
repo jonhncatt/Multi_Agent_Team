@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts.check_provider_conformance import (
     _error_payload,
     build_stream_recommendation,
+    content_active_duration_ms,
     redact_text,
     simulate_frontend_batching,
 )
@@ -37,7 +38,7 @@ def test_error_payload_does_not_persist_provider_metadata() -> None:
 
 
 def test_frontend_batching_reduces_frequent_delta_flushes() -> None:
-    samples = [{"at_ms": index * 5, "chars": 2} for index in range(1, 101)]
+    samples = [{"at_ms": 2000 + index * 5, "chars": 2} for index in range(1, 101)]
     results = simulate_frontend_batching(
         samples,
         duration_ms=500,
@@ -50,6 +51,40 @@ def test_frontend_batching_reduces_frequent_delta_flushes() -> None:
     assert results[1]["flushes"] < results[0]["flushes"]
     assert results[2]["estimated_state_updates"] == results[2]["flushes"] * 5
     assert results[2]["flush_reduction_percent"] > 80
+
+
+def test_content_active_duration_excludes_time_to_first_content() -> None:
+    samples = [
+        {"at_ms": 2100, "chars": 2},
+        {"at_ms": 2110, "chars": 3},
+        {"at_ms": 2135, "chars": 4},
+    ]
+
+    assert content_active_duration_ms(samples, total_duration_ms=5000) == 35
+
+
+def test_high_rate_stream_after_slow_ttfc_recommends_50ms_or_more() -> None:
+    samples = [
+        {"at_ms": 2100 + index * (1000 / 70), "chars": 2}
+        for index in range(70)
+    ]
+    active_duration = content_active_duration_ms(samples, total_duration_ms=5000)
+    batching = simulate_frontend_batching(
+        samples,
+        duration_ms=active_duration,
+        intervals_ms=(16, 33, 50, 100),
+        state_updates_per_flush=5,
+    )
+    result = build_stream_recommendation(
+        content_chunk_count=len(samples),
+        duration_ms=active_duration,
+        batching=batching,
+        state_updates_per_delta=5,
+        target_ui_updates_per_sec=20,
+    )
+
+    assert result["naive_render_risk"] == "high"
+    assert result["recommended_flush_interval_ms"] >= 50
 
 
 def test_stream_recommendation_selects_first_interval_under_target() -> None:
@@ -70,6 +105,7 @@ def test_stream_recommendation_selects_first_interval_under_target() -> None:
     assert result["naive_render_risk"] == "high"
     assert result["recommended_flush_interval_ms"] == 50
     assert result["recommended_flushes_per_sec"] == 18
+    assert result["minimum_interval_for_hard_cap_ms"] == 50
 
 
 def test_normalize_openai_base_url_matches_runtime_endpoint_handling() -> None:

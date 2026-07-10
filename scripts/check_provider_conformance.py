@@ -34,7 +34,7 @@ from app.config import build_provider_config, load_config, normalize_openai_base
 from app.openai_auth import OpenAIAuthManager  # noqa: E402
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_BATCH_INTERVALS_MS = (16, 33, 50, 100)
 PROBE_TOOL_NAME = "provider_probe"
 
@@ -195,7 +195,10 @@ def build_stream_recommendation(
         risk = "low"
 
     recommended = None
+    minimum_interval_for_hard_cap = math.ceil(1000.0 / max(1.0, target_ui_updates_per_sec))
     for candidate in batching:
+        if risk in {"medium", "high"} and int(candidate.get("interval_ms") or 0) < minimum_interval_for_hard_cap:
+            continue
         if float(candidate.get("flushes_per_sec") or 0.0) <= max(1.0, target_ui_updates_per_sec):
             recommended = candidate
             break
@@ -207,6 +210,7 @@ def build_stream_recommendation(
         "content_chunks_per_sec": _safe_round(chunks_per_sec),
         "estimated_naive_state_updates_per_sec": _safe_round(naive_state_updates_per_sec),
         "target_ui_flushes_per_sec": _safe_round(target_ui_updates_per_sec),
+        "minimum_interval_for_hard_cap_ms": int(minimum_interval_for_hard_cap),
         "recommended_flush_interval_ms": int((recommended or {}).get("interval_ms") or 0),
         "recommended_flushes_per_sec": _safe_round((recommended or {}).get("flushes_per_sec") or 0.0),
         "guidance": (
@@ -220,6 +224,17 @@ def build_stream_recommendation(
 def _stream_intervals_ms(samples: list[dict[str, Any]]) -> list[float]:
     times = [float(item.get("at_ms") or 0.0) for item in samples]
     return [max(0.0, right - left) for left, right in zip(times, times[1:])]
+
+
+def content_active_duration_ms(samples: list[dict[str, Any]], *, total_duration_ms: float) -> float:
+    """Measure only the period in which text deltas are actively arriving."""
+
+    times = [float(item.get("at_ms") or 0.0) for item in samples if int(item.get("chars") or 0) > 0]
+    if len(times) >= 2:
+        return max(1.0, times[-1] - times[0])
+    if len(times) == 1:
+        return max(1.0, float(total_duration_ms or 0.0) - times[0])
+    return 0.0
 
 
 def _content_from_message(message: Any) -> str:
@@ -345,6 +360,12 @@ def _collect_stream_attempt(
         cpu_ms = (time.process_time() - cpu_started) * 1000.0
         _, peak_bytes = tracemalloc.get_traced_memory()
         intervals = _stream_intervals_ms(samples)
+        active_duration_ms = content_active_duration_ms(samples, total_duration_ms=duration_ms)
+        active_chunk_rate = (
+            max(1, len(samples) - 1) * 1000.0 / active_duration_ms
+            if samples and active_duration_ms > 0
+            else 0.0
+        )
         return {
             "ok": chunk_count > 0,
             "include_usage_requested": include_usage,
@@ -357,8 +378,12 @@ def _collect_stream_attempt(
             "chunk_count": chunk_count,
             "content_chunk_count": len(samples),
             "content_chars": content_chars,
+            "content_active_duration_ms": _safe_round(active_duration_ms),
             "all_chunks_per_sec": _safe_round(chunk_count * 1000.0 / max(1.0, duration_ms)),
-            "content_chunks_per_sec": _safe_round(len(samples) * 1000.0 / max(1.0, duration_ms)),
+            "request_averaged_content_chunks_per_sec": _safe_round(
+                len(samples) * 1000.0 / max(1.0, duration_ms)
+            ),
+            "content_chunks_per_sec": _safe_round(active_chunk_rate),
             "average_chars_per_content_chunk": _safe_round(content_chars / max(1, len(samples))),
             "content_interval_ms": {
                 "median": _safe_round(statistics.median(intervals) if intervals else 0.0),
@@ -644,15 +669,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             checks["stream"] = stream_result
             if stream_result.get("ok"):
+                active_duration_ms = float(
+                    stream_result.get("content_active_duration_ms")
+                    or stream_result.get("duration_ms")
+                    or 0.0
+                )
                 batching = simulate_frontend_batching(
                     list(stream_result.get("samples") or []),
-                    duration_ms=float(stream_result.get("duration_ms") or 0.0),
+                    duration_ms=active_duration_ms,
                     state_updates_per_flush=max(1, int(args.frontend_state_updates_per_delta)),
                 )
                 stream_result["frontend_batching_simulation"] = batching
                 stream_recommendation = build_stream_recommendation(
                     content_chunk_count=int(stream_result.get("content_chunk_count") or 0),
-                    duration_ms=float(stream_result.get("duration_ms") or 0.0),
+                    duration_ms=active_duration_ms,
                     batching=batching,
                     state_updates_per_delta=max(1, int(args.frontend_state_updates_per_delta)),
                     target_ui_updates_per_sec=max(1.0, float(args.target_ui_updates_per_sec)),
