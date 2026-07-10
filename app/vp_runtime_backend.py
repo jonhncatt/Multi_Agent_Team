@@ -6,12 +6,11 @@ import re
 import threading
 import time
 from typing import Any, Callable
-from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
 from app.attachments import image_to_data_url_with_meta
-from app.config import AppConfig, get_access_roots
+from app.config import AppConfig, get_access_roots, normalize_openai_base_url
 from app.local_tools import LocalToolExecutor
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
@@ -1339,16 +1338,7 @@ class VPRuntimeBackend:
         return usage
 
     def _normalize_base_url(self, raw_url: str) -> str:
-        url = raw_url.strip().strip("\"'").rstrip("/")
-        parsed = urlparse(url)
-        path = parsed.path or ""
-        suffixes = ["/chat/completions", "/responses", "/v1/chat/completions", "/v1/responses"]
-        lowered = path.lower()
-        for suffix in suffixes:
-            if lowered.endswith(suffix):
-                path = path[: -len(suffix)] + ("/v1" if suffix.startswith("/v1/") else "")
-                break
-        return urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
+        return normalize_openai_base_url(raw_url)
 
     @staticmethod
     def _parse_json_object(text: str) -> dict[str, Any] | None:

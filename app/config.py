@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse, urlunparse
 
 from app.i18n import normalize_locale
 
@@ -35,6 +36,23 @@ def _split_paths(raw: str) -> list[str]:
 
 
 _PRIMARY_ENV_PREFIX = "VP_"
+
+
+def normalize_openai_base_url(raw_url: str) -> str:
+    """Normalize an OpenAI-compatible endpoint to the SDK base URL."""
+
+    url = str(raw_url or "").strip().strip("\"'").rstrip("/")
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    suffixes = ("/chat/completions", "/responses", "/v1/chat/completions", "/v1/responses")
+    lowered = path.lower()
+    for suffix in suffixes:
+        if lowered.endswith(suffix):
+            path = path[: -len(suffix)] + ("/v1" if suffix.startswith("/v1/") else "")
+            break
+    return urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
 
 
 def _env_key_candidates(key: str) -> list[str]:

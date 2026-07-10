@@ -6,6 +6,7 @@ from scripts.check_provider_conformance import (
     redact_text,
     simulate_frontend_batching,
 )
+from app.config import normalize_openai_base_url
 
 
 def test_redact_text_removes_configured_secrets() -> None:
@@ -69,3 +70,13 @@ def test_stream_recommendation_selects_first_interval_under_target() -> None:
     assert result["naive_render_risk"] == "high"
     assert result["recommended_flush_interval_ms"] == 50
     assert result["recommended_flushes_per_sec"] == 18
+
+
+def test_normalize_openai_base_url_matches_runtime_endpoint_handling() -> None:
+    assert normalize_openai_base_url("https://gateway.example/v1/") == "https://gateway.example/v1"
+    assert (
+        normalize_openai_base_url("https://gateway.example/v1/chat/completions")
+        == "https://gateway.example/v1"
+    )
+    assert normalize_openai_base_url("https://gateway.example/chat/completions") == "https://gateway.example"
+    assert normalize_openai_base_url("https://gateway.example/v1/responses") == "https://gateway.example/v1"

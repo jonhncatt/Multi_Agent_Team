@@ -30,7 +30,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.config import build_provider_config, load_config  # noqa: E402
+from app.config import build_provider_config, load_config, normalize_openai_base_url  # noqa: E402
 from app.openai_auth import OpenAIAuthManager  # noqa: E402
 
 
@@ -510,6 +510,9 @@ def _print_summary(report: dict[str, Any]) -> None:
     print("Provider conformance probe")
     print(f"  provider: {report['provider']['name']}")
     print(f"  model: {report['provider']['model']}")
+    print(f"  auth configured: {'yes' if report['provider'].get('auth_available') else 'no'}")
+    print(f"  base URL configured: {'yes' if report['provider'].get('base_url_configured') else 'no'}")
+    print(f"  custom CA configured: {'yes' if report['provider'].get('custom_ca_configured') else 'no'}")
     for key, label in (("non_stream", "non-stream"), ("stream", "stream"), ("tool_calling", "tool calling")):
         payload = checks.get(key)
         if not isinstance(payload, dict):
@@ -607,7 +610,7 @@ def main(argv: list[str] | None = None) -> int:
         "max_retries": 0,
     }
     if config.openai_base_url:
-        client_kwargs["base_url"] = str(config.openai_base_url).rstrip("/")
+        client_kwargs["base_url"] = normalize_openai_base_url(str(config.openai_base_url))
     if config.openai_ca_cert_path:
         try:
             import httpx
