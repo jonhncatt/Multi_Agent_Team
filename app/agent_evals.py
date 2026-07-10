@@ -1,0 +1,928 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import datetime, timezone
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any, Callable
+from uuid import uuid4
+
+from app.config import AppConfig, build_provider_config, load_config
+from app.models import ChatSettings
+from app.vintage_programmer_runtime import VintageProgrammerRuntime
+
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CASES_PATH = ROOT / "evals" / "agent_quality_cases.json"
+AGENT_DIR = ROOT / "agents" / "vintage_programmer"
+SCHEMA_VERSION = 1
+SUPPORTED_CASE_KIND = "agent_workspace"
+DEFAULT_IGNORED_CHANGE_GLOBS = (
+    ".eval_build/**",
+    ".eval_runtime/**",
+    "app/data/**",
+    "workspace/skills/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+)
+READ_EVIDENCE_TOOLS = {
+    "read_file",
+    "read_section",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
+    "fact_check_file",
+}
+WRITE_CAPABLE_TOOLS = {
+    "apply_patch",
+    "exec_command",
+    "web_download",
+    "archive_extract",
+    "mail_extract_attachments",
+}
+READ_COMMAND_MARKERS = (
+    "cat ",
+    "type ",
+    "get-content",
+    "more ",
+    "sed ",
+    "head ",
+    "tail ",
+    "rg ",
+    "grep ",
+    "python ",
+    "python3 ",
+    "py ",
+)
+
+
+class EvalConfigurationError(ValueError):
+    pass
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
+    return normalized[:80] or "eval-case"
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def safe_report_path(path: Path, *, fallback_label: str = "isolated-path") -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        return resolved.relative_to(ROOT).as_posix()
+    except Exception:
+        return f"<{fallback_label}>/{resolved.name}"
+
+
+def _resolve_repo_path(raw: str, *, require_dir: bool = False, require_file: bool = False) -> Path:
+    candidate = Path(str(raw or "").strip())
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    resolved = candidate.expanduser().resolve()
+    if not _is_within(resolved, ROOT):
+        raise EvalConfigurationError(f"Eval path escapes repository root: {raw}")
+    if require_dir and not resolved.is_dir():
+        raise EvalConfigurationError(f"Eval fixture directory does not exist: {raw}")
+    if require_file and not resolved.is_file():
+        raise EvalConfigurationError(f"Eval file does not exist: {raw}")
+    return resolved
+
+
+def load_eval_suite(path: str | Path = DEFAULT_CASES_PATH) -> dict[str, Any]:
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = (ROOT / resolved).resolve()
+    if not resolved.is_file():
+        raise EvalConfigurationError(f"Eval cases file does not exist: {resolved}")
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise EvalConfigurationError(f"Eval cases JSON is invalid: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise EvalConfigurationError("Current eval suite must be a JSON object, not the legacy list format.")
+    payload["_cases_path"] = str(resolved)
+    validate_eval_suite(payload)
+    return payload
+
+
+def validate_eval_suite(suite: dict[str, Any]) -> None:
+    if int(suite.get("schema_version") or 0) != SCHEMA_VERSION:
+        raise EvalConfigurationError(f"Unsupported eval schema_version; expected {SCHEMA_VERSION}.")
+    if not str(suite.get("suite") or "").strip():
+        raise EvalConfigurationError("Eval suite requires a non-empty suite name.")
+    cases = suite.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise EvalConfigurationError("Eval suite requires at least one case.")
+
+    seen: set[str] = set()
+    for index, raw_case in enumerate(cases):
+        if not isinstance(raw_case, dict):
+            raise EvalConfigurationError(f"Case #{index + 1} must be an object.")
+        name = str(raw_case.get("name") or "").strip()
+        if not name:
+            raise EvalConfigurationError(f"Case #{index + 1} requires a name.")
+        if name in seen:
+            raise EvalConfigurationError(f"Duplicate eval case name: {name}")
+        seen.add(name)
+        if str(raw_case.get("kind") or "") != SUPPORTED_CASE_KIND:
+            raise EvalConfigurationError(
+                f"Case {name} uses unsupported kind {raw_case.get('kind')!r}; "
+                f"current runner supports only {SUPPORTED_CASE_KIND!r}."
+            )
+        fixture = _resolve_repo_path(str(raw_case.get("fixture") or ""), require_dir=True)
+        message = str(raw_case.get("message") or "").strip()
+        if not message:
+            raise EvalConfigurationError(f"Case {name} requires a message.")
+        required_context = _string_list(raw_case.get("required_context_files"))
+        target_files = _string_list(raw_case.get("target_files"))
+        allowed_changes = _string_list(raw_case.get("allowed_changed_files"))
+        if not required_context or not target_files or not allowed_changes:
+            raise EvalConfigurationError(
+                f"Case {name} requires required_context_files, target_files, and allowed_changed_files."
+            )
+        required_fixture_files = [*required_context, *target_files, *_string_list(raw_case.get("protected_files"))]
+        verification = _mapping(raw_case.get("verification"))
+        verification_script = str(verification.get("script") or "").strip()
+        if not verification_script:
+            raise EvalConfigurationError(f"Case {name} requires verification.script.")
+        required_fixture_files.append(verification_script)
+        for relative in required_fixture_files:
+            resolved = (fixture / relative).resolve()
+            if not _is_within(resolved, fixture) or not resolved.is_file():
+                raise EvalConfigurationError(f"Case {name} fixture file is missing or unsafe: {relative}")
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    return [str(item).strip().replace("\\", "/") for item in list(value or []) if str(item).strip()]
+
+
+def _is_ignored(relative_path: str, patterns: list[str] | tuple[str, ...]) -> bool:
+    normalized = str(relative_path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return any(fnmatch.fnmatch(normalized, pattern) for pattern in patterns)
+
+
+def snapshot_workspace(root: Path, *, ignored_globs: list[str] | tuple[str, ...] = ()) -> dict[str, str]:
+    patterns = [*DEFAULT_IGNORED_CHANGE_GLOBS, *list(ignored_globs or [])]
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if _is_ignored(relative, patterns):
+            continue
+        snapshot[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
+
+
+def compare_snapshots(before: dict[str, str], after: dict[str, str]) -> dict[str, list[str]]:
+    before_paths = set(before)
+    after_paths = set(after)
+    return {
+        "added": sorted(after_paths - before_paths),
+        "modified": sorted(path for path in before_paths & after_paths if before[path] != after[path]),
+        "deleted": sorted(before_paths - after_paths),
+        "changed": sorted(
+            (after_paths - before_paths)
+            | (before_paths - after_paths)
+            | {path for path in before_paths & after_paths if before[path] != after[path]}
+        ),
+    }
+
+
+def _strip_cpp_comments_and_literals(text: str) -> str:
+    pattern = re.compile(
+        r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+        flags=re.DOTALL,
+    )
+    return pattern.sub(" ", str(text or ""))
+
+
+def scan_c_style_rules(workspace: Path, case: dict[str, Any]) -> list[dict[str, str]]:
+    rule_spec = _mapping(case.get("c_style_rules"))
+    files = _string_list(rule_spec.get("files") or case.get("target_files"))
+    raw_patterns = list(rule_spec.get("forbidden_patterns") or [])
+    violations: list[dict[str, str]] = []
+    for relative in files:
+        path = (workspace / relative).resolve()
+        if not _is_within(path, workspace) or not path.is_file():
+            violations.append({"file": relative, "rule": "target_missing", "match": ""})
+            continue
+        searchable = _strip_cpp_comments_and_literals(path.read_text(encoding="utf-8", errors="replace"))
+        for raw in raw_patterns:
+            if isinstance(raw, str):
+                expression = raw
+                label = raw
+            elif isinstance(raw, dict):
+                expression = str(raw.get("pattern") or "")
+                label = str(raw.get("label") or expression)
+            else:
+                continue
+            if not expression:
+                continue
+            match = re.search(expression, searchable, flags=re.MULTILINE)
+            if match:
+                violations.append(
+                    {
+                        "file": relative,
+                        "rule": label,
+                        "match": str(match.group(0) or "")[:120],
+                    }
+                )
+    return violations
+
+
+def _event_payload_text(event: dict[str, Any]) -> str:
+    selected = {
+        "input": event.get("input"),
+        "normalized_arguments": event.get("normalized_arguments"),
+        "raw_arguments": event.get("raw_arguments"),
+        "arguments_preview": event.get("arguments_preview"),
+    }
+    return json.dumps(_jsonable(selected), ensure_ascii=False).replace("\\", "/").lower()
+
+
+def analyze_tool_evidence(
+    tool_events: list[dict[str, Any]],
+    *,
+    required_context_files: list[str],
+    verification_markers: list[str],
+) -> dict[str, Any]:
+    observed: dict[str, bool] = {path: False for path in required_context_files}
+    verification_attempted = False
+    verification_succeeded = False
+    failed_tool_calls = 0
+    fingerprints: list[str] = []
+
+    for event in tool_events:
+        name = str(event.get("name") or "").strip()
+        payload_text = _event_payload_text(event)
+        status = str(event.get("status") or "").strip().lower()
+        if status in {"failed", "error", "blocked", "rejected"}:
+            failed_tool_calls += 1
+        fingerprints.append(f"{name}:{payload_text[:240]}")
+
+        read_capable = name in READ_EVIDENCE_TOOLS
+        if name == "exec_command" and any(marker in payload_text for marker in READ_COMMAND_MARKERS):
+            read_capable = True
+        if read_capable:
+            for relative in observed:
+                normalized = relative.replace("\\", "/").lower()
+                basename = Path(relative).name.lower()
+                if normalized in payload_text or basename in payload_text:
+                    observed[relative] = True
+
+        if name == "exec_command" and any(marker.lower() in payload_text for marker in verification_markers):
+            verification_attempted = True
+            verification_succeeded = verification_succeeded or _tool_event_succeeded(event)
+
+    repeats = max(0, len(fingerprints) - len(set(fingerprints)))
+    return {
+        "required_context_files": observed,
+        "context_files_observed": sum(1 for value in observed.values() if value),
+        "context_files_required": len(observed),
+        "context_coverage_complete": all(observed.values()) if observed else True,
+        "agent_verification_attempted": verification_attempted,
+        "agent_verification_succeeded": verification_succeeded,
+        "tool_call_count": len(tool_events),
+        "failed_tool_call_count": failed_tool_calls,
+        "repeated_tool_call_count": repeats,
+    }
+
+
+def _tool_event_succeeded(event: dict[str, Any]) -> bool:
+    status = str(event.get("status") or "").strip().lower()
+    if status in {"failed", "error", "blocked", "rejected"}:
+        return False
+    preview = event.get("result_preview")
+    if isinstance(preview, dict):
+        if preview.get("ok") is False:
+            return False
+        return_code = preview.get("returncode")
+        if return_code is not None:
+            try:
+                return int(return_code) == 0
+            except Exception:
+                return False
+    output = str(event.get("output_preview") or "")
+    try:
+        decoded = json.loads(output)
+    except Exception:
+        decoded = None
+    if isinstance(decoded, dict):
+        if decoded.get("ok") is False:
+            return False
+        returncode = decoded.get("returncode")
+        if returncode is not None:
+            try:
+                return int(returncode) == 0
+            except Exception:
+                return False
+    return status not in {"failed", "error", "blocked", "rejected"}
+
+
+def _redact_output(text: str, *, workspace: Path, limit: int = 8000) -> str:
+    value = str(text or "")
+    replacements = [str(workspace), str(Path.home())]
+    for secret in replacements:
+        if secret:
+            value = value.replace(secret, "<redacted-path>")
+            value = value.replace(secret.replace("\\", "/"), "<redacted-path>")
+    value = re.sub(r"https?://[^\s\"']+", "<redacted-url>", value, flags=re.IGNORECASE)
+    value = re.sub(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/][^\s\"']+", "<redacted-path>", value)
+    value = re.sub(r"(?<![A-Za-z0-9_])\\\\[^\s\"']+", "<redacted-path>", value)
+    value = re.sub(r"(?<![A-Za-z0-9_])/(?:[^/\s\"']+/)+[^/\s\"']*", "<redacted-path>", value)
+    if len(value) > limit:
+        value = value[-limit:]
+    return value
+
+
+def _wrapper_argv(script: Path, *, workspace: Path, case_name: str) -> list[str]:
+    suffix = script.suffix.lower()
+    if suffix == ".py":
+        return [sys.executable, str(script), str(workspace), case_name]
+    if suffix in {".bat", ".cmd"}:
+        command_shell = os.environ.get("COMSPEC") or shutil.which("cmd.exe") or "cmd.exe"
+        command_text = subprocess.list2cmdline([str(script), str(workspace), case_name])
+        return [command_shell, "/d", "/s", "/c", command_text]
+    if suffix == ".ps1":
+        powershell = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+        if not powershell:
+            raise FileNotFoundError("PowerShell is unavailable for the configured verifier script.")
+        return [powershell, "-NoProfile", "-File", str(script), str(workspace), case_name]
+    return [str(script), str(workspace), case_name]
+
+
+def execute_authoritative_verifier(
+    workspace: Path,
+    case: dict[str, Any],
+    *,
+    verifier_script: str | None = None,
+    timeout_sec: float | None = None,
+) -> dict[str, Any]:
+    verification = _mapping(case.get("verification"))
+    timeout = max(1.0, float(timeout_sec or verification.get("timeout_sec") or 90.0))
+    configured_script = str(
+        verifier_script
+        if verifier_script is not None
+        else os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")
+    ).strip()
+    source = "portable_fixture"
+    try:
+        if configured_script:
+            script_path = Path(configured_script).expanduser()
+            if not script_path.is_absolute() or not script_path.is_file():
+                return {
+                    "status": "blocked",
+                    "source": "company_wrapper",
+                    "returncode": 2,
+                    "summary": "Configured company verifier script is unavailable.",
+                    "stdout": "",
+                    "stderr": "",
+                }
+            argv = _wrapper_argv(script_path.resolve(), workspace=workspace, case_name=str(case.get("name") or ""))
+            source = "company_wrapper"
+        else:
+            relative_script = str(verification.get("script") or "").strip()
+            script_path = (workspace / relative_script).resolve()
+            if not _is_within(script_path, workspace) or not script_path.is_file():
+                return {
+                    "status": "failed",
+                    "source": source,
+                    "returncode": 1,
+                    "summary": "Portable verification script is missing.",
+                    "stdout": "",
+                    "stderr": "",
+                }
+            argv = [sys.executable, str(script_path)]
+
+        completed = subprocess.run(
+            argv,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env={**os.environ, "VP_EVAL_WORKSPACE": str(workspace)},
+        )
+        return_code = int(completed.returncode)
+        status = "passed" if return_code == 0 else ("blocked" if return_code == 2 else "failed")
+        summary = {
+            "passed": "Authoritative compile and tests passed.",
+            "failed": "Authoritative compile or tests failed.",
+            "blocked": "Authoritative compiler is unavailable or misconfigured.",
+        }[status]
+        return {
+            "status": status,
+            "source": source,
+            "returncode": return_code,
+            "summary": summary,
+            "stdout": _redact_output(completed.stdout, workspace=workspace),
+            "stderr": _redact_output(completed.stderr, workspace=workspace),
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "blocked",
+            "source": source,
+            "returncode": 2,
+            "summary": f"Authoritative verifier timed out after {timeout:g} seconds.",
+            "stdout": _redact_output(str(exc.stdout or ""), workspace=workspace),
+            "stderr": _redact_output(str(exc.stderr or ""), workspace=workspace),
+        }
+    except Exception as exc:
+        return {
+            "status": "blocked",
+            "source": source,
+            "returncode": 2,
+            "summary": f"Authoritative verifier could not start: {type(exc).__name__}.",
+            "stdout": "",
+            "stderr": "",
+        }
+
+
+def _isolated_config(base: AppConfig, workspace: Path) -> AppConfig:
+    runtime_root = workspace / ".eval_runtime"
+    sessions_dir = runtime_root / "sessions"
+    runs_dir = runtime_root / "runs"
+    session_meta_dir = runtime_root / "session_meta"
+    uploads_dir = runtime_root / "uploads"
+    for directory in (sessions_dir, runs_dir, session_meta_dir, uploads_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    allowed_commands = list(dict.fromkeys([*base.allowed_commands, "python", "python3", "py"]))
+    return replace(
+        base,
+        workspace_root=workspace,
+        projects_registry_path=runtime_root / "projects.json",
+        sessions_dir=sessions_dir,
+        runs_dir=runs_dir,
+        session_meta_dir=session_meta_dir,
+        uploads_dir=uploads_dir,
+        token_stats_path=runtime_root / "token_stats.json",
+        allowed_roots=[workspace],
+        workspace_sibling_root=None,
+        allow_workspace_sibling_access=False,
+        default_extra_allowed_roots=[],
+        extra_allowed_roots_source="eval_isolation",
+        allow_any_path=False,
+        permission_profile="auto",
+        execution_mode="host",
+        web_allowed_domains=[],
+        web_allow_all_domains=False,
+        allowed_commands=allowed_commands,
+    )
+
+
+def _runtime_factory(config: AppConfig) -> VintageProgrammerRuntime:
+    return VintageProgrammerRuntime(config=config, agent_dir=AGENT_DIR)
+
+
+def _compact_tool_events(events: list[dict[str, Any]], *, workspace: Path) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for event in events:
+        input_payload = event.get("normalized_arguments") or event.get("input") or {}
+        rendered_input = _redact_output(
+            json.dumps(_jsonable(input_payload), ensure_ascii=False),
+            workspace=workspace,
+            limit=800,
+        )
+        compact.append(
+            {
+                "name": str(event.get("name") or ""),
+                "status": str(event.get("status") or ""),
+                "summary": str(event.get("summary") or "")[:500],
+                "arguments": rendered_input,
+            }
+        )
+    return compact
+
+
+def _outside_workspace_write_detected(events: list[dict[str, Any]], workspace: Path) -> bool:
+    for event in events:
+        name = str(event.get("name") or "")
+        if name not in WRITE_CAPABLE_TOOLS or not _tool_event_succeeded(event):
+            continue
+        for raw_cwd in (event.get("cwd"), (event.get("normalized_arguments") or {}).get("cwd")):
+            if not str(raw_cwd or "").strip():
+                continue
+            candidate = Path(str(raw_cwd)).expanduser()
+            if candidate.is_absolute() and not _is_within(candidate, workspace):
+                return True
+        preview = event.get("result_preview")
+        if isinstance(preview, dict):
+            for raw_path in list(preview.get("files") or []):
+                candidate = Path(str(raw_path)).expanduser()
+                if candidate.is_absolute() and not _is_within(candidate, workspace):
+                    return True
+    return False
+
+
+def _runtime_declared_completed(result: dict[str, Any]) -> bool:
+    runtime_error = result.get("runtime_error") if isinstance(result.get("runtime_error"), dict) else {}
+    return (
+        str(result.get("turn_status") or "").strip().lower() == "completed"
+        and not runtime_error
+        and not dict(result.get("pending_user_input") or {})
+        and not dict(result.get("pending_approval") or {})
+    )
+
+
+def _auth_or_environment_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "credential",
+            "api key",
+            "authentication",
+            "auth is unavailable",
+            "ca certificate",
+            "connection failed",
+            "provider credentials",
+        )
+    )
+
+
+def run_eval_attempt(
+    case: dict[str, Any],
+    *,
+    attempt: int,
+    workspace: Path,
+    base_config: AppConfig,
+    model: str = "",
+    runtime_factory: Callable[[AppConfig], Any] = _runtime_factory,
+    verifier_script: str | None = None,
+) -> dict[str, Any]:
+    fixture = _resolve_repo_path(str(case.get("fixture") or ""), require_dir=True)
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(fixture, workspace)
+    config = _isolated_config(base_config, workspace)
+    ignored_globs = _string_list(case.get("ignored_change_globs"))
+    before = snapshot_workspace(workspace, ignored_globs=ignored_globs)
+    started = time.perf_counter()
+    result: dict[str, Any] = {}
+    runtime_exception = ""
+
+    settings_payload = dict(case.get("settings") or {})
+    settings_payload["model"] = str(model or settings_payload.get("model") or config.default_model)
+    settings_payload.setdefault("enable_tools", True)
+    settings_payload.setdefault("permission_profile", "auto")
+    settings_payload.setdefault("locale", "zh-CN")
+    settings = ChatSettings(**settings_payload)
+    run_id = f"eval-{_slug(str(case.get('name') or 'case'))}-{attempt}-{uuid4().hex[:8]}"
+    try:
+        runtime = runtime_factory(config)
+        result = _jsonable(
+            runtime.run(
+                message=str(case.get("message") or ""),
+                settings=settings,
+                context={
+                    "session_id": run_id,
+                    "run_id": run_id,
+                    "project": {
+                        "project_id": run_id,
+                        "project_title": str(case.get("name") or "Eval case"),
+                        "project_root": str(workspace),
+                        "cwd": str(workspace),
+                        "git_branch": "",
+                        "is_worktree": False,
+                    },
+                    "current_turn": {
+                        "user_message": str(case.get("message") or ""),
+                        "goal": str(case.get("message") or ""),
+                        "is_followup": False,
+                        "source": "agent_eval",
+                    },
+                    "work_cursor": {"project_root": str(workspace), "cwd": str(workspace)},
+                    "task_state": {},
+                    "history_turns": [],
+                    "recent_user_messages": [],
+                    "attachments": [],
+                },
+            )
+        )
+    except Exception as exc:
+        runtime_exception = f"{type(exc).__name__}: {exc}"
+
+    elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
+    after = snapshot_workspace(workspace, ignored_globs=ignored_globs)
+    changes = compare_snapshots(before, after)
+    target_files = _string_list(case.get("target_files"))
+    allowed_changes = set(_string_list(case.get("allowed_changed_files")))
+    protected_files = set(_string_list(case.get("protected_files")))
+    target_changed = all(path in changes["changed"] for path in target_files)
+    unexpected_changes = sorted(path for path in changes["changed"] if path not in allowed_changes)
+    protected_changes = sorted(path for path in changes["changed"] if path in protected_files)
+    c_style_violations = scan_c_style_rules(workspace, case)
+    tool_events = [
+        _jsonable(item)
+        for item in list(result.get("tool_events") or [])
+        if isinstance(_jsonable(item), dict)
+    ]
+    verification = _mapping(case.get("verification"))
+    tool_evidence = analyze_tool_evidence(
+        tool_events,
+        required_context_files=_string_list(case.get("required_context_files")),
+        verification_markers=_string_list(verification.get("command_markers") or [verification.get("script")]),
+    )
+    outside_write = _outside_workspace_write_detected(tool_events, workspace)
+
+    auth_or_environment_blocked = bool(
+        runtime_exception and _auth_or_environment_error(RuntimeError(runtime_exception))
+    )
+    if auth_or_environment_blocked:
+        authoritative = {
+            "status": "blocked",
+            "source": "not_run",
+            "returncode": 2,
+            "summary": "Provider authentication or environment is unavailable.",
+            "stdout": "",
+            "stderr": "",
+        }
+    elif runtime_exception:
+        authoritative = {
+            "status": "not_run",
+            "source": "not_run",
+            "returncode": None,
+            "summary": "Verification was not run because the Runtime failed.",
+            "stdout": "",
+            "stderr": "",
+        }
+    elif protected_changes and not str(verifier_script or os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")).strip():
+        authoritative = {
+            "status": "failed",
+            "source": "portable_fixture",
+            "returncode": 1,
+            "summary": "Portable verifier was modified by the Agent and was not executed.",
+            "stdout": "",
+            "stderr": "",
+        }
+    else:
+        authoritative = execute_authoritative_verifier(
+            workspace,
+            case,
+            verifier_script=verifier_script,
+        )
+
+    runtime_completed = _runtime_declared_completed(result)
+    completion_determinable = not runtime_exception and authoritative.get("status") in {"passed", "failed"}
+    factual_completion = bool(
+        completion_determinable
+        and tool_evidence["context_coverage_complete"]
+        and target_changed
+        and not unexpected_changes
+        and not protected_changes
+        and not c_style_violations
+        and tool_evidence["agent_verification_attempted"]
+        and authoritative.get("status") == "passed"
+        and not outside_write
+    )
+    completion_accuracy: bool | None = (
+        runtime_completed == factual_completion if completion_determinable else None
+    )
+
+    hard_failures: list[str] = []
+    failure_categories: list[str] = []
+
+    def fail(message: str, category: str) -> None:
+        hard_failures.append(message)
+        if category not in failure_categories:
+            failure_categories.append(category)
+
+    if runtime_exception:
+        fail("Runtime did not complete successfully.", "runtime_failure")
+    else:
+        if not runtime_completed:
+            fail("Runtime ended without a completed state.", "runtime_failure")
+        if not tool_evidence["context_coverage_complete"]:
+            fail("Required specification, rules, or reference files were not all observed in read traces.", "context_acquisition")
+        if not target_changed:
+            fail("Required target file was not changed.", "workspace_discipline")
+        if unexpected_changes or protected_changes:
+            fail("Unexpected or protected files were changed.", "workspace_discipline")
+        if c_style_violations:
+            fail("Generated code violates the C-style subset rules.", "language_rule_violation")
+        if not tool_evidence["agent_verification_attempted"]:
+            fail("Agent did not attempt the required verification command.", "verification_not_attempted")
+        if outside_write:
+            fail("A successful write-capable tool event escaped the isolated workspace.", "workspace_discipline")
+        if authoritative.get("status") == "failed":
+            fail("Authoritative compile or tests failed.", "code_correctness")
+        if completion_accuracy is False:
+            fail("Runtime completion state did not match the authoritative result.", "completion_honesty")
+
+    environment_blocked = bool(
+        auth_or_environment_blocked
+        or (authoritative.get("status") == "blocked" and not hard_failures)
+    )
+    if authoritative.get("status") == "blocked" and "environment_blocked" not in failure_categories:
+        failure_categories.append("environment_blocked")
+
+    if environment_blocked:
+        status = "blocked"
+    elif hard_failures:
+        status = "failed"
+    else:
+        status = "passed"
+
+    final_text = str(result.get("final_answer") or result.get("text") or "")
+    token_usage = dict(result.get("token_usage") or {}) if isinstance(result.get("token_usage"), dict) else {}
+    return {
+        "case": str(case.get("name") or ""),
+        "attempt": int(attempt),
+        "status": status,
+        "workspace": safe_report_path(workspace, fallback_label="isolated-workspace"),
+        "elapsed_ms": elapsed_ms,
+        "hard_failures": hard_failures,
+        "failure_categories": failure_categories,
+        "runtime": {
+            "declared_completed": runtime_completed,
+            "turn_status": str(result.get("turn_status") or ""),
+            "exception": _redact_output(runtime_exception, workspace=workspace),
+            "runtime_error": _jsonable(result.get("runtime_error") or {}),
+            "pending_user_input": _jsonable(result.get("pending_user_input") or {}),
+            "pending_approval": _jsonable(result.get("pending_approval") or {}),
+            "effective_model": str(result.get("effective_model") or settings.model or ""),
+            "final_answer": _redact_output(final_text, workspace=workspace, limit=6000),
+            "token_usage": token_usage,
+            "llm_calls": int(token_usage.get("llm_calls") or len(list(result.get("llm_exchanges") or [])) or 0),
+        },
+        "workspace_changes": {
+            **changes,
+            "target_files": target_files,
+            "target_changed": target_changed,
+            "unexpected_changes": unexpected_changes,
+            "protected_changes": protected_changes,
+            "outside_workspace_write_detected": outside_write,
+            "isolation_root": "attempt_workspace",
+        },
+        "context_and_tools": {
+            **tool_evidence,
+            "timeline": _compact_tool_events(tool_events, workspace=workspace),
+        },
+        "c_style": {
+            "passed": not c_style_violations,
+            "violations": c_style_violations,
+        },
+        "verification": authoritative,
+        "completion_state_accuracy": completion_accuracy,
+    }
+
+
+def aggregate_eval_results(
+    results: list[dict[str, Any]],
+    *,
+    suite_name: str,
+    cases_path: str,
+    provider: str,
+    model: str,
+) -> dict[str, Any]:
+    total = len(results)
+    passed = sum(1 for item in results if item.get("status") == "passed")
+    failed = sum(1 for item in results if item.get("status") == "failed")
+    blocked = sum(1 for item in results if item.get("status") == "blocked")
+    verification_attempts = sum(
+        1 for item in results if bool((item.get("context_and_tools") or {}).get("agent_verification_attempted"))
+    )
+    determined_accuracy = [
+        bool(item.get("completion_state_accuracy"))
+        for item in results
+        if isinstance(item.get("completion_state_accuracy"), bool)
+    ]
+    accurate = sum(1 for value in determined_accuracy if value)
+    category_counts: dict[str, int] = {}
+    for item in results:
+        for category in list(item.get("failure_categories") or []):
+            key = str(category or "unknown")
+            category_counts[key] = category_counts.get(key, 0) + 1
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _utc_now(),
+        "suite": suite_name,
+        "cases_path": cases_path,
+        "provider": {
+            "name": provider,
+            "model": model,
+        },
+        "summary": {
+            "total_attempts": total,
+            "passed": passed,
+            "failed": failed,
+            "blocked": blocked,
+            "success_rate_percent": round((passed * 100.0 / total) if total else 0.0, 2),
+            "verification_rate_percent": round((verification_attempts * 100.0 / total) if total else 0.0, 2),
+            "completion_state_accuracy_percent": round(
+                (accurate * 100.0 / len(determined_accuracy)) if determined_accuracy else 0.0,
+                2,
+            ),
+            "completion_state_accuracy_samples": len(determined_accuracy),
+            "failure_categories": category_counts,
+        },
+        "results": results,
+    }
+
+
+def run_eval_suite(
+    suite: dict[str, Any],
+    *,
+    repeat: int,
+    provider: str = "",
+    model: str = "",
+    name_filter: str = "",
+    workspaces_root: Path | None = None,
+    keep_workspaces: bool = False,
+    runtime_factory: Callable[[AppConfig], Any] = _runtime_factory,
+    verifier_script: str | None = None,
+) -> dict[str, Any]:
+    validate_eval_suite(suite)
+    repeat_count = max(1, int(repeat))
+    base_config = load_config()
+    if str(provider or "").strip():
+        base_config = build_provider_config(base_config, str(provider).strip())
+    selected_model = str(model or base_config.default_model).strip()
+    selected_provider = str(base_config.llm_provider or provider or "").strip()
+    cases = [
+        case
+        for case in list(suite.get("cases") or [])
+        if not name_filter or name_filter.lower() in str(case.get("name") or "").lower()
+    ]
+    if not cases:
+        raise EvalConfigurationError("No eval cases matched the selected name filter.")
+    run_label = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
+    workspace_root = (workspaces_root or (ROOT / "artifacts" / "evals" / "workspaces" / run_label)).resolve()
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        for attempt in range(1, repeat_count + 1):
+            workspace = workspace_root / _slug(str(case.get("name") or "case")) / f"attempt-{attempt}"
+            result = run_eval_attempt(
+                case,
+                attempt=attempt,
+                workspace=workspace,
+                base_config=base_config,
+                model=selected_model,
+                runtime_factory=runtime_factory,
+                verifier_script=verifier_script,
+            )
+            results.append(result)
+            if not keep_workspaces and result.get("status") == "passed":
+                shutil.rmtree(workspace, ignore_errors=True)
+                result["workspace_retained"] = False
+            else:
+                result["workspace_retained"] = True
+    return aggregate_eval_results(
+        results,
+        suite_name=str(suite.get("suite") or ""),
+        cases_path=safe_report_path(
+            Path(str(suite.get("_cases_path") or DEFAULT_CASES_PATH)),
+            fallback_label="cases",
+        ),
+        provider=selected_provider,
+        model=selected_model,
+    )
+
+
+def eval_exit_code(report: dict[str, Any]) -> int:
+    summary = _mapping(report.get("summary"))
+    if int(summary.get("failed") or 0) > 0:
+        return 1
+    if int(summary.get("blocked") or 0) > 0:
+        return 2
+    return 0

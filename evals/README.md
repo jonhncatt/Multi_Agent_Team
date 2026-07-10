@@ -1,37 +1,75 @@
 # Evals
 
-This directory has two tiers.
+The current quality gate targets the active `VintageProgrammerRuntime` directly. It runs each live Agent attempt in an isolated workspace and evaluates the resulting files, tool trace, verification behavior, and completion state.
 
-## Stable Gate Suites
+## Current Agent quality suite
+
+- cases: `evals/agent_quality_cases.json`
+- first scenario: specification-driven C-style implementation in a `.cpp` project
+- runner: `scripts/run_evals.py`
+
+Validate the suite and fixtures without sending a provider request:
+
+```bash
+python scripts/run_evals.py --validate-only
+```
+
+Run one live attempt with the active provider configuration:
+
+```bash
+python scripts/run_evals.py --live
+```
+
+Run the formal company baseline:
+
+```bash
+python scripts/run_evals.py \
+  --cases evals/agent_quality_cases.json \
+  --live \
+  --repeat 3 \
+  --provider openai_compatible \
+  --model gpt-5.4 \
+  --output artifacts/evals/c-style-cpp-baseline.json
+```
+
+`--live` is mandatory for provider-backed attempts. Without it, the runner does not send model requests. Successful attempt workspaces are removed by default; failed and blocked workspaces are retained under `artifacts/evals/workspaces/`. Use `--keep-workspaces` to retain every attempt.
+
+## Company compiler adapter
+
+Set `VP_EVAL_CPP_VERIFY_SCRIPT` to the absolute path of a company-owned wrapper script when the portable fixture cannot use MSVC, `clang++`, or `g++` locally.
+
+The runner invokes:
+
+```text
+<script> <workspace_path> <case_name>
+```
+
+The process working directory is the attempt workspace. The wrapper may call a compiler on the same machine or forward the project to a remote compilation service.
+
+Return codes:
+
+- `0`: compile and tests passed;
+- `1`: compile or tests failed;
+- `2`: compiler unavailable or adapter configuration failed.
+
+The wrapper is executed by the Eval runner after the Agent turn. Its path and environment are not sent to the model or stored in the report.
+
+## Report and exit status
+
+Reports are JSON and contain per-attempt status, workspace changes, context-read evidence, tool counts, C-style rule violations, authoritative verification, token usage, and completion-state accuracy.
+
+- exit `0`: every attempt passed;
+- exit `1`: at least one real Eval failure;
+- exit `2`: no real failure, but at least one attempt was blocked by authentication, compiler, or environment configuration.
+
+## Legacy datasets
+
+The following files belong to the removed legacy platform compatibility layer and are retained only as historical regression material:
 
 - `evals/gate_cases.json`
-  - purpose: office/helper baseline gate
 - `evals/research_gate_cases.json`
-  - purpose: research-module gate
 - `evals/swarm_gate_cases.json`
-  - purpose: research Swarm gate
+- `evals/cases.json`
+- `evals/replay_samples/`
 
-Run them with:
-
-```bash
-python scripts/run_evals.py --cases evals/gate_cases.json --output artifacts/evals/regression-summary.json
-python scripts/run_evals.py --cases evals/research_gate_cases.json --output artifacts/evals/research-gate-summary.json
-python scripts/run_evals.py --cases evals/swarm_gate_cases.json --output artifacts/evals/swarm-gate-summary.json
-```
-
-## Full Exploratory Suite
-
-- file: `evals/cases.json`
-- purpose: broader regression and investigation coverage
-- expectation: useful for analysis, not necessarily suitable as a hard branch gate while legacy paths are still being retired
-
-Run it with:
-
-```bash
-python scripts/run_evals.py --cases evals/cases.json --output artifacts/evals/full-summary.json
-```
-
-## Replay Samples
-
-- directory: `evals/replay_samples/`
-- purpose: lightweight baseline corpus for replay, gate promotion, and release regression seeding
+They contain legacy `helper`, `conversation`, and `module_task` case kinds and are not accepted by the current runner. Do not use them as active release gates until their useful scenarios are deliberately migrated to the current schema.
