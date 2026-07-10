@@ -94,17 +94,31 @@ Vintage Programmer 已经具备较完整的 Agent Runtime 基础，包括模型�
 
 这三个场景将成为第一批真实任务 Eval 的主线。后续新增能力必须说明它改善了哪一个核心场景，或者解决了哪个基础可靠性问题。
 
+当前已确认的输入与产物形式：
+
+- 大量文件分析的典型输入包括 PDF 规格书、Excel 规格书和 C++ 源代码；
+- C++ 源代码至少应覆盖 `.cpp`，后续建立样本时同时统计实际出现的头文件和其他相关后缀；
+- 规格驱动生成的主要产物是 C++ 代码和 Markdown 文档；
+- 文件数量、单文件大小和任务总大小尚未量化，不能先用主观定义代替真实工作负载；
+- C++ 项目实际使用的构建系统、测试框架、测试规格格式和规则文件位置仍需从代表性仓库取证。
+
 ### Provider 约束
 
 - 公司当前只提供 Chat Completions 风格接口；
 - 不能假设存在 Responses API、OpenAI 托管工具、后台模式或服务端 response state；
 - 需要尽可能在这一约束下实现接近 Codex 的本地体验；
 - 多 provider 兼容仍有价值，但近期首先保证公司接口上的稳定体验。
+- 公司环境使用 `openai_compatible` provider 和 `gpt-5.4` 模型配置；
+- 实测已经确认非流式 Chat Completion、streaming、function/tool calling、指定 `tool_choice`、tool call ID 和 JSON 参数均可用；
+- 尚未验证同一轮多个 tool calls、完整 tool-result 回灌、严格 structured output、上下文上限和各类错误恢复，因此不能把一次 dummy tool call 等同于完整 Agent 契约已经通过。
 
 ### Subagent 方向
 
 - 希望系统在适合时自动使用 Subagent；
 - Subagent 必须在 UI 中有可见状态；
+- 第一版不为 Subagent 创建独立聊天页或侧边栏任务；
+- Subagent 作为主任务执行流中的可折叠卡片出现：默认展示名称、目标、状态、耗时和结果摘要，展开后查看工具活动与详细输出；
+- 主 Agent 仍是唯一直接与用户对话、汇总子任务和给出最终结果的角色；
 - 自动委派必须受并发数、预算、任务边界和递归深度控制；
 - 第一版自动委派优先用于相互独立的只读调查，不立即开放无限制并行写入。
 
@@ -114,6 +128,9 @@ Vintage Programmer 已经具备较完整的 Agent Runtime 基础，包括模型�
 - 希望最终支持 Commit、Push 和 Merge Request；
 - GitLab Self-Managed 应作为正式兼容目标；
 - 产品界面和内部模型应使用通用 Git 概念，并将 GitLab 的交付对象称为 Merge Request（MR），不把 GitHub PR 写死在核心层。
+- 公司 GitLab 页面可以看到 Personal Access Token 创建入口，现阶段视为“很可能可用、仍需实际验证”；
+- GitLab 具体版本、允许的 PAT scope、公司策略以及是否安装或允许使用 `glab` 尚未确认；
+- 第一版设计不强依赖 `glab`：本地提交和 push 使用 Git，MR 等平台能力通过 GitLab adapter 调用 API，`glab` 只作为可选增强。
 
 ### 外部集成优先级
 
@@ -285,14 +302,26 @@ python scripts/check_provider_conformance.py --model <configured-model>
 - 16/33/50/100ms 前端合并刷新模拟；
 - 对当前逐 delta UI 更新压力的风险判断。
 
-当前 `.env` 激活的是 OpenRouter 免费模型，不是尚未单独配置的公司接口。已有探测结果只能验证脚本本身：
+个人电脑的 `.env` 激活的是 OpenRouter 免费模型。该环境的已有结果只用于验证脚本本身：
 
 - 当前 primary 免费模型遇到 HTTP 429，不能用于能力结论；
 - configured fallback 的非流式与流式请求成功；
 - fallback 流式测试约产生 5–7 个文本 chunk/秒；
 - 探测进程在等待流式响应期间约占单核 2.4%–7.1%，说明该样本的本地传输 CPU 压力较低；
 - fallback 的 dummy tool call 曾成功，也出现过一次空 choices，因此暂记为“协议可用但稳定性待测”；
-- 以上结论不能替代公司 Chat Completions 网关的正式 conformance 结果。
+- 以上结果不用于判断公司 Chat Completions 网关能力。
+
+公司电脑已经使用内部 base URL、自定义 CA 和 `gpt-5.4` 完成两次探测。当前可以记录为正式的初步 capability profile：
+
+- 非流式 Chat Completion：支持；
+- streaming：支持；
+- function/tool calling：支持，强制 dummy function call 的名称、call ID 和 JSON 参数符合当前契约；
+- 最近一次 stream TTFC 为 `1710.58 ms`，前一次为 `2095.7 ms`；
+- 两次活跃文本 chunk 频率分别约为 `70.03 chunks/s` 和 `855.23 chunks/s`，说明公司网关的交付节奏可能高度可变并出现突发输出；
+- 探针记录的本地 CPU 只覆盖 Python 客户端进程，不包含真实浏览器解析、状态更新、Markdown 渲染和绘制开销；最近一次显示 `0.0%` 也可能只是短采样经四舍五入后的结果；
+- 当前逐 delta 更新 UI 的风险为 high，初始合并刷新间隔采用探针建议的 `100 ms`；在真实浏览器 A/B 验证通过前，不默认启用产品 streaming。
+
+因此，streaming 与基础 tool calling 不再是开放问题；阶段 0 后续只继续验证多 tool calls、tool-result 回灌、structured output、上下文限制、取消和错误契约。
 
 ## 7. 阶段 1：安全边界与安全更新
 
@@ -493,6 +522,16 @@ python scripts/check_provider_conformance.py --model <configured-model>
 - Subagent 失败后主任务如何降级？
 - Worktree 何时创建、保留和清理？
 
+### 已决策的第一版 UI
+
+- Subagent 不创建独立聊天页，也不成为侧边栏中的独立主任务；
+- 每个 Subagent 在主任务执行流中显示为可折叠卡片；
+- 折叠状态至少显示名称、目标、`queued/running/completed/failed/cancelled` 状态、耗时和结果摘要；
+- 展开后可以查看关键工具活动、阶段进展、错误和最终输出，但不要求复制完整主聊天体验；
+- 多个 Subagent 可以在同一主任务中并列显示，主 Agent 负责最终汇总和冲突说明；
+- 自动委派发生时要立即显示卡片，不能等子任务结束后才补一条不可观察的结果；
+- “Codex-like”在本文档中指上述主任务内可观察的子执行体验，不意味着复制未公开或未经确认的内部实现。
+
 ### 验收标准
 
 - 同一主任务可运行至少两个独立只读 Subagent；
@@ -537,6 +576,15 @@ Agent 能运行 `git` 命令，不等于产品拥有安全、清晰的 Git 工�
 - 支持可配置的 GitLab base URL 和项目路径；
 - 优先复用本机 Git 凭证完成 fetch/push，API token 仅用于 MR 等 Git 本身无法完成的操作；
 - Worktree 与本地 checkout 之间安全 handoff。
+
+### 已确认的认证方向
+
+- 公司 GitLab 提供 Personal Access Token 创建入口，后续用最小权限 token 做一次只读 API 探测后再正式标记为可用；
+- Git 的 fetch、commit 和 push 优先沿用本机已有 Git 凭证，不要求把 PAT 交给模型；
+- PAT 仅保存在本地 secret/config 层，只向 GitLab adapter 暴露，不写入任务消息、轨迹、日志或仓库；
+- MR 的创建和查询优先直接适配 GitLab REST API；`glab` 可以在检测到已安装且已认证时使用，但不是第一版的运行前提；
+- GitLab Self-Managed base URL 和自定义 CA 必须可配置，以兼容公司内线环境；
+- GitLab 版本与 PAT scope 尚待确认，adapter 需要能力探测和清楚的降级提示。
 
 ### 验收标准
 
@@ -766,25 +814,30 @@ flowchart TD
 5. 希望 Subagent 可以自动出现，并在 UI 中可见。
 6. 希望支持 Commit、Push 和 GitLab Merge Request。
 7. 暂时不接其他外部系统，先把内部流程做稳定。
+8. 大量文件分析的主要输入是 PDF 规格书、Excel 规格书和 C++ 源代码。
+9. 规格驱动生成的主要产物是 C++ 代码和 Markdown 文档。
+10. 公司 `openai_compatible` 接口已经确认支持非流式、streaming 和基础 function/tool calling。
+11. 公司 GitLab 可以看到 Personal Access Token 创建入口，PAT 方案具备初步可行性。
+12. Subagent 不需要独立聊天页，采用主任务内可折叠卡片，由主 Agent 统一汇总。
 
 下一轮需要澄清：
 
-1. 大量文件通常是多少个、哪些格式、总体大约多大？
-2. 代码生成最常涉及哪些语言、测试框架和规则文件？
-3. 公司 Chat Completions 接口是否支持 streaming 和 function/tool calling？
-4. 公司 GitLab 的大致版本，以及是否允许创建 Personal Access Token 或使用 `glab`？
-5. Subagent 自动出现时，你更希望看到独立聊天页、主任务内折叠卡片，还是两者都有？
+1. 从若干代表性任务统计文件数量、各格式数量、单文件大小和总大小；只需要元数据，不需要把公司文件内容带出内网。
+2. 代表性 C++ 仓库使用的构建系统、测试框架、测试命令，以及规格和规则文件的实际位置与格式。
+3. 公司接口对多 tool calls、tool-result 回灌、structured output、上下文限制、取消和错误结构的支持程度。
+4. 公司 GitLab 的大致版本、允许的 PAT scope 和使用政策；`glab` 是否可用是可选信息，不再作为方案前置条件。
 
 ## 18. 下一步
 
 下一次讨论继续阶段 0，并开始阶段 1 的方案设计：
 
-1. 为公司 Chat Completions 接口定义 conformance suite；
-2. 为三个核心场景定义最小基线任务；
-3. 画出当前本地服务威胁模型；
-4. 为只绑定 loopback 的安全边界写出验收测试；
-5. 确认 GitLab 认证和版本约束；
-6. 在不修改功能行为的前提下，形成阶段 1 的实施方案。
+1. 用只统计扩展名、文件数和字节数的方式收集代表性文件任务规模；
+2. 为三个核心场景定义最小基线任务，并记录 C++ 仓库的真实构建和测试命令；
+3. 扩展公司 Chat Completions conformance suite，覆盖尚未验证的工具回灌、结构化输出、上下文和错误契约；
+4. 画出当前本地服务威胁模型；
+5. 为只绑定 loopback 的安全边界写出验收测试；
+6. 用最小权限 PAT 做 GitLab 只读 capability probe，记录版本、API 和 CA 兼容性；
+7. 在不修改功能行为的前提下，形成阶段 1 的实施方案。
 
 在上述决策完成前，不直接开始 Subagent、Plugin 或大规模架构重构。
 
