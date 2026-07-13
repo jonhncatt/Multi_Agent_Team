@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -43,23 +42,9 @@ def build_attachment_tool_guidance(attachments: list[dict[str, Any]], *, locale:
     image_paths = attachment_paths(attachments, kind="image")
     if image_paths:
         lines.append(translate(locale, "runtime.attachment_guidance.image"))
-        lines.append(
-            translate(
-                locale,
-                "runtime.attachment_guidance.image_paths",
-                paths=json.dumps(image_paths[:2], ensure_ascii=False),
-            )
-        )
     document_paths = attachment_paths(attachments, kind="document")
     if document_paths:
         lines.append(translate(locale, "runtime.attachment_guidance.document"))
-        lines.append(
-            translate(
-                locale,
-                "runtime.attachment_guidance.document_paths",
-                paths=json.dumps(document_paths[:6], ensure_ascii=False),
-            )
-        )
         lines.append(translate(locale, "runtime.attachment_guidance.msg"))
     return "\n".join(lines)
 

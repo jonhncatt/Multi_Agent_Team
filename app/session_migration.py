@@ -6,6 +6,7 @@ from typing import Any
 from app.context_pack import (
     ContextManager,
     RecentObservation,
+    VerifiedFact,
     _has_context_manager_data,
     _known_previous_project_roots,
     _normalize_clean_turns,
@@ -16,28 +17,40 @@ from app.context_pack import (
     _unique_strings,
 )
 from app.serialization import dump_model
-from app.session_context import normalize_current_task_focus
+from app.session_context import normalize_current_task_focus, normalize_task_state
 
 
-CONTEXT_SCHEMA_VERSION = 3
+CONTEXT_SCHEMA_VERSION = 4
 
 _LEGACY_SESSION_KEYS = (
     "summary",
-    "thread_memory",
     "compaction_status",
     "history_turns",
     "messages",
-    "turns",
-    "current_task_focus",
-    "active_task_focus",
     "plan_state",
     "plan",
     "recent_tool_results",
     "recent_errors",
     "attachment_evidence_pack",
-    "route_state",
-    "agent_state",
 )
+
+_LEGACY_FILE_TOOL_NAMES = {
+    "read_file",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
+    "read_section",
+    "table_extract",
+    "fact_check_file",
+    "search_codebase",
+    "image_inspect",
+    "image_read",
+    "apply_patch",
+    "archive_extract",
+    "mail_extract_attachments",
+    "web_download",
+    "browser_screenshot",
+    "save_skill",
+}
 
 
 def _clean_text(value: Any, *, limit: int) -> str:
@@ -96,14 +109,21 @@ def _legacy_active_files(payload: dict[str, Any]) -> list[str]:
     for result in list(payload.get("recent_tool_results") or []):
         if not isinstance(result, dict):
             continue
+        tool = str(result.get("tool") or result.get("name") or "").strip().lower()
+        if tool not in _LEGACY_FILE_TOOL_NAMES:
+            continue
         for key in ("target", "path", "file"):
             value = str(result.get(key) or "").strip()
-            if value:
+            if value and not re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.IGNORECASE):
                 files.append(value)
         for ref in list(result.get("source_refs") or []):
-            if not isinstance(ref, dict):
+            value = (
+                str(ref.get("path") or ref.get("file") or "").strip()
+                if isinstance(ref, dict)
+                else str(ref or "").strip()
+            )
+            if re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.IGNORECASE):
                 continue
-            value = str(ref.get("path") or ref.get("file") or "").strip()
             if value:
                 files.append(value)
     return _unique_strings(files, limit=10, max_chars=500)
@@ -182,11 +202,10 @@ def _legacy_plan(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _manager_from_legacy_session(payload: dict[str, Any]) -> ContextManager:
     return ContextManager(
-        clean_summary=_legacy_summary(payload),
-        clean_turns=_legacy_turns(payload),
-        recent_observations=_legacy_observations(payload),
-        active_files=_legacy_active_files(payload),
-        plan=_normalize_plan_items(_legacy_plan(payload)),
+        working_summary=_legacy_summary(payload),
+        recent_turns=_legacy_turns(payload),
+        recent_tool_results=_legacy_observations(payload),
+        relevant_files=_legacy_active_files(payload),
         context_version=1,
     )
 
@@ -200,7 +219,7 @@ def _rebase_manager_paths(
     if not str(project_root or "").strip():
         return manager
     rebased_turns = _rebase_value_paths_for_model(
-        manager.clean_turns,
+        manager.recent_turns,
         project_root=project_root,
         previous_roots=previous_roots,
     )
@@ -212,11 +231,11 @@ def _rebase_manager_paths(
                 previous_roots=previous_roots,
             )
         )
-        for item in manager.recent_observations
+        for item in manager.recent_tool_results
     ]
     rebased_active_files = _unique_strings(
         _rebase_value_paths_for_model(
-            manager.active_files,
+            manager.relevant_files,
             project_root=project_root,
             previous_roots=previous_roots,
         ),
@@ -224,15 +243,45 @@ def _rebase_manager_paths(
         max_chars=500,
     )
     return ContextManager(
-        clean_summary=_rebase_text_paths_for_model(
-            manager.clean_summary,
+        working_summary=_rebase_text_paths_for_model(
+            manager.working_summary,
             project_root=project_root,
             previous_roots=previous_roots,
         )[:4000],
-        clean_turns=rebased_turns,
-        recent_observations=rebased_observations,
-        active_files=rebased_active_files,
-        plan=list(manager.plan),
+        recent_turns=rebased_turns,
+        recent_tool_results=rebased_observations,
+        verified_facts=[
+            VerifiedFact(
+                text=_rebase_text_paths_for_model(
+                    item.text,
+                    project_root=project_root,
+                    previous_roots=previous_roots,
+                )[:500],
+                source=item.source,
+                source_ref=_rebase_text_paths_for_model(
+                    item.source_ref,
+                    project_root=project_root,
+                    previous_roots=previous_roots,
+                )[:500],
+            )
+            for item in manager.verified_facts
+        ],
+        relevant_files=rebased_active_files,
+        modified_files=_unique_strings(
+            _rebase_value_paths_for_model(
+                manager.modified_files,
+                project_root=project_root,
+                previous_roots=previous_roots,
+            ),
+            limit=10,
+            max_chars=500,
+        ),
+        user_requirements=[
+            _rebase_text_paths_for_model(item, project_root=project_root, previous_roots=previous_roots)[:500]
+            for item in manager.user_requirements
+        ],
+        decisions=list(manager.decisions),
+        open_questions=list(manager.open_questions),
         context_version=max(0, int(manager.context_version)),
     )
 
@@ -240,24 +289,54 @@ def _rebase_manager_paths(
 def migrate_legacy_session_to_context_manager(session: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
     payload = dict(session or {})
     migrated = False
+    raw_manager = _raw_context_manager(payload)
+    try:
+        manager_schema_version = int(raw_manager.get("schema_version") or 0) if raw_manager else 0
+    except Exception:
+        manager_schema_version = 0
+    legacy_plan = list(raw_manager.get("plan") or []) if raw_manager else []
+    manager: ContextManager | None = None
 
     if has_context_manager_payload(payload):
-        manager = ContextManager.from_payload(_raw_context_manager(payload))
+        manager = ContextManager.from_payload(raw_manager)
+        if manager_schema_version < 2:
+            migrated = True
     elif has_legacy_context_payload(payload):
         manager = _manager_from_legacy_session(payload)
+        legacy_plan = _legacy_plan(payload)
         migrated = True
     else:
-        manager = ContextManager()
+        if "context_manager" in payload:
+            payload.pop("context_manager", None)
+            migrated = True
 
-    project_root = str(payload.get("project_root") or payload.get("cwd") or "").strip()
-    manager = _rebase_manager_paths(
-        manager,
-        project_root=project_root,
-        previous_roots=_known_previous_project_roots(payload),
-    )
-    if migrated:
-        manager.context_version = max(1, int(manager.context_version or 0))
+    if manager is not None:
+        project_root = str(payload.get("project_root") or payload.get("cwd") or "").strip()
+        manager = _rebase_manager_paths(
+            manager,
+            project_root=project_root,
+            previous_roots=_known_previous_project_roots(payload),
+        )
+        if migrated:
+            manager.context_version = max(1, int(manager.context_version or 0))
+        payload["context_manager"] = manager.to_session_payload()
+        payload["context_schema_version"] = CONTEXT_SCHEMA_VERSION
 
-    payload["context_manager"] = manager.to_session_payload()
-    payload["context_schema_version"] = CONTEXT_SCHEMA_VERSION
+    task_state = normalize_task_state(payload.get("task_state") if isinstance(payload.get("task_state"), dict) else {})
+    if not list(task_state.get("plan_items") or []) and legacy_plan:
+        normalized_legacy_plan = [dump_model(item) for item in _normalize_plan_items(legacy_plan)]
+        next_action = next(
+            (
+                str(item.get("step") or "")
+                for item in normalized_legacy_plan
+                if str(item.get("status") or "") in {"pending", "in_progress"}
+            ),
+            "",
+        )
+        task_state = normalize_task_state(
+            {**task_state, "plan_items": normalized_legacy_plan, "next_required_action": next_action}
+        )
+        migrated = True
+
+    payload["task_state"] = task_state
     return payload, migrated

@@ -1635,6 +1635,15 @@ def test_debug_panel_reads_task_state_from_run_artifact_or_inspector_fallback() 
     assert 'renderDetailBlock("task_state_validation", debugTaskStateValidation)' in body
 
 
+def test_runtime_projection_reads_harness_state_and_thread_diagnostics() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "inspectorRuntimeState.thread_context" in script
+    assert "activeTaskState.goal" in script
+    assert "activeWorkCursor.active_files" in script
+    assert "modelContextTask" not in script
+
+
 def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

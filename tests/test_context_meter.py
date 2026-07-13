@@ -360,7 +360,8 @@ def test_maybe_auto_compact_session_uses_llm_compactor_when_available() -> None:
     assert session["compaction_state"]["fallback_reason"] == ""
     assert "confirmed_facts" in session["compaction_state"]["compaction_schema"]
     assert "LLM confirmed compacted history" in session["compaction_state"]["compacted_history"]
-    assert session["task_state"]["next_required_action"] == "verify derived fields"
+    # Compaction produces model memory; it must not overwrite Harness-owned task state.
+    assert session["task_state"]["next_required_action"] == "继续修 derived view"
     assert session["work_cursor"]["active_files"][0] == "app/context_meter.py"
 
 

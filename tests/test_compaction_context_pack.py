@@ -1,24 +1,6 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
-
-from app.config import load_config
 from app.context_meter import build_compaction_status, ensure_compaction_state
-from app.vintage_programmer_runtime import VintageProgrammerRuntime
-
-
-class _FakeTools:
-    tool_specs: list[dict[str, Any]] = []
-
-
-class _FakeBackend:
-    tools = _FakeTools()
-
-
-def _payload_from_human_message(text: str) -> dict[str, Any]:
-    return json.loads(text.split("model_context_json:\n", 1)[1])["model_context"]
 
 
 def test_compaction_status_uses_phase_reason_fields() -> None:
@@ -41,64 +23,48 @@ def test_compaction_status_uses_phase_reason_fields() -> None:
     assert status["after_tokens"] == 60
 
 
-def test_compaction_status_feeds_context_pack_without_legacy_context(tmp_path: Path) -> None:
-    config = load_config()
-    config.workspace_root = tmp_path
-    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
-    compaction_status = {
-        "generation": 2,
-        "phase": "mid_turn",
-        "reason": "context_limit",
-        "summary": "old tool observations compacted",
-        "retained_turn_count": 4,
+def test_context_meter_counts_typed_transcript_not_harness_memory() -> None:
+    base = {
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"id": "u1", "role": "user", "content": "hello", "created_at": "now"},
+                {"id": "a1", "role": "assistant", "content": "world", "created_at": "now"},
+            ],
+        },
+        "context_manager": {"working_summary": "X" * 100_000},
+        "thread_memory": {"summary": "Y" * 100_000},
+        "route_state": {"raw": "Z" * 100_000},
+    }
+    clean = {"thread_transcript": base["thread_transcript"]}
+
+    with_harness_state = build_compaction_status(session=base, model="gpt-5.4", estimate_mode="quick")
+    transcript_only = build_compaction_status(session=clean, model="gpt-5.4", estimate_mode="quick")
+
+    assert with_harness_state["estimated_context_tokens"] == transcript_only["estimated_context_tokens"]
+
+
+def test_compacted_transcript_meter_replaces_older_items_with_summary() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"id": "u1", "turn_id": "u1", "role": "user", "content": "old " + "A" * 20_000},
+                {"id": "a1", "turn_id": "a1", "role": "assistant", "content": "old answer " + "B" * 20_000},
+                {"id": "u2", "turn_id": "u2", "role": "user", "content": "new request"},
+            ],
+        },
+        "compaction_state": {
+            "compacted_history": "short summary",
+            "compacted_until_turn_id": "a1",
+        },
     }
 
-    payload = _payload_from_human_message(
-        runtime._build_human_payload(  # noqa: SLF001 - structure regression test
-            message="继续",
-            context={
-                "session_id": "s-compact",
-                "summary": "long summary",
-                "history_turns": [{"role": "tool", "text": "recent observation"}],
-                "context_manager": {
-                    "clean_summary": "clean summary from migrated context manager",
-                    "clean_turns": [{"role": "assistant", "text": "上一轮已完成 clean memory 更新。"}],
-                    "recent_observations": [{"tool": "read_file", "summary": "确认了 compaction 状态。", "status": "ok"}],
-                    "active_files": ["app/context_pack.py"],
-                    "plan": [{"step": "继续验证上下文隔离", "status": "pending"}],
-                    "context_version": 4,
-                },
-                "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
-                "compaction_status": compaction_status,
-            },
-        )
-    )
-    model_context = payload
-
-    assert set(model_context) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
-    assert model_context["memory"]["clean_summary"] == "clean summary from migrated context manager"
-    assert model_context["conversation"]["recent_turns"] == [{"role": "assistant", "text": "上一轮已完成 clean memory 更新。"}]
-    assert model_context["workspace"]["project_root"] == str(tmp_path.resolve())
-    assert "legacy_context" not in model_context
-    assert "route_hints" not in model_context
-
-
-def test_runtime_model_context_does_not_fallback_to_legacy_summary_or_history(tmp_path: Path) -> None:
-    config = load_config()
-    config.workspace_root = tmp_path
-    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=tmp_path, backend=_FakeBackend())
-
-    payload = _payload_from_human_message(
-        runtime._build_human_payload(  # noqa: SLF001
-            message="继续",
-            context={
-                "session_id": "s-no-migration",
-                "summary": "legacy summary should not be read",
-                "history_turns": [{"role": "assistant", "text": "legacy turn should not be read"}],
-                "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
-            },
-        )
+    compacted = build_compaction_status(session=session, model="gpt-5.4", estimate_mode="quick")
+    uncompressed = build_compaction_status(
+        session={"thread_transcript": session["thread_transcript"]},
+        model="gpt-5.4",
+        estimate_mode="quick",
     )
 
-    assert payload["memory"]["clean_summary"] == ""
-    assert payload["conversation"]["recent_turns"] == []
+    assert compacted["estimated_context_tokens"] < uncompressed["estimated_context_tokens"]

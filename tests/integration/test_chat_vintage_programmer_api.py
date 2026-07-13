@@ -1792,6 +1792,9 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     assert seen["compaction_status"]["compaction_source"] == "deterministic_fallback"
     assert 1 <= len(seen["history_turns"]) <= 12
     assert all(turn["text"] != "继续总结" for turn in seen["history_turns"])
+    seen_transcript = list(dict(seen["thread_transcript"]).get("items") or [])
+    assert seen_transcript
+    assert all(item["content"] != "继续总结" for item in seen_transcript)
 
 
 def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tmp_path: Path) -> None:
@@ -2424,6 +2427,10 @@ def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) 
     assert seen["summary"] == "old summary"
     assert len(seen["history_turns"]) == 2
     assert seen["thread_memory"]["summary"] == "old summary"
+    assert [item["content"] for item in dict(seen["thread_transcript"])["items"]] == [
+        "先看一下这个仓库",
+        "我已经看过仓库",
+    ]
     assert seen["current_task_focus"]["task_id"] == ""
     assert seen["route_state"]["task_checkpoint"]["task_id"] == "task-old"
 

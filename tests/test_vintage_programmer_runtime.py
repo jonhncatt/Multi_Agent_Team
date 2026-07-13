@@ -402,7 +402,7 @@ class _FakeBackend:
         return self._next(), object(), model, []
 
 
-class _FakeBackendWithoutModelContext(_FakeBackend):
+class _FakeBackendWithoutModelKwarg(_FakeBackend):
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         super().__init__(scripted_messages)
         self.tools = _FakeToolsWithoutModel()
@@ -648,6 +648,10 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "Do not create a plan for every request." in prompt
     assert "For simple direct answers, one-step checks, or trivial commands" in prompt
     assert "If a task starts simple but becomes multi-step during execution" in prompt
+    assert "[context_authority]" in prompt
+    assert "[evidence_reliability]" in prompt
+    assert "[conflict_resolution]" in prompt
+    assert "CURRENT_USER_REQUEST defines the task intent" in prompt
     assert "Execution must happen through tool calls." not in prompt
 
 
@@ -710,7 +714,7 @@ def test_descriptor_uses_cache_until_explicit_invalidation(tmp_path: Path, monke
     assert load_calls == {"spec": 2, "skills": 2}
 
 
-def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_path: Path) -> None:
+def test_build_human_payload_contains_only_current_user_request(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     runtime = VintageProgrammerRuntime(
@@ -744,21 +748,139 @@ def test_build_human_payload_separates_current_turn_from_active_task_focus(tmp_p
         },
     )
 
-    model_context_json = payload_text.split("model_context_json:\n", 1)[1]
-    payload = json.loads(model_context_json)["model_context"]
+    assert payload_text == "题目"
+    assert "task-old" not in payload_text
+    assert "followup_classifier" not in payload_text
 
-    assert set(payload) == {"task", "workspace", "memory", "plan", "permissions", "conversation"}
-    assert payload["task"]["user_request"] == "题目"
-    assert payload["task"]["goal"] == "题目"
-    assert "context_priority" not in payload
-    assert "route_hints" not in payload
-    assert "legacy_context" not in payload
-    assert "route_state" not in payload
-    assert "allowed_roots" not in payload["permissions"]
-    assert payload["workspace"]["cwd"]
-    history_turns = payload["conversation"]["recent_turns"]
-    assert [item["text"] for item in history_turns[:2]] == ["turn-12", "turn-13"]
-    assert history_turns[-1]["text"] == "turn-19"
+
+def test_thread_messages_replay_history_without_task_relation_classifier(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="unused")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    summary, messages = runtime._thread_messages(
+        {
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "role": "user", "content": "帮我写请假邮件"},
+                    {"id": "a1", "role": "assistant", "content": "邮件正文已经写好。"},
+                ],
+            },
+            "task_state": {"task_id": "task-mail", "goal": "写请假邮件"},
+            "context_manager": {"working_summary": "不应进入模型"},
+        }
+    )
+
+    assert summary == ""
+    assert [message.content for message in messages] == ["帮我写请假邮件", "邮件正文已经写好。"]
+    assert backend.invocations == []
+
+
+def test_thread_messages_apply_compaction_summary(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    summary, messages = runtime._thread_messages(
+        {
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "turn_id": "u1", "role": "user", "content": "old"},
+                    {"id": "a1", "turn_id": "a1", "role": "assistant", "content": "old answer"},
+                    {"id": "u2", "turn_id": "u2", "role": "user", "content": "new"},
+                ],
+            },
+            "compaction_status": {
+                "compacted_history": "old exchange summary",
+                "compacted_until_turn_id": "a1",
+            },
+        }
+    )
+
+    assert summary == "old exchange summary"
+    assert [message.content for message in messages] == ["new"]
+
+
+def test_thread_messages_replay_assistant_tool_pairs(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="unused")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    summary, messages = runtime._thread_messages(
+        {
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "读取文件"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "c1", "name": "read_file", "args": {"path": "README.md"}}],
+                    },
+                    {"role": "tool", "content": "ok", "tool_call_id": "c1", "name": "read_file"},
+                ],
+            },
+        }
+    )
+
+    assert summary == ""
+    assert messages[1].tool_calls[0]["id"] == "c1"
+    assert messages[2].tool_call_id == "c1"
+
+
+def test_runtime_has_no_turn_relation_classifier(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    assert not hasattr(runtime, "_build_model_context")
+    assert not hasattr(runtime, "_resolve_turn_relation")
+    assert not hasattr(runtime_module, "_TURN_RELATION_CLASSIFIER_TIMEOUT_SECONDS")
+
+
+def test_apply_patch_tool_event_exposes_changed_files_as_source_refs(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([]),
+    )
+    changed_path = str(tmp_path / "app" / "changed.py")
+
+    event = runtime._build_tool_event(
+        name="apply_patch",
+        arguments={"patch": "*** Begin Patch", "cwd": str(tmp_path)},
+        result={"ok": True, "cwd": str(tmp_path), "files": [changed_path], "summary": "patch applied"},
+        locale="zh-CN",
+    )
+
+    assert event.source_refs == [changed_path]
 
 
 def test_runtime_activity_copy_has_locale_parity() -> None:
@@ -871,6 +993,48 @@ def test_runtime_answers_simple_greeting_without_tool_calls(tmp_path: Path) -> N
     assert result["tool_events"] == []
 
 
+def test_runtime_replays_typed_thread_before_current_user_message(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="件名：休暇申請")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="题目呢",
+        settings=ChatSettings(model="gpt-test", enable_tools=False, response_style="short"),
+        context={
+            "session_id": "s-thread-replay",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "role": "user", "content": "帮我写一封日语请假邮件"},
+                    {"id": "a1", "role": "assistant", "content": "邮件正文已经写好。"},
+                ],
+            },
+            "context_manager": {"working_summary": "THIS_MUST_NOT_BE_SENT"},
+            "task_state": {"goal": "THIS_MUST_NOT_BE_SENT_EITHER"},
+            "attachments": [],
+        },
+    )
+
+    sent = result["activity"]["llm_exchanges"][0]["sent_messages_exact"]
+    conversation = [(item["role"], item["content"]) for item in sent if item["role"] in {"user", "assistant"}]
+    encoded = json.dumps(sent, ensure_ascii=False)
+    assert conversation == [
+        ("user", "帮我写一封日语请假邮件"),
+        ("assistant", "邮件正文已经写好。"),
+        ("user", "题目呢"),
+    ]
+    assert "THIS_MUST_NOT_BE_SENT" not in encoded
+    assert result["text"] == "件名：休暇申請"
+
+
 def test_runtime_emits_streamed_answer_deltas_and_activity_for_direct_answers(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -947,10 +1111,8 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
         "runtime_contract_ms",
         "runtime_boundary_ms",
         "runtime_project_contract_ms",
-        "runtime_model_context_ms",
-        "runtime_context_manager_normalize_ms",
+        "runtime_thread_replay_ms",
         "runtime_user_request_limit_ms",
-        "runtime_context_pack_ms",
         "runtime_render_messages_ms",
         "runtime_initial_trace_ms",
         "runtime_tools_context_ms",
@@ -967,7 +1129,7 @@ def test_runtime_records_phase_timings_for_direct_answer(tmp_path: Path) -> None
     assert phase_timings["runtime_total_ms"] >= phase_timings["answer_ready_ms"]
 
 
-def test_runtime_model_context_short_input_skips_exact_tokenizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_short_input_skips_exact_tokenizer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend([_FakeMessage(content="你好，有什么我可以帮你？")])
@@ -1122,6 +1284,9 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert result["execution_trace"]
     assert result["execution_trace"][0]["action_type"] == "tool_call"
     assert result["execution_trace"][-1]["action_type"] == "final_answer"
+    assert [item["role"] for item in result["transcript_delta"]] == ["assistant", "tool"]
+    assert result["transcript_delta"][0]["tool_calls"][0]["id"] == "tc1"
+    assert result["transcript_delta"][1]["tool_call_id"] == "tc1"
     assert result["tool_events"][0]["arguments_preview"] == "query=latest"
     assert result["tool_events"][0]["schema_validation"]["status"] == "valid"
     assert result["tool_events"][0]["validation_result"]["allowed"] is True
@@ -1469,12 +1634,22 @@ def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> 
 
     sent = json.dumps(result["activity"]["llm_exchanges"][0]["sent_messages_exact"], ensure_ascii=False)
 
-    assert "[current_attachments]" in sent
+    assert "current_attachments" in sent
     assert "report.md" in sent
     assert "text/markdown" in sent
     assert "document" in sent
     assert attachment_path in sent
-    assert any("[current_attachments]" in str(item.content or "") for item in backend.invocations[0]["messages"])
+    assert backend.invocations[0]["messages"][-1].content == "帮我看一下这个附件"
+    assert any(
+        '"current_attachments"' in str(item.content or "")
+        for item in backend.invocations[0]["messages"]
+        if isinstance(item, _FakeSystemMessage)
+    )
+    assert any(
+        attachment_path in str(item.content or "")
+        for item in backend.invocations[0]["messages"]
+        if isinstance(item, _FakeSystemMessage)
+    )
 
 
 def test_runtime_records_tool_and_followup_llm_exchanges(tmp_path: Path) -> None:
@@ -2173,19 +2348,21 @@ def test_runtime_sends_attachment_evidence_pack_to_model_messages(tmp_path: Path
     )
 
     first_messages = backend.invocations[0]["messages"]
-    human_payload = str(first_messages[-1].content)
     sent = json.dumps(result["activity"]["llm_exchanges"][0]["sent_messages_exact"], ensure_ascii=False)
 
-    assert "attachment_evidence" not in human_payload
-    assert "missing export button" not in human_payload
-    assert "[attachment_evidence_pack]" in sent
+    assert first_messages[-1].content == "查看资料，缺的直接补全。"
+    assert "attachment_evidence" in sent
     assert "missing export button" in sent
     assert "hello attachment" in sent
-    assert any("[attachment_evidence_pack]" in str(item.content or "") for item in first_messages)
+    assert any(
+        '"attachment_evidence"' in str(item.content or "")
+        for item in first_messages
+        if isinstance(item, _FakeSystemMessage)
+    )
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
 
-def test_runtime_model_context_uses_openai_large_context_budget(tmp_path: Path) -> None:
+def test_runtime_user_request_uses_openai_large_context_budget(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     runtime = VintageProgrammerRuntime(
@@ -2196,19 +2373,36 @@ def test_runtime_model_context_uses_openai_large_context_budget(tmp_path: Path) 
     )
     long_request = "会议转录：" + ("重要内容" * 2000)
 
-    context = runtime._build_model_context(
-        message=long_request,
-        context={
-            "project": {
-                "project_root": str(tmp_path),
-                "cwd": str(tmp_path),
-            },
-        },
+    visible_request, truncated = runtime._user_request_for_model(
+        long_request,
         model="gpt-5.4",
         max_output_tokens=8192,
     )
 
-    assert context.task.user_request == long_request
+    assert visible_request == long_request
+    assert truncated is False
+
+
+def test_human_payload_applies_user_request_limit_after_context_separation(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    config = _isolated_config(tmp_path)
+    config.max_user_request_chars = 4000
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    long_request = "A" * 6000
+
+    rendered = runtime._build_human_payload(
+        message=long_request,
+        context={"project": {"project_root": str(tmp_path), "cwd": str(tmp_path)}},
+    )
+
+    assert rendered == "A" * 4000
+    assert "A" * 4001 not in rendered
 
 
 def test_runtime_attachment_evidence_preview_uses_large_context_budget(tmp_path: Path) -> None:
@@ -3252,7 +3446,7 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
 def test_runtime_handles_runtime_context_setters_without_model_kwarg(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    backend = _FakeBackendWithoutModelContext(
+    backend = _FakeBackendWithoutModelKwarg(
         [
             _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "web_search", "args": {"query": "latest"}}]),
             _FakeMessage(content="ok"),

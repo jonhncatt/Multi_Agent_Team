@@ -14,7 +14,15 @@ from typing import Any
 from fastapi import UploadFile
 
 from app.serialization import dump_model
-from app.session_migration import CONTEXT_SCHEMA_VERSION, migrate_legacy_session_to_context_manager
+from app.session_migration import migrate_legacy_session_to_context_manager
+from app.thread_transcript import (
+    THREAD_TRANSCRIPT_SCHEMA_VERSION,
+    append_transcript_item,
+    append_transcript_items,
+    default_thread_transcript,
+    migrate_session_to_thread_transcript,
+    normalize_thread_transcript,
+)
 
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
@@ -271,15 +279,8 @@ class SessionStore:
             "updated_at": now_iso(),
         }
 
-    def _default_context_manager(self) -> dict[str, Any]:
-        return {
-            "clean_summary": "",
-            "clean_turns": [],
-            "recent_observations": [],
-            "active_files": [],
-            "plan": [],
-            "context_version": 0,
-        }
+    def _default_thread_transcript(self) -> dict[str, Any]:
+        return default_thread_transcript()
 
     def _default_work_cursor(self) -> dict[str, Any]:
         return {
@@ -658,6 +659,10 @@ class SessionStore:
         if not isinstance(payload.get("turns"), list):
             payload["turns"] = []
             changed = True
+        payload_before_thread_migration = dict(payload)
+        payload, thread_migrated = migrate_session_to_thread_transcript(payload)
+        if thread_migrated or payload != payload_before_thread_migration:
+            changed = True
         if not isinstance(payload.get("active_attachment_ids"), list):
             payload["active_attachment_ids"] = []
             changed = True
@@ -692,21 +697,6 @@ class SessionStore:
         if not isinstance(payload.get("compaction_state"), dict):
             payload["compaction_state"] = {}
             changed = True
-        try:
-            context_schema_version = int(payload.get("context_schema_version") or 0)
-        except Exception:
-            context_schema_version = 0
-        if context_schema_version < 0:
-            payload["context_schema_version"] = 0
-            changed = True
-        if not isinstance(payload.get("context_manager"), dict):
-            payload["context_manager"] = self._default_context_manager()
-            changed = True
-        else:
-            context_manager = {**self._default_context_manager(), **dict(payload.get("context_manager") or {})}
-            if context_manager != payload.get("context_manager"):
-                payload["context_manager"] = context_manager
-                changed = True
         agent_state = payload.get("agent_state")
         if not isinstance(agent_state, dict):
             payload["agent_state"] = self._default_agent_state()
@@ -771,6 +761,8 @@ class SessionStore:
             "git_branch": git_branch,
             "cwd": project_root,
             "turns": [],
+            "thread_transcript": self._default_thread_transcript(),
+            "thread_schema_version": THREAD_TRANSCRIPT_SCHEMA_VERSION,
             "active_attachment_ids": [],
             "attachment_context_cleared": False,
             "agent_state": self._default_agent_state(),
@@ -786,8 +778,6 @@ class SessionStore:
             "thread_memory": {},
             "artifact_memory": [],
             "compaction_state": {},
-            "context_manager": self._default_context_manager(),
-            "context_schema_version": CONTEXT_SCHEMA_VERSION,
         }
         self.save(session)
         return session
@@ -849,8 +839,11 @@ class SessionStore:
             payload["artifact_memory"] = []
         if not isinstance(payload.get("compaction_state"), dict):
             payload["compaction_state"] = {}
-        if not isinstance(payload.get("context_manager"), dict):
-            payload["context_manager"] = self._default_context_manager()
+        payload["thread_transcript"] = normalize_thread_transcript(
+            payload.get("thread_transcript"),
+            legacy_turns=payload.get("turns") or [],
+        )
+        payload["thread_schema_version"] = THREAD_TRANSCRIPT_SCHEMA_VERSION
         return payload
 
     def load_or_create(
@@ -874,6 +867,12 @@ class SessionStore:
     def save(self, session: dict[str, Any], *, touch: bool = True) -> None:
         if touch:
             session["updated_at"] = now_iso()
+        normalized_thread = normalize_thread_transcript(
+            session.get("thread_transcript"),
+            legacy_turns=session.get("turns") or [],
+        )
+        session["thread_transcript"] = normalized_thread
+        session["thread_schema_version"] = THREAD_TRANSCRIPT_SCHEMA_VERSION
         self._migrate_turn_artifacts(session)
         path = self._path(session["id"])
         with self._lock:
@@ -899,7 +898,22 @@ class SessionStore:
             "created_at": now_iso(),
         }
         session.setdefault("turns", []).append(turn)
+        if role in {"user", "assistant"}:
+            transcript = session.setdefault("thread_transcript", self._default_thread_transcript())
+            append_transcript_item(
+                transcript,
+                role=role,
+                content=text,
+                item_id=str(turn["id"]),
+                turn_id=str(turn["id"]),
+                attachments=attachments or [],
+                created_at=str(turn["created_at"]),
+            )
         return turn
+
+    def append_thread_items(self, session: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        transcript = session.setdefault("thread_transcript", self._default_thread_transcript())
+        return append_transcript_items(transcript, items)
 
     def list_recent_sessions(
         self,

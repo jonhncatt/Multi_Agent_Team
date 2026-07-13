@@ -10,7 +10,7 @@ from app.runtime_contract import RuntimeContract
 
 
 class RuntimeBoundary(BaseModel):
-    """Logical runtime boundary used by ModelContext and ActionValidator."""
+    """Logical runtime boundary sent as current environment and enforced by ActionValidator."""
 
     tool_policy: str = "use_when_needed"
     workspace_read_allowed: bool = True

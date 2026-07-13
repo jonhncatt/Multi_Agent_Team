@@ -9,17 +9,15 @@ from typing import Any, Callable
 
 import tiktoken
 
-from app import session_context as session_context_impl
 from app.context_pack import (
     CompactionSummary,
-    ContextManager,
-    apply_compaction_summary_to_state,
     build_compaction_input,
     build_structured_compaction_summary,
     normalize_compaction_summary,
     parse_compaction_summary_text,
     render_compaction_summary,
 )
+from app.thread_transcript import normalize_thread_transcript, transcript_items_after_compaction
 
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -307,21 +305,17 @@ def _build_serialized_context(
     retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
 ) -> str:
     payload = dict(session or {})
-    runtime_view = _build_runtime_context_view(
-        session=payload,
-        retained_raw_turns=retained_raw_turns,
+    transcript = normalize_thread_transcript(
+        payload.get("thread_transcript"),
+        legacy_turns=payload.get("turns") or [],
     )
-    thread_memory = session_context_impl.get_thread_memory(payload)
-    current_task_focus = session_context_impl.get_current_task_focus(payload)
-    artifact_memory_preview = session_context_impl.get_artifact_memory_preview(payload)
-    route_state = payload.get("route_state") if isinstance(payload.get("route_state"), dict) else {}
+    compacted_summary, items = transcript_items_after_compaction(
+        transcript,
+        ensure_compaction_state(payload),
+    )
     serialized = {
-        "compacted_history": str(runtime_view.get("summary") or ""),
-        "history_turns": runtime_view.get("history_turns") or [],
-        "thread_memory": thread_memory,
-        "current_task_focus": current_task_focus,
-        "artifact_memory_preview": artifact_memory_preview,
-        "route_state": route_state,
+        "compacted_history": compacted_summary,
+        "thread_transcript": items,
         "pending_user_message": str(pending_message or ""),
     }
     return json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
@@ -581,46 +575,8 @@ def _turn_digest(turn: dict[str, Any]) -> str:
     return f"- {role}: {text}{suffix}"
 
 
-def _build_compacted_history(
-    *,
-    session: dict[str, Any],
-    compacted_turns: list[dict[str, Any]],
-    next_generation: int,
-) -> str:
-    current_task_focus = session_context_impl.get_current_task_focus(session)
-    work_cursor = dict(session.get("work_cursor") or {})
-    task_state = dict(session.get("task_state") or {})
-    if not work_cursor:
-        work_cursor = {
-            "project_root": current_task_focus.get("project_root") or "",
-            "cwd": current_task_focus.get("cwd") or "",
-            "active_files": current_task_focus.get("active_files") or [],
-            "active_attachments": current_task_focus.get("active_attachments") or [],
-        }
-    if not task_state:
-        task_state = {
-            "task_id": current_task_focus.get("task_id") or "",
-            "goal": current_task_focus.get("goal") or "",
-            "status": "in_progress" if current_task_focus.get("goal") else "idle",
-            "next_required_action": current_task_focus.get("next_action") or "",
-        }
-    manager = ContextManager.from_payload(
-        session.get("context_manager") if isinstance(session.get("context_manager"), dict) else {}
-    )
-    compaction_input = build_compaction_input(
-        old_messages=compacted_turns,
-        tool_evidence=[item for item in manager.recent_observations],
-        task_state=task_state,
-        work_cursor=work_cursor,
-        modified_files=manager.active_files,
-        failed_attempts=task_state.get("failed_attempts") or [],
-        current_status=str(task_state.get("status") or ""),
-    )
-    summary = build_structured_compaction_summary(compaction_input)
-    return _shorten(render_compaction_summary(summary, generation=next_generation), _COMPACTED_HISTORY_CHAR_LIMIT)
-
-
 _COMPACTION_SCHEMA_KEYS = [
+    "user_requirements",
     "confirmed_facts",
     "files_touched",
     "decisions",
@@ -634,7 +590,8 @@ _COMPACTION_SCHEMA_KEYS = [
 
 def _compaction_summary_has_content(summary: CompactionSummary) -> bool:
     return bool(
-        summary.confirmed_facts
+        summary.user_requirements
+        or summary.confirmed_facts
         or summary.files_touched
         or summary.decisions
         or summary.failed_attempts
@@ -773,7 +730,6 @@ def maybe_auto_compact_session(
 
     state = ensure_compaction_state(session)
     next_generation = max(0, int(state.get("generation") or 0)) + 1
-    current_task_focus = session_context_impl.get_current_task_focus(session or {})
     raw_task_state = (
         dict((session or {}).get("task_state") or {})
         if isinstance((session or {}).get("task_state"), dict)
@@ -784,29 +740,53 @@ def maybe_auto_compact_session(
         if isinstance((session or {}).get("work_cursor"), dict)
         else {}
     )
-    if not raw_task_state:
-        raw_task_state = {
-            "task_id": current_task_focus.get("task_id") or "",
-            "goal": current_task_focus.get("goal") or "",
-            "status": "in_progress" if current_task_focus.get("goal") else "idle",
-            "next_required_action": current_task_focus.get("next_action") or "",
-        }
-    if not raw_work_cursor:
-        raw_work_cursor = {
-            "project_root": current_task_focus.get("project_root") or "",
-            "cwd": current_task_focus.get("cwd") or "",
-            "active_files": current_task_focus.get("active_files") or [],
-            "active_attachments": current_task_focus.get("active_attachments") or [],
-        }
-    context_manager = ContextManager.from_payload(
-        (session or {}).get("context_manager") if isinstance((session or {}).get("context_manager"), dict) else {}
+    transcript = normalize_thread_transcript(
+        (session or {}).get("thread_transcript"),
+        legacy_turns=(session or {}).get("turns") or [],
     )
+    _previous_summary, active_transcript_items = transcript_items_after_compaction(transcript, state)
+    last_turn_id = str(compacted_turns[-1].get("id") or "").strip()
+    transcript_items_to_compact: list[dict[str, Any]] = []
+    for item in active_transcript_items:
+        transcript_items_to_compact.append(item)
+        if last_turn_id in {str(item.get("id") or ""), str(item.get("turn_id") or "")}:
+            break
+    compacted_messages = [
+        {
+            "role": str(item.get("role") or ""),
+            "text": str(item.get("content") or ""),
+            "tool": str(item.get("name") or ""),
+            "tool_call_id": str(item.get("tool_call_id") or ""),
+        }
+        for item in transcript_items_to_compact
+    ]
+    compacted_tool_evidence: list[dict[str, Any]] = []
+    for item in transcript_items_to_compact:
+        if str(item.get("role") or "") != "tool":
+            continue
+        content = str(item.get("content") or "")
+        try:
+            decoded = json.loads(content)
+        except Exception:
+            decoded = {}
+        decoded = decoded if isinstance(decoded, dict) else {}
+        status = str(decoded.get("status") or "").strip().lower()
+        if not status:
+            status = "ok" if bool(decoded.get("ok")) else "unknown"
+        summary = str(decoded.get("summary") or decoded.get("message") or decoded.get("error") or content)
+        compacted_tool_evidence.append(
+            {
+                "name": str(item.get("name") or "tool"),
+                "status": status,
+                "summary": _shorten(summary, 500),
+            }
+        )
     compaction_input = build_compaction_input(
-        old_messages=compacted_turns,
-        tool_evidence=[item for item in context_manager.recent_observations],
+        old_messages=compacted_messages or compacted_turns,
+        tool_evidence=compacted_tool_evidence,
         task_state=raw_task_state,
         work_cursor=raw_work_cursor,
-        modified_files=context_manager.active_files,
+        modified_files=list(raw_work_cursor.get("active_files") or []),
         failed_attempts=raw_task_state.get("failed_attempts") or [],
         current_status=str(raw_task_state.get("status") or ""),
     )
@@ -818,7 +798,6 @@ def maybe_auto_compact_session(
         render_compaction_summary(compaction_summary, generation=next_generation),
         _COMPACTED_HISTORY_CHAR_LIMIT,
     )
-    last_turn_id = str(compacted_turns[-1].get("id") or "").strip()
     compact_reason = str(status_before.get("compact_reason") or "context_limit")
     compact_limit = int(status_before.get("auto_compact_token_limit") or 0)
     if compact_reason == "context_danger_limit":
@@ -854,16 +833,6 @@ def maybe_auto_compact_session(
         }
     )
     if isinstance(session, dict):
-        updated_manager, updated_task_state, updated_work_cursor = apply_compaction_summary_to_state(
-            context_manager=context_manager,
-            summary=compaction_summary,
-            task_state=raw_task_state,
-            work_cursor=raw_work_cursor,
-            generation=next_generation,
-        )
-        session["context_manager"] = updated_manager.to_session_payload()
-        session["task_state"] = session_context_impl.normalize_task_state(updated_task_state)
-        session["work_cursor"] = session_context_impl.normalize_work_cursor(updated_work_cursor)
         session["compaction_state"] = dict(state)
         session["summary"] = compacted_history
     status_after = build_compaction_status(

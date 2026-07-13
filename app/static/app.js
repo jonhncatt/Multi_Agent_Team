@@ -2390,8 +2390,8 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   })
     ? item.runtime_error
     : normalizeRuntimeErrorPayload(inspectorRuntimeState.runtime_error);
-  const sentToModel = inspectorRuntimeState.model_context && typeof inspectorRuntimeState.model_context === "object"
-    ? inspectorRuntimeState.model_context
+  const sentToModel = inspectorRuntimeState.thread_context && typeof inspectorRuntimeState.thread_context === "object"
+    ? inspectorRuntimeState.thread_context
     : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
   const runtimeBoundary = inspectorRuntimeState.runtime_boundary && typeof inspectorRuntimeState.runtime_boundary === "object"
     ? inspectorRuntimeState.runtime_boundary
@@ -2402,9 +2402,6 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
   const boundaryModelView = Object.keys(explicitBoundaryModelView).length
     ? explicitBoundaryModelView
     : ((runtimeBoundary.model_view && typeof runtimeBoundary.model_view === "object") ? runtimeBoundary.model_view : runtimeBoundary);
-  const modelPermissions = sentToModel.permissions && typeof sentToModel.permissions === "object"
-    ? sentToModel.permissions
-    : {};
   return {
     sent_to_model: sentToModel,
     user_context: {
@@ -2435,12 +2432,11 @@ function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
       permission_profile:
         latestHarness.permission_profile
         || inspectorRuntimeState.permission_profile
-        || modelPermissions.profile
         || boundaryModelView.permission_profile
         || "",
-      file_read_scope: boundaryModelView.file_read_scope || modelPermissions.read || "",
-      file_write_scope: boundaryModelView.file_write_scope || modelPermissions.write || "",
-      command_scope: boundaryModelView.command_scope || modelPermissions.shell || "",
+      file_read_scope: boundaryModelView.file_read_scope || "",
+      file_write_scope: boundaryModelView.file_write_scope || "",
+      command_scope: boundaryModelView.command_scope || "",
       network_allowed: boundaryModelView.network_allowed,
       network_reason: boundaryModelView.network_reason || "",
       tool_boundary_clean: latestHarness.tool_boundary_clean,
@@ -7552,14 +7548,6 @@ function App() {
     : "";
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
   const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
-  const modelContextForRun = (
-    runState.model_context && typeof runState.model_context === "object"
-  )
-    ? runState.model_context
-    : ((lastInspector.sent_to_model && typeof lastInspector.sent_to_model === "object") ? lastInspector.sent_to_model : {});
-  const modelContextTask = modelContextForRun.task && typeof modelContextForRun.task === "object" ? modelContextForRun.task : {};
-  const modelContextWorkspace = modelContextForRun.workspace && typeof modelContextForRun.workspace === "object" ? modelContextForRun.workspace : {};
-  const modelContextMemory = modelContextForRun.memory && typeof modelContextForRun.memory === "object" ? modelContextForRun.memory : {};
   const activeTaskState = (
     runState.task_state && typeof runState.task_state === "object"
   )
@@ -7571,16 +7559,14 @@ function App() {
     ? runState.work_cursor
     : ((sessionRuntimeState.work_cursor && typeof sessionRuntimeState.work_cursor === "object") ? sessionRuntimeState.work_cursor : {});
   const activeTaskCheckpoint = {
-    task_id: String(activeTaskState.task_id || modelContextTask.task_id || ""),
-    goal: String(activeTaskState.goal || modelContextTask.goal || modelContextTask.user_request || runState.goal || sessionRuntimeState.goal || ""),
+    task_id: String(activeTaskState.task_id || ""),
+    goal: String(activeTaskState.goal || runState.goal || sessionRuntimeState.goal || ""),
     status: String(activeTaskState.status || runState.turn_status || sessionRuntimeState.turn_status || ""),
-    current_step_id: String(activeTaskState.current_step_id || modelContextTask.current_step_id || ""),
-    cwd: String(activeWorkCursor.cwd || modelContextWorkspace.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
-    next_action: String(activeTaskState.next_required_action || modelContextTask.next_action || modelContextTask.current_step || ""),
+    current_step_id: String(activeTaskState.current_step_id || ""),
+    cwd: String(activeWorkCursor.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
+    next_action: String(activeTaskState.next_required_action || ""),
     blocked_reason: String(activeTaskState.blocked_reason || ""),
-    active_files: Array.isArray(activeWorkCursor.active_files) && activeWorkCursor.active_files.length
-      ? activeWorkCursor.active_files
-      : (Array.isArray(modelContextMemory.active_files) ? modelContextMemory.active_files : []),
+    active_files: Array.isArray(activeWorkCursor.active_files) ? activeWorkCursor.active_files : [],
     active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
     completed_steps: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps : [],
     failed_attempts: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts : [],

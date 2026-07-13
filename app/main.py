@@ -30,7 +30,6 @@ from app.context_meter import (
     maybe_auto_compact_session,
     resolve_context_window,
 )
-from app.context_pack import ContextManager, classify_assistant_output
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
     AppStatusResponse,
@@ -2510,6 +2509,7 @@ def _process_chat_request(
             )
             route_state_scope = "focus_reset" if focus_shift_requested and route_state_scope == "session" else route_state_scope
             runtime_history_view = build_runtime_context_payload(session=session)
+            thread_transcript_for_runtime = copy.deepcopy(session.get("thread_transcript") or {})
             history_turns_for_runtime = copy.deepcopy(runtime_history_view.get("history_turns") or [])
             summary_for_runtime = str(runtime_history_view.get("summary") or "")
             thread_memory_for_runtime = copy.deepcopy(session_context_impl.get_thread_memory(session))
@@ -2619,8 +2619,8 @@ def _process_chat_request(
                         "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
                         "is_worktree": bool(session_project.get("is_worktree")),
                     },
+                    "thread_transcript": thread_transcript_for_runtime,
                     "summary": summary_for_runtime,
-                    "context_manager": copy.deepcopy(session.get("context_manager") or {}),
                     "thread_memory": thread_memory_for_runtime,
                     "current_turn": current_turn_context,
                     "recent_user_messages": recent_user_messages_for_runtime,
@@ -2769,6 +2769,10 @@ def _process_chat_request(
                 text=text,
             )
 
+        session_store.append_thread_items(
+            session,
+            [dict(item) for item in list(runtime_result.get("transcript_delta") or []) if isinstance(item, dict)],
+        )
         assistant_turn = session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
         assistant_turn_id = str(assistant_turn.get("id") or "")
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
@@ -2975,18 +2979,6 @@ def _process_chat_request(
             answer_bundle=answer_bundle,
             touch_task_checkpoint=should_track_task,
         )
-        context_manager = ContextManager.from_payload(
-            session.get("context_manager") if isinstance(session.get("context_manager"), dict) else {}
-        )
-        clean_final_answer = final_answer if classify_assistant_output(final_answer) == "final_answer" else None
-        context_manager.update_after_turn(
-            user_request=req.message,
-            clean_final_answer=clean_final_answer,
-            runtime_trace={"tool_events": tool_events, "trace_events": list((activity or {}).get("trace_events") or [])},
-            plan_updates=plan,
-        )
-        context_manager.compact_if_needed()
-        session["context_manager"] = context_manager.to_session_payload()
         session["cwd"] = str((session.get("work_cursor") or {}).get("cwd") or session.get("project_root") or "")
         thread_memory = session_context_impl.get_thread_memory(session)
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
@@ -3041,7 +3033,7 @@ def _process_chat_request(
             inspector_run_state.pop("task_state_validation", None)
         inspector_run_state["context_meter"] = dict(context_meter)
         inspector_run_state["compaction_status"] = dict(compaction_status)
-        inspector_run_state["context_version"] = int(session.get("context_manager", {}).get("context_version") or 0)
+        inspector_run_state["context_version"] = int(session.get("thread_schema_version") or 1)
         inspector_run_state["phase_timings"] = dict(combined_phase_timings)
         inspector_run_state["model_draft"] = model_draft
         inspector_run_state["final_answer"] = final_answer
@@ -3067,7 +3059,10 @@ def _process_chat_request(
         inspector_session["artifact_memory_preview"] = artifact_memory_preview
         inspector_session["context_meter"] = dict(context_meter)
         inspector_session["compaction_status"] = dict(compaction_status)
-        inspector_session["context_manager"] = dict(session.get("context_manager") or {})
+        inspector_session["thread_transcript"] = {
+            "schema_version": int(session.get("thread_schema_version") or 1),
+            "item_count": len(list((session.get("thread_transcript") or {}).get("items") or [])),
+        }
         inspector_session["phase_timings"] = dict(combined_phase_timings)
         inspector["session"] = inspector_session
         session_context_impl.store_scoped_route_state(

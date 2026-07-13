@@ -19,20 +19,22 @@ def test_attachment_paths_filters_by_kind(tmp_path: Path) -> None:
     assert attachment_paths(attachments, kind="document") == [str(tmp_path / "report.docx")]
 
 
-def test_attachment_guidance_mentions_image_paths(tmp_path: Path) -> None:
+def test_attachment_guidance_keeps_image_paths_out_of_system_instructions(tmp_path: Path) -> None:
     attachments = [{"kind": "image", "path": str(tmp_path / "diagram.png")}]
     guidance = build_attachment_tool_guidance(attachments, locale="zh-CN")
 
-    assert str(tmp_path / "diagram.png") in guidance
+    assert str(tmp_path / "diagram.png") not in guidance
+    assert "image_read" in guidance
 
 
-def test_attachment_guidance_mentions_document_paths(tmp_path: Path) -> None:
+def test_attachment_guidance_keeps_document_paths_out_of_system_instructions(tmp_path: Path) -> None:
     doc_path = tmp_path / "report.pdf"
     attachments = [{"kind": "document", "path": str(doc_path)}]
 
     guidance = build_attachment_tool_guidance(attachments, locale="zh-CN")
 
-    assert str(doc_path) in guidance
+    assert str(doc_path) not in guidance
+    assert "read_file" in guidance
 
 
 def test_attachment_rewriter_maps_legacy_image_keys_and_attachment_ids(tmp_path: Path) -> None:

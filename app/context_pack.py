@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.serialization import dump_model
-from app.session_context import normalize_task_state, normalize_work_cursor
 
 
 _VALID_PLAN_STATUS = {"pending", "in_progress", "completed"}
@@ -25,37 +24,19 @@ _DRAFT_PREFIXES = (
 )
 
 
-class TaskContext(BaseModel):
-    user_request: str = ""
-    goal: str = ""
-    status: str = ""
-    current_step_id: str = ""
-    current_step: str = ""
-    next_action: str = ""
-    blocked_reason: str = ""
-    completed_steps: list[str] = Field(default_factory=list)
-    failed_attempts: list[str] = Field(default_factory=list)
-    validation_warnings: list[str] = Field(default_factory=list)
-
-
-class WorkspaceContext(BaseModel):
-    project_root: str = ""
-    cwd: str = ""
-    model_visible_paths: list[str] = Field(default_factory=list)
-
-
 class RecentObservation(BaseModel):
     source: str = ""
     tool: str = ""
     target: str = ""
     status: str = ""
     summary: str = ""
+    source_refs: list[str] = Field(default_factory=list)
 
 
-class MemoryContext(BaseModel):
-    clean_summary: str = ""
-    active_files: list[str] = Field(default_factory=list)
-    recent_observations: list[RecentObservation] = Field(default_factory=list)
+class VerifiedFact(BaseModel):
+    text: str = ""
+    source: str = ""
+    source_ref: str = ""
 
 
 class PlanItem(BaseModel):
@@ -63,11 +44,8 @@ class PlanItem(BaseModel):
     status: Literal["pending", "in_progress", "completed", "failed", "blocked"] = "pending"
 
 
-class PlanContext(BaseModel):
-    items: list[PlanItem] = Field(default_factory=list)
-
-
 class CompactionSummary(BaseModel):
+    user_requirements: list[str] = Field(default_factory=list)
     confirmed_facts: list[str] = Field(default_factory=list)
     files_touched: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
@@ -77,27 +55,6 @@ class CompactionSummary(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     do_not_repeat: list[str] = Field(default_factory=list)
 
-
-class PermissionsContext(BaseModel):
-    profile: str = "auto"
-    label: str = "Auto"
-    read: str = ""
-    write: str = ""
-    shell: str = ""
-    network: str = "disabled"
-
-
-class ConversationContext(BaseModel):
-    recent_turns: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ModelContext(BaseModel):
-    task: TaskContext = Field(default_factory=TaskContext)
-    workspace: WorkspaceContext = Field(default_factory=WorkspaceContext)
-    memory: MemoryContext = Field(default_factory=MemoryContext)
-    plan: PlanContext = Field(default_factory=PlanContext)
-    permissions: PermissionsContext = Field(default_factory=PermissionsContext)
-    conversation: ConversationContext = Field(default_factory=ConversationContext)
 
 def normalize_user_message_preview(message: Any, *, limit: int = 80) -> str:
     text = re.sub(r"\s+", " ", str(message or "")).strip()
@@ -187,6 +144,18 @@ def _unique_strings(values: Any, *, limit: int, max_chars: int = 240) -> list[st
     return out
 
 
+def _file_strings(values: Any, *, limit: int = 10) -> list[str]:
+    return _unique_strings(
+        [
+            item
+            for item in list(values or [])
+            if not re.match(r"^[a-z][a-z0-9+.-]*://", str(item or "").strip(), flags=re.IGNORECASE)
+        ],
+        limit=limit,
+        max_chars=500,
+    )
+
+
 def _summary_strings(values: Any, *, limit: int = 8, max_chars: int = 500) -> list[str]:
     if isinstance(values, str):
         raw_values: list[Any] = [
@@ -236,15 +205,6 @@ def _normalize_plan_items(raw_items: Any) -> list[PlanItem]:
     return items
 
 
-def _normalize_plan_context(raw_plan_state: Any, raw_plan: Any = None) -> PlanContext:
-    raw_items: Any = raw_plan
-    if isinstance(raw_plan_state, dict):
-        raw_items = raw_plan_state.get("items") or raw_plan_state.get("plan") or raw_items
-    elif raw_plan_state:
-        raw_items = raw_plan_state
-    return PlanContext(items=_normalize_plan_items(raw_items))
-
-
 def _is_clean_role(role: str) -> bool:
     return role in {"user", "assistant"}
 
@@ -288,20 +248,43 @@ def _normalize_clean_turns(raw_turns: Any, *, current_message: Any, limit: int =
         role = _truncate(item.get("role"), 40)
         if not _is_clean_role(role):
             continue
-        text = _clean_text(item.get("text") or item.get("content"), limit=1200)
-        if not text:
+        original_text = str(item.get("text") or item.get("content") or "")
+        raw_text = _clean_text(original_text, limit=20000)
+        was_truncated = bool(item.get("truncated")) or len(original_text) > 1200
+        if role == "user" and (
+            raw_text == current_text
+            or (was_truncated and len(raw_text) >= 1200 and current_text.startswith(raw_text))
+        ):
             continue
-        if role == "user" and text == current_text:
+        text = raw_text[:1200]
+        if not text:
             continue
         if role == "assistant" and is_model_draft(text):
             continue
         turn: dict[str, Any] = {"role": role, "text": text}
-        if len(str(item.get("text") or item.get("content") or "")) > 1200:
+        if was_truncated:
             turn["truncated"] = True
         selected.append(turn)
         if len(selected) >= limit:
             break
     return list(reversed(selected))
+
+
+def _source_ref_text(value: Any) -> str:
+    if isinstance(value, dict):
+        direct = str(value.get("path") or value.get("file") or value.get("url") or value.get("ref") or "").strip()
+        if direct:
+            return direct[:500]
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)[:500]
+    return str(value or "").strip()[:500]
+
+
+def _normalize_source_refs(raw_values: Any, *, limit: int = 6) -> list[str]:
+    return _unique_strings(
+        [_source_ref_text(item) for item in list(raw_values or [])],
+        limit=limit,
+        max_chars=500,
+    )
 
 
 def _normalize_recent_observations(raw_values: Any) -> list[RecentObservation]:
@@ -320,6 +303,7 @@ def _normalize_recent_observations(raw_values: Any) -> list[RecentObservation]:
                 target=_truncate(item.get("target") or item.get("path") or item.get("file"), 240),
                 status=_truncate(item.get("status") or ("error" if item.get("error") else ""), 80),
                 summary=summary,
+                source_refs=_normalize_source_refs(item.get("source_refs"), limit=6),
             )
         )
         if len(observations) >= 5:
@@ -337,7 +321,7 @@ def _tool_event_observation(event: Any) -> dict[str, Any] | None:
     if not summary and not tool:
         return None
     target = ""
-    args = payload.get("arguments") or payload.get("args")
+    args = payload.get("arguments") or payload.get("args") or payload.get("normalized_arguments") or payload.get("input")
     if isinstance(args, dict):
         target = _truncate(args.get("path") or args.get("root") or args.get("cwd") or args.get("query"), 240)
     return {
@@ -346,6 +330,7 @@ def _tool_event_observation(event: Any) -> dict[str, Any] | None:
         "target": target,
         "status": status,
         "summary": summary or f"{tool}:{status}",
+        "source_refs": _normalize_source_refs(payload.get("source_refs"), limit=6),
     }
 
 
@@ -355,13 +340,165 @@ def _extract_active_files_from_events(tool_events: Any) -> list[str]:
         payload = dump_model(event)
         if not isinstance(payload, dict):
             continue
+        tool = str(payload.get("name") or payload.get("tool") or payload.get("tool_name") or "").strip().lower()
+        project_root = str(payload.get("project_root") or "").strip()
+        if tool in _FILE_CONTEXT_TOOL_NAMES:
+            for ref in list(payload.get("source_refs") or []):
+                value = (
+                    str(ref.get("path") or ref.get("file") or "")
+                    if isinstance(ref, dict)
+                    else str(ref or "")
+                )
+                if value and not re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.IGNORECASE):
+                    files.append(
+                        _rebase_text_paths_for_model(value, project_root=project_root) if project_root else value
+                    )
+            args = payload.get("arguments") or payload.get("args") or payload.get("normalized_arguments") or payload.get("input")
+            if isinstance(args, dict):
+                value = str(args.get("path") or args.get("file") or args.get("dst_path") or "")
+                if value:
+                    files.append(_rebase_text_paths_for_model(value, project_root=project_root) if project_root else value)
+    return _unique_strings(files, limit=10, max_chars=500)
+
+
+_WRITE_TOOL_NAMES = {
+    "apply_patch",
+    "write_file",
+    "save_skill",
+    "archive_extract",
+    "mail_extract_attachments",
+    "web_download",
+    "browser_screenshot",
+}
+
+_FILE_CONTEXT_TOOL_NAMES = {
+    "read_file",
+    "search_contents_in_file",
+    "search_contents_in_file_multi",
+    "read_section",
+    "table_extract",
+    "fact_check_file",
+    "search_codebase",
+    "image_inspect",
+    "image_read",
+    "apply_patch",
+    "archive_extract",
+    "mail_extract_attachments",
+    "web_download",
+    "browser_screenshot",
+    "save_skill",
+}
+
+_NON_FACT_TOOL_NAMES = {
+    "update_plan",
+    "request_user_input",
+    "load_skill",
+    "save_skill",
+    "sessions_list",
+    "sessions_history",
+}
+
+
+def _extract_modified_files_from_events(tool_events: Any) -> list[str]:
+    files: list[str] = []
+    for event in list(tool_events or []):
+        payload = dump_model(event)
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {"ok", "success", "completed", "complete", "done"}:
+            continue
+        tool = str(payload.get("name") or payload.get("tool") or payload.get("tool_name") or "").strip().lower()
+        if tool not in _WRITE_TOOL_NAMES:
+            continue
+        args = payload.get("arguments") or payload.get("args") or payload.get("normalized_arguments") or payload.get("input")
+        if tool == "apply_patch" and isinstance(args, dict) and bool(args.get("check")):
+            continue
+        project_root = str(payload.get("project_root") or "").strip()
         for ref in list(payload.get("source_refs") or []):
             if isinstance(ref, dict):
-                files.append(str(ref.get("path") or ref.get("file") or ""))
-        args = payload.get("arguments") or payload.get("args")
+                value = str(ref.get("path") or ref.get("file") or "")
+            else:
+                value = str(ref or "")
+            if value and not re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.IGNORECASE):
+                files.append(_rebase_text_paths_for_model(value, project_root=project_root) if project_root else value)
         if isinstance(args, dict):
-            files.append(str(args.get("path") or args.get("file") or ""))
+            value = str(args.get("path") or args.get("file") or args.get("dst_path") or "")
+            if value:
+                files.append(_rebase_text_paths_for_model(value, project_root=project_root) if project_root else value)
+        result_preview = payload.get("result_preview")
+        if isinstance(result_preview, dict):
+            files.extend(
+                _rebase_text_paths_for_model(str(item or ""), project_root=project_root) if project_root else str(item or "")
+                for item in list(result_preview.get("files") or [])
+            )
     return _unique_strings(files, limit=10, max_chars=500)
+
+
+def extract_modified_files_from_events(tool_events: Any) -> list[str]:
+    """Return files changed by successful write tools using the real ToolEvent wire shape."""
+
+    return _extract_modified_files_from_events(tool_events)
+
+
+def _verified_facts_from_events(tool_events: Any) -> list[VerifiedFact]:
+    facts: list[VerifiedFact] = []
+    for event in list(tool_events or []):
+        payload = dump_model(event)
+        if not isinstance(payload, dict):
+            continue
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in {"ok", "success", "completed", "complete", "done"}:
+            continue
+        text = _truncate(payload.get("summary") or payload.get("message"), 500)
+        tool = _truncate(payload.get("name") or payload.get("tool") or payload.get("tool_name"), 120)
+        if not text or tool.lower() in _NON_FACT_TOOL_NAMES:
+            continue
+        refs = _normalize_source_refs(payload.get("source_refs"), limit=6)
+        args = payload.get("arguments") or payload.get("args") or payload.get("normalized_arguments") or payload.get("input")
+        argument_ref = ""
+        if isinstance(args, dict):
+            argument_ref = _truncate(
+                args.get("path")
+                or args.get("file")
+                or args.get("url")
+                or args.get("cmd")
+                or args.get("query"),
+                400,
+            )
+        source_ref = refs[0] if refs else (
+            f"{tool}:{argument_ref}" if argument_ref else f"tool:{tool or 'runtime'}"
+        )
+        project_root = str(payload.get("project_root") or "").strip()
+        if project_root and source_ref and not re.match(r"^[a-z][a-z0-9+.-]*://", source_ref, flags=re.IGNORECASE):
+            source_ref = _rebase_text_paths_for_model(source_ref, project_root=project_root)
+        facts.append(VerifiedFact(text=text, source=tool or "runtime", source_ref=source_ref))
+        if len(facts) >= 12:
+            break
+    return facts
+
+
+def _normalize_verified_facts(raw_values: Any) -> list[VerifiedFact]:
+    facts: list[VerifiedFact] = []
+    seen: set[tuple[str, str]] = set()
+    for item in list(raw_values or []):
+        if not isinstance(item, dict):
+            continue
+        text = _truncate(item.get("text") or item.get("summary"), 500)
+        source = _truncate(item.get("source") or item.get("tool"), 120)
+        raw_source_ref = item.get("source_ref")
+        source_ref = _source_ref_text(raw_source_ref)
+        if not source_ref:
+            refs = _normalize_source_refs(item.get("source_refs"), limit=6)
+            source_ref = refs[0] if refs else (f"tool:{source}" if source else "")
+        key = (text, source_ref)
+        if not text or not source_ref or key in seen:
+            continue
+        seen.add(key)
+        facts.append(VerifiedFact(text=text, source=source or "runtime", source_ref=source_ref))
+        if len(facts) >= 12:
+            break
+    return facts
 
 
 def _compact_turn_for_compaction(turn: Any) -> dict[str, Any] | None:
@@ -441,15 +578,8 @@ def build_compaction_input(
         if len(messages) >= 24:
             break
     evidence = _normalize_compaction_tool_evidence(tool_evidence)
-    files_from_evidence: list[str] = []
-    for item in evidence:
-        files_from_evidence.append(str(item.get("target") or ""))
     files = _unique_strings(
-        [
-            *list(modified_files or []),
-            *list(cursor_payload.get("active_files") or []),
-            *files_from_evidence,
-        ],
+        list(modified_files or []),
         limit=16,
         max_chars=500,
     )
@@ -514,6 +644,7 @@ def normalize_compaction_summary(raw: Any) -> CompactionSummary:
         return raw
     payload = dict(raw or {}) if isinstance(raw, dict) else {}
     return CompactionSummary(
+        user_requirements=_summary_strings(payload.get("user_requirements"), limit=12, max_chars=500),
         confirmed_facts=_summary_strings(payload.get("confirmed_facts"), limit=12, max_chars=500),
         files_touched=_unique_strings(payload.get("files_touched"), limit=16, max_chars=500),
         decisions=_summary_strings(payload.get("decisions"), limit=10, max_chars=500),
@@ -551,27 +682,28 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
     payload = dict(compaction_input or {})
     task_state = dict(payload.get("task_state") or {})
     evidence = [dict(item) for item in list(payload.get("tool_evidence") or []) if isinstance(item, dict)]
-    messages = [dict(item) for item in list(payload.get("old_messages") or []) if isinstance(item, dict)]
     confirmed: list[str] = []
+    user_requirements: list[str] = []
     decisions: list[str] = []
     for item in evidence:
         status = str(item.get("status") or "").strip().lower()
         summary = _truncate(item.get("summary"), 500)
         if not summary:
             continue
-        if status in {"", "ok", "success", "completed"}:
+        if status in {"ok", "success", "completed", "complete", "done"}:
             confirmed.append(summary)
-    for item in messages:
-        role = str(item.get("role") or "").strip()
-        text = _truncate(item.get("text"), 320)
-        if role == "assistant" and text:
-            confirmed.append(text)
+    for item in list(payload.get("old_messages") or []):
+        if not isinstance(item, dict) or str(item.get("role") or "").strip() != "user":
+            continue
+        text = _truncate(item.get("text"), 500)
+        normalized_text = text.lower()
+        requirement_markers = (
+            "必须", "不要", "不能", "只", "禁止", "要求", "需要", "务必",
+            "must", "should", "only", "do not", "don't", "never", "require",
+        )
+        if text and any(marker in normalized_text for marker in requirement_markers):
+            user_requirements.append(text)
     plan_items = [dict(item) for item in list(task_state.get("plan_items") or []) if isinstance(item, dict)]
-    for item in plan_items:
-        if str(item.get("status") or "").strip() == "completed":
-            step = _truncate(item.get("step"), 500)
-            if step:
-                decisions.append(step)
     next_steps = []
     next_required = _truncate(task_state.get("next_required_action"), 500)
     if next_required:
@@ -588,6 +720,8 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
         do_not_repeat.append(f"Avoid repeating without new evidence: {item}")
     status = _truncate(task_state.get("status") or payload.get("current_status"), 80)
     goal = _truncate(task_state.get("goal"), 500)
+    if goal:
+        user_requirements.insert(0, goal)
     blocked = _truncate(task_state.get("blocked_reason"), 500)
     state_parts = []
     if status:
@@ -599,6 +733,7 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
     if blocked:
         state_parts.append(f"blocked={blocked}")
     return CompactionSummary(
+        user_requirements=_unique_strings(user_requirements, limit=12, max_chars=500),
         confirmed_facts=_unique_strings(confirmed, limit=12, max_chars=500),
         files_touched=_unique_strings(payload.get("modified_files"), limit=16, max_chars=500),
         decisions=_unique_strings(decisions, limit=10, max_chars=500),
@@ -613,6 +748,7 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
 def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
     payload = dict(compaction_input or {})
     schema = {
+        "user_requirements": ["explicit user requirements and constraints"],
         "confirmed_facts": ["facts that are already verified"],
         "files_touched": ["paths that are relevant or changed"],
         "decisions": ["decisions already made"],
@@ -636,6 +772,7 @@ def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
 def render_compaction_summary(summary: CompactionSummary | dict[str, Any], *, generation: int | None = None) -> str:
     payload = normalize_compaction_summary(summary)
     sections: list[tuple[str, list[str] | str]] = [
+        ("user_requirements", payload.user_requirements),
         ("confirmed_facts", payload.confirmed_facts),
         ("files_touched", payload.files_touched),
         ("decisions", payload.decisions),
@@ -662,103 +799,39 @@ def render_compaction_summary(summary: CompactionSummary | dict[str, Any], *, ge
     return _clean_text("\n".join(lines), limit=4000)
 
 
-def apply_compaction_summary_to_state(
-    *,
-    context_manager: "ContextManager",
-    summary: CompactionSummary | dict[str, Any],
-    task_state: dict[str, Any] | None = None,
-    work_cursor: dict[str, Any] | None = None,
-    generation: int | None = None,
-) -> tuple["ContextManager", dict[str, Any], dict[str, Any]]:
-    normalized = normalize_compaction_summary(summary)
-    manager = ContextManager.from_payload(context_manager.to_session_payload())
-    manager.clean_summary = render_compaction_summary(normalized, generation=generation)
-    observations = [
-        {
-            "source": "compaction",
-            "tool": "llm_compaction",
-            "status": "ok",
-            "summary": item,
-        }
-        for item in [*normalized.confirmed_facts[:4], *normalized.decisions[:2], normalized.current_state]
-        if str(item or "").strip()
-    ]
-    manager.recent_observations = _normalize_recent_observations(
-        [*observations, *[dump_model(item) for item in manager.recent_observations]]
-    )
-    if normalized.files_touched:
-        manager.active_files = _unique_strings(
-            [*normalized.files_touched, *manager.active_files],
-            limit=10,
-            max_chars=500,
-        )
-    if normalized.next_steps:
-        manager.plan = [
-            PlanItem(step=step, status=("in_progress" if index == 0 else "pending"))
-            for index, step in enumerate(normalized.next_steps[:12])
-        ]
-    manager.clean_turns = manager.clean_turns[-8:]
-    manager._touch()
-
-    task_payload = dict(task_state or {})
-    existing_failures = [
-        dict(item)
-        for item in list(task_payload.get("failed_attempts") or [])
-        if isinstance(item, dict)
-    ]
-    for item in normalized.failed_attempts:
-        existing_failures.append({"summary": item, "source": "compaction"})
-    if normalized.failed_attempts:
-        task_payload["failed_attempts"] = existing_failures[-12:]
-    if normalized.next_steps:
-        task_payload["next_required_action"] = normalized.next_steps[0]
-        task_payload["plan_items"] = [
-            {
-                "id": f"compaction-step-{index + 1}",
-                "step": step,
-                "status": "in_progress" if index == 0 else "pending",
-            }
-            for index, step in enumerate(normalized.next_steps[:12])
-        ]
-    if normalized.current_state and not str(task_payload.get("blocked_reason") or "").strip():
-        if normalized.failed_attempts and str(task_payload.get("status") or "") in {"blocked", "failed"}:
-            task_payload["blocked_reason"] = normalized.current_state[:500]
-
-    cursor_payload = dict(work_cursor or {})
-    if normalized.files_touched:
-        cursor_payload["active_files"] = _unique_strings(
-            [*normalized.files_touched, *list(cursor_payload.get("active_files") or [])],
-            limit=8,
-            max_chars=500,
-        )
-    return manager, task_payload, cursor_payload
-
-
-def _permission_text(value: Any, *, enabled: str, disabled: str) -> str:
-    return enabled if bool(value) else disabled
-
-
 def _has_context_manager_data(payload: dict[str, Any]) -> bool:
     try:
         context_version = int(payload.get("context_version") or 0)
     except Exception:
         context_version = 0
+    try:
+        schema_version = int(payload.get("schema_version") or 0)
+    except Exception:
+        schema_version = 0
     return bool(
-        str(payload.get("clean_summary") or "").strip()
-        or list(payload.get("clean_turns") or [])
-        or list(payload.get("recent_observations") or [])
-        or list(payload.get("active_files") or [])
+        str(payload.get("working_summary") or payload.get("clean_summary") or "").strip()
+        or list(payload.get("recent_turns") or payload.get("clean_turns") or [])
+        or list(payload.get("recent_tool_results") or payload.get("recent_observations") or [])
+        or list(payload.get("relevant_files") or payload.get("active_files") or [])
+        or list(payload.get("modified_files") or [])
+        or list(payload.get("verified_facts") or [])
         or list(payload.get("plan") or [])
+        or schema_version >= 2
         or context_version > 0
     )
 
 
 class ContextManager(BaseModel):
-    clean_summary: str = ""
-    clean_turns: list[dict[str, Any]] = Field(default_factory=list)
-    recent_observations: list[RecentObservation] = Field(default_factory=list)
-    active_files: list[str] = Field(default_factory=list)
-    plan: list[PlanItem] = Field(default_factory=list)
+    schema_version: Literal[2] = 2
+    working_summary: str = ""
+    recent_turns: list[dict[str, Any]] = Field(default_factory=list)
+    recent_tool_results: list[RecentObservation] = Field(default_factory=list)
+    verified_facts: list[VerifiedFact] = Field(default_factory=list)
+    relevant_files: list[str] = Field(default_factory=list)
+    modified_files: list[str] = Field(default_factory=list)
+    user_requirements: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
     context_version: int = 0
 
     @classmethod
@@ -769,11 +842,17 @@ class ContextManager(BaseModel):
         except Exception:
             context_version = 0
         return cls(
-            clean_summary=_truncate(raw.get("clean_summary"), 4000),
-            clean_turns=_normalize_clean_turns(raw.get("clean_turns"), current_message="", limit=16),
-            recent_observations=_normalize_recent_observations(raw.get("recent_observations")),
-            active_files=_unique_strings(raw.get("active_files"), limit=10, max_chars=500),
-            plan=_normalize_plan_items(raw.get("plan")),
+            working_summary=_truncate(raw.get("working_summary") or raw.get("clean_summary"), 4000),
+            recent_turns=_normalize_clean_turns(raw.get("recent_turns") or raw.get("clean_turns"), current_message="", limit=16),
+            recent_tool_results=_normalize_recent_observations(
+                raw.get("recent_tool_results") or raw.get("recent_observations")
+            ),
+            verified_facts=_normalize_verified_facts(raw.get("verified_facts")),
+            relevant_files=_file_strings(raw.get("relevant_files") or raw.get("active_files"), limit=10),
+            modified_files=_file_strings(raw.get("modified_files"), limit=10),
+            user_requirements=_summary_strings(raw.get("user_requirements"), limit=12, max_chars=500),
+            decisions=_summary_strings(raw.get("decisions"), limit=10, max_chars=500),
+            open_questions=_summary_strings(raw.get("open_questions"), limit=8, max_chars=500),
             context_version=context_version,
         )
 
@@ -786,249 +865,15 @@ class ContextManager(BaseModel):
 
     def to_session_payload(self) -> dict[str, Any]:
         return {
-            "clean_summary": self.clean_summary,
-            "clean_turns": [dict(item) for item in self.clean_turns],
-            "recent_observations": [dump_model(item) for item in self.recent_observations[:5]],
-            "active_files": list(self.active_files[:10]),
-            "plan": [dump_model(item) for item in self.plan[:12]],
+            "schema_version": 2,
+            "working_summary": self.working_summary,
+            "recent_turns": [dict(item) for item in self.recent_turns],
+            "recent_tool_results": [dump_model(item) for item in self.recent_tool_results[:5]],
+            "verified_facts": [dump_model(item) for item in self.verified_facts[:12]],
+            "relevant_files": list(self.relevant_files[:10]),
+            "modified_files": list(self.modified_files[:10]),
+            "user_requirements": list(self.user_requirements[:12]),
+            "decisions": list(self.decisions[:10]),
+            "open_questions": list(self.open_questions[:8]),
             "context_version": int(self.context_version),
         }
-
-    def _touch(self) -> None:
-        self.context_version += 1
-
-    def update_after_turn(
-        self,
-        *,
-        user_request: str,
-        clean_final_answer: str | None,
-        runtime_trace: dict[str, Any] | None = None,
-        plan_updates: list[dict[str, Any]] | None = None,
-    ) -> None:
-        user_text = _clean_text(user_request, limit=4000)
-        if user_text:
-            self.clean_turns.append({"role": "user", "text": user_text})
-            self._touch()
-
-        answer_text = _clean_text(clean_final_answer, limit=4000)
-        if answer_text and classify_assistant_output(answer_text) == "final_answer":
-            self.clean_turns.append({"role": "assistant", "text": answer_text})
-            self._touch()
-
-        trace = dict(runtime_trace or {})
-        observations = []
-        for event in list(trace.get("tool_events") or []):
-            observation = _tool_event_observation(event)
-            if observation:
-                observations.append(observation)
-        if observations:
-            merged = [*observations, *[dump_model(item) for item in self.recent_observations]]
-            self.recent_observations = _normalize_recent_observations(merged)
-            self._touch()
-
-        active_files = _extract_active_files_from_events(trace.get("tool_events") or [])
-        if active_files:
-            self.active_files = _unique_strings([*active_files, *self.active_files], limit=10, max_chars=500)
-            self._touch()
-
-        if plan_updates is not None:
-            self.plan = _normalize_plan_items(plan_updates)
-            self._touch()
-
-        self.recent_observations = self.recent_observations[:5]
-        self.active_files = self.active_files[:10]
-
-    def compact_if_needed(self, *, max_clean_turns: int = 16) -> bool:
-        if len(self.clean_turns) <= max_clean_turns:
-            return False
-        keep_count = min(8, max(4, max_clean_turns // 2))
-        old_turns = self.clean_turns[:-keep_count]
-        retained = self.clean_turns[-keep_count:]
-        compaction_messages = [*old_turns]
-        if self.clean_summary.strip():
-            compaction_messages.insert(0, {"role": "assistant", "text": self.clean_summary})
-        compaction_input = build_compaction_input(
-            old_messages=compaction_messages,
-            tool_evidence=[dump_model(item) for item in self.recent_observations],
-            task_state={"plan_items": [dump_model(item) for item in self.plan]},
-            work_cursor={"active_files": list(self.active_files)},
-            modified_files=list(self.active_files),
-        )
-        summary = build_structured_compaction_summary(compaction_input)
-        self.clean_summary = render_compaction_summary(summary)
-        self.clean_turns = retained
-        self.recent_observations = self.recent_observations[:5]
-        self.active_files = _unique_strings(
-            [*summary.files_touched, *self.active_files],
-            limit=10,
-            max_chars=500,
-        )
-        if summary.next_steps:
-            self.plan = [
-                PlanItem(step=step, status=("in_progress" if index == 0 else "pending"))
-                for index, step in enumerate(summary.next_steps[:12])
-            ]
-        self._touch()
-        return True
-
-
-def _permissions_from_boundary(runtime_boundary_model_view: dict[str, Any], *, permission_profile: str) -> PermissionsContext:
-    profile = str(permission_profile or runtime_boundary_model_view.get("permission_profile") or "auto")
-    return PermissionsContext(
-        profile=profile,
-        label=str(runtime_boundary_model_view.get("permission_label") or profile.replace("_", " ").title()),
-        read=str(runtime_boundary_model_view.get("file_read_scope") or _permission_text(
-            runtime_boundary_model_view.get("workspace_read_allowed"),
-            enabled="current project + imported files",
-            disabled="none",
-        )),
-        write=str(runtime_boundary_model_view.get("file_write_scope") or _permission_text(
-            runtime_boundary_model_view.get("workspace_write_allowed"),
-            enabled="current project",
-            disabled="none",
-        )),
-        shell=str(runtime_boundary_model_view.get("command_scope") or _permission_text(
-            runtime_boundary_model_view.get("shell_allowed"),
-            enabled="current project",
-            disabled="none",
-        )),
-        network=(
-            "enabled"
-            if bool(runtime_boundary_model_view.get("network_allowed"))
-            else str(runtime_boundary_model_view.get("network_reason") or "disabled")
-        ),
-    )
-
-
-def _current_step_from_context_manager(context_manager: ContextManager) -> str:
-    for item in context_manager.recent_observations:
-        summary = _truncate(item.summary, 500)
-        if summary:
-            return summary
-    return ""
-
-
-def _next_action_from_context_manager(context_manager: ContextManager) -> str:
-    for item in context_manager.plan:
-        if item.status in {"pending", "in_progress"}:
-            step = _truncate(item.step, 500)
-            if step:
-                return step
-    return ""
-
-
-def _task_context_from_state(
-    *,
-    user_request: str,
-    context_manager: ContextManager,
-    task_state: dict[str, Any] | None = None,
-) -> TaskContext:
-    normalized_task = normalize_task_state(task_state or {})
-    plan_items = [dict(item) for item in list(normalized_task.get("plan_items") or []) if isinstance(item, dict)]
-    current_step_id = str(normalized_task.get("current_step_id") or "").strip()
-    current_step = ""
-    if current_step_id:
-        current_step = next(
-            (
-                _truncate(item.get("step"), 500)
-                for item in plan_items
-                if str(item.get("id") or "").strip() == current_step_id and _truncate(item.get("step"), 500)
-            ),
-            "",
-        )
-    if not current_step:
-        current_step = _truncate(
-            normalized_task.get("next_required_action") or _current_step_from_context_manager(context_manager),
-            500,
-        )
-    return TaskContext(
-        user_request=_clean_text(user_request, limit=max(4000, len(str(user_request or "")))),
-        goal=_truncate(normalized_task.get("goal") or normalize_user_message_preview(user_request, limit=140), 500),
-        status=_truncate(normalized_task.get("status"), 80),
-        current_step_id=_truncate(current_step_id, 120),
-        current_step=current_step,
-        next_action=_truncate(
-            normalized_task.get("next_required_action") or _next_action_from_context_manager(context_manager),
-            500,
-        ),
-        blocked_reason=_truncate(normalized_task.get("blocked_reason"), 500),
-        completed_steps=_summary_strings(normalized_task.get("completed_steps"), limit=6, max_chars=240),
-        failed_attempts=_summary_strings(normalized_task.get("failed_attempts"), limit=6, max_chars=240),
-        validation_warnings=_summary_strings(normalized_task.get("validation_warnings"), limit=6, max_chars=240),
-    )
-
-
-def build_model_context(
-    *,
-    user_request: str,
-    context_manager: ContextManager,
-    runtime_boundary: Any,
-    project_root: Path | str | None = None,
-    cwd: Path | str | None = None,
-    task_state: dict[str, Any] | None = None,
-    work_cursor: dict[str, Any] | None = None,
-    user_request_char_limit: int | None = None,
-) -> ModelContext:
-    boundary_model_view = runtime_boundary.to_model_view() if hasattr(runtime_boundary, "to_model_view") else dict(runtime_boundary or {})
-    normalized_task = normalize_task_state(task_state or {})
-    normalized_cursor = normalize_work_cursor(work_cursor or {})
-    resolved_project_root = str(
-        project_root
-        or normalized_cursor.get("project_root")
-        or boundary_model_view.get("project_root")
-        or ""
-    )
-    resolved_cwd = str(
-        cwd
-        or normalized_cursor.get("cwd")
-        or boundary_model_view.get("cwd")
-        or resolved_project_root
-    )
-    clean_user_request = _clean_text(
-        user_request,
-        limit=max(4000, int(user_request_char_limit or 4000)),
-    )
-    active_files = _unique_strings(
-        [*list(normalized_cursor.get("active_files") or []), *context_manager.active_files],
-        limit=10,
-        max_chars=500,
-    )
-    conversation = _normalize_clean_turns(context_manager.clean_turns, current_message=clean_user_request, limit=8)
-    task_context = _task_context_from_state(
-        user_request=clean_user_request,
-        context_manager=context_manager,
-        task_state=normalized_task,
-    )
-    plan_items = (
-        [
-            PlanItem(step=_truncate(item.get("step"), 500), status=str(item.get("status") or "pending"))
-            for item in list(normalized_task.get("plan_items") or [])[:12]
-            if isinstance(item, dict) and _truncate(item.get("step"), 500)
-        ]
-        if list(normalized_task.get("plan_items") or [])
-        else context_manager.plan[:12]
-    )
-    return ModelContext(
-        task=task_context,
-        workspace=WorkspaceContext(
-            project_root=str(resolved_project_root),
-            cwd=str(resolved_cwd),
-            model_visible_paths=active_files,
-        ),
-        memory=MemoryContext(
-            clean_summary=_truncate(context_manager.clean_summary, 2000),
-            active_files=active_files,
-            recent_observations=context_manager.recent_observations[:5],
-        ),
-        plan=PlanContext(items=plan_items),
-        permissions=_permissions_from_boundary(
-            boundary_model_view,
-            permission_profile=str(getattr(runtime_boundary, "permission_profile", "") or boundary_model_view.get("permission_profile") or ""),
-        ),
-        conversation=ConversationContext(recent_turns=conversation),
-    )
-
-
-def render_model_context(model_context: ModelContext) -> str:
-    payload = {"model_context": dump_model(model_context)}
-    return "model_context_json:\n" + json.dumps(payload, ensure_ascii=False)

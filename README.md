@@ -54,9 +54,9 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 `exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
 
-## ModelContext
+## Session = Thread
 
-当前模型输入的正常路径只渲染 `ModelContext`，它由六个清晰部分组成：`task`、`workspace`、`memory`、`plan`、`permissions`、`conversation`。`RuntimeTrace`、raw tool output、model draft、旧的 route/agent state 只用于调试或迁移，不再作为正常模型上下文来源。
+`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录、权限和附件由 Harness 作为小型运行环境消息提供，`task_state`、`work_cursor`、RuntimeTrace 等状态只供 Harness、前端和审计使用。旧 Session 首次读取时会从原有 `turns` 自动生成 transcript。
 
 ## Manual Update
 
