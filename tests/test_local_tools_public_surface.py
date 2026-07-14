@@ -588,3 +588,28 @@ def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Pat
     assert result["ok"] is False
     assert "File not found: missing.txt" in str(result["error"])
     assert result["files"] == []
+
+
+def test_apply_patch_requires_save_skill_for_team_and_project_skill_paths(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    team_root = tmp_path / "vp-install" / "skills" / "team"
+    executor.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        reserved_skill_roots=[str(team_root)],
+    )
+
+    team_result = executor.apply_patch(
+        "*** Begin Patch\n*** Add File: vp-install/skills/team/demo/SKILL.md\n+# Team\n*** End Patch\n",
+        cwd=str(tmp_path),
+    )
+    project_result = executor.apply_patch(
+        "*** Begin Patch\n*** Add File: .agents/skills/demo/SKILL.md\n+# Project\n*** End Patch\n",
+        cwd=str(tmp_path),
+    )
+
+    assert team_result["ok"] is False
+    assert team_result["error"]["kind"] == "reserved_skill_path"
+    assert project_result["ok"] is False
+    assert project_result["error"]["kind"] == "reserved_skill_path"
+    assert not (tmp_path / ".agents").exists()

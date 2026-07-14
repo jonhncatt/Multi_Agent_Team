@@ -19,9 +19,9 @@
 
 ## Stable Runtime
 
-3.1.5W は VP Skills v1 リリースです。読み取り専用の built-in skills と、ユーザーが編集できる workspace skills をサポートし、runtime は既定で軽量な `[available_skills]` だけを注入します。完全な `SKILL.md` は、明示的な `$skill` 参照または `load_skill` によって必要なときだけ読み込まれます。
+現在の branch は、読み取り専用の Built-in Skills と Git で共同管理する Team Skills を持つグローバル Skill Registry を使用します。runtime は既定で軽量な `[available_skills]` metadata だけを渡し、完全な `SKILL.md` は明示的な `$skill` または `load_skill` で必要なときだけ読み込みます。
 
-このリリースでは `save_skill` tool も追加し、agent が再利用可能な手順を `workspace/skills/<name>/SKILL.md` に保存できるようにしました。高品質な workspace skill 作成を案内する built-in `create-workspace-skill` も同梱しています。thread 単位の agent 並行実行、低モーションの実行インジケーター、前景 loading overlay は引き続き維持します。
+`save_skill` は再利用可能な手順を Vintage Programmer repository の `skills/team/<name>/SKILL.md` にだけ保存し、現在選択中の業務 project には書き込みません。Built-in の `create-team-skill` が Team Skill 作成を案内し、Built-in Skills 自体は読み取り専用です。
 
 ## Max Output Tokens
 
@@ -239,15 +239,16 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 各ディレクトリには `soul.md`、`identity.md`、`agent.md`、`tools.md` が含まれます。root-level の同名ファイルは旧 workspace 向け fallback です。
 
-## Local Skills
+## Skills
 
-workspace skill は次に配置します。
+グローバル catalog は次に配置します。
 
 ```text
-workspace/skills/<skill_id>/SKILL.md
+skills/builtin/<skill_name>/SKILL.md
+skills/team/<skill_name>/SKILL.md
 ```
 
-`enabled: true` かつ `bind_to` に `vintage_programmer` を含む skill だけがメイン agent に注入されます。
+両 catalog は特定の Agent に紐付きません。現在は Vintage Programmer が有効な metadata を発見し、選択後にだけ本文を読み込みます。Team Skill を commit する前に `python scripts/validate_skills.py` を実行してください。
 
 ## Inline Code
 

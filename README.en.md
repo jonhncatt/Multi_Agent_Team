@@ -19,9 +19,9 @@ Current stable release: `3.1.5W`
 
 ## Stable Runtime
 
-3.1.5W is the VP Skills v1 release: it supports read-only built-in skills and user-editable workspace skills, while the runtime injects only the lightweight `[available_skills]` list by default. Full `SKILL.md` content is loaded on demand through explicit `$skill` references or `load_skill`.
+The current branch uses a global Skill Registry with read-only Built-in Skills and Git-managed Team Skills. The runtime injects only lightweight `[available_skills]` metadata by default; full `SKILL.md` content is loaded on demand through explicit `$skill` references or `load_skill`.
 
-This release adds the `save_skill` tool so the agent can preserve reusable workflows in `workspace/skills/<name>/SKILL.md`. It also ships the built-in `create-workspace-skill` skill to guide high-quality workspace skill creation. Thread-scoped agent concurrency, low-motion run indicators, and the foreground loading overlay remain in place.
+`save_skill` writes reusable workflows only to `skills/team/<name>/SKILL.md` in the Vintage Programmer repository, independently of the active business project. The built-in `create-team-skill` guides Team Skill authoring; Built-in Skills remain read-only.
 
 ## Max Output Tokens
 
@@ -101,8 +101,8 @@ That makes the agent easier to inspect, trust, and improve.
   The model proposes actions; the runtime validates tool names, arguments, and execution boundaries before running anything.
 - **Editable agent specs**  
   The main agent behavior is defined by local Markdown files you can inspect and change directly.
-- **Local skills system**  
-  Workspace skills can be added, toggled, and bound to `vintage_programmer`.
+- **Global skills system**
+  Built-in Skills ship read-only with the product; Team Skills are maintained together through the Vintage Programmer Git repository.
 - **Verified provider profiles**  
   `.env.example` and source code currently verify support for OpenAI, OpenAI-compatible gateways, OpenRouter, and local Ollama profiles.
 - **Multilingual locale layer**  
@@ -237,15 +237,16 @@ Its core Markdown specs are stored by locale:
 
 Each directory contains `soul.md`, `identity.md`, `agent.md`, and `tools.md`. Root-level copies are only a legacy workspace fallback.
 
-## Local Skills
+## Skills
 
-Workspace skills live in:
+The global catalogs live in:
 
 ```text
-workspace/skills/<skill_id>/SKILL.md
+skills/builtin/<skill_name>/SKILL.md
+skills/team/<skill_name>/SKILL.md
 ```
 
-Only skills with `enabled: true` and `bind_to` including `vintage_programmer` are injected into the main agent.
+Both catalogs are independent of individual agents. The current Vintage Programmer runtime discovers enabled metadata globally and loads full content only after selection. Use `python scripts/validate_skills.py` before committing Team Skills.
 
 ## Inline Code
 

@@ -188,7 +188,7 @@ class _FakeTools:
                 "description": "load selected skill instructions",
                 "parameters": {
                     "type": "object",
-                    "properties": {"key": {"type": "string"}},
+                    "properties": {"key": {"type": "string"}, "resource": {"type": "string"}},
                     "required": ["key"],
                     "additionalProperties": False,
                 },
@@ -247,7 +247,12 @@ class _FakeTools:
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
         if name == "load_skill" and callable(self.skill_loader):
-            return self.skill_loader(str(arguments.get("key") or ""))
+            resource = str(arguments.get("resource") or "")
+            return (
+                self.skill_loader(str(arguments.get("key") or ""), resource=resource)
+                if resource
+                else self.skill_loader(str(arguments.get("key") or ""))
+            )
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
         return {
@@ -3968,11 +3973,11 @@ def test_runtime_does_not_auto_rescue_image_attachment_turn_when_model_refuses_t
     assert result["inspector"]["evidence"]["status"] == "not_needed"
 
 
-def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(tmp_path: Path) -> None:
+def test_runtime_loads_enabled_team_skills_for_inline_code(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    skill_dir = tmp_path / "workspace" / "skills" / "inline_helper"
+    skill_dir = tmp_path / "skills" / "team" / "inline_helper"
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
@@ -4001,14 +4006,14 @@ def test_runtime_loads_enabled_skills_and_skips_workspace_nudge_for_inline_code(
     assert result["text"] == "inline analysis complete"
     assert result["inspector"]["run_state"]["inline_document"] is True
     assert result["tool_events"] == []
-    assert result["inspector"]["loaded_skills"][0]["key"] == "workspace:inline_helper"
+    assert result["inspector"]["loaded_skills"][0]["key"] == "team:inline_helper"
 
 
 def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    skill_dir = tmp_path / "workspace" / "skills" / "repo_triage"
+    skill_dir = tmp_path / "skills" / "team" / "repo_triage"
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
@@ -4036,16 +4041,18 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
 
     system_prompt = str(backend.invocations[0]["messages"][0].content)
     assert "[available_skills]" in system_prompt
-    assert "workspace:repo_triage" in system_prompt
+    assert "team:repo_triage" in system_prompt
     assert "Use for repository triage." in system_prompt
     assert "Full secret instruction body." not in system_prompt
+    available_section = system_prompt.split("[available_skills]", 1)[1].split("\n\n", 1)[0]
+    assert '"path"' not in available_section
 
 
 def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    skill_dir = tmp_path / "workspace" / "skills" / "repo_triage"
+    skill_dir = tmp_path / "skills" / "team" / "repo_triage"
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         "---\n"
@@ -4059,7 +4066,7 @@ def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
     )
     backend = _FakeBackend(
         [
-            _FakeMessage(content="", tool_calls=[{"id": "tc-load-skill", "name": "load_skill", "args": {"key": "workspace:repo_triage"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc-load-skill", "name": "load_skill", "args": {"key": "team:repo_triage"}}]),
             _FakeMessage(content="skill loaded"),
         ]
     )
@@ -4076,13 +4083,56 @@ def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
         context={"session_id": "s-load-skill", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
     )
 
-    assert backend.tools.calls == [("load_skill", {"key": "workspace:repo_triage"})]
+    assert backend.tools.calls == [("load_skill", {"key": "team:repo_triage"})]
     assert result["tool_events"][0]["name"] == "load_skill"
     assert "Full skill instruction body." in str(result["tool_events"][0]["result_preview"])
-    assert result["inspector"]["loaded_skills"][0]["key"] == "workspace:repo_triage"
+    assert result["inspector"]["loaded_skills"][0]["key"] == "team:repo_triage"
 
 
-def test_runtime_save_skill_tool_creates_workspace_skill(tmp_path: Path) -> None:
+def test_runtime_load_skill_tool_reads_selected_relative_resource(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    skill_dir = tmp_path / "skills" / "team" / "protocol_rules"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: protocol_rules\ndescription: Use for protocol rules.\nenabled: true\n---\n\n# Protocol Rules\n\nLoad references/rules.md.\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "references").mkdir()
+    (skill_dir / "references" / "rules.md").write_text("Use explicit error codes.\n", encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc-load-main", "name": "load_skill", "args": {"key": "team:protocol_rules"}}]),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-load-resource",
+                        "name": "load_skill",
+                        "args": {"key": "team:protocol_rules", "resource": "references/rules.md"},
+                    }
+                ],
+            ),
+            _FakeMessage(content="rules loaded"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(config=config, kernel_runtime=object(), agent_dir=agent_dir, backend=backend)
+
+    result = runtime.run(
+        message="按协议规则处理",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={"session_id": "s-skill-resource", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
+    )
+
+    first_result = result["tool_events"][0]["result_preview"]
+    second_result = result["tool_events"][1]["result_preview"]
+    assert "references/rules.md" in str(first_result)
+    assert "Use explicit error codes." in str(second_result)
+    assert result["inspector"]["loaded_skills"][0]["key"] == "team:protocol_rules"
+
+
+def test_runtime_save_skill_tool_creates_global_team_skill(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -4115,13 +4165,15 @@ def test_runtime_save_skill_tool_creates_workspace_skill(tmp_path: Path) -> None
         backend=backend,
     )
 
+    business_project = tmp_path / "company-project"
+    business_project.mkdir()
     result = runtime.run(
         message="把这次仓库排查流程总结成 skill",
         settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
-        context={"session_id": "s-save-skill", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
+        context={"session_id": "s-save-skill", "project": {"project_root": str(business_project)}, "history_turns": [], "attachments": []},
     )
 
-    skill_path = tmp_path / "workspace" / "skills" / "repo-triage" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "team" / "repo-triage" / "SKILL.md"
     assert backend.tools.calls == [
         (
             "save_skill",
@@ -4135,6 +4187,7 @@ def test_runtime_save_skill_tool_creates_workspace_skill(tmp_path: Path) -> None
     ]
     assert result["tool_events"][0]["name"] == "save_skill"
     assert skill_path.is_file()
+    assert not (business_project / "skills").exists()
     content = skill_path.read_text(encoding="utf-8")
     assert content.startswith("---\nname: repo-triage\n")
     assert "description: Use when investigating repository structure." in content

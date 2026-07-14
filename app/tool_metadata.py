@@ -80,7 +80,7 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
             "optional_dependency": [],
         },
         "risk": "medium",
-        "summary": "create or update workspace skills",
+        "summary": "create or update repository-shared Team Skills",
     },
     "exec_command": {
         "group": "shell",

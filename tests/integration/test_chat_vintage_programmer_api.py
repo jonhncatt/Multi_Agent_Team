@@ -2751,11 +2751,11 @@ def test_workbench_endpoints_list_and_edit_local_skills(monkeypatch, tmp_path: P
     assert "repo_triage" not in {item["id"] for item in after_delete.json()["skills"]}
 
 
-def test_workbench_skill_endpoints_include_read_only_system_skills(monkeypatch, tmp_path: Path) -> None:
+def test_workbench_skill_endpoints_include_read_only_builtin_skills(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
-    system_skill_dir = tmp_path / "agents" / "vintage_programmer" / "skills" / "system_helper"
-    system_skill_dir.mkdir(parents=True, exist_ok=True)
-    (system_skill_dir / "SKILL.md").write_text(
+    builtin_skill_dir = tmp_path / "skills" / "builtin" / "system_helper"
+    builtin_skill_dir.mkdir(parents=True, exist_ok=True)
+    (builtin_skill_dir / "SKILL.md").write_text(
         "---\n"
         "name: system_helper\n"
         "description: built in helper\n"
@@ -2768,21 +2768,25 @@ def test_workbench_skill_endpoints_include_read_only_system_skills(monkeypatch, 
 
     skills_response = client.get("/api/workbench/skills")
     assert skills_response.status_code == 200
-    system_entry = next(item for item in skills_response.json()["skills"] if item["key"] == "system:system_helper")
-    assert system_entry["read_only"] is True
-    assert system_entry["content"] == ""
+    builtin_entry = next(item for item in skills_response.json()["skills"] if item["key"] == "builtin:system_helper")
+    assert builtin_entry["read_only"] is True
+    assert builtin_entry["content"] == ""
 
-    detail_response = client.get("/api/workbench/skills/system_helper?scope=system")
+    detail_response = client.get("/api/workbench/skills/system_helper?scope=builtin")
     assert detail_response.status_code == 200
     assert "# System Helper" in detail_response.json()["content"]
 
+    legacy_alias_response = client.get("/api/workbench/skills/system_helper?scope=system")
+    assert legacy_alias_response.status_code == 200
+    assert legacy_alias_response.json()["key"] == "builtin:system_helper"
+
     update_response = client.put(
-        "/api/workbench/skills/system_helper?scope=system",
+        "/api/workbench/skills/system_helper?scope=builtin",
         json={"content": "---\nname: system_helper\ndescription: x\nenabled: true\n---\n\n# X\n"},
     )
     assert update_response.status_code == 403
 
-    delete_response = client.delete("/api/workbench/skills/system_helper?scope=system")
+    delete_response = client.delete("/api/workbench/skills/system_helper?scope=builtin")
     assert delete_response.status_code == 403
 
 

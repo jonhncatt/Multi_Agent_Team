@@ -200,6 +200,7 @@ class RequestUserInputArgs(BaseModel):
 
 class LoadSkillArgs(BaseModel):
     key: str
+    resource: str = ""
 
 
 class SaveSkillArgs(BaseModel):
@@ -674,7 +675,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="save_skill",
-                description="Create or update a workspace skill using the strict VP SKILL.md format.",
+                description="Create or update a repository-shared Team Skill through the global VP Skill Registry.",
                 args_schema=SaveSkillArgs,
                 func=self._save_skill_tool,
             ),
@@ -895,8 +896,8 @@ class VPRuntimeBackend:
     def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
         return json.dumps(self.tools.sessions_history(session_id=session_id, max_turns=max_turns), ensure_ascii=False)
 
-    def _load_skill_tool(self, key: str) -> str:
-        return json.dumps(self.tools.load_skill(key=key), ensure_ascii=False)
+    def _load_skill_tool(self, key: str, resource: str = "") -> str:
+        return json.dumps(self.tools.load_skill(key=key, resource=resource), ensure_ascii=False)
 
     def _save_skill_tool(
         self,

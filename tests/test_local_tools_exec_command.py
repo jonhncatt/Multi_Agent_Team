@@ -797,3 +797,65 @@ def test_apply_patch_rejects_paths_outside_allowed_roots(
     assert (tmp_path / "docs" / "test.md").read_text(encoding="utf-8") == "x\n"
     assert denied["ok"] is False
     assert "allowed roots" in str(denied["error"]).lower()
+
+
+def test_exec_command_rejects_project_skill_creation_and_points_to_save_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path, write_allowed=True))
+
+    result = manager.exec_command(cmd="mkdir -p .agents/skills/demo", cwd=".")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "reserved_skill_path"
+    assert "save_skill" in str(result["error_detail"]["recovery"])
+
+
+def test_exec_command_rejects_direct_team_catalog_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    team_root = tmp_path / "skills" / "team"
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, write_allowed=True),
+        reserved_skill_roots=[str(team_root)],
+    )
+
+    result = manager.exec_command(cmd="mkdir -p skills/team/demo", cwd=".")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "reserved_skill_path"
+    assert not (team_root / "demo").exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf x > skills/team/demo/SKILL.md",
+        "python -c \"from pathlib import Path; Path('skills/team/demo').mkdir(parents=True)\"",
+    ],
+)
+def test_exec_command_rejects_indirect_team_catalog_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    team_root = tmp_path / "skills" / "team"
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, write_allowed=True),
+        reserved_skill_roots=[str(team_root)],
+    )
+
+    result = manager.exec_command(cmd=command, cwd=".")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "reserved_skill_path"
+    assert not (team_root / "demo").exists()

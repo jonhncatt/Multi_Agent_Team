@@ -1164,6 +1164,7 @@ class LocalToolExecutor:
         run_id: str | None = None,
         skill_loader: Any | None = None,
         skill_writer: Any | None = None,
+        reserved_skill_roots: list[str] | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1183,9 +1184,12 @@ class LocalToolExecutor:
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
         self._runtime_ctx.skill_loader = skill_loader
         self._runtime_ctx.skill_writer = skill_writer
+        self._runtime_ctx.reserved_skill_roots = [
+            str(item) for item in list(reserved_skill_roots or []) if str(item or "").strip()
+        ]
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_loader", "skill_writer"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_loader", "skill_writer", "reserved_skill_roots"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -2458,6 +2462,87 @@ class LocalToolExecutor:
         allowed = ", ".join(str(root) for root in roots[:6])
         return f"Write path outside writable roots: {resolved}. Writable roots: {allowed}"
 
+    def _reserved_skill_write_error(self, path: Path) -> str:
+        """Keep all skill mutations behind the dedicated save_skill flow."""
+
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path.absolute()
+        for raw_root in list(getattr(self._runtime_ctx, "reserved_skill_roots", []) or []):
+            try:
+                root = Path(str(raw_root)).expanduser().resolve()
+            except Exception:
+                continue
+            if _is_within(resolved, root):
+                return "Skill catalog files must be changed through save_skill, not ordinary file tools."
+
+        normalized = "/" + str(resolved).replace("\\", "/").lower().strip("/") + "/"
+        project_skill_markers = (
+            "/.agents/skills/",
+            "/.codex/skills/",
+            "/workspace/skills/",
+        )
+        if any(marker in normalized for marker in project_skill_markers):
+            return "Project/workspace Skill directories are disabled. Use save_skill to write the global Team catalog."
+        return ""
+
+    def _reserved_skill_command_error(self, command: str, *, cwd: Path) -> str:
+        text = str(command or "").replace("\\", "/").lower()
+        known_mutator = bool(
+            re.search(
+                r"(?:^|[;&|]\s*|\s)(?:cp|mv|mkdir|touch|tee|sed\s+-i|perl\s+-pi|rm|del|copy|move|"
+                r"python(?:3)?\b|py\b|node\b|sh\b|bash\b|zsh\b|powershell\b|pwsh\b|cmd\b|"
+                r"install\b|rsync\b|patch\b|unzip\b)",
+                text,
+            )
+        )
+        redirection_targets = re.findall(r"(?:^|\s)(?:\d*>>?|&>)\s*([^\s;&|]+)", text)
+        if not known_mutator and not redirection_targets:
+            return ""
+
+        project_markers = (".agents/skills/", ".codex/skills/", "workspace/skills/")
+        catalog_markers = ("skills/builtin/", "skills/team/")
+        reserved_markers = [
+            str(Path(raw_root).expanduser().resolve()).replace("\\", "/").lower().rstrip("/") + "/"
+            for raw_root in list(getattr(self._runtime_ctx, "reserved_skill_roots", []) or [])
+            if str(raw_root or "").strip()
+        ]
+        if known_mutator and any(marker in text for marker in project_markers):
+            return "Project/workspace Skill directories are disabled. Use save_skill to write the global Team catalog."
+        if known_mutator and any(marker in text for marker in (*catalog_markers, *reserved_markers)):
+            return "Skill catalog files must be changed through save_skill, not ordinary file tools."
+
+        for raw_target in redirection_targets:
+            value = str(raw_target or "").strip().strip("'\"")
+            if not value:
+                continue
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            error = self._reserved_skill_write_error(candidate)
+            if error:
+                return error
+
+        if not known_mutator:
+            return ""
+
+        try:
+            argv = shlex.split(str(command or ""))
+        except Exception:
+            argv = []
+        for token in argv[1:]:
+            value = str(token or "").strip().strip("<>")
+            if not value or value.startswith("-") or "://" in value:
+                continue
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            error = self._reserved_skill_write_error(candidate)
+            if error:
+                return error
+        return ""
+
     def _spawn_command_reader(self, session_id: int, proc: subprocess.Popen[bytes]) -> None:
         def reader() -> None:
             stream = proc.stdout
@@ -3006,7 +3091,12 @@ class LocalToolExecutor:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "key": {"type": "string", "description": "Skill key such as workspace:repo-triage or system:repo-triage."},
+                        "key": {"type": "string", "description": "Skill key such as team:protocol-analysis or builtin:create-team-skill."},
+                        "resource": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Optional relative resource path returned by an earlier load_skill call, such as references/rules.md. Leave empty to load SKILL.md.",
+                        },
                     },
                     "required": ["key"],
                     "additionalProperties": False,
@@ -3015,13 +3105,13 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "save_skill",
-                "description": "Create or update a workspace skill using the strict VP SKILL.md format. This never writes built-in system skills.",
+                "description": "Create or update a repository-shared Team Skill using the strict VP SKILL.md format. The Skill Registry resolves its location independently of the active project; Built-in Skills are never modified.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Workspace skill name, e.g. repo-triage. Use lowercase letters, digits, hyphens, or underscores.",
+                            "description": "Team Skill name, e.g. protocol-analysis. Use lowercase letters, digits, hyphens, or underscores.",
                         },
                         "description": {
                             "type": "string",
@@ -3035,7 +3125,7 @@ class LocalToolExecutor:
                         "overwrite": {
                             "type": "boolean",
                             "default": False,
-                            "description": "Set true to replace an existing workspace skill with the same name.",
+                            "description": "Set true to replace an existing Team Skill with the same name.",
                         },
                     },
                     "required": ["name", "description", "body"],
@@ -3313,6 +3403,16 @@ class LocalToolExecutor:
             return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
+        reserved_skill_error = self._reserved_skill_command_error(cmd, cwd=real_cwd)
+        if reserved_skill_error:
+            return self._command_failure_result(
+                command=cmd,
+                cwd=str(real_cwd),
+                error=reserved_skill_error,
+                stderr=reserved_skill_error,
+                error_kind="reserved_skill_path",
+                error_detail={"message": reserved_skill_error, "recovery": "Call save_skill with a Team Skill name and content."},
+            )
         compound_shell = self._is_compound_shell_command(cmd)
         compound_validation: dict[str, Any] = {}
         tainted_matches: list[dict[str, Any]] = []
@@ -3670,7 +3770,7 @@ class LocalToolExecutor:
             "summary": "user input required",
         }
 
-    def load_skill(self, key: str) -> dict[str, Any]:
+    def load_skill(self, key: str, resource: str = "") -> dict[str, Any]:
         skill_key = str(key or "").strip()
         if not skill_key:
             return {
@@ -3694,7 +3794,8 @@ class LocalToolExecutor:
                 "summary": "skill loader unavailable",
             }
         try:
-            payload = loader(skill_key)
+            resource_name = str(resource or "").strip()
+            payload = loader(skill_key, resource=resource_name) if resource_name else loader(skill_key)
         except Exception as exc:
             message = safe_error_message(exc)
             return {
@@ -4602,6 +4703,35 @@ class LocalToolExecutor:
                         pending_deletes.append(source)
                     continue
                 return {"ok": False, "error": f"Unsupported patch op: {op_type}", "files": files}
+
+            for target, _content in pending_writes:
+                reserved_error = self._reserved_skill_write_error(target)
+                if reserved_error:
+                    return {
+                        "ok": False,
+                        "error": {
+                            "kind": "reserved_skill_path",
+                            "tool": "apply_patch",
+                            "message": reserved_error,
+                            "recovery": "Call save_skill with a Team Skill name and content.",
+                        },
+                        "files": files,
+                        "summary": reserved_error,
+                    }
+            for target in pending_deletes:
+                reserved_error = self._reserved_skill_write_error(target)
+                if reserved_error:
+                    return {
+                        "ok": False,
+                        "error": {
+                            "kind": "reserved_skill_path",
+                            "tool": "apply_patch",
+                            "message": reserved_error,
+                            "recovery": "Use the Team Skill management API for catalog changes.",
+                        },
+                        "files": files,
+                        "summary": reserved_error,
+                    }
 
             if check:
                 return {

@@ -775,11 +775,14 @@ def delete_project(project_id: str) -> ProjectDeleteResponse:
 @app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
 def workbench_skill_catalog() -> WorkbenchSkillsResponse:
     skills = get_workbench_store().list_skill_entries(include_content=False)
-    return WorkbenchSkillsResponse(skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)])
+    return WorkbenchSkillsResponse(
+        skills=[SkillDescriptor(**item) for item in skills if isinstance(item, dict)],
+        migration=get_workbench_store().skill_migration_report,
+    )
 
 
 @app.get("/api/workbench/skills/{skill_name}", response_model=SkillDescriptor)
-def workbench_skill_detail(skill_name: str, scope: str = "workspace") -> SkillDescriptor:
+def workbench_skill_detail(skill_name: str, scope: str = "team") -> SkillDescriptor:
     try:
         return SkillDescriptor(**get_workbench_store().get_skill(skill_name, scope=scope))
     except FileNotFoundError as exc:
@@ -801,11 +804,13 @@ def workbench_create_skill(req: SkillUpsertRequest) -> SkillDescriptor:
 
 
 @app.put("/api/workbench/skills/{skill_name}", response_model=SkillDescriptor)
-def workbench_update_skill(skill_name: str, req: SkillUpsertRequest, scope: str = "workspace") -> SkillDescriptor:
+def workbench_update_skill(skill_name: str, req: SkillUpsertRequest, scope: str = "team") -> SkillDescriptor:
     try:
         updated = SkillDescriptor(**get_workbench_store().save_skill(skill_name, req.content, scope=scope))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _invalidate_runtime_descriptor_caches()
@@ -813,7 +818,7 @@ def workbench_update_skill(skill_name: str, req: SkillUpsertRequest, scope: str 
 
 
 @app.post("/api/workbench/skills/{skill_name}/toggle", response_model=SkillDescriptor)
-def workbench_set_skill_enabled(skill_name: str, req: ToggleSkillRequest, scope: str = "workspace") -> SkillDescriptor:
+def workbench_set_skill_enabled(skill_name: str, req: ToggleSkillRequest, scope: str = "team") -> SkillDescriptor:
     try:
         updated = SkillDescriptor(**get_workbench_store().set_skill_enabled(skill_name, enabled=req.enabled, scope=scope))
     except FileNotFoundError as exc:
@@ -825,7 +830,7 @@ def workbench_set_skill_enabled(skill_name: str, req: ToggleSkillRequest, scope:
 
 
 @app.delete("/api/workbench/skills/{skill_name}", response_model=SkillDeleteResponse)
-def workbench_delete_skill(skill_name: str, scope: str = "workspace") -> SkillDeleteResponse:
+def workbench_delete_skill(skill_name: str, scope: str = "team") -> SkillDeleteResponse:
     try:
         get_workbench_store().delete_skill(skill_name, scope=scope)
     except FileNotFoundError as exc:

@@ -4,8 +4,7 @@
 
 ## Stable Runtime
 
-3.1.5W 是 VP Skills v1 发布：支持只读内置 skills 和用户可编辑 workspace skills，runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
-它新增 `save_skill` 工具，agent 可以把可复用流程沉淀到 `workspace/skills/<name>/SKILL.md`；同时内置 `create-workspace-skill`，用于指导 agent 生成高质量 workspace skill。thread 级 agent 并发继续保留。这不是 OS sandbox，批准后命令会在 host 环境实际执行。
+当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Vintage Programmer 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。完整 `SKILL.md` 仍通过显式 `$skill` 或 `load_skill` 按需读取。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

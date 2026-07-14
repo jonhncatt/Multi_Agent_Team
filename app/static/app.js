@@ -1182,7 +1182,8 @@ function shallowSkillList(skills) {
 
 function normalizeSkillDescriptor(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
-  const scope = String(item.scope || "workspace").trim() || "workspace";
+  const rawScope = String(item.scope || item.source || "team").trim().toLowerCase() || "team";
+  const scope = rawScope === "system" ? "builtin" : (rawScope === "workspace" ? "team" : rawScope);
   const name = String(item.name || item.id || "").trim();
   const key = String(item.key || (name ? `${scope}:${name}` : "")).trim();
   return {
@@ -1204,26 +1205,27 @@ function skillName(item) {
 }
 
 function skillScope(item) {
-  return String((item && (item.scope || "")) || "workspace").trim() || "workspace";
+  const rawScope = String((item && (item.scope || item.source || "")) || "team").trim().toLowerCase() || "team";
+  return rawScope === "system" ? "builtin" : (rawScope === "workspace" ? "team" : rawScope);
 }
 
 function workbenchSkillUrl(itemOrName, scope) {
   const name = typeof itemOrName === "string" ? itemOrName : skillName(itemOrName);
-  const resolvedScope = scope || (typeof itemOrName === "string" ? "workspace" : skillScope(itemOrName));
-  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}?scope=${encodeURIComponent(String(resolvedScope || "workspace").trim())}`;
+  const resolvedScope = scope || (typeof itemOrName === "string" ? "team" : skillScope(itemOrName));
+  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}?scope=${encodeURIComponent(String(resolvedScope || "team").trim())}`;
 }
 
 function workbenchSkillActionUrl(itemOrName, scope, action) {
   const name = typeof itemOrName === "string" ? itemOrName : skillName(itemOrName);
-  const resolvedScope = scope || (typeof itemOrName === "string" ? "workspace" : skillScope(itemOrName));
+  const resolvedScope = scope || (typeof itemOrName === "string" ? "team" : skillScope(itemOrName));
   const suffix = String(action || "").trim();
-  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}/${encodeURIComponent(suffix)}?scope=${encodeURIComponent(String(resolvedScope || "workspace").trim())}`;
+  return `/api/workbench/skills/${encodeURIComponent(String(name || "").trim())}/${encodeURIComponent(suffix)}?scope=${encodeURIComponent(String(resolvedScope || "team").trim())}`;
 }
 
 function groupSkillsByScope(skills) {
-  const grouped = { system: [], workspace: [] };
+  const grouped = { builtin: [], team: [] };
   shallowSkillList(skills).forEach((item) => {
-    const scope = skillScope(item) === "system" ? "system" : "workspace";
+    const scope = skillScope(item) === "builtin" ? "builtin" : "team";
     grouped[scope].push(item);
   });
   return grouped;
@@ -3778,6 +3780,7 @@ function App() {
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
+  const skillsPanelStatus = String(appState.panelCache.skills.status || "idle");
   const [selectedSkillId, setSelectedSkillId] = useState("");
   const [skillEditor, setSkillEditor] = useState("");
   const specs = appState.panelCache.specs.data;
@@ -7393,7 +7396,7 @@ function App() {
       const targetName = targetSkill ? skillName(targetSkill) : "";
       const method = targetName ? "PUT" : "POST";
       const url = targetName
-        ? workbenchSkillUrl(targetName, "workspace")
+        ? workbenchSkillUrl(targetName, "team")
         : "/api/workbench/skills";
       const payload = await fetchJson(url, {
         method,
@@ -7465,7 +7468,7 @@ function App() {
     }
     setSavingWorkbench(true);
     try {
-      await fetchJson(workbenchSkillUrl(targetName, "workspace"), { method: "DELETE" });
+      await fetchJson(workbenchSkillUrl(targetName, "team"), { method: "DELETE" });
       if (fallbackSkillId) {
         skillDraftModeRef.current = false;
       }
@@ -9464,7 +9467,7 @@ function App() {
                     <div className="editor-actions">
                       <button className="ghost-btn" type="button" onClick=${() => {
                         startNewSkillDraft();
-                      }}>${t("buttons.new")}</button>
+                      }}>${t("skills.new_team")}</button>
                       <button className="solid-btn" type="button" onClick=${saveSkill} disabled=${savingWorkbench || selectedSkillReadOnly || !skillEditor.trim()}>${t("buttons.save")}</button>
                       ${selectedSkill
                         ? html`
@@ -9489,13 +9492,17 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="meta-line">
+                    ${skillsPanelStatus === "loading" ? t("skills.loading") : t("skills.global_catalog")}
+                  </div>
+
                   <div className="resource-list">
                     ${skills.length
-                      ? ["system", "workspace"].map((scope) => {
+                      ? ["builtin", "team"].map((scope) => {
                           const scopedItems = groupedSkills[scope] || [];
                           if (!scopedItems.length) return null;
                           return html`
-                            <div key=${scope} className="resource-group-label">${scope === "system" ? t("skills.group.system") : t("skills.group.workspace")}</div>
+                            <div key=${scope} className="resource-group-label">${scope === "builtin" ? t("skills.group.builtin") : t("skills.group.team")}</div>
                             ${scopedItems.map(
                               (item) => {
                                 const itemKey = skillKey(item);

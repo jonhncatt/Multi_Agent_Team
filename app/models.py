@@ -535,7 +535,8 @@ class ToolDescriptor(BaseModel):
 
 class SkillDescriptor(BaseModel):
     key: str = ""
-    scope: str = "workspace"
+    scope: str = "team"
+    source: str = "team"
     name: str = ""
     description: str = ""
     path: str
@@ -565,6 +566,7 @@ class WorkbenchToolsResponse(BaseModel):
 
 class WorkbenchSkillsResponse(BaseModel):
     skills: list[SkillDescriptor] = Field(default_factory=list)
+    migration: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkbenchSpecsResponse(BaseModel):

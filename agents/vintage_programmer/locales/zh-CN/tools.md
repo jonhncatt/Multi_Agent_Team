@@ -41,7 +41,7 @@
 ## Skills
 
 - `load_skill` 只在轻量 skill 列表命中后读取完整 `SKILL.md`。
-- `save_skill` 只创建或更新 workspace skill。只有当流程确实可复用、触发条件清楚、用户目标允许写入时才使用；不要修改内置 system skill。
+- `save_skill` 只创建或更新团队共享的 Team Skill。Team Skill 的路径由全局 Skill Registry 决定，与当前业务项目无关；只有流程确实可复用、触发条件清楚且用户目标允许写入时才使用。不要用普通文件或命令工具创建 Skill，也不要修改只读 Built-in Skill。
 
 ## 状态和用户输入工具
 

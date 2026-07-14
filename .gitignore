@@ -10,12 +10,6 @@ artifacts/
 tmp/
 .playwright-cli/
 workspace/
-!workspace/
-workspace/*
-!workspace/skills/
-workspace/skills/*
-!workspace/skills/sample-workspace-skill/
-!workspace/skills/sample-workspace-skill/SKILL.md
 app/data/projects.json
 app/data/apps/
 app/data/sessions/*

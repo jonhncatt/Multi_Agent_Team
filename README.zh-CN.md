@@ -19,9 +19,9 @@
 
 ## Stable Runtime
 
-3.1.5W 是 VP Skills v1 发布：支持只读内置 skills 和用户可编辑 workspace skills，runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
+当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
 
-本版本新增 `save_skill` 工具，agent 可以把可复用流程沉淀到 `workspace/skills/<name>/SKILL.md`；同时内置 `create-workspace-skill`，用于指导 agent 生成高质量 workspace skill。thread 级 agent 并发、低动效运行提示和前景加载遮罩继续保留。
+`save_skill` 只把可复用流程写入 VP 仓库的 `skills/team/<name>/SKILL.md`，与当前业务项目无关；内置 `create-team-skill` 用于指导 Team Skill 创作，Built-in Skills 保持只读。
 
 ## Max Output Tokens
 
@@ -239,15 +239,16 @@ VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 
 每个目录包含 `soul.md`、`identity.md`、`agent.md`、`tools.md`。根目录同名文件仅作为旧 workspace fallback。
 
-## 本地 Skills
+## Skills
 
-本地 skills 固定放在：
+全局目录固定为：
 
 ```text
-workspace/skills/<skill_id>/SKILL.md
+skills/builtin/<skill_name>/SKILL.md
+skills/team/<skill_name>/SKILL.md
 ```
 
-只有 `enabled: true` 且 `bind_to` 包含 `vintage_programmer` 的 skill，才会注入主 agent。
+两类 Skill 都不绑定具体 Agent。当前由 Vintage Programmer 发现启用的轻量 metadata，选中后再加载完整正文。提交 Team Skill 前运行 `python scripts/validate_skills.py`。
 
 ## Inline Code
 

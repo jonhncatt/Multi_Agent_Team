@@ -1,98 +1,97 @@
-# Skill Progressive Disclosure
+# Global Skill Registry and Progressive Disclosure
 
-## Current Design
+## Catalogs
 
-VP skills are split into two scopes:
-
-```text
-agents/vintage_programmer/skills/<skill>/SKILL.md   # system, built-in, read-only
-workspace/skills/<skill>/SKILL.md                   # workspace, user-editable
-```
-
-The repository ships one enabled built-in system skill for creating workspace skills:
+Skills are independent of concrete agents and the active business project:
 
 ```text
-agents/vintage_programmer/skills/create-workspace-skill/SKILL.md
+skills/builtin/<skill>/SKILL.md   # product-maintained, read-only
+skills/team/<skill>/SKILL.md      # team-maintained, distributed through VP Git
 ```
 
-The repository also ships one disabled workspace sample:
+Both catalogs are globally discoverable. Built-in/Team describes ownership and mutability, not which Agent may use a Skill. The current Vintage Programmer runtime loads both. `SkillRegistry.enabled_skills(agent_id, capabilities)` is the extension point for future capability filtering without moving or copying files.
+
+Canonical keys are:
 
 ```text
-workspace/skills/sample-workspace-skill/SKILL.md
+builtin:<name>
+team:<name>
 ```
 
-The workspace sample is a narrow `.gitignore` exception; other workspace skills remain local by default.
-
-Every skill gets a stable key:
-
-```text
-system:<name>
-workspace:<name>
-```
-
-If a user writes `$name` without a scope, workspace wins over system. Scoped references such as `$system:name` and `$workspace:name` are exact.
+The legacy `system:` and `workspace:` prefixes remain read-compatible aliases. An unscoped name resolves only when unique; duplicate names require an explicit canonical key.
 
 ## Skill Format
 
-Only this frontmatter format is valid:
-
 ```markdown
 ---
-name: repo-triage
-description: Use when the user wants to inspect repository structure, recent changes, risks, or prepare a code investigation plan.
+name: protocol-spec-analysis
+description: Use when the user wants to extract messages, fields, constraints, and open questions from a protocol specification.
 enabled: true
 ---
 
-# Repo Triage
+# Protocol Spec Analysis
 
-Full instructions go here.
+Reusable instructions go here.
 ```
 
-Rules:
-
-- `name` and `description` are required.
-- `enabled` is optional and defaults to `true`.
-- `id`, `title`, `summary`, and `bind_to` are not supported skill fields.
-- All skills bind to `vintage_programmer` in this version.
+Only `name`, `description`, and optional `enabled` are valid frontmatter fields. Runtime/Harness policies, credentials, personal paths, and temporary task data do not belong in a Skill.
 
 ## Runtime Flow
 
 ```text
-scan system/workspace skill roots
-  -> parse SKILL.md frontmatter only
-  -> apply enabled status and system overrides
-  -> inject [available_skills] lightweight list
-  -> explicit $skill references preload full SKILL.md
-  -> model may call load_skill({ key })
-  -> runtime validates key and reads full SKILL.md
-  -> model may call save_skill(...) to create/update a workspace skill
+scan builtin/team roots
+  -> parse and cache frontmatter metadata
+  -> inject [available_skills] without physical paths
+  -> explicit $skill may preload full content
+  -> load_skill({key}) reads selected full content
+  -> load_skill({key, resource}) reads a listed relative reference/script as UTF-8 text
+  -> save_skill(...) validates and writes only Team
 ```
 
-The initial prompt receives only lightweight metadata: `key`, `scope`, `name`, `description`, and `path`. Full `SKILL.md` content is read only after explicit invocation or a `load_skill` tool call.
+Full bodies are never included merely because a Skill exists. This keeps model context stable as the shared catalog grows.
 
-`save_skill` writes only `workspace/skills/<name>/SKILL.md`, uses the same strict frontmatter validation as the Workbench API, and does not modify built-in system skills. It refuses to overwrite an existing workspace skill unless `overwrite: true` is supplied.
+The initial `load_skill({key})` result lists up to 200 relative resource names under the selected Skill. A second call can read one resource without exposing a physical directory or granting general filesystem access to the VP installation. Traversal, absolute paths, binary content, and resources over 2 MB are rejected.
 
-## Local State
+## Write Boundary
 
-Workspace-local runtime files live under `workspace/skills/`, which is ignored by Git:
+- Built-in Skill source is read-only through Runtime and Workbench APIs.
+- Team Skill creation/update goes through `save_skill` or the Team management API.
+- The model supplies a logical name and content, never a destination path.
+- Registry root is derived from the Vintage Programmer installation, not `VP_WORKSPACE_ROOT`, current project, or current working directory.
+- Ordinary file/shell tools reject Registry paths and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations.
+- Team and Built-in cannot silently share a name.
 
-- `.vp_skill_index.json`: lightweight index snapshot.
-- `.vp_skill_overrides.json`: system skill enable/disable overrides.
+## Runtime State
 
-Source `SKILL.md` files remain the final source of truth; snapshots are runtime cache data.
+Ignored state lives under:
 
-## Next Steps
+```text
+app/data/runtime/skills/
+├── skill_index.json
+├── skill_overrides.json
+└── skill_migration.json
+```
 
-P1:
+The index is a disposable metadata cache. Built-in enabled overrides are user runtime state. The migration report records copied, already-present, conflicting, and skipped legacy Skills. `SKILL.md` files remain authoritative.
 
-- Add a skill preview/debug command that explains which skills would load and why.
-- Surface `available_skills`, `loaded_skill_keys`, and load reasons more clearly in the inspector.
+## Legacy Migration
 
-P2:
+Legacy sources are detected at startup:
 
-- Add skill lint for description quality, duplicate names, invalid metadata, and excessive full-body size.
-- Add routing evals for important domain skills.
+```text
+agents/vintage_programmer/skills/
+workspace/skills/
+```
 
-P3:
+Known replaced product Skills are skipped. Other valid legacy Skills are copied to Team with supporting files intact. Migration is idempotent. Existing targets with different content produce a conflict and are never overwritten.
 
-- Consider additional scopes such as project `.agents/skills`, user home skills, admin skills, or plugin-provided skills after the system/workspace flow is stable.
+## Team Contribution
+
+1. After upgrading an older checkout, run `python scripts/migrate_skills.py --json` and resolve any reported conflicts.
+2. Create or update the Team Skill through VP Skill management.
+3. Run `python scripts/validate_skills.py`.
+4. Review the Git diff, including references and scripts.
+5. Commit and push the Vintage Programmer branch.
+6. Merge through GitLab review; coworkers receive it on pull/update.
+
+The validator checks strict schema, duplicate names, suspected credentials/private keys, personal absolute paths, and excessive body size.

@@ -30,7 +30,6 @@ DEFAULT_IGNORED_CHANGE_GLOBS = (
     ".eval_build/**",
     ".eval_runtime/**",
     "app/data/**",
-    "workspace/skills/**",
     "**/__pycache__/**",
     "**/*.pyc",
 )
@@ -535,7 +534,11 @@ def _isolated_config(base: AppConfig, workspace: Path) -> AppConfig:
 
 
 def _runtime_factory(config: AppConfig) -> VintageProgrammerRuntime:
-    return VintageProgrammerRuntime(config=config, agent_dir=AGENT_DIR)
+    return VintageProgrammerRuntime(
+        config=config,
+        agent_dir=AGENT_DIR,
+        skill_repository_root=config.workspace_root / ".eval_runtime" / "vp_install",
+    )
 
 
 def _compact_tool_events(events: list[dict[str, Any]], *, workspace: Path) -> list[dict[str, Any]]:

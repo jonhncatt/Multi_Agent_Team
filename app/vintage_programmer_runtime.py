@@ -166,9 +166,14 @@ _WRITE_INTENT_HINTS = (
     "改成",
     "改为",
     "创建 skill",
+    "创建team skill",
+    "创建 team skill",
+    "创建团队 skill",
     "创建workspace skill",
     "创建 workspace skill",
     "生成 skill",
+    "生成team skill",
+    "生成 team skill",
     "生成workspace skill",
     "生成 workspace skill",
     "保存 skill",
@@ -188,8 +193,10 @@ _WRITE_INTENT_HINTS = (
     "update",
     "change",
     "create skill",
+    "create team skill",
     "create workspace skill",
     "generate skill",
+    "generate team skill",
     "generate workspace skill",
     "save skill",
     "write skill",
@@ -349,6 +356,7 @@ class VintageProgrammerRuntime:
         kernel_runtime: Any | None = None,
         agent_dir: Path,
         backend: Any | None = None,
+        skill_repository_root: Path | None = None,
     ) -> None:
         self._config = config
         self._agent_dir = agent_dir.resolve()
@@ -362,7 +370,11 @@ class VintageProgrammerRuntime:
         self._tool_specs_by_name = self._build_tool_spec_index()
         self._tool_descriptors = build_tool_descriptors(self._tool_specs)
         self._tool_descriptors_by_name = tool_descriptor_by_name(self._tool_specs)
-        self._workbench = WorkbenchStore(config=config, agent_dir=self._agent_dir)
+        self._workbench = WorkbenchStore(
+            config=config,
+            agent_dir=self._agent_dir,
+            skill_repository_root=skill_repository_root,
+        )
         self._descriptor_lock = threading.Lock()
         self._descriptor_cache: dict[str, dict[str, object]] = {}
         self._descriptor_cache_generation = 0
@@ -467,7 +479,6 @@ class VintageProgrammerRuntime:
             "scope": str(item.get("scope") or ""),
             "name": str(item.get("name") or item.get("id") or ""),
             "description": str(item.get("description") or item.get("summary") or ""),
-            "path": str(item.get("path") or ""),
         }
         if include_content:
             row["content"] = str(item.get("content") or "")
@@ -506,7 +517,7 @@ class VintageProgrammerRuntime:
     @staticmethod
     def _explicit_skill_references(message: str) -> list[str]:
         refs: list[str] = []
-        pattern = re.compile(r"(?<![\w.-])\$((?:(?:system|workspace):)?[a-z0-9][a-z0-9_-]{0,63})\b")
+        pattern = re.compile(r"(?<![\w.-])\$((?:(?:builtin|team|system|workspace):)?[a-z0-9][a-z0-9_-]{0,63})\b")
         for match in pattern.finditer(str(message or "").lower()):
             ref = str(match.group(1) or "").strip()
             if ref and ref not in refs:
@@ -528,15 +539,28 @@ class VintageProgrammerRuntime:
             loaded.append(item)
         return loaded
 
-    def _make_skill_loader(self, *, agent_id: str, loaded_skills: list[dict[str, Any]]) -> Callable[[str], dict[str, Any]]:
-        def _loader(key: str) -> dict[str, Any]:
+    def _make_skill_loader(self, *, agent_id: str, loaded_skills: list[dict[str, Any]]) -> Callable[..., dict[str, Any]]:
+        def _loader(key: str, *, resource: str = "") -> dict[str, Any]:
             item = self._workbench.load_skill(str(key or ""), agent_id=agent_id)
             skill_key = str(item.get("key") or "").strip()
             if skill_key and skill_key not in self._skill_key_set(loaded_skills):
                 loaded_skills.append(item)
+            resource_name = str(resource or "").strip()
+            if resource_name:
+                resource_payload = self._workbench.load_skill_resource(
+                    skill_key or str(key or ""),
+                    resource_name,
+                    agent_id=agent_id,
+                )
+                return {
+                    "ok": True,
+                    **resource_payload,
+                    "summary": f"loaded skill resource: {skill_key}/{resource_payload.get('resource')}",
+                }
             return {
                 "ok": True,
                 **self._skill_descriptor_for_model(item, include_content=True),
+                "resources": self._workbench.list_skill_resources(skill_key or str(key or ""), agent_id=agent_id),
                 "summary": f"loaded skill: {str(item.get('name') or skill_key)}",
             }
 
@@ -563,7 +587,7 @@ class VintageProgrammerRuntime:
             return {
                 "ok": True,
                 **descriptor,
-                "summary": f"saved workspace skill: {str(item.get('name') or name)}",
+                "summary": f"saved Team Skill: {str(item.get('name') or name)}",
             }
 
         return _writer
@@ -3649,7 +3673,7 @@ class VintageProgrammerRuntime:
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
-        skill_loader: Callable[[str], dict[str, Any]] | None = None,
+        skill_loader: Callable[..., dict[str, Any]] | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
@@ -3677,6 +3701,8 @@ class VintageProgrammerRuntime:
             kwargs["skill_loader"] = skill_loader
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
+            kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
         setter(**kwargs)
 
     @staticmethod

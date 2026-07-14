@@ -41,7 +41,7 @@
 ## Skills
 
 - Use `load_skill` only after the lightweight skill list indicates a relevant skill.
-- Use `save_skill` only to create or update workspace skills. Use it when the workflow is genuinely reusable, the trigger is clear, and the user goal allows writing; never use it to modify built-in system skills.
+- Use `save_skill` only to create or update repository-shared Team Skills. The global Skill Registry resolves the destination independently of the active business project. Use it only for a genuinely reusable workflow with a clear trigger and authorized write intent; never create Skills with ordinary file or shell tools, and never modify read-only Built-in Skills.
 
 ## State And User Input Tools
 
