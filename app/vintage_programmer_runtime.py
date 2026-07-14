@@ -243,6 +243,7 @@ _WRITE_TOOL_NAMES = {
     "archive_extract",
     "mail_extract_attachments",
     "save_skill",
+    "run_skill_script",
 }
 
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
@@ -591,6 +592,27 @@ class VintageProgrammerRuntime:
             }
 
         return _writer
+
+    def _make_skill_script_resolver(
+        self,
+        *,
+        agent_id: str,
+        loaded_skills: list[dict[str, Any]],
+    ) -> Callable[[str, str], dict[str, Any]]:
+        def _resolver(key: str, script: str) -> dict[str, Any]:
+            resolved_skill = self._workbench.resolve_skill_reference(str(key or ""), agent_id=agent_id)
+            canonical_key = str(resolved_skill.get("key") or "").strip()
+            if not canonical_key or canonical_key not in self._skill_key_set(loaded_skills):
+                raise PermissionError(
+                    "Skill must be loaded with load_skill before one of its scripts can run."
+                )
+            return self._workbench.resolve_skill_script(
+                canonical_key,
+                str(script or ""),
+                agent_id=agent_id,
+            )
+
+        return _resolver
 
     def invalidate_descriptor_cache(self) -> None:
         with self._descriptor_lock:
@@ -3675,6 +3697,7 @@ class VintageProgrammerRuntime:
         run_id: str = "",
         skill_loader: Callable[..., dict[str, Any]] | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
+        skill_script_resolver: Callable[[str, str], dict[str, Any]] | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3701,6 +3724,8 @@ class VintageProgrammerRuntime:
             kwargs["skill_loader"] = skill_loader
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "skill_script_resolver"):
+            kwargs["skill_script_resolver"] = skill_script_resolver
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
             kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
         setter(**kwargs)
@@ -4338,6 +4363,10 @@ class VintageProgrammerRuntime:
             loaded_skills = self._preload_explicit_skills(prompt_message, agent_id=spec.agent_id)
         skill_loader = self._make_skill_loader(agent_id=spec.agent_id, loaded_skills=loaded_skills)
         skill_writer = self._make_skill_writer()
+        skill_script_resolver = self._make_skill_script_resolver(
+            agent_id=spec.agent_id,
+            loaded_skills=loaded_skills,
+        )
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
@@ -4730,6 +4759,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 skill_loader=skill_loader,
                 skill_writer=skill_writer,
+                skill_script_resolver=skill_script_resolver,
             )
 
         user_input_response = (
@@ -4986,6 +5016,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_loader=skill_loader,
                     skill_writer=skill_writer,
+                    skill_script_resolver=skill_script_resolver,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -5572,6 +5603,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         skill_loader=skill_loader,
                         skill_writer=skill_writer,
+                        skill_script_resolver=skill_script_resolver,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -6358,6 +6390,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_loader=skill_loader,
                     skill_writer=skill_writer,
+                    skill_script_resolver=skill_script_resolver,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)

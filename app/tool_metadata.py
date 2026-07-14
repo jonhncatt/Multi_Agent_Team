@@ -66,6 +66,22 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "low",
         "summary": "load selected skill instructions",
     },
+    "run_skill_script": {
+        "group": "shell",
+        "source": "native",
+        "read_only": False,
+        "requires_evidence": False,
+        "requires": {
+            "workspace_read": True,
+            "workspace_write": False,
+            "shell": True,
+            "network": False,
+            "browser": False,
+            "optional_dependency": [],
+        },
+        "risk": "high",
+        "summary": "run a Python resource from an enabled loaded Skill",
+    },
     "save_skill": {
         "group": "control",
         "source": "native",

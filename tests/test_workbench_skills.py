@@ -250,3 +250,27 @@ def test_workbench_loads_skill_resources_without_exposing_arbitrary_paths(tmp_pa
     assert "path" not in loaded
     with pytest.raises(ValueError):
         store.load_skill_resource("team:with_reference", "../outside.md")
+
+
+def test_workbench_resolves_only_enabled_python_skill_scripts(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    skill_file = store.team_skills_dir / "scripted" / "SKILL.md"
+    _write_skill(skill_file, name="scripted", description="runs a checked script")
+    script = skill_file.parent / "scripts" / "check.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+    (script.parent / "notes.txt").write_text("not executable\n", encoding="utf-8")
+
+    resolved = store.resolve_skill_script("team:scripted", "scripts/check.py")
+
+    assert resolved["key"] == "team:scripted"
+    assert resolved["resource"] == "scripts/check.py"
+    assert Path(resolved["path"]) == script.resolve()
+    with pytest.raises(ValueError, match="Python"):
+        store.resolve_skill_script("team:scripted", "scripts/notes.txt")
+    with pytest.raises(ValueError, match="relative path"):
+        store.resolve_skill_script("team:scripted", "../outside.py")
+
+    store.set_skill_enabled("scripted", False, scope="team")
+    with pytest.raises(ValueError, match="disabled"):
+        store.resolve_skill_script("team:scripted", "scripts/check.py")

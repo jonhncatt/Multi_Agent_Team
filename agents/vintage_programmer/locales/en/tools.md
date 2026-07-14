@@ -42,6 +42,7 @@
 
 - Use `load_skill` only after the lightweight skill list indicates a relevant skill.
 - Use `save_skill` only to create or update repository-shared Team Skills. The global Skill Registry resolves the destination independently of the active business project. Use it only for a genuinely reusable workflow with a clear trigger and authorized write intent; never create Skills with ordinary file or shell tools, and never modify read-only Built-in Skills.
+- Use `run_skill_script` to execute a Python script bundled with an already-loaded Skill. Supply only the canonical Skill key, the script path relative to that Skill, and literal arguments. The script runs from the active business project; do not discover, copy, or pass the Skill's physical installation path. Team Skills remain editable through `save_skill`, Skill management, or Git; only Built-in Skills are read-only.
 
 ## State And User Input Tools
 

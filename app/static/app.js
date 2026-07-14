@@ -46,6 +46,7 @@ const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
 const MAIN_LIVE_CARD_LIMIT = 8;
+const COMPACT_PLAN_ITEM_LIMIT = 6;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
@@ -2668,10 +2669,24 @@ function isThreadSnapshotBusy(threadId, snapshot) {
   );
 }
 
-function formatElapsedFromStartedAt(startedAt, nowMs = Date.now()) {
+function formatElapsedSeconds(totalSeconds, locale = "en") {
+  const normalized = Math.max(0, Math.floor(Number(totalSeconds || 0) || 0));
+  const hours = Math.floor(normalized / 3600);
+  const minutes = Math.floor((normalized % 3600) / 60);
+  const seconds = normalized % 60;
+  if (hours > 0) {
+    return translateUi(locale, "duration.hours_minutes_seconds", { hours, minutes, seconds });
+  }
+  if (minutes > 0) {
+    return translateUi(locale, "duration.minutes_seconds", { minutes, seconds });
+  }
+  return translateUi(locale, "duration.seconds", { seconds });
+}
+
+function formatElapsedFromStartedAt(startedAt, nowMs = Date.now(), locale = "en") {
   const anchor = normalizeActivityTimestamp(startedAt || 0);
   if (!anchor) return "";
-  return `${Math.max(0, Math.floor((Math.max(anchor, nowMs) - anchor) / 1000))}s`;
+  return formatElapsedSeconds(Math.max(0, Math.floor((Math.max(anchor, nowMs) - anchor) / 1000)), locale);
 }
 
 function latestAssistantActivity(messages) {
@@ -2804,8 +2819,8 @@ function buildRuntimeStatsSummary({
     liveTurnState,
   });
   const elapsedValue = (
-    (isCurrentThreadActiveRun ? formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now()) : "")
-    || formatActivityDuration(activity, activityClockMs || Date.now())
+    (isCurrentThreadActiveRun ? formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now(), locale) : "")
+    || formatActivityDuration(activity, activityClockMs || Date.now(), locale)
     || translateUi(locale, "context_meter.unknown")
   );
   const autoCompactionEnabled = Boolean(safeContextMeter.compaction_enabled || safeguards.context_compaction);
@@ -3214,6 +3229,7 @@ function buildRunExecutionProgress({
   const elapsed = formatElapsedFromStartedAt(
     runStartedAt || activity.turn_started_at || activity.started_at || 0,
     nowMs,
+    locale,
   );
   const lastProgressAgeSeconds = lastProgressAtMs
     ? Math.max(0, Math.floor((nowMs - lastProgressAtMs) / 1000))
@@ -3459,7 +3475,7 @@ function appendActivityTrace(activity, trace, options = {}) {
   };
 }
 
-function formatActivityDuration(activity, nowMs = Date.now()) {
+function formatActivityDuration(activity, nowMs = Date.now(), locale = "en") {
   const item = normalizeMessageActivity(activity || {});
   const turnStartedAt = item.turn_started_at || item.started_at;
   if (!turnStartedAt) return "";
@@ -3475,13 +3491,13 @@ function formatActivityDuration(activity, nowMs = Date.now()) {
       )
       : Math.max(0, nowMs - turnStartedAt)
   );
-  return `${Math.max(0, Math.round(durationMs / 1000))}s`;
+  return formatElapsedSeconds(Math.max(0, Math.round(durationMs / 1000)), locale);
 }
 
 function activityPillLabel(locale, activity, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
   const status = String(item.status || "");
-  const duration = formatActivityDuration(item, nowMs);
+  const duration = formatActivityDuration(item, nowMs, locale);
   if (status === "failed") return `${translateUi(locale, "activity.failed")}${duration ? ` ${duration}` : ""}`;
   if (status === "blocked") return translateUi(locale, "activity.blocked");
   if (status === "cancelled") return `${translateUi(locale, "activity.cancelled")}${duration ? ` ${duration}` : ""}`;
@@ -3777,6 +3793,8 @@ function App() {
   const activeRunStartedAt = normalizeActivityTimestamp(appState.activeTurn.startedAt || 0);
   const activeRunProgressAt = normalizeActivityTimestamp(appState.activeTurn.lastLiveProgressAt || 0);
   const activeLiveHeartbeat = normalizeLiveHeartbeat(appState.activeTurn.liveHeartbeat || {});
+  const hasLiveTurnState = Boolean(Object.keys(liveTurnState || {}).length);
+  const hasConnectionHeartbeat = Boolean(activeLiveHeartbeat.connectionAt || activeLiveHeartbeat.updatedAt);
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
@@ -4273,16 +4291,27 @@ function App() {
       || Boolean(activeRunId)
       || Boolean(activeRunThreadId)
       || Boolean(activeRunStartedAt)
-      || Boolean(Object.keys(liveTurnState || {}).length)
+      || hasConnectionHeartbeat
+      || hasLiveTurnState
     );
     if (!shouldTickActivityClock) {
       setActivityClockMs(Date.now());
       return undefined;
     }
-    setActivityClockMs(Date.now());
+    const syncActivityClock = () => setActivityClockMs(Date.now());
+    const syncVisibleActivityClock = () => {
+      if (document.visibilityState !== "hidden") syncActivityClock();
+    };
+    syncActivityClock();
     const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
-    return () => window.clearInterval(intervalId);
-  }, [activeRunId, activeRunThreadId, activeRunStartedAt, currentThreadBusy, hasRunningActivity, liveTurnState]);
+    window.addEventListener("focus", syncActivityClock);
+    document.addEventListener("visibilitychange", syncVisibleActivityClock);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", syncActivityClock);
+      document.removeEventListener("visibilitychange", syncVisibleActivityClock);
+    };
+  }, [activeRunId, activeRunThreadId, activeRunStartedAt, currentThreadBusy, hasRunningActivity, hasConnectionHeartbeat, hasLiveTurnState]);
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -8158,11 +8187,21 @@ function App() {
     const visibleItems = preview
       ? (suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
       : progressItems;
-    const visiblePlanItems = preview ? [] : planItems;
+    const visiblePlanItems = preview
+      ? (isTerminal ? [] : planItems.slice(0, COMPACT_PLAN_ITEM_LIMIT))
+      : planItems;
+    const planCompletedCount = planItems.filter((entry) => normalizeProgressStatus(entry.status) === "completed").length;
+    const showPlanSummary = Boolean(planItems.length);
+    const planProgressLabel = showPlanSummary
+      ? translateUi(uiLocale, "run.plan_progress", { completed: planCompletedCount, total: planItems.length })
+      : "";
+    const planOverflowCount = preview && !isTerminal
+      ? Math.max(0, planItems.length - visiblePlanItems.length)
+      : 0;
     const overflowCount = preview && !suppressPreview && !isTerminal
       ? Math.max(0, mainLiveCards.length - visibleItems.length)
       : 0;
-    const durationLabel = formatActivityDuration(item, activityClockMs || Date.now());
+    const durationLabel = formatActivityDuration(item, activityClockMs || Date.now(), uiLocale);
     const liveSummary = resolveLiveSummary(item, projection, uiLocale);
     const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
     const note = String(
@@ -8173,7 +8212,7 @@ function App() {
       || "",
     ).trim();
     const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);
-    if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote) return null;
+    if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote && !showPlanSummary) return null;
     const markerForStatus = (status) => {
       const normalized = normalizeProgressStatus(status);
       if (normalized === "completed") return "✓";
@@ -8212,8 +8251,17 @@ function App() {
                 ${durationLabel ? html`<div className="activity-progress-duration">${durationLabel}</div>` : null}
               </div>
             `}
-        ${visiblePlanItems.length ? html`<div className="activity-progress-section-title">${t("run.checklist")}</div>` : null}
+        ${showPlanSummary
+          ? html`
+              <div className="activity-progress-section-title">
+                ${preview ? planProgressLabel : `${t("run.checklist")} · ${planProgressLabel}`}
+              </div>
+            `
+          : null}
         ${renderProgressItems(visiblePlanItems)}
+        ${planOverflowCount
+          ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: planOverflowCount })}</div>`
+          : null}
         ${!preview && visibleItems.length ? html`<div className="activity-progress-section-title">${t("run.execution_progress")}</div>` : null}
         ${renderProgressItems(visibleItems)}
         ${overflowCount

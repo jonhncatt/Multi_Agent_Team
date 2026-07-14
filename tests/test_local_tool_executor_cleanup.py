@@ -37,6 +37,7 @@ CANONICAL_TOOL_NAMES = {
     "update_plan",
     "request_user_input",
     "load_skill",
+    "run_skill_script",
     "save_skill",
 }
 

@@ -45,6 +45,7 @@ scan builtin/team roots
   -> explicit $skill may preload full content
   -> load_skill({key}) reads selected full content
   -> load_skill({key, resource}) reads a listed relative reference/script as UTF-8 text
+  -> run_skill_script({key, script, args}) executes a loaded Python script from the active project
   -> save_skill(...) validates and writes only Team
 ```
 
@@ -52,10 +53,12 @@ Full bodies are never included merely because a Skill exists. This keeps model c
 
 The initial `load_skill({key})` result lists up to 200 relative resource names under the selected Skill. A second call can read one resource without exposing a physical directory or granting general filesystem access to the VP installation. Traversal, absolute paths, binary content, and resources over 2 MB are rejected.
 
+Python resources are executed through `run_skill_script`, never by exposing the Registry directory to general shell execution. The model supplies a canonical Skill key, a relative `.py` path, and literal arguments. The Skill must already be enabled and loaded for the current run. Runtime resolves the private install path, rejects traversal and compound shell syntax, and runs the script with the active business project as `cwd`, so project-relative inputs and outputs behave normally. Public tool results and resumable command state keep only logical Skill identifiers and redact the physical Registry path.
+
 ## Write Boundary
 
 - Built-in Skill source is read-only through Runtime and Workbench APIs.
-- Team Skill creation/update goes through `save_skill` or the Team management API.
+- Team Skill creation/update goes through `save_skill`, the Team management API, or normal reviewed Git maintenance. Team is editable; only Built-in is read-only.
 - The model supplies a logical name and content, never a destination path.
 - Registry root is derived from the Vintage Programmer installation, not `VP_WORKSPACE_ROOT`, current project, or current working directory.
 - Ordinary file/shell tools reject Registry paths and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations.

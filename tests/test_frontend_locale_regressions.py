@@ -849,9 +849,16 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "const frozenElapsedMs = isActivityTerminalStatus(item.status)" in script
     assert "const shouldTickActivityClock = (" in script
     assert "|| Boolean(activeRunStartedAt)" in script
-    assert "|| Boolean(Object.keys(liveTurnState || {}).length)" in script
+    assert "|| hasLiveTurnState" in script
+    assert "|| hasConnectionHeartbeat" in script
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
-    assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now())" in script
+    assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now(), locale)" in script
+    assert 'window.addEventListener("focus", syncActivityClock)' in script
+    assert 'document.addEventListener("visibilitychange", syncVisibleActivityClock)' in script
+    assert "hasLiveTurnState]);" in script
+    assert "liveTurnState]);" not in script
+    assert 'translateUi(locale, "duration.minutes_seconds"' in script
+    assert 'translateUi(locale, "duration.hours_minutes_seconds"' in script
     assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
     assert "startedAt: clientSubmittedAtMs," in script
     assert "const liveAssistantMessageId = hasLiveRuntimeState" in script
@@ -1663,7 +1670,7 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     assert '!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
     assert '|| (suppressPreview ? "" : item.activity_summary)' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
-    assert 'if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote) return null;' in body
+    assert 'if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote && !showPlanSummary) return null;' in body
     assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
 
 
@@ -1698,6 +1705,10 @@ def test_plan_and_live_execution_are_projected_as_separate_layers() -> None:
     assert "execution_items: executionItems" in script
     assert '${t("run.checklist")}' in script
     assert '${t("run.execution_progress")}' in script
+    assert "const visiblePlanItems = preview" in script
+    assert "planItems.slice(0, COMPACT_PLAN_ITEM_LIMIT)" in script
+    assert 'translateUi(uiLocale, "run.plan_progress"' in script
+    assert "const showPlanSummary = Boolean(planItems.length);" in script
 
 
 def test_transport_heartbeat_does_not_replace_last_semantic_progress() -> None:

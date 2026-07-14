@@ -4132,6 +4132,36 @@ def test_runtime_load_skill_tool_reads_selected_relative_resource(tmp_path: Path
     assert result["inspector"]["loaded_skills"][0]["key"] == "team:protocol_rules"
 
 
+def test_runtime_skill_script_resolver_requires_loaded_skill(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    skill_dir = tmp_path / "skills" / "team" / "scripted"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: scripted\ndescription: Use for a checked script.\nenabled: true\n---\n\n# Scripted\n",
+        encoding="utf-8",
+    )
+    script = skill_dir / "scripts" / "check.py"
+    script.parent.mkdir()
+    script.write_text("print('ok')\n", encoding="utf-8")
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    loaded_skills: list[dict[str, Any]] = []
+    resolver = runtime._make_skill_script_resolver(agent_id="vintage_programmer", loaded_skills=loaded_skills)
+
+    with pytest.raises(PermissionError, match="load_skill"):
+        resolver("team:scripted", "scripts/check.py")
+
+    loaded_skills.append(runtime._workbench.load_skill("team:scripted", agent_id="vintage_programmer"))
+    resolved = resolver("team:scripted", "scripts/check.py")
+    assert Path(resolved["path"]) == script.resolve()
+
+
 def test_runtime_save_skill_tool_creates_global_team_skill(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"

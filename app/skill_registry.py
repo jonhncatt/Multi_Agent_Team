@@ -559,21 +559,26 @@ class SkillRegistry:
                 break
         return resources
 
-    def load_resource(self, reference: str, resource: str, *, agent_id: str = "") -> dict[str, Any]:
-        item = self.resolve(reference, agent_id=agent_id)
+    @staticmethod
+    def _normalize_resource_path(resource: str) -> PurePosixPath:
         value = str(resource or "").replace("\\", "/").strip()
         while value.startswith("./"):
             value = value[2:]
         relative = PurePosixPath(value)
         if not value or relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
             raise ValueError("skill resource must be a relative path inside the selected skill")
+        return relative
+
+    def load_resource(self, reference: str, resource: str, *, agent_id: str = "") -> dict[str, Any]:
+        item = self.resolve(reference, agent_id=agent_id)
+        relative = self._normalize_resource_path(resource)
         if relative.name == SKILL_FILE_NAME:
             raise ValueError("load the main SKILL.md without the resource argument")
         skill_root = Path(str(item.get("path") or "")).resolve().parent
         target = (skill_root / Path(*relative.parts)).resolve()
         self._ensure_within(target, skill_root)
         if not target.is_file():
-            raise FileNotFoundError(f"Skill resource not found: {value}")
+            raise FileNotFoundError(f"Skill resource not found: {relative.as_posix()}")
         size = int(target.stat().st_size)
         if size > 2_000_000:
             raise ValueError("skill resource exceeds the 2,000,000 byte load limit")
@@ -587,6 +592,42 @@ class SkillRegistry:
             "name": str(item.get("name") or ""),
             "resource": relative.as_posix(),
             "content": content,
+            "size": size,
+        }
+
+    def resolve_python_script(self, reference: str, script: str, *, agent_id: str = "") -> dict[str, Any]:
+        """Resolve an enabled Skill's Python resource for the trusted runner.
+
+        This private execution descriptor contains physical paths and must not be
+        sent to the model. Public tool results use only the logical key/resource.
+        """
+
+        item = self.load(reference, agent_id=agent_id)
+        relative = self._normalize_resource_path(script)
+        if relative.suffix.lower() != ".py":
+            raise ValueError("run_skill_script supports Python (.py) resources only")
+        skill_root = Path(str(item.get("path") or "")).resolve().parent
+        target = skill_root.joinpath(*relative.parts)
+        if target.is_symlink():
+            raise ValueError("skill script symbolic links are not supported")
+        target = target.resolve()
+        self._ensure_within(target, skill_root)
+        if not target.is_file():
+            raise FileNotFoundError(f"Skill script not found: {relative.as_posix()}")
+        size = int(target.stat().st_size)
+        if size > 2_000_000:
+            raise ValueError("skill script exceeds the 2,000,000 byte execution limit")
+        try:
+            target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("skill script is not UTF-8 text") from exc
+        return {
+            "key": str(item.get("key") or reference),
+            "scope": str(item.get("scope") or ""),
+            "name": str(item.get("name") or ""),
+            "resource": relative.as_posix(),
+            "path": str(target),
+            "skill_root": str(skill_root),
             "size": size,
         }
 

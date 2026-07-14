@@ -1164,6 +1164,7 @@ class LocalToolExecutor:
         run_id: str | None = None,
         skill_loader: Any | None = None,
         skill_writer: Any | None = None,
+        skill_script_resolver: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
@@ -1184,12 +1185,13 @@ class LocalToolExecutor:
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
         self._runtime_ctx.skill_loader = skill_loader
         self._runtime_ctx.skill_writer = skill_writer
+        self._runtime_ctx.skill_script_resolver = skill_script_resolver
         self._runtime_ctx.reserved_skill_roots = [
             str(item) for item in list(reserved_skill_roots or []) if str(item or "").strip()
         ]
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_loader", "skill_writer", "reserved_skill_roots"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_loader", "skill_writer", "skill_script_resolver", "reserved_skill_roots", "active_skill_script_path", "active_skill_script_root", "active_skill_script_argv", "active_skill_logical_command"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1563,6 +1565,9 @@ class LocalToolExecutor:
                     add(Path(str(raw)).expanduser())
                 except Exception:
                     continue
+        active_skill_script_root = str(getattr(self._runtime_ctx, "active_skill_script_root", "") or "").strip()
+        if active_skill_script_root:
+            add(Path(active_skill_script_root).expanduser())
         if roots:
             return roots
         add(self._current_project_root())
@@ -2489,6 +2494,23 @@ class LocalToolExecutor:
 
     def _reserved_skill_command_error(self, command: str, *, cwd: Path) -> str:
         text = str(command or "").replace("\\", "/").lower()
+        active_script = str(getattr(self._runtime_ctx, "active_skill_script_path", "") or "").strip()
+        if active_script and not self._is_compound_shell_command(command):
+            try:
+                argv = shlex.split(str(command or "").strip())
+            except Exception:
+                argv = []
+            if argv and self._is_python_command(argv[0]) and not any(arg in {"-c", "-m"} for arg in argv[1:]):
+                script_arg = next((arg for arg in argv[1:] if arg and not arg.startswith("-")), "")
+                if script_arg:
+                    candidate = Path(script_arg).expanduser()
+                    if not candidate.is_absolute():
+                        candidate = cwd / candidate
+                    try:
+                        if candidate.resolve() == Path(active_script).expanduser().resolve():
+                            return ""
+                    except Exception:
+                        pass
         known_mutator = bool(
             re.search(
                 r"(?:^|[;&|]\s*|\s)(?:cp|mv|mkdir|touch|tee|sed\s+-i|perl\s+-pi|rm|del|copy|move|"
@@ -2543,6 +2565,26 @@ class LocalToolExecutor:
                 return error
         return ""
 
+    def _active_skill_script_argv(self, command: str) -> list[str]:
+        """Return the private argv for the one active logical Skill command."""
+
+        logical_command = str(getattr(self._runtime_ctx, "active_skill_logical_command", "") or "").strip()
+        active_script = str(getattr(self._runtime_ctx, "active_skill_script_path", "") or "").strip()
+        raw_argv = getattr(self._runtime_ctx, "active_skill_script_argv", None)
+        if not logical_command or str(command or "").strip() != logical_command or not active_script:
+            return []
+        if not isinstance(raw_argv, list) or len(raw_argv) < 2 or not all(isinstance(item, str) for item in raw_argv):
+            return []
+        argv = [str(item) for item in raw_argv]
+        if not self._is_python_command(argv[0]) or any(arg in {"-c", "-m"} for arg in argv[1:]):
+            return []
+        try:
+            if Path(argv[1]).expanduser().resolve() != Path(active_script).expanduser().resolve():
+                return []
+        except Exception:
+            return []
+        return argv
+
     def _spawn_command_reader(self, session_id: int, proc: subprocess.Popen[bytes]) -> None:
         def reader() -> None:
             stream = proc.stdout
@@ -2587,6 +2629,11 @@ class LocalToolExecutor:
             compound_validation = dict(session.get("compound_validation") or {}) if compound_shell else {}
             command_execution_approved = dict(session.get("command_execution_approved") or {})
             tainted_execution_approved = dict(session.get("tainted_execution_approved") or {})
+            redactions = [
+                (str(item.get("source") or ""), str(item.get("replacement") or ""))
+                for item in list(session.get("redactions") or [])
+                if isinstance(item, dict) and str(item.get("source") or "")
+            ]
         returncode = proc.poll() if isinstance(proc, subprocess.Popen) else 0
         status = "running" if returncode is None else "completed"
         payload: dict[str, Any] = {
@@ -2610,7 +2657,24 @@ class LocalToolExecutor:
             payload["tainted_execution_approved"] = tainted_execution_approved
         if returncode is not None:
             payload["summary"] = f"command exited with {returncode}"
-        return payload
+        return self._redact_command_payload(payload, redactions)
+
+    @classmethod
+    def _redact_command_payload(cls, value: Any, redactions: list[tuple[str, str]]) -> Any:
+        if not redactions:
+            return value
+        if isinstance(value, dict):
+            return {key: cls._redact_command_payload(item, redactions) for key, item in value.items()}
+        if isinstance(value, list):
+            return [cls._redact_command_payload(item, redactions) for item in value]
+        if not isinstance(value, str):
+            return value
+        text = value
+        for source, replacement in sorted(redactions, key=lambda item: len(item[0]), reverse=True):
+            variants = {source, source.replace("\\", "/"), source.replace("/", "\\")}
+            for variant in sorted((item for item in variants if item), key=len, reverse=True):
+                text = text.replace(variant, replacement)
+        return text
 
     def _apply_update_hunks(self, path: Path, current_text: str, hunks: list[list[str]]) -> str:
         lines = current_text.splitlines()
@@ -3104,6 +3168,28 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "run_skill_script",
+                "description": "Execute one Python script resource from an enabled, already-loaded Built-in or Team Skill. Use the logical Skill key and relative script path; the Registry resolves the physical location.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Loaded Skill key such as team:protocol-analysis."},
+                        "script": {"type": "string", "description": "Relative Python resource path returned by load_skill, such as scripts/check.py."},
+                        "args": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "default": [],
+                            "description": "Literal process arguments. They are passed without a shell.",
+                        },
+                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
+                        "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
+                    },
+                    "required": ["key", "script"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "save_skill",
                 "description": "Create or update a repository-shared Team Skill using the strict VP SKILL.md format. The Skill Registry resolves its location independently of the active project; Built-in Skills are never modified.",
                 "parameters": {
@@ -3325,6 +3411,9 @@ class LocalToolExecutor:
         if name == "load_skill":
             result = self.load_skill(**arguments)
             return self._decorate_result(result)
+        if name == "run_skill_script":
+            result = self.run_skill_script(**arguments)
+            return self._decorate_result(result)
         if name == "save_skill":
             result = self.save_skill(**arguments)
             return self._decorate_result(result)
@@ -3384,7 +3473,8 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         if not self._current_shell_allowed():
             return self._command_failure_result(command=cmd, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
-        if str(cmd or "").strip() and is_dangerous_command(str(cmd)):
+        trusted_skill_argv = self._active_skill_script_argv(cmd)
+        if str(cmd or "").strip() and not trusted_skill_argv and is_dangerous_command(str(cmd)):
             message = "Command is blocked by the runtime boundary."
             return self._command_failure_result(
                 command=cmd,
@@ -3403,7 +3493,7 @@ class LocalToolExecutor:
             return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
-        reserved_skill_error = self._reserved_skill_command_error(cmd, cwd=real_cwd)
+        reserved_skill_error = "" if trusted_skill_argv else self._reserved_skill_command_error(cmd, cwd=real_cwd)
         if reserved_skill_error:
             return self._command_failure_result(
                 command=cmd,
@@ -3413,13 +3503,33 @@ class LocalToolExecutor:
                 error_kind="reserved_skill_path",
                 error_detail={"message": reserved_skill_error, "recovery": "Call save_skill with a Team Skill name and content."},
             )
-        compound_shell = self._is_compound_shell_command(cmd)
+        compound_shell = False if trusted_skill_argv else self._is_compound_shell_command(cmd)
         compound_validation: dict[str, Any] = {}
         tainted_matches: list[dict[str, Any]] = []
         supply_chain_risks: list[dict[str, Any]] = []
         path_args_validated = False
         allow_supply_chain_commands = self._supply_chain_approval_allowed()
-        if compound_shell:
+        if trusted_skill_argv:
+            argv = list(trusted_skill_argv)
+            if not self._is_allowed_command(argv[0]):
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error=f"Command not allowed: {argv[0]}",
+                )
+            path_error = self._command_path_validation_error(argv, cwd=real_cwd)
+            if path_error:
+                message = str(path_error.get("message") or "Skill script path is outside command allowed roots.")
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error=message,
+                    stderr=message,
+                    error_kind="command_path_outside_allowed_roots",
+                    error_detail=path_error,
+                )
+            path_args_validated = True
+        elif compound_shell:
             ok, detail = self._validate_compound_shell_command(cmd, real_cwd)
             if not ok:
                 message = str(detail.get("reason") or detail.get("summary") or detail.get("message") or "Compound shell command could not be validated safely.")
@@ -3567,7 +3677,7 @@ class LocalToolExecutor:
                 "buffer": "",
                 "cursor": 0,
                 "cwd": str(real_cwd),
-                "command": str(cmd or "").strip() if compound_shell else " ".join(shlex.quote(token) for token in argv),
+                "command": str(cmd or "").strip() if (compound_shell or trusted_skill_argv) else " ".join(shlex.quote(token) for token in argv),
                 "execution_mode": execution_mode,
                 "tty": bool(tty),
             }
@@ -3818,6 +3928,159 @@ class LocalToolExecutor:
                 "summary": "invalid skill payload",
             }
         return payload if "ok" in payload else {"ok": True, **payload}
+
+    def run_skill_script(
+        self,
+        key: str,
+        script: str,
+        args: list[str] | None = None,
+        yield_time_ms: int = 1000,
+        max_output_chars: int = 12000,
+    ) -> dict[str, Any]:
+        skill_key = str(key or "").strip()
+        script_name = str(script or "").replace("\\", "/").strip()
+        if not skill_key or not script_name:
+            message = "run_skill_script requires a Skill key and relative Python script path."
+            return {
+                "ok": False,
+                "error": {"kind": "invalid_skill_script", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+        raw_args = [] if args is None else args
+        if not isinstance(raw_args, list) or len(raw_args) > 64:
+            message = "run_skill_script args must be a list with at most 64 strings."
+            return {
+                "ok": False,
+                "error": {"kind": "invalid_skill_script_args", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+        literal_args: list[str] = []
+        for item in raw_args:
+            if not isinstance(item, str) or "\x00" in item or len(item) > 4096:
+                message = "Each run_skill_script argument must be a string of at most 4,096 characters without NUL bytes."
+                return {
+                    "ok": False,
+                    "error": {"kind": "invalid_skill_script_args", "tool": "run_skill_script", "message": message},
+                    "summary": message,
+                }
+            literal_args.append(item)
+
+        resolver = getattr(self._runtime_ctx, "skill_script_resolver", None)
+        if not callable(resolver):
+            message = "No Skill script resolver is available for the current run."
+            return {
+                "ok": False,
+                "error": {"kind": "skill_script_resolver_unavailable", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+        try:
+            resolved = resolver(skill_key, script_name)
+        except Exception as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {"kind": "skill_script_resolution_failed", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+        if not isinstance(resolved, dict):
+            message = "Skill script resolver returned an invalid payload."
+            return {
+                "ok": False,
+                "error": {"kind": "invalid_skill_script_payload", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+
+        canonical_key = str(resolved.get("key") or skill_key).strip()
+        canonical_script = str(resolved.get("resource") or script_name).replace("\\", "/").strip()
+        script_path = Path(str(resolved.get("path") or "")).expanduser().resolve()
+        skill_root = Path(str(resolved.get("skill_root") or script_path.parent)).expanduser().resolve()
+        if script_path.suffix.lower() != ".py" or not script_path.is_file() or not _is_within(script_path, skill_root):
+            message = "Resolved Skill script is not a valid Python resource inside the selected Skill."
+            return {
+                "ok": False,
+                "error": {"kind": "invalid_skill_script_payload", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+
+        execution_mode = self._current_execution_mode()
+        if execution_mode != "host":
+            message = "run_skill_script currently supports host execution mode only."
+            return {
+                "ok": False,
+                "error": {"kind": "skill_script_mode_unsupported", "tool": "run_skill_script", "message": message},
+                "summary": message,
+            }
+        python_command = self._preferred_python_command(execution_mode=execution_mode)
+        argv = [python_command, str(script_path), *literal_args]
+        logical_command = f"run_skill_script {canonical_key} {canonical_script}"
+        previous_path = getattr(self._runtime_ctx, "active_skill_script_path", None)
+        previous_root = getattr(self._runtime_ctx, "active_skill_script_root", None)
+        previous_argv = getattr(self._runtime_ctx, "active_skill_script_argv", None)
+        previous_logical_command = getattr(self._runtime_ctx, "active_skill_logical_command", None)
+        self._runtime_ctx.active_skill_script_path = str(script_path)
+        self._runtime_ctx.active_skill_script_root = str(skill_root)
+        self._runtime_ctx.active_skill_script_argv = list(argv)
+        self._runtime_ctx.active_skill_logical_command = logical_command
+        try:
+            result = self.exec_command(
+                cmd=logical_command,
+                cwd=".",
+                yield_time_ms=max(0, min(int(yield_time_ms), 10000)),
+                max_output_chars=max(256, min(int(max_output_chars), 60000)),
+            )
+        finally:
+            if previous_path is None:
+                try:
+                    delattr(self._runtime_ctx, "active_skill_script_path")
+                except Exception:
+                    pass
+            else:
+                self._runtime_ctx.active_skill_script_path = previous_path
+            if previous_root is None:
+                try:
+                    delattr(self._runtime_ctx, "active_skill_script_root")
+                except Exception:
+                    pass
+            else:
+                self._runtime_ctx.active_skill_script_root = previous_root
+            if previous_argv is None:
+                try:
+                    delattr(self._runtime_ctx, "active_skill_script_argv")
+                except Exception:
+                    pass
+            else:
+                self._runtime_ctx.active_skill_script_argv = previous_argv
+            if previous_logical_command is None:
+                try:
+                    delattr(self._runtime_ctx, "active_skill_logical_command")
+                except Exception:
+                    pass
+            else:
+                self._runtime_ctx.active_skill_logical_command = previous_logical_command
+
+        redactions = [
+            {"source": str(script_path), "replacement": f"skill://{canonical_key}/{canonical_script}"},
+            {"source": str(skill_root), "replacement": f"skill://{canonical_key}"},
+        ]
+        session_id = result.get("session_id") if isinstance(result, dict) else None
+        if session_id is not None:
+            with self._command_sessions_lock:
+                session = self._command_sessions.get(int(session_id))
+                if isinstance(session, dict):
+                    session["command"] = logical_command
+                    session["redactions"] = redactions
+        public_result = self._redact_command_payload(
+            dict(result or {}),
+            [(item["source"], item["replacement"]) for item in redactions],
+        )
+        public_result["command"] = logical_command
+        public_result["skill_key"] = canonical_key
+        public_result["script"] = canonical_script
+        if public_result.get("running"):
+            public_result["summary"] = f"Skill script running: {canonical_key}/{canonical_script}"
+        elif public_result.get("returncode") is not None:
+            public_result["summary"] = f"Skill script exited with {public_result.get('returncode')}: {canonical_key}/{canonical_script}"
+        return public_result
 
     def save_skill(
         self,

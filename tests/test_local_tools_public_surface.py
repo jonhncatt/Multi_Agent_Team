@@ -55,6 +55,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "update_plan",
         "request_user_input",
         "load_skill",
+        "run_skill_script",
         "save_skill",
     }.issubset(tool_names)
     assert {
@@ -72,6 +73,62 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "search_file",
         "search_file_multi",
     }.isdisjoint(tool_names)
+
+
+def test_run_skill_script_executes_registry_resolved_python_without_exposing_install_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    project_root.mkdir()
+    skill_root = tmp_path / "vp-install" / "skills" / "team" / "scripted"
+    script = skill_root / "scripts" / "check.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "print(Path.cwd().name + ':' + sys.argv[1])\n"
+        "print(__file__)\n",
+        encoding="utf-8",
+    )
+    executor = LocalToolExecutor(_config(tmp_path))
+    boundary = {
+        "permission_profile": "auto",
+        "workspace_read_allowed": True,
+        "workspace_write_allowed": True,
+        "shell_allowed": True,
+        "network_allowed": False,
+        "allowed_roots": [str(project_root)],
+        "writable_roots": [str(project_root)],
+        "command_allowed_roots": [str(project_root)],
+        "cwd": str(project_root),
+        "project_root": str(project_root),
+    }
+    executor.set_runtime_context(
+        execution_mode="host",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        runtime_boundary=boundary,
+        reserved_skill_roots=[str(skill_root.parent.parent), str(skill_root.parent)],
+        skill_script_resolver=lambda key, resource: {
+            "key": "team:scripted",
+            "resource": "scripts/check.py",
+            "path": str(script),
+            "skill_root": str(skill_root),
+        },
+    )
+
+    result = executor.run_skill_script(
+        key="team:scripted",
+        script="scripts/check.py",
+        args=["hello; touch injected.txt"],
+        yield_time_ms=3000,
+    )
+
+    assert result["ok"] is True
+    assert result["returncode"] == 0
+    assert "business-project:hello; touch injected.txt" in result["output"]
+    assert not (project_root / "injected.txt").exists()
+    assert result["command"] == "run_skill_script team:scripted scripts/check.py"
+    assert str(tmp_path / "vp-install") not in json.dumps(result, ensure_ascii=False)
+    assert "skill://team:scripted/scripts/check.py" in result["output"]
 
 
 def test_image_read_uses_registered_handler_and_model_hint(tmp_path: Path) -> None:

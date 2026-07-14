@@ -42,6 +42,7 @@
 
 - `load_skill` は軽量 skill リストで関連 skill が見つかった後にだけ使う。
 - `save_skill` は Git リポジトリで共有する Team Skill の作成または更新にだけ使う。保存先はグローバル Skill Registry が現在の業務プロジェクトとは独立して解決する。再利用可能でトリガーが明確かつ書き込みが許可された場合だけ使い、通常のファイル・シェルツールで Skill を作成したり、読み取り専用の Built-in Skill を変更したりしない。
+- 読み込み済み Skill に同梱された Python スクリプトを実行するときは `run_skill_script` を使い、正規 Skill key、Skill 内の相対パス、リテラル引数だけを渡す。スクリプトは現在の業務プロジェクトを作業ディレクトリとして実行する。Skill の物理インストール先を探索、コピー、指定しない。Team Skill は `save_skill`、管理画面、Git で編集でき、読み取り専用なのは Built-in Skill だけである。
 
 ## 状態とユーザー入力ツール
 

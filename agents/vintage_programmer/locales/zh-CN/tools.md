@@ -42,6 +42,7 @@
 
 - `load_skill` 只在轻量 skill 列表命中后读取完整 `SKILL.md`。
 - `save_skill` 只创建或更新团队共享的 Team Skill。Team Skill 的路径由全局 Skill Registry 决定，与当前业务项目无关；只有流程确实可复用、触发条件清楚且用户目标允许写入时才使用。不要用普通文件或命令工具创建 Skill，也不要修改只读 Built-in Skill。
+- 执行已加载 Skill 自带的 Python 脚本时使用 `run_skill_script`，只提供规范 Skill key、Skill 内相对脚本路径和参数。脚本在当前业务项目目录中运行；不要查找、复制或传递 Skill 的物理安装路径。Team Skill 可以通过 `save_skill`、管理界面或 Git 修改，只有 Built-in Skill 只读。
 
 ## 状态和用户输入工具
 
