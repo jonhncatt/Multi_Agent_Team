@@ -58,6 +58,8 @@ The wrapper is executed by the Eval runner after the Agent turn. Its path and en
 
 Reports are JSON and contain per-attempt status, workspace changes, context-read evidence, tool counts, C-style rule violations, authoritative verification, token usage, and completion-state accuracy.
 
+`success_rate_percent` keeps the historical all-attempt denominator. `evaluable_success_rate_percent` excludes attempts blocked by authentication, compiler, or environment availability, so environment gaps do not masquerade as Agent quality failures. Workspace-boundary decisions use canonical tool paths; display-redacted previews are never treated as authoritative path evidence.
+
 - exit `0`: every attempt passed;
 - exit `1`: at least one real Eval failure;
 - exit `2`: no real failure, but at least one attempt was blocked by authentication, compiler, or environment configuration.

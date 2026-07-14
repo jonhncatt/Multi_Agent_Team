@@ -11,6 +11,7 @@ import pytest
 from app.agent_evals import (
     DEFAULT_CASES_PATH,
     EvalConfigurationError,
+    _outside_workspace_write_detected,
     aggregate_eval_results,
     analyze_tool_evidence,
     compare_snapshots,
@@ -22,6 +23,7 @@ from app.agent_evals import (
     snapshot_workspace,
 )
 from app.config import load_config
+from app.tool_trace_summary import safe_preview
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +130,48 @@ def test_tool_evidence_tracks_reads_verification_and_repeats() -> None:
     assert evidence["agent_verification_attempted"] is True
     assert evidence["agent_verification_succeeded"] is True
     assert evidence["repeated_tool_call_count"] == 1
+
+
+def test_workspace_write_check_does_not_treat_redacted_preview_as_real_path(tmp_path: Path) -> None:
+    workspace = tmp_path / "c_style_cpp_protocol_frame_parser" / "attempt-1"
+    target = workspace / "src" / "frame_parser.cpp"
+    target.parent.mkdir(parents=True)
+    masked_target = safe_preview(str(target), limit=4000)
+
+    assert "***" in str(masked_target)
+    assert _outside_workspace_write_detected(
+        [
+            {
+                "name": "apply_patch",
+                "status": "ok",
+                "project_root": str(workspace),
+                "cwd": str(workspace),
+                "source_refs": [str(target)],
+                "result_preview": {"ok": True, "files": [masked_target]},
+            }
+        ],
+        workspace,
+    ) is False
+
+
+def test_workspace_write_check_uses_unredacted_source_refs(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.cpp"
+
+    assert _outside_workspace_write_detected(
+        [
+            {
+                "name": "apply_patch",
+                "status": "ok",
+                "project_root": str(workspace),
+                "cwd": str(workspace),
+                "source_refs": [str(outside)],
+                "result_preview": {"ok": True, "files": ["<redacted-path>"]},
+            }
+        ],
+        workspace,
+    ) is True
 
 
 @pytest.mark.parametrize(
@@ -249,6 +293,8 @@ def test_aggregate_three_attempts_and_exit_codes() -> None:
     assert report["summary"]["failed"] == 1
     assert report["summary"]["blocked"] == 1
     assert report["summary"]["success_rate_percent"] == 33.33
+    assert report["summary"]["evaluable_attempts"] == 2
+    assert report["summary"]["evaluable_success_rate_percent"] == 50.0
     assert report["summary"]["verification_rate_percent"] == 66.67
     assert report["summary"]["completion_state_accuracy_percent"] == 50.0
     assert report["summary"]["completion_state_accuracy_samples"] == 2
@@ -315,6 +361,27 @@ class _PassingFakeRuntime:
         }
 
 
+class _CompilerBlockedFakeRuntime(_PassingFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        result["task_completion"] = {
+            "turn_ended": True,
+            "task_completed": False,
+            "task_status": "in_progress",
+            "verification": {"status": "failed"},
+        }
+        result["tool_events"][-1]["result_preview"] = {
+            "ok": True,
+            "returncode": 2,
+        }
+        return result
+
+
 def test_eval_attempt_uses_fake_runtime_without_live_model(tmp_path: Path) -> None:
     wrapper = tmp_path / "verify.py"
     _write_exit_script(wrapper, 0)
@@ -348,7 +415,7 @@ def test_eval_attempt_is_blocked_when_authoritative_compiler_is_unavailable(tmp_
         workspace=tmp_path / "attempt",
         base_config=load_config(),
         model="gpt-test",
-        runtime_factory=_PassingFakeRuntime,
+        runtime_factory=_CompilerBlockedFakeRuntime,
         verifier_script=str(wrapper),
     )
 
@@ -357,6 +424,8 @@ def test_eval_attempt_is_blocked_when_authoritative_compiler_is_unavailable(tmp_
     assert result["completion_state_accuracy"] is None
     assert result["hard_failures"] == []
     assert result["failure_categories"] == ["environment_blocked"]
+    assert result["runtime"]["turn_ended"] is True
+    assert result["runtime"]["task_completed"] is False
 
 
 CORRECT_IMPLEMENTATION = r'''#include "frame_parser.h"

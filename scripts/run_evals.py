@@ -53,7 +53,8 @@ def _print_summary(report: dict) -> None:
         f"failed={summary.get('failed', 0)} "
         f"blocked={summary.get('blocked', 0)} "
         f"total={summary.get('total_attempts', 0)} "
-        f"success_rate={summary.get('success_rate_percent', 0)}%"
+        f"success_rate={summary.get('success_rate_percent', 0)}% "
+        f"evaluable_success_rate={summary.get('evaluable_success_rate_percent', 0)}%"
     )
     print(f"Report: {report.get('report_path', '')}")
 

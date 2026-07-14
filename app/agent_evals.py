@@ -536,22 +536,37 @@ def _compact_tool_events(events: list[dict[str, Any]], *, workspace: Path) -> li
 
 
 def _outside_workspace_write_detected(events: list[dict[str, Any]], workspace: Path) -> bool:
+    def candidate_path(raw_value: Any) -> Path | None:
+        value = str(raw_value or "").strip()
+        if not value:
+            return None
+        # ToolEvent previews are display-safe data. Long path components can be
+        # masked as "***", so a preview must never become evidence of an
+        # out-of-workspace write.
+        if "***" in value or "<redacted" in value.lower():
+            return None
+        candidate = Path(value).expanduser()
+        return candidate if candidate.is_absolute() else None
+
     for event in events:
         name = str(event.get("name") or "")
         if name not in WRITE_CAPABLE_TOOLS or not _tool_event_succeeded(event):
             continue
-        for raw_cwd in (event.get("cwd"), (event.get("normalized_arguments") or {}).get("cwd")):
-            if not str(raw_cwd or "").strip():
-                continue
-            candidate = Path(str(raw_cwd)).expanduser()
-            if candidate.is_absolute() and not _is_within(candidate, workspace):
-                return True
+        trusted_candidates = [
+            event.get("project_root"),
+            event.get("cwd"),
+            *_string_list(event.get("source_refs")),
+        ]
+        preview_candidates = [
+            (event.get("normalized_arguments") or {}).get("cwd"),
+        ]
         preview = event.get("result_preview")
         if isinstance(preview, dict):
-            for raw_path in list(preview.get("files") or []):
-                candidate = Path(str(raw_path)).expanduser()
-                if candidate.is_absolute() and not _is_within(candidate, workspace):
-                    return True
+            preview_candidates.extend(list(preview.get("files") or []))
+        for raw_path in [*trusted_candidates, *preview_candidates]:
+            candidate = candidate_path(raw_path)
+            if candidate is not None and not _is_within(candidate, workspace):
+                return True
     return False
 
 
@@ -740,8 +755,12 @@ def run_eval_attempt(
     if runtime_exception:
         fail("Runtime did not complete successfully.", "runtime_failure")
     else:
-        if not runtime_completed:
-            fail("Runtime ended without a completed state.", "runtime_failure")
+        if dict(result.get("runtime_error") or {}):
+            fail("Runtime reported an error.", "runtime_failure")
+        if dict(result.get("pending_user_input") or {}):
+            fail("Runtime ended while waiting for user input.", "runtime_failure")
+        if dict(result.get("pending_approval") or {}):
+            fail("Runtime ended while waiting for approval.", "runtime_failure")
         if not tool_evidence["context_coverage_complete"]:
             fail("Required specification, rules, or reference files were not all observed in read traces.", "context_acquisition")
         if not target_changed:
@@ -785,6 +804,9 @@ def run_eval_attempt(
         "failure_categories": failure_categories,
         "runtime": {
             "declared_completed": runtime_completed,
+            "task_completed": runtime_completed,
+            "turn_ended": str(result.get("turn_status") or "").strip().lower()
+            in {"completed", "failed", "blocked", "cancelled"},
             "turn_status": str(result.get("turn_status") or ""),
             "exception": _redact_output(runtime_exception, workspace=workspace),
             "runtime_error": _jsonable(result.get("runtime_error") or {}),
@@ -829,6 +851,7 @@ def aggregate_eval_results(
     passed = sum(1 for item in results if item.get("status") == "passed")
     failed = sum(1 for item in results if item.get("status") == "failed")
     blocked = sum(1 for item in results if item.get("status") == "blocked")
+    evaluable = passed + failed
     verification_attempts = sum(
         1 for item in results if bool((item.get("context_and_tools") or {}).get("agent_verification_attempted"))
     )
@@ -857,7 +880,12 @@ def aggregate_eval_results(
             "passed": passed,
             "failed": failed,
             "blocked": blocked,
+            "evaluable_attempts": evaluable,
             "success_rate_percent": round((passed * 100.0 / total) if total else 0.0, 2),
+            "evaluable_success_rate_percent": round(
+                (passed * 100.0 / evaluable) if evaluable else 0.0,
+                2,
+            ),
             "verification_rate_percent": round((verification_attempts * 100.0 / total) if total else 0.0, 2),
             "completion_state_accuracy_percent": round(
                 (accurate * 100.0 / len(determined_accuracy)) if determined_accuracy else 0.0,

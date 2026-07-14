@@ -29,6 +29,8 @@ The quality Eval suite in `evals/agent_quality_cases.json` covers three real tas
 python scripts/run_evals.py --cases evals/agent_quality_cases.json --validate-only
 ```
 
+An unavailable compiler is reported as `blocked`, not as an Agent failure, when no independent hard failure occurred. The report retains the all-attempt success rate and also emits an evaluable success rate that excludes environment-blocked attempts. Path-isolation checks use canonical execution evidence rather than display-redacted tool previews.
+
 ## Frontend run visibility
 
 Plan state and execution activity are separate UI layers. A plan never replaces current tool/model activity. During a run the UI shows the current step, tool, wait state, action, command, elapsed time, last semantic progress, and connection state.
