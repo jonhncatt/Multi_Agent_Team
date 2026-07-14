@@ -145,118 +145,6 @@ def default_loop_safeguards() -> dict[str, Any]:
         "context_compaction": True,
     }
 
-_WRITE_INTENT_HINTS = (
-    "直接补",
-    "直接改",
-    "大胆修改",
-    "大胆改",
-    "补齐",
-    "补全",
-    "补上",
-    "补一下",
-    "修改",
-    "修复",
-    "实现",
-    "完善",
-    "加上",
-    "添加",
-    "替换",
-    "更新",
-    "改成",
-    "改为",
-    "创建 skill",
-    "创建team skill",
-    "创建 team skill",
-    "创建团队 skill",
-    "创建workspace skill",
-    "创建 workspace skill",
-    "生成 skill",
-    "生成team skill",
-    "生成 team skill",
-    "生成workspace skill",
-    "生成 workspace skill",
-    "保存 skill",
-    "保存成 skill",
-    "制作 skill",
-    "新建 skill",
-    "写个 skill",
-    "写入",
-    "写进",
-    "写到",
-    "做个 skill",
-    "做成 skill",
-    "总结成 skill",
-    "沉淀成 skill",
-    "apply_patch",
-    "patch",
-    "fix",
-    "implement",
-    "modify",
-    "update",
-    "change",
-    "create skill",
-    "create team skill",
-    "create workspace skill",
-    "generate skill",
-    "generate team skill",
-    "generate workspace skill",
-    "save skill",
-    "write skill",
-    "write into",
-    "write to the script",
-    "put into",
-    "make a skill",
-    "new skill",
-    "summarize as a skill",
-    "turn this into a skill",
-    "補完",
-    "修正",
-    "変更",
-    "実装",
-    "追加",
-    "skill を作成",
-    "skill に保存",
-    "直して",
-    "書き込",
-)
-
-_EXPLICIT_WRITE_AUTH_HINTS = (
-    "不用确认",
-    "不需要确认",
-    "不用问我",
-    "不要问我",
-    "直接做",
-    "做吧",
-    "开始吧",
-    "执行吧",
-    "直接补",
-    "直接改",
-    "go ahead",
-    "proceed",
-    "no need to ask",
-    "without asking",
-    "just do it",
-    "確認不要",
-    "そのまま",
-    "進めて",
-)
-
-_WRITE_PROHIBITION_HINTS = (
-    "不要修改",
-    "不要改",
-    "不修改",
-    "不能修改",
-    "只读",
-    "do not modify",
-    "don't modify",
-    "do not edit",
-    "read only",
-    "read-only",
-    "変更しない",
-    "編集しない",
-    "読み取り専用",
-)
-
 _WRITE_TOOL_NAMES = {
     "apply_patch",
     "exec_command",
@@ -566,10 +454,8 @@ class VintageProgrammerRuntime:
     def _extend_runtime_boundary_for_skills(
         boundary: RuntimeBoundary,
         available_skills: list[dict[str, Any]],
-        *,
-        allow_team_writes: bool = False,
     ) -> RuntimeBoundary:
-        """Grant ordinary read/command access to enabled Skill directories only."""
+        """Extend path capabilities for enabled Skills without interpreting user text."""
 
         def _dedup(values: list[str]) -> list[str]:
             result: list[str] = []
@@ -604,7 +490,7 @@ class VintageProgrammerRuntime:
         boundary.enabled_skill_roots = _dedup(skill_roots)
         if boundary.shell_allowed:
             boundary.command_allowed_roots = _dedup([*boundary.command_allowed_roots, *skill_roots])
-        if allow_team_writes and boundary.workspace_write_allowed:
+        if boundary.workspace_write_allowed:
             boundary.writable_roots = _dedup([*boundary.writable_roots, *team_skill_roots])
             boundary.team_skill_write_allowed = bool(team_skill_roots)
         else:
@@ -2416,8 +2302,6 @@ class VintageProgrammerRuntime:
         event: ToolEvent,
         tracker: dict[str, Any],
         is_verification: bool,
-        write_authorized: bool,
-        successful_mutation_seen: bool,
     ) -> dict[str, Any] | None:
         failure = classify_tool_failure(
             tool_name=tool_name,
@@ -2456,10 +2340,6 @@ class VintageProgrammerRuntime:
             "consecutive_occurrence": consecutive,
             "repeated": occurrence > 1,
         }
-        if write_authorized and is_verification and not successful_mutation_seen:
-            failure["precondition"] = "no_successful_mutation_observed"
-            failure["required_action"] = "modify_target_before_retrying_verification"
-
         tracker.setdefault("records", []).append(dict(failure))
         tracker["records"] = list(tracker.get("records") or [])[-24:]
         result["runtime_failure"] = dict(failure)
@@ -3629,41 +3509,6 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
-    def _write_authorization_state(
-        message: str,
-        *,
-        project_root: str,
-        workspace_write_allowed: bool = True,
-    ) -> dict[str, Any]:
-        normalized = " ".join(str(message or "").split()).lower()
-        write_prohibited = any(hint.lower() in normalized for hint in _WRITE_PROHIBITION_HINTS)
-        has_write_intent = (
-            any(hint.lower() in normalized for hint in _WRITE_INTENT_HINTS)
-            and not write_prohibited
-        )
-        explicit_authorization = any(hint.lower() in normalized for hint in _EXPLICIT_WRITE_AUTH_HINTS)
-        authorized = bool(workspace_write_allowed) and not write_prohibited and (has_write_intent or explicit_authorization)
-        reasons: list[str] = []
-        if has_write_intent:
-            reasons.append("write_intent_detected")
-        if explicit_authorization:
-            reasons.append("explicit_user_authorization")
-        if write_prohibited:
-            reasons.append("write_prohibited")
-        return {
-            "authorized": bool(authorized),
-            "scope": "workspace" if authorized else "",
-            "project_root": str(project_root or ""),
-            "requires_structured_approval_for": [
-                "project_outside_write",
-                "large_delete_or_move",
-                "dangerous_shell",
-                "network_or_system_level_side_effect",
-            ],
-            "reason": ",".join(reasons),
-        }
-
-    @staticmethod
     def _callable_accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
         try:
             signature = inspect.signature(fn)
@@ -4445,17 +4290,16 @@ class VintageProgrammerRuntime:
                 cwd=effective_cwd or project_root or self._config.workspace_root,
                 attachments=attachment_metas,
             )
-            write_authorization_state = self._write_authorization_state(
-                prompt_message,
-                project_root=project_root,
-                workspace_write_allowed=turn_runtime_boundary.workspace_write_allowed,
-            )
             self._extend_runtime_boundary_for_skills(
                 turn_runtime_boundary,
                 available_skills,
-                allow_team_writes=bool(write_authorization_state.get("authorized")),
             )
-        write_authorized = bool(write_authorization_state.get("authorized"))
+        write_capability_state = {
+            "workspace_write_allowed": bool(turn_runtime_boundary.workspace_write_allowed),
+            "team_skill_write_allowed": bool(turn_runtime_boundary.team_skill_write_allowed),
+            "scope": "runtime_boundary",
+            "intent_owner": "model",
+        }
         blocked_reason = ""
         with phase_timer.measure("runtime_project_contract_ms"):
             project_contract_text = self._load_project_contract_text(project_root)
@@ -4546,8 +4390,8 @@ class VintageProgrammerRuntime:
             notes.append("inline_document_context")
         if attachment_evidence_pack:
             notes.append("attachment_evidence_pack_ready")
-        if write_authorized:
-            notes.append("write_authorized_workspace")
+        if turn_runtime_boundary.workspace_write_allowed:
+            notes.append("workspace_write_capable")
         if has_image_attachments:
             notes.append("image_attachment_context")
         if route_state_input.get("current_task_focus") or route_state_input.get("task_checkpoint"):
@@ -5038,7 +4882,6 @@ class VintageProgrammerRuntime:
             llm_retry_used = False
             progress_tracker = self._new_progress_tracker()
             failure_tracker = self._new_failure_tracker()
-            successful_mutation_seen = False
             progress_signals: list[dict[str, Any]] = []
             replan_history: list[dict[str, Any]] = []
             replan_attempt_count = 0
@@ -5605,18 +5448,11 @@ class VintageProgrammerRuntime:
                         event=event,
                         tracker=failure_tracker,
                         is_verification=is_verification,
-                        write_authorized=write_authorized,
-                        successful_mutation_seen=successful_mutation_seen,
                     )
                     successful_tool_result = bool(
                         failure is None
                         and str(event.status or "").strip().lower() in {"ok", "success", "completed"}
                     )
-                    if successful_tool_result and (
-                        name in {"apply_patch", "save_skill", "web_download", "archive_extract", "mail_extract_attachments"}
-                        or (name == "exec_command" and self._looks_like_mutating_command(command_text))
-                    ):
-                        successful_mutation_seen = True
                     round_signature_parts.append(
                         {
                             "name": name,
@@ -6678,7 +6514,7 @@ class VintageProgrammerRuntime:
                 "task_state": dict(final_task_state),
                 "pending_user_input": pending_user_input,
                 "pending_approval": pending_approval,
-                "write_authorization_state": dict(write_authorization_state),
+                "write_capability_state": dict(write_capability_state),
                 "blocked_reason": blocked_reason,
                 "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
                 "loop_safeguards": dict(loop_safeguards),
@@ -6797,7 +6633,7 @@ class VintageProgrammerRuntime:
             "plan": plan_state,
             "pending_user_input": pending_user_input,
             "pending_approval": pending_approval,
-            "write_authorization_state": dict(write_authorization_state),
+            "write_capability_state": dict(write_capability_state),
             "blocked_reason": blocked_reason,
             "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
             "attachment_evidence_pack_preview": [

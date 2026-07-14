@@ -718,7 +718,7 @@ def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Pat
     assert result["files"] == []
 
 
-def test_apply_patch_requires_write_intent_for_team_and_rejects_project_skill_paths(tmp_path: Path) -> None:
+def test_apply_patch_requires_runtime_write_scope_for_team_and_rejects_project_skill_paths(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     team_root = tmp_path / "vp-install" / "skills" / "team"
     executor.set_runtime_context(
@@ -746,14 +746,14 @@ def test_apply_patch_requires_write_intent_for_team_and_rejects_project_skill_pa
 
     assert team_result["ok"] is False
     assert team_result["error"]["kind"] == "reserved_skill_path"
-    assert "explicitly authorizes" in team_result["error"]["message"]
+    assert "RuntimeBoundary writable scope" in team_result["error"]["message"]
     assert "cannot edit bundled scripts" in team_result["error"]["recovery"]
     assert project_result["ok"] is False
     assert project_result["error"]["kind"] == "reserved_skill_path"
     assert not (tmp_path / ".agents").exists()
 
 
-def test_apply_patch_updates_existing_team_skill_script_when_user_authorized(tmp_path: Path) -> None:
+def test_apply_patch_updates_existing_team_skill_script_when_runtime_boundary_allows(tmp_path: Path) -> None:
     project_root = tmp_path / "business-project"
     project_root.mkdir()
     team_root = tmp_path / "vp-install" / "skills" / "team"

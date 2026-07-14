@@ -2469,7 +2469,7 @@ class LocalToolExecutor:
         return f"Write path outside writable roots: {resolved}. Writable roots: {allowed}"
 
     def _reserved_skill_write_error(self, path: Path) -> str:
-        """Keep Built-in read-only and require turn-level write scope for Team."""
+        """Keep Built-in read-only and enforce path capabilities for Team Skills."""
 
         try:
             resolved = path.resolve(strict=False)
@@ -2500,7 +2500,7 @@ class LocalToolExecutor:
             ]
             if team_write_allowed and any(_is_within(resolved, writable_root) for writable_root in writable_roots):
                 return ""
-            return "Team Skill files may be changed only when the current user request explicitly authorizes the update."
+            return "Team Skill path is outside the active RuntimeBoundary writable scope."
         for raw_root in list(getattr(self._runtime_ctx, "reserved_skill_roots", []) or []):
             try:
                 root = Path(str(raw_root)).expanduser().resolve()
@@ -2533,7 +2533,7 @@ class LocalToolExecutor:
         for raw_root in list(getattr(self._runtime_ctx, "team_skill_roots", []) or []):
             try:
                 if _is_within(resolved, Path(str(raw_root)).expanduser().resolve()):
-                    return "If the user explicitly requested this Team Skill update, retry with apply_patch under the authorized Team path. save_skill only replaces SKILL.md and cannot edit bundled scripts or references."
+                    return "Use apply_patch when this Team Skill path is writable in the active RuntimeBoundary. save_skill only replaces SKILL.md and cannot edit bundled scripts or references."
             except Exception:
                 continue
         return "Use save_skill to create or replace a Team SKILL.md; project-level Skill directories are disabled."
@@ -3506,7 +3506,7 @@ class LocalToolExecutor:
                 error_detail={
                     "message": reserved_skill_error,
                     "recovery": (
-                        "Use apply_patch for an explicitly requested Team Skill update. "
+                        "Use apply_patch for a Team Skill path permitted by the active RuntimeBoundary. "
                         "Built-in Skills remain read-only; save_skill only creates or replaces SKILL.md."
                     ),
                 },

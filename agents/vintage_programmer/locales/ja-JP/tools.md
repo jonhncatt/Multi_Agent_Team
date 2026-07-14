@@ -41,7 +41,7 @@
 ## Skills
 
 - 軽量 Skill リストには、有効な各 Skill の `SKILL.md` パスが含まれる。関連する Skill を選んだら、通常の `read_file` で完全な説明を読み、相対リソースは `SKILL.md` のディレクトリを基準に解決する。
-- `save_skill` は Team Skill の作成、または完全な `SKILL.md` の置換に使う。ユーザーが既存 Team Skill の更新を明示的に依頼した場合は、その `SKILL.md`、`scripts/`、`references/` を `apply_patch` で直接編集し、`save_skill` へ切り替えたり重複確認を求めたりしない。読み取り専用の Built-in Skill は変更しない。
+- `save_skill` は Team Skill の作成、または完全な `SKILL.md` の置換に使う。現在の thread のタスクで既存 Team Skill の変更が必要な場合、その `SKILL.md`、`scripts/`、`references/` は通常の `apply_patch` で編集する。意図はモデルが会話全体から判断し、Harness は表現を分類せず、再確認も要求しない。読み取り専用の Built-in Skill は変更しない。
 - Skill 同梱スクリプトは通常の `exec_command` で直接実行し、作業ディレクトリは現在の業務プロジェクトのままにする。有効状態は発見とその turn の Skill パス権限だけを制御し、別の load/unlock 状態は持たない。Team Skill は `save_skill`、管理画面、Git で編集でき、読み取り専用なのは Built-in Skill だけである。
 
 ## 状態とユーザー入力ツール

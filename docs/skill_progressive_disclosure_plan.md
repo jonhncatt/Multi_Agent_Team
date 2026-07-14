@@ -56,10 +56,10 @@ Bundled scripts use the same `exec_command` path as project commands. Runtime va
 ## Write Boundary
 
 - Built-in Skill source is read-only through Runtime and Workbench APIs.
-- Team Skill creation or complete `SKILL.md` replacement can use `save_skill`; existing Team `SKILL.md`, `scripts/`, and `references/` may use ordinary `apply_patch` when the current user request explicitly authorizes the update. Team is editable; only Built-in is read-only.
+- Team Skill creation or complete `SKILL.md` replacement can use `save_skill`; existing Team `SKILL.md`, `scripts/`, and `references/` use ordinary `apply_patch`. Team is editable; only Built-in is read-only.
 - The model supplies a logical name and content, never a destination path.
 - Registry root is derived from the Vintage Programmer installation, not `VP_WORKSPACE_ROOT`, current project, or current working directory.
-- Ordinary writes always reject Built-in and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations. Enabled Team Skill directories join the writable boundary only for turns with explicit user write intent. Direct execution of scripts in enabled Skill directories is allowed through the normal command boundary.
+- Ordinary writes always reject Built-in and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations. When the Runtime permission profile allows workspace writes, enabled Team Skill directories join the writable boundary. The model decides from the full thread whether a write serves the user's task; the Harness does not parse natural-language intent or negation. Direct execution of scripts in enabled Skill directories is allowed through the normal command boundary.
 - Team and Built-in cannot silently share a name.
 
 ## Runtime State
