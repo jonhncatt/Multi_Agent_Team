@@ -3,9 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.i18n import translate
-
-
 _IMAGE_TOOL_NAMES = {"image_read", "image_inspect"}
 _DOCUMENT_READ_TOOL_NAMES = {
     "read_file",
@@ -30,23 +27,6 @@ def attachment_paths(attachments: list[dict[str, Any]], *, kind: str | None = No
         if path:
             paths.append(path)
     return paths
-
-
-def build_attachment_tool_guidance(attachments: list[dict[str, Any]], *, locale: str) -> str:
-    if not attachments:
-        return ""
-    lines: list[str] = [
-        translate(locale, "runtime.attachment_guidance.intro"),
-        translate(locale, "runtime.attachment_guidance.no_guess"),
-    ]
-    image_paths = attachment_paths(attachments, kind="image")
-    if image_paths:
-        lines.append(translate(locale, "runtime.attachment_guidance.image"))
-    document_paths = attachment_paths(attachments, kind="document")
-    if document_paths:
-        lines.append(translate(locale, "runtime.attachment_guidance.document"))
-        lines.append(translate(locale, "runtime.attachment_guidance.msg"))
-    return "\n".join(lines)
 
 
 def _path_exists(raw_path: str) -> bool:

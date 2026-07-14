@@ -2,9 +2,8 @@
 
 ## Tool Principles
 
-- Tools are for evidence, action, and verification; do not use them as ceremony.
-- Choose the smallest tool set that solves the current problem. Tool output beats memory and guesses.
-- Use write-capable tools only when the user goal is clear, the target path is clear, and runtime boundaries allow it.
+- Call tools only when the task needs evidence, action, or verification, and choose the smallest tool set that solves the problem.
+- Every tool call obeys `current_runtime_context`; its live boundary controls write, command, and network capabilities.
 - When a tool fails, read the error and adapt; do not repeat the same invalid call.
 
 ## Local Workspace

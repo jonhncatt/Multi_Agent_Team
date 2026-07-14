@@ -16,14 +16,30 @@ Session / Thread
 
 按以下顺序构造 Chat Completions messages：
 
-1. 静态 agent、工具与运行规则（SystemMessage）。
-2. 当前目录和权限边界 `current_runtime_context`（SystemMessage）。
-3. 如果发生过压缩，加入替代更早历史的 compaction summary（SystemMessage）。
+1. 一条 SystemMessage：静态 agent 规则、工具规则、Harness 协议，以及当前目录和权限边界 `current_runtime_context`。
+2. 仓库存在 `AGENTS.md` 时，以带来源标记的 contextual HumanMessage 提供项目指令。
+3. 如果发生过压缩，以 contextual HumanMessage 加入替代更早历史的未验证 working summary。
 4. 回放未被压缩的 typed transcript（HumanMessage、AIMessage、ToolMessage）。
-5. 当前附件清单或预览（仅当前轮需要时加入 SystemMessage）。
-6. 当前用户原始请求（HumanMessage，始终最后）。
+5. 当前附件清单或预览仅在需要时作为 contextual HumanMessage 加入。
+6. 当前用户原始请求作为 HumanMessage，始终最后且不重复包装。
 
 工具 schema 仍由 provider/backend 单独绑定，不写进 transcript。
+
+## 提示词职责分层
+
+```text
+soul.md       表达风格与价值取向
+identity.md   角色和工作范围
+agent.md      执行、计划与交付流程
+tools.md      工具选择和具体使用规则
+Runtime       实时环境、权限、上下文权威、证据优先级和工具校验
+```
+
+- 同一条行为规则只保留一个主要归属，不再由多个静态文件和 Runtime 重复强调。
+- `AGENTS.md` 是仓库范围的上下文指令，不提升为产品级 System 规则。
+- compaction summary 和历史 assistant 文本都是未验证上下文，不提升为 Runtime 事实。
+- 工具循环中的审批结果、重规划提示和中途压缩也作为带标记的上下文消息追加，不再生成额外 SystemMessage。
+- Runtime 继续兼容读取旧的 `task_state_delta` 输出，但默认提示词不再要求模型生成它；计划由 `update_plan` 工具和 Harness 状态维护。
 
 ## 持久化结构
 

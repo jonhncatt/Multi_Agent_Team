@@ -56,7 +56,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Session = Thread
 
-`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录、权限和附件由 Harness 作为小型运行环境消息提供，`task_state`、`work_cursor`、RuntimeTrace 等状态只供 Harness、前端和审计使用。旧 Session 首次读取时会从原有 `turns` 自动生成 transcript。
+`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录和权限合并进唯一的 SystemMessage，`AGENTS.md`、压缩摘要和附件作为带来源标记的上下文消息提供；`task_state`、`work_cursor`、RuntimeTrace 等状态只供 Harness、前端和审计使用。旧 Session 首次读取时会从原有 `turns` 自动生成 transcript。
 
 ## Manual Update
 

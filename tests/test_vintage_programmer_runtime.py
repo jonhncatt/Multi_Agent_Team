@@ -640,19 +640,16 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "max_tool_rounds" not in descriptor
     assert "emergency_max_tool_calls_per_turn" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
-    assert "Use tools when needed." in prompt
-    assert "Do not assume python3 exists." in prompt
-    assert "./.venv/bin/python" in prompt
-    assert ".venv\\Scripts\\python.exe" in prompt
-    assert f"detected interpreter command ({runtime._config.python_command})" in prompt
-    assert "Do not create a plan for every request." in prompt
-    assert "For simple direct answers, one-step checks, or trivial commands" in prompt
-    assert "If a task starts simple but becomes multi-step during execution" in prompt
+    assert "[runtime_protocol]" in prompt
     assert "[context_authority]" in prompt
     assert "[evidence_reliability]" in prompt
     assert "[conflict_resolution]" in prompt
-    assert "CURRENT_USER_REQUEST defines the task intent" in prompt
-    assert "Execution must happen through tool calls." not in prompt
+    assert "The final user message is the current request." in prompt
+    assert "[runtime_contract]" not in prompt
+    assert "[anti_permission_gate]" not in prompt
+    assert "[model_led_action_protocol]" not in prompt
+    assert "[full_auto_tool_policy]" not in prompt
+    assert "task_state_delta" not in prompt
 
 
 def test_runtime_accepts_legacy_tool_policy_frontmatter(tmp_path: Path) -> None:
@@ -910,8 +907,7 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
     assert "多步骤、多文件、代码修改、调试、测试" in agent_doc
     assert "简单问答、单步检查或琐碎命令" in agent_doc
     assert "唯一 checklist 协议" in agent_doc
-    assert "补充状态" in agent_doc
-    assert "不要输出完整 `task_state`" in agent_doc
+    assert "task_state_delta" not in agent_doc
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
     assert "不要假定 `python3`" in tools_doc
@@ -921,7 +917,32 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
     assert "## 状态和用户输入工具" in tools_doc
     assert "`update_plan` 只在需要维护多步任务状态时使用" in tools_doc
     assert "具体计划规则以 `agent.md` 为准" in tools_doc
-    assert "工具用于取得证据、执行动作或验证结果" in tools_doc
+    assert "只在任务需要取证、执行或验证时调用工具" in tools_doc
+
+
+def test_rendered_prompt_has_single_policy_owners() -> None:
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=REPO_ROOT / "agents" / "vintage_programmer",
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    prompt = runtime._render_system_prompt(
+        ChatSettings(model="gpt-5.4", locale="zh-CN"),
+        spec=runtime._load_spec(locale="zh-CN"),
+        loaded_skills=[],
+        available_skills=[],
+        runtime_context_text='[current_runtime_context]\n{"cwd":"/workspace"}',
+    )
+    meaningful_lines = [line.strip() for line in prompt.splitlines() if line.strip()]
+
+    assert len(meaningful_lines) == len(set(meaningful_lines))
+    assert prompt.count("不要为每个请求都创建计划") == 1
+    assert prompt.count("不要假定 `python3`") == 1
+    assert "task_state_delta" not in prompt
+    assert "[current_runtime_context]" in prompt
+    assert "[runtime_contract]" not in prompt
+    assert "[full_auto_tool_policy]" not in prompt
 
 
 def test_runtime_activity_helpers_use_requested_locale() -> None:
@@ -1403,6 +1424,14 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
     assert result["tool_events"][0]["status"] == "ok"
     assert result["inspector"]["run_state"]["pending_approval"] == {}
     assert any(item["type"] == "approval.approved" for item in result["inspector"]["trace_events"])
+    assert len(
+        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
+    ) == 1
+    assert any(
+        "[approved_command_execution_result]" in str(item.content or "")
+        for item in backend.invocations[0]["messages"]
+        if isinstance(item, _FakeHumanMessage)
+    )
 
 
 def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Path) -> None:
@@ -1640,15 +1669,18 @@ def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> 
     assert "document" in sent
     assert attachment_path in sent
     assert backend.invocations[0]["messages"][-1].content == "帮我看一下这个附件"
+    assert len(
+        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
+    ) == 1
     assert any(
         '"current_attachments"' in str(item.content or "")
         for item in backend.invocations[0]["messages"]
-        if isinstance(item, _FakeSystemMessage)
+        if isinstance(item, _FakeHumanMessage)
     )
     assert any(
         attachment_path in str(item.content or "")
         for item in backend.invocations[0]["messages"]
-        if isinstance(item, _FakeSystemMessage)
+        if isinstance(item, _FakeHumanMessage)
     )
 
 
@@ -2226,9 +2258,78 @@ def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
         },
     )
 
-    system_prompt = str(backend.invocations[0]["messages"][0].content or "")
-    assert "[AGENTS.md]" in system_prompt
-    assert "Project contract: model-led turn planning only." in system_prompt
+    messages = backend.invocations[0]["messages"]
+    system_messages = [item for item in messages if isinstance(item, _FakeSystemMessage)]
+    assert len(system_messages) == 1
+    assert "Project contract: model-led turn planning only." not in str(system_messages[0].content or "")
+    assert any(
+        "[project_instructions]" in str(item.content or "")
+        and "Project contract: model-led turn planning only." in str(item.content or "")
+        for item in messages
+        if isinstance(item, _FakeHumanMessage)
+    )
+    assert messages[-1].content == "直接回答"
+
+
+def test_runtime_message_layers_keep_context_below_single_system_message(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    (tmp_path / "AGENTS.md").write_text("Repository rule", encoding="utf-8")
+    attachment_path = tmp_path / "spec.md"
+    attachment_path.write_text("spec", encoding="utf-8")
+    backend = _FakeBackend([_FakeMessage(content="done")])
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    runtime.run(
+        message="current request",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-message-layers",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "turn_id": "u1", "role": "user", "content": "old"},
+                    {"id": "a1", "turn_id": "a1", "role": "assistant", "content": "old answer"},
+                    {"id": "u2", "turn_id": "u2", "role": "user", "content": "recent"},
+                ],
+            },
+            "compaction_status": {
+                "compacted_history": "older summary",
+                "compacted_until_turn_id": "a1",
+            },
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "name": "spec.md",
+                    "mime": "text/markdown",
+                    "kind": "document",
+                    "path": str(attachment_path),
+                }
+            ],
+        },
+    )
+
+    messages = backend.invocations[0]["messages"]
+    assert [type(item) for item in messages] == [
+        _FakeSystemMessage,
+        _FakeHumanMessage,
+        _FakeHumanMessage,
+        _FakeHumanMessage,
+        _FakeHumanMessage,
+        _FakeHumanMessage,
+    ]
+    assert "[current_runtime_context]" in messages[0].content
+    assert "[project_instructions]" in messages[1].content
+    assert "[thread_compaction_summary]" in messages[2].content
+    assert messages[3].content == "recent"
+    assert "[current_attachment_context]" in messages[4].content
+    assert messages[5].content == "current request"
 
 
 def test_authorized_write_final_answer_is_not_runtime_steered(tmp_path: Path) -> None:
@@ -2357,7 +2458,7 @@ def test_runtime_sends_attachment_evidence_pack_to_model_messages(tmp_path: Path
     assert any(
         '"attachment_evidence"' in str(item.content or "")
         for item in first_messages
-        if isinstance(item, _FakeSystemMessage)
+        if isinstance(item, _FakeHumanMessage)
     )
     assert result["attachment_evidence_pack_preview"][0]["name"] == "requirements.pdf"
 
@@ -2670,6 +2771,15 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
     assert result["text"] == "replanned answer"
     assert "replan_requested:no_progress" in result["inspector"]["notes"]
     assert result["inspector"]["run_state"]["replan_history"][0]["trigger"] == "no_progress"
+    assert all(
+        len([item for item in invocation["messages"] if isinstance(item, _FakeSystemMessage)]) == 1
+        for invocation in backend.invocations
+    )
+    assert any(
+        "[checkpoint_replan]" in str(item.content or "")
+        for item in backend.invocations[-1]["messages"]
+        if isinstance(item, _FakeHumanMessage)
+    )
     assert any(
         signal["kind"] == "no_new_info"
         for signal in result["inspector"]["run_state"]["progress_signals"]
