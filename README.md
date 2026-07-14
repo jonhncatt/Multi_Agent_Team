@@ -309,7 +309,7 @@ enabled: true
 
 runtime 启动和每次 run 只读取轻量 metadata，并把启用 Skill 的规范 key、名称、描述和 `SKILL.md` 绝对路径放入 `[available_skills]`。模型判断某个 Skill 与任务相关后，使用普通 `read_file` 读取完整 `SKILL.md`，再按其中的相对路径读取 `references/`、`scripts/` 等资源；没有额外的加载或解锁状态。skill key 形如 `builtin:create-team-skill` 或 `team:protocol-analysis`。如果两个目录存在同名 Skill，管理 API 中未限定作用域的引用会被拒绝，必须使用完整 key。
 
-Agent 可以在用户目标允许时调用 `save_skill` 创建或更新 Team Skill；团队也可以通过管理界面或正常的 Git 评审流程随时改进 Team Skill。模型只提交逻辑名称和内容，由 Skill Registry 固定写入 VP 仓库的 `skills/team`，不接收物理路径。只有 Built-in Skill 只读。旧的 `system:` / `workspace:` key 和 API scope 暂时分别作为 `builtin:` / `team:` 的兼容别名。
+Agent 可以在用户目标允许时调用 `save_skill` 创建 Team Skill 或整体替换 `SKILL.md`。用户明确要求更新已有 Team Skill 时，`SKILL.md`、`scripts/` 和 `references/` 可使用普通 `apply_patch` 直接修改；相应目录只在该轮存在明确写入意图时加入可写边界。团队也可以通过管理界面或正常 Git 评审流程改进 Team Skill。只有 Built-in Skill 始终只读。旧的 `system:` / `workspace:` key 和 API scope 暂时分别作为 `builtin:` / `team:` 的兼容别名。
 
 已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 直接执行 `SKILL.md` 所在目录下的 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
 

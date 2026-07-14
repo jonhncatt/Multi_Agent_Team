@@ -24,6 +24,7 @@ class RuntimeBoundary(BaseModel):
     writable_roots: list[str] = Field(default_factory=list)
     command_allowed_roots: list[str] = Field(default_factory=list)
     enabled_skill_roots: list[str] = Field(default_factory=list)
+    team_skill_write_allowed: bool = False
     cwd: str = "."
     project_root: str = "."
     max_output_tokens: int = 16384

@@ -180,6 +180,9 @@ _WRITE_INTENT_HINTS = (
     "制作 skill",
     "新建 skill",
     "写个 skill",
+    "写入",
+    "写进",
+    "写到",
     "做个 skill",
     "做成 skill",
     "总结成 skill",
@@ -199,6 +202,9 @@ _WRITE_INTENT_HINTS = (
     "generate workspace skill",
     "save skill",
     "write skill",
+    "write into",
+    "write to the script",
+    "put into",
     "make a skill",
     "new skill",
     "summarize as a skill",
@@ -211,27 +217,44 @@ _WRITE_INTENT_HINTS = (
     "skill を作成",
     "skill に保存",
     "直して",
+    "書き込",
 )
 
 _EXPLICIT_WRITE_AUTH_HINTS = (
-    "直接",
-    "大胆",
     "不用确认",
     "不需要确认",
     "不用问我",
     "不要问我",
-    "有版本控制",
-    "我有版本控制",
     "直接做",
+    "做吧",
+    "开始吧",
+    "执行吧",
     "直接补",
     "直接改",
     "go ahead",
+    "proceed",
     "no need to ask",
     "without asking",
     "just do it",
-    "直接",
     "確認不要",
     "そのまま",
+    "進めて",
+)
+
+_WRITE_PROHIBITION_HINTS = (
+    "不要修改",
+    "不要改",
+    "不修改",
+    "不能修改",
+    "只读",
+    "do not modify",
+    "don't modify",
+    "do not edit",
+    "read only",
+    "read-only",
+    "変更しない",
+    "編集しない",
+    "読み取り専用",
 )
 
 _WRITE_TOOL_NAMES = {
@@ -543,6 +566,8 @@ class VintageProgrammerRuntime:
     def _extend_runtime_boundary_for_skills(
         boundary: RuntimeBoundary,
         available_skills: list[dict[str, Any]],
+        *,
+        allow_team_writes: bool = False,
     ) -> RuntimeBoundary:
         """Grant ordinary read/command access to enabled Skill directories only."""
 
@@ -561,6 +586,7 @@ class VintageProgrammerRuntime:
             return result
 
         skill_roots: list[str] = []
+        team_skill_roots: list[str] = []
         for item in list(available_skills or []):
             raw_path = str(item.get("path") or "").strip()
             if not raw_path:
@@ -572,10 +598,17 @@ class VintageProgrammerRuntime:
             if path.name != "SKILL.md" or not path.is_file():
                 continue
             skill_roots.append(str(path.parent))
+            if str(item.get("scope") or "").strip().lower() in {"team", "workspace"}:
+                team_skill_roots.append(str(path.parent))
         boundary.allowed_roots = _dedup([*boundary.allowed_roots, *skill_roots])
         boundary.enabled_skill_roots = _dedup(skill_roots)
         if boundary.shell_allowed:
             boundary.command_allowed_roots = _dedup([*boundary.command_allowed_roots, *skill_roots])
+        if allow_team_writes and boundary.workspace_write_allowed:
+            boundary.writable_roots = _dedup([*boundary.writable_roots, *team_skill_roots])
+            boundary.team_skill_write_allowed = bool(team_skill_roots)
+        else:
+            boundary.team_skill_write_allowed = False
         return boundary
 
     def invalidate_descriptor_cache(self) -> None:
@@ -3603,14 +3636,20 @@ class VintageProgrammerRuntime:
         workspace_write_allowed: bool = True,
     ) -> dict[str, Any]:
         normalized = " ".join(str(message or "").split()).lower()
-        has_write_intent = any(hint.lower() in normalized for hint in _WRITE_INTENT_HINTS)
+        write_prohibited = any(hint.lower() in normalized for hint in _WRITE_PROHIBITION_HINTS)
+        has_write_intent = (
+            any(hint.lower() in normalized for hint in _WRITE_INTENT_HINTS)
+            and not write_prohibited
+        )
         explicit_authorization = any(hint.lower() in normalized for hint in _EXPLICIT_WRITE_AUTH_HINTS)
-        authorized = bool(workspace_write_allowed) and has_write_intent
+        authorized = bool(workspace_write_allowed) and not write_prohibited and (has_write_intent or explicit_authorization)
         reasons: list[str] = []
         if has_write_intent:
             reasons.append("write_intent_detected")
         if explicit_authorization:
             reasons.append("explicit_user_authorization")
+        if write_prohibited:
+            reasons.append("write_prohibited")
         return {
             "authorized": bool(authorized),
             "scope": "workspace" if authorized else "",
@@ -3680,6 +3719,10 @@ class VintageProgrammerRuntime:
             kwargs["skill_writer"] = skill_writer
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
             kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
+        if self._callable_accepts_kwarg(setter, "builtin_skill_roots"):
+            kwargs["builtin_skill_roots"] = self._workbench.builtin_skill_roots
+        if self._callable_accepts_kwarg(setter, "team_skill_roots"):
+            kwargs["team_skill_roots"] = self._workbench.team_skill_roots
         setter(**kwargs)
 
     @staticmethod
@@ -4402,11 +4445,15 @@ class VintageProgrammerRuntime:
                 cwd=effective_cwd or project_root or self._config.workspace_root,
                 attachments=attachment_metas,
             )
-            self._extend_runtime_boundary_for_skills(turn_runtime_boundary, available_skills)
             write_authorization_state = self._write_authorization_state(
                 prompt_message,
                 project_root=project_root,
                 workspace_write_allowed=turn_runtime_boundary.workspace_write_allowed,
+            )
+            self._extend_runtime_boundary_for_skills(
+                turn_runtime_boundary,
+                available_skills,
+                allow_team_writes=bool(write_authorization_state.get("authorized")),
             )
         write_authorized = bool(write_authorization_state.get("authorized"))
         blocked_reason = ""

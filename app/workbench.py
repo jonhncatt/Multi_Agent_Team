@@ -133,6 +133,14 @@ class WorkbenchStore:
         return self._skill_registry.reserved_roots
 
     @property
+    def builtin_skill_roots(self) -> list[str]:
+        return [str(self._skill_registry.builtin_skills_dir)]
+
+    @property
+    def team_skill_roots(self) -> list[str]:
+        return [str(self._skill_registry.team_skills_dir)]
+
+    @property
     def agent_dir(self) -> Path:
         return self._agent_dir
 

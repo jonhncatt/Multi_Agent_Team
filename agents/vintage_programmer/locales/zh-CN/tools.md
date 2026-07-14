@@ -41,7 +41,7 @@
 ## Skills
 
 - 轻量 Skill 列表包含启用 Skill 的 `SKILL.md` 路径。命中后先用普通 `read_file` 读取完整说明；相对资源路径以 `SKILL.md` 所在目录为基准。
-- `save_skill` 只创建或更新团队共享的 Team Skill。Team Skill 的路径由全局 Skill Registry 决定，与当前业务项目无关；只有流程确实可复用、触发条件清楚且用户目标允许写入时才使用。不要用普通文件或命令工具创建 Skill，也不要修改只读 Built-in Skill。
+- `save_skill` 用于创建 Team Skill 或整体替换其 `SKILL.md`。已有 Team Skill 的 `SKILL.md`、`scripts/` 和 `references/` 在用户明确要求更新时可直接用 `apply_patch` 修改；此时不要改用 `save_skill`，也不要再次询问确认。不要修改只读 Built-in Skill。
 - Skill 自带脚本使用普通 `exec_command` 直接执行，工作目录保持为当前业务项目。启用状态只控制展示和本轮 Skill 路径授权，不需要额外加载或解锁。Team Skill 可以通过 `save_skill`、管理界面或 Git 修改，只有 Built-in Skill 只读。
 
 ## 状态和用户输入工具

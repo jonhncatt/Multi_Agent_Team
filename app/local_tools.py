@@ -1164,6 +1164,8 @@ class LocalToolExecutor:
         run_id: str | None = None,
         skill_writer: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
+        builtin_skill_roots: list[str] | None = None,
+        team_skill_roots: list[str] | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1185,9 +1187,15 @@ class LocalToolExecutor:
         self._runtime_ctx.reserved_skill_roots = [
             str(item) for item in list(reserved_skill_roots or []) if str(item or "").strip()
         ]
+        self._runtime_ctx.builtin_skill_roots = [
+            str(item) for item in list(builtin_skill_roots or []) if str(item or "").strip()
+        ]
+        self._runtime_ctx.team_skill_roots = [
+            str(item) for item in list(team_skill_roots or []) if str(item or "").strip()
+        ]
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -2461,12 +2469,38 @@ class LocalToolExecutor:
         return f"Write path outside writable roots: {resolved}. Writable roots: {allowed}"
 
     def _reserved_skill_write_error(self, path: Path) -> str:
-        """Keep all skill mutations behind the dedicated save_skill flow."""
+        """Keep Built-in read-only and require turn-level write scope for Team."""
 
         try:
             resolved = path.resolve(strict=False)
         except Exception:
             resolved = path.absolute()
+        for raw_root in list(getattr(self._runtime_ctx, "builtin_skill_roots", []) or []):
+            try:
+                root = Path(str(raw_root)).expanduser().resolve()
+            except Exception:
+                continue
+            if _is_within(resolved, root):
+                return "Built-in Skill files are read-only. Create or update a Team Skill instead."
+        for raw_root in list(getattr(self._runtime_ctx, "team_skill_roots", []) or []):
+            try:
+                root = Path(str(raw_root)).expanduser().resolve()
+            except Exception:
+                continue
+            if not _is_within(resolved, root):
+                continue
+            boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
+            team_write_allowed = bool(
+                isinstance(boundary, dict)
+                and boundary.get("team_skill_write_allowed")
+            )
+            writable_roots = [
+                Path(item).expanduser().resolve()
+                for item in self._current_writable_roots()
+            ]
+            if team_write_allowed and any(_is_within(resolved, writable_root) for writable_root in writable_roots):
+                return ""
+            return "Team Skill files may be changed only when the current user request explicitly authorizes the update."
         for raw_root in list(getattr(self._runtime_ctx, "reserved_skill_roots", []) or []):
             try:
                 root = Path(str(raw_root)).expanduser().resolve()
@@ -2485,6 +2519,25 @@ class LocalToolExecutor:
             return "Project/workspace Skill directories are disabled. Use save_skill to write the global Team catalog."
         return ""
 
+    def _reserved_skill_write_recovery(self, path: Path) -> str:
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path.absolute()
+        for raw_root in list(getattr(self._runtime_ctx, "builtin_skill_roots", []) or []):
+            try:
+                if _is_within(resolved, Path(str(raw_root)).expanduser().resolve()):
+                    return "Built-in Skills cannot be modified. Make the change in a Team Skill instead."
+            except Exception:
+                continue
+        for raw_root in list(getattr(self._runtime_ctx, "team_skill_roots", []) or []):
+            try:
+                if _is_within(resolved, Path(str(raw_root)).expanduser().resolve()):
+                    return "If the user explicitly requested this Team Skill update, retry with apply_patch under the authorized Team path. save_skill only replaces SKILL.md and cannot edit bundled scripts or references."
+            except Exception:
+                continue
+        return "Use save_skill to create or replace a Team SKILL.md; project-level Skill directories are disabled."
+
     def _reserved_skill_command_error(self, command: str, *, cwd: Path) -> str:
         text = str(command or "").replace("\\", "/").lower()
         if self._is_direct_enabled_skill_script_command(command, cwd=cwd):
@@ -2502,15 +2555,14 @@ class LocalToolExecutor:
             return ""
 
         project_markers = (".agents/skills/", ".codex/skills/", "workspace/skills/")
-        catalog_markers = ("skills/builtin/", "skills/team/")
-        reserved_markers = [
-            str(Path(raw_root).expanduser().resolve()).replace("\\", "/").lower().rstrip("/") + "/"
-            for raw_root in list(getattr(self._runtime_ctx, "reserved_skill_roots", []) or [])
-            if str(raw_root or "").strip()
-        ]
         if known_mutator and any(marker in text for marker in project_markers):
             return "Project/workspace Skill directories are disabled. Use save_skill to write the global Team catalog."
-        if known_mutator and any(marker in text for marker in (*catalog_markers, *reserved_markers)):
+        if (
+            known_mutator
+            and any(marker in text for marker in ("skills/builtin/", "skills/team/"))
+            and not list(getattr(self._runtime_ctx, "builtin_skill_roots", []) or [])
+            and not list(getattr(self._runtime_ctx, "team_skill_roots", []) or [])
+        ):
             return "Skill catalog files must be changed through save_skill, not ordinary file tools."
 
         for raw_target in redirection_targets:
@@ -3451,7 +3503,13 @@ class LocalToolExecutor:
                 error=reserved_skill_error,
                 stderr=reserved_skill_error,
                 error_kind="reserved_skill_path",
-                error_detail={"message": reserved_skill_error, "recovery": "Call save_skill with a Team Skill name and content."},
+                error_detail={
+                    "message": reserved_skill_error,
+                    "recovery": (
+                        "Use apply_patch for an explicitly requested Team Skill update. "
+                        "Built-in Skills remain read-only; save_skill only creates or replaces SKILL.md."
+                    ),
+                },
             )
         compound_shell = self._is_compound_shell_command(cmd)
         compound_validation: dict[str, Any] = {}
@@ -4704,7 +4762,7 @@ class LocalToolExecutor:
                             "kind": "reserved_skill_path",
                             "tool": "apply_patch",
                             "message": reserved_error,
-                            "recovery": "Call save_skill with a Team Skill name and content.",
+                            "recovery": self._reserved_skill_write_recovery(target),
                         },
                         "files": files,
                         "summary": reserved_error,
@@ -4718,7 +4776,7 @@ class LocalToolExecutor:
                             "kind": "reserved_skill_path",
                             "tool": "apply_patch",
                             "message": reserved_error,
-                            "recovery": "Use the Team Skill management API for catalog changes.",
+                            "recovery": self._reserved_skill_write_recovery(target),
                         },
                         "files": files,
                         "summary": reserved_error,

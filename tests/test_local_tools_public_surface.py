@@ -718,13 +718,21 @@ def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Pat
     assert result["files"] == []
 
 
-def test_apply_patch_requires_save_skill_for_team_and_project_skill_paths(tmp_path: Path) -> None:
+def test_apply_patch_requires_write_intent_for_team_and_rejects_project_skill_paths(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     team_root = tmp_path / "vp-install" / "skills" / "team"
     executor.set_runtime_context(
         project_root=str(tmp_path),
         cwd=str(tmp_path),
+        runtime_boundary={
+            "workspace_write_allowed": True,
+            "allowed_roots": [str(tmp_path), str(team_root)],
+            "writable_roots": [str(tmp_path), str(team_root)],
+            "command_allowed_roots": [str(tmp_path), str(team_root)],
+            "team_skill_write_allowed": False,
+        },
         reserved_skill_roots=[str(team_root)],
+        team_skill_roots=[str(team_root)],
     )
 
     team_result = executor.apply_patch(
@@ -738,6 +746,84 @@ def test_apply_patch_requires_save_skill_for_team_and_project_skill_paths(tmp_pa
 
     assert team_result["ok"] is False
     assert team_result["error"]["kind"] == "reserved_skill_path"
+    assert "explicitly authorizes" in team_result["error"]["message"]
+    assert "cannot edit bundled scripts" in team_result["error"]["recovery"]
     assert project_result["ok"] is False
     assert project_result["error"]["kind"] == "reserved_skill_path"
     assert not (tmp_path / ".agents").exists()
+
+
+def test_apply_patch_updates_existing_team_skill_script_when_user_authorized(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    project_root.mkdir()
+    team_root = tmp_path / "vp-install" / "skills" / "team"
+    skill_root = team_root / "scripted"
+    script = skill_root / "scripts" / "collect_env.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('old')\n", encoding="utf-8")
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(
+        project_root=str(project_root),
+        cwd=str(project_root),
+        runtime_boundary={
+            "workspace_write_allowed": True,
+            "allowed_roots": [str(project_root), str(skill_root)],
+            "writable_roots": [str(project_root), str(skill_root)],
+            "command_allowed_roots": [str(project_root), str(skill_root)],
+            "team_skill_write_allowed": True,
+        },
+        reserved_skill_roots=[str(team_root)],
+        builtin_skill_roots=[str(tmp_path / "vp-install" / "skills" / "builtin")],
+        team_skill_roots=[str(team_root)],
+    )
+    patch = (
+        "*** Begin Patch\n"
+        f"*** Update File: {script}\n"
+        "@@\n"
+        "-print('old')\n"
+        "+import os\n"
+        "+print(os.environ.get('VP_MODE', ''))\n"
+        "*** End Patch\n"
+    )
+
+    result = executor.apply_patch(patch, cwd=str(project_root))
+
+    assert result["ok"] is True
+    assert "os.environ.get" in script.read_text(encoding="utf-8")
+
+
+def test_apply_patch_never_modifies_builtin_skill_even_if_root_is_writable(tmp_path: Path) -> None:
+    builtin_root = tmp_path / "skills" / "builtin"
+    skill_file = builtin_root / "protected" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("# Protected\n", encoding="utf-8")
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary={
+            "workspace_write_allowed": True,
+            "allowed_roots": [str(tmp_path), str(builtin_root)],
+            "writable_roots": [str(tmp_path), str(builtin_root)],
+            "command_allowed_roots": [str(tmp_path), str(builtin_root)],
+            "team_skill_write_allowed": True,
+        },
+        reserved_skill_roots=[str(builtin_root)],
+        builtin_skill_roots=[str(builtin_root)],
+        team_skill_roots=[str(tmp_path / "skills" / "team")],
+    )
+    patch = (
+        "*** Begin Patch\n"
+        f"*** Update File: {skill_file}\n"
+        "@@\n"
+        "-# Protected\n"
+        "+# Changed\n"
+        "*** End Patch\n"
+    )
+
+    result = executor.apply_patch(patch, cwd=str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "reserved_skill_path"
+    assert "read-only" in result["error"]["message"]
+    assert skill_file.read_text(encoding="utf-8") == "# Protected\n"

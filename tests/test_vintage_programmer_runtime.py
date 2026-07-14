@@ -265,6 +265,24 @@ class _FakeToolsWithoutModel(_FakeTools):
         self.last_runtime_context = dict(payload)
 
 
+class _BoundaryCapturingTools(_FakeTools):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtime_boundaries: list[dict[str, Any]] = []
+
+    def set_runtime_context(self, **kwargs: Any) -> None:
+        self.runtime_boundaries.append(dict(kwargs.get("runtime_boundary") or {}))
+        super().set_runtime_context(
+            execution_mode=kwargs.get("execution_mode"),
+            session_id=kwargs.get("session_id"),
+            project_id=kwargs.get("project_id"),
+            project_root=kwargs.get("project_root"),
+            cwd=kwargs.get("cwd"),
+            model=kwargs.get("model"),
+            skill_writer=kwargs.get("skill_writer"),
+        )
+
+
 class _FailingTools(_FakeTools):
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
@@ -4138,7 +4156,7 @@ def test_runtime_reads_skill_resource_with_standard_read_file_tool(tmp_path: Pat
     assert result["inspector"]["loaded_skills"] == []
 
 
-def test_runtime_boundary_authorizes_enabled_skill_without_making_it_writable(tmp_path: Path) -> None:
+def test_runtime_boundary_makes_enabled_team_skill_writable_only_with_write_intent(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -4172,6 +4190,22 @@ def test_runtime_boundary_authorizes_enabled_skill_without_making_it_writable(tm
     assert str(skill_dir.resolve()) in boundary.command_allowed_roots
     assert str(skill_dir.resolve()) not in boundary.writable_roots
     assert boundary.enabled_skill_roots == [str(skill_dir.resolve())]
+    assert boundary.team_skill_write_allowed is False
+
+    authorized_boundary = RuntimeBoundary(
+        allowed_roots=[str(tmp_path / "business-project")],
+        writable_roots=[str(tmp_path / "business-project")],
+        command_allowed_roots=[str(tmp_path / "business-project")],
+        cwd=str(tmp_path / "business-project"),
+        project_root=str(tmp_path / "business-project"),
+    )
+    runtime._extend_runtime_boundary_for_skills(
+        authorized_boundary,
+        available,
+        allow_team_writes=True,
+    )
+    assert str(skill_dir.resolve()) in authorized_boundary.writable_roots
+    assert authorized_boundary.team_skill_write_allowed is True
 
     runtime._workbench.set_skill_enabled("scripted", False, scope="team")
     disabled_boundary = RuntimeBoundary(
@@ -4188,6 +4222,77 @@ def test_runtime_boundary_authorizes_enabled_skill_without_making_it_writable(tm
     assert str(skill_dir.resolve()) not in disabled_boundary.allowed_roots
     assert str(skill_dir.resolve()) not in disabled_boundary.command_allowed_roots
     assert disabled_boundary.enabled_skill_roots == []
+    assert disabled_boundary.team_skill_write_allowed is False
+
+
+def test_write_authorization_recognizes_request_to_write_into_skill_script(tmp_path: Path) -> None:
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+
+    state = runtime._write_authorization_state(
+        "把这段获取环境变量的命令直接写进 Team Skill 的 Python 脚本运行",
+        project_root=str(tmp_path),
+        workspace_write_allowed=True,
+    )
+
+    assert state["authorized"] is True
+    assert "write_intent_detected" in state["reason"]
+
+    continuation_state = runtime._write_authorization_state(
+        "好的，做吧。",
+        project_root=str(tmp_path),
+        workspace_write_allowed=True,
+    )
+    assert continuation_state["authorized"] is True
+    assert "explicit_user_authorization" in continuation_state["reason"]
+
+    read_only_state = runtime._write_authorization_state(
+        "请直接回答这个问题，不要修改任何文件。",
+        project_root=str(tmp_path),
+        workspace_write_allowed=True,
+    )
+    assert read_only_state["authorized"] is False
+
+
+def test_runtime_authorizes_team_skill_path_for_explicit_script_update(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    skill_dir = tmp_path / "skills" / "team" / "scripted"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: scripted\ndescription: Use for environment collection.\nenabled: true\n---\n\n# Scripted\n",
+        encoding="utf-8",
+    )
+    backend = _FakeBackend([_FakeMessage(content="updated")])
+    backend.tools = _BoundaryCapturingTools()
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="把获取环境变量的逻辑直接写进这个 Team Skill 的 Python 脚本",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-team-skill-write",
+            "project": {"project_root": str(tmp_path / "business-project")},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    boundary = backend.tools.runtime_boundaries[-1]
+    assert result["text"] == "updated"
+    assert boundary["team_skill_write_allowed"] is True
+    assert str(skill_dir.resolve()) in boundary["writable_roots"]
+    assert str((tmp_path / "skills" / "builtin").resolve()) not in boundary["writable_roots"]
 
 
 def test_runtime_save_skill_tool_creates_global_team_skill(tmp_path: Path) -> None:
