@@ -14,6 +14,7 @@ from app.agent_evals import (
     _outside_workspace_write_detected,
     aggregate_eval_results,
     analyze_tool_evidence,
+    build_failure_observability,
     compare_snapshots,
     eval_exit_code,
     execute_authoritative_verifier,
@@ -130,6 +131,49 @@ def test_tool_evidence_tracks_reads_verification_and_repeats() -> None:
     assert evidence["agent_verification_attempted"] is True
     assert evidence["agent_verification_succeeded"] is True
     assert evidence["repeated_tool_call_count"] == 1
+
+
+def test_failure_observability_is_content_free_and_tracks_recovery() -> None:
+    events = [
+        {
+            "name": "exec_command",
+            "status": "error",
+            "normalized_arguments": {"cmd": "python private_check.py", "cwd": "C:/Company/private"},
+            "result_preview": {
+                "ok": False,
+                "error": "C:/Company/private/source.cpp failed",
+                "error_kind": "command_path_outside_allowed_roots",
+                "returncode": 126,
+            },
+        },
+        {
+            "name": "exec_command",
+            "status": "ok",
+            "normalized_arguments": {"cmd": "python run_checks.py"},
+            "result_preview": {"ok": True, "returncode": 0, "output": "private test output"},
+        },
+    ]
+
+    observed = build_failure_observability(
+        events,
+        verification_markers=["run_checks.py"],
+        runtime_result={
+            "progress_signals": [{"kind": "repeated_error"}],
+            "replan_history": [{"trigger": "repeated_tool_failure", "prompt": "private prompt"}],
+            "blocked_reason": "",
+        },
+        authoritative_status="passed",
+        task_completed=True,
+    )
+
+    assert observed["failed_tool_calls"] == 1
+    assert observed["failure_categories"] == {"tool_call_failure": 1}
+    assert observed["recovered_failure_count"] == 1
+    assert observed["replan_triggers"] == ["repeated_tool_failure"]
+    assert observed["recovery_succeeded"] is True
+    assert "Company" not in str(observed)
+    assert "source.cpp" not in str(observed)
+    assert "private" not in str(observed)
 
 
 def test_workspace_write_check_does_not_treat_redacted_preview_as_real_path(tmp_path: Path) -> None:
@@ -263,19 +307,49 @@ def test_aggregate_three_attempts_and_exit_codes() -> None:
     results = [
         {
             "status": "passed",
-            "context_and_tools": {"agent_verification_attempted": True},
+            "context_and_tools": {
+                "agent_verification_attempted": True,
+                "tool_call_count": 4,
+                "failure_observability": {
+                    "failed_tool_calls": 1,
+                    "repeated_failure_count": 0,
+                    "replan_count": 1,
+                    "recovery_attempted": True,
+                    "recovery_succeeded": True,
+                },
+            },
             "completion_state_accuracy": True,
             "failure_categories": [],
         },
         {
             "status": "failed",
-            "context_and_tools": {"agent_verification_attempted": True},
+            "context_and_tools": {
+                "agent_verification_attempted": True,
+                "tool_call_count": 6,
+                "failure_observability": {
+                    "failed_tool_calls": 3,
+                    "repeated_failure_count": 2,
+                    "replan_count": 1,
+                    "recovery_attempted": True,
+                    "recovery_succeeded": False,
+                },
+            },
             "completion_state_accuracy": False,
             "failure_categories": ["code_correctness"],
         },
         {
             "status": "blocked",
-            "context_and_tools": {"agent_verification_attempted": False},
+            "context_and_tools": {
+                "agent_verification_attempted": False,
+                "tool_call_count": 2,
+                "failure_observability": {
+                    "failed_tool_calls": 2,
+                    "repeated_failure_count": 1,
+                    "replan_count": 0,
+                    "recovery_attempted": False,
+                    "recovery_succeeded": False,
+                },
+            },
             "completion_state_accuracy": None,
             "failure_categories": ["environment_blocked"],
         },
@@ -298,6 +372,15 @@ def test_aggregate_three_attempts_and_exit_codes() -> None:
     assert report["summary"]["verification_rate_percent"] == 66.67
     assert report["summary"]["completion_state_accuracy_percent"] == 50.0
     assert report["summary"]["completion_state_accuracy_samples"] == 2
+    assert report["summary"]["total_tool_calls"] == 12
+    assert report["summary"]["average_tool_calls_per_attempt"] == 4.0
+    assert report["summary"]["failed_tool_calls"] == 6
+    assert report["summary"]["attempts_with_tool_failures"] == 3
+    assert report["summary"]["repeated_tool_failures"] == 3
+    assert report["summary"]["replan_count"] == 2
+    assert report["summary"]["recovery_attempts"] == 2
+    assert report["summary"]["recovery_successes"] == 1
+    assert report["summary"]["recovery_success_rate_percent"] == 50.0
     assert eval_exit_code(report) == 1
 
     report["summary"]["failed"] = 0
@@ -361,6 +444,30 @@ class _PassingFakeRuntime:
         }
 
 
+class _PrivateFailureFakeRuntime(_PassingFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        result["final_answer"] = "private-file-content"
+        result["runtime_error"] = {
+            "error_kind": "provider_unavailable",
+            "message": "C:/Company/private at https://internal.example token=secret-value",
+        }
+        result["pending_user_input"] = {
+            "type": "request_user_input",
+            "question": "private-file-content",
+        }
+        result["pending_approval"] = {
+            "type": "command_execution",
+            "command": "upload C:/Company/private token=secret-value",
+        }
+        return result
+
+
 class _CompilerBlockedFakeRuntime(_PassingFakeRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         result = super().run(
@@ -403,6 +510,42 @@ def test_eval_attempt_uses_fake_runtime_without_live_model(tmp_path: Path) -> No
     assert result["context_and_tools"]["context_coverage_complete"] is True
     assert result["verification"]["status"] == "passed"
     assert result["completion_state_accuracy"] is True
+    assert result["runtime"]["final_answer"] == ""
+    assert result["runtime"]["final_answer_omitted"] is True
+    assert result["verification"]["stdout"] == ""
+    assert result["verification"]["output_omitted"] is True
+    assert all(
+        item["arguments"].startswith('{"redacted": true')
+        for item in result["context_and_tools"]["timeline"]
+    )
+
+
+def test_eval_report_omits_runtime_text_paths_urls_credentials_and_parameters(tmp_path: Path) -> None:
+    wrapper = tmp_path / "verify.py"
+    _write_exit_script(wrapper, 0)
+
+    result = run_eval_attempt(
+        _case(),
+        attempt=1,
+        workspace=tmp_path / "attempt",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_PrivateFailureFakeRuntime,
+        verifier_script=str(wrapper),
+    )
+
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "private-file-content" not in serialized
+    assert "Company" not in serialized
+    assert "internal.example" not in serialized
+    assert "secret-value" not in serialized
+    assert result["runtime"]["runtime_error"] == {
+        "present": True,
+        "kind": "provider_unavailable",
+        "details_omitted": True,
+    }
+    assert result["runtime"]["pending_user_input"]["details_omitted"] is True
+    assert result["runtime"]["pending_approval"]["details_omitted"] is True
 
 
 def test_eval_attempt_is_blocked_when_authoritative_compiler_is_unavailable(tmp_path: Path) -> None:

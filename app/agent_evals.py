@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from app.config import AppConfig, build_provider_config, load_config
 from app.models import ChatSettings
+from app.tool_failures import classify_tool_event, failure_key
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -294,8 +295,11 @@ def analyze_tool_evidence(
     for event in tool_events:
         name = str(event.get("name") or "").strip()
         payload_text = _event_payload_text(event)
-        status = str(event.get("status") or "").strip().lower()
-        if status in {"failed", "error", "blocked", "rejected"}:
+        is_verification = bool(
+            name == "exec_command"
+            and any(marker.lower() in payload_text for marker in verification_markers)
+        )
+        if classify_tool_event(event, is_verification=is_verification):
             failed_tool_calls += 1
         fingerprints.append(f"{name}:{payload_text[:240]}")
 
@@ -309,7 +313,7 @@ def analyze_tool_evidence(
                 if normalized in payload_text or basename in payload_text:
                     observed[relative] = True
 
-        if name == "exec_command" and any(marker.lower() in payload_text for marker in verification_markers):
+        if is_verification:
             verification_attempted = True
             verification_succeeded = verification_succeeded or _tool_event_succeeded(event)
 
@@ -372,6 +376,25 @@ def _redact_output(text: str, *, workspace: Path, limit: int = 8000) -> str:
     if len(value) > limit:
         value = value[-limit:]
     return value
+
+
+def _safe_runtime_state(value: Any, *, fallback_kind: str) -> dict[str, Any]:
+    payload = _mapping(value)
+    if not payload:
+        return {}
+    raw_kind = (
+        payload.get("error_kind")
+        or payload.get("kind")
+        or payload.get("type")
+        or payload.get("code")
+        or fallback_kind
+    )
+    kind = re.sub(r"[^a-z0-9_]+", "_", str(raw_kind or "").strip().lower()).strip("_")[:80]
+    return {
+        "present": True,
+        "kind": kind or fallback_kind,
+        "details_omitted": True,
+    }
 
 
 def _wrapper_argv(script: Path, *, workspace: Path, case_name: str) -> list[str]:
@@ -516,23 +539,120 @@ def _runtime_factory(config: AppConfig) -> VintageProgrammerRuntime:
 
 
 def _compact_tool_events(events: list[dict[str, Any]], *, workspace: Path) -> list[dict[str, Any]]:
+    _ = workspace
     compact: list[dict[str, Any]] = []
     for event in events:
         input_payload = event.get("normalized_arguments") or event.get("input") or {}
-        rendered_input = _redact_output(
-            json.dumps(_jsonable(input_payload), ensure_ascii=False),
-            workspace=workspace,
-            limit=800,
-        )
+        argument_keys = sorted(str(key) for key in input_payload) if isinstance(input_payload, dict) else []
+        status = str(event.get("status") or "")
+        failure = classify_tool_event(event)
         compact.append(
             {
                 "name": str(event.get("name") or ""),
-                "status": str(event.get("status") or ""),
-                "summary": str(event.get("summary") or "")[:500],
-                "arguments": rendered_input,
+                "status": status,
+                "summary": "tool_failed" if failure else "tool_succeeded",
+                "arguments": json.dumps({"redacted": True, "keys": argument_keys}, ensure_ascii=False),
+                "argument_keys": argument_keys,
+                "failure_category": str((failure or {}).get("category") or ""),
+                "error_kind": str((failure or {}).get("error_kind") or ""),
             }
         )
     return compact
+
+
+def build_failure_observability(
+    tool_events: list[dict[str, Any]],
+    *,
+    verification_markers: list[str],
+    runtime_result: dict[str, Any],
+    authoritative_status: str,
+    task_completed: bool,
+) -> dict[str, Any]:
+    classified: list[tuple[int, dict[str, Any]]] = []
+    successful_indices: dict[str, list[int]] = {}
+    for index, event in enumerate(tool_events):
+        name = str(event.get("name") or "tool").strip() or "tool"
+        payload_text = _event_payload_text(event)
+        is_verification = bool(
+            name == "exec_command"
+            and any(marker.lower() in payload_text for marker in verification_markers)
+        )
+        failure = classify_tool_event(event, is_verification=is_verification)
+        if failure:
+            classified.append((index, failure))
+        elif _tool_event_succeeded(event):
+            successful_indices.setdefault(name, []).append(index)
+
+    group_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    sequence: list[dict[str, Any]] = []
+    recovered_count = 0
+    for index, failure in classified:
+        key = failure_key(failure)
+        occurrence = group_counts.get(key, 0) + 1
+        group_counts[key] = occurrence
+        category = str(failure.get("category") or "tool_execution_failure")
+        category_counts[category] = category_counts.get(category, 0) + 1
+        later_success = any(
+            success_index > index
+            for success_index in successful_indices.get(str(failure.get("tool") or "tool"), [])
+        )
+        if later_success:
+            recovered_count += 1
+        sequence.append(
+            {
+                "index": index + 1,
+                "tool": str(failure.get("tool") or "tool"),
+                "category": category,
+                "error_kind": str(failure.get("error_kind") or "tool_error"),
+                "retryability": str(failure.get("retryability") or "change_strategy"),
+                "returncode": failure.get("returncode"),
+                "is_verification": bool(failure.get("is_verification")),
+                "occurrence": occurrence,
+                "repeated": occurrence > 1,
+                "recovered_by_later_tool_success": later_success,
+            }
+        )
+
+    progress_signals = [
+        item for item in list(runtime_result.get("progress_signals") or []) if isinstance(item, dict)
+    ]
+    no_progress_count = sum(
+        1
+        for item in progress_signals
+        if str(item.get("kind") or "") in {"no_new_info", "duplicate_result", "repeated_error"}
+    )
+    replan_triggers = [
+        str(item.get("trigger") or "")
+        for item in list(runtime_result.get("replan_history") or [])
+        if isinstance(item, dict) and str(item.get("trigger") or "").strip()
+    ]
+    blocked_reason = re.sub(
+        r"[^a-z0-9_]+",
+        "_",
+        str(runtime_result.get("blocked_reason") or "").strip().lower(),
+    ).strip("_")[:100]
+    environment_blocked = bool(
+        str(authoritative_status or "") == "blocked"
+        or category_counts.get("environment_blocked")
+    )
+    return {
+        "schema_version": 1,
+        "failed_tool_calls": len(sequence),
+        "failure_categories": category_counts,
+        "failures": sequence,
+        "repeated_failure_count": sum(1 for item in sequence if item.get("repeated")),
+        "recovered_failure_count": recovered_count,
+        "unresolved_failure_count": max(0, len(sequence) - recovered_count),
+        "no_progress_signal_count": no_progress_count,
+        "replan_count": len(replan_triggers),
+        "replan_triggers": replan_triggers,
+        "blocked_reason": blocked_reason,
+        "environment_blocked": environment_blocked,
+        "recovery_attempted": bool(replan_triggers or recovered_count),
+        "recovery_succeeded": bool(task_completed) if sequence else None,
+        "sensitive_content_omitted": True,
+    }
 
 
 def _outside_workspace_write_detected(events: list[dict[str, Any]], workspace: Path) -> bool:
@@ -743,6 +863,13 @@ def run_eval_attempt(
     completion_accuracy: bool | None = (
         runtime_completed == factual_completion if completion_determinable else None
     )
+    failure_observability = build_failure_observability(
+        tool_events,
+        verification_markers=_string_list(verification.get("command_markers") or [verification.get("script")]),
+        runtime_result=result,
+        authoritative_status=str(authoritative.get("status") or ""),
+        task_completed=factual_completion,
+    )
 
     hard_failures: list[str] = []
     failure_categories: list[str] = []
@@ -792,8 +919,16 @@ def run_eval_attempt(
     else:
         status = "passed"
 
-    final_text = str(result.get("final_answer") or result.get("text") or "")
     token_usage = dict(result.get("token_usage") or {}) if isinstance(result.get("token_usage"), dict) else {}
+    authoritative_report = {
+        "status": str(authoritative.get("status") or ""),
+        "source": str(authoritative.get("source") or ""),
+        "returncode": authoritative.get("returncode"),
+        "summary": str(authoritative.get("summary") or "")[:500],
+        "stdout": "",
+        "stderr": "",
+        "output_omitted": True,
+    }
     return {
         "case": str(case.get("name") or ""),
         "attempt": int(attempt),
@@ -808,12 +943,20 @@ def run_eval_attempt(
             "turn_ended": str(result.get("turn_status") or "").strip().lower()
             in {"completed", "failed", "blocked", "cancelled"},
             "turn_status": str(result.get("turn_status") or ""),
-            "exception": _redact_output(runtime_exception, workspace=workspace),
-            "runtime_error": _jsonable(result.get("runtime_error") or {}),
-            "pending_user_input": _jsonable(result.get("pending_user_input") or {}),
-            "pending_approval": _jsonable(result.get("pending_approval") or {}),
+            "exception": "runtime_exception" if runtime_exception else "",
+            "exception_details_omitted": bool(runtime_exception),
+            "runtime_error": _safe_runtime_state(result.get("runtime_error"), fallback_kind="runtime_error"),
+            "pending_user_input": _safe_runtime_state(
+                result.get("pending_user_input"),
+                fallback_kind="pending_user_input",
+            ),
+            "pending_approval": _safe_runtime_state(
+                result.get("pending_approval"),
+                fallback_kind="pending_approval",
+            ),
             "effective_model": str(result.get("effective_model") or settings.model or ""),
-            "final_answer": _redact_output(final_text, workspace=workspace, limit=6000),
+            "final_answer": "",
+            "final_answer_omitted": True,
             "token_usage": token_usage,
             "llm_calls": int(token_usage.get("llm_calls") or len(list(result.get("llm_exchanges") or [])) or 0),
         },
@@ -829,12 +972,13 @@ def run_eval_attempt(
         "context_and_tools": {
             **tool_evidence,
             "timeline": _compact_tool_events(tool_events, workspace=workspace),
+            "failure_observability": failure_observability,
         },
         "c_style": {
             "passed": not c_style_violations,
             "violations": c_style_violations,
         },
-        "verification": authoritative,
+        "verification": authoritative_report,
         "completion_state_accuracy": completion_accuracy,
     }
 
@@ -861,8 +1005,30 @@ def aggregate_eval_results(
         if isinstance(item.get("completion_state_accuracy"), bool)
     ]
     accurate = sum(1 for value in determined_accuracy if value)
+    total_tool_calls = 0
+    total_failed_tool_calls = 0
+    repeated_tool_failures = 0
+    replan_count = 0
+    recovery_attempts = 0
+    recovery_successes = 0
+    attempts_with_tool_failures = 0
     category_counts: dict[str, int] = {}
     for item in results:
+        context_and_tools = _mapping(item.get("context_and_tools"))
+        failure_observability = _mapping(context_and_tools.get("failure_observability"))
+        total_tool_calls += int(context_and_tools.get("tool_call_count") or 0)
+        failed_tool_calls = int(
+            failure_observability.get("failed_tool_calls")
+            if failure_observability.get("failed_tool_calls") is not None
+            else context_and_tools.get("failed_tool_call_count") or 0
+        )
+        total_failed_tool_calls += failed_tool_calls
+        attempts_with_tool_failures += int(failed_tool_calls > 0)
+        repeated_tool_failures += int(failure_observability.get("repeated_failure_count") or 0)
+        replan_count += int(failure_observability.get("replan_count") or 0)
+        recovery_attempted = bool(failure_observability.get("recovery_attempted"))
+        recovery_attempts += int(recovery_attempted)
+        recovery_successes += int(recovery_attempted and failure_observability.get("recovery_succeeded") is True)
         for category in list(item.get("failure_categories") or []):
             key = str(category or "unknown")
             category_counts[key] = category_counts.get(key, 0) + 1
@@ -892,6 +1058,18 @@ def aggregate_eval_results(
                 2,
             ),
             "completion_state_accuracy_samples": len(determined_accuracy),
+            "total_tool_calls": total_tool_calls,
+            "average_tool_calls_per_attempt": round((total_tool_calls / total) if total else 0.0, 2),
+            "failed_tool_calls": total_failed_tool_calls,
+            "attempts_with_tool_failures": attempts_with_tool_failures,
+            "repeated_tool_failures": repeated_tool_failures,
+            "replan_count": replan_count,
+            "recovery_attempts": recovery_attempts,
+            "recovery_successes": recovery_successes,
+            "recovery_success_rate_percent": round(
+                (recovery_successes * 100.0 / recovery_attempts) if recovery_attempts else 0.0,
+                2,
+            ),
             "failure_categories": category_counts,
         },
         "results": results,

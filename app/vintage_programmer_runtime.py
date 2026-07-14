@@ -78,6 +78,7 @@ from app.tool_trace_summary import (
     validate_tool_arguments,
 )
 from app.thread_transcript import normalize_transcript_item, transcript_items_after_compaction
+from app.tool_failures import classify_tool_failure, failure_key
 from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
 from app.vp_runtime_backend import create_vp_runtime_backend
@@ -116,6 +117,8 @@ _DEFAULT_MAX_SAME_ACTION_REPEATS = 4
 _DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN = 3
 _DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
 _DEFAULT_MAX_GUARD_REJECTIONS = 2
+_DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN = 2
+_DEFAULT_REPEATED_FAILURES_AFTER_REPLAN = 1
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
 
@@ -130,11 +133,14 @@ def default_loop_safeguards() -> dict[str, Any]:
         "no_progress_threshold_before_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN),
         "no_progress_threshold_after_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN),
         "max_guard_rejections": int(_DEFAULT_MAX_GUARD_REJECTIONS),
+        "repeated_failures_before_replan": int(_DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN),
+        "repeated_failures_after_replan": int(_DEFAULT_REPEATED_FAILURES_AFTER_REPLAN),
         "max_turn_seconds": int(_DEFAULT_MAX_TURN_SECONDS),
         "long_task_guard": True,
         "progress_signal_guard": True,
         "same_action_repeat_guard": True,
         "automatic_replan": True,
+        "tool_failure_recovery": True,
         "tool_output_truncation": True,
         "supports_user_cancel": True,
         "context_compaction": True,
@@ -2355,6 +2361,96 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
+    def _new_failure_tracker() -> dict[str, Any]:
+        return {
+            "counts": {},
+            "last_key": "",
+            "consecutive": 0,
+            "records": [],
+            "recoveries": [],
+        }
+
+    @classmethod
+    def _record_tool_failure(
+        cls,
+        *,
+        tool_name: str,
+        result: dict[str, Any],
+        event: ToolEvent,
+        tracker: dict[str, Any],
+        is_verification: bool,
+        write_authorized: bool,
+        successful_mutation_seen: bool,
+    ) -> dict[str, Any] | None:
+        failure = classify_tool_failure(
+            tool_name=tool_name,
+            payload=result,
+            event_status=str(getattr(event, "status", "") or ""),
+            validation_result=dict(getattr(event, "validation_result", {}) or {}),
+            is_verification=is_verification,
+        )
+        if failure is None:
+            previous_key = str(tracker.get("last_key") or "")
+            if previous_key:
+                tracker.setdefault("recoveries", []).append(
+                    {
+                        "failure_key": previous_key,
+                        "recovered_by_tool": str(tool_name or "tool"),
+                    }
+                )
+            tracker["last_key"] = ""
+            tracker["consecutive"] = 0
+            return None
+
+        key = failure_key(failure)
+        counts = tracker.setdefault("counts", {})
+        occurrence = int(counts.get(key) or 0) + 1
+        counts[key] = occurrence
+        if str(tracker.get("last_key") or "") == key:
+            consecutive = int(tracker.get("consecutive") or 0) + 1
+        else:
+            consecutive = 1
+        tracker["last_key"] = key
+        tracker["consecutive"] = consecutive
+
+        failure = {
+            **failure,
+            "occurrence": occurrence,
+            "consecutive_occurrence": consecutive,
+            "repeated": occurrence > 1,
+        }
+        if write_authorized and is_verification and not successful_mutation_seen:
+            failure["precondition"] = "no_successful_mutation_observed"
+            failure["required_action"] = "modify_target_before_retrying_verification"
+
+        tracker.setdefault("records", []).append(dict(failure))
+        tracker["records"] = list(tracker.get("records") or [])[-24:]
+        result["runtime_failure"] = dict(failure)
+        diagnostics = dict(getattr(event, "diagnostics", {}) or {})
+        diagnostics["failure"] = dict(failure)
+        event.diagnostics = diagnostics
+        event.result_preview = safe_preview(result, limit=4000)
+        return failure
+
+    @staticmethod
+    def _failure_recovery_summary(tracker: dict[str, Any]) -> dict[str, Any]:
+        records = [dict(item) for item in list(tracker.get("records") or []) if isinstance(item, dict)]
+        recoveries = [dict(item) for item in list(tracker.get("recoveries") or []) if isinstance(item, dict)]
+        categories: dict[str, int] = {}
+        for item in records:
+            category = str(item.get("category") or "tool_execution_failure")
+            categories[category] = categories.get(category, 0) + 1
+        return {
+            "schema_version": 1,
+            "failure_count": len(records),
+            "failure_categories": categories,
+            "repeated_failure_count": sum(1 for item in records if bool(item.get("repeated"))),
+            "recoveries": recoveries[-12:],
+            "records": records[-12:],
+            "sensitive_content_omitted": True,
+        }
+
+    @staticmethod
     def _tool_result_items(result: dict[str, Any], *keys: str) -> list[Any]:
         payload = dict(result or {}) if isinstance(result, dict) else {}
         for key in keys:
@@ -2400,20 +2496,26 @@ class VintageProgrammerRuntime:
         plan_state_before: list[dict[str, Any]],
         tracker: dict[str, Any],
         action_fingerprint: str,
+        is_verification: bool = False,
     ) -> ProgressSignal:
         name = str(tool_name or "").strip() or "tool"
         payload = dict(result or {}) if isinstance(result, dict) else {}
-        ok = bool(payload.get("ok"))
         detail = cls._progress_detail_from_result(name, arguments, payload)
-        if not ok:
+        failure = classify_tool_failure(
+            tool_name=name,
+            payload=payload,
+            event_status=event_status,
+            is_verification=is_verification,
+        )
+        if failure:
             error = payload.get("error")
-            error_kind = str(error.get("kind") or "") if isinstance(error, dict) else ""
+            error_kind = str(failure.get("error_kind") or "tool_error")
             error_message = safe_error_message(
                 (error.get("message") if isinstance(error, dict) else error)
                 or payload.get("summary")
                 or translate(locale, "runtime.tool.failed")
             )
-            error_key = f"{name}:{error_kind or 'error'}"
+            error_key = failure_key(failure)
             seen_error_kinds = tracker.setdefault("error_kinds", set())
             if error_key not in seen_error_kinds:
                 seen_error_kinds.add(error_key)
@@ -2425,7 +2527,11 @@ class VintageProgrammerRuntime:
                     action_fingerprint=action_fingerprint,
                     tool_name=name,
                     detail=detail,
-                    payload={"error_kind": error_kind or "error", "event_status": event_status},
+                    payload={
+                        "category": str(failure.get("category") or "tool_execution_failure"),
+                        "error_kind": error_kind,
+                        "event_status": event_status,
+                    },
                 )
             return ProgressSignal(
                 has_progress=False,
@@ -2435,7 +2541,11 @@ class VintageProgrammerRuntime:
                 action_fingerprint=action_fingerprint,
                 tool_name=name,
                 detail=detail,
-                payload={"error_kind": error_kind or "error", "event_status": event_status},
+                payload={
+                    "category": str(failure.get("category") or "tool_execution_failure"),
+                    "error_kind": error_kind,
+                    "event_status": event_status,
+                },
             )
 
         if name == "read_file":
@@ -2750,6 +2860,32 @@ class VintageProgrammerRuntime:
         return items[-limit:]
 
     @staticmethod
+    def _recent_structured_failures(tool_events: list[ToolEvent], *, limit: int = 6) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for event in list(tool_events or []):
+            diagnostics = dict(getattr(event, "diagnostics", {}) or {})
+            failure = dict(diagnostics.get("failure") or {})
+            if not failure:
+                continue
+            items.append(
+                {
+                    key: failure.get(key)
+                    for key in (
+                        "tool",
+                        "category",
+                        "error_kind",
+                        "retryability",
+                        "required_action",
+                        "occurrence",
+                        "consecutive_occurrence",
+                        "precondition",
+                    )
+                    if failure.get(key) not in (None, "")
+                }
+            )
+        return items[-limit:]
+
+    @staticmethod
     def _localized_text(locale: str, *, zh_cn: str, ja_jp: str, en: str) -> str:
         normalized = normalize_locale(locale)
         if normalized == "ja-JP":
@@ -2945,6 +3081,24 @@ class VintageProgrammerRuntime:
                     en="If the path context is ambiguous, set `cwd`/`workdir` explicitly and keep it inside the allowed project roots.",
                 )
             )
+        if trigger == "repeated_tool_failure":
+            hints.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="不得再次机械重复同一工具/错误类型；必须修改参数、改用其他工具，或选择不同的执行策略。",
+                    ja_jp="同じツール/エラー種別を機械的に繰り返さず、引数、ツール、または実行戦略を変更してください。",
+                    en="Do not mechanically repeat the same tool/error class; change the arguments, tool, or execution strategy.",
+                )
+            )
+        if trigger == "verification_before_change":
+            hints.append(
+                self._localized_text(
+                    locale,
+                    zh_cn="当前写入任务尚无成功修改证据。先生成或修改目标文件，再重新运行验证。",
+                    ja_jp="書き込みタスクにはまだ成功した変更の証拠がありません。対象ファイルを作成または変更してから検証を再実行してください。",
+                    en="No successful mutation has been observed for this write task. Create or modify the target before running verification again.",
+                )
+            )
         return hints
 
     def _attempt_guard_safe_downgrade(
@@ -3012,6 +3166,13 @@ class VintageProgrammerRuntime:
         return candidate_call, candidate_validation, reason
 
     def _blocked_reason_label(self, locale: str, blocked_reason: str) -> str:
+        if str(blocked_reason or "").strip() in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
+            return self._localized_text(
+                locale,
+                zh_cn="同类工具错误重复出现",
+                ja_jp="同種のツールエラーが繰り返されました",
+                en="The same tool failure class repeated",
+            )
         mapping = {
             "turn_budget_no_progress_after_replan_exceeded": "runtime.budget.detail.no_progress_after_replan",
             "turn_budget_same_action_repeats_exceeded": "runtime.budget.detail.same_action_repeat",
@@ -3038,6 +3199,24 @@ class VintageProgrammerRuntime:
         last_failed = next((item for item in reversed(tool_events or []) if getattr(item, "status", "") != "ok"), None)
         last_failed_reason = str(getattr(last_failed, "summary", "") or "").strip()
         reason_code = str(blocked_reason or "").strip()
+        if reason_code in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
+            structured = self._recent_structured_failures(tool_events, limit=1)
+            latest = structured[-1] if structured else {}
+            failure_label = ":".join(
+                item
+                for item in (
+                    str(latest.get("tool") or "tool"),
+                    str(latest.get("category") or "tool_execution_failure"),
+                    str(latest.get("error_kind") or "tool_error"),
+                )
+                if item
+            )
+            return self._localized_text(
+                locale,
+                zh_cn=f"同类工具错误在复盘后仍然重复，已停止机械重试。错误类别：{failure_label}。",
+                ja_jp=f"同種のツールエラーが復盤後も繰り返されたため、機械的な再試行を停止しました。分類: {failure_label}。",
+                en=f"The same tool failure persisted after replanning, so mechanical retries were stopped. Failure class: {failure_label}.",
+            )
         if reason_code == "tool_validation_rejections_exceeded":
             base = self._localized_text(
                 locale,
@@ -3151,6 +3330,13 @@ class VintageProgrammerRuntime:
                 zh_cn="请换一个检查方向，指定更具体的目标文件，或先查看最近一次工具输出再决定下一步。",
                 ja_jp="調査方向を変えるか、対象ファイルをもっと具体化するか、直近のツール出力を確認してから次の一手を決めてください。",
                 en="Change the inspection angle, name a more specific target file, or review the latest tool output before choosing the next move.",
+            )
+        if reason_code in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
+            return self._localized_text(
+                locale,
+                zh_cn="不要再次提交同类失败动作；请更换工具或参数，先完成目标修改，或者明确报告不可用的环境能力。",
+                ja_jp="同種の失敗操作を再送せず、ツールまたは引数を変更し、対象変更を先に完了するか、利用できない環境機能を明示してください。",
+                en="Do not submit the same failure class again; change the tool or arguments, complete the target mutation first, or report the unavailable environment capability.",
             )
         if reason_code == "turn_budget_wall_clock_exceeded":
             return self._localized_text(
@@ -3296,6 +3482,7 @@ class VintageProgrammerRuntime:
         active_files = [str(item) for item in list(current_task_focus.get("active_files") or []) if str(item or "").strip()]
         recent_progress = self._recent_action_summaries(progress_signals)
         recent_failures = self._recent_failed_action_summaries(tool_events)
+        structured_failures = self._recent_structured_failures(tool_events)
         lines = [
             translate(locale, "runtime.replan.system_prompt", trigger=trigger),
             f"current_goal: {current_goal}",
@@ -3308,6 +3495,8 @@ class VintageProgrammerRuntime:
         if recent_failures:
             lines.append(translate(locale, "runtime.replan.failed_actions_intro"))
             lines.extend(f"- {item}" for item in recent_failures[:6])
+        if structured_failures:
+            lines.append("failure_contract: " + json.dumps(structured_failures, ensure_ascii=False))
         guardrail_hints = self._guard_recovery_hints(
             locale=locale,
             trigger=trigger,
@@ -4132,7 +4321,10 @@ class VintageProgrammerRuntime:
         no_progress_threshold_before_replan = int(loop_safeguards.get("no_progress_threshold_before_replan") or 0)
         no_progress_threshold_after_replan = int(loop_safeguards.get("no_progress_threshold_after_replan") or 0)
         max_guard_rejections = int(loop_safeguards.get("max_guard_rejections") or 0)
+        repeated_failures_before_replan = int(loop_safeguards.get("repeated_failures_before_replan") or 0)
+        repeated_failures_after_replan = int(loop_safeguards.get("repeated_failures_after_replan") or 0)
         automatic_replan_enabled = bool(loop_safeguards.get("automatic_replan"))
+        tool_failure_recovery_enabled = bool(loop_safeguards.get("tool_failure_recovery"))
         progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
         same_action_repeat_guard_enabled = bool(loop_safeguards.get("same_action_repeat_guard"))
         inline_document = looks_like_inline_document_payload(prompt_message)
@@ -4799,6 +4991,8 @@ class VintageProgrammerRuntime:
             safe_downgrade_attempt_count = 0
             llm_retry_used = False
             progress_tracker = self._new_progress_tracker()
+            failure_tracker = self._new_failure_tracker()
+            successful_mutation_seen = False
             progress_signals: list[dict[str, Any]] = []
             replan_history: list[dict[str, Any]] = []
             replan_attempt_count = 0
@@ -5355,15 +5549,42 @@ class VintageProgrammerRuntime:
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
+                    command_text = str(
+                        arguments.get("cmd")
+                        or result.get("command")
+                        or ""
+                    ).strip()
+                    is_verification = bool(
+                        name in {"exec_command", "write_stdin"}
+                        and self._looks_like_verification_command(command_text)
+                    )
+                    failure = self._record_tool_failure(
+                        tool_name=name,
+                        result=result,
+                        event=event,
+                        tracker=failure_tracker,
+                        is_verification=is_verification,
+                        write_authorized=write_authorized,
+                        successful_mutation_seen=successful_mutation_seen,
+                    )
+                    successful_tool_result = bool(
+                        failure is None
+                        and str(event.status or "").strip().lower() in {"ok", "success", "completed"}
+                    )
+                    if successful_tool_result and (
+                        name in {"apply_patch", "save_skill", "web_download", "archive_extract", "mail_extract_attachments"}
+                        or (name == "exec_command" and self._looks_like_mutating_command(command_text))
+                    ):
+                        successful_mutation_seen = True
                     round_signature_parts.append(
                         {
                             "name": name,
                             "input": arguments,
-                            "status": event.status,
+                            "status": "error" if failure else event.status,
                             "action_fingerprint": action_fingerprint,
                         }
                     )
-                    if event.status == "ok":
+                    if successful_tool_result:
                         round_success = True
                     progress_signal = self._progress_signal_from_tool_result(
                         locale=locale,
@@ -5374,6 +5595,7 @@ class VintageProgrammerRuntime:
                         plan_state_before=plan_state_before,
                         tracker=progress_tracker,
                         action_fingerprint=action_fingerprint,
+                        is_verification=is_verification,
                     )
                     progress_signal_payload = dump_model(progress_signal)
                     round_progress_signals.append(progress_signal_payload)
@@ -5384,6 +5606,41 @@ class VintageProgrammerRuntime:
                     else:
                         same_action_repeat_count += 1
                     last_action_fingerprint = action_fingerprint
+                    if failure and tool_failure_recovery_enabled and not halt_for_user_input:
+                        consecutive_failures = int(failure.get("consecutive_occurrence") or 1)
+                        precondition_failed = bool(failure.get("precondition"))
+                        repeated_before_replan = bool(
+                            replan_attempt_count == 0
+                            and repeated_failures_before_replan > 0
+                            and consecutive_failures >= repeated_failures_before_replan
+                        )
+                        repeated_after_replan = bool(
+                            replan_attempt_count > 0
+                            and repeated_failures_after_replan > 0
+                            and consecutive_failures >= repeated_failures_after_replan
+                        )
+                        if precondition_failed and replan_attempt_count == 0:
+                            needs_replan = True
+                            replan_trigger = "verification_before_change"
+                            replan_detail = str(failure.get("error_kind") or "verification_failure")
+                            notes.append("tool_failure_replan_requested:verification_before_change")
+                            stop_after_tools = True
+                        elif repeated_before_replan:
+                            if automatic_replan_enabled:
+                                needs_replan = True
+                                replan_trigger = "repeated_tool_failure"
+                                replan_detail = failure_key(failure)
+                                notes.append("tool_failure_replan_requested:repeated_tool_failure")
+                            else:
+                                turn_status = "blocked"
+                                blocked_reason = blocked_reason or "tool_failure_repeated"
+                                notes.append("tool_failure_repeated")
+                            stop_after_tools = True
+                        elif repeated_after_replan:
+                            turn_status = "blocked"
+                            blocked_reason = blocked_reason or "tool_failure_repeated_after_replan"
+                            notes.append("tool_failure_repeated_after_replan")
+                            stop_after_tools = True
                     if name == "update_plan" and bool(result.get("ok")):
                         plan_state = list(result.get("plan") or [])
                         if progress_cb is not None:
@@ -5697,6 +5954,7 @@ class VintageProgrammerRuntime:
                         "detail": replan_detail,
                         "known_facts": self._recent_action_summaries(progress_signals),
                         "failed_actions": self._recent_failed_action_summaries(tool_events),
+                        "structured_failures": self._recent_structured_failures(tool_events),
                         "prompt": replan_prompt,
                         "round_index": round_idx,
                     }
@@ -6367,6 +6625,7 @@ class VintageProgrammerRuntime:
                 else "full_payload_estimate"
             ),
         }
+        failure_recovery = self._failure_recovery_summary(failure_tracker)
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -6425,6 +6684,7 @@ class VintageProgrammerRuntime:
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
+                "failure_recovery": dict(failure_recovery),
                 "project_contract_loaded": bool(project_contract_text),
                 "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
                 "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
@@ -6523,6 +6783,7 @@ class VintageProgrammerRuntime:
             "execution_trace": list(execution_trace),
             "progress_signals": list(progress_signals),
             "replan_history": list(replan_history),
+            "failure_recovery": dict(failure_recovery),
             "activity": {
                 "run_id": run_id,
                 "status": turn_status,
@@ -6579,6 +6840,7 @@ class VintageProgrammerRuntime:
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
+                "failure_recovery": dict(failure_recovery),
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),

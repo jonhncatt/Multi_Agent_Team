@@ -285,6 +285,27 @@ class _FailingTools(_FakeTools):
         raise RuntimeError("boom")
 
 
+class _ScriptedTools(_FakeTools):
+    def __init__(self, scripted_results: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._scripted_results = [dict(item) for item in scripted_results]
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        if not self._scripted_results:
+            return {
+                "ok": True,
+                "name": name,
+                "project_root": str((self.runtime_context or {}).get("project_root") or ""),
+                "cwd": str((self.runtime_context or {}).get("cwd") or ""),
+            }
+        result = dict(self._scripted_results.pop(0))
+        result.setdefault("name", name)
+        result.setdefault("project_root", str((self.runtime_context or {}).get("project_root") or ""))
+        result.setdefault("cwd", str((self.runtime_context or {}).get("cwd") or ""))
+        return result
+
+
 class _ApprovalRequiredTools(_FakeTools):
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
@@ -2884,6 +2905,218 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
         signal["kind"] == "no_new_info"
         for signal in result["inspector"]["run_state"]["progress_signals"]
     )
+
+
+def test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_recovers(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126},
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126},
+            {"ok": True, "content": "alternative evidence"},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "python missing_one.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "exec_command", "args": {"cmd": "python missing_two.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "README.md"}}]),
+            _FakeMessage(content="recovered with a different strategy"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="检查两个候选命令，如果路径策略失败就换成读取已有文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
+        context={
+            "session_id": "s-recover-same-failure-class",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "recovered with a different strategy"
+    assert [call[0] for call in tools.calls] == ["exec_command", "exec_command", "read_file"]
+    history = result["inspector"]["run_state"]["replan_history"]
+    assert history[0]["trigger"] == "repeated_tool_failure"
+    assert history[0]["structured_failures"][-1]["consecutive_occurrence"] == 2
+    recovery = result["failure_recovery"]
+    assert recovery["failure_count"] == 2
+    assert recovery["repeated_failure_count"] == 1
+    assert recovery["recoveries"][-1]["recovered_by_tool"] == "read_file"
+    tool_messages = [
+        str(message.content or "")
+        for invocation in backend.invocations
+        for message in invocation["messages"]
+        if isinstance(message, _FakeToolMessage)
+    ]
+    assert any("runtime_failure" in message and "command_path_outside_allowed_roots" in message for message in tool_messages)
+    assert "failure_contract:" in history[0]["prompt"]
+    assert any(token in history[0]["prompt"] for token in ("机械重复", "機械的に繰り返さず", "mechanically repeat"))
+
+
+def test_runtime_stops_unrecoverable_environment_failure_after_one_replan(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error_kind": "tool_unavailable"},
+            {"ok": False, "error_kind": "tool_unavailable"},
+            {"ok": False, "error_kind": "tool_unavailable"},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "one.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "two.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "three.md"}}]),
+            _FakeMessage(content="should not claim completion"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="读取可用文件；如果工具环境不可用则明确停止",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-environment-block",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "tool_failure_repeated_after_replan"
+    assert "should not claim completion" not in result["text"]
+    assert len(tools.calls) == 3
+    assert result["failure_recovery"]["failure_categories"] == {"environment_blocked": 3}
+    assert result["failure_recovery"]["records"][-1]["retryability"] == "blocked"
+    assert len(result["replan_history"]) == 1
+
+
+def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126},
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126},
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "python one.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "exec_command", "args": {"cmd": "python two.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "exec_command", "args": {"cmd": "python three.py"}}]),
+            _FakeMessage(content="should not claim completion"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="检查命令路径；同类边界错误重复时必须换方案或停止",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
+        context={
+            "session_id": "s-repeated-tool-call-failure",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "tool_failure_repeated_after_replan"
+    assert len(tools.calls) == 3
+    assert result["failure_recovery"]["failure_categories"] == {"tool_call_failure": 3}
+    assert result["failure_recovery"]["repeated_failure_count"] == 2
+    assert result["task_completion"]["task_completed"] is False
+    assert "should not claim completion" not in result["text"]
+
+
+def test_runtime_replans_when_verification_fails_before_target_mutation(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "command": "python run_checks.py", "returncode": 1},
+            {"ok": True, "files": [str(tmp_path / "REPORT.md")]},
+            {"ok": True, "command": "python run_checks.py", "returncode": 0},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "python run_checks.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "apply_patch", "args": {"patch": "*** Begin Patch\n*** Add File: REPORT.md\n+done\n*** End Patch"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "exec_command", "args": {"cmd": "python run_checks.py"}}]),
+            _FakeMessage(content="implemented and verified"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="请修改 REPORT.md，完成后运行 run_checks.py 验证",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
+        context={
+            "session_id": "s-verify-before-mutation",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "implemented and verified"
+    assert result["replan_history"][0]["trigger"] == "verification_before_change"
+    first_failure = result["failure_recovery"]["records"][0]
+    assert first_failure["category"] == "verification_failure"
+    assert first_failure["precondition"] == "no_successful_mutation_observed"
+    assert first_failure["required_action"] == "modify_target_before_retrying_verification"
+    assert result["task_completion"]["verification"]["status"] == "passed"
 
 
 def test_runtime_blocked_message_details_after_replan_no_progress(

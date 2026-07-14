@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "suite": "vintage_programmer_tool_failure_recovery",
+  "description": "Deterministic Runtime recovery evals. These cases use fake tools and never call a real model.",
+  "cases": [
+    {
+      "name": "recoverable_same_class_changed_strategy",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_recovers",
+      "failure_category": "tool_call_failure",
+      "expected_turn_status": "completed",
+      "expected_replan_trigger": "repeated_tool_failure",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "unrecoverable_environment_block",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_stops_unrecoverable_environment_failure_after_one_replan",
+      "failure_category": "environment_blocked",
+      "expected_turn_status": "blocked",
+      "expected_replan_trigger": "repeated_tool_failure",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "repeated_error_after_replan",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_stops_repeated_tool_call_failure_after_replan",
+      "failure_category": "tool_call_failure",
+      "expected_turn_status": "blocked",
+      "expected_replan_trigger": "repeated_tool_failure",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "verification_before_target_change",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_replans_when_verification_fails_before_target_mutation",
+      "failure_category": "verification_failure",
+      "expected_turn_status": "completed",
+      "expected_replan_trigger": "verification_before_change",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "no_progress_after_replan",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_blocked_message_details_after_replan_no_progress",
+      "failure_category": "no_progress",
+      "expected_turn_status": "blocked",
+      "expected_replan_trigger": "no_progress",
+      "max_tool_calls": 4
+    }
+  ]
+}

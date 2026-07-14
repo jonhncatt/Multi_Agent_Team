@@ -31,6 +31,52 @@ python scripts/run_evals.py --cases evals/agent_quality_cases.json --validate-on
 
 An unavailable compiler is reported as `blocked`, not as an Agent failure, when no independent hard failure occurred. The report retains the all-attempt success rate and also emits an evaluable success rate that excludes environment-blocked attempts. Path-isolation checks use canonical execution evidence rather than display-redacted tool previews.
 
+### Tool-failure recovery
+
+The first company baseline exposed the concrete failure pattern for this change: one multi-file analysis attempt made 27 tool calls, encountered 4 tool errors, produced no target-file change, and correctly remained blocked instead of claiming completion. The existing exact-action and no-progress guards protected completion honesty, but they did not group the same error class when arguments changed.
+
+Tool failures are classified independently of the tool arguments. This prevents an Agent from evading the repeat guard by changing only a path or command while producing the same failure class. The structured feedback sent back to the model contains only the tool name, category, `error_kind`, retryability, required action, optional return code, and occurrence count.
+
+The categories are:
+
+- `tool_call_failure`: invalid or boundary-rejected tool usage; change arguments or tools.
+- `command_failure`: a command failed; inspect the exit status and change strategy.
+- `verification_failure`: compile or test verification failed; change the target or verification strategy.
+- `tool_execution_failure`: a tool implementation failed; retry once, then change strategy.
+- `environment_blocked`: a required provider, credential, compiler, shell, network, or tool capability is unavailable.
+
+Two consecutive failures with the same tool/category/`error_kind` trigger one explicit replan. The replan must choose different arguments, a different tool, or a different strategy. The same class failing again after that replan blocks the turn instead of consuming the remaining tool budget. A write-authorized task that runs a failing verification command before any successful mutation is replanned with an instruction to generate or modify the target first. These safeguards do not increase the maximum tool-call or round budgets, and a blocked or failed task remains incomplete.
+
+Deterministic recovery Evals use fake tools and make zero real model calls:
+
+```bash
+python scripts/run_recovery_evals.py --validate-only
+python scripts/run_recovery_evals.py
+```
+
+They cover a recoverable changed-strategy path, an unavailable environment, repeated failure after replanning, verification before mutation, and no progress after replanning. The existing C-style `.cpp`, multi-file analysis, and Markdown live cases remain unchanged.
+
+### Safe Eval failure reports
+
+Each live attempt now contains a `failure_observability` section that identifies the failing tool step, failure category, `error_kind`, occurrence and repeat count, replan trigger, and whether recovery succeeded. Aggregate output includes total and average tool calls, failed tool calls, repeated failures, replan count, and recovery success rate.
+
+Reports deliberately omit tool argument values, tool output, final answer text, verifier output, Runtime error details, file contents, absolute company paths, URLs, and credentials. Existing report fields remain present where compatibility requires them, but sensitive values are empty or replaced by content-free status envelopes.
+
+After this recovery change, the necessary company live regression is the previously unstable multi-file analysis case:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_evals.py `
+  --cases evals\agent_quality_cases.json `
+  --live `
+  --name multi_file_protocol_analysis `
+  --repeat 5 `
+  --provider openai_compatible `
+  --model gpt-5.4 `
+  --output artifacts\evals\company-gpt54-recovery.json
+```
+
+Compare `success_rate_percent`, `failed_tool_calls`, `average_tool_calls_per_attempt`, `recovery_success_rate_percent`, and `completion_state_accuracy_percent` with the earlier baseline. Run this from Developer PowerShell for VS 2022 only when the selected case needs the Visual Studio compiler environment; this multi-file case uses its portable verifier.
+
 ## Frontend run visibility
 
 Plan state and execution activity are separate UI layers. A plan never replaces current tool/model activity. During a run the UI shows the current step, tool, wait state, action, command, elapsed time, last semantic progress, and connection state.
