@@ -207,15 +207,6 @@ class WorkbenchStore:
     ) -> dict[str, Any]:
         return self._skill_registry.load_resource(reference, resource, agent_id=agent_id)
 
-    def resolve_skill_script(
-        self,
-        reference: str,
-        script: str,
-        *,
-        agent_id: str = "vintage_programmer",
-    ) -> dict[str, Any]:
-        return self._skill_registry.resolve_python_script(reference, script, agent_id=agent_id)
-
     def _normalize_spec_locale(self, locale: str | None) -> str:
         fallback_locale = str(getattr(self._config, "default_locale", "ja-JP") or "ja-JP")
         return normalize_locale(locale, fallback_locale)

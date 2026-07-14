@@ -41,19 +41,17 @@ Only `name`, `description`, and optional `enabled` are valid frontmatter fields.
 ```text
 scan builtin/team roots
   -> parse and cache frontmatter metadata
-  -> inject [available_skills] without physical paths
-  -> explicit $skill may preload full content
-  -> load_skill({key}) reads selected full content
-  -> load_skill({key, resource}) reads a listed relative reference/script as UTF-8 text
-  -> run_skill_script({key, script, args}) executes a loaded Python script from the active project
+  -> inject enabled metadata plus each SKILL.md path
+  -> read_file(path) reads selected instructions and referenced resources
+  -> exec_command(...) runs bundled Python/Shell/Node/PowerShell scripts from the active project
   -> save_skill(...) validates and writes only Team
 ```
 
 Full bodies are never included merely because a Skill exists. This keeps model context stable as the shared catalog grows.
 
-The initial `load_skill({key})` result lists up to 200 relative resource names under the selected Skill. A second call can read one resource without exposing a physical directory or granting general filesystem access to the VP installation. Traversal, absolute paths, binary content, and resources over 2 MB are rejected.
+There is no per-run loaded/unlocked state. Enabled/disabled is a catalog decision: enabled Skills are shown and their directories are added to the turn's ordinary read/command roots; disabled Skills are omitted. The model reads the complete selected `SKILL.md` before applying it and resolves relative resource links from that file's directory.
 
-Python resources are executed through `run_skill_script`, never by exposing the Registry directory to general shell execution. The model supplies a canonical Skill key, a relative `.py` path, and literal arguments. The Skill must already be enabled and loaded for the current run. Runtime resolves the private install path, rejects traversal and compound shell syntax, and runs the script with the active business project as `cwd`, so project-relative inputs and outputs behave normally. Public tool results and resumable command state keep only logical Skill identifiers and redact the physical Registry path.
+Bundled scripts use the same `exec_command` path as project commands. Runtime validates interpreter commands and script paths against the enabled Skill roots, while the process runs with the active business project as `cwd`, so project-relative inputs and outputs behave normally. There is no path rewrite, private resolver, automatic command conversion, or special Skill command session.
 
 ## Write Boundary
 
@@ -61,7 +59,7 @@ Python resources are executed through `run_skill_script`, never by exposing the 
 - Team Skill creation/update goes through `save_skill`, the Team management API, or normal reviewed Git maintenance. Team is editable; only Built-in is read-only.
 - The model supplies a logical name and content, never a destination path.
 - Registry root is derived from the Vintage Programmer installation, not `VP_WORKSPACE_ROOT`, current project, or current working directory.
-- Ordinary file/shell tools reject Registry paths and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations.
+- Ordinary file/shell writes reject Registry paths and project-level `.agents/skills`, `.codex/skills`, and legacy `workspace/skills` destinations. Direct execution of scripts in enabled Skill directories is allowed through the normal command boundary.
 - Team and Built-in cannot silently share a name.
 
 ## Runtime State

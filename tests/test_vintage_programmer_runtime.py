@@ -10,6 +10,7 @@ import pytest
 from app.config import load_config
 from app.i18n import translate
 from app.models import ChatSettings, ToolEvent
+from app.runtime_boundary import RuntimeBoundary
 from app.answer_stream_state import new_answer_stream_state
 from app import vintage_programmer_runtime as runtime_module
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
@@ -184,16 +185,6 @@ class _FakeTools:
             {"name": "update_plan", "description": "update plan", "parameters": {}},
             {"name": "request_user_input", "description": "request user input", "parameters": {}},
             {
-                "name": "load_skill",
-                "description": "load selected skill instructions",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"key": {"type": "string"}, "resource": {"type": "string"}},
-                    "required": ["key"],
-                    "additionalProperties": False,
-                },
-            },
-            {
                 "name": "save_skill",
                 "description": "save workspace skill",
                 "parameters": {
@@ -213,7 +204,6 @@ class _FakeTools:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.runtime_context: dict[str, Any] | None = None
         self.last_runtime_context: dict[str, Any] | None = None
-        self.skill_loader: Any | None = None
         self.skill_writer: Any | None = None
 
     def set_runtime_context(
@@ -225,10 +215,8 @@ class _FakeTools:
         project_root: str | None = None,
         cwd: str | None = None,
         model: str | None = None,
-        skill_loader: Any | None = None,
         skill_writer: Any | None = None,
     ) -> None:
-        self.skill_loader = skill_loader
         self.skill_writer = skill_writer
         payload = {
             "execution_mode": execution_mode,
@@ -246,13 +234,6 @@ class _FakeTools:
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
-        if name == "load_skill" and callable(self.skill_loader):
-            resource = str(arguments.get("resource") or "")
-            return (
-                self.skill_loader(str(arguments.get("key") or ""), resource=resource)
-                if resource
-                else self.skill_loader(str(arguments.get("key") or ""))
-            )
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
         return {
@@ -755,7 +736,7 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
 
     descriptor = runtime.descriptor()
     spec = runtime._load_spec()
-    prompt = runtime._render_system_prompt(ChatSettings(model="gpt-test"), spec=spec, loaded_skills=[])
+    prompt = runtime._render_system_prompt(ChatSettings(model="gpt-test"), spec=spec, available_skills=[])
 
     assert descriptor["agent_id"] == "vintage_programmer"
     assert descriptor["tool_scope"] == "read_only"
@@ -1056,7 +1037,6 @@ def test_rendered_prompt_has_single_policy_owners() -> None:
     prompt = runtime._render_system_prompt(
         ChatSettings(model="gpt-5.4", locale="zh-CN"),
         spec=runtime._load_spec(locale="zh-CN"),
-        loaded_skills=[],
         available_skills=[],
         runtime_context_text='[current_runtime_context]\n{"cwd":"/workspace"}',
     )
@@ -4006,7 +3986,8 @@ def test_runtime_loads_enabled_team_skills_for_inline_code(tmp_path: Path) -> No
     assert result["text"] == "inline analysis complete"
     assert result["inspector"]["run_state"]["inline_document"] is True
     assert result["tool_events"] == []
-    assert result["inspector"]["loaded_skills"][0]["key"] == "team:inline_helper"
+    assert result["inspector"]["available_skills"][0]["key"] == "team:inline_helper"
+    assert result["inspector"]["loaded_skills"] == []
 
 
 def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: Path) -> None:
@@ -4045,10 +4026,14 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
     assert "Use for repository triage." in system_prompt
     assert "Full secret instruction body." not in system_prompt
     available_section = system_prompt.split("[available_skills]", 1)[1].split("\n\n", 1)[0]
-    assert '"path"' not in available_section
+    assert '"path"' in available_section
+    assert str((skill_dir / "SKILL.md").resolve()) in available_section
+    assert "read_file" in available_section
+    assert "exec_command" in available_section
+    assert "load_skill" not in available_section
 
 
-def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
+def test_runtime_reads_skill_with_standard_read_file_tool(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -4066,8 +4051,17 @@ def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
     )
     backend = _FakeBackend(
         [
-            _FakeMessage(content="", tool_calls=[{"id": "tc-load-skill", "name": "load_skill", "args": {"key": "team:repo_triage"}}]),
-            _FakeMessage(content="skill loaded"),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-read-skill",
+                        "name": "read_file",
+                        "args": {"path": str((skill_dir / "SKILL.md").resolve())},
+                    }
+                ],
+            ),
+            _FakeMessage(content="skill read"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -4083,13 +4077,15 @@ def test_runtime_load_skill_tool_loads_full_skill_body(tmp_path: Path) -> None:
         context={"session_id": "s-load-skill", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
     )
 
-    assert backend.tools.calls == [("load_skill", {"key": "team:repo_triage"})]
-    assert result["tool_events"][0]["name"] == "load_skill"
-    assert "Full skill instruction body." in str(result["tool_events"][0]["result_preview"])
-    assert result["inspector"]["loaded_skills"][0]["key"] == "team:repo_triage"
+    assert backend.tools.calls == [
+        ("read_file", {"path": str((skill_dir / "SKILL.md").resolve())})
+    ]
+    assert result["tool_events"][0]["name"] == "read_file"
+    assert result["inspector"]["available_skills"][0]["key"] == "team:repo_triage"
+    assert result["inspector"]["loaded_skills"] == []
 
 
-def test_runtime_load_skill_tool_reads_selected_relative_resource(tmp_path: Path) -> None:
+def test_runtime_reads_skill_resource_with_standard_read_file_tool(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -4103,14 +4099,23 @@ def test_runtime_load_skill_tool_reads_selected_relative_resource(tmp_path: Path
     (skill_dir / "references" / "rules.md").write_text("Use explicit error codes.\n", encoding="utf-8")
     backend = _FakeBackend(
         [
-            _FakeMessage(content="", tool_calls=[{"id": "tc-load-main", "name": "load_skill", "args": {"key": "team:protocol_rules"}}]),
             _FakeMessage(
                 content="",
                 tool_calls=[
                     {
-                        "id": "tc-load-resource",
-                        "name": "load_skill",
-                        "args": {"key": "team:protocol_rules", "resource": "references/rules.md"},
+                        "id": "tc-read-main",
+                        "name": "read_file",
+                        "args": {"path": str((skill_dir / "SKILL.md").resolve())},
+                    }
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-read-resource",
+                        "name": "read_file",
+                        "args": {"path": str((skill_dir / "references" / "rules.md").resolve())},
                     }
                 ],
             ),
@@ -4125,14 +4130,15 @@ def test_runtime_load_skill_tool_reads_selected_relative_resource(tmp_path: Path
         context={"session_id": "s-skill-resource", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
     )
 
-    first_result = result["tool_events"][0]["result_preview"]
-    second_result = result["tool_events"][1]["result_preview"]
-    assert "references/rules.md" in str(first_result)
-    assert "Use explicit error codes." in str(second_result)
-    assert result["inspector"]["loaded_skills"][0]["key"] == "team:protocol_rules"
+    assert backend.tools.calls == [
+        ("read_file", {"path": str((skill_dir / "SKILL.md").resolve())}),
+        ("read_file", {"path": str((skill_dir / "references" / "rules.md").resolve())}),
+    ]
+    assert [event["name"] for event in result["tool_events"]] == ["read_file", "read_file"]
+    assert result["inspector"]["loaded_skills"] == []
 
 
-def test_runtime_skill_script_resolver_requires_loaded_skill(tmp_path: Path) -> None:
+def test_runtime_boundary_authorizes_enabled_skill_without_making_it_writable(tmp_path: Path) -> None:
     config = _isolated_config(tmp_path)
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -4151,15 +4157,37 @@ def test_runtime_skill_script_resolver_requires_loaded_skill(tmp_path: Path) -> 
         agent_dir=agent_dir,
         backend=_FakeBackend([_FakeMessage(content="ok")]),
     )
-    loaded_skills: list[dict[str, Any]] = []
-    resolver = runtime._make_skill_script_resolver(agent_id="vintage_programmer", loaded_skills=loaded_skills)
+    boundary = RuntimeBoundary(
+        allowed_roots=[str(tmp_path / "business-project")],
+        writable_roots=[str(tmp_path / "business-project")],
+        command_allowed_roots=[str(tmp_path / "business-project")],
+        cwd=str(tmp_path / "business-project"),
+        project_root=str(tmp_path / "business-project"),
+    )
+    available = runtime._enabled_skills("vintage_programmer")
 
-    with pytest.raises(PermissionError, match="load_skill"):
-        resolver("team:scripted", "scripts/check.py")
+    runtime._extend_runtime_boundary_for_skills(boundary, available)
 
-    loaded_skills.append(runtime._workbench.load_skill("team:scripted", agent_id="vintage_programmer"))
-    resolved = resolver("team:scripted", "scripts/check.py")
-    assert Path(resolved["path"]) == script.resolve()
+    assert str(skill_dir.resolve()) in boundary.allowed_roots
+    assert str(skill_dir.resolve()) in boundary.command_allowed_roots
+    assert str(skill_dir.resolve()) not in boundary.writable_roots
+    assert boundary.enabled_skill_roots == [str(skill_dir.resolve())]
+
+    runtime._workbench.set_skill_enabled("scripted", False, scope="team")
+    disabled_boundary = RuntimeBoundary(
+        allowed_roots=[str(tmp_path / "business-project")],
+        writable_roots=[str(tmp_path / "business-project")],
+        command_allowed_roots=[str(tmp_path / "business-project")],
+        cwd=str(tmp_path / "business-project"),
+        project_root=str(tmp_path / "business-project"),
+    )
+    runtime._extend_runtime_boundary_for_skills(
+        disabled_boundary,
+        runtime._enabled_skills("vintage_programmer"),
+    )
+    assert str(skill_dir.resolve()) not in disabled_boundary.allowed_roots
+    assert str(skill_dir.resolve()) not in disabled_boundary.command_allowed_roots
+    assert disabled_boundary.enabled_skill_roots == []
 
 
 def test_runtime_save_skill_tool_creates_global_team_skill(tmp_path: Path) -> None:

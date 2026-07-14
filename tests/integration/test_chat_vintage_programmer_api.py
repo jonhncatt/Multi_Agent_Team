@@ -109,7 +109,8 @@ class _FakeVintageRuntime:
                 "tools": [dict(item) for item in tools],
             },
             "tools": [dict(item) for item in tools],
-            "loaded_skills": [{"key": "workspace:example-refactor-helper", "scope": "workspace", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example"}],
+            "available_skills": [{"key": "team:example-refactor-helper", "scope": "team", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example/SKILL.md"}],
+            "loaded_skills": [],
         }
 
     def invalidate_descriptor_cache(self) -> None:
@@ -308,7 +309,8 @@ class _FakeVintageRuntime:
                     "attachment_count": 0,
                 },
                 "token_usage": {"total_tokens": 18},
-                "loaded_skills": [{"key": "workspace:example-refactor-helper", "scope": "workspace", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example"}],
+                "available_skills": [{"key": "team:example-refactor-helper", "scope": "team", "name": "example-refactor-helper", "description": "Starter", "path": "/tmp/example/SKILL.md"}],
+                "loaded_skills": [],
             },
         }
 

@@ -14,8 +14,6 @@ from app.workbench import build_tool_descriptors
 CANONICAL_TOOL_NAMES = (
     "update_plan",
     "request_user_input",
-    "load_skill",
-    "run_skill_script",
     "save_skill",
     "exec_command",
     "write_stdin",
@@ -48,6 +46,8 @@ CANONICAL_TOOL_NAMES = (
 )
 
 LEGACY_TOOL_NAMES = (
+    "load_skill",
+    "run_skill_script",
     "read_text_file",
     "search_text_in_file",
     "multi_query_search",
@@ -178,6 +178,8 @@ def test_legacy_tools_are_not_executable(tmp_path: Path) -> None:
     sample_path = tmp_path / "README.md"
     sample_path.write_text("demo\n", encoding="utf-8")
     arguments_by_tool = {
+        "load_skill": {"key": "team:demo"},
+        "run_skill_script": {"key": "team:demo", "script": "scripts/demo.py"},
         "read_text_file": {"path": str(sample_path)},
         "search_text_in_file": {"path": str(sample_path), "query": "demo"},
         "multi_query_search": {"path": str(sample_path), "queries": ["demo"]},

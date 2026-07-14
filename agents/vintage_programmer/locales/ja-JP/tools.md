@@ -40,9 +40,9 @@
 
 ## Skills
 
-- `load_skill` は軽量 skill リストで関連 skill が見つかった後にだけ使う。
+- 軽量 Skill リストには、有効な各 Skill の `SKILL.md` パスが含まれる。関連する Skill を選んだら、通常の `read_file` で完全な説明を読み、相対リソースは `SKILL.md` のディレクトリを基準に解決する。
 - `save_skill` は Git リポジトリで共有する Team Skill の作成または更新にだけ使う。保存先はグローバル Skill Registry が現在の業務プロジェクトとは独立して解決する。再利用可能でトリガーが明確かつ書き込みが許可された場合だけ使い、通常のファイル・シェルツールで Skill を作成したり、読み取り専用の Built-in Skill を変更したりしない。
-- 読み込み済み Skill に同梱された Python スクリプトを実行するときは `run_skill_script` を使い、正規 Skill key、Skill 内の相対パス、リテラル引数だけを渡す。スクリプトは現在の業務プロジェクトを作業ディレクトリとして実行する。Skill の物理インストール先を探索、コピー、指定しない。Team Skill は `save_skill`、管理画面、Git で編集でき、読み取り専用なのは Built-in Skill だけである。
+- Skill 同梱スクリプトは通常の `exec_command` で直接実行し、作業ディレクトリは現在の業務プロジェクトのままにする。有効状態は発見とその turn の Skill パス権限だけを制御し、別の load/unlock 状態は持たない。Team Skill は `save_skill`、管理画面、Git で編集でき、読み取り専用なのは Built-in Skill だけである。
 
 ## 状態とユーザー入力ツール
 

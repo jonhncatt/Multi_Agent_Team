@@ -19,7 +19,7 @@ Current stable release: `3.1.5W`
 
 ## Stable Runtime
 
-The current branch uses a global Skill Registry with read-only Built-in Skills and Git-managed Team Skills. The runtime injects only lightweight `[available_skills]` metadata by default; full `SKILL.md` content is loaded on demand through explicit `$skill` references or `load_skill`.
+The current branch uses a global Skill Registry with read-only Built-in Skills and Git-managed Team Skills. The runtime injects lightweight `[available_skills]` metadata plus each enabled `SKILL.md` path; the model reads full instructions with ordinary `read_file` and runs bundled scripts with ordinary `exec_command`.
 
 `save_skill` writes reusable workflows only to `skills/team/<name>/SKILL.md` in the Vintage Programmer repository, independently of the active business project. The built-in `create-team-skill` guides Team Skill authoring; Built-in Skills remain read-only.
 

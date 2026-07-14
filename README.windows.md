@@ -4,7 +4,7 @@
 
 ## Stable Runtime
 
-当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Vintage Programmer 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。完整 `SKILL.md` 仍通过显式 `$skill` 或 `load_skill` 按需读取。
+当前分支使用全局 Built-in/Team Skill Registry。`save_skill` 只把可复用流程写入 Vintage Programmer 仓库的 `skills\team\<name>\SKILL.md`，不会写入当前业务项目；`skills\builtin` 保持只读。模型从 `[available_skills]` 获得启用 Skill 的路径，用普通 `read_file` 读取完整说明，并用普通 `exec_command` 执行附属脚本。
 
 项目级 Python 模块命令建议优先使用 `.venv\Scripts\python.exe -m ...`；如果项目没有 `.venv`，再使用 `python -m ...`。如果当前环境没有 `python`，再使用 `py -m ...`。
 

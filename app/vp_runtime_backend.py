@@ -198,19 +198,6 @@ class RequestUserInputArgs(BaseModel):
     questions: list[dict[str, Any]]
 
 
-class LoadSkillArgs(BaseModel):
-    key: str
-    resource: str = ""
-
-
-class RunSkillScriptArgs(BaseModel):
-    key: str
-    script: str
-    args: list[str] = Field(default_factory=list, max_length=64)
-    yield_time_ms: int = Field(default=1000, ge=0, le=10000)
-    max_output_chars: int = Field(default=12000, ge=256, le=60000)
-
-
 class SaveSkillArgs(BaseModel):
     name: str
     description: str
@@ -676,18 +663,6 @@ class VPRuntimeBackend:
                 func=self._request_user_input_tool,
             ),
             self._StructuredTool.from_function(
-                name="load_skill",
-                description="Load the full SKILL.md content for one enabled skill selected from the available skills list.",
-                args_schema=LoadSkillArgs,
-                func=self._load_skill_tool,
-            ),
-            self._StructuredTool.from_function(
-                name="run_skill_script",
-                description="Execute a Python resource from an enabled, already-loaded Skill using its logical key and relative script path.",
-                args_schema=RunSkillScriptArgs,
-                func=self._run_skill_script_tool,
-            ),
-            self._StructuredTool.from_function(
                 name="save_skill",
                 description="Create or update a repository-shared Team Skill through the global VP Skill Registry.",
                 args_schema=SaveSkillArgs,
@@ -909,28 +884,6 @@ class VPRuntimeBackend:
 
     def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
         return json.dumps(self.tools.sessions_history(session_id=session_id, max_turns=max_turns), ensure_ascii=False)
-
-    def _load_skill_tool(self, key: str, resource: str = "") -> str:
-        return json.dumps(self.tools.load_skill(key=key, resource=resource), ensure_ascii=False)
-
-    def _run_skill_script_tool(
-        self,
-        key: str,
-        script: str,
-        args: list[str] | None = None,
-        yield_time_ms: int = 1000,
-        max_output_chars: int = 12000,
-    ) -> str:
-        return json.dumps(
-            self.tools.run_skill_script(
-                key=key,
-                script=script,
-                args=args or [],
-                yield_time_ms=yield_time_ms,
-                max_output_chars=max_output_chars,
-            ),
-            ensure_ascii=False,
-        )
 
     def _save_skill_tool(
         self,

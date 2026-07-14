@@ -2797,7 +2797,11 @@ def _process_chat_request(
         assistant_turn_id = str(assistant_turn.get("id") or "")
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
-        inspector_loaded_skills = list(inspector.get("loaded_skills") or [])
+        inspector_available_skills = list(
+            inspector.get("available_skills")
+            or inspector.get("loaded_skills")
+            or []
+        )
         current_task_focus = dict(
             inspector_run_state.get("current_task_focus")
             or inspector_run_state.get("task_checkpoint")
@@ -2984,12 +2988,12 @@ def _process_chat_request(
             "evidence_status": str(inspector_evidence.get("status") or "not_needed"),
             "enabled_skill_keys": [
                 str(item.get("key") or "")
-                for item in inspector_loaded_skills
+                for item in inspector_available_skills
                 if isinstance(item, dict) and str(item.get("key") or "").strip()
             ],
             "enabled_skill_ids": [
                 str(item.get("name") or item.get("id") or "")
-                for item in inspector_loaded_skills
+                for item in inspector_available_skills
                 if isinstance(item, dict) and str(item.get("name") or item.get("id") or "").strip()
             ],
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

@@ -19,7 +19,7 @@
 
 ## Stable Runtime
 
-当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
+当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 注入轻量 `[available_skills]` 和每个启用 Skill 的 `SKILL.md` 路径；模型用普通 `read_file` 读取完整说明，用普通 `exec_command` 执行附属脚本。
 
 `save_skill` 只把可复用流程写入 VP 仓库的 `skills/team/<name>/SKILL.md`，与当前业务项目无关；内置 `create-team-skill` 用于指导 Team Skill 创作，Built-in Skills 保持只读。
 

@@ -19,7 +19,7 @@
 
 ## Stable Runtime
 
-現在の branch は、読み取り専用の Built-in Skills と Git で共同管理する Team Skills を持つグローバル Skill Registry を使用します。runtime は既定で軽量な `[available_skills]` metadata だけを渡し、完全な `SKILL.md` は明示的な `$skill` または `load_skill` で必要なときだけ読み込みます。
+現在の branch は、読み取り専用の Built-in Skills と Git で共同管理する Team Skills を持つグローバル Skill Registry を使用します。runtime は軽量な `[available_skills]` metadata と有効な各 `SKILL.md` のパスを渡し、モデルは通常の `read_file` で完全な説明を読み、通常の `exec_command` で同梱スクリプトを実行します。
 
 `save_skill` は再利用可能な手順を Vintage Programmer repository の `skills/team/<name>/SKILL.md` にだけ保存し、現在選択中の業務 project には書き込みません。Built-in の `create-team-skill` が Team Skill 作成を案内し、Built-in Skills 自体は読み取り専用です。
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import shlex
 
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
@@ -54,10 +55,9 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "mail_extract_attachments",
         "update_plan",
         "request_user_input",
-        "load_skill",
-        "run_skill_script",
         "save_skill",
     }.issubset(tool_names)
+    assert {"load_skill", "run_skill_script"}.isdisjoint(tool_names)
     assert {
         "read_text_file",
         "search_text_in_file",
@@ -75,7 +75,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
     }.isdisjoint(tool_names)
 
 
-def test_run_skill_script_executes_registry_resolved_python_without_exposing_install_path(tmp_path: Path) -> None:
+def test_exec_command_runs_enabled_skill_python_directly_from_business_project(tmp_path: Path) -> None:
     project_root = tmp_path / "business-project"
     project_root.mkdir()
     skill_root = tmp_path / "vp-install" / "skills" / "team" / "scripted"
@@ -97,7 +97,8 @@ def test_run_skill_script_executes_registry_resolved_python_without_exposing_ins
         "network_allowed": False,
         "allowed_roots": [str(project_root)],
         "writable_roots": [str(project_root)],
-        "command_allowed_roots": [str(project_root)],
+        "command_allowed_roots": [str(project_root), str(skill_root)],
+        "enabled_skill_roots": [str(skill_root)],
         "cwd": str(project_root),
         "project_root": str(project_root),
     }
@@ -107,28 +108,98 @@ def test_run_skill_script_executes_registry_resolved_python_without_exposing_ins
         cwd=str(project_root),
         runtime_boundary=boundary,
         reserved_skill_roots=[str(skill_root.parent.parent), str(skill_root.parent)],
-        skill_script_resolver=lambda key, resource: {
-            "key": "team:scripted",
-            "resource": "scripts/check.py",
-            "path": str(script),
-            "skill_root": str(skill_root),
-        },
     )
 
-    result = executor.run_skill_script(
-        key="team:scripted",
-        script="scripts/check.py",
-        args=["hello; touch injected.txt"],
+    result = executor.exec_command(
+        cmd=f"python {shlex.quote(str(script))} {shlex.quote('hello world')}",
+        cwd=str(project_root),
         yield_time_ms=3000,
     )
 
     assert result["ok"] is True
     assert result["returncode"] == 0
-    assert "business-project:hello; touch injected.txt" in result["output"]
-    assert not (project_root / "injected.txt").exists()
-    assert result["command"] == "run_skill_script team:scripted scripts/check.py"
-    assert str(tmp_path / "vp-install") not in json.dumps(result, ensure_ascii=False)
-    assert "skill://team:scripted/scripts/check.py" in result["output"]
+    assert "business-project:hello world" in result["output"]
+    assert str(script) in result["output"]
+    assert Path(result["cwd"]) == project_root.resolve()
+
+
+def test_exec_command_rejects_disabled_skill_script_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    project_root.mkdir()
+    skill_root = tmp_path / "skills" / "team" / "disabled"
+    script = skill_root / "scripts" / "check.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('should not run')\n", encoding="utf-8")
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(
+        execution_mode="host",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        runtime_boundary={
+            "permission_profile": "auto",
+            "workspace_read_allowed": True,
+            "workspace_write_allowed": True,
+            "shell_allowed": True,
+            "network_allowed": False,
+            "allowed_roots": [str(project_root)],
+            "writable_roots": [str(project_root)],
+            "command_allowed_roots": [str(project_root)],
+            "enabled_skill_roots": [],
+            "cwd": str(project_root),
+            "project_root": str(project_root),
+        },
+        reserved_skill_roots=[str(skill_root.parent.parent)],
+    )
+
+    result = executor.exec_command(
+        cmd=f"python {shlex.quote(str(script))}",
+        cwd=str(project_root),
+        yield_time_ms=3000,
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "reserved_skill_path"
+
+
+def test_read_file_allows_enabled_skill_and_rejects_disabled_skill(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    project_root.mkdir()
+    enabled_root = tmp_path / "skills" / "team" / "enabled"
+    disabled_root = tmp_path / "skills" / "team" / "disabled"
+    enabled_file = enabled_root / "SKILL.md"
+    disabled_file = disabled_root / "SKILL.md"
+    enabled_root.mkdir(parents=True)
+    disabled_root.mkdir(parents=True)
+    enabled_file.write_text("# Enabled\n", encoding="utf-8")
+    disabled_file.write_text("# Disabled\n", encoding="utf-8")
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(
+        execution_mode="host",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        runtime_boundary={
+            "permission_profile": "auto",
+            "workspace_read_allowed": True,
+            "workspace_write_allowed": True,
+            "shell_allowed": True,
+            "network_allowed": False,
+            "allowed_roots": [str(project_root), str(enabled_root)],
+            "writable_roots": [str(project_root)],
+            "command_allowed_roots": [str(project_root), str(enabled_root)],
+            "enabled_skill_roots": [str(enabled_root)],
+            "cwd": str(project_root),
+            "project_root": str(project_root),
+        },
+        reserved_skill_roots=[str(tmp_path / "skills")],
+    )
+
+    enabled_result = executor.read_file(str(enabled_file))
+    disabled_result = executor.read_file(str(disabled_file))
+
+    assert enabled_result["ok"] is True
+    assert "# Enabled" in enabled_result["content"]
+    assert disabled_result["ok"] is False
+    assert "out of allowed roots" in str(disabled_result["error"]).lower()
 
 
 def test_image_read_uses_registered_handler_and_model_hint(tmp_path: Path) -> None:

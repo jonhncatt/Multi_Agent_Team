@@ -19,7 +19,7 @@
 
 ## Stable Runtime
 
-3.1.5W 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 默认只注入轻量 `[available_skills]`，完整 `SKILL.md` 通过显式 `$skill` 或 `load_skill` 按需读取。
+3.1.5W 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
 `save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
@@ -307,11 +307,11 @@ enabled: true
 
 必填字段是 `name` 和 `description`；`enabled` 可省略，默认启用。不再支持旧字段 `id`、`title`、`summary`、`bind_to`。
 
-runtime 启动和每次 run 默认只读取轻量 metadata，并把 `[available_skills]` 放入模型上下文。完整 `SKILL.md` 只会在用户显式写 `$skill-name` / `$scope:skill-name`，或模型调用只读工具 `load_skill({ key })` 后读取；选中 Skill 的 `references/`、`scripts/` 等文本资源可再通过 `load_skill({ key, resource })` 按相对路径读取，不暴露物理目录。skill key 形如 `builtin:create-team-skill` 或 `team:protocol-analysis`。如果两个目录存在同名 Skill，未限定作用域的引用会被拒绝，必须使用完整 key。
+runtime 启动和每次 run 只读取轻量 metadata，并把启用 Skill 的规范 key、名称、描述和 `SKILL.md` 绝对路径放入 `[available_skills]`。模型判断某个 Skill 与任务相关后，使用普通 `read_file` 读取完整 `SKILL.md`，再按其中的相对路径读取 `references/`、`scripts/` 等资源；没有额外的加载或解锁状态。skill key 形如 `builtin:create-team-skill` 或 `team:protocol-analysis`。如果两个目录存在同名 Skill，管理 API 中未限定作用域的引用会被拒绝，必须使用完整 key。
 
 Agent 可以在用户目标允许时调用 `save_skill` 创建或更新 Team Skill；团队也可以通过管理界面或正常的 Git 评审流程随时改进 Team Skill。模型只提交逻辑名称和内容，由 Skill Registry 固定写入 VP 仓库的 `skills/team`，不接收物理路径。只有 Built-in Skill 只读。旧的 `system:` / `workspace:` key 和 API scope 暂时分别作为 `builtin:` / `team:` 的兼容别名。
 
-已启用并通过 `load_skill` 加载的 Skill 如果包含 Python 脚本，Agent 使用 `run_skill_script` 按“规范 Skill key + Skill 内相对路径 + 参数”执行。Runtime 在内部解析真实安装路径，拒绝目录穿越和复合 shell 注入，并以当前业务项目作为工作目录；模型侧不会看到或传递 `skills/team` 的物理路径。
+已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 直接执行 `SKILL.md` 所在目录下的 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
 
 团队提交前运行：
 

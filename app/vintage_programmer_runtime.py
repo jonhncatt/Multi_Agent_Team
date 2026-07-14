@@ -108,7 +108,6 @@ _READ_ONLY_TOOL_NAMES = {
     "image_inspect",
     "update_plan",
     "request_user_input",
-    "load_skill",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -243,7 +242,6 @@ _WRITE_TOOL_NAMES = {
     "archive_extract",
     "mail_extract_attachments",
     "save_skill",
-    "run_skill_script",
 }
 
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
@@ -474,20 +472,20 @@ class VintageProgrammerRuntime:
         return self._workbench.enabled_skills_for_agent(agent_id)
 
     @staticmethod
-    def _skill_descriptor_for_model(item: dict[str, Any], *, include_content: bool = False) -> dict[str, Any]:
+    def _skill_descriptor_for_model(item: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(item.get("path") or "").strip()
+        try:
+            skill_path = str(Path(raw_path).expanduser().resolve()) if raw_path else ""
+        except Exception:
+            skill_path = raw_path
         row = {
             "key": str(item.get("key") or ""),
             "scope": str(item.get("scope") or ""),
             "name": str(item.get("name") or item.get("id") or ""),
             "description": str(item.get("description") or item.get("summary") or ""),
+            "path": skill_path,
         }
-        if include_content:
-            row["content"] = str(item.get("content") or "")
         return row
-
-    @staticmethod
-    def _skill_key_set(items: list[dict[str, Any]]) -> set[str]:
-        return {str(item.get("key") or "").strip() for item in items if str(item.get("key") or "").strip()}
 
     def _render_available_skills_prompt(self, available_skills: list[dict[str, Any]]) -> str:
         valid = [
@@ -499,7 +497,7 @@ class VintageProgrammerRuntime:
             return "[available_skills]\nNo enabled skills are currently available."
         lines = [
             "[available_skills]",
-            "Only lightweight skill metadata is listed here. If a skill is useful, call load_skill with its key before following its full instructions. Explicit user references like $skill may already be preloaded below.",
+            "Enabled Skills are listed as lightweight metadata with their SKILL.md paths. When a Skill is relevant, read its complete SKILL.md with read_file before following it. Resolve referenced files relative to the directory containing SKILL.md, and run bundled scripts directly with exec_command from the current business project. Skills do not require a separate load or unlock step.",
         ]
         char_budget = 8000
         used = sum(len(line) + 1 for line in lines)
@@ -514,58 +512,6 @@ class VintageProgrammerRuntime:
         if omitted:
             lines.append(f"... omitted {omitted} skill(s) because the available skill list exceeded the prompt budget.")
         return "\n".join(lines)
-
-    @staticmethod
-    def _explicit_skill_references(message: str) -> list[str]:
-        refs: list[str] = []
-        pattern = re.compile(r"(?<![\w.-])\$((?:(?:builtin|team|system|workspace):)?[a-z0-9][a-z0-9_-]{0,63})\b")
-        for match in pattern.finditer(str(message or "").lower()):
-            ref = str(match.group(1) or "").strip()
-            if ref and ref not in refs:
-                refs.append(ref)
-        return refs
-
-    def _preload_explicit_skills(self, message: str, *, agent_id: str) -> list[dict[str, Any]]:
-        loaded: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for ref in self._explicit_skill_references(message):
-            try:
-                item = self._workbench.load_skill(ref, agent_id=agent_id)
-            except Exception:
-                continue
-            key = str(item.get("key") or "").strip()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            loaded.append(item)
-        return loaded
-
-    def _make_skill_loader(self, *, agent_id: str, loaded_skills: list[dict[str, Any]]) -> Callable[..., dict[str, Any]]:
-        def _loader(key: str, *, resource: str = "") -> dict[str, Any]:
-            item = self._workbench.load_skill(str(key or ""), agent_id=agent_id)
-            skill_key = str(item.get("key") or "").strip()
-            if skill_key and skill_key not in self._skill_key_set(loaded_skills):
-                loaded_skills.append(item)
-            resource_name = str(resource or "").strip()
-            if resource_name:
-                resource_payload = self._workbench.load_skill_resource(
-                    skill_key or str(key or ""),
-                    resource_name,
-                    agent_id=agent_id,
-                )
-                return {
-                    "ok": True,
-                    **resource_payload,
-                    "summary": f"loaded skill resource: {skill_key}/{resource_payload.get('resource')}",
-                }
-            return {
-                "ok": True,
-                **self._skill_descriptor_for_model(item, include_content=True),
-                "resources": self._workbench.list_skill_resources(skill_key or str(key or ""), agent_id=agent_id),
-                "summary": f"loaded skill: {str(item.get('name') or skill_key)}",
-            }
-
-        return _loader
 
     def _make_skill_writer(self) -> Callable[..., dict[str, Any]]:
         def _writer(
@@ -584,7 +530,7 @@ class VintageProgrammerRuntime:
                 overwrite=overwrite,
             )
             self.invalidate_descriptor_cache()
-            descriptor = self._skill_descriptor_for_model(item, include_content=False)
+            descriptor = self._skill_descriptor_for_model(item)
             return {
                 "ok": True,
                 **descriptor,
@@ -593,26 +539,44 @@ class VintageProgrammerRuntime:
 
         return _writer
 
-    def _make_skill_script_resolver(
-        self,
-        *,
-        agent_id: str,
-        loaded_skills: list[dict[str, Any]],
-    ) -> Callable[[str, str], dict[str, Any]]:
-        def _resolver(key: str, script: str) -> dict[str, Any]:
-            resolved_skill = self._workbench.resolve_skill_reference(str(key or ""), agent_id=agent_id)
-            canonical_key = str(resolved_skill.get("key") or "").strip()
-            if not canonical_key or canonical_key not in self._skill_key_set(loaded_skills):
-                raise PermissionError(
-                    "Skill must be loaded with load_skill before one of its scripts can run."
-                )
-            return self._workbench.resolve_skill_script(
-                canonical_key,
-                str(script or ""),
-                agent_id=agent_id,
-            )
+    @staticmethod
+    def _extend_runtime_boundary_for_skills(
+        boundary: RuntimeBoundary,
+        available_skills: list[dict[str, Any]],
+    ) -> RuntimeBoundary:
+        """Grant ordinary read/command access to enabled Skill directories only."""
 
-        return _resolver
+        def _dedup(values: list[str]) -> list[str]:
+            result: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                try:
+                    normalized = str(Path(value).expanduser().resolve())
+                except Exception:
+                    continue
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                result.append(normalized)
+            return result
+
+        skill_roots: list[str] = []
+        for item in list(available_skills or []):
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                path = Path(raw_path).expanduser().resolve()
+            except Exception:
+                continue
+            if path.name != "SKILL.md" or not path.is_file():
+                continue
+            skill_roots.append(str(path.parent))
+        boundary.allowed_roots = _dedup([*boundary.allowed_roots, *skill_roots])
+        boundary.enabled_skill_roots = _dedup(skill_roots)
+        if boundary.shell_allowed:
+            boundary.command_allowed_roots = _dedup([*boundary.command_allowed_roots, *skill_roots])
+        return boundary
 
     def invalidate_descriptor_cache(self) -> None:
         with self._descriptor_lock:
@@ -639,7 +603,7 @@ class VintageProgrammerRuntime:
         payload["tool_count"] = len(spec.allowed_tools)
         payload["tools"] = allowed_tool_descriptors
         payload["available_skills"] = [self._skill_descriptor_for_model(item) for item in available_skills]
-        payload["loaded_skills"] = [self._skill_descriptor_for_model(item) for item in available_skills]
+        payload["loaded_skills"] = []
         with self._descriptor_lock:
             self._descriptor_cache[cache_key] = copy.deepcopy(payload)
         return copy.deepcopy(payload)
@@ -649,8 +613,7 @@ class VintageProgrammerRuntime:
         settings: ChatSettings,
         *,
         spec: VintageProgrammerSpec,
-        loaded_skills: list[dict[str, Any]],
-        available_skills: list[dict[str, Any]] | None = None,
+        available_skills: list[dict[str, Any]],
         runtime_context_text: str = "",
     ) -> str:
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
@@ -661,12 +624,7 @@ class VintageProgrammerRuntime:
         ]
         if spec.tools_text:
             parts.append(f"[tools.md]\n{spec.tools_text}")
-        parts.append(self._render_available_skills_prompt(list(available_skills if available_skills is not None else loaded_skills)))
-        for skill in loaded_skills:
-            skill_id = str(skill.get("key") or skill.get("name") or skill.get("id") or "").strip()
-            skill_content = str(skill.get("content") or "").strip()
-            if skill_id and skill_content:
-                parts.append(f"[skill:{skill_id}]\n{skill_content}")
+        parts.append(self._render_available_skills_prompt(list(available_skills)))
         parts.append(translate(locale, "runtime.system.language_instruction"))
         parts.append(f"Response style: {response_style_hint(locale, settings.response_style)}")
         parts.append(self._build_runtime_protocol_prompt())
@@ -3695,9 +3653,7 @@ class VintageProgrammerRuntime:
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
-        skill_loader: Callable[..., dict[str, Any]] | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
-        skill_script_resolver: Callable[[str, str], dict[str, Any]] | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3720,12 +3676,8 @@ class VintageProgrammerRuntime:
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
         if self._callable_accepts_kwarg(setter, "run_id"):
             kwargs["run_id"] = run_id
-        if self._callable_accepts_kwarg(setter, "skill_loader"):
-            kwargs["skill_loader"] = skill_loader
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
-        if self._callable_accepts_kwarg(setter, "skill_script_resolver"):
-            kwargs["skill_script_resolver"] = skill_script_resolver
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
             kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
         setter(**kwargs)
@@ -4360,13 +4312,7 @@ class VintageProgrammerRuntime:
             spec = self._load_spec(locale=locale)
         with phase_timer.measure("skills_load_ms"):
             available_skills = self._enabled_skills(spec.agent_id)
-            loaded_skills = self._preload_explicit_skills(prompt_message, agent_id=spec.agent_id)
-        skill_loader = self._make_skill_loader(agent_id=spec.agent_id, loaded_skills=loaded_skills)
         skill_writer = self._make_skill_writer()
-        skill_script_resolver = self._make_skill_script_resolver(
-            agent_id=spec.agent_id,
-            loaded_skills=loaded_skills,
-        )
         requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
@@ -4456,6 +4402,7 @@ class VintageProgrammerRuntime:
                 cwd=effective_cwd or project_root or self._config.workspace_root,
                 attachments=attachment_metas,
             )
+            self._extend_runtime_boundary_for_skills(turn_runtime_boundary, available_skills)
             write_authorization_state = self._write_authorization_state(
                 prompt_message,
                 project_root=project_root,
@@ -4478,7 +4425,6 @@ class VintageProgrammerRuntime:
                     content=self._render_system_prompt(
                         settings,
                         spec=spec,
-                        loaded_skills=loaded_skills,
                         available_skills=available_skills,
                         runtime_context_text=runtime_context_text,
                     )
@@ -4757,9 +4703,7 @@ class VintageProgrammerRuntime:
                 permission_profile=turn_runtime_boundary.permission_profile,
                 runtime_boundary=turn_runtime_boundary,
                 run_id=run_id,
-                skill_loader=skill_loader,
                 skill_writer=skill_writer,
-                skill_script_resolver=skill_script_resolver,
             )
 
         user_input_response = (
@@ -5014,9 +4958,7 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
-                    skill_loader=skill_loader,
                     skill_writer=skill_writer,
-                    skill_script_resolver=skill_script_resolver,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -5470,10 +5412,6 @@ class VintageProgrammerRuntime:
                             round_idx=round_idx,
                             call_idx=call_idx,
                         )
-                        if name == "load_skill" and bool(result.get("ok")):
-                            loaded_key = str(result.get("key") or "").strip()
-                            if loaded_key and loaded_key not in self._skill_key_set(loaded_skills):
-                                loaded_skills.append(dict(result))
                     else:
                         guard_rejection_count += 1
                         result = validation_observation(validation, tool=name or raw_name)
@@ -5601,9 +5539,7 @@ class VintageProgrammerRuntime:
                         permission_profile=turn_runtime_boundary.permission_profile,
                         runtime_boundary=turn_runtime_boundary,
                         run_id=run_id,
-                        skill_loader=skill_loader,
                         skill_writer=skill_writer,
-                        skill_script_resolver=skill_script_resolver,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -6388,9 +6324,7 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
-                    skill_loader=skill_loader,
                     skill_writer=skill_writer,
-                    skill_script_resolver=skill_script_resolver,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -6788,7 +6722,7 @@ class VintageProgrammerRuntime:
             "token_usage": dict(usage_total),
             "active_context_usage": dict(active_context_usage),
             "available_skills": [self._skill_descriptor_for_model(item) for item in available_skills],
-            "loaded_skills": [self._skill_descriptor_for_model(item) for item in loaded_skills],
+            "loaded_skills": [],
             "notes": self._dedup_notes(notes),
         }
         activity_summary = " · ".join(
@@ -6891,8 +6825,8 @@ class VintageProgrammerRuntime:
                 "network_mode": spec.network_mode,
                 "evidence_status": evidence_status,
                 "tool_count": len(tool_events),
-                "loaded_skill_keys": [str(item.get("key") or "") for item in loaded_skills],
-                "loaded_skill_ids": [str(item.get("name") or item.get("id") or "") for item in loaded_skills],
+                "loaded_skill_keys": [],
+                "loaded_skill_ids": [],
                 "inline_document": inline_document,
                 "route_state_input": dict(route_state_input),
                 "model_action": dict(model_action),
