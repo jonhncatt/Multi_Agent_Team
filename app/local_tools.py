@@ -2937,7 +2937,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "update_plan",
-                "description": "Synchronize a lightweight checklist for the current turn.",
+                "description": "Synchronize a lightweight checklist. Keep exactly one step in_progress until every step is completed.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3601,6 +3601,30 @@ class LocalToolExecutor:
                     "message": "update_plan `plan` must be a non-empty list.",
                 },
                 "summary": "update_plan `plan` must be a non-empty list.",
+            }
+        in_progress_count = sum(1 for item in normalized_plan if item.get("status") == "in_progress")
+        all_completed = all(item.get("status") == "completed" for item in normalized_plan)
+        if not all_completed and in_progress_count == 0:
+            first_open = next(
+                (item for item in normalized_plan if item.get("status") != "completed"),
+                None,
+            )
+            if first_open is not None:
+                first_open["status"] = "in_progress"
+                in_progress_count = 1
+        if (all_completed and in_progress_count != 0) or (not all_completed and in_progress_count != 1):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "bad_tool_arguments",
+                    "tool": "update_plan",
+                    "message": (
+                        "A non-complete plan must contain exactly one in_progress step; "
+                        "a complete plan must contain only completed steps."
+                    ),
+                    "in_progress_count": in_progress_count,
+                },
+                "summary": "invalid plan state: expected exactly one in_progress step",
             }
         return {
             "ok": True,

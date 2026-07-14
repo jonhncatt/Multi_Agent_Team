@@ -114,6 +114,7 @@ class MessageActivity(BaseModel):
     model_draft: str = ""
     final_answer: str = ""
     runtime_error: dict[str, Any] = Field(default_factory=dict)
+    task_completion: dict[str, Any] = Field(default_factory=dict)
     tool_boundary_clean: bool | None = None
     plan: list[dict[str, Any]] = Field(default_factory=list)
     plan_explanation: str = ""
@@ -227,6 +228,8 @@ class ContextMeter(BaseModel):
     used_percent: int = 0
     remaining_percent: int = 100
     threshold_source: str = ""
+    estimate_source: str = ""
+    observed_input_tokens: int = 0
     context_window_known: bool = False
     compaction_enabled: bool = False
     last_compacted_at: str = ""
@@ -258,6 +261,11 @@ class CompactionStatus(BaseModel):
     history_soft_limit_tokens: int = 0
     history_noise_tokens: int = 0
     threshold_source: str = ""
+    auto_compact_limit_source: str = ""
+    estimate_source: str = ""
+    observed_input_tokens: int = 0
+    observed_projected_tokens: int = 0
+    estimated_static_tokens: int = 0
     context_window_known: bool = False
     last_compacted_at: str = ""
     last_compaction_reason: str = ""
@@ -309,6 +317,7 @@ class ChatResponse(BaseModel):
     attachment_context_key: str = ""
     permission_profile: str = "auto"
     turn_status: str = "completed"
+    task_completion: dict[str, Any] = Field(default_factory=dict)
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
     pending_approval: dict[str, Any] = Field(default_factory=dict)

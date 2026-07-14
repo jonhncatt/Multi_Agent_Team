@@ -206,6 +206,7 @@ function createEmptyLiveHeartbeat() {
     command: "",
     recentEvent: "",
     updatedAt: 0,
+    connectionAt: 0,
     source: "",
   };
 }
@@ -222,6 +223,7 @@ function normalizeLiveHeartbeat(raw) {
     command: String(item.command || "").trim(),
     recentEvent: String(item.recentEvent || item.recent_event || "").trim(),
     updatedAt: normalizeActivityTimestamp(item.updatedAt || item.updated_at || 0),
+    connectionAt: normalizeActivityTimestamp(item.connectionAt || item.connection_at || 0),
     source: String(item.source || "").trim(),
   };
 }
@@ -2292,14 +2294,15 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
     ? normalizeMessageActivity({ ...item, trace_events: item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT) })
     : item;
   const revisionSummary = latestRevisionSummary(item);
-  const progressItems = projectionItem.plan.length
-    ? buildPlanChecklistItems(projectionItem.plan)
-    : buildFallbackProgressItems(projectionItem, locale, nowMs);
+  const planItems = buildPlanChecklistItems(projectionItem.plan);
+  const executionItems = buildFallbackProgressItems(projectionItem, locale, nowMs);
   const executionTrace = latestExecutionTrace(projectionItem);
   const toolGroups = buildToolProgressGroups(projectionItem);
-  const mainLiveCards = buildMainLiveCards(projectionItem, progressItems, executionTrace, locale, nowMs);
+  const mainLiveCards = buildMainLiveCards(projectionItem, executionItems, executionTrace, locale, nowMs);
   return {
-    progress_items: progressItems,
+    progress_items: executionItems,
+    plan_items: planItems,
+    execution_items: executionItems,
     main_live_cards: mainLiveCards,
     completion_summary: buildMainCompletionSummary(item, mainLiveCards, item.tool_items, locale),
     revision_summary: revisionSummary,
@@ -3206,6 +3209,25 @@ function buildRunExecutionProgress({
       recentEvent = translateUi(locale, "run.progress.recent_event_completed");
     }
   }
+  const elapsed = formatElapsedFromStartedAt(
+    runStartedAt || activity.turn_started_at || activity.started_at || 0,
+    nowMs,
+  );
+  const lastProgressAgeSeconds = lastProgressAtMs
+    ? Math.max(0, Math.floor((nowMs - lastProgressAtMs) / 1000))
+    : null;
+  const transportAnchor = Math.max(
+    normalizeActivityTimestamp(heartbeat.connectionAt || 0),
+    lastProgressAtMs || 0,
+  );
+  const connectionFresh = Boolean(
+    isCurrentThreadActiveRun
+    && transportAnchor
+    && (nowMs - transportAnchor) < 25_000
+  );
+  const connectionState = isCurrentThreadActiveRun
+    ? (connectionFresh ? "connected" : "stale")
+    : "idle";
   return {
     currentStep: currentChecklistStepLabel(plan, checkpoint),
     currentTool: toolName,
@@ -3214,6 +3236,12 @@ function buildRunExecutionProgress({
     statusLabel: formatRunProgressStatus(locale, status),
     command,
     recentEvent,
+    elapsed,
+    lastProgressAgo: lastProgressAgeSeconds == null
+      ? "-"
+      : translateUiOrFallback(locale, "run.progress.seconds_ago", `${lastProgressAgeSeconds}s ago`, { seconds: lastProgressAgeSeconds }),
+    connectionState,
+    connectionLabel: translateUiOrFallback(locale, `run.connection.${connectionState}`, connectionState),
   };
 }
 
@@ -6320,6 +6348,16 @@ function App() {
           };
         });
       };
+      const markOwnerConnectionHeartbeat = (value) => {
+        const connectionAt = normalizeActivityTimestamp(value || 0) || Date.now();
+        updateOwnerActiveTurn((prev) => ({
+          ...prev,
+          liveHeartbeat: normalizeLiveHeartbeat({
+            ...normalizeLiveHeartbeat(prev.liveHeartbeat || {}),
+            connectionAt,
+          }),
+        }));
+      };
       const syncHeartbeatFromTrace = (trace) => {
         const item = trace && typeof trace === "object" ? trace : {};
         const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
@@ -6819,7 +6857,11 @@ function App() {
             if (payload && payload.run_snapshot) {
               applySnapshot(payload.run_snapshot);
             }
-            if (event === "run_started") {
+            if (event === "heartbeat") {
+              // Transport liveness is deliberately separate from semantic
+              // progress, so an idle connection does not reset "last progress".
+              markOwnerConnectionHeartbeat(payload.ts || Date.now());
+            } else if (event === "run_started") {
               modelRequestStarted = true;
               patchPendingActivity((activity) => mergeActivityState(activity, {
                 run_id: String(payload.run_id || ""),
@@ -7604,6 +7646,13 @@ function App() {
     || activeTaskCheckpoint.next_action,
   );
   const hasPlanMode = Boolean(activePlan.length || hasTaskCheckpoint);
+  const showExecutionProgress = Boolean(
+    hasPlanMode
+    || hasLiveRuntimeState
+    || currentThreadBusy
+    || activeRunId
+    || activeRunThreadId
+  );
   const activePendingInput =
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
@@ -8092,6 +8141,7 @@ function App() {
   const renderActivityProgressList = (projection, activity, options = {}) => {
     const item = normalizeMessageActivity(activity || {});
     const progressItems = Array.isArray(projection && projection.progress_items) ? projection.progress_items : [];
+    const planItems = Array.isArray(projection && projection.plan_items) ? projection.plan_items : [];
     const mainLiveCards = Array.isArray(projection && projection.main_live_cards) ? projection.main_live_cards : progressItems;
     const completionSummary = (projection && projection.completion_summary && typeof projection.completion_summary === "object")
       ? projection.completion_summary
@@ -8105,6 +8155,7 @@ function App() {
     const visibleItems = preview
       ? (suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
       : progressItems;
+    const visiblePlanItems = preview ? [] : planItems;
     const overflowCount = preview && !suppressPreview && !isTerminal
       ? Math.max(0, mainLiveCards.length - visibleItems.length)
       : 0;
@@ -8119,13 +8170,35 @@ function App() {
       || "",
     ).trim();
     const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);
-    if (!visibleItems.length && !overflowCount && !showNote) return null;
+    if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote) return null;
     const markerForStatus = (status) => {
       const normalized = normalizeProgressStatus(status);
       if (normalized === "completed") return "✓";
       if (normalized === "failed" || normalized === "blocked" || normalized === "cancelled") return "!";
       return "○";
     };
+    const renderProgressItems = (entries) => entries.length
+      ? html`
+          <div className="activity-progress-list">
+            ${entries.map((entry) => {
+              const status = normalizeProgressStatus(entry.status);
+              const tone = activityToneClass(status);
+              const title = String(entry.label || entry.title || "").trim()
+                || translateUiOrFallback(uiLocale, "activity.tool_title.use_tool", "调用工具");
+              const detail = String(entry.detail || entry.target || "").trim();
+              return html`
+                <div key=${entry.id} className=${`activity-progress-item tone-${tone} status-${status}`}>
+                  <span className="activity-progress-marker" aria-hidden="true">${markerForStatus(status)}</span>
+                  <div className="activity-progress-copy">
+                    <div className="activity-progress-label">${title}</div>
+                    ${detail ? html`<div className="activity-progress-detail">${detail}</div>` : null}
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        `
+      : null;
     return html`
       <div className="activity-progress">
         ${preview
@@ -8136,28 +8209,10 @@ function App() {
                 ${durationLabel ? html`<div className="activity-progress-duration">${durationLabel}</div>` : null}
               </div>
             `}
-        ${visibleItems.length
-          ? html`
-              <div className="activity-progress-list">
-                ${visibleItems.map((entry) => {
-                  const status = normalizeProgressStatus(entry.status);
-                  const tone = activityToneClass(status);
-                  const title = String(entry.label || entry.title || "").trim()
-                    || translateUiOrFallback(uiLocale, "activity.tool_title.use_tool", "调用工具");
-                  const detail = String(entry.detail || entry.target || "").trim();
-                  return html`
-                    <div key=${entry.id} className=${`activity-progress-item tone-${tone} status-${status}`}>
-                      <span className="activity-progress-marker" aria-hidden="true">${markerForStatus(status)}</span>
-                      <div className="activity-progress-copy">
-                        <div className="activity-progress-label">${title}</div>
-                        ${detail ? html`<div className="activity-progress-detail">${detail}</div>` : null}
-                      </div>
-                    </div>
-                  `;
-                })}
-              </div>
-            `
-          : null}
+        ${visiblePlanItems.length ? html`<div className="activity-progress-section-title">${t("run.checklist")}</div>` : null}
+        ${renderProgressItems(visiblePlanItems)}
+        ${!preview && visibleItems.length ? html`<div className="activity-progress-section-title">${t("run.execution_progress")}</div>` : null}
+        ${renderProgressItems(visibleItems)}
         ${overflowCount
           ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: overflowCount })}</div>`
           : null}
@@ -8716,7 +8771,10 @@ function App() {
                       ? html`<code className="live-run-command">${runExecutionProgress.command}</code>`
                       : null}
                     <div className="live-run-meta">
+                      ${runExecutionProgress.currentStep ? html`<span>${formatRunFieldLabel(uiLocale, "current_step")}: ${runExecutionProgress.currentStep}</span>` : null}
                       ${runExecutionProgress.currentTool ? html`<span>${formatRunFieldLabel(uiLocale, "current_tool")}: ${runExecutionProgress.currentTool}</span>` : null}
+                      ${runExecutionProgress.elapsed ? html`<span>${formatRunFieldLabel(uiLocale, "elapsed")}: ${runExecutionProgress.elapsed}</span>` : null}
+                      <span>${formatRunFieldLabel(uiLocale, "connection")}: ${runExecutionProgress.connectionLabel}</span>
                       ${runExecutionProgress.recentEvent ? html`<span>${runExecutionProgress.recentEvent}</span>` : null}
                     </div>
                   </section>
@@ -9228,7 +9286,7 @@ function App() {
                     : null}
                 </section>
 
-                ${hasPlanMode
+                ${showExecutionProgress
                   ? html`
                       <section className="panel-card run-progress-card">
                         <div className="panel-title">${t("run.execution_progress")}</div>
@@ -9260,6 +9318,18 @@ function App() {
                           <div className="run-progress-row">
                             <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "recent_event")}</span>
                             <span className="run-progress-value">${runExecutionProgress.recentEvent || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "elapsed")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.elapsed || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "last_progress")}</span>
+                            <span className="run-progress-value">${runExecutionProgress.lastProgressAgo || "-"}</span>
+                          </div>
+                          <div className="run-progress-row">
+                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "connection")}</span>
+                            <span className=${`run-progress-state connection-${runExecutionProgress.connectionState || "idle"}`}>${runExecutionProgress.connectionLabel || "-"}</span>
                           </div>
                         </div>
                       </section>

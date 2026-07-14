@@ -21,20 +21,25 @@ from app.thread_transcript import normalize_thread_transcript, transcript_items_
 
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "gpt-5.5": 1_000_000,
-    "gpt-5.4": 1_000_000,
-    "gpt-5.4-mini": 400_000,
+    # Keep the default usable window separate from the maximum window a
+    # deployment may allow. Company-compatible endpoints can override this
+    # with VP_CONTEXT_WINDOW_TOKENS after their deployment is verified.
+    "gpt-5.5": 272_000,
+    "gpt-5.4": 272_000,
+    "gpt-5.4-mini": 272_000,
     "moonshot-v1-8k": 8 * 1024,
     "moonshot-v1-32k": 32 * 1024,
     "moonshot-v1-128k": 128 * 1024,
     "mixtral-8x7b-32768": 32 * 1024,
 }
 _DEFAULT_FALLBACK_CONTEXT_WINDOW = 256_000
-_AUTO_COMPACT_RATIO = 0.8
+_AUTO_COMPACT_RATIO = 0.9
 _DANGER_COMPACT_RATIO = 0.95
 _HISTORY_SOFT_LIMIT_TOKENS = 120_000
 _STATIC_OVERHEAD_TOKENS = 1200
 _DEFAULT_RETAINED_RAW_TURNS = 12
+_DEFAULT_RETAINED_HISTORY_TOKENS = 48_000
+_MAX_RETAINED_ITEM_IDS = 96
 _COMPACTED_HISTORY_DIGEST_LIMIT = 12
 _COMPACTED_HISTORY_CHAR_LIMIT = 6000
 _K_WINDOW_PATTERN = re.compile(r"(?<!\d)(\d{1,4})k(?![a-z0-9])", re.IGNORECASE)
@@ -64,7 +69,11 @@ def resolve_context_window(
     model: str | None,
     *,
     max_output_tokens: int | None = None,
+    context_window_tokens: int | None = None,
 ) -> tuple[int, str]:
+    explicit_window = max(0, int(context_window_tokens or 0))
+    if explicit_window:
+        return explicit_window, "config_override"
     candidates = _normalize_model_candidates(model)
     for item in candidates:
         if item in _MODEL_CONTEXT_WINDOWS:
@@ -135,33 +144,6 @@ def _shorten(text: str, limit: int) -> str:
     return f"{raw[: max(0, limit - 1)].rstrip()}…"
 
 
-def _serializable_turns(turns: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    serialized: list[dict[str, Any]] = []
-    for item in list(turns or []):
-        if not isinstance(item, dict):
-            continue
-        attachments = []
-        for meta in list(item.get("attachments") or []):
-            if not isinstance(meta, dict):
-                continue
-            attachments.append(
-                {
-                    "id": str(meta.get("id") or "").strip(),
-                    "name": str(meta.get("name") or "").strip(),
-                }
-            )
-        serialized.append(
-            {
-                "id": str(item.get("id") or "").strip(),
-                "role": str(item.get("role") or "").strip(),
-                "text": str(item.get("text") or ""),
-                "attachments": attachments,
-                "created_at": str(item.get("created_at") or ""),
-            }
-        )
-    return serialized
-
-
 def _default_compaction_state() -> dict[str, Any]:
     return {
         "generation": 0,
@@ -194,6 +176,14 @@ def _default_compaction_state() -> dict[str, Any]:
         "llm_compaction_used": False,
         "fallback_reason": "",
         "compaction_schema": [],
+        "observed_input_tokens": 0,
+        "observed_output_tokens": 0,
+        "observed_estimated_input_tokens": 0,
+        "observed_generation": 0,
+        "observed_model": "",
+        "observed_at": "",
+        "observed_source": "",
+        "estimated_static_tokens": 0,
     }
 
 
@@ -220,7 +210,7 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
             str(item).strip()
             for item in list(payload.get("retained_turn_ids") or [])
             if str(item).strip()
-        ][: _DEFAULT_RETAINED_RAW_TURNS],
+        ][: _MAX_RETAINED_ITEM_IDS],
         "last_compacted_at": str(payload.get("last_compacted_at") or ""),
         "last_compaction_reason": str(payload.get("last_compaction_reason") or ""),
         "last_compaction_phase": str(payload.get("last_compaction_phase") or ""),
@@ -251,20 +241,107 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
             for item in list(payload.get("compaction_schema") or [])
             if str(item).strip()
         ],
+        "observed_input_tokens": max(0, int(payload.get("observed_input_tokens") or 0)),
+        "observed_output_tokens": max(0, int(payload.get("observed_output_tokens") or 0)),
+        "observed_estimated_input_tokens": max(0, int(payload.get("observed_estimated_input_tokens") or 0)),
+        "observed_generation": max(0, int(payload.get("observed_generation") or 0)),
+        "observed_model": str(payload.get("observed_model") or ""),
+        "observed_at": str(payload.get("observed_at") or ""),
+        "observed_source": str(payload.get("observed_source") or ""),
+        "estimated_static_tokens": max(0, int(payload.get("estimated_static_tokens") or 0)),
     }
     if isinstance(session, dict) and session.get("compaction_state") != normalized:
         session["compaction_state"] = dict(normalized)
     return normalized
 
 
-def _find_turn_index(turns: list[dict[str, Any]], turn_id: str) -> int:
-    wanted = str(turn_id or "").strip()
-    if not wanted:
-        return -1
-    for index, item in enumerate(turns):
-        if str(item.get("id") or "").strip() == wanted:
-            return index
-    return -1
+def record_context_usage_observation(
+    session: dict[str, Any] | None,
+    *,
+    model: str = "",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    estimated_input_tokens: int = 0,
+    estimated_static_tokens: int = 0,
+) -> dict[str, Any]:
+    """Persist the latest active request size, not cumulative per-turn usage."""
+    if not isinstance(session, dict):
+        return {}
+    state = ensure_compaction_state(session)
+    observed_input = max(0, int(input_tokens or 0))
+    observed_estimate = max(0, int(estimated_input_tokens or 0))
+    state.update(
+        {
+            "observed_input_tokens": observed_input,
+            "observed_output_tokens": max(0, int(output_tokens or 0)),
+            "observed_estimated_input_tokens": observed_estimate,
+            "observed_generation": max(0, int(state.get("generation") or 0)),
+            "observed_model": str(model or ""),
+            "observed_at": _now_iso(),
+            "observed_source": "provider_usage" if observed_input > 0 else "full_payload_estimate",
+            "estimated_static_tokens": max(
+                _STATIC_OVERHEAD_TOKENS,
+                int(estimated_static_tokens or state.get("estimated_static_tokens") or 0),
+            ),
+        }
+    )
+    session["compaction_state"] = dict(state)
+    return state
+
+
+def _serializable_transcript_item(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "id": str(item.get("id") or "").strip(),
+        "turn_id": str(item.get("turn_id") or "").strip(),
+        "role": str(item.get("role") or "").strip(),
+        "text": str(item.get("content") or ""),
+        "created_at": str(item.get("created_at") or ""),
+    }
+    if item.get("attachments"):
+        payload["attachments"] = list(item.get("attachments") or [])
+    if item.get("tool_calls"):
+        payload["tool_calls"] = list(item.get("tool_calls") or [])
+    if str(item.get("tool_call_id") or "").strip():
+        payload["tool_call_id"] = str(item.get("tool_call_id") or "")
+    if str(item.get("name") or "").strip():
+        payload["name"] = str(item.get("name") or "")
+    return payload
+
+
+def _transcript_transactions(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    transactions: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for item in list(items or []):
+        if str(item.get("role") or "") == "user" and current:
+            transactions.append(current)
+            current = []
+        current.append(item)
+    if current:
+        transactions.append(current)
+    return transactions
+
+
+def _retained_transcript_items(
+    items: list[dict[str, Any]],
+    *,
+    retained_raw_turns: int,
+    retained_history_tokens: int = _DEFAULT_RETAINED_HISTORY_TOKENS,
+) -> list[dict[str, Any]]:
+    transactions = _transcript_transactions(items)
+    if not transactions:
+        return []
+    max_transactions = max(1, (max(1, int(retained_raw_turns)) + 1) // 2)
+    token_budget = max(1000, int(retained_history_tokens or _DEFAULT_RETAINED_HISTORY_TOKENS))
+    retained_groups: list[list[dict[str, Any]]] = []
+    retained_tokens = 0
+    for group in reversed(transactions):
+        group_tokens = quick_count_tokens(json.dumps(group, ensure_ascii=False, separators=(",", ":")))
+        if retained_groups and (len(retained_groups) >= max_transactions or retained_tokens + group_tokens > token_budget):
+            break
+        retained_groups.append(group)
+        retained_tokens += group_tokens
+    retained_groups.reverse()
+    return [item for group in retained_groups for item in group]
 
 
 def _build_runtime_context_view(
@@ -274,10 +351,16 @@ def _build_runtime_context_view(
 ) -> dict[str, Any]:
     payload = dict(session or {})
     compaction_state = ensure_compaction_state(payload)
-    turns = _serializable_turns(payload.get("turns") or [])
-    compacted_index = _find_turn_index(turns, str(compaction_state.get("compacted_until_turn_id") or ""))
-    uncovered_turns = turns[compacted_index + 1 :] if compacted_index >= 0 else turns
-    retained_turns = uncovered_turns[-max(1, retained_raw_turns) :]
+    transcript = normalize_thread_transcript(
+        payload.get("thread_transcript"),
+        legacy_turns=payload.get("turns") or [],
+    )
+    _summary, active_items = transcript_items_after_compaction(transcript, compaction_state)
+    uncovered_turns = [_serializable_transcript_item(item) for item in active_items]
+    retained_turns = _retained_transcript_items(
+        uncovered_turns,
+        retained_raw_turns=retained_raw_turns,
+    )
     retained_turn_ids = [
         str(item.get("id") or "").strip()
         for item in retained_turns
@@ -293,7 +376,7 @@ def _build_runtime_context_view(
         "history_turns": retained_turns,
         "uncovered_turns": uncovered_turns,
         "retained_turn_ids": retained_turn_ids,
-        "all_turns": turns,
+        "all_turns": [_serializable_transcript_item(item) for item in list(transcript.get("items") or [])],
         "compaction_state": compaction_state,
     }
 
@@ -333,6 +416,8 @@ def build_compaction_status(
     auto_compact_ratio: float = _AUTO_COMPACT_RATIO,
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
+    context_window_tokens: int | None = None,
+    auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     payload = dict(session or {})
@@ -344,12 +429,15 @@ def build_compaction_status(
     context_window, threshold_source = resolve_context_window(
         model,
         max_output_tokens=max_output_tokens,
+        context_window_tokens=context_window_tokens,
     )
     normalized_auto_ratio = max(0.1, min(0.95, float(auto_compact_ratio or _AUTO_COMPACT_RATIO)))
     normalized_danger_ratio = max(normalized_auto_ratio, min(0.99, float(danger_compact_ratio or _DANGER_COMPACT_RATIO)))
     normalized_history_soft_limit = max(1000, int(history_soft_limit_tokens or _HISTORY_SOFT_LIMIT_TOKENS))
-    auto_compact_token_limit = max(1, int(context_window * normalized_auto_ratio))
-    danger_compact_token_limit = max(auto_compact_token_limit, int(context_window * normalized_danger_ratio))
+    configured_auto_limit = max(0, int(auto_compact_token_limit or 0))
+    resolved_auto_compact_token_limit = configured_auto_limit or max(1, int(context_window * normalized_auto_ratio))
+    resolved_auto_compact_token_limit = min(resolved_auto_compact_token_limit, max(1, int(context_window * 0.9)))
+    danger_compact_token_limit = max(resolved_auto_compact_token_limit, int(context_window * normalized_danger_ratio))
     serialized = _build_serialized_context(
         session=payload,
         pending_message=pending_message,
@@ -362,7 +450,26 @@ def build_compaction_status(
         estimated_payload_tokens = count_tokens(serialized, model)
     else:
         estimated_payload_tokens = quick_count_tokens(serialized)
-    estimated_tokens = estimated_payload_tokens + _STATIC_OVERHEAD_TOKENS
+    estimated_static_tokens = max(
+        _STATIC_OVERHEAD_TOKENS,
+        int(compaction_state.get("estimated_static_tokens") or 0),
+    )
+    local_estimated_tokens = estimated_payload_tokens + estimated_static_tokens
+    observed_generation = int(compaction_state.get("observed_generation") or 0)
+    current_generation = int(compaction_state.get("generation") or 0)
+    observed_input_tokens = int(compaction_state.get("observed_input_tokens") or 0)
+    observed_estimated_tokens = int(compaction_state.get("observed_estimated_input_tokens") or 0)
+    observed_base_tokens = observed_input_tokens or observed_estimated_tokens
+    observed_projected_tokens = 0
+    if observed_base_tokens > 0 and observed_generation == current_generation:
+        pending_tokens = count_tokens(str(pending_message or ""), model) if normalized_estimate_mode == "exact" else quick_count_tokens(str(pending_message or ""))
+        observed_projected_tokens = (
+            observed_base_tokens
+            + int(compaction_state.get("observed_output_tokens") or 0)
+            + pending_tokens
+        )
+    estimated_tokens = max(local_estimated_tokens, observed_projected_tokens)
+    estimate_source = "provider_usage" if observed_projected_tokens >= local_estimated_tokens and observed_input_tokens > 0 else "full_payload_estimate"
     retained_ids = {
         str(item.get("id") or "").strip()
         for item in list(runtime_view.get("history_turns") or [])
@@ -382,7 +489,7 @@ def build_compaction_status(
     if estimated_tokens >= danger_compact_token_limit:
         compact_recommendation = "required"
         compact_reason = "context_danger_limit"
-    elif estimated_tokens >= auto_compact_token_limit:
+    elif estimated_tokens >= resolved_auto_compact_token_limit:
         compact_recommendation = "suggested"
         compact_reason = "context_auto_limit"
     elif compactable_turns and history_noise_tokens >= normalized_history_soft_limit:
@@ -417,11 +524,16 @@ def build_compaction_status(
         "estimated_context_tokens": int(estimated_tokens),
         "estimated_payload_tokens": int(estimated_payload_tokens),
         "effective_context_window": int(context_window),
-        "auto_compact_token_limit": int(auto_compact_token_limit),
+        "auto_compact_token_limit": int(resolved_auto_compact_token_limit),
         "danger_compact_token_limit": int(danger_compact_token_limit),
         "history_soft_limit_tokens": int(normalized_history_soft_limit),
         "history_noise_tokens": int(history_noise_tokens),
         "threshold_source": threshold_source,
+        "auto_compact_limit_source": "config_override" if configured_auto_limit else "context_ratio",
+        "estimate_source": estimate_source,
+        "observed_input_tokens": observed_input_tokens,
+        "observed_projected_tokens": int(observed_projected_tokens),
+        "estimated_static_tokens": int(estimated_static_tokens),
         "context_window_known": bool(context_window_known),
         "last_compacted_at": str(last_compacted_at or compaction_state.get("last_compacted_at") or ""),
         "last_compaction_reason": str(compaction_state.get("last_compaction_reason") or ""),
@@ -482,6 +594,8 @@ def build_context_meter(
     auto_compact_ratio: float = _AUTO_COMPACT_RATIO,
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
+    context_window_tokens: int | None = None,
+    auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     status = build_compaction_status(
         session=session,
@@ -493,6 +607,8 @@ def build_context_meter(
         auto_compact_ratio=auto_compact_ratio,
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
+        context_window_tokens=context_window_tokens,
+        auto_compact_token_limit=auto_compact_token_limit,
     )
     return build_context_meter_from_status(status)
 
@@ -515,7 +631,7 @@ def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, 
     return {
         "estimated_tokens": estimated_tokens,
         "estimated_payload_tokens": estimated_payload_tokens,
-        "overhead_tokens": int(_STATIC_OVERHEAD_TOKENS),
+        "overhead_tokens": max(0, estimated_tokens - estimated_payload_tokens),
         "context_window": int(context_window),
         "auto_compact_token_limit": auto_compact_token_limit,
         "danger_compact_token_limit": int(status_payload.get("danger_compact_token_limit") or 0),
@@ -527,6 +643,8 @@ def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, 
         "used_percent": int(round(used_ratio * 100)),
         "remaining_percent": int(round(remaining_ratio * 100)),
         "threshold_source": str(status_payload.get("threshold_source") or ""),
+        "estimate_source": str(status_payload.get("estimate_source") or ""),
+        "observed_input_tokens": int(status_payload.get("observed_input_tokens") or 0),
         "context_window_known": bool(status_payload.get("context_window_known")),
         "compaction_enabled": bool(status_payload.get("enabled")),
         "last_compacted_at": str(status_payload.get("last_compacted_at") or ""),
@@ -661,6 +779,8 @@ def maybe_auto_compact_session(
     auto_compact_ratio: float = _AUTO_COMPACT_RATIO,
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
+    context_window_tokens: int | None = None,
+    auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     payload = dict(session or {})
     status_before = build_compaction_status(
@@ -673,6 +793,8 @@ def maybe_auto_compact_session(
         auto_compact_ratio=auto_compact_ratio,
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
+        context_window_tokens=context_window_tokens,
+        auto_compact_token_limit=auto_compact_token_limit,
     )
     _persist_compaction_estimates(session, status=status_before)
     if not force and str(status_before.get("compact_recommendation") or "none") == "none":
@@ -693,6 +815,8 @@ def maybe_auto_compact_session(
             auto_compact_ratio=auto_compact_ratio,
             danger_compact_ratio=danger_compact_ratio,
             history_soft_limit_tokens=history_soft_limit_tokens,
+            context_window_tokens=context_window_tokens,
+            auto_compact_token_limit=auto_compact_token_limit,
         )
         _persist_compaction_estimates(session, status=exact_status)
         status_before = exact_status
@@ -730,16 +854,6 @@ def maybe_auto_compact_session(
 
     state = ensure_compaction_state(session)
     next_generation = max(0, int(state.get("generation") or 0)) + 1
-    raw_task_state = (
-        dict((session or {}).get("task_state") or {})
-        if isinstance((session or {}).get("task_state"), dict)
-        else {}
-    )
-    raw_work_cursor = (
-        dict((session or {}).get("work_cursor") or {})
-        if isinstance((session or {}).get("work_cursor"), dict)
-        else {}
-    )
     transcript = normalize_thread_transcript(
         (session or {}).get("thread_transcript"),
         legacy_turns=(session or {}).get("turns") or [],
@@ -784,11 +898,6 @@ def maybe_auto_compact_session(
     compaction_input = build_compaction_input(
         old_messages=compacted_messages or compacted_turns,
         tool_evidence=compacted_tool_evidence,
-        task_state=raw_task_state,
-        work_cursor=raw_work_cursor,
-        modified_files=list(raw_work_cursor.get("active_files") or []),
-        failed_attempts=raw_task_state.get("failed_attempts") or [],
-        current_status=str(raw_task_state.get("status") or ""),
     )
     compaction_summary, compaction_meta = _build_compaction_summary_with_optional_llm(
         compaction_input,
@@ -845,6 +954,8 @@ def maybe_auto_compact_session(
         auto_compact_ratio=auto_compact_ratio,
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
+        context_window_tokens=context_window_tokens,
+        auto_compact_token_limit=auto_compact_token_limit,
     )
     _persist_compaction_estimates(session, status=status_after)
     state["after_tokens"] = int(status_after.get("estimated_context_tokens") or 0)

@@ -568,8 +568,11 @@ def build_compaction_input(
     failed_attempts: Any = None,
     current_status: str = "",
 ) -> dict[str, Any]:
-    task_payload = dict(task_state or {})
-    cursor_payload = dict(work_cursor or {})
+    # ``task_state``/``work_cursor`` remain accepted for source compatibility
+    # with older callers, but compaction memory is intentionally derived from
+    # the thread transcript and tool evidence only. Harness state is not model
+    # history and must not be smuggled back into a Session=Thread summary.
+    _ = task_state, work_cursor, current_status
     messages = []
     for item in list(old_messages or []):
         turn = _compact_turn_for_compaction(item)
@@ -586,7 +589,6 @@ def build_compaction_input(
     failures = _summary_strings(
         [
             *list(failed_attempts or []),
-            *list(task_payload.get("failed_attempts") or []),
             *[
                 item
                 for item in evidence
@@ -599,43 +601,8 @@ def build_compaction_input(
     return {
         "old_messages": messages,
         "tool_evidence": evidence,
-        "task_state": {
-            "task_id": _truncate(task_payload.get("task_id"), 120),
-            "goal": _truncate(task_payload.get("goal"), 500),
-            "status": _truncate(task_payload.get("status"), 80),
-            "plan_items": [
-                {
-                    "id": _truncate(item.get("id") or item.get("step_id"), 120),
-                    "step": _truncate(item.get("step") or item.get("title"), 500),
-                    "status": _truncate(item.get("status"), 80),
-                }
-                for item in list(task_payload.get("plan_items") or task_payload.get("plan") or [])[:12]
-                if isinstance(item, dict) and _truncate(item.get("step") or item.get("title"), 500)
-            ],
-            "current_step_id": _truncate(task_payload.get("current_step_id"), 120),
-            "completed_steps": _summary_strings(task_payload.get("completed_steps"), limit=8, max_chars=500),
-            "blocked_reason": _truncate(task_payload.get("blocked_reason"), 500),
-            "next_required_action": _truncate(task_payload.get("next_required_action") or task_payload.get("next_action"), 500),
-            "failed_attempts": failures,
-        },
-        "work_cursor": {
-            "project_root": _truncate(cursor_payload.get("project_root"), 500),
-            "cwd": _truncate(cursor_payload.get("cwd"), 500),
-            "active_files": _unique_strings(cursor_payload.get("active_files"), limit=12, max_chars=500),
-            "active_attachments": [
-                {
-                    "id": _truncate(item.get("id"), 120),
-                    "name": _truncate(item.get("name"), 160),
-                    "kind": _truncate(item.get("kind"), 80),
-                    "path": _truncate(item.get("path"), 500),
-                }
-                for item in list(cursor_payload.get("active_attachments") or [])[:8]
-                if isinstance(item, dict)
-            ],
-        },
         "modified_files": files,
         "failed_attempts": failures,
-        "current_status": _truncate(current_status or task_payload.get("status"), 120),
     }
 
 
@@ -680,11 +647,13 @@ def parse_compaction_summary_text(text: str) -> CompactionSummary | None:
 
 def build_structured_compaction_summary(compaction_input: dict[str, Any] | None) -> CompactionSummary:
     payload = dict(compaction_input or {})
-    task_state = dict(payload.get("task_state") or {})
     evidence = [dict(item) for item in list(payload.get("tool_evidence") or []) if isinstance(item, dict)]
     confirmed: list[str] = []
     user_requirements: list[str] = []
     decisions: list[str] = []
+    user_messages: list[str] = []
+    assistant_messages: list[str] = []
+    evidence_files: list[str] = []
     for item in evidence:
         status = str(item.get("status") or "").strip().lower()
         summary = _truncate(item.get("summary"), 500)
@@ -692,10 +661,23 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
             continue
         if status in {"ok", "success", "completed", "complete", "done"}:
             confirmed.append(summary)
+        target = _truncate(item.get("target"), 500)
+        if target:
+            evidence_files.append(target)
+        evidence_files.extend(_file_strings(item.get("source_refs"), limit=6))
     for item in list(payload.get("old_messages") or []):
-        if not isinstance(item, dict) or str(item.get("role") or "").strip() != "user":
+        if not isinstance(item, dict):
             continue
+        role = str(item.get("role") or "").strip()
         text = _truncate(item.get("text"), 500)
+        if not text:
+            continue
+        if role == "assistant":
+            assistant_messages.append(text)
+            continue
+        if role != "user":
+            continue
+        user_messages.append(text)
         normalized_text = text.lower()
         requirement_markers = (
             "必须", "不要", "不能", "只", "禁止", "要求", "需要", "务必",
@@ -703,43 +685,29 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
         )
         if text and any(marker in normalized_text for marker in requirement_markers):
             user_requirements.append(text)
-    plan_items = [dict(item) for item in list(task_state.get("plan_items") or []) if isinstance(item, dict)]
-    next_steps = []
-    next_required = _truncate(task_state.get("next_required_action"), 500)
-    if next_required:
-        next_steps.append(next_required)
-    for item in plan_items:
-        status = str(item.get("status") or "").strip()
-        if status in {"pending", "in_progress"}:
-            step = _truncate(item.get("step"), 500)
-            if step:
-                next_steps.append(step)
+    # Always preserve the most recent earlier user request. It is the most
+    # useful continuation anchor even when it contains no requirement keyword.
+    if user_messages:
+        user_requirements.append(user_messages[-1])
     failed = _summary_strings(payload.get("failed_attempts"), limit=12, max_chars=500)
     do_not_repeat = []
     for item in failed[:6]:
         do_not_repeat.append(f"Avoid repeating without new evidence: {item}")
-    status = _truncate(task_state.get("status") or payload.get("current_status"), 80)
-    goal = _truncate(task_state.get("goal"), 500)
-    if goal:
-        user_requirements.insert(0, goal)
-    blocked = _truncate(task_state.get("blocked_reason"), 500)
-    state_parts = []
-    if status:
-        state_parts.append(f"status={status}")
-    if goal:
-        state_parts.append(f"goal={goal}")
-    if next_required:
-        state_parts.append(f"next={next_required}")
-    if blocked:
-        state_parts.append(f"blocked={blocked}")
+    current_state = ""
+    if assistant_messages:
+        current_state = "Earlier assistant response (unverified): " + assistant_messages[-1]
     return CompactionSummary(
         user_requirements=_unique_strings(user_requirements, limit=12, max_chars=500),
         confirmed_facts=_unique_strings(confirmed, limit=12, max_chars=500),
-        files_touched=_unique_strings(payload.get("modified_files"), limit=16, max_chars=500),
+        files_touched=_unique_strings(
+            [*list(payload.get("modified_files") or []), *evidence_files],
+            limit=16,
+            max_chars=500,
+        ),
         decisions=_unique_strings(decisions, limit=10, max_chars=500),
         failed_attempts=failed,
-        current_state="; ".join(state_parts),
-        next_steps=_unique_strings(next_steps, limit=12, max_chars=500),
+        current_state=current_state,
+        next_steps=[],
         open_questions=[],
         do_not_repeat=_unique_strings(do_not_repeat, limit=8, max_chars=500),
     )
@@ -761,6 +729,8 @@ def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
     return (
         "You are compacting a coding-agent thread. Return only strict JSON matching this schema.\n"
         "Do not include raw tool output, raw traces, provider payloads, secrets, or stack traces.\n"
+        "The result is unverified continuation memory, not Harness task state.\n"
+        "Use only the supplied transcript and source-marked tool evidence. Never invent plan status, completion, or verification.\n"
         "Use only concise durable facts needed to continue the task.\n\n"
         "schema:\n"
         + json.dumps(schema, ensure_ascii=False, indent=2)

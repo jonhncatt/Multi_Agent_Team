@@ -174,3 +174,23 @@ def test_update_plan_validation_error_does_not_pollute_failed_attempts_or_warnin
 
     assert state["failed_attempts"] == []
     assert state["validation_warnings"] == []
+
+
+def test_turn_failure_prevents_completed_task_state() -> None:
+    state = merge_task_state_after_turn(
+        {
+            "task_id": "task-failed",
+            "goal": "Patch and verify",
+            "status": "in_progress",
+            "plan_items": [{"step": "Run tests", "status": "in_progress"}],
+        },
+        [{"step": "Run tests", "status": "completed"}],
+        [],
+        [],
+        "failed",
+        {"message": "provider request failed"},
+        {},
+    )
+
+    assert state["status"] == "failed"
+    assert state["blocked_reason"] == "provider request failed"

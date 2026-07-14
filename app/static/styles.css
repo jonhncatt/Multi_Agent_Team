@@ -1020,6 +1020,15 @@ button {
   text-transform: uppercase;
 }
 
+.activity-progress-section-title {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
 .activity-progress-list {
   display: grid;
   gap: 7px;
@@ -2292,6 +2301,21 @@ button {
 .run-progress-state.status-cancelled {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.run-progress-state.connection-connected {
+  background: rgba(31, 136, 61, 0.12);
+  color: #1f883d;
+}
+
+.run-progress-state.connection-stale {
+  background: rgba(191, 135, 0, 0.14);
+  color: #8a6100;
+}
+
+.run-progress-state.connection-idle {
+  background: rgba(17, 24, 39, 0.08);
+  color: var(--ink-soft);
 }
 
 .tool-flags {

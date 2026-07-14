@@ -742,7 +742,11 @@ class VintageProgrammerRuntime:
         )
         if not text:
             return 4000
-        context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
+        context_window, _source = resolve_context_window(
+            model,
+            max_output_tokens=max_output_tokens,
+            context_window_tokens=getattr(self._config, "context_window_tokens", 0),
+        )
         output_reserve = max(0, int(max_output_tokens or getattr(self._config, "max_output_tokens", 16384) or 16384))
         reserved_tokens = max(16_000, output_reserve * 2 + 12_000)
         token_budget = max(4000, int(context_window * 0.85) - reserved_tokens)
@@ -774,7 +778,11 @@ class VintageProgrammerRuntime:
         max_output_tokens: int | None,
     ) -> int:
         hard_cap = max(4000, int(getattr(self._config, "max_attachment_chars", 1_000_000) or 1_000_000))
-        context_window, _source = resolve_context_window(model, max_output_tokens=max_output_tokens)
+        context_window, _source = resolve_context_window(
+            model,
+            max_output_tokens=max_output_tokens,
+            context_window_tokens=getattr(self._config, "context_window_tokens", 0),
+        )
         per_attachment_token_budget = max(3000, int(context_window * 0.10))
         return min(hard_cap, max(12_000, per_attachment_token_budget * 4))
 
@@ -2005,6 +2013,158 @@ class VintageProgrammerRuntime:
             "citations": citations,
             "warnings": warnings,
         }
+
+    @staticmethod
+    def _completion_event_command(event: ToolEvent) -> str:
+        for payload in (
+            getattr(event, "normalized_arguments", None),
+            getattr(event, "input", None),
+            getattr(event, "result_preview", None),
+            getattr(event, "diagnostics", None),
+        ):
+            if not isinstance(payload, dict):
+                continue
+            command = str(payload.get("cmd") or payload.get("command") or "").strip()
+            if command:
+                return command
+        return ""
+
+    @staticmethod
+    def _completion_event_returncode(event: ToolEvent) -> int | None:
+        for payload in (getattr(event, "result_preview", None), getattr(event, "diagnostics", None)):
+            if not isinstance(payload, dict) or payload.get("returncode") in (None, ""):
+                continue
+            try:
+                return int(payload.get("returncode"))
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _looks_like_verification_command(cls, command: str) -> bool:
+        text = str(command or "").strip().lower()
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"(?:^|[\s/\\])(?:pytest|ctest|unittest|run_checks\.py|cargo\s+test|go\s+test|"
+                r"npm\s+test|pnpm\s+test|yarn\s+test|make\s+(?:test|check)|"
+                r"cmake\s+--build|clang\+\+|g\+\+|cl(?:\.exe)?|python(?:3)?\s+-m\s+(?:pytest|compileall|py_compile))\b",
+                text,
+            )
+        )
+
+    @classmethod
+    def _looks_like_mutating_command(cls, command: str) -> bool:
+        text = str(command or "").strip().lower()
+        return bool(
+            re.search(
+                r"(?:^|[;&|]\s*|\s)(?:sed\s+-i|perl\s+-pi|tee|touch|mkdir|cp|mv|git\s+(?:commit|push)|"
+                r"python(?:3)?\s+[^\n]*\b(?:write_text|write_bytes)\b)",
+                text,
+            )
+        )
+
+    def _assess_task_completion(
+        self,
+        *,
+        turn_status: str,
+        plan_state: list[dict[str, Any]],
+        tool_events: list[ToolEvent],
+        pending_user_input: dict[str, Any],
+        runtime_error: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        normalized_plan = [
+            {
+                "step": str(item.get("step") or item.get("title") or "").strip(),
+                "status": str(item.get("status") or "pending").strip(),
+            }
+            for item in list(plan_state or [])
+            if isinstance(item, dict) and str(item.get("step") or item.get("title") or "").strip()
+        ]
+        plan_tracked = bool(normalized_plan)
+        model_plan_claimed_complete = bool(normalized_plan) and all(
+            item.get("status") == "completed" for item in normalized_plan
+        )
+        successful_mutation = False
+        verification_events: list[ToolEvent] = []
+        mutation_tools = {"apply_patch", "save_skill", "web_download", "archive_extract", "mail_extract_attachments"}
+        for event in list(tool_events or []):
+            name = str(getattr(event, "name", "") or "").strip().lower()
+            status = str(getattr(event, "status", "") or "").strip().lower()
+            successful = status in {"ok", "success", "completed", "complete", "done"}
+            command = self._completion_event_command(event)
+            if successful and (name in mutation_tools or (name == "exec_command" and self._looks_like_mutating_command(command))):
+                successful_mutation = True
+            if name in {"exec_command", "write_stdin"} and self._looks_like_verification_command(command):
+                verification_events.append(event)
+
+        verification_status = "not_required"
+        verification_command = ""
+        if verification_events:
+            latest_verification = verification_events[-1]
+            verification_command = self._completion_event_command(latest_verification)[:500]
+            returncode = self._completion_event_returncode(latest_verification)
+            event_status = str(getattr(latest_verification, "status", "") or "").strip().lower()
+            if returncode == 0 and event_status in {"ok", "success", "completed", "complete", "done"}:
+                verification_status = "passed"
+            elif returncode is None and event_status in {"ok", "success", "running"}:
+                verification_status = "running"
+            else:
+                verification_status = "failed"
+        elif successful_mutation:
+            verification_status = "missing"
+
+        reasons: list[str] = []
+        normalized_turn_status = str(turn_status or "").strip() or "completed"
+        if normalized_turn_status in {"failed", "blocked", "cancelled", "needs_user_input"}:
+            task_status = normalized_turn_status
+            task_completed = False
+            reasons.append("turn_not_successful")
+        else:
+            if plan_tracked and not model_plan_claimed_complete:
+                reasons.append("plan_incomplete")
+            if verification_status in {"failed", "missing", "running"}:
+                reasons.append(f"verification_{verification_status}")
+            if reasons:
+                task_status = "in_progress"
+                task_completed = False
+            elif plan_tracked:
+                task_status = "completed"
+                task_completed = True
+            else:
+                task_status = "not_tracked"
+                task_completed = None
+
+        guarded_plan = [dict(item) for item in normalized_plan]
+        if (
+            model_plan_claimed_complete
+            and verification_status in {"failed", "missing", "running"}
+            and guarded_plan
+        ):
+            guarded_plan[-1]["status"] = "in_progress"
+            task_status = "in_progress"
+            task_completed = False
+            if "plan_reopened_for_verification" not in reasons:
+                reasons.append("plan_reopened_for_verification")
+
+        return {
+            "turn_finished": normalized_turn_status != "running",
+            "turn_status": normalized_turn_status,
+            "task_status": task_status,
+            "task_completed": task_completed,
+            "plan_tracked": plan_tracked,
+            "plan_complete": bool(guarded_plan) and all(item.get("status") == "completed" for item in guarded_plan),
+            "model_plan_claimed_complete": model_plan_claimed_complete,
+            "verification": {
+                "required": successful_mutation,
+                "status": verification_status,
+                "command": verification_command,
+            },
+            "reasons": reasons,
+            "runtime_error_present": bool(runtime_error),
+            "waiting_for_user": bool(pending_user_input),
+        }, guarded_plan
 
     @staticmethod
     def _activity_detail(**fields: Any) -> str:
@@ -3628,16 +3788,75 @@ class VintageProgrammerRuntime:
             name=name or "unknown_tool",
         )
 
+    def _estimate_model_request_tokens(
+        self,
+        messages: list[Any],
+        *,
+        model: str | None,
+        tool_names: tuple[str, ...] | list[str] | None,
+    ) -> int:
+        """Estimate the complete request sent to the chat provider.
+
+        This intentionally includes system/project instructions, replayed thread
+        items, attachments, the current request, tool transactions, and the
+        selected tool schemas. Provider-reported input tokens supersede it once
+        a real response is available.
+        """
+
+        serialized_messages: list[dict[str, Any]] = []
+        for message in list(messages or []):
+            class_name = message.__class__.__name__.lower()
+            tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+            tool_calls = safe_model_dump(getattr(message, "tool_calls", []) or [])
+            if tool_call_id or "toolmessage" in class_name:
+                role = "tool"
+            elif "systemmessage" in class_name:
+                role = "system"
+            elif "aimessage" in class_name:
+                role = "assistant"
+            else:
+                role = "user"
+            item: dict[str, Any] = {
+                "role": role,
+                "content": safe_model_dump(getattr(message, "content", "")),
+            }
+            name = str(getattr(message, "name", "") or "").strip()
+            if name:
+                item["name"] = name
+            if tool_call_id:
+                item["tool_call_id"] = tool_call_id
+            if isinstance(tool_calls, list) and tool_calls:
+                item["tool_calls"] = tool_calls
+            serialized_messages.append(item)
+
+        selected_names = {str(name or "").strip() for name in list(tool_names or []) if str(name or "").strip()}
+        selected_tools = [
+            dict(spec)
+            for spec in self._tool_specs
+            if isinstance(spec, dict)
+            and (
+                tool_names is None
+                or str(spec.get("name") or "") in selected_names
+            )
+        ]
+        payload = {
+            "messages": serialized_messages,
+            **({"tools": selected_tools} if selected_tools else {}),
+        }
+        try:
+            return count_tokens(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+                model,
+            )
+        except Exception:
+            return quick_count_tokens(json.dumps(payload, ensure_ascii=False, default=str))
+
     def _build_live_compaction_summary(
         self,
         *,
         tool_events: list[ToolEvent],
         start_index: int,
         end_index: int,
-        plan_state: list[dict[str, Any]],
-        task_state: dict[str, Any],
-        work_cursor: dict[str, Any],
-        current_status: str,
         model: str | None,
         max_output_tokens: int,
         progress_cb: Callable[[dict[str, Any]], None] | None,
@@ -3647,22 +3866,11 @@ class VintageProgrammerRuntime:
     ) -> str:
         if end_index <= start_index:
             return ""
-        task_payload = normalize_task_state(
-            {
-                **dict(task_state or {}),
-                "plan_items": list((task_state or {}).get("plan_items") or plan_state or []),
-            }
-        )
-        cursor_payload = normalize_work_cursor(work_cursor or {})
         compacted_events = tool_events[start_index:end_index]
         compaction_input = build_compaction_input(
             old_messages=[],
             tool_evidence=[dump_model(item) for item in compacted_events],
-            task_state=task_payload,
-            work_cursor=cursor_payload,
             modified_files=extract_modified_files_from_events(compacted_events),
-            failed_attempts=task_payload.get("failed_attempts") or [],
-            current_status=current_status,
         )
         fallback_summary = build_structured_compaction_summary(compaction_input)
         prompt = render_compaction_prompt(compaction_input)
@@ -3794,11 +4002,8 @@ class VintageProgrammerRuntime:
         base_message_count: int,
         tool_events: list[ToolEvent],
         compacted_until: int,
-        plan_state: list[dict[str, Any]],
-        task_state: dict[str, Any],
-        work_cursor: dict[str, Any],
-        current_status: str,
         model: str | None,
+        tool_names: tuple[str, ...] | list[str] | None,
         max_output_tokens: int,
         progress_cb: Callable[[dict[str, Any]], None] | None,
         run_id: str,
@@ -3807,28 +4012,30 @@ class VintageProgrammerRuntime:
         auto_compact_token_limit: int,
         context_window_known: bool,
     ) -> tuple[list[Any], int, bool, int]:
+        _ = context_window_known
         if not self._messages_at_tool_boundary(messages):
             return messages, compacted_until, False, 0
-        estimated_tokens = 0
+        estimated_tokens = self._estimate_model_request_tokens(
+            messages,
+            model=model,
+            tool_names=tool_names,
+        )
+        uncompacted_events = list(tool_events[compacted_until:])
         try:
-            estimated_tokens = count_tokens(
-                "\n".join(
-                    self._backend._shorten(str(getattr(item, "content", getattr(item, "text", item))), 3000)
-                    for item in list(messages)
-                ),
+            uncompacted_tool_tokens = count_tokens(
+                json.dumps([dump_model(item) for item in uncompacted_events], ensure_ascii=False, default=str),
                 model,
             )
         except Exception:
-            estimated_tokens = 0
-        if auto_compact_token_limit > 0 and estimated_tokens < auto_compact_token_limit:
-            return messages, compacted_until, False, estimated_tokens
-        if auto_compact_token_limit <= 0 and len(tool_events) - compacted_until < _DEFAULT_COMPACT_AFTER_TOOL_CALLS:
-            return messages, compacted_until, False, estimated_tokens
-        if (
-            auto_compact_token_limit > 0
-            and not context_window_known
-            and len(tool_events) - compacted_until < _DEFAULT_COMPACT_AFTER_TOOL_CALLS
-        ):
+            uncompacted_tool_tokens = quick_count_tokens(
+                json.dumps([dump_model(item) for item in uncompacted_events], ensure_ascii=False, default=str)
+            )
+        context_pressure = auto_compact_token_limit > 0 and estimated_tokens >= auto_compact_token_limit
+        tool_pressure = (
+            len(uncompacted_events) >= _DEFAULT_COMPACT_AFTER_TOOL_CALLS
+            or (len(uncompacted_events) >= 8 and uncompacted_tool_tokens >= 16_000)
+        )
+        if not context_pressure and not tool_pressure:
             return messages, compacted_until, False, estimated_tokens
         if len(messages) <= base_message_count + _DEFAULT_COMPACT_KEEP_LAST_MESSAGES:
             return messages, compacted_until, False, estimated_tokens
@@ -3841,10 +4048,6 @@ class VintageProgrammerRuntime:
             tool_events=tool_events,
             start_index=compacted_until,
             end_index=end_index,
-            plan_state=plan_state,
-            task_state=task_state,
-            work_cursor=work_cursor,
-            current_status=current_status,
             model=model,
             max_output_tokens=max_output_tokens,
             progress_cb=progress_cb,
@@ -4091,6 +4294,9 @@ class VintageProgrammerRuntime:
             turn_transcript_messages: list[Any] = []
 
         usage_total = self._backend._empty_usage()
+        latest_call_usage = self._backend._empty_usage()
+        latest_request_estimated_tokens = 0
+        latest_estimated_static_tokens = 0
         notes: list[str] = [
             f"agent_id:{spec.agent_id}",
             f"tool_scope:{spec.tool_scope}",
@@ -4465,6 +4671,16 @@ class VintageProgrammerRuntime:
             )
             initial_invoke_ok = False
             initial_exchange = begin_llm_exchange("initial", requested_model, messages)
+            latest_request_estimated_tokens = self._estimate_model_request_tokens(
+                messages,
+                model=requested_model,
+                tool_names=runnable_tools,
+            )
+            latest_estimated_static_tokens = max(
+                1200,
+                latest_request_estimated_tokens
+                - int(compaction_status.get("estimated_payload_tokens") or 0),
+            )
             try:
                 ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                     self._backend._invoke_chat_with_runner,
@@ -4554,7 +4770,8 @@ class VintageProgrammerRuntime:
                     skill_writer=skill_writer,
                 )
                 notes.extend(invoke_notes)
-                usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
+                usage_total = self._backend._merge_usage(usage_total, latest_call_usage)
                 initial_exchange["model"] = str(effective_model or requested_model)
                 initial_exchange["status"] = "completed"
                 initial_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
@@ -5530,35 +5747,13 @@ class VintageProgrammerRuntime:
                     compacted = False
                     live_estimated_tokens = 0
                 else:
-                    live_work_cursor = normalize_work_cursor(
-                        {
-                            **dict(work_cursor or {}),
-                            "project_root": current_task_focus.get("project_root") or project_root,
-                            "cwd": current_task_focus.get("cwd") or effective_cwd or project_root,
-                            "active_files": current_task_focus.get("active_files") or work_cursor.get("active_files") or [],
-                            "active_attachments": current_task_focus.get("active_attachments") or work_cursor.get("active_attachments") or [],
-                        }
-                    )
-                    live_task_state = normalize_task_state(
-                        {
-                            **dict(task_state or {}),
-                            "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
-                            "goal": current_goal,
-                            "status": turn_status,
-                            "plan_items": plan_state,
-                            "next_required_action": current_task_focus.get("next_action") or task_state.get("next_required_action") or "",
-                        }
-                    )
                     messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
                         messages=messages,
                         base_message_count=base_message_count,
                         tool_events=tool_events,
                         compacted_until=compacted_tool_events,
-                        plan_state=plan_state,
-                        task_state=live_task_state,
-                        work_cursor=live_work_cursor,
-                        current_status=turn_status,
                         model=effective_model,
+                        tool_names=runnable_tools,
                         max_output_tokens=int(settings.max_output_tokens),
                         progress_cb=progress_cb,
                         run_id=run_id,
@@ -5579,12 +5774,10 @@ class VintageProgrammerRuntime:
                     except Exception:
                         compaction_summary_text = ""
                     try:
-                        after_tokens = count_tokens(
-                            "\n".join(
-                                self._backend._shorten(str(getattr(item, "content", getattr(item, "text", item))), 3000)
-                                for item in list(messages)
-                            ),
-                            effective_model,
+                        after_tokens = self._estimate_model_request_tokens(
+                            messages,
+                            model=effective_model,
+                            tool_names=runnable_tools,
                         )
                     except Exception:
                         after_tokens = 0
@@ -5664,6 +5857,16 @@ class VintageProgrammerRuntime:
                 )
                 followup_exchange = begin_llm_exchange("post_tool_response", effective_model or requested_model, messages)
                 completed_exchange = followup_exchange
+                latest_request_estimated_tokens = self._estimate_model_request_tokens(
+                    messages,
+                    model=effective_model or requested_model,
+                    tool_names=runnable_tools,
+                )
+                latest_estimated_static_tokens = max(
+                    1200,
+                    latest_request_estimated_tokens
+                    - int(live_compaction_status.get("estimated_payload_tokens") or 0),
+                )
                 try:
                     ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                         self._backend._invoke_with_runner_recovery,
@@ -5729,6 +5932,11 @@ class VintageProgrammerRuntime:
                         )
                         retry_exchange = begin_llm_exchange("post_tool_response_retry", effective_model or requested_model, messages)
                         retry_model_request_started_perf = time.perf_counter()
+                        latest_request_estimated_tokens = self._estimate_model_request_tokens(
+                            messages,
+                            model=effective_model or requested_model,
+                            tool_names=runnable_tools,
+                        )
                         try:
                             ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
                                 self._backend._invoke_with_runner_recovery,
@@ -5868,7 +6076,8 @@ class VintageProgrammerRuntime:
                     skill_writer=skill_writer,
                 )
                 notes.extend(invoke_notes)
-                usage_total = self._backend._merge_usage(usage_total, self._backend._extract_usage_from_message(ai_msg))
+                latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
+                usage_total = self._backend._merge_usage(usage_total, latest_call_usage)
                 completed_exchange["model"] = str(effective_model or requested_model)
                 completed_exchange["status"] = "completed"
                 completed_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
@@ -5929,6 +6138,58 @@ class VintageProgrammerRuntime:
             final_answer = str(final_answer or raw_assistant_text).strip()
         else:
             final_answer = ""
+        task_completion, plan_state = self._assess_task_completion(
+            turn_status=turn_status,
+            plan_state=plan_state,
+            tool_events=tool_events,
+            pending_user_input=pending_user_input,
+            runtime_error=runtime_error,
+        )
+        if turn_status == "completed" and task_completion.get("task_status") == "in_progress":
+            reason_labels = {
+                "plan_incomplete": self._localized_text(
+                    locale,
+                    zh_cn="计划仍有未完成步骤",
+                    ja_jp="plan に未完了 step があります",
+                    en="the plan still has unfinished steps",
+                ),
+                "verification_failed": self._localized_text(
+                    locale,
+                    zh_cn="最近一次验证失败",
+                    ja_jp="直近の検証が失敗しました",
+                    en="the latest verification failed",
+                ),
+                "verification_missing": self._localized_text(
+                    locale,
+                    zh_cn="修改后尚未运行验证",
+                    ja_jp="変更後の検証がまだ実行されていません",
+                    en="changes have not been verified yet",
+                ),
+                "verification_running": self._localized_text(
+                    locale,
+                    zh_cn="验证仍在运行",
+                    ja_jp="検証がまだ実行中です",
+                    en="verification is still running",
+                ),
+                "plan_reopened_for_verification": self._localized_text(
+                    locale,
+                    zh_cn="验证步骤已重新打开",
+                    ja_jp="検証 step を再開しました",
+                    en="the verification step was reopened",
+                ),
+            }
+            reason_text = "；".join(
+                reason_labels.get(str(reason), str(reason))
+                for reason in list(task_completion.get("reasons") or [])
+                if str(reason) in reason_labels
+            )
+            completion_note = self._localized_text(
+                locale,
+                zh_cn=f"运行时状态：本轮回复已结束，但用户任务仍未完成（{reason_text or '仍有后续工作'}）。",
+                ja_jp=f"Runtime 状態: この turn の応答は終了しましたが、ユーザー task は未完了です（{reason_text or '後続作業があります'}）。",
+                en=f"Runtime status: this turn ended, but the user task is still open ({reason_text or 'follow-up work remains'}).",
+            )
+            final_answer = f"{final_answer}\n\n{completion_note}".strip()
         display_text = final_answer
         if turn_status == "failed":
             display_text = runtime_error_user_text(runtime_error, locale=locale)
@@ -6095,6 +6356,17 @@ class VintageProgrammerRuntime:
         else:
             final_task_state = normalize_task_state(base_task_state if has_existing_task else {})
         task_state_validation = {}
+        active_context_usage = {
+            "input_tokens": max(0, int(latest_call_usage.get("input_tokens") or 0)),
+            "output_tokens": max(0, int(latest_call_usage.get("output_tokens") or 0)),
+            "estimated_input_tokens": max(0, int(latest_request_estimated_tokens or 0)),
+            "estimated_static_tokens": max(0, int(latest_estimated_static_tokens or 0)),
+            "source": (
+                "provider_usage"
+                if int(latest_call_usage.get("input_tokens") or 0) > 0
+                else "full_payload_estimate"
+            ),
+        }
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -6102,6 +6374,7 @@ class VintageProgrammerRuntime:
                 "phase": runtime_phase,
                 "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "turn_status": turn_status,
+                "task_completion": dict(task_completion),
                 "plan": plan_state,
                 "task_state": dict(final_task_state),
                 "pending_user_input": pending_user_input,
@@ -6188,11 +6461,13 @@ class VintageProgrammerRuntime:
                 "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "task_state": dict(final_task_state),
+                "task_completion": dict(task_completion),
                 "history_turn_count": len(replay_messages),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
                 "phase_timings": dict(phase_timings),
             },
             "token_usage": dict(usage_total),
+            "active_context_usage": dict(active_context_usage),
             "available_skills": [self._skill_descriptor_for_model(item) for item in available_skills],
             "loaded_skills": [self._skill_descriptor_for_model(item) for item in loaded_skills],
             "notes": self._dedup_notes(notes),
@@ -6218,6 +6493,7 @@ class VintageProgrammerRuntime:
             "effective_model": effective_model or requested_model,
             "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
             "turn_status": turn_status,
+            "task_completion": dict(task_completion),
             "plan": plan_state,
             "pending_user_input": pending_user_input,
             "pending_approval": pending_approval,
@@ -6250,6 +6526,7 @@ class VintageProgrammerRuntime:
             "activity": {
                 "run_id": run_id,
                 "status": turn_status,
+                "task_completion": dict(task_completion),
                 "started_at": trace_events[0]["timestamp"] if trace_events else 0.0,
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
@@ -6281,6 +6558,7 @@ class VintageProgrammerRuntime:
             "tool_events": [dump_model(item) for item in tool_events],
             "transcript_delta": self._transcript_delta(turn_transcript_messages),
             "token_usage": usage_total,
+            "active_context_usage": dict(active_context_usage),
             "inspector": inspector,
             "answer_bundle": answer_bundle,
             "route_state": {

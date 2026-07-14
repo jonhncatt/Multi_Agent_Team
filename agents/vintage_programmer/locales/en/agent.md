@@ -39,6 +39,8 @@ spec_notes:
 - Use `update_plan` only for non-trivial tasks: multi-step, multi-file, code changes, debugging, tests, investigation before action, or work likely to span turns.
 - Once a plan exists, update it after meaningful progress, failure, blocking, or a direction change.
 - `update_plan` is the only checklist protocol; each call submits the full current checklist with human-readable `step` and `status`.
+- While work remains, keep exactly one plan step `in_progress`; when the task is genuinely done, mark every step `completed` before the final answer.
+- Do not mark verification complete after a failed check. After workspace changes, run a relevant check when available; if it fails or cannot run, keep the task open and report that result.
 
 ## Delivery Shape
 

@@ -578,10 +578,10 @@ def normalize_task_state(raw: Any) -> dict[str, Any]:
     known_step_ids = {str(item.get("id") or "").strip() for item in plan_items if str(item.get("id") or "").strip()}
     current_step_id = raw_current_step_id if raw_current_step_id in known_step_ids else derive_current_step_id(plan_items)
     raw_status = _normalize_step_status(raw.get("status"), default=str(raw.get("status") or "idle").strip() or "idle")
-    if plan_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in plan_items):
-        status = "completed"
-    elif raw_status in {"blocked", "failed", "cancelled"}:
+    if raw_status in {"blocked", "failed", "cancelled"}:
         status = raw_status
+    elif plan_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in plan_items):
+        status = "completed"
     elif plan_items:
         status = raw_status if raw_status in {"in_progress", "pending"} else "in_progress"
     else:
@@ -1105,14 +1105,48 @@ def merge_task_state_after_turn(
     merged_items = _merge_plan_items_with_history(state.get("plan_items") or [], plan)
     current_step_id = derive_current_step_id(merged_items)
     completed_steps = _derive_completed_steps(merged_items, state.get("completed_steps") or [], now)
-    progress_basis = _merge_text_lists(state.get("progress_basis"), limit=8)
-    evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), limit=12)
-    failed_attempts = _normalize_failed_attempts(state.get("failed_attempts") or [])
+    events = [dict(item) for item in list(tool_events or []) if isinstance(item, dict)]
+    signals = [dict(item) for item in list(progress_signals or []) if isinstance(item, dict)]
+    progress_basis = _merge_text_lists(
+        state.get("progress_basis"),
+        [
+            str(item.get("summary") or "").strip()
+            for item in signals
+            if bool(item.get("has_progress")) and str(item.get("summary") or "").strip()
+        ],
+        limit=8,
+    )
+    event_refs = [
+        {"tool": _event_tool_name(event), "ref": str(ref or "").strip()}
+        for event in events
+        for ref in list(event.get("source_refs") or [])
+        if str(ref or "").strip()
+    ]
+    evidence_refs = _merge_evidence_refs(state.get("evidence_refs"), event_refs, limit=12)
+    event_failures = [
+        {
+            "tool": _event_tool_name(event),
+            "summary": str(event.get("summary") or event.get("output_preview") or "").strip()[:500],
+            "created_at": now,
+        }
+        for event in events
+        if _event_tool_name(event) != "update_plan"
+        and _event_status(event) in {"error", "failed", "failure", "blocked"}
+    ]
+    failed_attempts = _normalize_failed_attempts(
+        [*list(state.get("failed_attempts") or []), *event_failures]
+    )
 
     turn_status_text = str(turn_status or "").strip()
     runtime_summary = _runtime_error_summary(runtime_error)
     pending_action = _pending_user_action(pending_user_input)
-    if merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
+    if turn_status_text == "failed" or runtime_summary:
+        status = "failed"
+    elif turn_status_text == "cancelled":
+        status = "cancelled"
+    elif turn_status_text in {"blocked", "needs_user_input"} or pending_action:
+        status = "blocked"
+    elif merged_items and all(str(item.get("status") or "").strip() in _TASK_STEP_COMPLETED_STATUSES for item in merged_items):
         status = "completed"
     elif merged_items or state.get("goal"):
         status = "in_progress"
@@ -1138,7 +1172,11 @@ def merge_task_state_after_turn(
             "current_step_id": current_step_id,
             "completed_steps": completed_steps,
             "failed_attempts": failed_attempts,
-            "blocked_reason": state.get("blocked_reason") or "",
+            "blocked_reason": (
+                pending_action
+                or runtime_summary
+                or (str(state.get("blocked_reason") or "") if status in {"blocked", "failed"} else "")
+            ),
             "next_required_action": next_required_action,
             "progress_basis": progress_basis,
             "evidence_refs": evidence_refs,

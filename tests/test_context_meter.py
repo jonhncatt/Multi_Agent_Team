@@ -9,6 +9,7 @@ from app.context_meter import (
     build_context_meter_from_status,
     build_runtime_context_payload,
     maybe_auto_compact_session,
+    record_context_usage_observation,
     resolve_context_window,
 )
 
@@ -23,12 +24,12 @@ def test_resolve_context_window_prefers_explicit_model_registry() -> None:
 def test_resolve_context_window_matches_openai_large_context_models() -> None:
     window, source = resolve_context_window("gpt-5.4", max_output_tokens=128000)
 
-    assert window == 1_000_000
+    assert window == 272_000
     assert source == "model_registry"
 
     mini_window, mini_source = resolve_context_window("openai/gpt-5.4-mini", max_output_tokens=128000)
 
-    assert mini_window == 400_000
+    assert mini_window == 272_000
     assert mini_source == "model_registry"
 
 
@@ -37,6 +38,53 @@ def test_resolve_context_window_uses_model_name_hint() -> None:
 
     assert window == 32768
     assert source == "model_registry"
+
+
+def test_context_window_and_auto_limit_can_be_overridden_for_company_deployment() -> None:
+    status = build_compaction_status(
+        session={"turns": [{"role": "user", "text": "hello"}]},
+        model="gpt-5.4",
+        context_window_tokens=1_000_000,
+        auto_compact_token_limit=700_000,
+        estimate_mode="quick",
+    )
+
+    assert status["effective_context_window"] == 1_000_000
+    assert status["threshold_source"] == "config_override"
+    assert status["auto_compact_token_limit"] == 700_000
+    assert status["auto_compact_limit_source"] == "config_override"
+
+
+def test_provider_input_usage_supersedes_smaller_local_context_estimate() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"id": "u1", "role": "user", "content": "small request"},
+                {"id": "a1", "role": "assistant", "content": "small reply"},
+            ],
+        }
+    }
+    record_context_usage_observation(
+        session,
+        model="gpt-5.4",
+        input_tokens=250_000,
+        output_tokens=1_000,
+        estimated_input_tokens=2_000,
+        estimated_static_tokens=1_500,
+    )
+
+    status = build_compaction_status(
+        session=session,
+        model="gpt-5.4",
+        pending_message="continue",
+        estimate_mode="quick",
+    )
+
+    assert status["estimate_source"] == "provider_usage"
+    assert status["observed_input_tokens"] == 250_000
+    assert status["estimated_context_tokens"] >= 251_000
+    assert status["compact_recommendation"] in {"suggested", "required"}
 
 
 def test_build_context_meter_uses_fallback_budget_for_unknown_models() -> None:
@@ -74,7 +122,7 @@ def test_build_context_meter_uses_fallback_budget_for_unknown_models() -> None:
     )
 
     assert meter["estimated_tokens"] > 0
-    assert meter["auto_compact_token_limit"] == int(256000 * 0.8)
+    assert meter["auto_compact_token_limit"] == int(256000 * 0.9)
     assert meter["threshold_source"] == "fallback_budget"
     assert meter["warning"]
     assert 0 <= meter["used_percent"] <= 100
@@ -354,7 +402,8 @@ def test_maybe_auto_compact_session_uses_llm_compactor_when_available() -> None:
     )
 
     assert result["compacted"] is True
-    assert captured["input"]["task_state"]["goal"] == "finish compaction"
+    assert "task_state" not in captured["input"]
+    assert "work_cursor" not in captured["input"]
     assert session["compaction_state"]["llm_compaction_used"] is True
     assert session["compaction_state"]["compaction_source"] == "llm"
     assert session["compaction_state"]["fallback_reason"] == ""

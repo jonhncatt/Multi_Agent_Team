@@ -590,6 +590,106 @@ def _isolated_config(tmp_path: Path):
     return config
 
 
+def test_model_request_estimate_includes_full_messages_and_selected_tool_schemas(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    messages = [
+        _FakeSystemMessage(content="system " + "S" * 8_000),
+        _FakeHumanMessage(content="attachment " + "A" * 12_000),
+    ]
+
+    without_tools = runtime._estimate_model_request_tokens(messages, model="gpt-5.4", tool_names=[])
+    with_tools = runtime._estimate_model_request_tokens(
+        messages,
+        model="gpt-5.4",
+        tool_names=["read_file", "search_codebase"],
+    )
+
+    assert without_tools > 2_000
+    assert with_tools > without_tools
+
+
+def test_completion_guard_reopens_completed_plan_after_failed_verification(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    events = [
+        ToolEvent(name="apply_patch", status="ok", output_preview="patched", result_preview={"ok": True}),
+        ToolEvent(
+            name="exec_command",
+            status="error",
+            output_preview="1 failed",
+            normalized_arguments={"cmd": "pytest -q"},
+            result_preview={"ok": False, "returncode": 1, "command": "pytest -q"},
+        ),
+    ]
+
+    assessment, guarded_plan = runtime._assess_task_completion(
+        turn_status="completed",
+        plan_state=[
+            {"step": "Patch code", "status": "completed"},
+            {"step": "Run tests", "status": "completed"},
+        ],
+        tool_events=events,
+        pending_user_input={},
+        runtime_error={},
+    )
+
+    assert assessment["task_status"] == "in_progress"
+    assert assessment["task_completed"] is False
+    assert assessment["verification"]["status"] == "failed"
+    assert assessment["model_plan_claimed_complete"] is True
+    assert guarded_plan[-1]["status"] == "in_progress"
+
+
+def test_completion_guard_accepts_completed_plan_with_passing_verification(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=_FakeBackend([_FakeMessage(content="ok")]),
+    )
+    events = [
+        ToolEvent(name="apply_patch", status="ok", output_preview="patched", result_preview={"ok": True}),
+        ToolEvent(
+            name="exec_command",
+            status="ok",
+            output_preview="passed",
+            normalized_arguments={"cmd": "pytest -q"},
+            result_preview={"ok": True, "returncode": 0, "command": "pytest -q"},
+        ),
+    ]
+
+    assessment, guarded_plan = runtime._assess_task_completion(
+        turn_status="completed",
+        plan_state=[
+            {"step": "Patch code", "status": "completed"},
+            {"step": "Run tests", "status": "completed"},
+        ],
+        tool_events=events,
+        pending_user_input={},
+        runtime_error={},
+    )
+
+    assert assessment["task_status"] == "completed"
+    assert assessment["task_completed"] is True
+    assert assessment["verification"]["status"] == "passed"
+    assert all(item["status"] == "completed" for item in guarded_plan)
+
+
 def test_runtime_requires_soul_and_agent_specs(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir, include_soul=False)
@@ -3545,7 +3645,9 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
         },
     )
 
-    assert result["text"] == "Patched the task_state merge path."
+    assert result["text"].startswith("Patched the task_state merge path.")
+    assert result["task_completion"]["task_status"] == "in_progress"
+    assert result["task_completion"]["verification"]["status"] == "missing"
     assert result["task_state_delta"]["next_required_action"] == "Run focused tests"
     assert result["task_state"]["completed_steps"] == []
     assert result["task_state"]["next_required_action"] == ""

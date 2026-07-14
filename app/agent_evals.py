@@ -404,6 +404,8 @@ def execute_authoritative_verifier(
         if verifier_script is not None
         else os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")
     ).strip()
+    if not bool(verification.get("use_company_wrapper", True)):
+        configured_script = ""
     source = "portable_fixture"
     try:
         if configured_script:
@@ -555,6 +557,11 @@ def _outside_workspace_write_detected(events: list[dict[str, Any]], workspace: P
 
 def _runtime_declared_completed(result: dict[str, Any]) -> bool:
     runtime_error = result.get("runtime_error") if isinstance(result.get("runtime_error"), dict) else {}
+    task_completion = result.get("task_completion") if isinstance(result.get("task_completion"), dict) else {}
+    if task_completion.get("task_completed") is False:
+        return False
+    if task_completion.get("task_completed") is True:
+        return True
     return (
         str(result.get("turn_status") or "").strip().lower() == "completed"
         and not runtime_error
@@ -686,7 +693,10 @@ def run_eval_attempt(
             "stdout": "",
             "stderr": "",
         }
-    elif protected_changes and not str(verifier_script or os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")).strip():
+    elif protected_changes and not (
+        bool(verification.get("use_company_wrapper", True))
+        and str(verifier_script or os.environ.get("VP_EVAL_CPP_VERIFY_SCRIPT", "")).strip()
+    ):
         authoritative = {
             "status": "failed",
             "source": "portable_fixture",

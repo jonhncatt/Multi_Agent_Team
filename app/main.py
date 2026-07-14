@@ -28,6 +28,7 @@ from app.context_meter import (
     build_runtime_context_payload,
     ensure_compaction_state,
     maybe_auto_compact_session,
+    record_context_usage_observation,
     resolve_context_window,
 )
 from app.i18n import normalize_locale, supported_locales, translate
@@ -523,6 +524,8 @@ def _build_compaction_status_for_session(
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+        context_window_tokens=config.context_window_tokens,
+        auto_compact_token_limit=config.context_auto_compact_token_limit,
     )
 
 
@@ -545,6 +548,8 @@ def _build_context_meter_for_session(
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+        context_window_tokens=config.context_window_tokens,
+        auto_compact_token_limit=config.context_auto_compact_token_limit,
     )
 
 
@@ -1485,6 +1490,8 @@ def compact_session_endpoint(session_id: str, req: CompactRequest | None = None)
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+        context_window_tokens=config.context_window_tokens,
+        auto_compact_token_limit=config.context_auto_compact_token_limit,
     )
     context_meter, compaction_status = _context_bundle_for_session(
         session=loaded,
@@ -2326,6 +2333,8 @@ def _process_chat_request(
                 auto_compact_ratio=config.context_auto_compact_ratio,
                 danger_compact_ratio=config.context_danger_compact_ratio,
                 history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+                context_window_tokens=config.context_window_tokens,
+                auto_compact_token_limit=config.context_auto_compact_token_limit,
             )
             request_phase_timer.record_duration_ms(
                 "context_compact_ms",
@@ -2667,6 +2676,11 @@ def _process_chat_request(
             runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "auto")
         )
         turn_status = str(runtime_result.get("turn_status") or "completed")
+        task_completion = (
+            dict(runtime_result.get("task_completion") or {})
+            if isinstance(runtime_result.get("task_completion"), dict)
+            else {}
+        )
         plan = list(runtime_result.get("plan") or [])
         pending_user_input = (
             dict(runtime_result.get("pending_user_input") or {})
@@ -2700,6 +2714,7 @@ def _process_chat_request(
             "model_draft": model_draft,
             "final_answer": final_answer,
             "runtime_error": runtime_error,
+            "task_completion": dict(task_completion),
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
@@ -2946,6 +2961,11 @@ def _process_chat_request(
             "agent_id": "vintage_programmer",
             "permission_profile": permission_profile,
             "turn_status": str(inspector_run_state.get("turn_status") or turn_status),
+            "task_completion": dict(
+                inspector_run_state.get("task_completion")
+                if isinstance(inspector_run_state.get("task_completion"), dict)
+                else task_completion
+            ),
             "pending_user_input": dict(inspector_run_state.get("pending_user_input") or pending_user_input),
             "pending_approval": dict(inspector_run_state.get("pending_approval") or pending_approval),
             "phase": str(inspector_run_state.get("phase") or "report"),
@@ -2984,6 +3004,20 @@ def _process_chat_request(
         recent_tasks = list(thread_memory.get("recent_tasks") or [])
         artifact_memory_preview = session_context_impl.get_artifact_memory_preview(session)
         current_task_focus = session_context_impl.get_current_task_focus(session)
+        active_context_usage = (
+            dict(runtime_result.get("active_context_usage") or {})
+            if isinstance(runtime_result.get("active_context_usage"), dict)
+            else {}
+        )
+        if active_context_usage:
+            record_context_usage_observation(
+                session,
+                model=selected_model,
+                input_tokens=int(active_context_usage.get("input_tokens") or 0),
+                output_tokens=int(active_context_usage.get("output_tokens") or 0),
+                estimated_input_tokens=int(active_context_usage.get("estimated_input_tokens") or 0),
+                estimated_static_tokens=int(active_context_usage.get("estimated_static_tokens") or 0),
+            )
         context_meter, compaction_status = _context_bundle_for_session(
             session=session,
             model=selected_model,
@@ -3046,6 +3080,7 @@ def _process_chat_request(
         inspector_session["current_task_focus"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_checkpoint"] = session_context_impl.compat_task_checkpoint_from_focus(current_task_focus)
         inspector_session["task_state"] = dict(session.get("task_state") or {})
+        inspector_session["task_completion"] = dict(task_completion)
         if response_task_state_delta:
             inspector_session["task_state_delta"] = dict(response_task_state_delta)
         else:
@@ -3077,6 +3112,7 @@ def _process_chat_request(
                 "effective_model": selected_model,
                 "permission_profile": permission_profile,
                 "turn_status": turn_status,
+                "task_completion": dict(task_completion),
                 "work_cursor": dict(session.get("work_cursor") or {}),
                 "task_state": dict(session.get("task_state") or {}),
             }
@@ -3211,6 +3247,7 @@ def _process_chat_request(
             attachment_context_key=resolved_attachment_context_key,
             permission_profile=permission_profile,
             turn_status=turn_status,
+            task_completion=task_completion,
             plan=plan,
             pending_user_input=pending_user_input,
             pending_approval=pending_approval,

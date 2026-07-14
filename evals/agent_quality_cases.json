@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "suite": "c_style_cpp_agent_quality",
-  "description": "Live Agent baseline for specification-driven C-style code in a .cpp project.",
+  "suite": "vintage_programmer_agent_quality",
+  "description": "Live Agent quality baseline covering C-style implementation, multi-file analysis, and Markdown delivery.",
   "cases": [
     {
       "name": "c_style_cpp_protocol_frame_parser",
@@ -65,6 +65,70 @@
           "run_checks.py"
         ],
         "timeout_sec": 90
+      }
+    },
+    {
+      "name": "multi_file_protocol_analysis",
+      "kind": "agent_workspace",
+      "fixture": "evals/fixtures/agent_quality/multi_file_protocol_analysis",
+      "message": "请完成这个协议资料分析任务。先完整阅读 specs/FRAME_SPEC.md、specs/ERRORS.md 和 reference/LEGACY_NOTES.md，只修改 REPORT.md，写出可供开发者直接使用的协议审查报告。必须区分当前规格与 legacy 冲突，所有技术结论都要来自给定文件。完成后运行 run_checks.py；如果检查失败，不要声称完成。",
+      "settings": {
+        "locale": "zh-CN",
+        "max_output_tokens": 8192,
+        "enable_tools": true,
+        "permission_profile": "auto",
+        "response_style": "normal"
+      },
+      "required_context_files": [
+        "specs/FRAME_SPEC.md",
+        "specs/ERRORS.md",
+        "reference/LEGACY_NOTES.md"
+      ],
+      "target_files": ["REPORT.md"],
+      "allowed_changed_files": ["REPORT.md"],
+      "protected_files": [
+        "specs/FRAME_SPEC.md",
+        "specs/ERRORS.md",
+        "reference/LEGACY_NOTES.md",
+        "run_checks.py"
+      ],
+      "verification": {
+        "script": "run_checks.py",
+        "command_markers": ["run_checks.py"],
+        "timeout_sec": 30,
+        "use_company_wrapper": false
+      }
+    },
+    {
+      "name": "markdown_integration_guide",
+      "kind": "agent_workspace",
+      "fixture": "evals/fixtures/agent_quality/markdown_integration_guide",
+      "message": "请根据 RULES.md、REFERENCE.md 和 source/CHANGE_NOTES.md 完成集成指南。先阅读三个来源文件，只修改 GUIDE.md，准确记录受支持的构建、验证、失败处理和兼容性信息，不要发明安装步骤。完成后运行 run_checks.py；检查失败时必须保持任务未完成。",
+      "settings": {
+        "locale": "zh-CN",
+        "max_output_tokens": 8192,
+        "enable_tools": true,
+        "permission_profile": "auto",
+        "response_style": "normal"
+      },
+      "required_context_files": [
+        "RULES.md",
+        "REFERENCE.md",
+        "source/CHANGE_NOTES.md"
+      ],
+      "target_files": ["GUIDE.md"],
+      "allowed_changed_files": ["GUIDE.md"],
+      "protected_files": [
+        "RULES.md",
+        "REFERENCE.md",
+        "source/CHANGE_NOTES.md",
+        "run_checks.py"
+      ],
+      "verification": {
+        "script": "run_checks.py",
+        "command_markers": ["run_checks.py"],
+        "timeout_sec": 30,
+        "use_company_wrapper": false
       }
     }
   ]

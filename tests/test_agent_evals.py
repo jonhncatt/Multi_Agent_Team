@@ -45,7 +45,12 @@ def test_default_agent_quality_suite_is_valid() -> None:
     suite = load_eval_suite(DEFAULT_CASES_PATH)
 
     assert suite["schema_version"] == 1
-    assert suite["suite"] == "c_style_cpp_agent_quality"
+    assert suite["suite"] == "vintage_programmer_agent_quality"
+    assert [case["name"] for case in suite["cases"]] == [
+        "c_style_cpp_protocol_frame_parser",
+        "multi_file_protocol_analysis",
+        "markdown_integration_guide",
+    ]
     assert suite["cases"][0]["kind"] == "agent_workspace"
 
 
@@ -162,6 +167,29 @@ def test_company_verifier_timeout_is_blocked(tmp_path: Path) -> None:
     assert result["status"] == "blocked"
     assert result["returncode"] == 2
     assert "timed out" in result["summary"]
+
+
+def test_non_cpp_case_ignores_company_wrapper_and_uses_portable_verifier(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "run_checks.py").write_text("print('portable')\n", encoding="utf-8")
+    wrapper = tmp_path / "wrapper.py"
+    _write_exit_script(wrapper, 1)
+
+    result = execute_authoritative_verifier(
+        workspace,
+        {
+            "name": "docs-case",
+            "verification": {
+                "script": "run_checks.py",
+                "use_company_wrapper": False,
+            },
+        },
+        verifier_script=str(wrapper),
+    )
+
+    assert result["status"] == "passed"
+    assert result["source"] == "portable_fixture"
 
 
 def test_company_verifier_output_redacts_company_paths_and_urls(tmp_path: Path) -> None:

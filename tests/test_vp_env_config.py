@@ -187,7 +187,7 @@ def test_env_example_matches_web_fetch_budget_default() -> None:
     assert "# VP_MAX_OUTPUT_TOKENS=16384" in lines
     assert "# VP_MAX_USER_REQUEST_CHARS=4000000" in lines
     assert "# VP_MAX_ATTACHMENT_CHARS=1000000" in lines
-    assert "# VP_CONTEXT_AUTO_COMPACT_RATIO=0.8" in lines
+    assert "# VP_CONTEXT_AUTO_COMPACT_RATIO=0.9" in lines
     assert "# VP_CONTEXT_DANGER_COMPACT_RATIO=0.95" in lines
     assert "# VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000" in lines
     assert "# VP_CONTEXT_EXACT_STALE_SEC=60" in lines

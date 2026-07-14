@@ -1663,7 +1663,7 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     assert '!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
     assert '|| (suppressPreview ? "" : item.activity_summary)' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
-    assert 'if (!visibleItems.length && !overflowCount && !showNote) return null;' in body
+    assert 'if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote) return null;' in body
     assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
 
 
@@ -1685,7 +1685,46 @@ def test_collapsed_activity_preview_passes_summary_suppression_text() -> None:
     assert "suppressPreview: hasVisibleAnswerContent," in body
     assert 'suppressNoteText: pendingFallback.fromSummaryFallback ? (pendingFallback.suppressNoteText || pendingFallback.text) : "",' in body
     assert 'suppressCompletedPreview: Boolean(!item.pending && String(displayActivity.final_answer || item.text || "").trim()),' in body
-    assert "visibleItems.map((entry) => {" in script
+    assert "entries.map((entry) => {" in script
+
+
+def test_plan_and_live_execution_are_projected_as_separate_layers() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const planItems = buildPlanChecklistItems(projectionItem.plan);" in script
+    assert "const executionItems = buildFallbackProgressItems(projectionItem, locale, nowMs);" in script
+    assert "main_live_cards: mainLiveCards" in script
+    assert "plan_items: planItems" in script
+    assert "execution_items: executionItems" in script
+    assert '${t("run.checklist")}' in script
+    assert '${t("run.execution_progress")}' in script
+
+
+def test_transport_heartbeat_does_not_replace_last_semantic_progress() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "connectionAt: 0" in script
+    assert 'if (event === "heartbeat") {' in script
+    assert "markOwnerConnectionHeartbeat(payload.ts || Date.now());" in script
+    heartbeat_helper = re.search(
+        r"const markOwnerConnectionHeartbeat = \(value\) => \{(?P<body>.*?)\n      \};",
+        script,
+        re.S,
+    )
+    assert heartbeat_helper, "transport heartbeat helper not found"
+    assert "connectionAt" in heartbeat_helper.group("body")
+    assert "lastLiveProgressAt" not in heartbeat_helper.group("body")
+
+
+def test_execution_progress_shows_elapsed_last_progress_and_connection() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "lastProgressAgo:" in script
+    assert "connectionState," in script
+    assert "connectionLabel:" in script
+    assert 'formatRunFieldLabel(uiLocale, "elapsed")' in script
+    assert 'formatRunFieldLabel(uiLocale, "last_progress")' in script
+    assert 'formatRunFieldLabel(uiLocale, "connection")' in script
 
 
 def test_append_activity_trace_promotes_model_draft_and_runtime_error_from_trace_payload() -> None:

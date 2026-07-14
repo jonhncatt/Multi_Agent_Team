@@ -395,6 +395,8 @@ class AppConfig:
     python_command_source: str
     max_user_request_chars: int
     max_attachment_chars: int
+    context_window_tokens: int
+    context_auto_compact_token_limit: int
     context_auto_compact_ratio: float
     context_danger_compact_ratio: float
     context_history_soft_limit_tokens: int
@@ -1172,11 +1174,25 @@ def load_config() -> AppConfig:
                 ),
             ),
         ),
+        context_window_tokens=max(
+            0,
+            min(
+                2_000_000,
+                int(_env("VP_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
+            ),
+        ),
+        context_auto_compact_token_limit=max(
+            0,
+            min(
+                2_000_000,
+                int(_env("VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT", default="0") or "0"),
+            ),
+        ),
         context_auto_compact_ratio=max(
             0.1,
             min(
                 0.95,
-                float(_env("VP_CONTEXT_AUTO_COMPACT_RATIO", default="0.8") or "0.8"),
+                float(_env("VP_CONTEXT_AUTO_COMPACT_RATIO", default="0.9") or "0.9"),
             ),
         ),
         context_danger_compact_ratio=max(

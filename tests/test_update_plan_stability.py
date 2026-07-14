@@ -70,14 +70,14 @@ def test_update_plan_accepts_description_compatibility_for_placeholder_step(tmp_
     }
 
 
-def test_update_plan_accepts_list_of_strings_and_normalizes_to_pending_steps(tmp_path: Path) -> None:
+def test_update_plan_accepts_list_of_strings_and_activates_first_open_step(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
 
     result = executor.update_plan(plan=["Inspect code", "Patch code"])
 
     assert result["ok"] is True
     assert result["plan"] == [
-        {"step": "Inspect code", "status": "pending"},
+        {"step": "Inspect code", "status": "in_progress"},
         {"step": "Patch code", "status": "pending"},
     ]
 
@@ -102,7 +102,7 @@ def test_update_plan_schema_accepts_description_without_internal_ids(tmp_path: P
     assert validation["status"] == "valid"
 
 
-def test_update_plan_allows_multiple_in_progress_items_without_rejecting(tmp_path: Path) -> None:
+def test_update_plan_rejects_multiple_in_progress_items(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
 
     result = executor.update_plan(
@@ -112,5 +112,6 @@ def test_update_plan_allows_multiple_in_progress_items_without_rejecting(tmp_pat
         ]
     )
 
-    assert result["ok"] is True
-    assert [item["status"] for item in result["plan"]] == ["in_progress", "in_progress"]
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "bad_tool_arguments"
+    assert result["error"]["in_progress_count"] == 2
