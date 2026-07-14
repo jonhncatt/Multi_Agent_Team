@@ -447,6 +447,7 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "validation_result",
         "normalized_arguments",
         'className="activity-progress"',
+        'className="activity-progress-divider"',
         'className="activity-debug-drawer"',
         "MAIN_LIVE_CARD_LIMIT",
         "composer-profile-select",
@@ -461,6 +462,7 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
     required_style_tokens = (
         ".activity-progress",
         ".activity-progress-item",
+        ".activity-progress-divider",
         ".activity-debug-drawer",
         "@keyframes activity-progress-pulse",
         ".activity-flow-summary",
@@ -1666,11 +1668,14 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     assert 'const suppressPreview = Boolean(options.suppressPreview) && preview;' in body
     assert 'const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";' in body
     assert 'const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
-    assert 'suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT)' in body
+    assert 'const recentExecutionItems = (preview ? mainLiveCards : progressItems).slice(-MAIN_LIVE_CARD_LIMIT);' in body
+    assert 'suppressPreview || isTerminal ? [] : recentExecutionItems' in body
+    assert 'const showExecutionDivider = Boolean(showPlanSummary && visibleItems.length);' in body
+    assert 'className="activity-progress-divider" role="separator"' in body
     assert '!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
     assert '|| (suppressPreview ? "" : item.activity_summary)' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
-    assert 'if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote && !showPlanSummary) return null;' in body
+    assert 'if (!visibleItems.length && !visiblePlanItems.length && !showNote && !showPlanSummary) return null;' in body
     assert '${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}' in body
 
 

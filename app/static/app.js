@@ -45,7 +45,7 @@ const THREAD_DETAIL_PAGE_SIZE = 40;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
-const MAIN_LIVE_CARD_LIMIT = 8;
+const MAIN_LIVE_CARD_LIMIT = 5;
 const COMPACT_PLAN_ITEM_LIMIT = 6;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
@@ -8184,9 +8184,10 @@ function App() {
     const normalizedStatus = normalizeProgressStatus(item.status);
     const suppressPreview = Boolean(options.suppressPreview) && preview;
     const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";
+    const recentExecutionItems = (preview ? mainLiveCards : progressItems).slice(-MAIN_LIVE_CARD_LIMIT);
     const visibleItems = preview
-      ? (suppressPreview || isTerminal ? [] : mainLiveCards.slice(0, MAIN_LIVE_CARD_LIMIT))
-      : progressItems;
+      ? (suppressPreview || isTerminal ? [] : recentExecutionItems)
+      : recentExecutionItems;
     const visiblePlanItems = preview
       ? (isTerminal ? [] : planItems.slice(0, COMPACT_PLAN_ITEM_LIMIT))
       : planItems;
@@ -8198,9 +8199,7 @@ function App() {
     const planOverflowCount = preview && !isTerminal
       ? Math.max(0, planItems.length - visiblePlanItems.length)
       : 0;
-    const overflowCount = preview && !suppressPreview && !isTerminal
-      ? Math.max(0, mainLiveCards.length - visibleItems.length)
-      : 0;
+    const showExecutionDivider = Boolean(showPlanSummary && visibleItems.length);
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now(), uiLocale);
     const liveSummary = resolveLiveSummary(item, projection, uiLocale);
     const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
@@ -8212,7 +8211,7 @@ function App() {
       || "",
     ).trim();
     const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);
-    if (!visibleItems.length && !visiblePlanItems.length && !overflowCount && !showNote && !showPlanSummary) return null;
+    if (!visibleItems.length && !visiblePlanItems.length && !showNote && !showPlanSummary) return null;
     const markerForStatus = (status) => {
       const normalized = normalizeProgressStatus(status);
       if (normalized === "completed") return "✓";
@@ -8262,11 +8261,11 @@ function App() {
         ${planOverflowCount
           ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: planOverflowCount })}</div>`
           : null}
+        ${showExecutionDivider
+          ? html`<div className="activity-progress-divider" role="separator" aria-hidden="true"></div>`
+          : null}
         ${!preview && visibleItems.length ? html`<div className="activity-progress-section-title">${t("run.execution_progress")}</div>` : null}
         ${renderProgressItems(visibleItems)}
-        ${overflowCount
-          ? html`<div className="activity-flow-note">${t("activity.more_steps", { count: overflowCount })}</div>`
-          : null}
         ${showNote ? html`<div className="activity-flow-note">${note}</div>` : null}
       </div>
     `;
