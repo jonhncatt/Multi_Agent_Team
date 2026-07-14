@@ -2132,15 +2132,61 @@ class VintageProgrammerRuntime:
             proposed_tool_calls.append(normalized_call)
         return proposed_tool_calls, normalization_notes
 
+    @staticmethod
+    def _normalize_invalid_tool_calls(invalid_tool_calls: Any) -> list[dict[str, Any]]:
+        """Keep actionable parse diagnostics without retaining malformed arguments."""
+
+        normalized: list[dict[str, Any]] = []
+        if not isinstance(invalid_tool_calls, list):
+            return normalized
+        for raw_call in invalid_tool_calls[:8]:
+            dumped = safe_model_dump(raw_call)
+            call = dict(dumped) if isinstance(dumped, dict) else {}
+            raw_name = str(call.get("name") or "").strip()
+            name = normalize_tool_name(raw_name)
+            raw_error = call.get("error")
+            if raw_error in (None, ""):
+                raw_error = call.get("errors")
+            if isinstance(raw_error, dict):
+                error_kind = str(raw_error.get("kind") or raw_error.get("code") or "invalid_tool_arguments").strip()
+                error_message = safe_error_message(
+                    raw_error.get("message") or raw_error.get("detail") or error_kind
+                )
+            else:
+                error_kind = "invalid_tool_arguments"
+                error_message = safe_error_message(raw_error or "The tool call arguments could not be parsed.")
+            normalized.append(
+                {
+                    "id": str(call.get("id") or ""),
+                    "name": name or raw_name or "unknown_tool",
+                    "raw_name": raw_name,
+                    "error_kind": re.sub(r"[^a-z0-9_]+", "_", error_kind.lower()).strip("_")[:80]
+                    or "invalid_tool_arguments",
+                    "error": error_message,
+                    "argument_value_type": type(call.get("args")).__name__,
+                }
+            )
+        return normalized
+
     def _resolve_model_action(
         self,
         *,
         ai_text: str,
         tool_calls: list[dict[str, Any]],
+        invalid_tool_calls: Any = None,
         step_index: int,
     ) -> dict[str, Any]:
         proposed_tool_calls, normalization_notes = self._normalize_model_tool_calls(tool_calls)
-        if proposed_tool_calls:
+        normalized_invalid_calls = self._normalize_invalid_tool_calls(invalid_tool_calls)
+        executable_tool_calls = proposed_tool_calls
+        if normalized_invalid_calls:
+            action_type = "invalid_tool_call"
+            executable_tool_calls = []
+            reason = (
+                f"Model emitted {len(normalized_invalid_calls)} malformed tool call(s); "
+                "the Harness must request a corrected native tool call before execution."
+            )
+        elif proposed_tool_calls:
             action_type = "tool_call"
             reason = (
                 f"Model requested {len(proposed_tool_calls)} tool call(s); ActionValidator will validate each call before execution."
@@ -2155,7 +2201,7 @@ class VintageProgrammerRuntime:
             reason = "The model did not emit an executable current step."
         tool_names = [
             str(item.get("name") or item.get("raw_name") or "")
-            for item in proposed_tool_calls
+            for item in (normalized_invalid_calls or proposed_tool_calls)
             if str(item.get("name") or item.get("raw_name") or "").strip()
         ]
         return {
@@ -2163,8 +2209,10 @@ class VintageProgrammerRuntime:
             "action_type": action_type,
             "tool_name": tool_names[0] if tool_names else "",
             "tool_names": tool_names,
-            "tool_calls": proposed_tool_calls,
-            "accepted": action_type != "empty",
+            "tool_calls": executable_tool_calls,
+            "invalid_tool_calls": normalized_invalid_calls,
+            "held_valid_tool_call_count": len(proposed_tool_calls) if normalized_invalid_calls else 0,
+            "accepted": action_type not in {"empty", "invalid_tool_call"},
             "reason": reason,
             "normalization_notes": normalization_notes,
             "text_chars": len(str(ai_text or "")),
@@ -3090,6 +3138,20 @@ class VintageProgrammerRuntime:
                 ja_jp="同種のツールエラーが繰り返されました",
                 en="The same tool failure class repeated",
             )
+        if str(blocked_reason or "").strip() == "invalid_tool_call_repeated":
+            return self._localized_text(
+                locale,
+                zh_cn="模型重复返回了无效工具调用",
+                ja_jp="モデルが無効なツール呼び出しを繰り返しました",
+                en="The model repeated an invalid tool call",
+            )
+        if str(blocked_reason or "").strip() == "model_action_empty_after_tool_failure":
+            return self._localized_text(
+                locale,
+                zh_cn="工具失败后的自动恢复没有产生下一步",
+                ja_jp="ツール失敗後の自動回復で次の手が得られませんでした",
+                en="Automatic recovery after the tool failure produced no next step",
+            )
         mapping = {
             "turn_budget_no_progress_after_replan_exceeded": "runtime.budget.detail.no_progress_after_replan",
             "turn_budget_same_action_repeats_exceeded": "runtime.budget.detail.same_action_repeat",
@@ -3185,6 +3247,20 @@ class VintageProgrammerRuntime:
                 ja_jp="モデルが実行可能な次の一手を返さなかったため、この turn を続けられませんでした。",
                 en="The model did not produce an executable next step, so the turn could not continue.",
             )
+        if reason_code == "invalid_tool_call_repeated":
+            return self._localized_text(
+                locale,
+                zh_cn="Harness 已检测到格式无效的工具调用并要求模型纠正一次，但模型仍未返回符合工具 schema 的可执行调用。",
+                ja_jp="Harness は不正な形式のツール呼び出しを検出して一度修正を求めましたが、モデルはツール schema に適合する実行可能な呼び出しを返しませんでした。",
+                en="The Harness detected a malformed tool call and requested one correction, but the model still did not return an executable call matching the tool schema.",
+            )
+        if reason_code == "model_action_empty_after_tool_failure":
+            return self._localized_text(
+                locale,
+                zh_cn="最近一次工具调用已经失败。Harness 已自动要求模型复盘并改用其他工具或参数，但恢复回复仍没有可执行动作。",
+                ja_jp="直近のツール呼び出しは失敗しました。Harness は別のツールまたは引数で再計画するよう自動的に求めましたが、回復応答にも実行可能な操作がありませんでした。",
+                en="The latest tool call failed. The Harness automatically requested a replan with different tooling or arguments, but the recovery response still contained no executable action.",
+            )
         return self._localized_text(
             locale,
             zh_cn="当前轮次没有继续推进。",
@@ -3268,6 +3344,20 @@ class VintageProgrammerRuntime:
                 zh_cn="请明确下一步要检查的文件、测试或命令，让模型基于更具体的目标继续。",
                 ja_jp="次に確認するファイル、テスト、またはコマンドを明示して、より具体的な目標で続行してください。",
                 en="Specify the next file, test, or command to inspect so the model can continue with a more concrete target.",
+            )
+        if reason_code == "invalid_tool_call_repeated":
+            return self._localized_text(
+                locale,
+                zh_cn="无需重新说明原任务；请重试当前轮次。若再次出现，请查看 LLM exchange 中记录的工具名称和 error_kind，以确认公司接口的 tool-call 参数兼容性。",
+                ja_jp="元のタスクを説明し直す必要はありません。この turn を再試行してください。再発する場合は LLM exchange のツール名と error_kind を確認し、社内 API の tool-call 引数互換性を調べてください。",
+                en="You do not need to restate the task; retry the turn. If it recurs, inspect the tool name and error_kind in the LLM exchange to verify company API tool-call argument compatibility.",
+            )
+        if reason_code == "model_action_empty_after_tool_failure":
+            return self._localized_text(
+                locale,
+                zh_cn="无需重新指定目标文件；请重试当前轮次。诊断时优先查看最近失败工具的 error_kind 和自动复盘记录。",
+                ja_jp="対象ファイルを指定し直す必要はありません。この turn を再試行し、診断時は直近の失敗ツールの error_kind と自動復盤記録を確認してください。",
+                en="You do not need to specify the target again; retry the turn. For diagnosis, inspect the latest failed tool error_kind and the automatic replan record.",
             )
         return self._localized_text(
             locale,
@@ -3432,6 +3522,27 @@ class VintageProgrammerRuntime:
         lines.append(translate(locale, "runtime.replan.required_next_move"))
         return "\n".join(item for item in lines if item).strip()
 
+    def _build_invalid_tool_call_recovery_prompt(
+        self,
+        *,
+        invalid_tool_calls: list[dict[str, Any]],
+    ) -> str:
+        diagnostics: list[str] = []
+        for item in invalid_tool_calls[:8]:
+            name = str(item.get("name") or "unknown_tool").strip() or "unknown_tool"
+            error_kind = str(item.get("error_kind") or "invalid_tool_arguments").strip()
+            error = safe_error_message(item.get("error") or error_kind)
+            diagnostics.append(f"- {name}: {error_kind}: {error}")
+        return "\n".join(
+            [
+                "[HARNESS MODEL ACTION RECOVERY]",
+                "Your previous response contained a malformed native tool call. It was not executed.",
+                *diagnostics,
+                "Return one corrected native tool call whose arguments exactly match the available tool schema, or give a direct final answer if no tool is needed.",
+                "Do not repeat the malformed call and do not present a tool call as prose or JSON in message content.",
+            ]
+        ).strip()
+
     @staticmethod
     def _extract_task_state_delta(ai_text: str) -> tuple[str, dict[str, Any], str]:
         raw = str(ai_text or "")
@@ -3460,12 +3571,14 @@ class VintageProgrammerRuntime:
         *,
         ai_text: str,
         tool_calls: list[dict[str, Any]],
+        invalid_tool_calls: Any = None,
         step_index: int,
     ) -> dict[str, Any]:
         cleaned_text, task_state_delta, delta_warning = self._extract_task_state_delta(str(ai_text or ""))
         model_action = self._resolve_model_action(
             ai_text=cleaned_text,
             tool_calls=tool_calls,
+            invalid_tool_calls=invalid_tool_calls,
             step_index=step_index,
         )
         return {
@@ -3762,11 +3875,14 @@ class VintageProgrammerRuntime:
     ) -> dict[str, Any]:
         action = dict(model_action or {})
         tool_calls = list(action.get("tool_calls") or [])
+        invalid_tool_calls = list(action.get("invalid_tool_calls") or [])
         accepted = bool(action.get("accepted"))
         resolved_decision = str(decision or "").strip()
         if not resolved_decision:
             if tool_calls or str(action.get("action_type") or "").strip() == "tool_call":
                 resolved_decision = "tool_call"
+            elif invalid_tool_calls or str(action.get("action_type") or "").strip() == "invalid_tool_call":
+                resolved_decision = "invalid_tool_call"
             elif accepted and str(assistant_text or "").strip():
                 resolved_decision = "final_answer"
             else:
@@ -3774,6 +3890,8 @@ class VintageProgrammerRuntime:
         return {
             "has_tool_calls": bool(tool_calls),
             "tool_count": len(tool_calls),
+            "has_invalid_tool_calls": bool(invalid_tool_calls),
+            "invalid_tool_call_count": len(invalid_tool_calls),
             "decision": resolved_decision,
             "final_answer_allowed": resolved_decision == "final_answer",
             "turn_status_after_round": str(turn_status_after_round or "running"),
@@ -4549,9 +4667,11 @@ class VintageProgrammerRuntime:
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
             current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
+            current_invalid_tool_calls = list(getattr(ai_msg, "invalid_tool_calls", None) or [])
             step_state = self._resolve_model_step(
                 ai_text=raw_ai_text,
                 tool_calls=current_tool_calls,
+                invalid_tool_calls=current_invalid_tool_calls,
                 step_index=current_step_index,
             )
             cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
@@ -4864,6 +4984,7 @@ class VintageProgrammerRuntime:
                     turn_status_after_round=(
                         "running"
                         if list(model_action.get("tool_calls") or [])
+                        or list(model_action.get("invalid_tool_calls") or [])
                         else ("completed" if bool(model_action.get("accepted")) else "blocked")
                     ),
                 )
@@ -4887,6 +5008,132 @@ class VintageProgrammerRuntime:
             replan_attempt_count = 0
             compacted_tool_events = 0
             base_message_count = len(messages)
+            invalid_tool_call_recovery_count = 0
+            empty_after_failure_recovery_count = 0
+            latest_tool_round_had_failure = False
+
+            def request_model_action_recovery(*, trigger: str, prompt: str) -> bool:
+                nonlocal ai_msg
+                nonlocal runner
+                nonlocal effective_model
+                nonlocal usage_total
+                nonlocal latest_call_usage
+                nonlocal latest_request_estimated_tokens
+                nonlocal runtime_error
+                nonlocal turn_status
+
+                messages.append(self._backend._HumanMessage(content=prompt))
+                phase = f"model_action_recovery:{trigger}"
+                recovery_exchange = begin_llm_exchange(phase, effective_model or requested_model, messages)
+                latest_request_estimated_tokens = self._estimate_model_request_tokens(
+                    messages,
+                    model=effective_model or requested_model,
+                    tool_names=runnable_tools,
+                )
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="llm.action_recovery.started",
+                    title="Recovering model action",
+                    detail=trigger,
+                    status="running",
+                    payload={"phase": phase, "trigger": trigger},
+                    trace_events=trace_events,
+                )
+                recovery_started_perf = time.perf_counter()
+                try:
+                    ai_msg, runner, effective_model, recovery_notes = self._invoke_backend_method(
+                        self._backend._invoke_with_runner_recovery,
+                        runner=runner,
+                        messages=messages,
+                        model=effective_model or requested_model,
+                        max_output_tokens=int(settings.max_output_tokens),
+                        enable_tools=bool(runnable_tools),
+                        tool_names=runnable_tools if runnable_tools else None,
+                        event_cb=self._make_model_stream_observer(
+                            progress_cb=progress_cb,
+                            run_id=run_id,
+                            thread_id=session_id,
+                            locale=locale,
+                            trace_events=trace_events,
+                            answer_stream_state=answer_stream_state,
+                            stage=phase,
+                            model=effective_model or requested_model,
+                            tool_round=round_idx,
+                            answer_context=turn_activity_context,
+                            phase_timer=phase_timer,
+                        ),
+                    )
+                except Exception as exc:
+                    runtime_error = self._llm_failure_payload(
+                        exc,
+                        messages=messages,
+                        phase=phase,
+                        model=effective_model or requested_model,
+                    )
+                    recovery_exchange["status"] = "failed"
+                    recovery_exchange["error"] = snapshot_error(exc, classified=runtime_error)
+                    recovery_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                        model_action={},
+                        assistant_text="",
+                        turn_status_after_round="failed",
+                        decision="runtime_error",
+                    )
+                    self._append_llm_exchange(llm_exchanges, recovery_exchange)
+                    turn_status = "failed"
+                    notes.append(f"model_action_recovery_failed:{trigger}")
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="llm.action_recovery.failed",
+                        title="Model action recovery failed",
+                        detail=str(runtime_error.get("message") or safe_error_message(exc)),
+                        status="failed",
+                        payload={**runtime_error, "trigger": trigger},
+                        trace_events=trace_events,
+                    )
+                    return False
+                finally:
+                    recovery_response_ms = int((time.perf_counter() - recovery_started_perf) * 1000)
+                    phase_timer.record_duration_ms("model_action_recovery_ms", recovery_response_ms)
+                    phase_timer.record_duration_ms("model_last_response_ms", recovery_response_ms)
+
+                notes.extend(recovery_notes)
+                latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
+                usage_total = self._backend._merge_usage(usage_total, latest_call_usage)
+                recovery_exchange["model"] = str(effective_model or requested_model)
+                recovery_exchange["status"] = "completed"
+                recovery_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                refresh_model_step(ai_msg, event_type="activity.delta")
+                recovery_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
+                    model_action=model_action,
+                    assistant_text=self._backend._content_to_text(getattr(ai_msg, "content", "")).strip(),
+                    turn_status_after_round=(
+                        "running"
+                        if list(model_action.get("tool_calls") or [])
+                        else (
+                            "blocked"
+                            if trigger == "invalid_tool_call" and list(model_action.get("invalid_tool_calls") or [])
+                            else (
+                                "running"
+                                if list(model_action.get("invalid_tool_calls") or [])
+                                else ("completed" if bool(model_action.get("accepted")) else "blocked")
+                            )
+                        )
+                    ),
+                )
+                self._append_llm_exchange(llm_exchanges, recovery_exchange)
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="llm.action_recovery.finished",
+                    title="Model action recovery finished",
+                    detail=str(model_action.get("action_type") or "empty"),
+                    status="success",
+                    payload={"phase": phase, "trigger": trigger, "model_action": dict(model_action)},
+                    trace_events=trace_events,
+                )
+                return True
 
             while initial_invoke_ok:
                 if self._cancel_requested(context_payload):
@@ -4920,8 +5167,104 @@ class VintageProgrammerRuntime:
 
                 ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
                 tool_calls = list(model_action.get("tool_calls") or [])
+                invalid_tool_calls = list(model_action.get("invalid_tool_calls") or [])
                 step_action_type = str(model_action.get("action_type") or "").strip() or "empty"
                 step_accepted = bool(model_action.get("accepted"))
+                if invalid_tool_calls:
+                    if invalid_tool_call_recovery_count >= 1:
+                        blocked_reason = "invalid_tool_call_repeated"
+                        turn_status = "blocked"
+                        notes.append("invalid_tool_call_repeated")
+                    else:
+                        invalid_tool_call_recovery_count += 1
+                        recovery_prompt = self._build_invalid_tool_call_recovery_prompt(
+                            invalid_tool_calls=invalid_tool_calls,
+                        )
+                        replan_payload = {
+                            "trigger": "invalid_tool_call",
+                            "detail": ", ".join(
+                                f"{item.get('name') or 'tool'}:{item.get('error_kind') or 'invalid_tool_arguments'}"
+                                for item in invalid_tool_calls[:8]
+                            ),
+                            "known_facts": [],
+                            "failed_actions": [],
+                            "structured_failures": [
+                                {
+                                    "tool": str(item.get("name") or "tool"),
+                                    "category": "tool_call_failure",
+                                    "error_kind": str(item.get("error_kind") or "invalid_tool_arguments"),
+                                    "retryability": "change_arguments",
+                                }
+                                for item in invalid_tool_calls[:8]
+                            ],
+                            "prompt": recovery_prompt,
+                            "round_index": round_idx,
+                        }
+                        replan_history = [*replan_history, replan_payload][-8:]
+                        notes.append("model_action_recovery_requested:invalid_tool_call")
+                        emit_runtime_activity(
+                            "activity.delta",
+                            "loop.safeguard",
+                            "Malformed tool call detected; requesting a corrected native tool call.",
+                            payload={
+                                "model_action": dict(model_action),
+                                "replan_history": list(replan_history),
+                                **turn_activity_context,
+                            },
+                        )
+                        if request_model_action_recovery(
+                            trigger="invalid_tool_call",
+                            prompt=recovery_prompt,
+                        ):
+                            continue
+                        break
+                if (
+                    not tool_calls
+                    and not step_accepted
+                    and latest_tool_round_had_failure
+                    and not invalid_tool_calls
+                ):
+                    if empty_after_failure_recovery_count >= 1:
+                        blocked_reason = "model_action_empty_after_tool_failure"
+                        turn_status = "blocked"
+                        notes.append("model_action_empty_after_tool_failure")
+                    else:
+                        empty_after_failure_recovery_count += 1
+                        recovery_prompt = self._build_replan_checkpoint_prompt(
+                            locale=locale,
+                            current_goal=current_goal,
+                            current_task_focus=current_task_focus,
+                            progress_signals=progress_signals,
+                            tool_events=tool_events,
+                            trigger="empty_after_tool_failure",
+                        )
+                        replan_payload = {
+                            "trigger": "empty_after_tool_failure",
+                            "detail": "The model returned no executable action after a failed tool call.",
+                            "known_facts": self._recent_action_summaries(progress_signals),
+                            "failed_actions": self._recent_failed_action_summaries(tool_events),
+                            "structured_failures": self._recent_structured_failures(tool_events),
+                            "prompt": recovery_prompt,
+                            "round_index": round_idx,
+                        }
+                        replan_history = [*replan_history, replan_payload][-8:]
+                        notes.append("model_action_recovery_requested:empty_after_tool_failure")
+                        emit_runtime_activity(
+                            "activity.delta",
+                            "loop.safeguard",
+                            "The model stopped after a failed tool call; requesting a different executable action.",
+                            payload={
+                                "model_action": dict(model_action),
+                                "replan_history": list(replan_history),
+                                **turn_activity_context,
+                            },
+                        )
+                        if request_model_action_recovery(
+                            trigger="empty_after_tool_failure",
+                            prompt=recovery_prompt,
+                        ):
+                            continue
+                        break
                 if not tool_calls:
                     no_tool_response_kind = "final_answer" if step_accepted and ai_text else "empty_response"
                     if step_accepted and ai_text:
@@ -5735,6 +6078,10 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     locale=locale,
                 )
+                latest_tool_round_had_failure = any(
+                    str(item.get("status") or "").strip().lower() == "error"
+                    for item in round_signature_parts
+                )
 
                 if round_signature_parts:
                     execution_entry = ExecutionTraceEntry(
@@ -6222,6 +6569,7 @@ class VintageProgrammerRuntime:
                     turn_status_after_round=(
                         "running"
                         if list(model_action.get("tool_calls") or [])
+                        or list(model_action.get("invalid_tool_calls") or [])
                         else ("completed" if bool(model_action.get("accepted")) else "blocked")
                     ),
                 )

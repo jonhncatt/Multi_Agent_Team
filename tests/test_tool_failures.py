@@ -54,6 +54,27 @@ def test_successful_event_has_no_failure_classification() -> None:
     ) is None
 
 
+def test_apply_patch_existing_file_requires_changed_arguments() -> None:
+    failure = classify_tool_failure(
+        tool_name="apply_patch",
+        payload={
+            "ok": False,
+            "error": {
+                "kind": "file_already_exists",
+                "operation": "add",
+                "message": "redacted path",
+            },
+        },
+        event_status="error",
+    )
+
+    assert failure is not None
+    assert failure["category"] == "tool_call_failure"
+    assert failure["error_kind"] == "file_already_exists"
+    assert failure["retryability"] == "change_arguments"
+    assert failure["required_action"] == "revise_arguments_or_choose_another_tool"
+
+
 def test_stored_runtime_classification_is_reused_by_eval() -> None:
     failure = classify_tool_event(
         {

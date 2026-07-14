@@ -4712,7 +4712,20 @@ class LocalToolExecutor:
                         access_roots=self._current_access_roots(),
                     )
                     if target.exists():
-                        return {"ok": False, "error": f"File already exists: {raw_path}", "files": files}
+                        return {
+                            "ok": False,
+                            "error": {
+                                "kind": "file_already_exists",
+                                "operation": "add",
+                                "message": f"Cannot add file because it already exists: {raw_path}",
+                                "recovery": (
+                                    "Read the existing file if needed, then retry with "
+                                    f"*** Update File: {raw_path}; do not repeat *** Add File."
+                                ),
+                            },
+                            "files": files,
+                            "summary": "apply_patch Add File rejected because the target already exists",
+                        }
                     pending_writes.append((target, str(op.get("content") or "")))
                     files.append(str(target))
                     continue

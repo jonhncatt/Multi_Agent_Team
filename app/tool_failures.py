@@ -21,6 +21,7 @@ _VALIDATION_KINDS = {
     "command_path_outside_allowed_roots",
     "compound_shell_subcommand_rejected",
     "dangerous_command",
+    "file_already_exists",
 }
 _ENVIRONMENT_KINDS = {
     "authentication_unavailable",

@@ -718,6 +718,21 @@ def test_apply_patch_returns_structured_failure_for_missing_target(tmp_path: Pat
     assert result["files"] == []
 
 
+def test_apply_patch_add_existing_file_returns_actionable_structured_failure(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "existing.txt"
+    target.write_text("keep me\n", encoding="utf-8")
+    add_patch = "*** Begin Patch\n*** Add File: existing.txt\n+replacement\n*** End Patch\n"
+
+    result = executor.apply_patch(add_patch, cwd=str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "file_already_exists"
+    assert result["error"]["operation"] == "add"
+    assert "*** Update File: existing.txt" in result["error"]["recovery"]
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+
+
 def test_apply_patch_requires_runtime_write_scope_for_team_and_rejects_project_skill_paths(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     team_root = tmp_path / "vp-install" / "skills" / "team"

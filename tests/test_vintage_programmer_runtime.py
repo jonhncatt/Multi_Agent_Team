@@ -1900,6 +1900,239 @@ def test_runtime_blocks_when_followup_model_action_is_empty_after_successful_loc
     assert result["execution_trace"][-1]["payload"]["response_kind"] == "empty_response"
 
 
+def test_runtime_recovers_once_from_invalid_tool_call(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    (tmp_path / "notes.txt").write_text("local context", encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                invalid_tool_calls=[
+                    {
+                        "id": "bad-call",
+                        "name": "apply_patch",
+                        "args": '{"patch":',
+                        "error": "Function apply_patch arguments are not valid JSON.",
+                    }
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-recovered", "name": "read_file", "args": {"path": "notes.txt"}}],
+            ),
+            _FakeMessage(content="recovered after correcting the native tool call"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="读取 notes.txt 后给出结论",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", locale="zh-CN"),
+        context={
+            "session_id": "s-invalid-tool-call-recovery",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "recovered after correcting the native tool call"
+    assert backend.tools.calls == [("read_file", {"path": "notes.txt"})]
+    assert result["replan_history"][0]["trigger"] == "invalid_tool_call"
+    exchanges = result["activity"]["llm_exchanges"]
+    assert exchanges[0]["harness_interpretation"]["decision"] == "invalid_tool_call"
+    assert exchanges[0]["harness_interpretation"]["has_invalid_tool_calls"] is True
+    assert exchanges[1]["phase"] == "model_action_recovery:invalid_tool_call"
+    assert exchanges[1]["harness_interpretation"]["decision"] == "tool_call"
+    assert result["model_action"]["action_type"] == "final_answer"
+    assert "args" not in result["replan_history"][0]["structured_failures"][0]
+
+
+def test_runtime_stops_after_corrected_tool_call_is_still_invalid(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    invalid = {
+        "id": "bad-call",
+        "name": "apply_patch",
+        "args": '{"patch":',
+        "error": "Function apply_patch arguments are not valid JSON.",
+    }
+    backend = _FakeBackend(
+        [
+            _FakeMessage(content="", invalid_tool_calls=[invalid]),
+            _FakeMessage(content="", invalid_tool_calls=[{**invalid, "id": "bad-call-again"}]),
+            _FakeMessage(content="must not be reached"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="修改现有文件",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", locale="zh-CN"),
+        context={
+            "session_id": "s-invalid-tool-call-repeated",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "invalid_tool_call_repeated"
+    assert backend.tools.calls == []
+    assert len(backend.invocations) == 2
+    assert "重复返回了无效工具调用" in result["text"]
+    assert "请明确下一步要检查的文件" not in result["text"]
+    exchanges = result["activity"]["llm_exchanges"]
+    assert exchanges[-1]["harness_interpretation"]["decision"] == "invalid_tool_call"
+    assert exchanges[-1]["harness_interpretation"]["turn_status_after_round"] == "blocked"
+
+
+def test_runtime_replans_when_model_goes_empty_after_apply_patch_failure(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ScriptedTools(
+        [
+            {
+                "ok": False,
+                "error": {
+                    "kind": "file_already_exists",
+                    "operation": "add",
+                    "message": "Cannot add file because it already exists: SKILL.md",
+                    "recovery": "Retry with *** Update File: SKILL.md.",
+                },
+            },
+            {"ok": True, "files": [str(tmp_path / "SKILL.md")]},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-add-existing",
+                        "name": "apply_patch",
+                        "args": {"patch": "*** Begin Patch\n*** Add File: SKILL.md\n+new\n*** End Patch"},
+                    }
+                ],
+            ),
+            _FakeMessage(content=""),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-update-existing",
+                        "name": "apply_patch",
+                        "args": {
+                            "patch": "*** Begin Patch\n*** Update File: SKILL.md\n@@\n-old\n+new\n*** End Patch"
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="updated the existing skill"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="更新现有的 SKILL.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", locale="zh-CN"),
+        context={
+            "session_id": "s-empty-after-file-exists",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"].startswith("updated the existing skill")
+    assert [name for name, _ in tools.calls] == ["apply_patch", "apply_patch"]
+    assert result["failure_recovery"]["records"][0]["error_kind"] == "file_already_exists"
+    assert result["failure_recovery"]["recoveries"][-1]["recovered_by_tool"] == "apply_patch"
+    assert result["replan_history"][0]["trigger"] == "empty_after_tool_failure"
+    assert "file_already_exists" in result["replan_history"][0]["prompt"]
+    assert any(
+        exchange["phase"] == "model_action_recovery:empty_after_tool_failure"
+        for exchange in result["activity"]["llm_exchanges"]
+    )
+
+
+def test_runtime_reports_specific_block_when_empty_after_failure_recovery(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    tools = _ScriptedTools(
+        [
+            {
+                "ok": False,
+                "error": {
+                    "kind": "file_already_exists",
+                    "message": "Cannot add file because it already exists: SKILL.md",
+                },
+            }
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "SKILL.md"}}],
+            ),
+            _FakeMessage(content=""),
+            _FakeMessage(content=""),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="继续处理现有 SKILL.md",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", locale="zh-CN"),
+        context={
+            "session_id": "s-empty-after-failure-recovery-empty",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "model_action_empty_after_tool_failure"
+    assert len(backend.invocations) == 3
+    assert result["replan_history"][0]["trigger"] == "empty_after_tool_failure"
+    assert "自动恢复没有产生下一步" in result["text"]
+    assert "请明确下一步要检查的文件" not in result["text"]
+
+
 def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
