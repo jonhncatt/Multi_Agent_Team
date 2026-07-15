@@ -3816,6 +3816,21 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [evalDialogOpen, setEvalDialogOpen] = useState(false);
+  const [evalCatalog, setEvalCatalog] = useState([]);
+  const [evalRuns, setEvalRuns] = useState([]);
+  const [evalSubmitting, setEvalSubmitting] = useState(false);
+  const [evalError, setEvalError] = useState("");
+  const [evalForm, setEvalForm] = useState({
+    cases: "evals/codex_alignment_cases.json",
+    name: "",
+    repeat: 3,
+    provider: "",
+    model: "",
+    output: "",
+    live: false,
+    keep_workspaces: false,
+  });
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
   const [bootState, setBootState] = useState({ active: true, phase: "workspace" });
@@ -4016,6 +4031,14 @@ function App() {
   const uiLocale = normalizeLocaleValue(chatSettings.locale || "", supportedLocales, defaultLocale);
   const t = (key, replacements = null) => translateUi(uiLocale, key, replacements);
   const currentTabLabel = (tab) => translateUi(uiLocale, `tabs.${tab}`);
+  const selectedEvalSuite = evalCatalog.find((item) => String(item.path || "") === String(evalForm.cases || "")) || evalCatalog[0] || null;
+  const activeEvalRun = evalRuns.find((item) => ["queued", "running"].includes(String(item.status || ""))) || null;
+  const evalButtonLabel = activeEvalRun
+    ? t("eval.button_progress", {
+        completed: Number(activeEvalRun.completed_attempts || 0),
+        total: Number(activeEvalRun.total_attempts || 0),
+      })
+    : t("tabs.eval");
 
   function isNearChatBottom(element, threshold = CHAT_AUTO_SCROLL_THRESHOLD_PX) {
     const el = element || chatListRef.current;
@@ -4413,6 +4436,19 @@ function App() {
     return () => window.clearInterval(intervalId);
   }, [projectId, chatSettings.model, chatSettings.max_output_tokens, anyThreadBusy, activeRunId, drawerView, contextMeterOpen]);
 
+  useEffect(() => {
+    refreshEvalRuns({ background: true });
+  }, []);
+
+  useEffect(() => {
+    const hasActiveEval = evalRuns.some((item) => ["queued", "running"].includes(String(item.status || "")));
+    if (!hasActiveEval) return undefined;
+    const intervalId = window.setInterval(() => {
+      refreshEvalRuns({ background: true });
+    }, 2000);
+    return () => window.clearInterval(intervalId);
+  }, [evalRuns.some((item) => ["queued", "running"].includes(String(item.status || "")))]);
+
   function clearUiError() {
     setUiError(null);
   }
@@ -4675,6 +4711,68 @@ function App() {
       throw errorWithUiError(uiError);
     }
     return res.json();
+  }
+
+  async function refreshEvalCatalog(options = {}) {
+    try {
+      const data = await fetchJson("/api/evals/catalog");
+      const suites = Array.isArray(data.suites) ? data.suites : [];
+      setEvalCatalog(suites);
+      return suites;
+    } catch (err) {
+      if (!options.background) setEvalError(normalizeUiError(uiLocale, err, t("eval.errors.catalog")).summary);
+      return [];
+    }
+  }
+
+  async function refreshEvalRuns(options = {}) {
+    try {
+      const data = await fetchJson("/api/evals/runs?limit=20");
+      const runs = Array.isArray(data.runs) ? data.runs : [];
+      setEvalRuns(runs);
+      return runs;
+    } catch (err) {
+      if (!options.background) setEvalError(normalizeUiError(uiLocale, err, t("eval.errors.runs")).summary);
+      return [];
+    }
+  }
+
+  async function openEvalDialog() {
+    setEvalDialogOpen(true);
+    setEvalError("");
+    setEvalForm((prev) => ({
+      ...prev,
+      provider: String(prev.provider || activeProvider || ""),
+      model: String(
+        prev.model
+        || chatSettings.model
+        || (activeProviderProfile && activeProviderProfile.default_model)
+        || (health && health.default_model)
+        || "",
+      ),
+    }));
+    await Promise.all([refreshEvalCatalog(), refreshEvalRuns()]);
+  }
+
+  async function startEvalRun() {
+    if (evalSubmitting) return;
+    setEvalSubmitting(true);
+    setEvalError("");
+    try {
+      const job = await fetchJson("/api/evals/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...evalForm,
+          repeat: Math.max(1, Math.min(10, Number(evalForm.repeat || 1))),
+        }),
+      });
+      setEvalRuns((prev) => [job, ...prev.filter((item) => String(item.id || "") !== String(job.id || ""))]);
+    } catch (err) {
+      setEvalError(normalizeUiError(uiLocale, err, t("eval.errors.start")).summary);
+    } finally {
+      setEvalSubmitting(false);
+    }
   }
 
   function applyHealthSlices(bootstrapData, runtimeData) {
@@ -6115,22 +6213,15 @@ function App() {
           queued_at: Date.now(),
         },
       });
-      const insertSteerBeforePendingAssistant = (items) => {
+      const appendSteerAfterCurrentResponse = (items) => {
         const next = Array.isArray(items) ? [...items] : [];
-        let insertAt = next.length;
-        for (let index = next.length - 1; index >= 0; index -= 1) {
-          if (next[index] && next[index].role === "assistant" && next[index].pending) {
-            insertAt = index;
-            break;
-          }
-        }
-        next.splice(insertAt, 0, steerMessage);
+        next.push(steerMessage);
         return next;
       };
-      setMessages((prev) => insertSteerBeforePendingAssistant(prev));
+      setMessages((prev) => appendSteerAfterCurrentResponse(prev));
       updateThreadSnapshot(String(sessionId || ""), (existing) => ({
         ...existing,
-        messages: insertSteerBeforePendingAssistant(existing.messages),
+        messages: appendSteerAfterCurrentResponse(existing.messages),
       }));
       if (overrideText == null) setDraft("");
       clearUiError();
@@ -6675,6 +6766,66 @@ function App() {
           )),
         );
       };
+      const completeCurrentAssistantSegment = (segment) => {
+        const item = segment && typeof segment === "object" ? segment : {};
+        const currentId = String((pendingMessage && pendingMessage.id) || "");
+        if (!currentId) return;
+        const segmentId = String(item.id || currentId);
+        const segmentText = String(item.text || assistantText || "").trim();
+        const completedAt = normalizeActivityTimestamp(item.completed_at || 0) || Date.now();
+        updateOwnerMessages((prev) => prev.map((message) => {
+          if (String(message.id || "") !== currentId) return message;
+          const segmentActivity = mergeActivityState(message.activity || latestActivity, {
+            status: "completed",
+            finished_at: completedAt,
+            final_answer: segmentText,
+            model_draft: "",
+          });
+          return createMessage("assistant", segmentText, {
+            id: segmentId,
+            activity: segmentActivity,
+            answerBundle: message.answerBundle,
+            runArtifact: message.runArtifact,
+          });
+        }));
+        pendingMessage = { ...pendingMessage, id: segmentId, pending: false };
+      };
+      const beginNextAssistantSegment = () => {
+        const startedAt = Date.now();
+        const nextPending = createMessage("assistant", t("labels.processing"), {
+          pending: true,
+          activity: {
+            status: "waiting_model",
+            run_id: String(activeRunId || ""),
+            started_at: startedAt,
+            turn_started_at: startedAt,
+            live_model: runModelName,
+            trace_events: [],
+          },
+        });
+        updateOwnerMessages((prev) => {
+          const next = Array.isArray(prev) ? [...prev] : [];
+          const nextQueuedIndex = next.findIndex((message) => (
+            message
+            && message.role === "user"
+            && String(((message.activity || {}).status) || "") === "steer_queued"
+          ));
+          if (nextQueuedIndex >= 0) next.splice(nextQueuedIndex, 0, nextPending);
+          else next.push(nextPending);
+          return next;
+        });
+        pendingMessage = nextPending;
+        latestActivity = normalizeMessageActivity(nextPending.activity);
+        latestRunSnapshot = {
+          ...latestRunSnapshot,
+          turn_status: "running",
+          final_answer: "",
+          model_draft: "",
+        };
+        assistantText = "";
+        assistantMessageStarted = false;
+        modelRequestStarted = false;
+      };
       const resolveStableAssistantText = (options = {}) => {
         const allowDraft = Boolean(options.allowDraft);
         const candidates = [
@@ -7079,6 +7230,9 @@ function App() {
               });
               pushLogWithLimit(setLogs, "system", explanation);
               pushLiveLog("system", explanation);
+            } else if (event === "turn/segment/completed") {
+              const segment = payload.segment && typeof payload.segment === "object" ? payload.segment : {};
+              completeCurrentAssistantSegment(segment);
             } else if (event === "turn/steer/accepted") {
               const steer = payload.steer && typeof payload.steer === "object" ? payload.steer : {};
               const steerId = String(steer.id || "");
@@ -7096,9 +7250,9 @@ function App() {
                     : item
                 )));
               }
-              assistantText = "";
-              patchPendingActivity((activity) => mergeActivityState(activity, { model_draft: "" }));
-              replacePendingText(t("activity.status.waiting_model"));
+              if (Boolean(payload.starts_next_response)) {
+                beginNextAssistantSegment();
+              }
               updateOwnerLiveHeartbeat({
                 status: "waiting_model",
                 action: t("steer.accepted"),
@@ -7196,12 +7350,11 @@ function App() {
                 assistantMessageStarted = true;
                 assistantText = String(item.text || assistantText || "");
                 patchPendingActivity((activity) => mergeActivityState(activity, {
-                  status: "completed",
-                  final_answer: assistantText,
-                  model_draft: "",
+                  status: "waiting_model",
+                  final_answer: "",
+                  model_draft: assistantText,
                 }));
-                if (assistantText) completePendingText(assistantText);
-                if (assistantText) collapseLiveRunUi();
+                if (assistantText) replacePendingText(assistantText);
               } else if (itemType === "userInputRequest") {
                 const itemApprovalRequest = item.approval_request && typeof item.approval_request === "object"
                   ? item.approval_request
@@ -8868,6 +9021,13 @@ function App() {
               if (!specs.length) refreshSpecs();
             }}>${currentTabLabel("agent")}</button>
             <button className=${`mini-btn ${drawerView === "settings" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "settings" ? "" : "settings")}>${currentTabLabel("settings")}</button>
+            <button
+              className=${`mini-btn eval-nav-btn ${activeEvalRun ? "is-running" : ""}`}
+              type="button"
+              onClick=${openEvalDialog}
+            >
+              ${evalButtonLabel}
+            </button>
           </div>
         </header>
 
@@ -9270,6 +9430,142 @@ function App() {
 	                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${currentThreadBusy || !String(activePendingApproval.approval_token || "").trim()}>
 	                    ${t("approval_modal.approve_once")}
 	                  </button>
+	                </div>
+	              </div>
+	            </div>
+	          `
+	        : null}
+
+	      ${evalDialogOpen
+	        ? html`
+	            <div className="project-modal-backdrop" id="evalModal">
+	              <div className="project-modal eval-modal">
+	                <div className="eval-modal-head">
+	                  <div>
+	                    <div className="panel-title">${t("eval.title")}</div>
+	                    <div className="path-hint">${t("eval.hint")}</div>
+	                  </div>
+	                  <button className="drawer-close" type="button" onClick=${() => setEvalDialogOpen(false)}>${t("buttons.close")}</button>
+	                </div>
+	                <div className="eval-form-grid">
+	                  <label className="form-field eval-form-wide">
+	                    <span>${t("eval.suite")}</span>
+	                    <select
+	                      className="drawer-input"
+	                      value=${evalForm.cases}
+	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, cases: event.currentTarget.value, name: "" }))}
+	                    >
+	                      ${evalCatalog.length
+	                        ? evalCatalog.map((item) => html`<option key=${item.path} value=${item.path}>${item.suite} · ${item.case_count}</option>`)
+	                        : html`<option value=${evalForm.cases}>${evalForm.cases}</option>`}
+	                    </select>
+	                  </label>
+	                  <label className="form-field eval-form-wide">
+	                    <span>${t("eval.case")}</span>
+	                    <select
+	                      className="drawer-input"
+	                      value=${evalForm.name}
+	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, name: event.currentTarget.value }))}
+	                    >
+	                      <option value="">${t("eval.all_cases")}</option>
+	                      ${(selectedEvalSuite && Array.isArray(selectedEvalSuite.cases) ? selectedEvalSuite.cases : []).map(
+	                        (caseName) => html`<option key=${caseName} value=${caseName}>${caseName}</option>`,
+	                      )}
+	                    </select>
+	                  </label>
+	                  <label className="form-field">
+	                    <span>${t("eval.repeat")}</span>
+	                    <input
+	                      className="drawer-input"
+	                      type="number"
+	                      min="1"
+	                      max="10"
+	                      value=${evalForm.repeat}
+	                      onInput=${(event) => setEvalForm((prev) => ({ ...prev, repeat: event.currentTarget.value }))}
+	                    />
+	                  </label>
+	                  <label className="form-field">
+	                    <span>${t("eval.provider")}</span>
+	                    <select
+	                      className="drawer-input"
+	                      value=${evalForm.provider}
+	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, provider: event.currentTarget.value }))}
+	                    >
+	                      ${dedupeStrings([evalForm.provider, ...availableProviders]).map(
+	                        (providerName) => html`<option key=${providerName} value=${providerName}>${providerName}</option>`,
+	                      )}
+	                    </select>
+	                  </label>
+	                  <label className="form-field eval-form-wide">
+	                    <span>${t("eval.model")}</span>
+	                    <input
+	                      className="drawer-input"
+	                      type="text"
+	                      value=${evalForm.model}
+	                      onInput=${(event) => setEvalForm((prev) => ({ ...prev, model: event.currentTarget.value }))}
+	                    />
+	                  </label>
+	                  <label className="form-field eval-form-wide">
+	                    <span>${t("eval.output")}</span>
+	                    <input
+	                      className="drawer-input"
+	                      type="text"
+	                      value=${evalForm.output}
+	                      placeholder=${t("eval.output_auto")}
+	                      onInput=${(event) => setEvalForm((prev) => ({ ...prev, output: event.currentTarget.value }))}
+	                    />
+	                  </label>
+	                </div>
+	                <div className="eval-options">
+	                  <label>
+	                    <input
+	                      type="checkbox"
+	                      checked=${Boolean(evalForm.live)}
+	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, live: event.currentTarget.checked }))}
+	                    />
+	                    <span>${t("eval.live")}</span>
+	                  </label>
+	                  <label>
+	                    <input
+	                      type="checkbox"
+	                      checked=${Boolean(evalForm.keep_workspaces)}
+	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, keep_workspaces: event.currentTarget.checked }))}
+	                    />
+	                    <span>${t("eval.keep_workspaces")}</span>
+	                  </label>
+	                </div>
+	                ${evalError ? html`<div className="status-error">${evalError}</div>` : null}
+	                <div className="modal-actions eval-actions">
+	                  <button className="ghost-btn" type="button" onClick=${() => refreshEvalRuns()} disabled=${evalSubmitting}>${t("buttons.refresh")}</button>
+	                  <button className="solid-btn" type="button" onClick=${startEvalRun} disabled=${evalSubmitting || !evalForm.live}>
+	                    ${evalSubmitting ? t("eval.starting") : t("eval.start")}
+	                  </button>
+	                </div>
+	                <div className="eval-run-list">
+	                  <div className="panel-title">${t("eval.recent_runs")}</div>
+	                  ${evalRuns.length
+	                    ? evalRuns.map((job) => {
+	                        const status = String(job.status || "queued");
+	                        const summary = job.summary && typeof job.summary === "object" ? job.summary : {};
+	                        const progress = `${Number(job.completed_attempts || 0)}/${Number(job.total_attempts || 0)}`;
+	                        return html`
+	                          <div key=${job.id} className=${`eval-run-row status-${status}`}>
+	                            <div className="eval-run-main">
+	                              <strong>${job.suite || job.cases_path}</strong>
+	                              <span>${t(`eval.status.${status}`)} · ${progress}</span>
+	                            </div>
+	                            ${job.current_case
+	                              ? html`<div className="eval-run-detail">${job.current_case} · attempt ${job.current_attempt}</div>`
+	                              : null}
+	                            ${Object.keys(summary).length
+	                              ? html`<div className="eval-run-detail">${t("eval.result_summary", { passed: Number(summary.passed || 0), failed: Number(summary.failed || 0), blocked: Number(summary.blocked || 0) })}</div>`
+	                              : null}
+	                            ${job.error ? html`<div className="eval-run-detail tone-error">${job.error}</div>` : null}
+	                            ${job.report_path ? html`<div className="eval-run-path">${job.report_path}</div>` : null}
+	                          </div>
+	                        `;
+	                      })
+	                    : html`<div className="path-hint">${t("eval.no_runs")}</div>`}
 	                </div>
 	              </div>
 	            </div>

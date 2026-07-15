@@ -1294,6 +1294,7 @@ def run_eval_suite(
     keep_workspaces: bool = False,
     runtime_factory: Callable[[AppConfig], Any] = _runtime_factory,
     verifier_script: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     validate_eval_suite(suite)
     repeat_count = max(1, int(repeat))
@@ -1312,8 +1313,31 @@ def run_eval_suite(
     run_label = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
     workspace_root = (workspaces_root or (ROOT / "artifacts" / "evals" / "workspaces" / run_label)).resolve()
     results: list[dict[str, Any]] = []
+    total_attempts = len(cases) * repeat_count
+    completed_attempts = 0
+
+    def emit(payload: dict[str, Any]) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(dict(payload))
+        except Exception:
+            # Eval progress is diagnostic UI state and must never change the
+            # authoritative attempt result.
+            return
+
     for case in cases:
         for attempt in range(1, repeat_count + 1):
+            case_name = str(case.get("name") or "case")
+            emit(
+                {
+                    "event": "attempt_started",
+                    "case": case_name,
+                    "attempt": attempt,
+                    "completed_attempts": completed_attempts,
+                    "total_attempts": total_attempts,
+                }
+            )
             workspace = workspace_root / _slug(str(case.get("name") or "case")) / f"attempt-{attempt}"
             result = run_eval_attempt(
                 case,
@@ -1325,6 +1349,17 @@ def run_eval_suite(
                 verifier_script=verifier_script,
             )
             results.append(result)
+            completed_attempts += 1
+            emit(
+                {
+                    "event": "attempt_finished",
+                    "case": case_name,
+                    "attempt": attempt,
+                    "status": str(result.get("status") or ""),
+                    "completed_attempts": completed_attempts,
+                    "total_attempts": total_attempts,
+                }
+            )
             if not keep_workspaces and result.get("status") == "passed":
                 shutil.rmtree(workspace, ignore_errors=True)
                 result["workspace_retained"] = False

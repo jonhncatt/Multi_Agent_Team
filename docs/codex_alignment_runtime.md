@@ -8,7 +8,8 @@
 - `POST /api/chat/runs/{run_id}/steer` 将文本加入当前 Turn 的队列，并立即返回 `queued`。
 - Runtime 只在安全边界取走队列：一轮模型回复准备结束时，或一组工具调用全部回灌完成后。
 - 追加指令作为真实 `user` 消息插入 Thread transcript；不启动第二条并行模型链，也不改变已有工具调用顺序。
-- 前端先显示“已排队”，收到 `turn/steer/accepted` 后显示“Agent 已接收”。当前版本的运行中追加仅支持文本，不携带附件。
+- 前端先把追加消息稳定保留在当前回复之后并显示“已排队”。Runtime 通过 `turn/segment/completed` 结束前一回复段，再通过 `turn/steer/accepted` 开始下一回复段；执行面板不会因为单次模型消息结束而提前收起。
+- Session turns 按 `原请求 → 中间回复 → 追加指令 → 最终回复` 持久化，因此刷新页面后不会只剩最后一段回复。当前版本的运行中追加仅支持文本，不携带附件。
 - Runtime 在最终空队列检查时原子关闭接收窗口，避免 Turn 已结束后仍接受消息。
 
 ## 单层 Subagent
@@ -17,6 +18,7 @@
 - 第一版面向文件探索、测试、日志分析和总结；每次调用同步运行一个独立上下文，所以不会出现多个 Subagent 同时修改同一文件。
 - 子上下文不继承主 Thread 历史，只接收自包含任务、当前项目、附件和 RuntimeBoundary。
 - 子 Agent 没有 `spawn_subagent`、`apply_patch`、`save_skill` 或用户询问工具；工作区写入能力关闭。它可以使用文件读取工具和 `exec_command` 做聚焦测试，但提示词明确禁止通过命令修改工作区。
+- Read-only Subagent 不进入交互式命令审批流程。`python -c`、`node -e` 或需要执行网络来源代码的命令会返回结构化的“改用安全方案”结果，要求改用文件工具、已有脚本或已有测试模块；全局 provenance 策略不放宽。
 - 子 Agent 的完整上下文不会回灌主 Thread。主 Agent 只收到状态、精简摘要、工具数量和 token 统计。
 - 前端将 `subagent` stream item 显示为主任务内的折叠卡片；没有独立聊天页或递归子 Agent。
 
@@ -27,6 +29,15 @@
 - Subagent 继续使用公司已有 Chat Completions provider 和原生 tool calling，不要求 Responses API。
 
 ## 验证
+
+首页右上角 `Eval` 按钮提供后台运行中心。弹窗只允许选择 `evals/` 下的合法 suite，报告只允许写入 `artifacts/evals/`。后端使用单 worker 顺序执行，关闭弹窗或切换页面不影响运行；状态持久化在 `artifacts/evals/jobs/`，应用异常重启后未完成任务标为 `interrupted`，不会误报成功。
+
+相关 API 均为新增接口，不改变现有聊天 API：
+
+- `GET /api/evals/catalog`
+- `GET /api/evals/runs`
+- `GET /api/evals/runs/{job_id}`
+- `POST /api/evals/runs`
 
 离线结构检查不会调用模型：
 

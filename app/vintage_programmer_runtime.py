@@ -3666,6 +3666,7 @@ class VintageProgrammerRuntime:
         run_id: str = "",
         skill_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
+        subagent_read_only: bool = False,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3692,6 +3693,8 @@ class VintageProgrammerRuntime:
             kwargs["skill_writer"] = skill_writer
         if self._callable_accepts_kwarg(setter, "subagent_runner"):
             kwargs["subagent_runner"] = subagent_runner
+        if self._callable_accepts_kwarg(setter, "subagent_read_only"):
+            kwargs["subagent_read_only"] = bool(subagent_read_only)
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
             kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
         if self._callable_accepts_kwarg(setter, "builtin_skill_roots"):
@@ -4551,6 +4554,7 @@ class VintageProgrammerRuntime:
         run_started_at = time.monotonic()
         answer_stream_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
         steered_user_messages: list[dict[str, Any]] = []
+        intermediate_turns: list[dict[str, Any]] = []
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
@@ -4569,6 +4573,12 @@ class VintageProgrammerRuntime:
         activity_sequence = 0
         current_step_index = 0
         llm_exchange_round = 0
+
+        def reset_answer_stream_for_next_segment() -> None:
+            next_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
+            next_state["item_id"] = f"{run_id or 'turn'}:agent_message:{uuid.uuid4().hex[:10]}"
+            answer_stream_state.clear()
+            answer_stream_state.update(next_state)
 
         def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
             drain = context_payload.get("drain_pending_steers")
@@ -4595,16 +4605,6 @@ class VintageProgrammerRuntime:
                 }
                 accepted.append(normalized)
                 steered_user_messages.append(normalized)
-                if progress_cb is not None:
-                    progress_cb(
-                        {
-                            "event": "turn/steer/accepted",
-                            "thread_id": session_id,
-                            "turn_id": run_id,
-                            "run_id": run_id,
-                            "steer": dict(normalized),
-                        }
-                    )
             return accepted
 
         def append_steers_to_model(steers: list[dict[str, Any]]) -> None:
@@ -4621,6 +4621,75 @@ class VintageProgrammerRuntime:
                 )
                 messages.append(steer_message)
                 turn_transcript_messages.append(steer_message)
+
+        def accept_steers_at_boundary(
+            steers: list[dict[str, Any]],
+            *,
+            boundary: str,
+            response_text: str = "",
+        ) -> None:
+            if not steers:
+                return
+            completed_at = time.time()
+            segment_id = f"{run_id or 'turn'}:segment:{uuid.uuid4().hex[:10]}"
+            visible_response = str(response_text or "").strip()
+            if visible_response:
+                intermediate_turns.append(
+                    {
+                        "id": segment_id,
+                        "role": "assistant",
+                        "text": visible_response,
+                        "activity": {
+                            "status": "completed",
+                            "run_id": run_id,
+                            "finished_at": completed_at,
+                        },
+                    }
+                )
+            if progress_cb is not None:
+                progress_cb(
+                    {
+                        "event": "turn/segment/completed",
+                        "thread_id": session_id,
+                        "turn_id": run_id,
+                        "run_id": run_id,
+                        "segment": {
+                            "id": segment_id,
+                            "text": visible_response,
+                            "boundary": str(boundary or "model"),
+                            "completed_at": completed_at,
+                        },
+                    }
+                )
+            for index, steer in enumerate(list(steers)):
+                intermediate_turns.append(
+                    {
+                        "id": str(steer.get("id") or uuid.uuid4()),
+                        "role": "user",
+                        "text": str(steer.get("message") or "").strip(),
+                        "activity": {
+                            "status": "steer_accepted",
+                            "run_id": run_id,
+                            "steer_id": str(steer.get("id") or ""),
+                            "queued_at": float(steer.get("queued_at") or 0.0),
+                            "accepted_at": float(steer.get("accepted_at") or completed_at),
+                        },
+                    }
+                )
+                if progress_cb is not None:
+                    progress_cb(
+                        {
+                            "event": "turn/steer/accepted",
+                            "thread_id": session_id,
+                            "turn_id": run_id,
+                            "run_id": run_id,
+                            "steer": dict(steer),
+                            "boundary": str(boundary or "model"),
+                            "batch_index": index,
+                            "batch_size": len(steers),
+                            "starts_next_response": index == len(steers) - 1,
+                        }
+                    )
 
         def emit_subagent_item(event: str, item: dict[str, Any]) -> None:
             normalized = dict(item or {})
@@ -4910,6 +4979,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 skill_writer=skill_writer,
                 subagent_runner=subagent_runner,
+                subagent_read_only=bool(context_payload.get("subagent_read_only")),
             )
 
         user_input_response = (
@@ -5166,6 +5236,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_writer=skill_writer,
                     subagent_runner=subagent_runner,
+                    subagent_read_only=bool(context_payload.get("subagent_read_only")),
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -5470,12 +5541,17 @@ class VintageProgrammerRuntime:
                 if not tool_calls:
                     pending_steers = drain_pending_steers(final=True)
                     if pending_steers:
+                        accept_steers_at_boundary(
+                            pending_steers,
+                            boundary="after_response",
+                            response_text=ai_text,
+                        )
                         messages.append(ai_msg)
                         turn_transcript_messages.append(ai_msg)
                         append_steers_to_model(pending_steers)
                         final_answer = ""
                         model_draft = ""
-                        answer_stream_state["text"] = ""
+                        reset_answer_stream_for_next_segment()
                         notes.append(f"user_steer_accepted:{len(pending_steers)}")
                         emit_runtime_activity(
                             "activity.delta",
@@ -6007,6 +6083,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         skill_writer=skill_writer,
                         subagent_runner=subagent_runner,
+                        subagent_read_only=bool(context_payload.get("subagent_read_only")),
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -6445,7 +6522,12 @@ class VintageProgrammerRuntime:
 
                 pending_steers = drain_pending_steers(final=False)
                 if pending_steers:
+                    accept_steers_at_boundary(
+                        pending_steers,
+                        boundary="tool",
+                    )
                     append_steers_to_model(pending_steers)
+                    reset_answer_stream_for_next_segment()
                     notes.append(f"user_steer_accepted:{len(pending_steers)}")
                     emit_runtime_activity(
                         "activity.delta",
@@ -6805,6 +6887,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_writer=skill_writer,
                     subagent_runner=subagent_runner,
+                    subagent_read_only=bool(context_payload.get("subagent_read_only")),
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -7282,6 +7365,7 @@ class VintageProgrammerRuntime:
                 ],
                 "live_items": [dict(item) for item in stream_items],
                 "steered_user_messages": [dict(item) for item in steered_user_messages],
+                "intermediate_turns": [dict(item) for item in intermediate_turns],
                 "trace_events": [dict(item) for item in trace_events],
             },
             "tool_boundary_clean": (
@@ -7294,6 +7378,7 @@ class VintageProgrammerRuntime:
             "tool_events": [dump_model(item) for item in tool_events],
             "transcript_delta": self._transcript_delta(turn_transcript_messages),
             "steered_user_messages": [dict(item) for item in steered_user_messages],
+            "intermediate_turns": [dict(item) for item in intermediate_turns],
             "token_usage": usage_total,
             "active_context_usage": dict(active_context_usage),
             "inspector": inspector,

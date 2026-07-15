@@ -545,6 +545,7 @@ button {
 
 .head-left {
   display: flex;
+  flex: 1 1 auto;
   gap: 10px;
   align-items: center;
   min-width: 0;
@@ -601,8 +602,9 @@ button {
 
 .head-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 4px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
@@ -2104,6 +2106,128 @@ button {
   padding: 22px;
 }
 
+.eval-nav-btn.is-running {
+  border-color: rgba(37, 99, 235, 0.38);
+  background: rgba(239, 246, 255, 0.96);
+  color: #1d4ed8;
+}
+
+.project-modal.eval-modal {
+  width: min(760px, 100%);
+  max-height: min(860px, calc(100vh - 40px));
+  overflow: auto;
+}
+
+.eval-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.eval-modal-head .drawer-close {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.eval-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+}
+
+.eval-form-wide {
+  grid-column: 1 / -1;
+}
+
+.eval-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 22px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.eval-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.eval-actions {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.eval-run-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.eval-run-row {
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-soft);
+}
+
+.eval-run-row.status-running,
+.eval-run-row.status-queued {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(239, 246, 255, 0.72);
+}
+
+.eval-run-row.status-passed {
+  border-color: rgba(22, 163, 74, 0.25);
+}
+
+.eval-run-row.status-failed,
+.eval-run-row.status-blocked,
+.eval-run-row.status-interrupted {
+  border-color: rgba(180, 35, 24, 0.24);
+}
+
+.eval-run-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.eval-run-main span,
+.eval-run-detail,
+.eval-run-path {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.eval-run-path {
+  overflow-wrap: anywhere;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+@media (max-width: 640px) {
+  .eval-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .eval-form-wide {
+    grid-column: auto;
+  }
+
+  .eval-run-main {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -2455,6 +2579,10 @@ button {
   .status-right,
   .composer-toolbar-left {
     justify-content: flex-start;
+  }
+
+  .head-actions {
+    flex-wrap: wrap;
   }
 
   .conversation-plane {

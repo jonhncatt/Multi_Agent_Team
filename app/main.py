@@ -31,6 +31,7 @@ from app.context_meter import (
     record_context_usage_observation,
     resolve_context_window,
 )
+from app.eval_jobs import EvalJobError, EvalJobManager
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
     AppStatusResponse,
@@ -43,6 +44,7 @@ from app.models import (
     ClearStatsResponse,
     CompactRequest,
     CompactResponse,
+    EvalRunRequest,
     DeleteThreadResponse,
     DeleteSessionResponse,
     HealthResponse,
@@ -141,6 +143,16 @@ _provider_payload_lock = threading.Lock()
 _provider_payload_cache: dict[str, Any] = {}
 _active_chat_runs_lock = threading.Lock()
 _active_chat_runs: dict[str, dict[str, Any]] = {}
+_eval_job_manager_lock = threading.Lock()
+_eval_job_manager: EvalJobManager | None = None
+
+
+def _get_eval_job_manager() -> EvalJobManager:
+    global _eval_job_manager
+    with _eval_job_manager_lock:
+        if _eval_job_manager is None:
+            _eval_job_manager = EvalJobManager(repo_root=Path(__file__).resolve().parent.parent)
+        return _eval_job_manager
 
 
 def _merge_phase_timings(*payloads: Any) -> dict[str, int]:
@@ -395,18 +407,20 @@ def _enqueue_active_chat_run_steer(
 
 
 def _drain_active_chat_run_steers(run_id: str, *, final: bool = False) -> list[dict[str, Any]]:
-    """Drain queued user guidance at a clean model boundary.
+    """Accept at most one queued user message at a clean model boundary.
 
     A final empty drain atomically closes the turn to new guidance, avoiding a
-    message being accepted after the runtime has committed to returning.
+    message being accepted after the runtime has committed to returning. Later
+    queued messages remain ordered for subsequent model boundaries.
     """
     with _active_chat_runs_lock:
         record = _active_chat_runs.get(str(run_id or "").strip())
         if not isinstance(record, dict):
             return []
         raw_pending = record.get("pending_steers")
-        pending = [dict(item) for item in raw_pending if isinstance(item, dict)] if isinstance(raw_pending, list) else []
-        record["pending_steers"] = []
+        queued = [dict(item) for item in raw_pending if isinstance(item, dict)] if isinstance(raw_pending, list) else []
+        pending = queued[:1]
+        record["pending_steers"] = queued[1:]
         if final and not pending:
             record["accepting_steers"] = False
         if pending:
@@ -2860,20 +2874,35 @@ def _process_chat_request(
             session,
             [dict(item) for item in list(runtime_result.get("transcript_delta") or []) if isinstance(item, dict)],
         )
-        for steer in list(runtime_result.get("steered_user_messages") or []):
-            if not isinstance(steer, dict) or not str(steer.get("message") or "").strip():
-                continue
+        intermediate_turns = [
+            dict(item)
+            for item in list(runtime_result.get("intermediate_turns") or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in {"user", "assistant"}
+            and str(item.get("text") or "").strip()
+        ]
+        if not intermediate_turns:
+            intermediate_turns = [
+                {
+                    "role": "user",
+                    "text": str(steer.get("message") or "").strip(),
+                    "activity": {
+                        "status": "steer_accepted",
+                        "run_id": run_id,
+                        "steer_id": str(steer.get("id") or ""),
+                        "queued_at": float(steer.get("queued_at") or 0.0),
+                        "accepted_at": float(steer.get("accepted_at") or 0.0),
+                    },
+                }
+                for steer in list(runtime_result.get("steered_user_messages") or [])
+                if isinstance(steer, dict) and str(steer.get("message") or "").strip()
+            ]
+        for item in intermediate_turns:
             session_store.append_turn(
                 session,
-                role="user",
-                text=str(steer.get("message") or "").strip(),
-                activity={
-                    "status": "steer_accepted",
-                    "run_id": run_id,
-                    "steer_id": str(steer.get("id") or ""),
-                    "queued_at": float(steer.get("queued_at") or 0.0),
-                    "accepted_at": float(steer.get("accepted_at") or 0.0),
-                },
+                role=str(item.get("role") or "user"),
+                text=str(item.get("text") or "").strip(),
+                activity=dict(item.get("activity") or {}),
                 record_transcript=False,
             )
         assistant_turn = session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
@@ -3495,6 +3524,38 @@ def steer_chat_run(run_id: str, req: ChatSteerRequest) -> dict[str, Any]:
             },
         )
     return {"ok": True, **queued}
+
+
+@app.get("/api/evals/catalog")
+def list_eval_catalog() -> dict[str, Any]:
+    manager = _get_eval_job_manager()
+    return {"suites": manager.catalog()}
+
+
+@app.get("/api/evals/runs")
+def list_eval_runs(limit: int = 20) -> dict[str, Any]:
+    manager = _get_eval_job_manager()
+    return {"runs": manager.list(limit=limit)}
+
+
+@app.get("/api/evals/runs/{job_id}")
+def get_eval_run(job_id: str) -> dict[str, Any]:
+    job = _get_eval_job_manager().get(job_id)
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=404, detail={"kind": "eval_run_not_found", "summary": "Eval run was not found."})
+    return job
+
+
+@app.post("/api/evals/runs")
+def start_eval_run(req: EvalRunRequest) -> dict[str, Any]:
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    try:
+        return _get_eval_job_manager().submit(dict(payload or {}))
+    except EvalJobError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "eval_run_invalid", "summary": str(exc)},
+        ) from exc
 
 
 @app.post("/api/chat/stream")

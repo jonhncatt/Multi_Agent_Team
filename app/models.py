@@ -38,6 +38,17 @@ class ChatSteerRequest(BaseModel):
     client_steer_id: str | None = None
 
 
+class EvalRunRequest(BaseModel):
+    cases: str = "evals/codex_alignment_cases.json"
+    name: str = ""
+    repeat: int = Field(default=3, ge=1, le=10)
+    provider: str = ""
+    model: str = ""
+    output: str = ""
+    live: bool = False
+    keep_workspaces: bool = False
+
+
 class ToolEvent(BaseModel):
     name: str
     input: dict | None = None

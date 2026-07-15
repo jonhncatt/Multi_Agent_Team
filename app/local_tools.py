@@ -1167,6 +1167,7 @@ class LocalToolExecutor:
         builtin_skill_roots: list[str] | None = None,
         team_skill_roots: list[str] | None = None,
         subagent_runner: Any | None = None,
+        subagent_read_only: bool = False,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1195,9 +1196,10 @@ class LocalToolExecutor:
             str(item) for item in list(team_skill_roots or []) if str(item or "").strip()
         ]
         self._runtime_ctx.subagent_runner = subagent_runner
+        self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1233,6 +1235,9 @@ class LocalToolExecutor:
 
     def _current_run_id(self) -> str:
         return str(getattr(self._runtime_ctx, "run_id", "") or "").strip()
+
+    def _current_subagent_read_only(self) -> bool:
+        return bool(getattr(self._runtime_ctx, "subagent_read_only", False))
 
     def _current_locale_hint(self) -> str:
         fallback_locale = str(getattr(self.config, "default_locale", "ja-JP") or "ja-JP")
@@ -3646,6 +3651,25 @@ class LocalToolExecutor:
         command_execution_approval_payload: dict[str, Any] = {}
         tainted_approval_payload: dict[str, Any] = {}
         if approval_risks:
+            if self._current_subagent_read_only():
+                message = (
+                    "Read-only Subagents cannot request interactive command approval. "
+                    "Use file/search tools or execute an existing workspace script or test module instead of inline or network-origin code."
+                )
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error=message,
+                    stderr=message,
+                    error_kind="subagent_safe_alternative_required",
+                    error_detail={
+                        "retryability": "change_tool_or_arguments",
+                        "recovery": (
+                            "Choose a provenance-preserving alternative: read/search the file directly, "
+                            "or run an existing script/module under the allowed workspace roots."
+                        ),
+                    },
+                )
             approved, approval_error = self._consume_command_execution_approval(
                 token=approval_token_value,
                 command=str(cmd or "").strip(),

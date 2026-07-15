@@ -41,6 +41,10 @@ REQUIRED_CORE_KEYS = (
     "buttons.clear_thread_selection",
     "buttons.delete_selected_threads",
     "tabs.settings",
+    "tabs.eval",
+    "eval.title",
+    "eval.start",
+    "eval.status.running",
     "activity.title",
     "activity.running",
     "activity.failed",
@@ -1298,10 +1302,9 @@ def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
     assert "final_answer: nextFinalAnswer," in body
 
 
-def test_agent_message_completion_clears_streaming_model_draft() -> None:
+def test_agent_message_completion_waits_for_turn_or_steer_boundary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "status: \"completed\",\n                  final_answer: assistantText,\n                  model_draft: \"\"," in script
     event_completed_match = re.search(
         r'else if \(event === "item/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "request_user_input"\)',
         script,
@@ -1315,9 +1318,12 @@ def test_agent_message_completion_clears_streaming_model_draft() -> None:
     )
     assert item_completed_match, "agentMessage item/completed branch not found"
     item_completed_body = item_completed_match.group("body")
-    assert 'status: "completed"' in item_completed_body
+    assert 'status: "waiting_model"' in item_completed_body
+    assert 'final_answer: ""' in item_completed_body
+    assert "model_draft: assistantText" in item_completed_body
     assert 'updateOwnerLiveHeartbeat({' not in item_completed_body
-    assert "if (assistantText) collapseLiveRunUi();" in item_completed_body
+    assert "collapseLiveRunUi" not in item_completed_body
+    assert "if (assistantText) replacePendingText(assistantText);" in item_completed_body
     assert 'model_draft: String(nextFinalAnswer).trim()\n              ? ""\n              : String(latestRunSnapshot.model_draft || activity.model_draft || stableText || ""),' in script
 
 
@@ -1824,6 +1830,29 @@ def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None
     assert 't("subagent.waiting_result")' in script
     assert ".subagent-card-list" in styles
     assert ".subagent-card > summary" in styles
+
+
+def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'onClick=${openEvalDialog}' in script
+    assert 'fetchJson("/api/evals/catalog")' in script
+    assert 'fetchJson("/api/evals/runs", {' in script
+    assert 'id="evalModal"' in script
+    assert "evalButtonLabel" in script
+    assert "completed_attempts" in script
+
+
+def test_frontend_steer_keeps_completed_segment_before_queued_guidance() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "appendSteerAfterCurrentResponse" in script
+    assert 'event === "turn/segment/completed"' in script
+    assert "completeCurrentAssistantSegment(segment)" in script
+    assert "beginNextAssistantSegment()" in script
+    assert "const nextQueuedIndex = next.findIndex" in script
+    assert "next.splice(nextQueuedIndex, 0, nextPending)" in script
+    assert 'status: "waiting_model"' in script
 
 
 def test_thread_runs_use_thread_scoped_busy_state() -> None:

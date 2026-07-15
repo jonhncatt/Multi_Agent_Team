@@ -34,6 +34,8 @@ python scripts/run_evals.py \
 
 `--live` is mandatory for provider-backed attempts. Without it, the runner does not send model requests. Successful attempt workspaces are removed by default; failed and blocked workspaces are retained under `artifacts/evals/workspaces/`. Use `--keep-workspaces` to retain every attempt.
 
+The home-page `Eval` button exposes the same runner as a persisted background job. The UI submits structured fields rather than a shell command, the server executes one Eval job at a time, and job state is stored under `artifacts/evals/jobs/`. Suite paths are restricted to `evals/` and report paths to `artifacts/evals/`.
+
 ## Codex alignment suite
 
 `evals/codex_alignment_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:

@@ -21,6 +21,7 @@ from app.agent_evals import (
     execute_authoritative_verifier,
     load_eval_suite,
     run_eval_attempt,
+    run_eval_suite,
     scan_c_style_rules,
     snapshot_workspace,
 )
@@ -661,6 +662,36 @@ def test_eval_attempt_uses_fake_runtime_without_live_model(tmp_path: Path) -> No
         item["arguments"].startswith('{"redacted": true')
         for item in result["context_and_tools"]["timeline"]
     )
+
+
+def test_eval_suite_emits_attempt_progress_for_background_ui(tmp_path: Path) -> None:
+    wrapper = tmp_path / "verify.py"
+    _write_exit_script(wrapper, 0)
+    suite = load_eval_suite(DEFAULT_CASES_PATH)
+    suite["cases"] = [dict(suite["cases"][0])]
+    events: list[dict] = []
+
+    report = run_eval_suite(
+        suite,
+        repeat=2,
+        provider="",
+        model="gpt-test",
+        workspaces_root=tmp_path / "workspaces",
+        keep_workspaces=True,
+        runtime_factory=_PassingFakeRuntime,
+        verifier_script=str(wrapper),
+        progress_cb=events.append,
+    )
+
+    assert report["summary"]["passed"] == 2
+    assert [item["event"] for item in events] == [
+        "attempt_started",
+        "attempt_finished",
+        "attempt_started",
+        "attempt_finished",
+    ]
+    assert events[-1]["completed_attempts"] == 2
+    assert events[-1]["total_attempts"] == 2
 
 
 def test_eval_attempt_records_run_time_guidance_acceptance_without_live_model(tmp_path: Path) -> None:

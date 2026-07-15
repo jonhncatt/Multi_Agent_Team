@@ -1719,6 +1719,64 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["compaction_status"]["mode"] == "token_budget"
 
 
+def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+
+    class SteeredRuntime(_FakeVintageRuntime):
+        def run(self, *, message, settings, context, progress_cb=None):
+            payload = super().run(
+                message=message,
+                settings=settings,
+                context=context,
+                progress_cb=progress_cb,
+            )
+            payload["text"] = "第二段最终回复"
+            payload["final_answer"] = "第二段最终回复"
+            payload["intermediate_turns"] = [
+                {
+                    "role": "assistant",
+                    "text": "第一段回复",
+                    "activity": {"status": "completed", "run_id": context.get("run_id")},
+                },
+                {
+                    "role": "user",
+                    "text": "追加：再检查测试",
+                    "activity": {"status": "steer_accepted", "steer_id": "steer-1"},
+                },
+            ]
+            payload["steered_user_messages"] = [
+                {"id": "steer-1", "message": "追加：再检查测试", "queued_at": 1.0, "accepted_at": 2.0}
+            ]
+            return payload
+
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", SteeredRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "先处理原任务",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    session = main_app.session_store.load(response.json()["session_id"])
+    assert session is not None
+    assert [(item["role"], item["text"]) for item in session["turns"]] == [
+        ("user", "先处理原任务"),
+        ("assistant", "第一段回复"),
+        ("user", "追加：再检查测试"),
+        ("assistant", "第二段最终回复"),
+    ]
+
+
 def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     capture_runtime = _ContextCapturingRuntime()
@@ -1995,9 +2053,20 @@ def test_steer_chat_run_endpoint_queues_and_drains_at_model_boundary(monkeypatch
         assert payload["status"] == "queued"
         assert payload["id"] == "steer-client-1"
 
-        drained = main_app._drain_active_chat_run_steers(run_id)
-        assert [item["message"] for item in drained] == ["先运行测试，再给结论"]
-        assert drained[0]["accepted_at"] >= drained[0]["queued_at"]
+        second_response = client.post(
+            f"/api/chat/runs/{run_id}/steer",
+            json={"message": "然后检查文档", "client_steer_id": "steer-client-2"},
+        )
+        assert second_response.status_code == 200
+        assert second_response.json()["id"] == "steer-client-2"
+
+        first_drained = main_app._drain_active_chat_run_steers(run_id)
+        assert [item["message"] for item in first_drained] == ["先运行测试，再给结论"]
+        assert first_drained[0]["accepted_at"] >= first_drained[0]["queued_at"]
+
+        second_drained = main_app._drain_active_chat_run_steers(run_id)
+        assert [item["message"] for item in second_drained] == ["然后检查文档"]
+        assert second_drained[0]["accepted_at"] >= second_drained[0]["queued_at"]
         assert main_app._drain_active_chat_run_steers(run_id, final=True) == []
 
         closed = client.post(
@@ -2009,6 +2078,53 @@ def test_steer_chat_run_endpoint_queues_and_drains_at_model_boundary(monkeypatch
     finally:
         with main_app._active_chat_runs_lock:
             main_app._active_chat_runs.pop(run_id, None)
+
+
+def test_eval_background_api_catalog_start_and_status(monkeypatch) -> None:
+    class FakeEvalManager:
+        def __init__(self) -> None:
+            self.submitted = None
+
+        def catalog(self):
+            return [{"path": "evals/cases.json", "suite": "cases", "cases": ["subagent"], "case_count": 1}]
+
+        def list(self, *, limit=20):
+            _ = limit
+            return [{"id": "eval-1", "status": "running", "completed_attempts": 1, "total_attempts": 3}]
+
+        def get(self, job_id):
+            return {"id": job_id, "status": "passed"} if job_id == "eval-1" else None
+
+        def submit(self, payload):
+            self.submitted = dict(payload)
+            return {"id": "eval-2", "status": "queued", "total_attempts": 3}
+
+    manager = FakeEvalManager()
+    monkeypatch.setattr(main_app, "_eval_job_manager", manager)
+    client = TestClient(main_app.app)
+
+    catalog = client.get("/api/evals/catalog")
+    assert catalog.status_code == 200
+    assert catalog.json()["suites"][0]["cases"] == ["subagent"]
+    runs = client.get("/api/evals/runs")
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["status"] == "running"
+    started = client.post(
+        "/api/evals/runs",
+        json={
+            "cases": "evals/cases.json",
+            "name": "subagent",
+            "repeat": 3,
+            "provider": "openai_compatible",
+            "model": "gpt-test",
+            "live": True,
+        },
+    )
+    assert started.status_code == 200
+    assert started.json()["status"] == "queued"
+    assert manager.submitted["name"] == "subagent"
+    assert client.get("/api/evals/runs/eval-1").status_code == 200
+    assert client.get("/api/evals/runs/missing").status_code == 404
 
 
 def test_chat_endpoint_normalizes_provider_errors(monkeypatch, tmp_path: Path) -> None:

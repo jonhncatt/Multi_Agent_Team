@@ -293,8 +293,10 @@ class _BoundaryCapturingTools(_FakeTools):
     def __init__(self) -> None:
         super().__init__()
         self.runtime_boundaries: list[dict[str, Any]] = []
+        self.runtime_contexts: list[dict[str, Any]] = []
 
     def set_runtime_context(self, **kwargs: Any) -> None:
+        self.runtime_contexts.append(dict(kwargs))
         self.runtime_boundaries.append(dict(kwargs.get("runtime_boundary") or {}))
         super().set_runtime_context(
             execution_mode=kwargs.get("execution_mode"),
@@ -1481,6 +1483,7 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
     backend = _FakeBackend(
         [
             _FakeAIMessage(content="I can finish now."),
+            _FakeAIMessage(content="The tests pass; I will check the documentation."),
             _FakeMessage(content="Tests passed; here is the verified result."),
         ]
     )
@@ -1496,13 +1499,19 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
             "message": "Run the tests before answering.",
             "queued_at": 10.0,
             "accepted_at": 11.0,
-        }
+        },
+        {
+            "id": "steer-2",
+            "message": "Then check the documentation.",
+            "queued_at": 12.0,
+            "accepted_at": 13.0,
+        },
     ]
 
     def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
         _ = final
-        drained = list(pending)
-        pending.clear()
+        drained = pending[:1]
+        del pending[:1]
         return drained
 
     progress_events: list[dict[str, Any]] = []
@@ -1521,14 +1530,36 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
     )
 
     assert result["text"] == "Tests passed; here is the verified result."
-    assert result["steered_user_messages"][0]["id"] == "steer-1"
-    assert [item["role"] for item in result["transcript_delta"]] == ["assistant", "user"]
+    assert [item["id"] for item in result["steered_user_messages"]] == ["steer-1", "steer-2"]
+    assert [item["role"] for item in result["intermediate_turns"]] == [
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert result["intermediate_turns"][0]["text"] == "I can finish now."
+    assert result["intermediate_turns"][1]["text"] == "Run the tests before answering."
+    assert result["intermediate_turns"][2]["text"] == "The tests pass; I will check the documentation."
+    assert result["intermediate_turns"][3]["text"] == "Then check the documentation."
+    assert [item["role"] for item in result["transcript_delta"]] == [
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
     assert result["transcript_delta"][1]["content"] == "Run the tests before answering."
-    assert len(backend.invocations) == 2
+    assert result["transcript_delta"][3]["content"] == "Then check the documentation."
+    assert len(backend.invocations) == 3
     followup_messages = backend.invocations[1]["messages"]
     assert followup_messages[-2].content == "I can finish now."
     assert followup_messages[-1].content == "Run the tests before answering."
+    final_messages = backend.invocations[2]["messages"]
+    assert final_messages[-2].content == "The tests pass; I will check the documentation."
+    assert final_messages[-1].content == "Then check the documentation."
+    assert any(item.get("event") == "turn/segment/completed" for item in progress_events)
     assert any(item.get("event") == "turn/steer/accepted" for item in progress_events)
+    accepted_event = next(item for item in progress_events if item.get("event") == "turn/steer/accepted")
+    assert accepted_event["starts_next_response"] is True
 
 
 def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
@@ -1595,6 +1626,7 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     assert child_tools.runtime_boundaries
     assert child_tools.runtime_boundaries[-1]["workspace_write_allowed"] is False
     assert child_tools.runtime_boundaries[-1]["writable_roots"] == []
+    assert child_tools.runtime_contexts[-1]["subagent_read_only"] is True
     stream_events = [
         item for item in progress_events
         if item.get("event") in {"item/started", "item/completed"}
