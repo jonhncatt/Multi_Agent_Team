@@ -33,6 +33,11 @@ class ChatRequest(BaseModel):
     settings: ChatSettings = Field(default_factory=ChatSettings)
 
 
+class ChatSteerRequest(BaseModel):
+    message: str = Field(min_length=1)
+    client_steer_id: str | None = None
+
+
 class ToolEvent(BaseModel):
     name: str
     input: dict | None = None

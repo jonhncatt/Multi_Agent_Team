@@ -39,6 +39,7 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ChatSettings,
+    ChatSteerRequest,
     ClearStatsResponse,
     CompactRequest,
     CompactResponse,
@@ -328,6 +329,8 @@ def _register_active_chat_run(run_id: str) -> threading.Event:
             "session_id": "",
             "project_id": "",
             "created_at": time.time(),
+            "accepting_steers": True,
+            "pending_steers": [],
         }
     return cancel_event
 
@@ -350,8 +353,68 @@ def _cancel_active_chat_run(run_id: str) -> dict[str, Any] | None:
         if cancel_event and hasattr(cancel_event, "set"):
             cancel_event.set()
         record["status"] = "cancelling"
+        record["accepting_steers"] = False
         record["cancel_requested_at"] = time.time()
         return dict(record)
+
+
+def _enqueue_active_chat_run_steer(
+    run_id: str,
+    message: str,
+    *,
+    client_steer_id: str = "",
+) -> dict[str, Any] | None:
+    steer_text = str(message or "").strip()
+    if not steer_text:
+        return None
+    with _active_chat_runs_lock:
+        record = _active_chat_runs.get(str(run_id or "").strip())
+        if (
+            not isinstance(record, dict)
+            or str(record.get("status") or "") != "running"
+            or not bool(record.get("accepting_steers"))
+        ):
+            return None
+        steer = {
+            "id": str(client_steer_id or "").strip()[:160] or str(uuid.uuid4()),
+            "message": steer_text,
+            "queued_at": time.time(),
+        }
+        pending = record.setdefault("pending_steers", [])
+        if not isinstance(pending, list):
+            pending = []
+            record["pending_steers"] = pending
+        pending.append(steer)
+        return {
+            **steer,
+            "run_id": str(record.get("run_id") or run_id or ""),
+            "session_id": str(record.get("session_id") or ""),
+            "project_id": str(record.get("project_id") or ""),
+            "status": "queued",
+        }
+
+
+def _drain_active_chat_run_steers(run_id: str, *, final: bool = False) -> list[dict[str, Any]]:
+    """Drain queued user guidance at a clean model boundary.
+
+    A final empty drain atomically closes the turn to new guidance, avoiding a
+    message being accepted after the runtime has committed to returning.
+    """
+    with _active_chat_runs_lock:
+        record = _active_chat_runs.get(str(run_id or "").strip())
+        if not isinstance(record, dict):
+            return []
+        raw_pending = record.get("pending_steers")
+        pending = [dict(item) for item in raw_pending if isinstance(item, dict)] if isinstance(raw_pending, list) else []
+        record["pending_steers"] = []
+        if final and not pending:
+            record["accepting_steers"] = False
+        if pending:
+            accepted_at = time.time()
+            for item in pending:
+                item["accepted_at"] = accepted_at
+            record["accepted_steer_count"] = int(record.get("accepted_steer_count") or 0) + len(pending)
+        return pending
 
 
 def _unregister_active_chat_run(run_id: str) -> None:
@@ -2623,6 +2686,10 @@ def _process_chat_request(
                     "session_id": session_id,
                     "run_id": run_id,
                     "cancel_event": cancel_event,
+                    "drain_pending_steers": lambda final=False: _drain_active_chat_run_steers(
+                        run_id,
+                        final=bool(final),
+                    ),
                     "user_input_response": dict(req.user_input_response or {}),
                     "phase_timing_base_ms": request_phase_timer.elapsed_ms(),
                     "project": {
@@ -2793,6 +2860,22 @@ def _process_chat_request(
             session,
             [dict(item) for item in list(runtime_result.get("transcript_delta") or []) if isinstance(item, dict)],
         )
+        for steer in list(runtime_result.get("steered_user_messages") or []):
+            if not isinstance(steer, dict) or not str(steer.get("message") or "").strip():
+                continue
+            session_store.append_turn(
+                session,
+                role="user",
+                text=str(steer.get("message") or "").strip(),
+                activity={
+                    "status": "steer_accepted",
+                    "run_id": run_id,
+                    "steer_id": str(steer.get("id") or ""),
+                    "queued_at": float(steer.get("queued_at") or 0.0),
+                    "accepted_at": float(steer.get("accepted_at") or 0.0),
+                },
+                record_transcript=False,
+            )
         assistant_turn = session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
         assistant_turn_id = str(assistant_turn.get("id") or "")
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
@@ -3393,6 +3476,25 @@ def cancel_chat_run(run_id: str) -> dict[str, Any]:
         "session_id": str(record.get("session_id") or ""),
         "project_id": str(record.get("project_id") or ""),
     }
+
+
+@app.post("/api/chat/runs/{run_id}/steer")
+def steer_chat_run(run_id: str, req: ChatSteerRequest) -> dict[str, Any]:
+    queued = _enqueue_active_chat_run_steer(
+        run_id,
+        req.message,
+        client_steer_id=str(req.client_steer_id or ""),
+    )
+    if not isinstance(queued, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "kind": "turn_not_accepting_guidance",
+                "summary": "The active turn is no longer accepting queued guidance.",
+                "run_id": str(run_id or ""),
+            },
+        )
+    return {"ok": True, **queued}
 
 
 @app.post("/api/chat/stream")

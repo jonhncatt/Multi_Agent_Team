@@ -14,6 +14,7 @@ from app.agent_evals import (
     _outside_workspace_write_detected,
     aggregate_eval_results,
     analyze_tool_evidence,
+    build_eval_thread_seed,
     build_failure_observability,
     compare_snapshots,
     eval_exit_code,
@@ -55,6 +56,42 @@ def test_default_agent_quality_suite_is_valid() -> None:
         "markdown_integration_guide",
     ]
     assert suite["cases"][0]["kind"] == "agent_workspace"
+
+
+def test_codex_alignment_suite_reserves_modalities_and_scenario_hooks() -> None:
+    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+
+    assert len(suite["cases"]) == 5
+    assert {"pdf", "excel", "markdown", "c", "cpp"}.issubset(
+        set(suite["reserved_input_modalities"])
+    )
+    by_name = {case["name"]: case for case in suite["cases"]}
+    assert by_name["runtime_steer_updates_active_turn"]["steer_messages"]
+    assert by_name["subagent_protocol_analysis_and_parent_summary"]["required_tools"] == [
+        "spawn_subagent"
+    ]
+    assert by_name["long_thread_compaction_handoff"]["thread_seed"]["turn_pairs"] == 36
+    assert by_name["update_existing_team_skill"]["team_skill_seed"]["name"] == "protocol-review"
+    assert by_name["failed_test_then_recover_c_style_cpp"]["expect_test_failure_recovery"] is True
+
+
+def test_eval_thread_seed_replays_only_retained_pairs_after_compaction() -> None:
+    seeded = build_eval_thread_seed(
+        {
+            "thread_seed": {
+                "turn_pairs": 5,
+                "retain_pairs": 2,
+                "chars_per_message": 64,
+                "topic": "protocol",
+                "compacted_history": "release marker ORION-742",
+            }
+        }
+    )
+
+    assert seeded["seeded_item_count"] == 10
+    assert seeded["compacted_item_count"] == 6
+    assert seeded["compaction_status"]["compacted_until_turn_id"] == "seed-a-3"
+    assert seeded["compaction_status"]["compacted_history"] == "release marker ORION-742"
 
 
 def test_legacy_list_suite_is_rejected_with_clear_error(tmp_path: Path) -> None:
@@ -489,6 +526,112 @@ class _CompilerBlockedFakeRuntime(_PassingFakeRuntime):
         return result
 
 
+class _SteeringFakeRuntime(_PassingFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        accepted = context["drain_pending_steers"](final=True)
+        result["steered_user_messages"] = accepted
+        return result
+
+
+class _TeamSkillUpdateFakeRuntime:
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings, context, progress_cb)
+        root = self.config.workspace_root / ".eval_runtime" / "vp_install" / "skills" / "team"
+        skill = root / "protocol-review" / "SKILL.md"
+        rules = root / "protocol-review" / "references" / "RULES.md"
+        skill.write_text(
+            skill.read_text(encoding="utf-8")
+            + "\nRun `python -m pytest tests/protocol -q` after parser changes.\n",
+            encoding="utf-8",
+        )
+        return {
+            "turn_status": "completed",
+            "runtime_error": {},
+            "pending_user_input": {},
+            "pending_approval": {},
+            "effective_model": "gpt-test",
+            "token_usage": {"llm_calls": 2, "total_tokens": 100},
+            "tool_events": [
+                {"name": "read_file", "normalized_arguments": {"path": str(skill)}, "status": "ok"},
+                {"name": "read_file", "normalized_arguments": {"path": str(rules)}, "status": "ok"},
+                {
+                    "name": "apply_patch",
+                    "normalized_arguments": {"path": str(skill)},
+                    "result_preview": {"ok": True, "files": [str(skill)]},
+                    "source_refs": [str(skill)],
+                    "project_root": str(self.config.workspace_root),
+                    "cwd": str(self.config.workspace_root),
+                    "status": "ok",
+                },
+                {
+                    "name": "exec_command",
+                    "normalized_arguments": {"cmd": "python run_checks.py", "cwd": str(self.config.workspace_root)},
+                    "result_preview": {"ok": True, "returncode": 0},
+                    "status": "ok",
+                },
+            ],
+        }
+
+
+class _FailureRecoveryFakeRuntime:
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        _ = (message, settings, context, progress_cb)
+        target = self.config.workspace_root / "src" / "calculator.cpp"
+        target.write_text(
+            "int sum_positive(const int *values, unsigned int count, int *out_sum)\n"
+            "{\n"
+            "    unsigned int index = 0;\n"
+            "    int sum = 0;\n"
+            "    if ((values == 0) || (out_sum == 0)) return -1;\n"
+            "    while (index < count) { if (values[index] > 0) sum += values[index]; index += 1; }\n"
+            "    *out_sum = sum;\n"
+            "    return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        return {
+            "turn_status": "completed",
+            "runtime_error": {},
+            "pending_user_input": {},
+            "pending_approval": {},
+            "effective_model": "gpt-test",
+            "token_usage": {"llm_calls": 3, "total_tokens": 150},
+            "tool_events": [
+                {"name": "read_file", "normalized_arguments": {"path": "RULES.md"}, "status": "ok"},
+                {
+                    "name": "exec_command",
+                    "normalized_arguments": {"cmd": "python run_checks.py"},
+                    "result_preview": {"ok": False, "returncode": 1},
+                    "status": "error",
+                },
+                {
+                    "name": "apply_patch",
+                    "normalized_arguments": {"path": "src/calculator.cpp"},
+                    "result_preview": {"ok": True, "files": [str(target)]},
+                    "status": "ok",
+                },
+                {
+                    "name": "exec_command",
+                    "normalized_arguments": {"cmd": "python run_checks.py"},
+                    "result_preview": {"ok": True, "returncode": 0},
+                    "status": "ok",
+                },
+            ],
+        }
+
+
 def test_eval_attempt_uses_fake_runtime_without_live_model(tmp_path: Path) -> None:
     wrapper = tmp_path / "verify.py"
     _write_exit_script(wrapper, 0)
@@ -518,6 +661,66 @@ def test_eval_attempt_uses_fake_runtime_without_live_model(tmp_path: Path) -> No
         item["arguments"].startswith('{"redacted": true')
         for item in result["context_and_tools"]["timeline"]
     )
+
+
+def test_eval_attempt_records_run_time_guidance_acceptance_without_live_model(tmp_path: Path) -> None:
+    wrapper = tmp_path / "verify.py"
+    _write_exit_script(wrapper, 0)
+    case = _case()
+    case["steer_messages"] = ["Run the verification once more."]
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / "attempt-steer",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_SteeringFakeRuntime,
+        verifier_script=str(wrapper),
+    )
+
+    assert result["status"] == "passed"
+    assert result["scenario"]["steer_messages_expected"] == 1
+    assert result["scenario"]["steer_messages_accepted"] == 1
+    assert result["scenario"]["requirements_met"] is True
+
+
+def test_eval_attempt_snapshots_real_isolated_team_skill_update(tmp_path: Path) -> None:
+    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+    case = next(item for item in suite["cases"] if item["name"] == "update_existing_team_skill")
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / "attempt-team-skill",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_TeamSkillUpdateFakeRuntime,
+    )
+
+    assert result["status"] == "passed"
+    assert result["workspace_changes"]["target_changed"] is True
+    assert result["workspace_changes"]["changed"] == ["team/protocol-review/SKILL.md"]
+    assert result["scenario"]["team_skill_seeded"] is True
+
+
+def test_eval_attempt_requires_failed_test_then_successful_recovery(tmp_path: Path) -> None:
+    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+    case = next(item for item in suite["cases"] if item["name"] == "failed_test_then_recover_c_style_cpp")
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / "attempt-recovery",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_FailureRecoveryFakeRuntime,
+    )
+
+    assert result["status"] == "passed"
+    assert result["scenario"]["test_failure_recovery_expected"] is True
+    assert result["scenario"]["test_failure_recovery_observed"] is True
+    assert result["context_and_tools"]["failed_tool_call_count"] == 1
 
 
 def test_eval_report_omits_runtime_text_paths_urls_credentials_and_parameters(tmp_path: Path) -> None:

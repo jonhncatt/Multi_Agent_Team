@@ -34,6 +34,37 @@ python scripts/run_evals.py \
 
 `--live` is mandatory for provider-backed attempts. Without it, the runner does not send model requests. Successful attempt workspaces are removed by default; failed and blocked workspaces are retained under `artifacts/evals/workspaces/`. Use `--keep-workspaces` to retain every attempt.
 
+## Codex alignment suite
+
+`evals/codex_alignment_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:
+
+- queued guidance accepted at a safe model boundary;
+- model-selected `spawn_subagent` delegation and parent summary;
+- a long seeded Thread replayed through a compaction summary plus retained turns;
+- modification of an existing Team Skill in the isolated VP Skill Registry;
+- a failed verification followed by a successful recovery;
+- `input_modalities` metadata reserved for PDF, Excel, Markdown, C, and C++ mixtures.
+
+Validate without provider calls:
+
+```bash
+python scripts/run_evals.py --cases evals/codex_alignment_cases.json --validate-only
+```
+
+Run the company baseline from PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_evals.py `
+  --cases evals\codex_alignment_cases.json `
+  --live `
+  --repeat 3 `
+  --provider openai_compatible `
+  --model gpt-5.4 `
+  --output artifacts\evals\company-gpt54-codex-alignment.json
+```
+
+The report's `scenario` section records required tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, and failed-test recovery without storing message text, company paths, credentials, URLs, or complete tool parameters.
+
 ## Company compiler adapter
 
 Set `VP_EVAL_CPP_VERIFY_SCRIPT` to the absolute path of a company-owned wrapper script when the portable fixture cannot use MSVC, `clang++`, or `g++` locally.

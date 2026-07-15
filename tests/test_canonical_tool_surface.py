@@ -14,6 +14,7 @@ from app.workbench import build_tool_descriptors
 CANONICAL_TOOL_NAMES = (
     "update_plan",
     "request_user_input",
+    "spawn_subagent",
     "save_skill",
     "exec_command",
     "write_stdin",

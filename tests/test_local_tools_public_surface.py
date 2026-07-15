@@ -55,6 +55,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "mail_extract_attachments",
         "update_plan",
         "request_user_input",
+        "spawn_subagent",
         "save_skill",
     }.issubset(tool_names)
     assert {"load_skill", "run_skill_script"}.isdisjoint(tool_names)
@@ -73,6 +74,31 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "search_file",
         "search_file_multi",
     }.isdisjoint(tool_names)
+
+
+def test_spawn_subagent_delegates_to_runtime_injected_runner(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    calls = []
+
+    def runner(**kwargs):
+        calls.append(dict(kwargs))
+        return {"ok": True, "status": "completed", "summary": "isolated result"}
+
+    executor.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        subagent_runner=runner,
+    )
+    result = executor.execute(
+        "spawn_subagent",
+        {"task": "Inspect parser files", "role": "explorer", "label": "Parser scan"},
+    )
+
+    assert result["ok"] is True
+    assert result["summary"] == "isolated result"
+    assert calls == [
+        {"task": "Inspect parser files", "role": "explorer", "label": "Parser scan"}
+    ]
 
 
 def test_exec_command_runs_enabled_skill_python_directly_from_business_project(tmp_path: Path) -> None:

@@ -1952,6 +1952,8 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
             "status": "running",
             "session_id": "s-1",
             "project_id": "project_demo",
+            "accepting_steers": True,
+            "pending_steers": [],
         }
 
     try:
@@ -1962,6 +1964,48 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
         assert payload["cancelled"] is True
         assert payload["status"] == "cancelling"
         assert cancel_event.is_set() is True
+        assert main_app._active_chat_runs[run_id]["accepting_steers"] is False
+    finally:
+        with main_app._active_chat_runs_lock:
+            main_app._active_chat_runs.pop(run_id, None)
+
+
+def test_steer_chat_run_endpoint_queues_and_drains_at_model_boundary(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    run_id = "run-steer-test"
+    with main_app._active_chat_runs_lock:
+        main_app._active_chat_runs[run_id] = {
+            "run_id": run_id,
+            "cancel_event": threading.Event(),
+            "status": "running",
+            "session_id": "s-1",
+            "project_id": "project_demo",
+            "accepting_steers": True,
+            "pending_steers": [],
+        }
+
+    try:
+        response = client.post(
+            f"/api/chat/runs/{run_id}/steer",
+            json={"message": "先运行测试，再给结论", "client_steer_id": "steer-client-1"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "queued"
+        assert payload["id"] == "steer-client-1"
+
+        drained = main_app._drain_active_chat_run_steers(run_id)
+        assert [item["message"] for item in drained] == ["先运行测试，再给结论"]
+        assert drained[0]["accepted_at"] >= drained[0]["queued_at"]
+        assert main_app._drain_active_chat_run_steers(run_id, final=True) == []
+
+        closed = client.post(
+            f"/api/chat/runs/{run_id}/steer",
+            json={"message": "这条已经太晚"},
+        )
+        assert closed.status_code == 409
+        assert closed.json()["detail"]["kind"] == "turn_not_accepting_guidance"
     finally:
         with main_app._active_chat_runs_lock:
             main_app._active_chat_runs.pop(run_id, None)

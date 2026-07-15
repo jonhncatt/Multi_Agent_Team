@@ -117,6 +117,10 @@ class _FakeHumanMessage(_FakeMessage):
     pass
 
 
+class _FakeAIMessage(_FakeMessage):
+    pass
+
+
 class _FakeToolMessage(_FakeMessage):
     pass
 
@@ -183,6 +187,20 @@ class _FakeTools:
             {"name": "mail_extract_attachments", "description": "extract mail attachments", "parameters": {}},
             {"name": "apply_patch", "description": "apply patch", "parameters": {}},
             {"name": "update_plan", "description": "update plan", "parameters": {}},
+            {
+                "name": "spawn_subagent",
+                "description": "delegate a bounded read-heavy task",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string"},
+                        "role": {"type": "string", "default": "explorer"},
+                        "label": {"type": "string", "default": ""},
+                    },
+                    "required": ["task"],
+                    "additionalProperties": False,
+                },
+            },
             {"name": "request_user_input", "description": "request user input", "parameters": {}},
             {
                 "name": "save_skill",
@@ -205,6 +223,7 @@ class _FakeTools:
         self.runtime_context: dict[str, Any] | None = None
         self.last_runtime_context: dict[str, Any] | None = None
         self.skill_writer: Any | None = None
+        self.subagent_runner: Any | None = None
 
     def set_runtime_context(
         self,
@@ -216,8 +235,10 @@ class _FakeTools:
         cwd: str | None = None,
         model: str | None = None,
         skill_writer: Any | None = None,
+        subagent_runner: Any | None = None,
     ) -> None:
         self.skill_writer = skill_writer
+        self.subagent_runner = subagent_runner
         payload = {
             "execution_mode": execution_mode,
             "session_id": session_id,
@@ -231,11 +252,14 @@ class _FakeTools:
 
     def clear_runtime_context(self) -> None:
         self.runtime_context = None
+        self.subagent_runner = None
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
+        if name == "spawn_subagent" and callable(self.subagent_runner):
+            return self.subagent_runner(**arguments)
         return {
             "ok": True,
             "name": name,
@@ -1449,6 +1473,134 @@ def test_runtime_runs_single_agent_tool_loop(tmp_path: Path) -> None:
     assert "tool.finished" in trace_types
     assert "run.finished" in trace_types
     assert result["inspector"]["run_state"]["model_action"]["action_type"] == result["model_action"]["action_type"]
+
+
+def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeAIMessage(content="I can finish now."),
+            _FakeMessage(content="Tests passed; here is the verified result."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    pending = [
+        {
+            "id": "steer-1",
+            "message": "Run the tests before answering.",
+            "queued_at": 10.0,
+            "accepted_at": 11.0,
+        }
+    ]
+
+    def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
+        _ = final
+        drained = list(pending)
+        pending.clear()
+        return drained
+
+    progress_events: list[dict[str, Any]] = []
+    result = runtime.run(
+        message="Finish this change.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-steer",
+            "run_id": "run-steer",
+            "drain_pending_steers": drain_pending_steers,
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["text"] == "Tests passed; here is the verified result."
+    assert result["steered_user_messages"][0]["id"] == "steer-1"
+    assert [item["role"] for item in result["transcript_delta"]] == ["assistant", "user"]
+    assert result["transcript_delta"][1]["content"] == "Run the tests before answering."
+    assert len(backend.invocations) == 2
+    followup_messages = backend.invocations[1]["messages"]
+    assert followup_messages[-2].content == "I can finish now."
+    assert followup_messages[-1].content == "Run the tests before answering."
+    assert any(item.get("event") == "turn/steer/accepted" for item in progress_events)
+
+
+def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_specs(agent_dir / "subagents" / "read_only")
+    child_tools = _BoundaryCapturingTools()
+    child_backend = _FakeBackendWithTools(
+        [_FakeMessage(content="Found the entry point in app/main.py.")],
+        child_tools,
+    )
+    monkeypatch.setattr(runtime_module, "create_vp_runtime_backend", lambda _config: child_backend)
+    parent_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-subagent",
+                        "name": "spawn_subagent",
+                        "args": {
+                            "task": "Locate the request entry point and report the relevant file.",
+                            "role": "explorer",
+                            "label": "Find request entry point",
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="The subagent found the request entry point."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=parent_backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="Use a subagent to locate the request entry point.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-subagent",
+            "run_id": "run-subagent",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["text"] == "The subagent found the request entry point."
+    assert parent_backend.tools.calls[0][0] == "spawn_subagent"
+    subagent_event = next(item for item in result["tool_events"] if item["name"] == "spawn_subagent")
+    assert "app/main.py" in str(subagent_event["result_preview"])
+    subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
+    assert len(subagent_items) == 1
+    assert subagent_items[0]["status"] == "completed"
+    assert "app/main.py" in subagent_items[0]["summary"]
+    assert child_tools.runtime_boundaries
+    assert child_tools.runtime_boundaries[-1]["workspace_write_allowed"] is False
+    assert child_tools.runtime_boundaries[-1]["writable_roots"] == []
+    stream_events = [
+        item for item in progress_events
+        if item.get("event") in {"item/started", "item/completed"}
+        and str((item.get("item") or {}).get("type") or "") == "subagent"
+    ]
+    assert [item["event"] for item in stream_events] == ["item/started", "item/completed"]
 
 
 def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> None:

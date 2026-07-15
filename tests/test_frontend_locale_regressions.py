@@ -1792,7 +1792,7 @@ def test_composer_submit_ignores_enter_during_ime_composition() -> None:
     assert "event.isComposing" in body
     assert "event.nativeEvent" in body
     assert "keyCode === 229" in body
-    assert "if (currentThreadBusy) return;" in body
+    assert "if (currentThreadBusy && !canQueueGuidance) return;" in body
     assert "handleSend();" in body
 
 
@@ -1809,8 +1809,21 @@ def test_composer_textarea_remains_editable_while_run_is_active() -> None:
 
     assert 'value=${draft}' in textarea_body
     assert "disabled=${sending}" not in textarea_body
-    assert "disabled=${currentThreadBusy || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
-    assert '${currentThreadBusy ? t("buttons.running")' in body
+    assert "disabled=${(currentThreadBusy && !canQueueGuidance) || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
+    assert '${canQueueGuidance ? t("buttons.steer")' in body
+
+
+def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'itemType === "subagent"' in script
+    assert 'String(liveItem.type || "") === "subagent"' in script
+    assert 'className=${`subagent-card ${running ? "running" : "completed"}`}' in script
+    assert 'open=${running}' in script
+    assert 't("subagent.waiting_result")' in script
+    assert ".subagent-card-list" in styles
+    assert ".subagent-card > summary" in styles
 
 
 def test_thread_runs_use_thread_scoped_busy_state() -> None:
@@ -1832,7 +1845,9 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "const activeSendThreadIdsRef = useRef(new Set());" in script
     assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
     assert "const anyThreadBusy = (() => {" in script
-    assert "if (!messageText || currentThreadBusy) return;" in body
+    assert "if (!messageText) return;" in body
+    assert "if (currentThreadBusy) {" in body
+    assert 'fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`' in body
     assert "if (ownerBusy) return;" in body
     assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {" in body
     assert "activeSendThreadIdsRef.current.delete(runOwnerThreadId);" in body

@@ -26,6 +26,7 @@ DEFAULT_CASES_PATH = ROOT / "evals" / "agent_quality_cases.json"
 AGENT_DIR = ROOT / "agents" / "vintage_programmer"
 SCHEMA_VERSION = 1
 SUPPORTED_CASE_KIND = "agent_workspace"
+SUPPORTED_INPUT_MODALITIES = {"text", "markdown", "source", "c", "cpp", "pdf", "excel"}
 DEFAULT_IGNORED_CHANGE_GLOBS = (
     ".eval_build/**",
     ".eval_runtime/**",
@@ -174,6 +175,29 @@ def validate_eval_suite(suite: dict[str, Any]) -> None:
             raise EvalConfigurationError(
                 f"Case {name} requires required_context_files, target_files, and allowed_changed_files."
             )
+        steer_messages = _string_list(raw_case.get("steer_messages"))
+        if "steer_messages" in raw_case and not steer_messages:
+            raise EvalConfigurationError(f"Case {name} steer_messages must contain non-empty messages.")
+        required_tools = _string_list(raw_case.get("required_tools"))
+        if any(not re.fullmatch(r"[a-z][a-z0-9_]*", tool) for tool in required_tools):
+            raise EvalConfigurationError(f"Case {name} contains an invalid required_tools entry.")
+        modalities = set(_string_list(raw_case.get("input_modalities")))
+        if modalities - SUPPORTED_INPUT_MODALITIES:
+            raise EvalConfigurationError(
+                f"Case {name} contains unsupported input_modalities: {sorted(modalities - SUPPORTED_INPUT_MODALITIES)}"
+            )
+        thread_seed = _mapping(raw_case.get("thread_seed"))
+        if thread_seed and int(thread_seed.get("turn_pairs") or 0) < 1:
+            raise EvalConfigurationError(f"Case {name} thread_seed.turn_pairs must be positive.")
+        team_skill_seed = _mapping(raw_case.get("team_skill_seed"))
+        if team_skill_seed:
+            skill_name = str(team_skill_seed.get("name") or "").strip()
+            source = str(team_skill_seed.get("source") or "").strip()
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", skill_name):
+                raise EvalConfigurationError(f"Case {name} team_skill_seed.name is invalid.")
+            source_path = (fixture / source).resolve()
+            if not source or not _is_within(source_path, fixture) or not source_path.is_dir():
+                raise EvalConfigurationError(f"Case {name} team_skill_seed.source is missing or unsafe.")
         required_fixture_files = [*required_context, *target_files, *_string_list(raw_case.get("protected_files"))]
         verification = _mapping(raw_case.get("verification"))
         verification_script = str(verification.get("script") or "").strip()
@@ -181,6 +205,8 @@ def validate_eval_suite(suite: dict[str, Any]) -> None:
             raise EvalConfigurationError(f"Case {name} requires verification.script.")
         required_fixture_files.append(verification_script)
         for relative in required_fixture_files:
+            if relative.startswith("team/") and team_skill_seed:
+                continue
             resolved = (fixture / relative).resolve()
             if not _is_within(resolved, fixture) or not resolved.is_file():
                 raise EvalConfigurationError(f"Case {name} fixture file is missing or unsafe: {relative}")
@@ -212,6 +238,77 @@ def snapshot_workspace(root: Path, *, ignored_globs: list[str] | tuple[str, ...]
     return snapshot
 
 
+def _prepare_team_skill_seed(
+    workspace: Path,
+    case: dict[str, Any],
+) -> Path | None:
+    seed = _mapping(case.get("team_skill_seed"))
+    if not seed:
+        return None
+    source = (workspace / str(seed.get("source") or "")).resolve()
+    skill_name = str(seed.get("name") or "").strip()
+    target = workspace / ".eval_runtime" / "vp_install" / "skills" / "team" / skill_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+    return target.parent
+
+
+def _prefixed_snapshot(snapshot: dict[str, str], prefix: str) -> dict[str, str]:
+    clean_prefix = str(prefix or "").strip("/")
+    return {f"{clean_prefix}/{path}": digest for path, digest in snapshot.items()}
+
+
+def build_eval_thread_seed(case: dict[str, Any]) -> dict[str, Any]:
+    seed = _mapping(case.get("thread_seed"))
+    if not seed:
+        return {
+            "thread_transcript": {"schema_version": 1, "items": []},
+            "compaction_status": {},
+            "seeded_item_count": 0,
+            "compacted_item_count": 0,
+        }
+    turn_pairs = max(1, min(200, int(seed.get("turn_pairs") or 1)))
+    chars_per_message = max(32, min(8000, int(seed.get("chars_per_message") or 256)))
+    retain_pairs = max(1, min(turn_pairs, int(seed.get("retain_pairs") or 2)))
+    topic = str(seed.get("topic") or "historical project discussion").strip()
+    items: list[dict[str, Any]] = []
+    filler = (str(seed.get("filler") or "context ") * (chars_per_message // 8 + 2))[:chars_per_message]
+    for index in range(1, turn_pairs + 1):
+        items.extend(
+            [
+                {
+                    "id": f"seed-u-{index}",
+                    "turn_id": f"seed-u-{index}",
+                    "role": "user",
+                    "content": f"{topic} user turn {index}: {filler}",
+                },
+                {
+                    "id": f"seed-a-{index}",
+                    "turn_id": f"seed-a-{index}",
+                    "role": "assistant",
+                    "content": f"{topic} assistant turn {index}: {filler}",
+                },
+            ]
+        )
+    compacted_pairs = max(0, turn_pairs - retain_pairs)
+    compaction_status: dict[str, Any] = {}
+    if compacted_pairs:
+        compaction_status = {
+            "compacted_history": str(seed.get("compacted_history") or f"Earlier discussion summary: {topic}"),
+            "compacted_until_turn_id": f"seed-a-{compacted_pairs}",
+            "generation": 1,
+            "last_compaction_phase": "eval_seed",
+        }
+    return {
+        "thread_transcript": {"schema_version": 1, "items": items},
+        "compaction_status": compaction_status,
+        "seeded_item_count": len(items),
+        "compacted_item_count": compacted_pairs * 2,
+    }
+
+
 def compare_snapshots(before: dict[str, str], after: dict[str, str]) -> dict[str, list[str]]:
     before_paths = set(before)
     after_paths = set(after)
@@ -239,6 +336,8 @@ def scan_c_style_rules(workspace: Path, case: dict[str, Any]) -> list[dict[str, 
     rule_spec = _mapping(case.get("c_style_rules"))
     files = _string_list(rule_spec.get("files") or case.get("target_files"))
     raw_patterns = list(rule_spec.get("forbidden_patterns") or [])
+    if not raw_patterns:
+        return []
     violations: list[dict[str, str]] = []
     for relative in files:
         path = (workspace / relative).resolve()
@@ -464,7 +563,13 @@ def execute_authoritative_verifier(
             text=True,
             timeout=timeout,
             check=False,
-            env={**os.environ, "VP_EVAL_WORKSPACE": str(workspace)},
+            env={
+                **os.environ,
+                "VP_EVAL_WORKSPACE": str(workspace),
+                "VP_EVAL_TEAM_SKILLS_ROOT": str(
+                    workspace / ".eval_runtime" / "vp_install" / "skills" / "team"
+                ),
+            },
         )
         return_code = int(completed.returncode)
         status = "passed" if return_code == 0 else ("blocked" if return_code == 2 else "failed")
@@ -740,8 +845,14 @@ def run_eval_attempt(
     workspace.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(fixture, workspace)
     config = _isolated_config(base_config, workspace)
+    team_skills_root = _prepare_team_skill_seed(workspace, case)
     ignored_globs = _string_list(case.get("ignored_change_globs"))
     before = snapshot_workspace(workspace, ignored_globs=ignored_globs)
+    team_before = (
+        _prefixed_snapshot(snapshot_workspace(team_skills_root, ignored_globs=()), "team")
+        if team_skills_root is not None
+        else {}
+    )
     started = time.perf_counter()
     result: dict[str, Any] = {}
     runtime_exception = ""
@@ -753,6 +864,27 @@ def run_eval_attempt(
     settings_payload.setdefault("locale", "zh-CN")
     settings = ChatSettings(**settings_payload)
     run_id = f"eval-{_slug(str(case.get('name') or 'case'))}-{attempt}-{uuid4().hex[:8]}"
+    steer_queue = [
+        {
+            "id": f"{run_id}:steer:{index}",
+            "message": message,
+            "queued_at": time.time(),
+        }
+        for index, message in enumerate(_string_list(case.get("steer_messages")), start=1)
+    ]
+    accepted_steers: list[dict[str, Any]] = []
+
+    def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
+        _ = final
+        if not steer_queue:
+            return []
+        accepted_at = time.time()
+        drained = [{**item, "accepted_at": accepted_at} for item in steer_queue]
+        steer_queue.clear()
+        accepted_steers.extend(drained)
+        return drained
+
+    thread_seed = build_eval_thread_seed(case)
     try:
         runtime = runtime_factory(config)
         result = _jsonable(
@@ -762,6 +894,7 @@ def run_eval_attempt(
                 context={
                     "session_id": run_id,
                     "run_id": run_id,
+                    "drain_pending_steers": drain_pending_steers,
                     "project": {
                         "project_id": run_id,
                         "project_title": str(case.get("name") or "Eval case"),
@@ -781,6 +914,8 @@ def run_eval_attempt(
                     "history_turns": [],
                     "recent_user_messages": [],
                     "attachments": [],
+                    "thread_transcript": dict(thread_seed.get("thread_transcript") or {}),
+                    "compaction_status": dict(thread_seed.get("compaction_status") or {}),
                 },
             )
         )
@@ -789,7 +924,12 @@ def run_eval_attempt(
 
     elapsed_ms = max(0, int((time.perf_counter() - started) * 1000))
     after = snapshot_workspace(workspace, ignored_globs=ignored_globs)
-    changes = compare_snapshots(before, after)
+    team_after = (
+        _prefixed_snapshot(snapshot_workspace(team_skills_root, ignored_globs=()), "team")
+        if team_skills_root is not None
+        else {}
+    )
+    changes = compare_snapshots({**before, **team_before}, {**after, **team_after})
     target_files = _string_list(case.get("target_files"))
     allowed_changes = set(_string_list(case.get("allowed_changed_files")))
     protected_files = set(_string_list(case.get("protected_files")))
@@ -802,6 +942,38 @@ def run_eval_attempt(
         for item in list(result.get("tool_events") or [])
         if isinstance(_jsonable(item), dict)
     ]
+    observed_tool_names = {
+        str(item.get("name") or "").strip()
+        for item in tool_events
+        if str(item.get("name") or "").strip()
+    }
+    required_tools = _string_list(case.get("required_tools"))
+    missing_required_tools = sorted(tool for tool in required_tools if tool not in observed_tool_names)
+    expected_steer_count = len(_string_list(case.get("steer_messages")))
+    accepted_steer_count = len(accepted_steers)
+    verification_markers = _string_list(
+        _mapping(case.get("verification")).get("command_markers")
+        or [_mapping(case.get("verification")).get("script")]
+    )
+    verification_outcomes = [
+        _tool_event_succeeded(item)
+        for item in tool_events
+        if str(item.get("name") or "") == "exec_command"
+        and any(marker.lower() in _event_payload_text(item) for marker in verification_markers)
+    ]
+    recovery_expected = bool(case.get("expect_test_failure_recovery"))
+    recovery_observed = bool(
+        any(not outcome for outcome in verification_outcomes)
+        and any(
+            outcome and any(not earlier for earlier in verification_outcomes[:index])
+            for index, outcome in enumerate(verification_outcomes)
+        )
+    )
+    scenario_requirements_met = bool(
+        not missing_required_tools
+        and accepted_steer_count == expected_steer_count
+        and (not recovery_expected or recovery_observed)
+    )
     verification = _mapping(case.get("verification"))
     tool_evidence = analyze_tool_evidence(
         tool_events,
@@ -862,6 +1034,7 @@ def run_eval_attempt(
         and tool_evidence["agent_verification_attempted"]
         and authoritative.get("status") == "passed"
         and not outside_write
+        and scenario_requirements_met
     )
     completion_accuracy: bool | None = (
         runtime_completed == factual_completion if completion_determinable else None
@@ -903,6 +1076,21 @@ def run_eval_attempt(
             fail("Agent did not attempt the required verification command.", "verification_not_attempted")
         if outside_write:
             fail("A successful write-capable tool event escaped the isolated workspace.", "workspace_discipline")
+        if missing_required_tools:
+            fail(
+                "Agent did not use all tools required by this delegation scenario.",
+                "required_tool_missing",
+            )
+        if accepted_steer_count != expected_steer_count:
+            fail(
+                "Queued run-time guidance was not fully accepted by the active turn.",
+                "steer_not_accepted",
+            )
+        if recovery_expected and not recovery_observed:
+            fail(
+                "The expected failed-test then successful-recovery sequence was not observed.",
+                "test_failure_recovery_missing",
+            )
         if authoritative.get("status") == "failed":
             fail("Authoritative compile or tests failed.", "code_correctness")
         if completion_accuracy is False:
@@ -976,6 +1164,22 @@ def run_eval_attempt(
             **tool_evidence,
             "timeline": _compact_tool_events(tool_events, workspace=workspace),
             "failure_observability": failure_observability,
+        },
+        "scenario": {
+            "input_modalities": _string_list(case.get("input_modalities")),
+            "required_tools": required_tools,
+            "missing_required_tools": missing_required_tools,
+            "steer_messages_expected": expected_steer_count,
+            "steer_messages_accepted": accepted_steer_count,
+            "thread_seeded_item_count": int(thread_seed.get("seeded_item_count") or 0),
+            "thread_compacted_item_count": int(thread_seed.get("compacted_item_count") or 0),
+            "compaction_summary_supplied": bool(
+                str((thread_seed.get("compaction_status") or {}).get("compacted_history") or "").strip()
+            ),
+            "team_skill_seeded": bool(team_skills_root is not None),
+            "test_failure_recovery_expected": recovery_expected,
+            "test_failure_recovery_observed": recovery_observed,
+            "requirements_met": scenario_requirements_met,
         },
         "c_style": {
             "passed": not c_style_violations,

@@ -907,6 +907,63 @@ button {
   min-width: 0;
 }
 
+.steer-status {
+  margin: 0 0 6px;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.steer-status.steer_accepted {
+  color: var(--accent);
+}
+
+.steer-status.steer_rejected {
+  color: var(--danger);
+}
+
+.subagent-card-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.subagent-card {
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.9);
+  overflow: hidden;
+}
+
+.subagent-card.running {
+  border-color: rgba(37, 99, 235, 0.32);
+}
+
+.subagent-card > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.subagent-card-task,
+.subagent-card-result {
+  padding: 0 11px 10px;
+  font-size: 0.82rem;
+}
+
+.subagent-card-task {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.subagent-card-result {
+  color: var(--ink-soft);
+}
+
 .message-activity {
   margin-bottom: 12px;
 }

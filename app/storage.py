@@ -887,6 +887,7 @@ class SessionStore:
         attachments: list[dict[str, Any]] | None = None,
         answer_bundle: dict[str, Any] | None = None,
         activity: dict[str, Any] | None = None,
+        record_transcript: bool = True,
     ) -> dict[str, Any]:
         turn = {
             "id": str(uuid.uuid4()),
@@ -898,7 +899,7 @@ class SessionStore:
             "created_at": now_iso(),
         }
         session.setdefault("turns", []).append(turn)
-        if role in {"user", "assistant"}:
+        if record_transcript and role in {"user", "assistant"}:
             transcript = session.setdefault("thread_transcript", self._default_thread_transcript())
             append_transcript_item(
                 transcript,

@@ -108,6 +108,7 @@ _READ_ONLY_TOOL_NAMES = {
     "image_inspect",
     "update_plan",
     "request_user_input",
+    "spawn_subagent",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -634,8 +635,21 @@ class VintageProgrammerRuntime:
         for message in messages:
             tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
             tool_calls = safe_model_dump(getattr(message, "tool_calls", []) or [])
+            additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
             class_name = message.__class__.__name__.lower()
-            role = "tool" if tool_call_id else ("assistant" if tool_calls or "aimessage" in class_name else "")
+            is_user_steer = bool(
+                isinstance(additional_kwargs, dict)
+                and additional_kwargs.get("vp_user_steer")
+            )
+            role = (
+                "tool"
+                if tool_call_id
+                else (
+                    "user"
+                    if is_user_steer
+                    else ("assistant" if tool_calls or "aimessage" in class_name else "")
+                )
+            )
             if not role:
                 continue
             raw = {
@@ -3651,6 +3665,7 @@ class VintageProgrammerRuntime:
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
         skill_writer: Callable[..., dict[str, Any]] | None = None,
+        subagent_runner: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
         setter = getattr(tools, "set_runtime_context", None)
@@ -3675,6 +3690,8 @@ class VintageProgrammerRuntime:
             kwargs["run_id"] = run_id
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "subagent_runner"):
+            kwargs["subagent_runner"] = subagent_runner
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
             kwargs["reserved_skill_roots"] = self._workbench.reserved_skill_roots
         if self._callable_accepts_kwarg(setter, "builtin_skill_roots"):
@@ -4412,6 +4429,10 @@ class VintageProgrammerRuntime:
                 turn_runtime_boundary,
                 available_skills,
             )
+            if bool(context_payload.get("subagent_read_only")):
+                turn_runtime_boundary.workspace_write_allowed = False
+                turn_runtime_boundary.writable_roots = []
+                turn_runtime_boundary.team_skill_write_allowed = False
         write_capability_state = {
             "workspace_write_allowed": bool(turn_runtime_boundary.workspace_write_allowed),
             "team_skill_write_allowed": bool(turn_runtime_boundary.team_skill_write_allowed),
@@ -4529,6 +4550,7 @@ class VintageProgrammerRuntime:
         llm_exchanges: list[dict[str, Any]] = []
         run_started_at = time.monotonic()
         answer_stream_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
+        steered_user_messages: list[dict[str, Any]] = []
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
@@ -4547,6 +4569,178 @@ class VintageProgrammerRuntime:
         activity_sequence = 0
         current_step_index = 0
         llm_exchange_round = 0
+
+        def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
+            drain = context_payload.get("drain_pending_steers")
+            if not callable(drain):
+                return []
+            try:
+                raw_items = drain(final=bool(final))
+            except TypeError:
+                raw_items = drain(bool(final))
+            except Exception as exc:
+                notes.append(f"steer_queue_error:{safe_error_message(exc)}")
+                return []
+            accepted: list[dict[str, Any]] = []
+            for raw in list(raw_items or []):
+                item = dict(raw) if isinstance(raw, dict) else {"message": str(raw or "")}
+                steer_text = str(item.get("message") or "").strip()
+                if not steer_text:
+                    continue
+                normalized = {
+                    "id": str(item.get("id") or uuid.uuid4()),
+                    "message": steer_text,
+                    "queued_at": float(item.get("queued_at") or 0.0),
+                    "accepted_at": float(item.get("accepted_at") or time.time()),
+                }
+                accepted.append(normalized)
+                steered_user_messages.append(normalized)
+                if progress_cb is not None:
+                    progress_cb(
+                        {
+                            "event": "turn/steer/accepted",
+                            "thread_id": session_id,
+                            "turn_id": run_id,
+                            "run_id": run_id,
+                            "steer": dict(normalized),
+                        }
+                    )
+            return accepted
+
+        def append_steers_to_model(steers: list[dict[str, Any]]) -> None:
+            for steer in list(steers or []):
+                steer_message = self._backend._HumanMessage(
+                    content=str(steer.get("message") or "").strip(),
+                    additional_kwargs={
+                        "vp_user_steer": {
+                            "id": str(steer.get("id") or ""),
+                            "queued_at": float(steer.get("queued_at") or 0.0),
+                            "accepted_at": float(steer.get("accepted_at") or 0.0),
+                        }
+                    },
+                )
+                messages.append(steer_message)
+                turn_transcript_messages.append(steer_message)
+
+        def emit_subagent_item(event: str, item: dict[str, Any]) -> None:
+            normalized = dict(item or {})
+            existing_index = next(
+                (
+                    index
+                    for index, existing in enumerate(stream_items)
+                    if str(existing.get("id") or "") == str(normalized.get("id") or "")
+                ),
+                -1,
+            )
+            if existing_index >= 0:
+                stream_items[existing_index] = normalized
+            else:
+                stream_items.append(normalized)
+            if progress_cb is not None:
+                progress_cb(
+                    {
+                        "event": event,
+                        "thread_id": session_id,
+                        "turn_id": run_id,
+                        "item": normalized,
+                    }
+                )
+
+        def subagent_runner(*, task: str, role: str = "explorer", label: str = "") -> dict[str, Any]:
+            subagent_id = f"{run_id or 'turn'}:subagent:{uuid.uuid4()}"
+            normalized_role = str(role or "explorer").strip().lower()
+            if normalized_role not in {"explorer", "tester", "analyst", "summarizer"}:
+                normalized_role = "explorer"
+            task_text = str(task or "").strip()
+            display_label = str(label or "").strip() or task_text[:120]
+            started_item = {
+                "id": subagent_id,
+                "type": "subagent",
+                "status": "inProgress",
+                "role": normalized_role,
+                "label": display_label,
+                "task": task_text,
+                "summary": "",
+                "started_at": time.time(),
+            }
+            emit_subagent_item("item/started", started_item)
+            child_progress_count = 0
+
+            def record_child_progress(_payload: dict[str, Any]) -> None:
+                nonlocal child_progress_count
+                child_progress_count += 1
+
+            try:
+                child_runtime = VintageProgrammerRuntime(
+                    config=self._config,
+                    kernel_runtime=None,
+                    agent_dir=self._agent_dir / "subagents" / "read_only",
+                    backend=create_vp_runtime_backend(self._config),
+                )
+                settings_payload = settings.model_dump() if hasattr(settings, "model_dump") else settings.dict()
+                child_settings = ChatSettings(**dict(settings_payload or {}))
+                child_settings.enable_tools = True
+                child_settings.response_style = "short"
+                child_result = child_runtime.run(
+                    message=task_text,
+                    settings=child_settings,
+                    context={
+                        "session_id": f"{session_id}:subagent:{subagent_id}",
+                        "run_id": subagent_id,
+                        "subagent_read_only": True,
+                        "project": dict(project_context),
+                        "work_cursor": dict(work_cursor),
+                        "attachments": [dict(item) for item in attachment_metas],
+                        "attachment_evidence_pack": [dict(item) for item in attachment_evidence_pack],
+                        "history_turns": [],
+                        "thread_transcript": {"schema_version": 1, "items": []},
+                    },
+                    progress_cb=record_child_progress,
+                )
+                child_status = str(child_result.get("turn_status") or "completed")
+                ok = child_status == "completed"
+                summary = str(child_result.get("final_answer") or child_result.get("text") or "").strip()
+                completed_item = {
+                    **started_item,
+                    "status": "completed" if ok else child_status,
+                    "summary": summary[:12000],
+                    "completed_at": time.time(),
+                    "tool_count": len(list(child_result.get("tool_events") or [])),
+                }
+                emit_subagent_item("item/completed", completed_item)
+                return {
+                    "ok": ok,
+                    "subagent_id": subagent_id,
+                    "role": normalized_role,
+                    "label": display_label,
+                    "status": child_status,
+                    "summary": summary[:12000],
+                    "tool_count": len(list(child_result.get("tool_events") or [])),
+                    "progress_event_count": child_progress_count,
+                    "token_usage": dict(child_result.get("token_usage") or {}),
+                }
+            except Exception as exc:
+                error_text = safe_error_message(exc)
+                emit_subagent_item(
+                    "item/completed",
+                    {
+                        **started_item,
+                        "status": "failed",
+                        "summary": error_text,
+                        "completed_at": time.time(),
+                    },
+                )
+                return {
+                    "ok": False,
+                    "subagent_id": subagent_id,
+                    "role": normalized_role,
+                    "label": display_label,
+                    "status": "failed",
+                    "error_kind": "subagent_failed",
+                    "error": error_text,
+                    "summary": error_text,
+                    "progress_event_count": child_progress_count,
+                }
 
         def emit_runtime_activity(
             activity_type: str,
@@ -4715,6 +4909,7 @@ class VintageProgrammerRuntime:
                 runtime_boundary=turn_runtime_boundary,
                 run_id=run_id,
                 skill_writer=skill_writer,
+                subagent_runner=subagent_runner,
             )
 
         user_input_response = (
@@ -4970,6 +5165,7 @@ class VintageProgrammerRuntime:
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
                     skill_writer=skill_writer,
+                    subagent_runner=subagent_runner,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -5012,7 +5208,12 @@ class VintageProgrammerRuntime:
             empty_after_failure_recovery_count = 0
             latest_tool_round_had_failure = False
 
-            def request_model_action_recovery(*, trigger: str, prompt: str) -> bool:
+            def request_model_action_recovery(
+                *,
+                trigger: str,
+                prompt: str,
+                append_prompt: bool = True,
+            ) -> bool:
                 nonlocal ai_msg
                 nonlocal runner
                 nonlocal effective_model
@@ -5022,7 +5223,8 @@ class VintageProgrammerRuntime:
                 nonlocal runtime_error
                 nonlocal turn_status
 
-                messages.append(self._backend._HumanMessage(content=prompt))
+                if append_prompt:
+                    messages.append(self._backend._HumanMessage(content=prompt))
                 phase = f"model_action_recovery:{trigger}"
                 recovery_exchange = begin_llm_exchange(phase, effective_model or requested_model, messages)
                 latest_request_estimated_tokens = self._estimate_model_request_tokens(
@@ -5266,6 +5468,32 @@ class VintageProgrammerRuntime:
                             continue
                         break
                 if not tool_calls:
+                    pending_steers = drain_pending_steers(final=True)
+                    if pending_steers:
+                        messages.append(ai_msg)
+                        turn_transcript_messages.append(ai_msg)
+                        append_steers_to_model(pending_steers)
+                        final_answer = ""
+                        model_draft = ""
+                        answer_stream_state["text"] = ""
+                        notes.append(f"user_steer_accepted:{len(pending_steers)}")
+                        emit_runtime_activity(
+                            "activity.delta",
+                            "model_action",
+                            "Queued user guidance accepted; requesting the next model action.",
+                            payload={
+                                "steer_count": len(pending_steers),
+                                "model_action": dict(model_action),
+                                **turn_activity_context,
+                            },
+                        )
+                        if request_model_action_recovery(
+                            trigger="user_steer",
+                            prompt="",
+                            append_prompt=False,
+                        ):
+                            continue
+                        break
                     no_tool_response_kind = "final_answer" if step_accepted and ai_text else "empty_response"
                     if step_accepted and ai_text:
                         final_answer = ai_text
@@ -5751,6 +5979,11 @@ class VintageProgrammerRuntime:
                                 forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
                                 notes.append("tool_validation_rejections_exceeded")
                             stop_after_tools = True
+                    if name == "spawn_subagent" and isinstance(result.get("token_usage"), dict):
+                        usage_total = self._backend._merge_usage(
+                            usage_total,
+                            dict(result.get("token_usage") or {}),
+                        )
                     current_task_focus = self._task_checkpoint_from_tool(
                         checkpoint=current_task_focus,
                         tool_name=name,
@@ -5773,6 +6006,7 @@ class VintageProgrammerRuntime:
                         runtime_boundary=turn_runtime_boundary,
                         run_id=run_id,
                         skill_writer=skill_writer,
+                        subagent_runner=subagent_runner,
                     )
                     tool_call_count += 1
                     action_fingerprint = self._action_fingerprint(name, arguments)
@@ -6209,6 +6443,21 @@ class VintageProgrammerRuntime:
                     notes.append("run_cancelled_by_user")
                     break
 
+                pending_steers = drain_pending_steers(final=False)
+                if pending_steers:
+                    append_steers_to_model(pending_steers)
+                    notes.append(f"user_steer_accepted:{len(pending_steers)}")
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "model_action",
+                        "Queued user guidance accepted at the tool boundary.",
+                        payload={
+                            "steer_count": len(pending_steers),
+                            "model_action": dict(model_action),
+                            **turn_activity_context,
+                        },
+                    )
+
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
@@ -6555,6 +6804,7 @@ class VintageProgrammerRuntime:
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
                     skill_writer=skill_writer,
+                    subagent_runner=subagent_runner,
                 )
                 notes.extend(invoke_notes)
                 latest_call_usage = self._backend._extract_usage_from_message(ai_msg)
@@ -7031,6 +7281,7 @@ class VintageProgrammerRuntime:
                     if str(item.get("type") or "") in {"toolCall", "commandExecution", "fileChange", "userInputRequest", "imageView"}
                 ],
                 "live_items": [dict(item) for item in stream_items],
+                "steered_user_messages": [dict(item) for item in steered_user_messages],
                 "trace_events": [dict(item) for item in trace_events],
             },
             "tool_boundary_clean": (
@@ -7042,6 +7293,7 @@ class VintageProgrammerRuntime:
             "answer_stream": dict(answer_stream),
             "tool_events": [dump_model(item) for item in tool_events],
             "transcript_delta": self._transcript_delta(turn_transcript_messages),
+            "steered_user_messages": [dict(item) for item in steered_user_messages],
             "token_usage": usage_total,
             "active_context_usage": dict(active_context_usage),
             "inspector": inspector,

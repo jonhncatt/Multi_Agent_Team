@@ -198,6 +198,12 @@ class RequestUserInputArgs(BaseModel):
     questions: list[dict[str, Any]]
 
 
+class SpawnSubagentArgs(BaseModel):
+    task: str
+    role: str = "explorer"
+    label: str = ""
+
+
 class SaveSkillArgs(BaseModel):
     name: str
     description: str
@@ -651,6 +657,12 @@ class VPRuntimeBackend:
                 func=self._mail_extract_attachments_tool,
             ),
             self._StructuredTool.from_function(
+                name="spawn_subagent",
+                description="Delegate one bounded read-heavy exploration, test, log-analysis, or summarization task to an isolated subagent and return its concise result.",
+                args_schema=SpawnSubagentArgs,
+                func=self._spawn_subagent_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="update_plan",
                 description="Synchronize a lightweight checklist for the current turn.",
                 args_schema=UpdatePlanArgs,
@@ -1100,6 +1112,12 @@ class VPRuntimeBackend:
 
     def _request_user_input_tool(self, questions: list[dict[str, Any]]) -> str:
         return json.dumps(self.tools.request_user_input(questions=questions), ensure_ascii=False)
+
+    def _spawn_subagent_tool(self, task: str, role: str = "explorer", label: str = "") -> str:
+        return json.dumps(
+            self.tools.spawn_subagent(task=task, role=role, label=label),
+            ensure_ascii=False,
+        )
 
     def _browser_open_tool(self, url: str, timeout_ms: int = 20000) -> str:
         return json.dumps(self.tools.browser_open(url=url, timeout_ms=timeout_ms), ensure_ascii=False)

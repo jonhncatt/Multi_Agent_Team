@@ -36,6 +36,7 @@ CANONICAL_TOOL_NAMES = {
     "mail_extract_attachments",
     "update_plan",
     "request_user_input",
+    "spawn_subagent",
     "save_skill",
 }
 

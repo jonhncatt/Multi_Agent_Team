@@ -876,6 +876,8 @@ function liveRunItemFromStreamItem(streamItem, eventName = "") {
     labelKey = isCompleted ? "activity.live.answer_done" : "activity.live.answer_streaming";
   } else if (itemType === "contextCompaction") {
     labelKey = isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting";
+  } else if (itemType === "subagent") {
+    labelKey = isCompleted ? "subagent.completed" : "subagent.running";
   } else if (itemType === "toolCall" || tool) {
     labelKey = isCompleted ? "activity.live.tool_finished" : "activity.live.tool_running";
   }
@@ -3890,6 +3892,11 @@ function App() {
     activeTurn: appState.activeTurn,
     messages,
   });
+  const canQueueGuidance = Boolean(
+    currentThreadBusy
+    && activeRunId
+    && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+  );
   const anyThreadBusy = (() => {
     if (currentThreadBusy) return true;
     for (const [threadId, snapshot] of threadDetailCacheRef.current.entries()) {
@@ -6091,7 +6098,64 @@ function App() {
 
   async function handleSend(overrideText, userInputResponse) {
     const messageText = String(overrideText != null ? overrideText : draft).trim();
-    if (!messageText || currentThreadBusy) return;
+    if (!messageText) return;
+    if (currentThreadBusy) {
+      if (!canQueueGuidance) return;
+      if (pendingUploads.some((item) => item && (item.uploading || (!item.uploadFailed && item.id)))) {
+        const summary = t("errors.steer_attachments_not_supported");
+        setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+        return;
+      }
+      const steerId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const steerMessage = createMessage("user", messageText, {
+        activity: {
+          status: "steer_queued",
+          run_id: String(activeRunId || ""),
+          steer_id: steerId,
+          queued_at: Date.now(),
+        },
+      });
+      const insertSteerBeforePendingAssistant = (items) => {
+        const next = Array.isArray(items) ? [...items] : [];
+        let insertAt = next.length;
+        for (let index = next.length - 1; index >= 0; index -= 1) {
+          if (next[index] && next[index].role === "assistant" && next[index].pending) {
+            insertAt = index;
+            break;
+          }
+        }
+        next.splice(insertAt, 0, steerMessage);
+        return next;
+      };
+      setMessages((prev) => insertSteerBeforePendingAssistant(prev));
+      updateThreadSnapshot(String(sessionId || ""), (existing) => ({
+        ...existing,
+        messages: insertSteerBeforePendingAssistant(existing.messages),
+      }));
+      if (overrideText == null) setDraft("");
+      clearUiError();
+      try {
+        const queued = await fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: messageText, client_steer_id: steerId }),
+        });
+        const queuedAt = normalizeActivityTimestamp(queued.queued_at || 0) || Date.now();
+        setMessages((prev) => prev.map((item) => (
+          String(((item.activity || {}).steer_id) || "") === steerId
+            ? { ...item, activity: { ...(item.activity || {}), status: "steer_queued", queued_at: queuedAt } }
+            : item
+        )));
+      } catch (err) {
+        setMessages((prev) => prev.map((item) => (
+          String(((item.activity || {}).steer_id) || "") === steerId
+            ? { ...item, activity: { ...(item.activity || {}), status: "steer_rejected" } }
+            : item
+        )));
+        applyUiError(err, t("errors.steer_failed"));
+      }
+      return;
+    }
     const slashCommand = normalizeSlashCommandText(messageText);
     if (slashCommand) {
       setDraft("");
@@ -7015,6 +7079,33 @@ function App() {
               });
               pushLogWithLimit(setLogs, "system", explanation);
               pushLiveLog("system", explanation);
+            } else if (event === "turn/steer/accepted") {
+              const steer = payload.steer && typeof payload.steer === "object" ? payload.steer : {};
+              const steerId = String(steer.id || "");
+              if (steerId) {
+                updateOwnerMessages((prev) => prev.map((item) => (
+                  String(((item.activity || {}).steer_id) || "") === steerId
+                    ? {
+                        ...item,
+                        activity: {
+                          ...(item.activity || {}),
+                          status: "steer_accepted",
+                          accepted_at: normalizeActivityTimestamp(steer.accepted_at || 0) || Date.now(),
+                        },
+                      }
+                    : item
+                )));
+              }
+              assistantText = "";
+              patchPendingActivity((activity) => mergeActivityState(activity, { model_draft: "" }));
+              replacePendingText(t("activity.status.waiting_model"));
+              updateOwnerLiveHeartbeat({
+                status: "waiting_model",
+                action: t("steer.accepted"),
+                recentEvent: t("steer.accepted"),
+                source: "user",
+                updatedAt: steer.accepted_at || Date.now(),
+              });
             } else if (event === "turn/completed") {
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
@@ -7541,7 +7632,7 @@ function App() {
     ) {
       return;
     }
-    if (currentThreadBusy) return;
+    if (currentThreadBusy && !canQueueGuidance) return;
     if (slashCommandSuggestions.length) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -8459,6 +8550,31 @@ function App() {
       || (!item.pending ? item.text : "")
       || "",
     ).trim());
+    const subagentCards = displayActivity.live_items
+      .filter((liveItem) => String(liveItem.type || "") === "subagent")
+      .map((liveItem, index) => {
+        const raw = liveItem.raw && typeof liveItem.raw === "object" ? liveItem.raw : {};
+        const running = !isActivityTerminalStatus(liveItem.status);
+        const role = String(raw.role || "explorer");
+        const title = String(raw.label || liveItem.label || raw.task || t("subagent.title"));
+        const summary = String(raw.summary || liveItem.detail || "");
+        return html`
+          <details
+            key=${liveItem.id || `${item.id}-subagent-${index}`}
+            className=${`subagent-card ${running ? "running" : "completed"}`}
+            open=${running}
+          >
+            <summary>
+              <span>${t("subagent.title")} · ${role}</span>
+              <span>${running ? t("subagent.running") : t("subagent.completed")}</span>
+            </summary>
+            <div className="subagent-card-task">${title}</div>
+            ${summary
+              ? html`<div className="subagent-card-result message-markdown" dangerouslySetInnerHTML=${{ __html: renderMessageHtml(summary, `${item.id}-subagent-${index}`) }}></div>`
+              : html`<div className="subagent-card-result muted">${t("subagent.waiting_result")}</div>`}
+          </details>
+        `;
+      });
     return html`
       <div className=${`message-activity tone-${tone} ${isOpen ? "open" : ""}`}>
         <button
@@ -8470,6 +8586,7 @@ function App() {
           <span>${pillLabel}</span>
           <span className="activity-pill-arrow">${isOpen ? "−" : ">"}</span>
         </button>
+        ${subagentCards.length ? html`<div className="subagent-card-list">${subagentCards}</div>` : null}
         ${!isOpen
           ? renderActivityProgressList(projection, displayActivity, {
               preview: true,
@@ -8492,6 +8609,16 @@ function App() {
           : null}
       </div>
     `;
+  };
+
+  const renderSteerStatus = (item) => {
+    if (!item || item.role !== "user") return null;
+    const status = String(((item.activity || {}).status) || "");
+    if (!["steer_queued", "steer_accepted", "steer_rejected"].includes(status)) return null;
+    const label = status === "steer_accepted"
+      ? t("steer.accepted")
+      : (status === "steer_rejected" ? t("steer.rejected") : t("steer.queued"));
+    return html`<div className=${`steer-status ${status}`}>${label}</div>`;
   };
 
   const messageBodyText = (item) => {
@@ -8782,6 +8909,7 @@ function App() {
                       </div>
                       <div className="message-card">
                         ${renderMessageActivity(item)}
+                        ${renderSteerStatus(item)}
                         <div
                           className="message-card-body message-markdown"
                           dangerouslySetInnerHTML=${{ __html: renderMessageHtml(messageBodyText(item), item.id) }}
@@ -8997,9 +9125,9 @@ function App() {
                 className="send-btn"
                 type="button"
                 onClick=${() => handleSend()}
-                disabled=${currentThreadBusy || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
+                disabled=${(currentThreadBusy && !canQueueGuidance) || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
               >
-	              ${currentThreadBusy ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send"))}
+	              ${canQueueGuidance ? t("buttons.steer") : (currentThreadBusy ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send")))}
 	            </button>
           </div>
           <div className="status-bar status-inline" id="statusBar">

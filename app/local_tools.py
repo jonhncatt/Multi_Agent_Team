@@ -1166,6 +1166,7 @@ class LocalToolExecutor:
         reserved_skill_roots: list[str] | None = None,
         builtin_skill_roots: list[str] | None = None,
         team_skill_roots: list[str] | None = None,
+        subagent_runner: Any | None = None,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
         if mode not in {"host", "docker"}:
@@ -1193,9 +1194,10 @@ class LocalToolExecutor:
         self._runtime_ctx.team_skill_roots = [
             str(item) for item in list(team_skill_roots or []) if str(item or "").strip()
         ]
+        self._runtime_ctx.subagent_runner = subagent_runner
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -3134,6 +3136,32 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "spawn_subagent",
+                "description": "Delegate one bounded, read-heavy exploration, test, log-analysis, or summarization task to an isolated subagent. The subagent cannot spawn another subagent and returns a concise result to this thread.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "A self-contained task with the scope, relevant paths, and expected result.",
+                        },
+                        "role": {
+                            "type": "string",
+                            "enum": ["explorer", "tester", "analyst", "summarizer"],
+                            "default": "explorer",
+                        },
+                        "label": {
+                            "type": "string",
+                            "default": "",
+                            "description": "Short user-facing label for the delegated work.",
+                        },
+                    },
+                    "required": ["task"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "update_plan",
                 "description": "Synchronize a lightweight checklist. Keep exactly one step in_progress until every step is completed.",
                 "parameters": {
@@ -3413,6 +3441,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "update_plan":
             result = self.update_plan(**arguments)
+            return self._decorate_result(result)
+        if name == "spawn_subagent":
+            result = self.spawn_subagent(**arguments)
             return self._decorate_result(result)
         if name == "request_user_input":
             result = self.request_user_input(**arguments)
@@ -3867,6 +3898,35 @@ class LocalToolExecutor:
             "questions": normalized_questions,
             "summary": "user input required",
         }
+
+    def spawn_subagent(
+        self,
+        task: str,
+        role: str = "explorer",
+        label: str = "",
+    ) -> dict[str, Any]:
+        runner = getattr(self._runtime_ctx, "subagent_runner", None)
+        task_text = str(task or "").strip()
+        if not task_text:
+            return {
+                "ok": False,
+                "error_kind": "invalid_arguments",
+                "error": "spawn_subagent requires a non-empty task",
+            }
+        if not callable(runner):
+            return {
+                "ok": False,
+                "error_kind": "subagent_unavailable",
+                "error": "Subagent execution is unavailable in this runtime.",
+            }
+        return dict(
+            runner(
+                task=task_text,
+                role=str(role or "explorer").strip() or "explorer",
+                label=str(label or "").strip(),
+            )
+            or {}
+        )
 
     def save_skill(
         self,

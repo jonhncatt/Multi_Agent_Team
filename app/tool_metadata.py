@@ -57,6 +57,15 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "low",
         "summary": "request structured follow-up input",
     },
+    "spawn_subagent": {
+        "group": "control",
+        "source": "native",
+        "read_only": True,
+        "requires_evidence": False,
+        "requires": {**_FALLBACK_REQUIRES},
+        "risk": "low",
+        "summary": "delegate one bounded read-heavy task to an isolated subagent",
+    },
     "save_skill": {
         "group": "control",
         "source": "native",
