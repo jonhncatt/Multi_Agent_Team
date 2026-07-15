@@ -1866,6 +1866,17 @@ def test_frontend_steer_keeps_completed_segment_before_queued_guidance() -> None
     assert 'status: "waiting_model"' in script
 
 
+def test_live_execution_card_renders_after_queued_guidance_before_acceptance() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId)" in script
+    assert '["steer_queued", "steer_accepted", "steer_rejected"].includes(steerStatus)' in script
+    assert "const [liveAssistant] = list.splice(liveIndex, 1);" in script
+    assert "list.splice(displayAfterIndex, 0, liveAssistant);" in script
+    assert "const conversationMessages = messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId);" in script
+    assert "? conversationMessages.map(" in script
+
+
 def test_thread_runs_use_thread_scoped_busy_state() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     handle_send_match = re.search(

@@ -3029,6 +3029,37 @@ function latestAssistantMessage(messages, options = {}) {
   return reversed.find((item) => item && item.role === "assistant") || null;
 }
 
+function messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId) {
+  const list = Array.isArray(messages) ? [...messages] : [];
+  const liveId = String(liveAssistantMessageId || "").trim();
+  if (!liveId) return list;
+  const liveIndex = list.findIndex((item) => (
+    item
+    && item.role === "assistant"
+    && String(item.id || "").trim() === liveId
+  ));
+  if (liveIndex < 0) return list;
+
+  let displayAfterIndex = liveIndex;
+  for (let index = liveIndex + 1; index < list.length; index += 1) {
+    const item = list[index] && typeof list[index] === "object" ? list[index] : {};
+    const steerStatus = String(((item.activity || {}).status) || "").trim();
+    if (
+      item.role === "user"
+      && ["steer_queued", "steer_accepted", "steer_rejected"].includes(steerStatus)
+    ) {
+      displayAfterIndex = index;
+      continue;
+    }
+    break;
+  }
+  if (displayAfterIndex === liveIndex) return list;
+
+  const [liveAssistant] = list.splice(liveIndex, 1);
+  list.splice(displayAfterIndex, 0, liveAssistant);
+  return list;
+}
+
 function currentChecklistStepLabel(plan, checkpoint = {}) {
   const entries = normalizePlanChecklist(plan);
   const inProgress = entries.find((item) => normalizeProgressStatus(item.status) === "running");
@@ -7940,6 +7971,7 @@ function App() {
   const liveAssistantMessageId = hasLiveRuntimeState
     ? String((((latestAssistantMessage(messages, { preferPending: true })) || {}).id) || "").trim()
     : "";
+  const conversationMessages = messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId);
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
   const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
   const activeTaskState = (
@@ -9124,8 +9156,8 @@ function App() {
                 </div>
               `
             : null}
-          ${messages.length
-            ? messages.map(
+          ${conversationMessages.length
+            ? conversationMessages.map(
                 (item) => {
                   const messageId = String(item.id || "");
                   const copied = Boolean(messageId && copiedMessageId === messageId);
