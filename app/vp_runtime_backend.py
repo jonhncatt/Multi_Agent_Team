@@ -199,9 +199,25 @@ class RequestUserInputArgs(BaseModel):
 
 
 class SpawnSubagentArgs(BaseModel):
-    task: str
-    role: str = "explorer"
-    label: str = ""
+    task: str = Field(description="Self-contained assignment with scope, relevant paths, and expected result.")
+    role: str = Field(
+        default="explorer",
+        description="Builtin role: explorer, tester, analyst, or summarizer.",
+    )
+    label: str = Field(default="", description="Short user-facing label for the delegated work.")
+
+
+class WaitSubagentsArgs(BaseModel):
+    subagent_ids: list[str] = Field(
+        default_factory=list,
+        description="Subagent ids to collect; omit to collect all children from this turn.",
+    )
+    timeout_seconds: float = Field(
+        default=30,
+        ge=0,
+        le=300,
+        description="Maximum seconds to wait before returning any still-running ids.",
+    )
 
 
 class SaveSkillArgs(BaseModel):
@@ -658,9 +674,15 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="spawn_subagent",
-                description="Delegate one bounded read-heavy exploration, test, log-analysis, or summarization task to an isolated subagent and return its concise result.",
+                description="Start one bounded Subagent task in an isolated context and immediately return its id. Independent tasks can run in parallel; call wait_subagents to collect results.",
                 args_schema=SpawnSubagentArgs,
                 func=self._spawn_subagent_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="wait_subagents",
+                description="Wait for selected parallel Subagents, or all current Subagents, and collect completed summaries.",
+                args_schema=WaitSubagentsArgs,
+                func=self._wait_subagents_tool,
             ),
             self._StructuredTool.from_function(
                 name="update_plan",
@@ -1116,6 +1138,19 @@ class VPRuntimeBackend:
     def _spawn_subagent_tool(self, task: str, role: str = "explorer", label: str = "") -> str:
         return json.dumps(
             self.tools.spawn_subagent(task=task, role=role, label=label),
+            ensure_ascii=False,
+        )
+
+    def _wait_subagents_tool(
+        self,
+        subagent_ids: list[str] | None = None,
+        timeout_seconds: float = 30,
+    ) -> str:
+        return json.dumps(
+            self.tools.wait_subagents(
+                subagent_ids=subagent_ids or [],
+                timeout_seconds=timeout_seconds,
+            ),
             ensure_ascii=False,
         )
 

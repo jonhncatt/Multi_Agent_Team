@@ -8,18 +8,20 @@
 - `POST /api/chat/runs/{run_id}/steer` 将文本加入当前 Turn 的队列，并立即返回 `queued`。
 - Runtime 只在安全边界取走队列：一轮模型回复准备结束时，或一组工具调用全部回灌完成后。
 - 追加指令作为真实 `user` 消息插入 Thread transcript；不启动第二条并行模型链，也不改变已有工具调用顺序。
-- 前端先把追加消息稳定保留在当前回复之后并显示“已排队”。Runtime 通过 `turn/segment/completed` 结束前一回复段，再通过带 `next_segment_id` 的 `turn/steer/accepted` 开始下一回复段；旧回复只冻结可见文本，Plan 与实时执行面板转移到追加用户消息之后的新回复段，因此运行中和刷新后的顺序一致。
+- 前端在 Runtime 尚未接收时把追加指令保留在输入框上方的待合流区，不提前写入消息列表，也不移动当前执行面板。Runtime 通过 `turn/segment/completed` 结束前一回复段，再通过带 `next_segment_id` 的 `turn/steer/accepted` 将指令正式写入 Thread 并开始下一回复段；运行中和刷新后的顺序一致。
 - Session turns 按 `原请求 → 中间回复 → 追加指令 → 最终回复` 持久化，因此刷新页面后不会只剩最后一段回复。当前版本的运行中追加仅支持文本，不携带附件。
 - Runtime 在最终空队列检查时原子关闭接收窗口，避免 Turn 已结束后仍接受消息。
 
-## 单层 Subagent
+## 单层并行 Subagent
 
 - `spawn_subagent` 是普通模型工具。是否使用、委派什么任务由主模型决定，不存在关键词路由。
-- 第一版面向文件探索、测试、日志分析和总结；每次调用同步运行一个独立上下文，所以不会出现多个 Subagent 同时修改同一文件。
+- `spawn_subagent` 只负责启动并立即返回 id；独立任务可以先后启动并在后台并行执行。主 Agent 通过 `wait_subagents` 等待全部或指定结果，不再把一次子任务阻塞成同步工具调用。
+- 默认每个主 Turn 最多同时运行 3 个子 Agent，可用 `VP_MAX_CONCURRENT_SUBAGENTS` 在 1–8 之间调整。Turn 结束前 Runtime 会收束其子线程，不留下孤儿任务。
 - 子上下文不继承主 Thread 历史，只接收自包含任务、当前项目、附件和 RuntimeBoundary。
-- 子 Agent 没有 `spawn_subagent`、`apply_patch`、`save_skill` 或用户询问工具；工作区写入能力关闭。它可以使用文件读取工具和 `exec_command` 做聚焦测试，但提示词明确禁止通过命令修改工作区。
+- 内置角色定义独立存放在 `agents/builtin/*.toml`，当前提供 `explorer`、`tester`、`analyst`、`summarizer`。每个角色有不同说明和工具白名单；本轮不增加 `agents/team/`。
+- 子 Agent 没有 `spawn_subagent`、`wait_subagents`、`apply_patch`、`save_skill` 或用户询问工具；工作区写入能力关闭。只有 `tester` 角色包含命令工具，用于聚焦测试，且仍不能通过命令修改工作区。
 - Read-only Subagent 不进入交互式命令审批流程。`python -c`、`node -e` 或需要执行网络来源代码的命令会返回结构化的“改用安全方案”结果，要求改用文件工具、已有脚本或已有测试模块；全局 provenance 策略不放宽。
-- 子 Agent 的完整上下文不会回灌主 Thread。主 Agent 只收到状态、精简摘要、工具数量和 token 统计。
+- 子 Agent 的完整上下文不会回灌主 Thread。主 Agent 只在 `wait_subagents` 结果中收到状态、精简摘要、工具数量和 token 统计。
 - 前端将 `subagent` stream item 显示为主任务内的折叠卡片；没有独立聊天页或递归子 Agent。
 
 ## 兼容性

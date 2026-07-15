@@ -409,6 +409,7 @@ class AppConfig:
     tool_result_tail_chars: int
     tool_context_prune_keep_last: int
     max_concurrent_runs: int
+    max_concurrent_subagents: int
     run_queue_wait_notice_ms: int
     execution_mode: str
     docker_bin: str
@@ -1022,6 +1023,12 @@ def load_config() -> AppConfig:
             or "2"
         ).strip()
     )
+    max_concurrent_subagents = int(
+        (
+            _env("VP_MAX_CONCURRENT_SUBAGENTS", default="3")
+            or "3"
+        ).strip()
+    )
     run_queue_wait_notice_ms = int(
         (
             _env(
@@ -1230,6 +1237,7 @@ def load_config() -> AppConfig:
         tool_result_tail_chars=max(500, min(200_000, tool_result_tail_chars)),
         tool_context_prune_keep_last=max(0, min(20, tool_context_prune_keep_last)),
         max_concurrent_runs=max(1, min(32, max_concurrent_runs)),
+        max_concurrent_subagents=max(1, min(8, max_concurrent_subagents)),
         run_queue_wait_notice_ms=max(0, min(120_000, run_queue_wait_notice_ms)),
         execution_mode=execution_mode,
         docker_bin=docker_bin or "docker",

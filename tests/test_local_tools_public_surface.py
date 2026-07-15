@@ -56,6 +56,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "update_plan",
         "request_user_input",
         "spawn_subagent",
+        "wait_subagents",
         "save_skill",
     }.issubset(tool_names)
     assert {"load_skill", "run_skill_script"}.isdisjoint(tool_names)
@@ -99,6 +100,29 @@ def test_spawn_subagent_delegates_to_runtime_injected_runner(tmp_path: Path) -> 
     assert calls == [
         {"task": "Inspect parser files", "role": "explorer", "label": "Parser scan"}
     ]
+
+
+def test_wait_subagents_delegates_to_runtime_injected_waiter(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    calls = []
+
+    def waiter(**kwargs):
+        calls.append(dict(kwargs))
+        return {"ok": True, "completed": True, "results": [{"subagent_id": "child-1"}]}
+
+    executor.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        subagent_waiter=waiter,
+    )
+    result = executor.execute(
+        "wait_subagents",
+        {"subagent_ids": ["child-1"], "timeout_seconds": 12},
+    )
+
+    assert result["ok"] is True
+    assert result["completed"] is True
+    assert calls == [{"subagent_ids": ["child-1"], "timeout_seconds": 12.0}]
 
 
 def test_exec_command_runs_enabled_skill_python_directly_from_business_project(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 import hashlib
 import inspect
@@ -67,6 +68,7 @@ from app.session_context import (
     normalize_task_state_delta,
     normalize_work_cursor,
 )
+from app.subagent_registry import BuiltinSubagentRegistry, SubagentSpecError
 from app.tool_name_normalizer import normalize_tool_name
 from app.tool_trace_summary import (
     build_tool_argument_audit,
@@ -109,6 +111,7 @@ _READ_ONLY_TOOL_NAMES = {
     "update_plan",
     "request_user_input",
     "spawn_subagent",
+    "wait_subagents",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -286,6 +289,7 @@ class VintageProgrammerRuntime:
             agent_dir=self._agent_dir,
             skill_repository_root=skill_repository_root,
         )
+        self._builtin_subagents = BuiltinSubagentRegistry(self._agent_dir.parent / "builtin")
         self._descriptor_lock = threading.Lock()
         self._descriptor_cache: dict[str, dict[str, object]] = {}
         self._descriptor_cache_generation = 0
@@ -3666,6 +3670,7 @@ class VintageProgrammerRuntime:
         run_id: str = "",
         skill_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
+        subagent_waiter: Callable[..., dict[str, Any]] | None = None,
         subagent_read_only: bool = False,
     ) -> None:
         tools = getattr(self._backend, "tools", None)
@@ -3693,6 +3698,8 @@ class VintageProgrammerRuntime:
             kwargs["skill_writer"] = skill_writer
         if self._callable_accepts_kwarg(setter, "subagent_runner"):
             kwargs["subagent_runner"] = subagent_runner
+        if self._callable_accepts_kwarg(setter, "subagent_waiter"):
+            kwargs["subagent_waiter"] = subagent_waiter
         if self._callable_accepts_kwarg(setter, "subagent_read_only"):
             kwargs["subagent_read_only"] = bool(subagent_read_only)
         if self._callable_accepts_kwarg(setter, "reserved_skill_roots"):
@@ -4336,11 +4343,40 @@ class VintageProgrammerRuntime:
         has_image_attachments = _has_image_attachments(attachment_metas)
         with phase_timer.measure("agent_spec_load_ms"):
             spec = self._load_spec(locale=locale)
+        subagent_spec_payload = (
+            dict(context_payload.get("subagent_spec") or {})
+            if isinstance(context_payload.get("subagent_spec"), dict)
+            else {}
+        )
         with phase_timer.measure("skills_load_ms"):
             available_skills = self._enabled_skills(spec.agent_id)
+        if subagent_spec_payload:
+            available_skills = []
         skill_writer = self._make_skill_writer()
-        requested_model = str(settings.model or spec.default_model or self._config.default_model).strip() or self._config.default_model
+        requested_model = str(
+            subagent_spec_payload.get("model")
+            or settings.model
+            or spec.default_model
+            or self._config.default_model
+        ).strip() or self._config.default_model
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
+        if subagent_spec_payload and settings.enable_tools:
+            explicit_subagent_tools = [
+                str(item).strip()
+                for item in list(subagent_spec_payload.get("allowed_tools") or [])
+                if str(item or "").strip()
+            ]
+            selected_tools = list(
+                self._resolve_allowed_tools(
+                    tool_scope=str(subagent_spec_payload.get("tool_scope") or "read_only").strip().lower(),
+                    explicit_tools=explicit_subagent_tools,
+                )
+            )
+            selected_tools = [
+                name
+                for name in selected_tools
+                if name not in {"spawn_subagent", "wait_subagents", "request_user_input", "save_skill", "apply_patch"}
+            ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
         runnable_tools = list(selected_tools if selected_tools else ())
         max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
@@ -4453,14 +4489,25 @@ class VintageProgrammerRuntime:
                 project_context,
                 python_command=self._config.python_command,
             )
+            rendered_system_prompt = self._render_system_prompt(
+                settings,
+                spec=spec,
+                available_skills=available_skills,
+                runtime_context_text=runtime_context_text,
+            )
+            if subagent_spec_payload:
+                rendered_system_prompt += (
+                    "\n\n[subagent_role]\n"
+                    f"name: {str(subagent_spec_payload.get('name') or 'subagent')}\n"
+                    f"description: {str(subagent_spec_payload.get('description') or '')}\n"
+                    f"instructions:\n{str(subagent_spec_payload.get('developer_instructions') or '').strip()}\n"
+                    "Work only on the bounded task in the current user message. "
+                    "Return a concise evidence-backed result to the parent Agent.\n"
+                    "[/subagent_role]"
+                )
             messages: list[Any] = [
                 self._backend._SystemMessage(
-                    content=self._render_system_prompt(
-                        settings,
-                        spec=spec,
-                        available_skills=available_skills,
-                        runtime_context_text=runtime_context_text,
-                    )
+                    content=rendered_system_prompt
                 )
             ]
             if project_contract_text:
@@ -4698,20 +4745,25 @@ class VintageProgrammerRuntime:
                         }
                     )
 
+        subagent_lock = threading.RLock()
+        subagent_records: dict[str, dict[str, Any]] = {}
+        subagent_executor: ThreadPoolExecutor | None = None
+
         def emit_subagent_item(event: str, item: dict[str, Any]) -> None:
             normalized = dict(item or {})
-            existing_index = next(
-                (
-                    index
-                    for index, existing in enumerate(stream_items)
-                    if str(existing.get("id") or "") == str(normalized.get("id") or "")
-                ),
-                -1,
-            )
-            if existing_index >= 0:
-                stream_items[existing_index] = normalized
-            else:
-                stream_items.append(normalized)
+            with subagent_lock:
+                existing_index = next(
+                    (
+                        index
+                        for index, existing in enumerate(stream_items)
+                        if str(existing.get("id") or "") == str(normalized.get("id") or "")
+                    ),
+                    -1,
+                )
+                if existing_index >= 0:
+                    stream_items[existing_index] = normalized
+                else:
+                    stream_items.append(normalized)
             if progress_cb is not None:
                 progress_cb(
                     {
@@ -4722,24 +4774,13 @@ class VintageProgrammerRuntime:
                     }
                 )
 
-        def subagent_runner(*, task: str, role: str = "explorer", label: str = "") -> dict[str, Any]:
-            subagent_id = f"{run_id or 'turn'}:subagent:{uuid.uuid4()}"
-            normalized_role = str(role or "explorer").strip().lower()
-            if normalized_role not in {"explorer", "tester", "analyst", "summarizer"}:
-                normalized_role = "explorer"
-            task_text = str(task or "").strip()
-            display_label = str(label or "").strip() or task_text[:120]
-            started_item = {
-                "id": subagent_id,
-                "type": "subagent",
-                "status": "inProgress",
-                "role": normalized_role,
-                "label": display_label,
-                "task": task_text,
-                "summary": "",
-                "started_at": time.time(),
-            }
-            emit_subagent_item("item/started", started_item)
+        def run_subagent_task(
+            *,
+            subagent_id: str,
+            task_text: str,
+            role_spec: dict[str, Any],
+            started_item: dict[str, Any],
+        ) -> dict[str, Any]:
             child_progress_count = 0
 
             def record_child_progress(_payload: dict[str, Any]) -> None:
@@ -4750,7 +4791,7 @@ class VintageProgrammerRuntime:
                 child_runtime = VintageProgrammerRuntime(
                     config=self._config,
                     kernel_runtime=None,
-                    agent_dir=self._agent_dir / "subagents" / "read_only",
+                    agent_dir=self._agent_dir,
                     backend=create_vp_runtime_backend(self._config),
                 )
                 settings_payload = settings.model_dump() if hasattr(settings, "model_dump") else settings.dict()
@@ -4764,6 +4805,7 @@ class VintageProgrammerRuntime:
                         "session_id": f"{session_id}:subagent:{subagent_id}",
                         "run_id": subagent_id,
                         "subagent_read_only": True,
+                        "subagent_spec": dict(role_spec),
                         "project": dict(project_context),
                         "work_cursor": dict(work_cursor),
                         "attachments": [dict(item) for item in attachment_metas],
@@ -4776,19 +4818,11 @@ class VintageProgrammerRuntime:
                 child_status = str(child_result.get("turn_status") or "completed")
                 ok = child_status == "completed"
                 summary = str(child_result.get("final_answer") or child_result.get("text") or "").strip()
-                completed_item = {
-                    **started_item,
-                    "status": "completed" if ok else child_status,
-                    "summary": summary[:12000],
-                    "completed_at": time.time(),
-                    "tool_count": len(list(child_result.get("tool_events") or [])),
-                }
-                emit_subagent_item("item/completed", completed_item)
-                return {
+                result = {
                     "ok": ok,
                     "subagent_id": subagent_id,
-                    "role": normalized_role,
-                    "label": display_label,
+                    "role": str(role_spec.get("name") or "explorer"),
+                    "label": str(started_item.get("label") or ""),
                     "status": child_status,
                     "summary": summary[:12000],
                     "tool_count": len(list(child_result.get("tool_events") or [])),
@@ -4797,6 +4831,97 @@ class VintageProgrammerRuntime:
                 }
             except Exception as exc:
                 error_text = safe_error_message(exc)
+                result = {
+                    "ok": False,
+                    "subagent_id": subagent_id,
+                    "role": str(role_spec.get("name") or "explorer"),
+                    "label": str(started_item.get("label") or ""),
+                    "status": "failed",
+                    "error_kind": "subagent_failed",
+                    "error": error_text,
+                    "summary": error_text,
+                    "progress_event_count": child_progress_count,
+                    "token_usage": {},
+                }
+            completed_item = {
+                **started_item,
+                "status": "completed" if bool(result.get("ok")) else str(result.get("status") or "failed"),
+                "summary": str(result.get("summary") or "")[:12000],
+                "completed_at": time.time(),
+                "tool_count": int(result.get("tool_count") or 0),
+            }
+            with subagent_lock:
+                record = subagent_records.get(subagent_id)
+                if isinstance(record, dict):
+                    record["result"] = dict(result)
+                    record["item"] = dict(completed_item)
+            emit_subagent_item("item/completed", completed_item)
+            return result
+
+        def subagent_runner(*, task: str, role: str = "explorer", label: str = "") -> dict[str, Any]:
+            nonlocal subagent_executor
+            task_text = str(task or "").strip()
+            normalized_role = str(role or "explorer").strip().lower() or "explorer"
+            try:
+                role_spec = self._builtin_subagents.load(normalized_role).as_payload()
+            except SubagentSpecError as exc:
+                return {
+                    "ok": False,
+                    "error_kind": "unknown_subagent_role",
+                    "error": safe_error_message(exc),
+                    "available_roles": [item.name for item in self._builtin_subagents.list()],
+                }
+            subagent_id = f"{run_id or 'turn'}:subagent:{uuid.uuid4()}"
+            display_label = str(label or "").strip() or task_text[:120]
+            started_item = {
+                "id": subagent_id,
+                "type": "subagent",
+                "status": "inProgress",
+                "role": normalized_role,
+                "label": display_label,
+                "task": task_text,
+                "summary": "",
+                "started_at": time.time(),
+            }
+            with subagent_lock:
+                if subagent_executor is None:
+                    subagent_executor = ThreadPoolExecutor(
+                        max_workers=int(self._config.max_concurrent_subagents),
+                        thread_name_prefix="vp-subagent",
+                    )
+                subagent_records[subagent_id] = {
+                    "id": subagent_id,
+                    "role": normalized_role,
+                    "item": dict(started_item),
+                    "result": None,
+                    "future": None,
+                    "usage_reported": False,
+                }
+                executor = subagent_executor
+            emit_subagent_item("item/started", started_item)
+            try:
+                future = executor.submit(
+                    run_subagent_task,
+                    subagent_id=subagent_id,
+                    task_text=task_text,
+                    role_spec=role_spec,
+                    started_item=started_item,
+                )
+            except Exception as exc:
+                error_text = safe_error_message(exc)
+                failed_result = {
+                    "ok": False,
+                    "subagent_id": subagent_id,
+                    "role": normalized_role,
+                    "label": display_label,
+                    "status": "failed",
+                    "error_kind": "subagent_start_failed",
+                    "error": error_text,
+                    "summary": error_text,
+                    "token_usage": {},
+                }
+                with subagent_lock:
+                    subagent_records[subagent_id]["result"] = dict(failed_result)
                 emit_subagent_item(
                     "item/completed",
                     {
@@ -4806,17 +4931,99 @@ class VintageProgrammerRuntime:
                         "completed_at": time.time(),
                     },
                 )
-                return {
-                    "ok": False,
-                    "subagent_id": subagent_id,
-                    "role": normalized_role,
-                    "label": display_label,
-                    "status": "failed",
-                    "error_kind": "subagent_failed",
-                    "error": error_text,
-                    "summary": error_text,
-                    "progress_event_count": child_progress_count,
-                }
+                return failed_result
+            with subagent_lock:
+                subagent_records[subagent_id]["future"] = future
+            return {
+                "ok": True,
+                "accepted": True,
+                "subagent_id": subagent_id,
+                "role": normalized_role,
+                "label": display_label,
+                "status": "running",
+                "summary": "Subagent started. Call wait_subagents to collect its result.",
+            }
+
+        def subagent_waiter(
+            *,
+            subagent_ids: list[str] | None = None,
+            timeout_seconds: float = 30,
+        ) -> dict[str, Any]:
+            requested_ids = [str(item).strip() for item in list(subagent_ids or []) if str(item or "").strip()]
+            with subagent_lock:
+                selected_ids = requested_ids or list(subagent_records)
+                unknown_ids = [item for item in selected_ids if item not in subagent_records]
+                if unknown_ids:
+                    return {
+                        "ok": False,
+                        "error_kind": "unknown_subagent_id",
+                        "error": "Unknown Subagent id(s).",
+                        "unknown_ids": unknown_ids,
+                    }
+                futures: list[Future[Any]] = [
+                    subagent_records[item]["future"]
+                    for item in selected_ids
+                    if isinstance(subagent_records[item].get("future"), Future)
+                ]
+            if futures:
+                wait(futures, timeout=max(0.0, min(300.0, float(timeout_seconds or 0.0))))
+            results: list[dict[str, Any]] = []
+            pending_ids: list[str] = []
+            new_usage: dict[str, Any] = {}
+            with subagent_lock:
+                for subagent_id in selected_ids:
+                    record = subagent_records[subagent_id]
+                    result = record.get("result")
+                    if not isinstance(result, dict):
+                        pending_ids.append(subagent_id)
+                        item = dict(record.get("item") or {})
+                        results.append(
+                            {
+                                "subagent_id": subagent_id,
+                                "role": str(record.get("role") or ""),
+                                "status": "running",
+                                "label": str(item.get("label") or ""),
+                            }
+                        )
+                        continue
+                    results.append({key: value for key, value in result.items() if key != "token_usage"})
+                    if not bool(record.get("usage_reported")):
+                        new_usage = self._backend._merge_usage(
+                            new_usage,
+                            dict(result.get("token_usage") or {}),
+                        )
+                        record["usage_reported"] = True
+            completed = not pending_ids
+            return {
+                "ok": True,
+                "completed": completed,
+                "status": "completed" if completed else "waiting",
+                "results": results,
+                "pending_ids": pending_ids,
+                "token_usage": new_usage,
+                "summary": (
+                    f"Collected {len(results) - len(pending_ids)} of {len(results)} Subagent result(s)."
+                ),
+            }
+
+        def shutdown_subagents() -> None:
+            nonlocal subagent_executor, usage_total
+            executor = subagent_executor
+            subagent_executor = None
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=False)
+            unreported_usage: dict[str, Any] = {}
+            with subagent_lock:
+                for record in subagent_records.values():
+                    result = record.get("result")
+                    if not isinstance(result, dict) or bool(record.get("usage_reported")):
+                        continue
+                    unreported_usage = self._backend._merge_usage(
+                        unreported_usage,
+                        dict(result.get("token_usage") or {}),
+                    )
+                    record["usage_reported"] = True
+            usage_total = self._backend._merge_usage(usage_total, unreported_usage)
 
         def emit_runtime_activity(
             activity_type: str,
@@ -4986,6 +5193,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 skill_writer=skill_writer,
                 subagent_runner=subagent_runner,
+                subagent_waiter=subagent_waiter,
                 subagent_read_only=bool(context_payload.get("subagent_read_only")),
             )
 
@@ -5243,6 +5451,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_writer=skill_writer,
                     subagent_runner=subagent_runner,
+                    subagent_waiter=subagent_waiter,
                     subagent_read_only=bool(context_payload.get("subagent_read_only")),
                 )
                 notes.extend(invoke_notes)
@@ -6063,7 +6272,9 @@ class VintageProgrammerRuntime:
                                 forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
                                 notes.append("tool_validation_rejections_exceeded")
                             stop_after_tools = True
-                    if name == "spawn_subagent" and isinstance(result.get("token_usage"), dict):
+                    if name in {"spawn_subagent", "wait_subagents"} and isinstance(
+                        result.get("token_usage"), dict
+                    ):
                         usage_total = self._backend._merge_usage(
                             usage_total,
                             dict(result.get("token_usage") or {}),
@@ -6091,6 +6302,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         skill_writer=skill_writer,
                         subagent_runner=subagent_runner,
+                        subagent_waiter=subagent_waiter,
                         subagent_read_only=bool(context_payload.get("subagent_read_only")),
                     )
                     tool_call_count += 1
@@ -6896,6 +7108,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     skill_writer=skill_writer,
                     subagent_runner=subagent_runner,
+                    subagent_waiter=subagent_waiter,
                     subagent_read_only=bool(context_payload.get("subagent_read_only")),
                 )
                 notes.extend(invoke_notes)
@@ -6918,6 +7131,7 @@ class VintageProgrammerRuntime:
                 self._append_llm_exchange(llm_exchanges, completed_exchange)
                 last_successful_round = round_idx
         finally:
+            shutdown_subagents()
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
 

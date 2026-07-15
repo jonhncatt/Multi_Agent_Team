@@ -35,8 +35,8 @@
       "name": "subagent_protocol_analysis_and_parent_summary",
       "kind": "agent_workspace",
       "fixture": "evals/fixtures/agent_quality/multi_file_protocol_analysis",
-      "message": "完成协议审查报告。把规格、错误语义和 legacy 冲突的只读调查委派给一个 Subagent，由主 Agent 使用返回的精简结论，只修改 REPORT.md。你可以补读必要证据；最后运行 run_checks.py，并根据真实结果收口。",
-      "required_tools": ["spawn_subagent"],
+      "message": "完成协议审查报告。把规格与错误语义、legacy 冲突拆成两个互不依赖的只读调查，先分别启动 Subagent，再等待并汇总两个精简结论；主 Agent 只修改 REPORT.md。你可以补读必要证据；最后运行 run_checks.py，并根据真实结果收口。",
+      "required_tools": ["spawn_subagent", "wait_subagents"],
       "settings": {
         "locale": "zh-CN",
         "max_output_tokens": 8192,

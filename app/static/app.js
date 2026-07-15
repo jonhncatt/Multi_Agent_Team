@@ -245,6 +245,7 @@ function createEmptyThreadActiveTurn() {
     liveEvidence: {},
     liveRunLogs: [],
     stageTimeline: [],
+    pendingGuidance: [],
   };
 }
 
@@ -278,6 +279,16 @@ function normalizeThreadActiveTurn(raw) {
     liveEvidence: item.liveEvidence && typeof item.liveEvidence === "object" ? item.liveEvidence : {},
     liveRunLogs: Array.isArray(item.liveRunLogs) ? item.liveRunLogs : [],
     stageTimeline: Array.isArray(item.stageTimeline) ? item.stageTimeline : [],
+    pendingGuidance: Array.isArray(item.pendingGuidance)
+      ? item.pendingGuidance
+          .filter((entry) => entry && typeof entry === "object" && String(entry.message || "").trim())
+          .map((entry) => ({
+            id: String(entry.id || ""),
+            message: String(entry.message || "").trim(),
+            status: String(entry.status || "queued"),
+            queuedAt: normalizeActivityTimestamp(entry.queuedAt || entry.queued_at || 0),
+          }))
+      : [],
   };
 }
 
@@ -726,6 +737,52 @@ function extractSessionMessages(data) {
       },
     ),
   );
+}
+
+function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages) {
+  const authoritative = Array.isArray(authoritativeMessages)
+    ? authoritativeMessages.filter((item) => item && typeof item === "object")
+    : [];
+  const current = Array.isArray(currentMessages)
+    ? currentMessages.filter((item) => item && typeof item === "object")
+    : [];
+  if (!authoritative.length) return current;
+
+  const currentById = new Map(
+    current
+      .map((item) => [String(item.id || "").trim(), item])
+      .filter(([id]) => Boolean(id)),
+  );
+  const authoritativeIds = new Set(
+    authoritative.map((item) => String(item.id || "").trim()).filter(Boolean),
+  );
+  const mergedTail = authoritative.map((message) => {
+    const previous = currentById.get(String(message.id || "").trim());
+    if (!previous) return message;
+    return {
+      ...message,
+      activity: mergeActivityState(message.activity || {}, previous.activity || {}),
+      answerBundle:
+        (previous.answerBundle && Object.keys(previous.answerBundle || {}).length)
+          ? previous.answerBundle
+          : message.answerBundle,
+      runArtifact:
+        (previous.runArtifact && Object.keys(previous.runArtifact || {}).length)
+          ? previous.runArtifact
+          : message.runArtifact,
+      fullTurnLoading: Boolean(previous.fullTurnLoading),
+      fullTurnError: String(previous.fullTurnError || ""),
+    };
+  });
+  const firstAuthoritativeIndex = current.findIndex((item) => (
+    authoritativeIds.has(String(item.id || "").trim())
+  ));
+  if (firstAuthoritativeIndex < 0) return mergedTail;
+
+  const preservedPrefix = current
+    .slice(0, firstAuthoritativeIndex)
+    .filter((item) => !authoritativeIds.has(String(item.id || "").trim()));
+  return [...preservedPrefix, ...mergedTail];
 }
 
 function normalizeActivityTimestamp(value) {
@@ -3604,6 +3661,7 @@ function createInitialAppState() {
       liveEvidence: {},
       liveToolTimeline: [],
       stageTimeline: [],
+      pendingGuidance: [],
       activeRunId: "",
       stoppingRun: false,
     },
@@ -3881,6 +3939,9 @@ function App() {
   const hasLiveTurnState = Boolean(Object.keys(liveTurnState || {}).length);
   const hasConnectionHeartbeat = Boolean(activeLiveHeartbeat.connectionAt || activeLiveHeartbeat.updatedAt);
   const stoppingRun = Boolean(appState.activeTurn.stoppingRun);
+  const pendingGuidance = Array.isArray(appState.activeTurn.pendingGuidance)
+    ? appState.activeTurn.pendingGuidance
+    : [];
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
   const skillsPanelStatus = String(appState.panelCache.skills.status || "idle");
@@ -3978,6 +4039,7 @@ function App() {
   const setSending = (value) => dispatch({ type: "update", path: ["activeTurn", "sending"], value });
   const setLoadingSession = (value) => dispatch({ type: "update", path: ["threadIndex", "loading"], value });
   const setLiveRunLogs = (value) => dispatch({ type: "update", path: ["activeTurn", "liveRunLogs"], value });
+  const setPendingGuidance = (value) => dispatch({ type: "update", path: ["activeTurn", "pendingGuidance"], value });
   const hasRunningActivity = useMemo(
     () => messages.some((item) => {
       if (!item || item.role !== "assistant") return false;
@@ -5026,6 +5088,7 @@ function App() {
     setActiveRunStartedAt(0);
     setLiveHeartbeat(createEmptyLiveHeartbeat());
     setStoppingRun(false);
+    setPendingGuidance([]);
     setContextMeterOpen(false);
   }
 
@@ -5053,6 +5116,7 @@ function App() {
       liveEvidence,
       liveRunLogs,
       stageTimeline,
+      pendingGuidance,
     });
   }
 
@@ -5091,6 +5155,40 @@ function App() {
     return storeThreadSnapshot(key, { ...existing, ...nextValue });
   }
 
+  function updateThreadPendingGuidance(threadId, updater) {
+    const key = threadCacheKey(threadId);
+    if (!key || isTempThreadId(key)) return;
+    const resolvePending = (items) => {
+      const current = Array.isArray(items) ? items : [];
+      const next = resolveStateValue(current, updater);
+      return Array.isArray(next) ? next : current;
+    };
+    if (String(activeSessionIdRef.current || "").trim() === key) {
+      setPendingGuidance((prev) => {
+        const nextPending = resolvePending(prev);
+        updateThreadSnapshot(key, (existing) => ({
+          ...existing,
+          activeTurn: normalizeThreadActiveTurn({
+            ...normalizeThreadActiveTurn(existing.activeTurn || {}),
+            pendingGuidance: nextPending,
+          }),
+        }));
+        return nextPending;
+      });
+      return;
+    }
+    updateThreadSnapshot(key, (existing) => {
+      const activeTurn = normalizeThreadActiveTurn(existing.activeTurn || {});
+      return {
+        ...existing,
+        activeTurn: normalizeThreadActiveTurn({
+          ...activeTurn,
+          pendingGuidance: resolvePending(activeTurn.pendingGuidance),
+        }),
+      };
+    });
+  }
+
   function rememberVisibleThreadSnapshot(targetThreadId = sessionId) {
     const key = threadCacheKey(targetThreadId);
     if (!key || isTempThreadId(key)) return null;
@@ -5123,6 +5221,7 @@ function App() {
     setLiveEvidence(next.liveEvidence);
     setLiveRunLogs(next.liveRunLogs);
     setStageTimeline(next.stageTimeline);
+    setPendingGuidance(next.pendingGuidance);
     setActiveRunId(next.activeRunId);
     setActiveRunThreadId(next.activeRunThreadId);
     setActiveRunStartedAt(next.startedAt);
@@ -6295,24 +6394,14 @@ function App() {
         return;
       }
       const steerId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const steerMessage = createMessage("user", messageText, {
-        activity: {
-          status: "steer_queued",
-          run_id: String(activeRunId || ""),
-          steer_id: steerId,
-          queued_at: Date.now(),
-        },
-      });
-      const appendSteerAfterCurrentResponse = (items) => {
-        const next = Array.isArray(items) ? [...items] : [];
-        next.push(steerMessage);
-        return next;
+      const steerOwnerThreadId = String(sessionId || "").trim();
+      const queuedGuidance = {
+        id: steerId,
+        message: messageText,
+        status: "queued",
+        queuedAt: Date.now(),
       };
-      setMessages((prev) => appendSteerAfterCurrentResponse(prev));
-      updateThreadSnapshot(String(sessionId || ""), (existing) => ({
-        ...existing,
-        messages: appendSteerAfterCurrentResponse(existing.messages),
-      }));
+      updateThreadPendingGuidance(steerOwnerThreadId, (prev) => [...prev, queuedGuidance]);
       if (overrideText == null) setDraft("");
       clearUiError();
       try {
@@ -6322,17 +6411,19 @@ function App() {
           body: JSON.stringify({ message: messageText, client_steer_id: steerId }),
         });
         const queuedAt = normalizeActivityTimestamp(queued.queued_at || 0) || Date.now();
-        setMessages((prev) => prev.map((item) => (
-          String(((item.activity || {}).steer_id) || "") === steerId
-            ? { ...item, activity: { ...(item.activity || {}), status: "steer_queued", queued_at: queuedAt } }
+        updateThreadPendingGuidance(steerOwnerThreadId, (prev) => prev.map((item) => (
+          String(item.id || "") === steerId
+            ? { ...item, status: "queued", queuedAt }
             : item
         )));
       } catch (err) {
-        setMessages((prev) => prev.map((item) => (
-          String(((item.activity || {}).steer_id) || "") === steerId
-            ? { ...item, activity: { ...(item.activity || {}), status: "steer_rejected" } }
-            : item
-        )));
+        updateThreadPendingGuidance(
+          steerOwnerThreadId,
+          (prev) => prev.filter((item) => String(item.id || "") !== steerId),
+        );
+        if (overrideText == null && String(activeSessionIdRef.current || "").trim() === steerOwnerThreadId) {
+          setDraft((current) => String(current || "").trim() ? current : messageText);
+        }
         applyUiError(err, t("errors.steer_failed"));
       }
       return;
@@ -6602,6 +6693,24 @@ function App() {
         setLastLiveProgressAt(nextTurn.lastLiveProgressAt);
         setLiveHeartbeat(nextTurn.liveHeartbeat);
         setStoppingRun(nextTurn.stoppingRun);
+      };
+      const reconcileCompletedThreadMessages = async (threadId) => {
+        const ownerId = String(threadId || runOwnerThreadId || "").trim();
+        if (!ownerId || isTempThreadId(ownerId)) return false;
+        try {
+          const detail = normalizeThreadDetailPayload(await fetchJson(
+            `/api/thread/${encodeURIComponent(ownerId)}?view=summary&max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
+          ));
+          const authoritativeMessages = extractSessionMessages(detail);
+          if (!authoritativeMessages.length) return false;
+          updateOwnerMessages((prev) => (
+            mergeAuthoritativeThreadMessages(authoritativeMessages, prev)
+          ));
+          updateThreadSnapshot(ownerId, (existing) => ({ ...existing, detail }));
+          return true;
+        } catch {
+          return false;
+        }
       };
       const updateOwnerLiveHeartbeat = (value) => {
         const heartbeatAt = Date.now();
@@ -7029,6 +7138,7 @@ function App() {
             lastLiveProgressAt: 0,
             liveHeartbeat: createEmptyLiveHeartbeat(),
             stoppingRun: false,
+            pendingGuidance: [],
           }));
         } else {
           setActiveRunId("");
@@ -7036,6 +7146,7 @@ function App() {
           setActiveRunStartedAt(0);
           setLastLiveProgressAt(0);
           setLiveHeartbeat(createEmptyLiveHeartbeat());
+          setPendingGuidance([]);
           setSending(false);
           setStoppingRun(false);
         }
@@ -7344,18 +7455,34 @@ function App() {
               const steer = payload.steer && typeof payload.steer === "object" ? payload.steer : {};
               const steerId = String(steer.id || "");
               if (steerId) {
-                updateOwnerMessages((prev) => prev.map((item) => (
-                  String(((item.activity || {}).steer_id) || "") === steerId
-                    ? {
-                        ...item,
-                        activity: {
-                          ...(item.activity || {}),
-                          status: "steer_accepted",
-                          accepted_at: normalizeActivityTimestamp(steer.accepted_at || 0) || Date.now(),
-                        },
-                      }
-                    : item
-                )));
+                const acceptedAt = normalizeActivityTimestamp(steer.accepted_at || 0) || Date.now();
+                const acceptedMessage = createMessage("user", String(steer.message || ""), {
+                  id: steerId,
+                  activity: {
+                    status: "steer_accepted",
+                    run_id: String(activeRunId || ""),
+                    steer_id: steerId,
+                    queued_at: normalizeActivityTimestamp(steer.queued_at || 0),
+                    accepted_at: acceptedAt,
+                  },
+                });
+                updateOwnerMessages((prev) => {
+                  const previous = Array.isArray(prev) ? prev : [];
+                  const existingIndex = previous.findIndex((item) => (
+                    String(((item.activity || {}).steer_id) || "") === steerId
+                  ));
+                  if (existingIndex < 0) return [...previous, acceptedMessage];
+                  return previous.map((item, index) => (
+                    index === existingIndex
+                      ? { ...item, activity: { ...(item.activity || {}), ...acceptedMessage.activity } }
+                      : item
+                  ));
+                });
+                updateOwnerActiveTurn((prev) => ({
+                  ...prev,
+                  pendingGuidance: (Array.isArray(prev.pendingGuidance) ? prev.pendingGuidance : [])
+                    .filter((item) => String(item.id || "") !== steerId),
+                }));
               }
               if (Boolean(payload.starts_next_response)) {
                 beginNextAssistantSegment(String(payload.next_segment_id || ""));
@@ -7628,14 +7755,7 @@ function App() {
       }
       updateOwnerActiveTurn((prev) => ({
         ...prev,
-        sending: false,
-        activeRunId: "",
-        activeRunThreadId: "",
-        startedAt: 0,
-        lastLiveProgressAt: 0,
         lastResponse: finalPayload,
-        liveHeartbeat: createEmptyLiveHeartbeat(),
-        stoppingRun: false,
         liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
           ...(((finalPayload.inspector || {}).run_state) || {}),
           permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
@@ -7709,6 +7829,12 @@ function App() {
         "response",
         t("log.reply_received", { count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0 }),
       );
+      const reconciledMessages = await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId);
+      if (!reconciledMessages) {
+        updateOwnerMessages((prev) => (
+          messagesForLiveGuidanceDisplay(prev, String((pendingMessage && pendingMessage.id) || ""))
+        ));
+      }
       await cleanupRunUi();
     } catch (err) {
       const nextError = applyUiError(err, t("errors.request_failed"));
@@ -9257,6 +9383,24 @@ function App() {
           onDragLeave=${handleComposerDragLeave}
           onDrop=${handleComposerDrop}
         >
+          ${pendingGuidance.length
+            ? html`
+                <div className="pending-guidance-strip" role="status" aria-live="polite">
+                  <div className="pending-guidance-head">
+                    <span>${t("steer.pending_title")}</span>
+                    <small>${pendingGuidance.length}</small>
+                  </div>
+                  <div className="pending-guidance-list">
+                    ${pendingGuidance.map((item) => html`
+                      <div key=${item.id} className="pending-guidance-item">
+                        <span>${item.message}</span>
+                        <small>${t("steer.pending_waiting")}</small>
+                      </div>
+                    `)}
+                  </div>
+                </div>
+              `
+            : null}
           ${pendingUploads.length
 	            ? html`
 	                <div className="attachment-strip">

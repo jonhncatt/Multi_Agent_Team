@@ -201,6 +201,18 @@ class _FakeTools:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "wait_subagents",
+                "description": "wait for subagents",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subagent_ids": {"type": "array", "items": {"type": "string"}},
+                        "timeout_seconds": {"type": "number", "default": 30},
+                    },
+                    "additionalProperties": False,
+                },
+            },
             {"name": "request_user_input", "description": "request user input", "parameters": {}},
             {
                 "name": "save_skill",
@@ -224,6 +236,7 @@ class _FakeTools:
         self.last_runtime_context: dict[str, Any] | None = None
         self.skill_writer: Any | None = None
         self.subagent_runner: Any | None = None
+        self.subagent_waiter: Any | None = None
 
     def set_runtime_context(
         self,
@@ -236,9 +249,11 @@ class _FakeTools:
         model: str | None = None,
         skill_writer: Any | None = None,
         subagent_runner: Any | None = None,
+        subagent_waiter: Any | None = None,
     ) -> None:
         self.skill_writer = skill_writer
         self.subagent_runner = subagent_runner
+        self.subagent_waiter = subagent_waiter
         payload = {
             "execution_mode": execution_mode,
             "session_id": session_id,
@@ -253,6 +268,7 @@ class _FakeTools:
     def clear_runtime_context(self) -> None:
         self.runtime_context = None
         self.subagent_runner = None
+        self.subagent_waiter = None
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
@@ -260,6 +276,8 @@ class _FakeTools:
             return self.skill_writer(**arguments)
         if name == "spawn_subagent" and callable(self.subagent_runner):
             return self.subagent_runner(**arguments)
+        if name == "wait_subagents" and callable(self.subagent_waiter):
+            return self.subagent_waiter(**arguments)
         return {
             "ok": True,
             "name": name,
@@ -626,6 +644,19 @@ def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: b
     )
     if include_tools:
         (agent_dir / "tools.md").write_text("tool rules", encoding="utf-8")
+
+
+def _write_builtin_subagent_spec(agents_dir: Path, name: str = "explorer") -> None:
+    builtin_dir = agents_dir / "builtin"
+    builtin_dir.mkdir(parents=True, exist_ok=True)
+    (builtin_dir / f"{name}.toml").write_text(
+        f'name = "{name}"\n'
+        f'description = "Read-only {name} test role."\n'
+        'tool_scope = "read_only"\n'
+        'allowed_tools = ["read_file", "search_codebase"]\n'
+        'developer_instructions = "Inspect evidence and return concise findings."\n',
+        encoding="utf-8",
+    )
 
 
 def _isolated_config(tmp_path: Path):
@@ -1569,7 +1600,7 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
 ) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    _write_specs(agent_dir / "subagents" / "read_only")
+    _write_builtin_subagent_spec(agent_dir.parent)
     child_tools = _BoundaryCapturingTools()
     child_backend = _FakeBackendWithTools(
         [_FakeMessage(content="Found the entry point in app/main.py.")],
@@ -1589,6 +1620,16 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
                             "role": "explorer",
                             "label": "Find request entry point",
                         },
+                    }
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-wait-subagent",
+                        "name": "wait_subagents",
+                        "args": {"timeout_seconds": 30},
                     }
                 ],
             ),
@@ -1617,9 +1658,14 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     )
 
     assert result["text"] == "The subagent found the request entry point."
-    assert parent_backend.tools.calls[0][0] == "spawn_subagent"
+    assert [item[0] for item in parent_backend.tools.calls[:2]] == [
+        "spawn_subagent",
+        "wait_subagents",
+    ]
     subagent_event = next(item for item in result["tool_events"] if item["name"] == "spawn_subagent")
-    assert "app/main.py" in str(subagent_event["result_preview"])
+    assert "running" in str(subagent_event["result_preview"])
+    wait_event = next(item for item in result["tool_events"] if item["name"] == "wait_subagents")
+    assert "app/main.py" in str(wait_event["result_preview"])
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 1
     assert subagent_items[0]["status"] == "completed"
@@ -1634,6 +1680,102 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
         and str((item.get("item") or {}).get("type") or "") == "subagent"
     ]
     assert [item["event"] for item in stream_events] == ["item/started", "item/completed"]
+
+
+def test_runtime_runs_independent_subagents_in_parallel_and_waits_for_both(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    _write_builtin_subagent_spec(agent_dir.parent, "analyst")
+    barrier = threading.Barrier(2)
+    active_lock = threading.Lock()
+    activity = {"active": 0, "peak": 0, "created": 0}
+
+    class _ConcurrentChildBackend(_FakeBackend):
+        def _invoke_chat_with_runner(self, **kwargs: Any):
+            with active_lock:
+                activity["active"] += 1
+                activity["peak"] = max(activity["peak"], activity["active"])
+            try:
+                barrier.wait(timeout=5)
+                return super()._invoke_chat_with_runner(**kwargs)
+            finally:
+                with active_lock:
+                    activity["active"] -= 1
+
+    def create_child_backend(_config):
+        with active_lock:
+            activity["created"] += 1
+            index = activity["created"]
+        return _ConcurrentChildBackend([_FakeMessage(content=f"Child result {index}.")])
+
+    monkeypatch.setattr(runtime_module, "create_vp_runtime_backend", create_child_backend)
+    parent_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-subagent-a",
+                        "name": "spawn_subagent",
+                        "args": {"task": "Explore parser paths.", "role": "explorer", "label": "Paths"},
+                    },
+                    {
+                        "id": "tc-subagent-b",
+                        "name": "spawn_subagent",
+                        "args": {"task": "Analyze protocol risks.", "role": "analyst", "label": "Risks"},
+                    },
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-wait-all",
+                        "name": "wait_subagents",
+                        "args": {"timeout_seconds": 30},
+                    }
+                ],
+            ),
+            _FakeMessage(content="Combined both independent findings."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=parent_backend,
+    )
+
+    result = runtime.run(
+        message="Delegate two independent investigations and combine them.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-parallel-subagents",
+            "run_id": "run-parallel-subagents",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "Combined both independent findings."
+    assert activity["created"] == 2
+    assert activity["peak"] == 2
+    assert [item[0] for item in parent_backend.tools.calls] == [
+        "spawn_subagent",
+        "spawn_subagent",
+        "wait_subagents",
+    ]
+    wait_event = next(item for item in result["tool_events"] if item["name"] == "wait_subagents")
+    assert "Child result 1" in str(wait_event["result_preview"])
+    assert "Child result 2" in str(wait_event["result_preview"])
+    subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
+    assert len(subagent_items) == 2
+    assert all(item.get("status") == "completed" for item in subagent_items)
 
 
 def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> None:

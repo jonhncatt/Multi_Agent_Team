@@ -1246,8 +1246,12 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "setActiveRunThreadId(\"\")" not in turn_completed_body
 
     assert "await cleanupRunUi();" in body
-    assert "activeRunThreadId: \"\",\n        startedAt: 0,\n        lastLiveProgressAt: 0," in body
-    assert "liveHeartbeat: createEmptyLiveHeartbeat(),\n        stoppingRun: false," in body
+    cleanup_body = body.split("const cleanupRunUi = async () => {", 1)[1].split("const collapseLiveRunUi = () => {", 1)[0]
+    assert "activeRunThreadId: \"\"" in cleanup_body
+    assert "startedAt: 0" in cleanup_body
+    assert "lastLiveProgressAt: 0" in cleanup_body
+    assert "liveHeartbeat: createEmptyLiveHeartbeat()" in cleanup_body
+    assert "stoppingRun: false" in cleanup_body
     assert "if (!uiFinalized) {" in body
 
 
@@ -1851,12 +1855,21 @@ def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
     assert "completed_attempts" in script
 
 
-def test_frontend_steer_keeps_completed_segment_before_queued_guidance() -> None:
+def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "appendSteerAfterCurrentResponse" in script
+    busy_branch = script.split("if (currentThreadBusy) {", 1)[1].split("const slashCommand", 1)[0]
+    assert "const queuedGuidance = {" in busy_branch
+    assert "updateThreadPendingGuidance(steerOwnerThreadId, (prev) => [...prev, queuedGuidance]);" in busy_branch
+    assert "setMessages(" not in busy_branch
+    assert 'className="pending-guidance-strip"' in script
+    assert 't("steer.pending_waiting")' in script
     assert 'event === "turn/segment/completed"' in script
     assert "completeCurrentAssistantSegment(segment)" in script
+    assert 'event === "turn/steer/accepted"' in script
+    assert 'const acceptedMessage = createMessage("user", String(steer.message || ""), {' in script
+    assert "if (existingIndex < 0) return [...previous, acceptedMessage];" in script
+    assert "pendingGuidance: (Array.isArray(prev.pendingGuidance) ? prev.pendingGuidance : [])" in script
     assert 'beginNextAssistantSegment(String(payload.next_segment_id || ""))' in script
     assert "const nextQueuedIndex = next.findIndex" in script
     assert "next.splice(nextQueuedIndex, 0, nextPending)" in script
@@ -1875,6 +1888,25 @@ def test_live_execution_card_renders_after_queued_guidance_before_acceptance() -
     assert "list.splice(displayAfterIndex, 0, liveAssistant);" in script
     assert "const conversationMessages = messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId);" in script
     assert "? conversationMessages.map(" in script
+
+
+def test_completed_steered_turn_reconciles_authoritative_thread_order_before_cleanup() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    handle_send_match = re.search(
+        r"async function handleSend\(overrideText, userInputResponse\) \{(?P<body>.*?)\n  \}\n\n  async function loadSpecDetail",
+        script,
+        re.S,
+    )
+    assert handle_send_match, "handleSend function not found"
+    body = handle_send_match.group("body")
+
+    assert "function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages)" in script
+    assert "const reconcileCompletedThreadMessages = async (threadId) => {" in body
+    assert "mergeAuthoritativeThreadMessages(authoritativeMessages, prev)" in body
+    reconcile_call = "await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId)"
+    assert reconcile_call in body
+    assert body.index(reconcile_call) < body.index("await cleanupRunUi();")
+    assert "messagesForLiveGuidanceDisplay(prev, String((pendingMessage && pendingMessage.id) || \"\"))" in body
 
 
 def test_thread_runs_use_thread_scoped_busy_state() -> None:

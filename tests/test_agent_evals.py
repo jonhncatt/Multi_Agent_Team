@@ -70,7 +70,8 @@ def test_codex_alignment_suite_reserves_modalities_and_scenario_hooks() -> None:
     by_name = {case["name"]: case for case in suite["cases"]}
     assert by_name["runtime_steer_updates_active_turn"]["steer_messages"]
     assert by_name["subagent_protocol_analysis_and_parent_summary"]["required_tools"] == [
-        "spawn_subagent"
+        "spawn_subagent",
+        "wait_subagents",
     ]
     assert by_name["long_thread_compaction_handoff"]["thread_seed"]["turn_pairs"] == 36
     assert by_name["update_existing_team_skill"]["team_skill_seed"]["name"] == "protocol-review"

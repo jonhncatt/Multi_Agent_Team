@@ -41,7 +41,7 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
 `evals/codex_alignment_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:
 
 - queued guidance accepted at a safe model boundary;
-- model-selected `spawn_subagent` delegation and parent summary;
+- model-selected parallel `spawn_subagent` delegation, `wait_subagents` collection, and parent summary;
 - a long seeded Thread replayed through a compaction summary plus retained turns;
 - modification of an existing Team Skill in the isolated VP Skill Registry;
 - a failed verification followed by a successful recovery;

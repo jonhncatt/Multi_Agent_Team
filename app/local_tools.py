@@ -1167,6 +1167,7 @@ class LocalToolExecutor:
         builtin_skill_roots: list[str] | None = None,
         team_skill_roots: list[str] | None = None,
         subagent_runner: Any | None = None,
+        subagent_waiter: Any | None = None,
         subagent_read_only: bool = False,
     ) -> None:
         mode = (execution_mode or "").strip().lower()
@@ -1196,10 +1197,11 @@ class LocalToolExecutor:
             str(item) for item in list(team_skill_roots or []) if str(item or "").strip()
         ]
         self._runtime_ctx.subagent_runner = subagent_runner
+        self._runtime_ctx.subagent_waiter = subagent_waiter
         self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_read_only"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -3392,7 +3394,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "spawn_subagent",
-                "description": "Delegate one bounded, read-heavy exploration, test, log-analysis, or summarization task to an isolated subagent. The subagent cannot spawn another subagent and returns a concise result to this thread.",
+                "description": "Start one bounded Subagent task in an isolated context and immediately return its id. Independent Subagents can run in parallel; call wait_subagents to collect their results before using them.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3412,6 +3414,28 @@ class LocalToolExecutor:
                         },
                     },
                     "required": ["task"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "wait_subagents",
+                "description": "Wait for selected running Subagents, or all current Subagents when ids are omitted, and return completed summaries plus any still-running ids.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subagent_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "default": [],
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 300,
+                            "default": 30,
+                        },
+                    },
                     "additionalProperties": False,
                 },
             },
@@ -3699,6 +3723,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "spawn_subagent":
             result = self.spawn_subagent(**arguments)
+            return self._decorate_result(result)
+        if name == "wait_subagents":
+            result = self.wait_subagents(**arguments)
             return self._decorate_result(result)
         if name == "request_user_input":
             result = self.request_user_input(**arguments)
@@ -4208,6 +4235,26 @@ class LocalToolExecutor:
                 task=task_text,
                 role=str(role or "explorer").strip() or "explorer",
                 label=str(label or "").strip(),
+            )
+            or {}
+        )
+
+    def wait_subagents(
+        self,
+        subagent_ids: list[str] | None = None,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        waiter = getattr(self._runtime_ctx, "subagent_waiter", None)
+        if not callable(waiter):
+            return {
+                "ok": False,
+                "error_kind": "subagent_unavailable",
+                "error": "Subagent waiting is unavailable in this runtime.",
+            }
+        return dict(
+            waiter(
+                subagent_ids=[str(item) for item in list(subagent_ids or []) if str(item or "").strip()],
+                timeout_seconds=max(0.0, min(300.0, float(timeout_seconds or 0.0))),
             )
             or {}
         )

@@ -15,6 +15,7 @@ CANONICAL_TOOL_NAMES = (
     "update_plan",
     "request_user_input",
     "spawn_subagent",
+    "wait_subagents",
     "save_skill",
     "exec_command",
     "write_stdin",

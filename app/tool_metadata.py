@@ -64,7 +64,16 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "requires_evidence": False,
         "requires": {**_FALLBACK_REQUIRES},
         "risk": "low",
-        "summary": "delegate one bounded read-heavy task to an isolated subagent",
+        "summary": "start one bounded Subagent task and return its id",
+    },
+    "wait_subagents": {
+        "group": "control",
+        "source": "native",
+        "read_only": True,
+        "requires_evidence": False,
+        "requires": {**_FALLBACK_REQUIRES},
+        "risk": "low",
+        "summary": "wait for parallel Subagent tasks and collect their results",
     },
     "save_skill": {
         "group": "control",
