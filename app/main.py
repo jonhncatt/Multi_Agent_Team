@@ -1079,6 +1079,9 @@ def _thread_list_item_from_session_row(row: dict[str, Any]) -> ThreadListItem:
         cwd=str(row.get("cwd") or ""),
         updated_at=str(row.get("updated_at") or ""),
         created_at=str(row.get("created_at") or ""),
+        activity_at=str(row.get("activity_at") or row.get("updated_at") or ""),
+        activity_revision=max(0, int(row.get("activity_revision") or 0)),
+        activity_kind=str(row.get("activity_kind") or ""),
         status=_thread_status_value(session_id),
     )
 
@@ -1337,6 +1340,9 @@ def _thread_detail_response_payload(
         git_branch=str(loaded.get("git_branch") or ""),
         cwd=str(loaded.get("cwd") or ""),
         status=_thread_status_value(session_id),
+        activity_at=str(loaded.get("activity_at") or loaded.get("updated_at") or ""),
+        activity_revision=max(0, int(loaded.get("activity_revision") or 0)),
+        activity_kind=str(loaded.get("activity_kind") or ""),
         agent_state=agent_state,
         work_cursor=work_cursor,
         task_state=task_state,
@@ -2178,6 +2184,7 @@ def _process_chat_request(
             "runtime_error": {},
             "updated_at": updated_at,
         }
+        session_store.mark_activity(seed_session, kind="turn_blocked")
         session_store.save(seed_session)
         return ChatResponse(
             session_id=seed_session["id"],
@@ -2362,6 +2369,7 @@ def _process_chat_request(
             )
             request_phase_timer.record_offset_ms("session_ready_ms")
             with request_phase_timer.measure("thread_started_emit_ms"):
+                session_store.mark_activity(session, kind="user_message")
                 _emit_thread_started(progress_cb, session_id, session=session)
         with request_phase_timer.measure("history_snapshot_ms"):
             history_turns_before = copy.deepcopy(session.get("turns", []))
@@ -3251,6 +3259,7 @@ def _process_chat_request(
                 inspector=inspector,
                 extra=turn_artifact_extra,
             )
+        session_store.mark_activity(session, kind=f"turn_{str(turn_status or 'completed').strip().lower()}")
         session_store.save(session)
         _emit_progress(
             progress_cb,

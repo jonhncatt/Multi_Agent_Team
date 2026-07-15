@@ -52,7 +52,7 @@ Context 状態は Codex 風の軽量表示です。チャットの通常経路�
 
 ## Command Safety
 
-`exec_command` は引き続き保守的な allowlist を使います。v2.9.15 の推奨完全安全リストには `printf` と `dir` が含まれ、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。既定ではコマンド実行は現在の project root に制限され、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` などの高リスクコマンドは引き続きブロックされます。
+`exec_command` は引き続き保守的な allowlist を使い、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。コマンド実行は現在の権限と path 境界に従い、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。具体的な `git push` は shell を許可するすべての権限プロファイルで毎回一度限りの承認が必要で、承認は正確なコマンド、repository、remote URL fingerprint、branch、HEAD に結び付けられます。Skill やファイル内のコマンド文字列は実行権限ではなく、危険な削除や download-to-shell は引き続きブロックされます。
 
 ## ModelContext
 

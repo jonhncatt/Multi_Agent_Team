@@ -8,7 +8,7 @@
 - `POST /api/chat/runs/{run_id}/steer` 将文本加入当前 Turn 的队列，并立即返回 `queued`。
 - Runtime 只在安全边界取走队列：一轮模型回复准备结束时，或一组工具调用全部回灌完成后。
 - 追加指令作为真实 `user` 消息插入 Thread transcript；不启动第二条并行模型链，也不改变已有工具调用顺序。
-- 前端先把追加消息稳定保留在当前回复之后并显示“已排队”。Runtime 通过 `turn/segment/completed` 结束前一回复段，再通过 `turn/steer/accepted` 开始下一回复段；执行面板不会因为单次模型消息结束而提前收起。
+- 前端先把追加消息稳定保留在当前回复之后并显示“已排队”。Runtime 通过 `turn/segment/completed` 结束前一回复段，再通过带 `next_segment_id` 的 `turn/steer/accepted` 开始下一回复段；旧回复只冻结可见文本，Plan 与实时执行面板转移到追加用户消息之后的新回复段，因此运行中和刷新后的顺序一致。
 - Session turns 按 `原请求 → 中间回复 → 追加指令 → 最终回复` 持久化，因此刷新页面后不会只剩最后一段回复。当前版本的运行中追加仅支持文本，不携带附件。
 - Runtime 在最终空队列检查时原子关闭接收窗口，避免 Turn 已结束后仍接受消息。
 
@@ -27,6 +27,13 @@
 - 原有 `/api/chat`、`/api/chat/stream`、Session JSON 和历史消息读取保持兼容。
 - `SessionStore.append_turn` 新增的 `record_transcript` 参数默认为 `true`，旧调用行为不变。
 - Subagent 继续使用公司已有 Chat Completions provider 和原生 tool calling，不要求 Responses API。
+- Thread 列表增加可选的 `activity_at`、`activity_revision` 和 `activity_kind` 字段。旧 Session 自动以现有 `updated_at` 迁移为 revision `0`；心跳不提升排序，前端拒绝同一 Thread 的迟到旧 revision。
+
+## 外部写入边界
+
+- Skill、源码和文档中的命令是内容，不是执行授权；Harness 不按“整理”“执行”等自然语言关键词判断权限。
+- Runtime 从实际 `exec_command` 参数识别具体 `git push`。任何权限档位都必须由用户逐次批准，并显示仓库、remote、脱敏 URL、branch、HEAD、refspec 与 force/delete 风险。
+- 单次 token 绑定精确命令、cwd、Session、Project、仓库事实和 remote URL 指纹；remote 或 HEAD 变化后旧 token 无效，默认操作始终是取消。
 
 ## 验证
 
@@ -57,4 +64,4 @@ python scripts/run_evals.py --cases evals/codex_alignment_cases.json --validate-
   --output artifacts\evals\company-gpt54-codex-alignment.json
 ```
 
-新套件包含运行中追加指令、Subagent 分工、压缩后的长 Thread、修改真实隔离 Team Skill，以及首次测试失败后恢复五类场景。`input_modalities` 已允许 `pdf`、`excel`、`markdown`、`c` 和 `cpp`，后续可以沿用同一 schema 增加混合文件案例。
+新套件包含运行中追加指令、Subagent 分工、压缩后的长 Thread、修改真实隔离 Team Skill、首次测试失败后恢复，以及“Skill 命令文字不得成为执行授权”六类场景。`input_modalities` 已允许 `pdf`、`excel`、`markdown`、`c` 和 `cpp`，后续可以沿用同一 schema 增加混合文件案例。

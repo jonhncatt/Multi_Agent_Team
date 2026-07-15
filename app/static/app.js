@@ -3664,14 +3664,66 @@ function mergeHealthSlices(previousHealth, bootstrapData, runtimeData) {
 }
 
 function normalizeThreadListPayload(data) {
-  if (Array.isArray(data && data.threads)) return data.threads;
-  if (!Array.isArray(data && data.sessions)) return [];
-  return data.sessions.map((item) => ({
+  const source = Array.isArray(data && data.threads)
+    ? data.threads
+    : (Array.isArray(data && data.sessions) ? data.sessions : []);
+  return source.map((item) => ({
     ...item,
     thread_id: String(item.thread_id || item.session_id || ""),
     session_id: String(item.session_id || item.thread_id || ""),
     status: String(item.status || "idle"),
+    activity_at: String(item.activity_at || item.updated_at || item.created_at || ""),
+    activity_revision: Math.max(0, Number(item.activity_revision || 0) || 0),
+    activity_kind: String(item.activity_kind || ""),
   }));
+}
+
+function threadActivityTimestamp(item) {
+  const row = item && typeof item === "object" ? item : {};
+  const parsed = Date.parse(String(row.activity_at || row.updated_at || row.created_at || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareThreadFreshness(incoming, existing) {
+  const next = incoming && typeof incoming === "object" ? incoming : {};
+  const current = existing && typeof existing === "object" ? existing : {};
+  const nextRevision = Math.max(0, Number(next.activity_revision || 0) || 0);
+  const currentRevision = Math.max(0, Number(current.activity_revision || 0) || 0);
+  if (nextRevision !== currentRevision) return nextRevision > currentRevision ? 1 : -1;
+  const nextAt = threadActivityTimestamp(next);
+  const currentAt = threadActivityTimestamp(current);
+  if (nextAt !== currentAt) return nextAt > currentAt ? 1 : -1;
+  return 0;
+}
+
+function mergeThreadRow(existing, incoming) {
+  const current = existing && typeof existing === "object" ? existing : {};
+  const next = incoming && typeof incoming === "object" ? incoming : {};
+  if (Object.keys(current).length && compareThreadFreshness(next, current) < 0) {
+    return current;
+  }
+  return { ...current, ...next };
+}
+
+function sortThreadRows(rows) {
+  return (Array.isArray(rows) ? [...rows] : []).sort((left, right) => {
+    const activityDelta = threadActivityTimestamp(right) - threadActivityTimestamp(left);
+    if (activityDelta) return activityDelta;
+    const leftId = String((left && (left.thread_id || left.session_id)) || "");
+    const rightId = String((right && (right.thread_id || right.session_id)) || "");
+    return rightId.localeCompare(leftId);
+  });
+}
+
+function mergeAuthoritativeThreadRows(incomingRows, existingRows) {
+  const existingById = new Map(
+    (Array.isArray(existingRows) ? existingRows : []).map((item) => [threadListItemId(item), item]),
+  );
+  const merged = (Array.isArray(incomingRows) ? incomingRows : []).map((item) => {
+    const key = threadListItemId(item);
+    return mergeThreadRow(existingById.get(key), item);
+  });
+  return sortThreadRows(merged);
 }
 
 function normalizeThreadDetailPayload(data) {
@@ -5161,15 +5213,15 @@ function App() {
           if (key === threadKey) return;
           next.push(entry);
         });
-        return next;
+        return sortThreadRows(next);
       }
       const realIndex = previousList.findIndex((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey);
       if (realIndex >= 0) {
         const next = previousList.slice();
         next[realIndex] = merged;
-        return next;
+        return sortThreadRows(next);
       }
-      return [merged, ...previousList];
+      return sortThreadRows([merged, ...previousList]);
     });
   }
 
@@ -5191,16 +5243,17 @@ function App() {
       const previousList = Array.isArray(prev) ? prev : [];
       const existingIndex = previousList.findIndex((entry) => String(entry.thread_id || entry.session_id || "").trim() === threadKey);
       const existing = existingIndex >= 0 ? previousList[existingIndex] : {};
-      const merged = { ...existing, ...normalized, thread_id: threadKey, session_id: String(normalized.session_id || threadKey) };
+      const candidate = {
+        ...normalized,
+        thread_id: threadKey,
+        session_id: String(normalized.session_id || threadKey),
+      };
+      const merged = mergeThreadRow(existing, candidate);
       if (existingIndex >= 0) {
         const remainder = previousList.filter((_, index) => index !== existingIndex);
-        return promote ? [merged, ...remainder] : [
-          ...previousList.slice(0, existingIndex),
-          merged,
-          ...previousList.slice(existingIndex + 1),
-        ];
+        return sortThreadRows([merged, ...remainder]);
       }
-      return promote ? [merged, ...previousList] : [...previousList, merged];
+      return sortThreadRows(promote ? [merged, ...previousList] : [...previousList, merged]);
     });
   }
 
@@ -5439,7 +5492,7 @@ function App() {
       const list = normalizeThreadListPayload(data);
       if (requestSeq !== sessionsRequestSeqRef.current) return list;
       if (!background) clearUiError();
-      setSessions(list);
+      setSessions((prev) => mergeAuthoritativeThreadRows(list, prev));
       return list;
     } catch (err) {
       if (requestSeq !== sessionsRequestSeqRef.current) return [];
@@ -5615,6 +5668,9 @@ function App() {
         cwd: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
         updated_at: nowIso,
         created_at: nowIso,
+        activity_at: nowIso,
+        activity_revision: 0,
+        activity_kind: "created",
         status: "idle",
       },
       { promote: true },
@@ -5643,6 +5699,9 @@ function App() {
           cwd: String((projectRecord && projectRecord.root_path) || runtimeStatus.project_root || ""),
           updated_at: nowIso,
           created_at: nowIso,
+          activity_at: nowIso,
+          activity_revision: 0,
+          activity_kind: "created",
           status: "idle",
         });
         if (activeSessionIdRef.current === tempId) activeSessionIdRef.current = sid;
@@ -6773,35 +6832,52 @@ function App() {
         const segmentId = String(item.id || currentId);
         const segmentText = String(item.text || assistantText || "").trim();
         const completedAt = normalizeActivityTimestamp(item.completed_at || 0) || Date.now();
-        updateOwnerMessages((prev) => prev.map((message) => {
-          if (String(message.id || "") !== currentId) return message;
-          const segmentActivity = mergeActivityState(message.activity || latestActivity, {
-            status: "completed",
-            finished_at: completedAt,
-            final_answer: segmentText,
-            model_draft: "",
+        updateOwnerMessages((prev) => {
+          const previous = Array.isArray(prev) ? prev : [];
+          if (!segmentText) {
+            return previous.filter((message) => String(message.id || "") !== currentId);
+          }
+          return previous.map((message) => {
+            if (String(message.id || "") !== currentId) return message;
+            const previousActivity = normalizeMessageActivity(message.activity || latestActivity);
+            const startedAt = normalizeActivityTimestamp(
+              previousActivity.turn_started_at || previousActivity.started_at || 0,
+            );
+            const segmentActivity = normalizeMessageActivity({
+              status: "completed",
+              run_id: String(previousActivity.run_id || activeRunId || ""),
+              started_at: startedAt || undefined,
+              turn_started_at: startedAt || undefined,
+              finished_at: completedAt,
+              run_duration_ms: startedAt ? Math.max(0, completedAt - startedAt) : 0,
+              final_answer: segmentText,
+              model_draft: "",
+            });
+            return createMessage("assistant", segmentText, {
+              id: segmentId,
+              activity: segmentActivity,
+              answerBundle: message.answerBundle,
+              runArtifact: {},
+            });
           });
-          return createMessage("assistant", segmentText, {
-            id: segmentId,
-            activity: segmentActivity,
-            answerBundle: message.answerBundle,
-            runArtifact: message.runArtifact,
-          });
-        }));
+        });
         pendingMessage = { ...pendingMessage, id: segmentId, pending: false };
       };
-      const beginNextAssistantSegment = () => {
+      const beginNextAssistantSegment = (nextSegmentId = "") => {
         const startedAt = Date.now();
+        const carriedActivity = normalizeMessageActivity(latestActivity || {});
         const nextPending = createMessage("assistant", t("labels.processing"), {
+          id: String(nextSegmentId || "").trim() || undefined,
           pending: true,
-          activity: {
+          activity: mergeActivityState(carriedActivity, {
             status: "waiting_model",
             run_id: String(activeRunId || ""),
             started_at: startedAt,
             turn_started_at: startedAt,
             live_model: runModelName,
-            trace_events: [],
-          },
+            final_answer: "",
+            model_draft: "",
+          }),
         });
         updateOwnerMessages((prev) => {
           const next = Array.isArray(prev) ? [...prev] : [];
@@ -7251,7 +7327,7 @@ function App() {
                 )));
               }
               if (Boolean(payload.starts_next_response)) {
-                beginNextAssistantSegment();
+                beginNextAssistantSegment(String(payload.next_segment_id || ""));
               }
               updateOwnerLiveHeartbeat({
                 status: "waiting_model",
@@ -9394,15 +9470,36 @@ function App() {
 	                <div className="timeline-list">
 	                  ${commandApprovalRisks.length
 	                    ? commandApprovalRisks.map(
-	                        (risk, index) => html`
-	                          <div key=${`approval-risk-${index}`} className="timeline-row">
-	                            <div className="timeline-head">
-	                              <span>${String(risk.category || risk.kind || t("approval_modal.risk"))}</span>
-	                              <span>${String(risk.base_command || "")}</span>
+	                        (risk, index) => {
+	                          const externalDetails = [
+	                            [t("approval_modal.repository"), risk.repository_root],
+	                            [t("approval_modal.remote"), risk.remote],
+	                            [t("approval_modal.remote_url"), risk.remote_url],
+	                            [t("approval_modal.branch"), risk.branch],
+	                            [t("approval_modal.head"), risk.head],
+	                            [t("approval_modal.refspecs"), risk.refspecs],
+	                          ].filter(([, value]) => String(value || "").trim());
+	                          const flags = [];
+	                          if (Boolean(risk.force)) flags.push(t("approval_modal.force"));
+	                          if (Boolean(risk.delete)) flags.push(t("approval_modal.delete"));
+	                          return html`
+	                            <div key=${`approval-risk-${index}`} className="timeline-row">
+	                              <div className="timeline-head">
+	                                <span>${String(risk.category || risk.kind || t("approval_modal.risk"))}</span>
+	                                <span>${String(risk.operation || risk.base_command || "")}</span>
+	                              </div>
+	                              <div className="timeline-detail">${String(risk.message || "")}</div>
+	                              ${externalDetails.map(([label, value]) => html`
+	                                <div key=${`${index}-${label}`} className="timeline-detail approval-context-line">
+	                                  <strong>${label}:</strong> ${String(value || "")}
+	                                </div>
+	                              `)}
+	                              ${flags.length
+	                                ? html`<div className="timeline-detail tone-error">${flags.join(" · ")}</div>`
+	                                : null}
 	                            </div>
-	                            <div className="timeline-detail">${String(risk.message || "")}</div>
-	                          </div>
-	                        `,
+	                          `;
+	                        },
 	                      )
 	                    : html`
 	                        <div className="timeline-row">

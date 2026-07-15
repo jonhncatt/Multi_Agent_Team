@@ -1770,6 +1770,16 @@ class LocalToolExecutor:
                     "base_command": str(item.get("base_command") or ""),
                     "blocked_argument": str(item.get("blocked_argument") or ""),
                     "subcommand": str(item.get("subcommand") or ""),
+                    "operation": str(item.get("operation") or ""),
+                    "repository_root": str(item.get("repository_root") or ""),
+                    "remote": str(item.get("remote") or ""),
+                    "remote_url": str(item.get("remote_url") or ""),
+                    "remote_fingerprint": str(item.get("remote_fingerprint") or ""),
+                    "branch": str(item.get("branch") or ""),
+                    "head": str(item.get("head") or ""),
+                    "refspecs": str(item.get("refspecs") or ""),
+                    "force": str(bool(item.get("force"))).lower(),
+                    "delete": str(bool(item.get("delete"))).lower(),
                 }
             )
         return records
@@ -2119,6 +2129,233 @@ class LocalToolExecutor:
             unique.append(item)
         return unique
 
+    @staticmethod
+    def _git_push_index(argv: list[str]) -> int:
+        """Return the concrete git subcommand index without interpreting aliases."""
+        if not argv or LocalToolExecutor._command_base_name(argv[0]) not in {"git", "git.exe"}:
+            return -1
+        options_with_value = {
+            "-C",
+            "-c",
+            "--config-env",
+            "--exec-path",
+            "--git-dir",
+            "--work-tree",
+            "--namespace",
+            "--super-prefix",
+        }
+        index = 1
+        while index < len(argv):
+            token = str(argv[index] or "").strip()
+            if not token:
+                index += 1
+                continue
+            if token == "--":
+                index += 1
+                break
+            if token in options_with_value:
+                index += 2
+                continue
+            if any(token.startswith(prefix + "=") for prefix in options_with_value if prefix.startswith("--")):
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return index if token.lower() == "push" else -1
+        if index < len(argv) and str(argv[index] or "").strip().lower() == "push":
+            return index
+        return -1
+
+    @staticmethod
+    def _git_command_cwd(argv: list[str], *, cwd: Path, subcommand_index: int) -> Path:
+        effective = cwd.resolve()
+        index = 1
+        while index < max(1, subcommand_index):
+            token = str(argv[index] or "").strip()
+            if token == "-C" and index + 1 < subcommand_index:
+                candidate = Path(str(argv[index + 1] or "")).expanduser()
+                effective = (effective / candidate).resolve(strict=False) if not candidate.is_absolute() else candidate.resolve(strict=False)
+                index += 2
+                continue
+            index += 1
+        return effective
+
+    @staticmethod
+    def _sanitize_git_remote_url(raw: str) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        parsed = urllib.parse.urlsplit(text)
+        if parsed.scheme and parsed.hostname:
+            host = str(parsed.hostname or "")
+            if parsed.port:
+                host = f"{host}:{parsed.port}"
+            return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        scp_match = re.match(r"^(?:[^@\s]+@)?([^:\s]+):(.+)$", text)
+        if scp_match:
+            return f"{scp_match.group(1)}:{scp_match.group(2)}"
+        return text
+
+    @staticmethod
+    def _git_probe(cwd: Path, *args: str) -> str:
+        git_bin = shutil.which("git")
+        if not git_bin:
+            return ""
+        try:
+            completed = subprocess.run(
+                [git_bin, "-C", str(cwd), *[str(item) for item in args]],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except Exception:
+            return ""
+        if int(completed.returncode or 0) != 0:
+            return ""
+        return str(completed.stdout or "").strip()
+
+    @classmethod
+    def _git_push_operands(cls, argv: list[str], *, push_index: int) -> dict[str, Any]:
+        args = [str(item or "").strip() for item in argv[push_index + 1 :] if str(item or "").strip()]
+        value_options = {
+            "--exec",
+            "--receive-pack",
+            "--repo",
+            "--push-option",
+            "-o",
+        }
+        repository = ""
+        refspecs: list[str] = []
+        force = False
+        delete = False
+        index = 0
+        while index < len(args):
+            token = args[index]
+            lowered = token.lower()
+            if lowered in {"--force", "-f", "--force-if-includes"} or lowered.startswith("--force-with-lease"):
+                force = True
+            if lowered == "--delete":
+                delete = True
+            if token in value_options:
+                if index + 1 < len(args):
+                    if token == "--repo":
+                        repository = args[index + 1]
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if token.startswith("--repo="):
+                repository = token.split("=", 1)[1]
+                index += 1
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            if not repository:
+                repository = token
+            else:
+                refspecs.append(token)
+                if token.startswith("+"):
+                    force = True
+                if token.startswith(":") or token.endswith(":"):
+                    delete = True
+            index += 1
+        return {
+            "repository": repository,
+            "refspecs": refspecs,
+            "force": force,
+            "delete": delete,
+        }
+
+    def _git_push_risk(self, argv: list[str], *, cwd: Path, subcommand: str = "") -> dict[str, Any] | None:
+        push_index = self._git_push_index(argv)
+        if push_index < 0:
+            return None
+        git_cwd = self._git_command_cwd(argv, cwd=cwd, subcommand_index=push_index)
+        operands = self._git_push_operands(argv, push_index=push_index)
+        repository_root = self._git_probe(git_cwd, "rev-parse", "--show-toplevel")
+        branch = self._git_probe(git_cwd, "branch", "--show-current")
+        head = self._git_probe(git_cwd, "rev-parse", "HEAD")
+        remote_names_raw = self._git_probe(git_cwd, "remote")
+        remote_names = {
+            str(item or "").strip()
+            for item in str(remote_names_raw or "").splitlines()
+            if str(item or "").strip()
+        }
+        explicit_repository = str(operands.get("repository") or "").strip()
+        remote = explicit_repository
+        if not remote:
+            for key in (
+                f"branch.{branch}.pushRemote" if branch else "",
+                "remote.pushDefault",
+                f"branch.{branch}.remote" if branch else "",
+            ):
+                if not key:
+                    continue
+                remote = self._git_probe(git_cwd, "config", "--get", key)
+                if remote:
+                    break
+        if not remote and "origin" in remote_names:
+            remote = "origin"
+        raw_remote_url = ""
+        if remote and (remote in remote_names or not any(marker in remote for marker in ("://", "/", "\\"))):
+            raw_remote_url = self._git_probe(git_cwd, "remote", "get-url", "--push", remote)
+        if not raw_remote_url:
+            raw_remote_url = remote
+        remote_url = self._sanitize_git_remote_url(raw_remote_url)
+        remote_fingerprint = hashlib.sha256(str(raw_remote_url or "").encode("utf-8")).hexdigest() if raw_remote_url else ""
+        force = bool(operands.get("force"))
+        delete = bool(operands.get("delete"))
+        qualifiers = []
+        if force:
+            qualifiers.append("force update")
+        if delete:
+            qualifiers.append("remote deletion")
+        qualifier_text = f" ({', '.join(qualifiers)})" if qualifiers else ""
+        return {
+            "kind": "external_side_effect",
+            "category": "external_write",
+            "operation": "git_push",
+            "message": f"git push writes refs to a remote repository{qualifier_text} and requires explicit one-time approval.",
+            "base_command": "git",
+            "blocked_argument": "push",
+            "subcommand": str(subcommand or ""),
+            "repository_root": str(repository_root or git_cwd),
+            "remote": remote or "(unresolved)",
+            "remote_url": remote_url or "(unresolved)",
+            "remote_fingerprint": remote_fingerprint,
+            "branch": branch or "(detached or unresolved)",
+            "head": head or "(unresolved)",
+            "refspecs": " ".join(str(item) for item in list(operands.get("refspecs") or [])),
+            "force": force,
+            "delete": delete,
+        }
+
+    def _external_side_effect_risks(
+        self,
+        *,
+        argv: list[str],
+        cwd: Path,
+        compound_validation: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        risks: list[dict[str, Any]] = []
+        if compound_validation:
+            for item in list(compound_validation.get("subcommands") or []):
+                if not isinstance(item, dict):
+                    continue
+                sub_argv = [str(token) for token in list(item.get("argv") or []) if str(token or "").strip()]
+                sub_cwd = Path(str(item.get("effective_cwd") or cwd)).expanduser().resolve()
+                risk = self._git_push_risk(sub_argv, cwd=sub_cwd, subcommand=str(item.get("text") or ""))
+                if risk is not None:
+                    risks.append(risk)
+        else:
+            risk = self._git_push_risk(argv, cwd=cwd)
+            if risk is not None:
+                risks.append(risk)
+        return risks
+
     def _command_execution_approval_failure_result(
         self,
         *,
@@ -2137,10 +2374,15 @@ class LocalToolExecutor:
         )
         files = self._approval_files_public_payload(tainted_files)
         has_tainted = bool(files)
+        has_external_write = any(str(item.get("category") or "") == "external_write" for item in all_risks)
         message = token_error or (
-            "Execution requires approval because the command can fetch or execute network-origin code."
-            if all_risks and not has_tainted
-            else "Execution blocked because the command would run code that originated from the network."
+            "External write requires explicit one-time approval. Verify the repository, remote, branch, and command before continuing."
+            if has_external_write
+            else (
+                "Execution requires approval because the command can fetch or execute network-origin code."
+                if all_risks and not has_tainted
+                else "Execution blocked because the command would run code that originated from the network."
+            )
         )
         approval_request = {
             "type": "command_execution",
@@ -2157,7 +2399,11 @@ class LocalToolExecutor:
             cwd=cwd,
             error=message,
             stderr=message,
-            error_kind="tainted_code_approval_required" if has_tainted else "command_execution_approval_required",
+            error_kind=(
+                "external_side_effect_approval_required"
+                if has_external_write
+                else ("tainted_code_approval_required" if has_tainted else "command_execution_approval_required")
+            ),
             error_detail={
                 "approval_token": approval_token,
                 "command": str(command or "").strip(),
@@ -2171,7 +2417,11 @@ class LocalToolExecutor:
             {
                 "approval_required": True,
                 "approval_request": approval_request,
-                "summary": "Command execution requires explicit approval.",
+                "summary": (
+                    "External write requires explicit approval."
+                    if has_external_write
+                    else "Command execution requires explicit approval."
+                ),
             }
         )
         return payload
@@ -3646,7 +3896,16 @@ class LocalToolExecutor:
             cwd=real_cwd,
             compound_validation=compound_validation if compound_shell else None,
         )
-        approval_risks = [*supply_chain_risks, *self._tainted_execution_risks(tainted_matches)]
+        external_side_effect_risks = self._external_side_effect_risks(
+            argv=argv,
+            cwd=real_cwd,
+            compound_validation=compound_validation if compound_shell else None,
+        )
+        approval_risks = [
+            *supply_chain_risks,
+            *external_side_effect_risks,
+            *self._tainted_execution_risks(tainted_matches),
+        ]
         approval_token_value = str(approval_token or tainted_approval_token or "").strip()
         command_execution_approval_payload: dict[str, Any] = {}
         tainted_approval_payload: dict[str, Any] = {}
@@ -3654,7 +3913,8 @@ class LocalToolExecutor:
             if self._current_subagent_read_only():
                 message = (
                     "Read-only Subagents cannot request interactive command approval. "
-                    "Use file/search tools or execute an existing workspace script or test module instead of inline or network-origin code."
+                    "Use file/search tools or an existing read-oriented workspace script instead of inline code, "
+                    "network-origin code, or external writes."
                 )
                 return self._command_failure_result(
                     command=cmd,
@@ -3666,7 +3926,7 @@ class LocalToolExecutor:
                         "retryability": "change_tool_or_arguments",
                         "recovery": (
                             "Choose a provenance-preserving alternative: read/search the file directly, "
-                            "or run an existing script/module under the allowed workspace roots."
+                            "or run an existing read-oriented script/module under the allowed workspace roots."
                         ),
                     },
                 )
@@ -3681,7 +3941,7 @@ class LocalToolExecutor:
                 return self._command_execution_approval_failure_result(
                     command=cmd,
                     cwd=str(real_cwd),
-                    risks=supply_chain_risks,
+                    risks=[*supply_chain_risks, *external_side_effect_risks],
                     tainted_files=tainted_matches,
                     token_error="" if not approval_token_value else approval_error,
                 )

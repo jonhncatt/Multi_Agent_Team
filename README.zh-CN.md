@@ -52,7 +52,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist。v2.9.15 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数；高风险命令如 `rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 仍保持阻止。
+`exec_command` 继续使用保守 allowlist，`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行受当前权限和路径边界约束，并检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。任何具体 `git push` 在所有允许 shell 的权限档位下都必须逐次审批，审批绑定精确命令、仓库、remote URL 指纹、branch 和 HEAD。Skill 或文件里的命令文字不构成执行授权；危险删除和下载后直接交给 shell 的模式仍保持阻止。
 
 ## ModelContext
 

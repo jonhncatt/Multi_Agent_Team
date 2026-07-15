@@ -187,6 +187,9 @@ class SessionMetaStore:
             "cwd": str(payload.get("cwd") or ""),
             "created_at": str(payload.get("created_at") or ""),
             "updated_at": str(payload.get("updated_at") or ""),
+            "activity_at": str(payload.get("activity_at") or payload.get("updated_at") or ""),
+            "activity_revision": max(0, int(payload.get("activity_revision") or 0)),
+            "activity_kind": str(payload.get("activity_kind") or ""),
             "status": str(agent_state.get("turn_status") or "idle"),
         }
 
@@ -221,7 +224,7 @@ class SessionMetaStore:
         max_items = max(1, min(500, int(limit)))
         wanted_project_id = str(project_id or "").strip()
         rows: list[dict[str, Any]] = []
-        for path in sorted(self.meta_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for path in self.meta_dir.glob("*.json"):
             try:
                 with self._lock:
                     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -232,9 +235,14 @@ class SessionMetaStore:
             if wanted_project_id and str(payload.get("project_id") or "").strip() != wanted_project_id:
                 continue
             rows.append(dict(payload))
-            if len(rows) >= max_items:
-                break
-        return sorted(rows, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:max_items]
+        return sorted(
+            rows,
+            key=lambda item: (
+                str(item.get("activity_at") or item.get("updated_at") or ""),
+                str(item.get("session_id") or ""),
+            ),
+            reverse=True,
+        )[:max_items]
 
     def delete(self, session_id: str) -> None:
         path = self._path(session_id)
@@ -656,6 +664,19 @@ class SessionStore:
         if not str(payload.get("updated_at") or "").strip():
             payload["updated_at"] = str(payload.get("created_at") or now_iso())
             changed = True
+        if not str(payload.get("activity_at") or "").strip():
+            payload["activity_at"] = str(payload.get("updated_at") or payload.get("created_at") or now_iso())
+            changed = True
+        try:
+            activity_revision = max(0, int(payload.get("activity_revision") or 0))
+        except Exception:
+            activity_revision = 0
+        if payload.get("activity_revision") != activity_revision:
+            payload["activity_revision"] = activity_revision
+            changed = True
+        if not isinstance(payload.get("activity_kind"), str):
+            payload["activity_kind"] = ""
+            changed = True
         if not isinstance(payload.get("turns"), list):
             payload["turns"] = []
             changed = True
@@ -749,10 +770,14 @@ class SessionStore:
         project_title = str(project.get("title") or "").strip()
         project_root = str(project.get("root_path") or "").strip()
         git_branch = str(project.get("git_branch") or "").strip()
+        created_at = now_iso()
         session = {
             "id": str(uuid.uuid4()),
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
+            "created_at": created_at,
+            "updated_at": created_at,
+            "activity_at": created_at,
+            "activity_revision": 0,
+            "activity_kind": "created",
             "title": "",
             "summary": "",
             "project_id": project_id,
@@ -878,6 +903,22 @@ class SessionStore:
         with self._lock:
             path.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
         self.session_meta_store.save_session(session)
+
+    def mark_activity(self, session: dict[str, Any], *, kind: str, at: str = "") -> dict[str, Any]:
+        """Advance the stable Thread ordering clock for one meaningful event."""
+        try:
+            previous_revision = max(0, int(session.get("activity_revision") or 0))
+        except Exception:
+            previous_revision = 0
+        stamp = str(at or now_iso()).strip() or now_iso()
+        session["activity_revision"] = previous_revision + 1
+        session["activity_at"] = stamp
+        session["activity_kind"] = str(kind or "activity").strip()[:80] or "activity"
+        return {
+            "activity_revision": int(session["activity_revision"]),
+            "activity_at": str(session["activity_at"]),
+            "activity_kind": str(session["activity_kind"]),
+        }
 
     def append_turn(
         self,

@@ -665,7 +665,15 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "clearVisibleCommandApprovalState();" in script
+    assert 't("approval_modal.repository")' in script
+    assert 't("approval_modal.remote_url")' in script
+    assert 't("approval_modal.branch")' in script
+    assert 't("approval_modal.head")' in script
+    assert "if (Boolean(risk.force))" in script
+    assert "if (Boolean(risk.delete))" in script
     assert '"approval_modal.title": "确认命令执行"' in locales
+    assert '"approval_modal.repository": "仓库"' in locales
+    assert '"approval_modal.remote_url": "Remote 地址"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；批准只对这一个精确命令生效一次。"' in locales
 
@@ -1849,9 +1857,12 @@ def test_frontend_steer_keeps_completed_segment_before_queued_guidance() -> None
     assert "appendSteerAfterCurrentResponse" in script
     assert 'event === "turn/segment/completed"' in script
     assert "completeCurrentAssistantSegment(segment)" in script
-    assert "beginNextAssistantSegment()" in script
+    assert 'beginNextAssistantSegment(String(payload.next_segment_id || ""))' in script
     assert "const nextQueuedIndex = next.findIndex" in script
     assert "next.splice(nextQueuedIndex, 0, nextPending)" in script
+    assert "return previous.filter((message) => String(message.id || \"\") !== currentId)" in script
+    assert "const carriedActivity = normalizeMessageActivity(latestActivity || {})" in script
+    assert "runArtifact: {}" in script
     assert 'status: "waiting_model"' in script
 
 
@@ -1930,7 +1941,7 @@ def test_thread_run_indicators_show_running_and_completed_attention() -> None:
     assert "animation: thread-run-indicator-spin" not in styles
 
 
-def test_thread_run_updates_do_not_reorder_existing_thread_rows() -> None:
+def test_thread_rows_use_monotonic_activity_ordering_and_reject_stale_refreshes() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     upsert_match = re.search(
         r"function upsertThreadRow\(rawItem, options = \{\}\) \{(?P<body>.*?)\n  \}\n\n  function removeThreadRow",
@@ -1940,14 +1951,16 @@ def test_thread_run_updates_do_not_reorder_existing_thread_rows() -> None:
     assert upsert_match, "upsertThreadRow function not found"
     body = upsert_match.group("body")
 
-    assert "const promote = options.promote === true;" in body
     assert "const existingIndex = previousList.findIndex" in body
-    assert "...previousList.slice(0, existingIndex)," in body
-    assert "merged," in body
-    assert "...previousList.slice(existingIndex + 1)," in body
-    assert "return promote ? [merged, ...previousList] : [...previousList, merged];" in body
+    assert "const merged = mergeThreadRow(existing, candidate);" in body
+    assert "return sortThreadRows([merged, ...remainder]);" in body
+    assert "function compareThreadFreshness(incoming, existing)" in script
+    assert "if (nextRevision !== currentRevision)" in script
+    assert "if (Object.keys(current).length && compareThreadFreshness(next, current) < 0)" in script
+    assert "setSessions((prev) => mergeAuthoritativeThreadRows(list, prev));" in script
     assert 'if (payload.thread) upsertThreadRow(payload.thread);' in script
-    assert 'upsertThreadRow(payload.thread, { promote: true })' not in script
+    assert 'if (event === "heartbeat") {' in script
+    assert "Transport liveness is deliberately separate from semantic" in script
 
 
 def test_completed_thread_runs_release_busy_state() -> None:

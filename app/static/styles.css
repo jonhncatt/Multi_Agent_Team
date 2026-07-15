@@ -2360,6 +2360,15 @@ button {
   word-break: break-word;
 }
 
+.approval-context-line {
+  overflow-wrap: anywhere;
+}
+
+.approval-context-line strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
 .timeline-details {
   margin-top: 8px;
 }

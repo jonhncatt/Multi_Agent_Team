@@ -437,6 +437,9 @@ class SessionListItem(BaseModel):
     cwd: str = ""
     updated_at: str = ""
     created_at: str = ""
+    activity_at: str = ""
+    activity_revision: int = 0
+    activity_kind: str = ""
 
 
 class SessionListResponse(BaseModel):
@@ -457,6 +460,9 @@ class ThreadDetailResponse(BaseModel):
     git_branch: str = ""
     cwd: str = ""
     status: Literal["not_loaded", "idle", "active", "system_error"] = "idle"
+    activity_at: str = ""
+    activity_revision: int = 0
+    activity_kind: str = ""
     agent_state: dict[str, object] = Field(default_factory=dict)
     work_cursor: dict[str, Any] = Field(default_factory=dict)
     task_state: dict[str, Any] = Field(default_factory=dict)
@@ -481,6 +487,9 @@ class ThreadListItem(BaseModel):
     cwd: str = ""
     updated_at: str = ""
     created_at: str = ""
+    activity_at: str = ""
+    activity_revision: int = 0
+    activity_kind: str = ""
     status: Literal["not_loaded", "idle", "active", "system_error"] = "idle"
 
 

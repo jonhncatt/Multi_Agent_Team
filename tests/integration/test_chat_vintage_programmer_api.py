@@ -1172,6 +1172,9 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert detail_payload["thread_id"] == thread_id
     assert detail_payload["session_id"] == thread_id
     assert detail_payload.get("status", "idle") == "idle"
+    assert detail_payload.get("activity_revision", 0) == 0
+    assert detail_payload["activity_kind"] == "created"
+    assert detail_payload["activity_at"]
 
     list_response = client.get(f"/api/threads?project_id={bootstrap_payload['default_project_id']}")
     assert list_response.status_code == 200
@@ -1629,6 +1632,8 @@ def test_thread_started_event_uses_session_snapshot_without_reload(monkeypatch, 
     thread = events[0]["thread"]
     assert thread["thread_id"] == session["id"]
     assert thread["title"] == "介绍一下你自己"
+    assert thread["activity_revision"] == 0
+    assert thread["activity_kind"] == "created"
 
 
 def test_projects_endpoint_returns_live_git_branch_from_project_store(monkeypatch, tmp_path: Path) -> None:
@@ -1898,6 +1903,13 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert event_names[-1] == "done"
     assert event_names.index("run_started") < event_names.index("item/agentMessage/delta")
     assert event_names.index("run_finished") < event_names.index("done")
+    started_thread = next(payload["thread"] for name, payload in events if name == "thread/started")
+    updated_thread = next(payload["thread"] for name, payload in events if name == "thread/updated")
+    assert started_thread["activity_revision"] == 1
+    assert started_thread["activity_kind"] == "user_message"
+    assert updated_thread["activity_revision"] == 2
+    assert updated_thread["activity_kind"] == "turn_completed"
+    assert updated_thread["activity_at"] >= started_thread["activity_at"]
     stage_payloads = [payload for name, payload in events if name == "stage"]
     assert any(payload.get("phase") == "execute" for payload in stage_payloads)
     trace_payloads = [payload for name, payload in events if name == "trace_event"]

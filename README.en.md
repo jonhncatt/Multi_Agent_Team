@@ -52,7 +52,7 @@ For the stable v2.9.x runtime, Python `3.11` is recommended. Python `3.12` is al
 
 ## Command Safety
 
-`exec_command` keeps a conservative allowlist. The recommended full safe list for v2.9.15 includes both `printf` and `dir`, and `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited to the current project root by default, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. High-risk commands such as `rm`, `chmod`, `chown`, `curl`, `wget`, `sudo`, `dd`, `kill`, `pkill`, `brew`, `pip`, and `pip3` remain blocked.
+`exec_command` keeps a conservative allowlist. `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited by the current permission and path boundaries, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. Every concrete `git push` requires one-time approval in any shell-enabled permission profile; approval is bound to the exact command, repository, remote URL fingerprint, branch, and HEAD. Command text found in a Skill or file is not execution authorization. Dangerous deletion and download-to-shell patterns remain blocked.
 
 ## ModelContext
 

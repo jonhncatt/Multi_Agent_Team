@@ -4574,11 +4574,12 @@ class VintageProgrammerRuntime:
         current_step_index = 0
         llm_exchange_round = 0
 
-        def reset_answer_stream_for_next_segment() -> None:
+        def reset_answer_stream_for_next_segment() -> str:
             next_state = new_answer_stream_state(run_id=run_id, thread_id=session_id)
             next_state["item_id"] = f"{run_id or 'turn'}:agent_message:{uuid.uuid4().hex[:10]}"
             answer_stream_state.clear()
             answer_stream_state.update(next_state)
+            return str(next_state["item_id"])
 
         def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
             drain = context_payload.get("drain_pending_steers")
@@ -4627,6 +4628,7 @@ class VintageProgrammerRuntime:
             *,
             boundary: str,
             response_text: str = "",
+            next_segment_id: str = "",
         ) -> None:
             if not steers:
                 return
@@ -4688,6 +4690,11 @@ class VintageProgrammerRuntime:
                             "batch_index": index,
                             "batch_size": len(steers),
                             "starts_next_response": index == len(steers) - 1,
+                            "next_segment_id": (
+                                str(next_segment_id or "")
+                                if index == len(steers) - 1
+                                else ""
+                            ),
                         }
                     )
 
@@ -5541,17 +5548,18 @@ class VintageProgrammerRuntime:
                 if not tool_calls:
                     pending_steers = drain_pending_steers(final=True)
                     if pending_steers:
+                        next_segment_id = reset_answer_stream_for_next_segment()
                         accept_steers_at_boundary(
                             pending_steers,
                             boundary="after_response",
                             response_text=ai_text,
+                            next_segment_id=next_segment_id,
                         )
                         messages.append(ai_msg)
                         turn_transcript_messages.append(ai_msg)
                         append_steers_to_model(pending_steers)
                         final_answer = ""
                         model_draft = ""
-                        reset_answer_stream_for_next_segment()
                         notes.append(f"user_steer_accepted:{len(pending_steers)}")
                         emit_runtime_activity(
                             "activity.delta",
@@ -6522,12 +6530,13 @@ class VintageProgrammerRuntime:
 
                 pending_steers = drain_pending_steers(final=False)
                 if pending_steers:
+                    next_segment_id = reset_answer_stream_for_next_segment()
                     accept_steers_at_boundary(
                         pending_steers,
                         boundary="tool",
+                        next_segment_id=next_segment_id,
                     )
                     append_steers_to_model(pending_steers)
-                    reset_answer_stream_for_next_segment()
                     notes.append(f"user_steer_accepted:{len(pending_steers)}")
                     emit_runtime_activity(
                         "activity.delta",

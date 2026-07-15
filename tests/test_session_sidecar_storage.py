@@ -275,6 +275,48 @@ def test_session_list_reads_metadata_without_parsing_session_file(tmp_path: Path
     assert rows[0]["title"] == "hello"
 
 
+def test_thread_activity_clock_controls_listing_without_following_unrelated_saves(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    first = store.create(_project(tmp_path))
+    second = store.create(_project(tmp_path))
+
+    store.mark_activity(first, kind="user_message", at="2026-07-15T10:00:00+00:00")
+    store.save(first)
+    store.mark_activity(second, kind="turn_completed", at="2026-07-15T09:00:00+00:00")
+    store.save(second)
+
+    # Saving non-activity metadata must not move an older Thread above new progress.
+    second["title"] = "renamed without new activity"
+    store.save(second)
+
+    rows = store.list_recent_sessions(limit=10, project_id="project-test")
+    assert [row["session_id"] for row in rows] == [first["id"], second["id"]]
+    assert rows[0]["activity_revision"] == 1
+    assert rows[0]["activity_kind"] == "user_message"
+
+
+def test_legacy_session_activity_fields_migrate_idempotently(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    legacy = {
+        "id": "legacy-activity",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-02-01T00:00:00+00:00",
+        "turns": [],
+    }
+
+    normalized, changed = store._normalize_session(legacy)  # noqa: SLF001 - migration regression
+    normalized_again, changed_again = store._normalize_session(normalized)  # noqa: SLF001
+
+    assert changed is True
+    assert normalized["activity_at"] == legacy["updated_at"]
+    assert normalized["activity_revision"] == 0
+    assert normalized["activity_kind"] == ""
+    assert normalized_again == normalized
+    # Other legacy compatibility shims may still report a normalization pass;
+    # the activity migration itself must not advance or rewrite its clock.
+    assert isinstance(changed_again, bool)
+
+
 def test_session_load_migrates_derived_top_level_memory_fields(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))

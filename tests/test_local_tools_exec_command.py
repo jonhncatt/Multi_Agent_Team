@@ -123,6 +123,107 @@ def test_read_only_subagent_gets_safe_alternative_instead_of_inline_python_appro
     assert result["error_detail"]["retryability"] == "change_tool_or_arguments"
 
 
+@pytest.mark.parametrize(
+    ("command", "force", "delete"),
+    [
+        ("git push origin main", False, False),
+        ("git -C . push origin main", False, False),
+        ("git status && git push origin main", False, False),
+        ("git push --force origin main", True, False),
+        ("git push origin --delete old-branch", False, True),
+    ],
+)
+def test_git_push_always_requires_external_write_approval_with_repository_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+    force: bool,
+    delete: bool,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        session_id="git-session",
+        project_id="git-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="auto", network_allowed=False),
+    )
+
+    def fake_git_probe(_cwd: Path, *args: str) -> str:
+        probes = {
+            ("rev-parse", "--show-toplevel"): str(tmp_path),
+            ("branch", "--show-current"): "main",
+            ("rev-parse", "HEAD"): "abc123",
+            ("remote",): "origin",
+            ("remote", "get-url", "--push", "origin"): "https://token@example.com/team/repo.git",
+        }
+        return probes.get(tuple(args), "")
+
+    monkeypatch.setattr(manager, "_git_probe", fake_git_probe)
+    result = manager.exec_command(cmd=command, cwd=".", yield_time_ms=10)
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "external_side_effect_approval_required"
+    assert result["approval_required"] is True
+    assert result["approval_request"]["default_action"] == "cancel"
+    risk = result["approval_request"]["risks"][0]
+    assert risk["operation"] == "git_push"
+    assert risk["repository_root"] == str(tmp_path)
+    assert risk["remote"] == "origin"
+    assert risk["remote_url"] == "https://example.com/team/repo.git"
+    assert risk["branch"] == "main"
+    assert risk["head"] == "abc123"
+    assert risk["force"] is force
+    assert risk["delete"] is delete
+
+
+def test_git_push_approval_is_invalidated_when_remote_or_head_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        session_id="git-session",
+        project_id="git-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
+    )
+    state = {"remote": "https://github.com/wrong/repo.git", "head": "abc123"}
+
+    def fake_git_probe(_cwd: Path, *args: str) -> str:
+        probes = {
+            ("rev-parse", "--show-toplevel"): str(tmp_path),
+            ("branch", "--show-current"): "main",
+            ("rev-parse", "HEAD"): state["head"],
+            ("remote",): "origin",
+            ("remote", "get-url", "--push", "origin"): state["remote"],
+        }
+        return probes.get(tuple(args), "")
+
+    monkeypatch.setattr(manager, "_git_probe", fake_git_probe)
+    command = "git push origin main"
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=10)
+    token = blocked["approval_request"]["approval_token"]
+
+    state["remote"] = "https://gitlab.company.example/team/repo.git"
+    changed_remote = manager.exec_command(cmd=command, cwd=".", yield_time_ms=10, approval_token=token)
+
+    assert changed_remote["ok"] is False
+    assert changed_remote["error_kind"] == "external_side_effect_approval_required"
+    assert "risk details" in changed_remote["error"]
+    assert changed_remote["approval_request"]["approval_token"] == ""
+
+    blocked_again = manager.exec_command(cmd=command, cwd=".", yield_time_ms=10)
+    head_token = blocked_again["approval_request"]["approval_token"]
+    state["head"] = "def456"
+    changed_head = manager.exec_command(cmd=command, cwd=".", yield_time_ms=10, approval_token=head_token)
+
+    assert changed_head["ok"] is False
+    assert "risk details" in changed_head["error"]
+    assert changed_head["approval_request"]["approval_token"] == ""
+
+
 def test_python_commands_prefer_project_venv_when_available(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

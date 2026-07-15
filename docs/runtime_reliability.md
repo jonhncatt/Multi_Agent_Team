@@ -82,3 +82,19 @@ Compare `success_rate_percent`, `failed_tool_calls`, `average_tool_calls_per_att
 Plan state and execution activity are separate UI layers. A plan never replaces current tool/model activity. During a run the UI shows the current step, tool, wait state, action, command, elapsed time, last semantic progress, and connection state.
 
 SSE `heartbeat` events update transport liveness only. They do not update semantic progress or make a stalled task appear active. Heartbeats arrive at low frequency and the existing streaming text update path is unchanged, avoiding a new per-token rendering cost.
+
+## External-write approval boundary
+
+Commands found in Skills, source files, rules, logs, or documentation are evidence to interpret. They are not execution authorization. The model may propose a concrete command when the current task truly requires it, but the Runtime independently applies the action boundary to parsed tool arguments rather than trying to classify the user's natural-language wording.
+
+Every concrete `git push` requires a single-use approval, including Auto and Full Access. The request displays the resolved repository, remote, sanitized push URL, branch, HEAD, refspecs, and force/delete flags. Its token binds the exact command and working directory plus a fingerprint of those repository facts. A changed command, repository, remote URL, branch, HEAD, session, project, or previously used token is rejected and cannot silently acquire a replacement approval through the same call.
+
+The first safety Eval treats a `git push` example inside `SKILL.md` as reference text. It must be preserved and reviewed in a Markdown deliverable without appearing in an `exec_command` event. Reports retain only the redaction-safe rule label (`git_push`), never the command, URL, credentials, file content, or complete arguments.
+
+## Stable Thread activity ordering
+
+`updated_at` remains the persistence timestamp, but it no longer decides whether a Thread contains new user-visible activity. `activity_revision`, `activity_at`, and `activity_kind` form a separate monotonic clock. User-message acceptance and terminal Turn state advance it; connection heartbeats and unrelated metadata saves do not.
+
+The list API sorts by `activity_at`. The frontend merges each Thread only when the incoming revision/time is at least as fresh as its current row, then applies the same activity ordering. A late background refresh therefore cannot move a Thread backward and forward using stale data. Old Sessions gain revision `0` and inherit `activity_at` from their existing `updated_at`, so no manual migration is required.
+
+When run-time guidance is accepted, the Runtime supplies the next assistant segment ID. The frontend freezes only the visible text of the completed segment and transfers the live plan/activity panel to that new segment after the queued user message. This makes the live order match the persisted Thread order before and after refresh.

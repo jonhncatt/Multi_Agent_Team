@@ -1560,6 +1560,7 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
     assert any(item.get("event") == "turn/steer/accepted" for item in progress_events)
     accepted_event = next(item for item in progress_events if item.get("event") == "turn/steer/accepted")
     assert accepted_event["starts_next_response"] is True
+    assert str(accepted_event["next_segment_id"]).startswith("run-steer:agent_message:")
 
 
 def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(

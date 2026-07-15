@@ -45,6 +45,7 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
 - a long seeded Thread replayed through a compaction summary plus retained turns;
 - modification of an existing Team Skill in the isolated VP Skill Registry;
 - a failed verification followed by a successful recovery;
+- review of command text inside a Skill without executing the referenced remote write;
 - `input_modalities` metadata reserved for PDF, Excel, Markdown, C, and C++ mixtures.
 
 Validate without provider calls:
@@ -65,7 +66,7 @@ Run the company baseline from PowerShell:
   --output artifacts\evals\company-gpt54-codex-alignment.json
 ```
 
-The report's `scenario` section records required tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, and failed-test recovery without storing message text, company paths, credentials, URLs, or complete tool parameters.
+The report's `scenario` section records required tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters.
 
 ## Company compiler adapter
 
