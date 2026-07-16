@@ -929,9 +929,21 @@ class SessionStore:
         answer_bundle: dict[str, Any] | None = None,
         activity: dict[str, Any] | None = None,
         record_transcript: bool = True,
+        turn_id: str | None = None,
     ) -> dict[str, Any]:
+        requested_turn_id = str(turn_id or "").strip()
+        existing_turn_ids = {
+            str(item.get("id") or "").strip()
+            for item in list(session.get("turns") or [])
+            if isinstance(item, dict)
+        }
+        resolved_turn_id = (
+            requested_turn_id
+            if requested_turn_id and requested_turn_id not in existing_turn_ids
+            else str(uuid.uuid4())
+        )
         turn = {
-            "id": str(uuid.uuid4()),
+            "id": resolved_turn_id,
             "role": role,
             "text": text,
             "attachments": attachments or [],

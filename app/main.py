@@ -2122,7 +2122,12 @@ def _process_chat_request(
             default_project=requested_project,
         )
         fallback_text = translate(locale, "chat.auth_missing")
-        user_turn = session_store.append_turn(seed_session, role="user", text=req.message)
+        user_turn = session_store.append_turn(
+            seed_session,
+            role="user",
+            text=req.message,
+            turn_id=req.client_message_id,
+        )
         session_store.append_turn(
             seed_session,
             role="assistant",
@@ -2697,6 +2702,7 @@ def _process_chat_request(
             role="user",
             text=user_text,
             attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+            turn_id=req.client_message_id,
         )
         user_turn_id = str(user_turn.get("id") or "")
         session_store.save(session)

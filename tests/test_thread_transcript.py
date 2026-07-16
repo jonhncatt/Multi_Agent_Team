@@ -116,6 +116,24 @@ def test_session_store_keeps_ui_turns_as_projection_and_transcript_as_model_hist
     ]
 
 
+def test_session_store_preserves_unique_client_turn_id_and_rejects_collision(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(
+        {"project_id": "p1", "title": "Project", "root_path": str(tmp_path), "git_branch": "main"}
+    )
+
+    first = store.append_turn(session, role="user", text="hi", turn_id="client-message-1")
+    second = store.append_turn(session, role="user", text="again", turn_id="client-message-1")
+
+    assert first["id"] == "client-message-1"
+    assert second["id"] != "client-message-1"
+    assert len({first["id"], second["id"]}) == 2
+    assert [item["id"] for item in session["thread_transcript"]["items"]] == [
+        first["id"],
+        second["id"],
+    ]
+
+
 def test_existing_thread_transcript_wins_over_legacy_turn_projection() -> None:
     normalized = normalize_thread_transcript(
         {

@@ -1907,9 +1907,13 @@ def test_completed_steered_turn_reconciles_authoritative_thread_order_before_cle
     assert handle_send_match, "handleSend function not found"
     body = handle_send_match.group("body")
 
-    assert "function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages)" in script
+    assert "function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages, options = {})" in script
+    assert "const optimisticMessageIds = new Set(" in script
+    assert "!optimisticMessageIds.has(String(item.id || \"\").trim())" in script
     assert "const reconcileCompletedThreadMessages = async (threadId) => {" in body
-    assert "mergeAuthoritativeThreadMessages(authoritativeMessages, prev)" in body
+    assert "mergeAuthoritativeThreadMessages(authoritativeMessages, prev, {" in body
+    assert "optimisticMessageIds: [String(userMessage.id || \"\")]" in body
+    assert "client_message_id: String(userMessage.id || \"\")," in body
     reconcile_call = "await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId)"
     assert reconcile_call in body
     assert body.index(reconcile_call) < body.index("await cleanupRunUi();")
@@ -1943,6 +1947,8 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     lock_check = body.split("if (ownerBusy) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
     assert "activeSendThreadIdsRef.current.delete" not in lock_check
     assert "appendMessagesOnceById(" in body
+    assert body.index("let uiFinalized = false;") < body.index("try {\n      if (isTempThreadId(sid)")
+    assert body.count("let uiFinalized = false;") == 1
     assert "setSending(false);" not in body.split("const cleanupRunUi = async () => {", 1)[0]
     assert "disabled=${creatingThread || sending}" not in script
 

@@ -1943,6 +1943,40 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert run_finished_payload["duration_ms"] == response_payload["activity"]["run_duration_ms"]
 
 
+def test_chat_stream_preserves_client_message_id_in_authoritative_thread(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    client_message_id = "client-message-first-turn"
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "hi",
+            "client_message_id": client_message_id,
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    final_payload = next(payload for name, payload in events if name == "final")
+    session_id = str(dict(final_payload.get("response") or {}).get("session_id") or "")
+    assert session_id
+    detail = client.get(f"/api/thread/{session_id}?view=summary&max_turns=40")
+    assert detail.status_code == 200
+    turns = detail.json()["turns"]
+    assert turns[0]["role"] == "user"
+    assert turns[0]["text"] == "hi"
+    assert turns[0]["id"] == client_message_id
+    assert sum(1 for turn in turns if turn["role"] == "user" and turn["text"] == "hi") == 1
+
+
 def test_chat_stream_preserves_multiple_runtime_answer_deltas(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _StreamingVintageRuntime())

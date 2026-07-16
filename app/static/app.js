@@ -755,14 +755,22 @@ function appendMessagesOnceById(previousMessages, incomingMessages) {
   return next;
 }
 
-function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages) {
+function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages, options = {}) {
   const authoritative = Array.isArray(authoritativeMessages)
     ? authoritativeMessages.filter((item) => item && typeof item === "object")
     : [];
-  const current = Array.isArray(currentMessages)
+  const optimisticMessageIds = new Set(
+    (Array.isArray(options.optimisticMessageIds) ? options.optimisticMessageIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  const rawCurrent = Array.isArray(currentMessages)
     ? currentMessages.filter((item) => item && typeof item === "object")
     : [];
-  if (!authoritative.length) return current;
+  if (!authoritative.length) return rawCurrent;
+  const current = rawCurrent.filter(
+    (item) => !optimisticMessageIds.has(String(item.id || "").trim()),
+  );
 
   const currentById = new Map(
     current
@@ -6497,6 +6505,7 @@ function App() {
     let updateOwnerActiveTurn = null;
     let lockedRunOwnerThreadId = "";
     let cancelAssistantDeltaFlush = () => {};
+    let uiFinalized = false;
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -6596,6 +6605,7 @@ function App() {
           session_id: sid,
           project_id: projectId,
           message: messageText,
+          client_message_id: String(userMessage.id || ""),
           client_submitted_at_ms: clientSubmittedAtMs,
           attachment_ids: readyAttachmentIds,
           user_input_response: structuredUserInputResponse,
@@ -6650,7 +6660,6 @@ function App() {
       let latestGlobalTokenTotals = {};
       let completedTurnPayload = null;
       let latestActivity = normalizeMessageActivity(pendingMessage.activity);
-      let uiFinalized = false;
       ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
       updateOwnerMessages = (value) => {
         if (ownerThreadVisible()) {
@@ -6727,7 +6736,9 @@ function App() {
           const authoritativeMessages = extractSessionMessages(detail);
           if (!authoritativeMessages.length) return false;
           updateOwnerMessages((prev) => (
-            mergeAuthoritativeThreadMessages(authoritativeMessages, prev)
+            mergeAuthoritativeThreadMessages(authoritativeMessages, prev, {
+              optimisticMessageIds: [String(userMessage.id || "")],
+            })
           ));
           updateThreadSnapshot(ownerId, (existing) => ({ ...existing, detail }));
           return true;

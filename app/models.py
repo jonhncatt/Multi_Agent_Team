@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     project_id: str | None = None
     message: str = Field(min_length=1)
+    client_message_id: str | None = Field(default=None, max_length=160)
     client_submitted_at_ms: int | None = None
     attachment_ids: list[str] = Field(default_factory=list)
     user_input_response: dict[str, Any] = Field(default_factory=dict)
