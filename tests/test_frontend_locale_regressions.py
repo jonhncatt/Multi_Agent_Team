@@ -861,16 +861,17 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "traceEvents.length ? traceEvents[traceEvents.length - 1].timestamp : 0" not in body
     assert "const turnStartedAt = item.turn_started_at || item.started_at;" in script
     assert "const frozenElapsedMs = isActivityTerminalStatus(item.status)" in script
-    assert "const shouldTickActivityClock = (" in script
-    assert "|| Boolean(activeRunStartedAt)" in script
-    assert "|| hasLiveTurnState" in script
-    assert "|| hasConnectionHeartbeat" in script
+    assert "const activeRunBelongsToCurrentThread = Boolean(" in script
+    assert "const shouldTickActivityClock = Boolean(" in script
+    assert "Boolean(activeRunStartedAt)" in script
+    assert "hasConnectionHeartbeat" in script
+    clock_body = script.split("const activeRunBelongsToCurrentThread = Boolean(", 1)[1].split("if (!shouldTickActivityClock)", 1)[0]
+    assert "hasLiveTurnState" not in clock_body
     assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
     assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now(), locale)" in script
     assert 'window.addEventListener("focus", syncActivityClock)' in script
     assert 'document.addEventListener("visibilitychange", syncVisibleActivityClock)' in script
-    assert "hasLiveTurnState]);" in script
-    assert "liveTurnState]);" not in script
+    assert "hasConnectionHeartbeat]);" in script
     assert 'translateUi(locale, "duration.minutes_seconds"' in script
     assert 'translateUi(locale, "duration.hours_minutes_seconds"' in script
     assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
@@ -1688,8 +1689,13 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     assert 'const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
     assert 'const recentExecutionItems = (preview ? mainLiveCards : progressItems).slice(-MAIN_LIVE_CARD_LIMIT);' in body
     assert 'suppressPreview || isTerminal ? [] : recentExecutionItems' in body
-    assert 'const showExecutionDivider = Boolean(showPlanSummary && visibleItems.length);' in body
+    assert "const showLiveStatusPanel = Boolean(" in body
+    assert "showPlanSummary && (visibleItems.length || showLiveStatusPanel)" in body
     assert 'className="activity-progress-divider" role="separator"' in body
+    assert 'className="activity-live-status" role="status"' in body
+    assert "runExecutionProgress.currentStep" in body
+    assert "runExecutionProgress.currentTool" in body
+    assert "runExecutionProgress.elapsed" in body
     assert '!suppressPreview && normalizedStatus === "completed" && !suppressCompletedPreview ? completionSummary.label : ""' in body
     assert '|| (suppressPreview ? "" : item.activity_summary)' in body
     assert 'const showNote = Boolean(note) && !(preview && suppressNoteText && note === suppressNoteText);' in body
@@ -1886,7 +1892,8 @@ def test_live_execution_card_renders_after_queued_guidance_before_acceptance() -
     assert '["steer_queued", "steer_accepted", "steer_rejected"].includes(steerStatus)' in script
     assert "const [liveAssistant] = list.splice(liveIndex, 1);" in script
     assert "list.splice(displayAfterIndex, 0, liveAssistant);" in script
-    assert "const conversationMessages = messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId);" in script
+    assert "const conversationMessages = messagesForLiveGuidanceDisplay(" in script
+    assert "appendMessagesOnceById([], messages)," in script
     assert "? conversationMessages.map(" in script
 
 
@@ -1932,10 +1939,52 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "if (currentThreadBusy) {" in body
     assert 'fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`' in body
     assert "if (ownerBusy) return;" in body
-    assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {" in body
-    assert "activeSendThreadIdsRef.current.delete(runOwnerThreadId);" in body
+    assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;" in body
+    lock_check = body.split("if (ownerBusy) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
+    assert "activeSendThreadIdsRef.current.delete" not in lock_check
+    assert "appendMessagesOnceById(" in body
     assert "setSending(false);" not in body.split("const cleanupRunUi = async () => {", 1)[0]
     assert "disabled=${creatingThread || sending}" not in script
+
+
+def test_optimistic_thread_messages_are_idempotent_by_message_id() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function appendMessagesOnceById(previousMessages, incomingMessages)" in script
+    helper_body = script.split(
+        "function appendMessagesOnceById(previousMessages, incomingMessages)",
+        1,
+    )[1].split("\n}\n", 1)[0]
+    assert "if (messageId && knownIds.has(messageId)) return;" in helper_body
+    assert "knownIds.add(messageId);" in helper_body
+    assert "messages: appendMessagesOnceById(" in script
+    assert "? appendMessagesOnceById(prev, [userMessage, pendingMessage])" in script
+    assert "appendMessagesOnceById([], messages)," in script
+
+
+def test_assistant_stream_deltas_are_batched_before_react_updates() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const STREAM_UI_FLUSH_INTERVAL_MS = 100;" in script
+    assert 'let assistantDeltaBuffer = "";' in script
+    assert "const flushAssistantDelta = () => {" in script
+    assert 'const queueAssistantDelta = (delta, itemId = "") => {' in script
+    assert "STREAM_UI_FLUSH_INTERVAL_MS," in script
+    delta_branch = script.split('event === "item/agentMessage/delta"', 1)[1].split(
+        'event === "item/completed"',
+        1,
+    )[0]
+    assert "queueAssistantDelta(delta" in delta_branch
+    assert "updateOwnerActiveTurn" not in delta_branch
+    assert "replacePendingText" not in delta_branch
+    assert "patchPendingActivity" not in delta_branch
+    assert "recentEvent: assistantText" not in script
+    assert 'event === "run_failed"' in script
+    run_failed_branch = script.split('event === "run_failed"', 1)[1].split(
+        'event === "trace_event"',
+        1,
+    )[0]
+    assert "flushAssistantDelta();" in run_failed_branch
 
 
 def test_thread_run_indicators_show_running_and_completed_attention() -> None:

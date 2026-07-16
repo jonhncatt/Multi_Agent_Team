@@ -49,6 +49,7 @@ const MAIN_LIVE_CARD_LIMIT = 5;
 const COMPACT_PLAN_ITEM_LIMIT = 6;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
+const STREAM_UI_FLUSH_INTERVAL_MS = 100;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
 const THEME_COLOR_OPTIONS = [
@@ -737,6 +738,21 @@ function extractSessionMessages(data) {
       },
     ),
   );
+}
+
+function appendMessagesOnceById(previousMessages, incomingMessages) {
+  const next = Array.isArray(previousMessages) ? [...previousMessages] : [];
+  const knownIds = new Set(
+    next.map((item) => String((item && item.id) || "").trim()).filter(Boolean),
+  );
+  (Array.isArray(incomingMessages) ? incomingMessages : []).forEach((message) => {
+    if (!message || typeof message !== "object") return;
+    const messageId = String(message.id || "").trim();
+    if (messageId && knownIds.has(messageId)) return;
+    next.push(message);
+    if (messageId) knownIds.add(messageId);
+  });
+  return next;
 }
 
 function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages) {
@@ -4460,14 +4476,21 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const shouldTickActivityClock = (
-      hasRunningActivity
-      || currentThreadBusy
-      || Boolean(activeRunId)
-      || Boolean(activeRunThreadId)
-      || Boolean(activeRunStartedAt)
-      || hasConnectionHeartbeat
-      || hasLiveTurnState
+    const activeRunBelongsToCurrentThread = Boolean(
+      String(activeRunThreadId || "").trim()
+      && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+    );
+    const shouldTickActivityClock = Boolean(
+      currentThreadBusy
+      || (
+        activeRunBelongsToCurrentThread
+        && (
+          Boolean(activeRunId)
+          || Boolean(activeRunStartedAt)
+          || hasConnectionHeartbeat
+          || hasRunningActivity
+        )
+      )
     );
     if (!shouldTickActivityClock) {
       setActivityClockMs(Date.now());
@@ -4486,7 +4509,7 @@ function App() {
       window.removeEventListener("focus", syncActivityClock);
       document.removeEventListener("visibilitychange", syncVisibleActivityClock);
     };
-  }, [activeRunId, activeRunThreadId, activeRunStartedAt, currentThreadBusy, hasRunningActivity, hasConnectionHeartbeat, hasLiveTurnState]);
+  }, [sessionId, activeRunId, activeRunThreadId, activeRunStartedAt, currentThreadBusy, hasRunningActivity, hasConnectionHeartbeat]);
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -6473,6 +6496,7 @@ function App() {
     let updateOwnerSessionRuntimeState = null;
     let updateOwnerActiveTurn = null;
     let lockedRunOwnerThreadId = "";
+    let cancelAssistantDeltaFlush = () => {};
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -6485,9 +6509,7 @@ function App() {
         ? isThreadSnapshotBusy(runOwnerThreadId, { activeTurn: visibleThreadActiveTurnSnapshot(), messages })
         : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
       if (ownerBusy) return;
-      if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
-        activeSendThreadIdsRef.current.delete(runOwnerThreadId);
-      }
+      if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;
       activeSendThreadIdsRef.current.add(runOwnerThreadId);
       lockedRunOwnerThreadId = runOwnerThreadId;
       markThreadRunIndicator(runOwnerThreadId, "running");
@@ -6543,25 +6565,23 @@ function App() {
           liveEvidence: { status: "not_needed" },
         });
       };
-      const initialMessagesForRun = [...(Array.isArray(messages) ? messages : []), userMessage, pendingMessage];
       updateThreadSnapshot(runOwnerThreadId, (existing) => ({
         ...existing,
-        messages: initialMessagesForRun,
+        messages: appendMessagesOnceById(
+          Array.isArray(existing.messages) && existing.messages.length
+            ? existing.messages
+            : (ownerThreadVisible() ? messages : []),
+          [userMessage, pendingMessage],
+        ),
         sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, nextInitialRuntimeState),
         activeTurn: initialActiveTurn(existing.activeTurn),
       }));
       if (ownerThreadVisible()) {
-        setMessages((prev) => {
-          if (!ownerThreadVisible()) return prev;
-          const nextMessages = [...prev, userMessage, pendingMessage];
-          updateThreadSnapshot(runOwnerThreadId, (existing) => ({
-            ...existing,
-            messages: nextMessages,
-            sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, nextInitialRuntimeState),
-            activeTurn: initialActiveTurn(existing.activeTurn),
-          }));
-          return nextMessages;
-        });
+        setMessages((prev) => (
+          ownerThreadVisible()
+            ? appendMessagesOnceById(prev, [userMessage, pendingMessage])
+            : prev
+        ));
         setLiveTurnState(nextInitialRuntimeState);
         setLiveEvidence({ status: "not_needed" });
         setLastLiveProgressAt(clientSubmittedAtMs);
@@ -6618,6 +6638,9 @@ function App() {
       let assistantMessageStarted = false;
       let modelRequestStarted = false;
       let assistantText = "";
+      let assistantDeltaBuffer = "";
+      let assistantDeltaItemId = "";
+      let assistantDeltaFlushTimer = 0;
       let latestThreadId = String(sid || "");
       let latestRunSnapshot = {};
       let latestEvidenceState = { status: "not_needed" };
@@ -6949,6 +6972,63 @@ function App() {
           }),
         );
       };
+      const flushAssistantDelta = () => {
+        if (assistantDeltaFlushTimer) {
+          window.clearTimeout(assistantDeltaFlushTimer);
+          assistantDeltaFlushTimer = 0;
+        }
+        const delta = assistantDeltaBuffer;
+        const itemId = assistantDeltaItemId;
+        assistantDeltaBuffer = "";
+        assistantDeltaItemId = "";
+        if (!delta) return;
+        assistantText += delta;
+        const progressAt = Date.now();
+        latestActivity = mergeActivityState(latestActivity, {
+          model_draft: assistantText,
+        });
+        updateOwnerMessages((prev) => prev.map((item) => (
+          pendingMessage && item.id === pendingMessage.id
+            ? {
+                ...item,
+                text: assistantText,
+                activity: mergeActivityState(item.activity, { model_draft: assistantText }),
+              }
+            : item
+        )));
+        updateOwnerActiveTurn((prev) => ({
+          ...prev,
+          lastLiveProgressAt: progressAt,
+          liveHeartbeat: normalizeLiveHeartbeat({
+            ...normalizeLiveHeartbeat(prev.liveHeartbeat || {}),
+            status: "waiting_model",
+            action: t("activity.live.answer_streaming"),
+            recentEvent: t("activity.live.answer_streaming"),
+            source: "model",
+            updatedAt: progressAt,
+          }),
+        }));
+        if (ownerThreadVisible() && itemId) {
+          dispatch({ type: "items/agentDelta", itemId, delta, status: "inProgress" });
+        }
+      };
+      const queueAssistantDelta = (delta, itemId = "") => {
+        const text = String(delta || "");
+        if (!text) return;
+        assistantDeltaBuffer += text;
+        assistantDeltaItemId = String(itemId || assistantDeltaItemId || "");
+        if (assistantDeltaFlushTimer) return;
+        assistantDeltaFlushTimer = window.setTimeout(
+          flushAssistantDelta,
+          STREAM_UI_FLUSH_INTERVAL_MS,
+        );
+      };
+      cancelAssistantDeltaFlush = () => {
+        if (assistantDeltaFlushTimer) window.clearTimeout(assistantDeltaFlushTimer);
+        assistantDeltaFlushTimer = 0;
+        assistantDeltaBuffer = "";
+        assistantDeltaItemId = "";
+      };
       const completePendingText = (text) => {
         updateOwnerMessages((prev) =>
           prev.map((item) => (
@@ -6966,6 +7046,7 @@ function App() {
         );
       };
       const completeCurrentAssistantSegment = (segment) => {
+        flushAssistantDelta();
         const item = segment && typeof segment === "object" ? segment : {};
         const currentId = String((pendingMessage && pendingMessage.id) || "");
         if (!currentId) return;
@@ -7004,6 +7085,7 @@ function App() {
         pendingMessage = { ...pendingMessage, id: segmentId, pending: false };
       };
       const beginNextAssistantSegment = (nextSegmentId = "") => {
+        flushAssistantDelta();
         const startedAt = Date.now();
         const carriedActivity = normalizeMessageActivity(latestActivity || {});
         const nextPending = createMessage("assistant", t("labels.processing"), {
@@ -7346,6 +7428,7 @@ function App() {
                 source: "model",
               });
             } else if (event === "run_finished") {
+              flushAssistantDelta();
               const hasVisibleAnswer = hasVisibleFinalAnswer();
               const displayedAnswer = previewPendingAssistant({
                 status: hasVisibleAnswer ? "completed" : (latestActivity.status || "thinking"),
@@ -7365,6 +7448,7 @@ function App() {
                 });
               }
             } else if (event === "run_failed") {
+              flushAssistantDelta();
               stabilizePendingAssistant({
                 status: "failed",
                 allowDraft: true,
@@ -7495,6 +7579,7 @@ function App() {
                 updatedAt: steer.accepted_at || Date.now(),
               });
             } else if (event === "turn/completed") {
+              flushAssistantDelta();
               completedTurnPayload = payload.turn && typeof payload.turn === "object" ? payload.turn : {};
               const completionStatus = String((completedTurnPayload && completedTurnPayload.status) || latestRunSnapshot.turn_status || "completed");
               applySnapshot({ turn_status: completionStatus });
@@ -7542,25 +7627,11 @@ function App() {
               assistantMessageStarted = true;
               const delta = String(payload.delta || "");
               if (delta) {
-                assistantText += delta;
-                updateOwnerActiveTurn((prev) => ({ ...prev, lastLiveProgressAt: Date.now() }));
-                updateOwnerLiveHeartbeat((prev) => ({
-                  ...prev,
-                  status: prev.status || "waiting_model",
-                  action: prev.action || t("activity.live.answer_streaming"),
-                  recentEvent: assistantText,
-                  source: "model",
-                }));
-                if (ownerThreadVisible()) {
-                  dispatch({ type: "items/agentDelta", itemId: String(payload.item_id || ""), delta, status: "inProgress" });
-                }
-                replacePendingText(assistantText);
-                patchPendingActivity((activity) => mergeActivityState(activity, {
-                  model_draft: assistantText,
-                }));
+                queueAssistantDelta(delta, String(payload.item_id || ""));
               }
             } else if (event === "item/completed") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
+              if (String(item.type || "") === "agentMessage") flushAssistantDelta();
               if (item.id) {
                 patchPendingActivity((activity) => mergeActivityState(activity, {
                   live_items: [liveRunItemFromStreamItem(item, event)],
@@ -7708,6 +7779,7 @@ function App() {
         if (done) break;
       }
 
+      flushAssistantDelta();
       if (!finalPayload && (completedTurnPayload || assistantText || Object.keys(latestRunSnapshot).length)) {
         finalPayload = buildFallbackFinalPayload();
       }
@@ -7845,6 +7917,7 @@ function App() {
         setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
       }
     } finally {
+      cancelAssistantDeltaFlush();
       if (!uiFinalized) {
         if (lockedRunOwnerThreadId) {
           finishThreadRunIndicator(lockedRunOwnerThreadId);
@@ -8097,7 +8170,10 @@ function App() {
   const liveAssistantMessageId = hasLiveRuntimeState
     ? String((((latestAssistantMessage(messages, { preferPending: true })) || {}).id) || "").trim()
     : "";
-  const conversationMessages = messagesForLiveGuidanceDisplay(messages, liveAssistantMessageId);
+  const conversationMessages = messagesForLiveGuidanceDisplay(
+    appendMessagesOnceById([], messages),
+    liveAssistantMessageId,
+  );
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
   const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
   const activeTaskState = (
@@ -8677,7 +8753,15 @@ function App() {
     const planOverflowCount = preview && !isTerminal
       ? Math.max(0, planItems.length - visiblePlanItems.length)
       : 0;
-    const showExecutionDivider = Boolean(showPlanSummary && visibleItems.length);
+    const showLiveStatusPanel = Boolean(
+      preview
+      && showPlanSummary
+      && !isTerminal
+      && (hasLiveRuntimeState || currentThreadBusy),
+    );
+    const showExecutionDivider = Boolean(
+      showPlanSummary && (visibleItems.length || showLiveStatusPanel),
+    );
     const durationLabel = formatActivityDuration(item, activityClockMs || Date.now(), uiLocale);
     const liveSummary = resolveLiveSummary(item, projection, uiLocale);
     const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);
@@ -8741,6 +8825,32 @@ function App() {
           : null}
         ${showExecutionDivider
           ? html`<div className="activity-progress-divider" role="separator" aria-hidden="true"></div>`
+          : null}
+        ${showLiveStatusPanel
+          ? html`
+              <div className="activity-live-status" role="status" aria-live="polite">
+                <div className="activity-live-status-head">
+                  <span className=${`live-run-dot status-${runExecutionProgress.status || "running"}`} aria-hidden="true"></span>
+                  <strong>${runExecutionProgress.statusLabel || t("activity.running")}</strong>
+                  ${runExecutionProgress.elapsed ? html`<span>${runExecutionProgress.elapsed}</span>` : null}
+                </div>
+                <div className="activity-live-status-action">
+                  ${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("run.progress.background_running")}
+                </div>
+                <div className="activity-live-status-meta">
+                  ${runExecutionProgress.currentStep
+                    ? html`<span>${formatRunFieldLabel(uiLocale, "current_step")}: ${runExecutionProgress.currentStep}</span>`
+                    : null}
+                  ${runExecutionProgress.currentTool
+                    ? html`<span>${formatRunFieldLabel(uiLocale, "current_tool")}: ${runExecutionProgress.currentTool}</span>`
+                    : null}
+                  <span>${formatRunFieldLabel(uiLocale, "connection")}: ${runExecutionProgress.connectionLabel}</span>
+                  ${runExecutionProgress.recentEvent && runExecutionProgress.recentEvent !== runExecutionProgress.currentAction
+                    ? html`<span>${runExecutionProgress.recentEvent}</span>`
+                    : null}
+                </div>
+              </div>
+            `
           : null}
         ${!preview && visibleItems.length ? html`<div className="activity-progress-section-title">${t("run.execution_progress")}</div>` : null}
         ${renderProgressItems(visibleItems)}
