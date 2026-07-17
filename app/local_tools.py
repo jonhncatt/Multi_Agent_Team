@@ -64,6 +64,21 @@ def _is_within(path: Path, root: Path) -> bool:
 
 _BROAD_GLOB_GUIDANCE_THRESHOLD = 300
 
+APPLY_PATCH_TOOL_DESCRIPTION = (
+    "Apply one atomic file-oriented patch under allowed writable roots. "
+    "Use `*** Add File:` only for a target known not to exist, `*** Update File:` for every "
+    "existing or previously read file, and `*** Delete File:` only for an existing file. "
+    "Never use Add File to replace an existing file."
+)
+
+APPLY_PATCH_ARGUMENT_DESCRIPTION = (
+    "Patch DSL enclosed by `*** Begin Patch` and `*** End Patch`. Each operation starts with "
+    "`*** Add File: path`, `*** Update File: path`, or `*** Delete File: path`. Add File content "
+    "uses `+` lines. Update File requires one or more `@@` hunks whose context/removal/addition "
+    "lines begin with space, `-`, or `+`; it may be followed by `*** Move to: new_path`. Paths "
+    "may be relative to cwd or absolute, but must remain under an allowed writable root."
+)
+
 
 def _project_relative_or_absolute(path: Path, project_root: Path) -> str:
     try:
@@ -3087,7 +3102,11 @@ class LocalToolExecutor:
                         "cwd": {"type": "string", "description": "Working directory relative to workspace", "default": "."},
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
-                        "tty": {"type": "boolean", "default": False},
+                        "tty": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Compatibility flag reported in the result; the current host runner uses pipes and does not allocate a PTY.",
+                        },
                         "approval_token": {
                             "type": "string",
                             "default": "",
@@ -3122,13 +3141,21 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "apply_patch",
-                "description": "Apply a freeform patch inside the workspace.",
+                "description": APPLY_PATCH_TOOL_DESCRIPTION,
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "patch": {"type": "string"},
-                        "cwd": {"type": "string", "default": "."},
-                        "check": {"type": "boolean", "default": False},
+                        "patch": {"type": "string", "description": APPLY_PATCH_ARGUMENT_DESCRIPTION},
+                        "cwd": {
+                            "type": "string",
+                            "default": ".",
+                            "description": "Base directory used to resolve relative patch paths.",
+                        },
+                        "check": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Validate the complete patch without changing files when true.",
+                        },
                     },
                     "required": ["patch"],
                     "additionalProperties": False,
@@ -3142,10 +3169,32 @@ class LocalToolExecutor:
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "default": "."},
-                        "start_char": {"type": "integer", "minimum": 0, "default": 0},
-                        "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
-                        "start_line": {"type": "integer", "minimum": 0, "default": 0},
-                        "max_lines": {"type": "integer", "minimum": 0, "maximum": 200000, "default": 0},
+                        "start_char": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": "Zero-based character offset in character mode.",
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 128,
+                            "maximum": 1000000,
+                            "default": 200000,
+                            "description": "Maximum extracted characters returned in either mode.",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": "One-based first line; 0 keeps character mode unless max_lines is set.",
+                        },
+                        "max_lines": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 200000,
+                            "default": 0,
+                            "description": "Maximum lines; a value above 0 enables line mode.",
+                        },
                     },
                     "additionalProperties": False,
                 },
@@ -3231,7 +3280,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "table_extract",
-                "description": "Extract tables from a local PDF or XLSX file, optionally narrowed by query or page hint.",
+                "description": "Extract tables from a local PDF or OpenXML Excel workbook, optionally narrowed by query or page hint.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3248,7 +3297,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "fact_check_file",
-                "description": "Check whether a file provides supporting evidence for a claim, using derived or provided search queries.",
+                "description": "Retrieve file snippets related to a claim and return a heuristic evidence verdict that still requires model judgment.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3316,7 +3365,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "web_download",
-                "description": "Download a web file (binary-safe) to a local path under allowed roots for later reading or extraction.",
+                "description": "Download a web file (binary-safe) under allowed writable roots. Downloaded content is marked untrusted; executing it may require approval.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3334,7 +3383,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "sessions_list",
-                "description": "List recent local chat sessions so the agent can locate past context.",
+                "description": "List recent local chat sessions for the current project so the agent can locate past context.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3388,7 +3437,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "archive_extract",
-                "description": "Extract a local .zip archive into a target directory under allowed roots.",
+                "description": "Extract a local .zip archive under allowed writable roots; files inherit untrusted provenance from a downloaded archive.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3484,7 +3533,10 @@ class LocalToolExecutor:
                                 "properties": {
                                     "step": {"type": "string"},
                                     "description": {"type": "string"},
-                                    "status": {"type": "string"},
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "in_progress", "completed"],
+                                    },
                                 },
                                 "additionalProperties": False,
                             },
@@ -3506,14 +3558,18 @@ class LocalToolExecutor:
                     "properties": {
                         "questions": {
                             "type": "array",
+                            "minItems": 1,
+                            "maxItems": 3,
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "header": {"type": "string"},
+                                    "header": {"type": "string", "maxLength": 12},
                                     "id": {"type": "string"},
                                     "question": {"type": "string"},
                                     "options": {
                                         "type": "array",
+                                        "minItems": 2,
+                                        "maxItems": 3,
                                         "items": {
                                             "type": "object",
                                             "properties": {
@@ -3537,7 +3593,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "save_skill",
-                "description": "Create or update a repository-shared Team Skill using the strict VP SKILL.md format. The Skill Registry resolves its location independently of the active project; Built-in Skills are never modified.",
+                "description": "Create a repository-shared Team SKILL.md, or replace it only when overwrite is true. The Skill Registry resolves its location independently of the active project; Built-in Skills are never modified.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3612,13 +3668,17 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "browser_wait",
-                "description": "Wait for a selector or a timeout in the current browser session.",
+                "description": "Wait for a selector state, or wait only for timeout_ms when selector is empty.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "selector": {"type": "string", "default": ""},
                         "timeout_ms": {"type": "integer", "minimum": 250, "maximum": 60000, "default": 5000},
-                        "state": {"type": "string", "default": "visible"},
+                        "state": {
+                            "type": "string",
+                            "enum": ["attached", "detached", "visible", "hidden"],
+                            "default": "visible",
+                        },
                     },
                     "additionalProperties": False,
                 },
@@ -3626,7 +3686,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "browser_scroll",
-                "description": "Scroll the current browser page or scroll one selector into view.",
+                "description": "Scroll the page by direction/amount, or ignore those fields and bring selector into view when selector is set.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4875,10 +4935,7 @@ class LocalToolExecutor:
 
     def _list_dir_impl(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
         try:
-            real_path = self._resolve_path(path)
-            write_error = self._write_path_error(real_path)
-            if write_error:
-                return {"ok": False, "error": write_error, "error_kind": "write_outside_writable_roots"}
+            real_path = self._resolve_source_path(path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_dir():
@@ -4928,7 +4985,7 @@ class LocalToolExecutor:
                 key=lambda p: p.stat().st_mtime,
                 reverse=True,
             )
-            for path in files[:limit]:
+            for path in files:
                 try:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                 except Exception:
@@ -4968,6 +5025,8 @@ class LocalToolExecutor:
                         "created_at": str(payload.get("created_at") or ""),
                     }
                 )
+                if len(rows) >= limit:
+                    break
             return {"ok": True, "count": len(rows), "sessions": rows}
         except Exception as exc:
             return {"ok": False, "error": f"sessions_list failed: {exc}"}
@@ -5711,7 +5770,7 @@ class LocalToolExecutor:
                     "tables": tables[:limit_tables],
                 }
 
-            if real_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm", ".xls"}:
+            if real_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
                 try:
                     from openpyxl import load_workbook  # lazy import
                 except Exception as exc:

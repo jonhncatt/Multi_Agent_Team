@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 import shlex
 
@@ -250,6 +251,73 @@ def test_read_file_allows_enabled_skill_and_rejects_disabled_skill(tmp_path: Pat
     assert "# Enabled" in enabled_result["content"]
     assert disabled_result["ok"] is False
     assert "out of allowed roots" in str(disabled_result["error"]).lower()
+
+
+def test_list_dir_is_available_in_a_read_only_runtime_boundary(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    read_root = tmp_path / "shared-read-only"
+    project_root.mkdir()
+    read_root.mkdir()
+    (read_root / "spec.md").write_text("# Spec\n", encoding="utf-8")
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(
+        execution_mode="host",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        runtime_boundary={
+            "permission_profile": "default",
+            "workspace_read_allowed": True,
+            "workspace_write_allowed": False,
+            "shell_allowed": False,
+            "network_allowed": False,
+            "allowed_roots": [str(project_root), str(read_root)],
+            "writable_roots": [],
+            "command_allowed_roots": [],
+            "enabled_skill_roots": [],
+            "cwd": str(project_root),
+            "project_root": str(project_root),
+        },
+    )
+
+    result = executor.list_dir(str(read_root))
+
+    assert result["ok"] is True
+    assert [entry["name"] for entry in result["entries"]] == ["spec.md"]
+
+
+def test_sessions_list_applies_limit_after_current_project_filter(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    (config.sessions_dir / "wanted.json").write_text(
+        json.dumps(
+            {
+                "id": "wanted",
+                "project_id": "current-project",
+                "turns": [{"role": "user", "text": "Wanted"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(config.sessions_dir / "wanted.json", (1, 1))
+    for index in range(3):
+        other_path = config.sessions_dir / f"other-{index}.json"
+        other_path.write_text(
+            json.dumps(
+                {
+                    "id": f"other-{index}",
+                    "project_id": "other-project",
+                    "turns": [{"role": "user", "text": "Other"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.utime(other_path, (10 + index, 10 + index))
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_id="current-project")
+
+    result = executor.sessions_list(limit=1)
+
+    assert result["ok"] is True
+    assert [item["session_id"] for item in result["sessions"]] == ["wanted"]
 
 
 def test_image_read_uses_registered_handler_and_model_hint(tmp_path: Path) -> None:

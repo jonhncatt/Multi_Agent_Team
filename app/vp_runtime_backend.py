@@ -5,202 +5,282 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
 from app.attachments import image_to_data_url_with_meta
 from app.config import AppConfig, get_access_roots, normalize_openai_base_url
-from app.local_tools import LocalToolExecutor
+from app.local_tools import (
+    APPLY_PATCH_ARGUMENT_DESCRIPTION,
+    APPLY_PATCH_TOOL_DESCRIPTION,
+    LocalToolExecutor,
+)
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
+from app.serialization import safe_model_dump
 
 
 class ExecCommandArgs(BaseModel):
     cmd: str = Field(description="Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`")
-    cwd: str = Field(default=".", description="Working directory relative to workspace")
-    yield_time_ms: int = Field(default=1000, ge=0, le=10000)
-    max_output_chars: int = Field(default=12000, ge=256, le=60000)
-    tty: bool = False
+    cwd: str = Field(default=".", description="Working directory under the active command roots.")
+    yield_time_ms: int = Field(
+        default=1000,
+        ge=0,
+        le=10000,
+        description="Milliseconds to wait before returning output or a resumable session id.",
+    )
+    max_output_chars: int = Field(
+        default=12000,
+        ge=256,
+        le=60000,
+        description="Maximum fresh output characters returned by this call.",
+    )
+    tty: bool = Field(
+        default=False,
+        description="Compatibility flag reported in the result; the current host runner uses pipes and does not allocate a PTY.",
+    )
 
 
 class WriteStdinArgs(BaseModel):
-    session_id: int
-    chars: str = ""
-    yield_time_ms: int = Field(default=1000, ge=0, le=10000)
-    max_output_chars: int = Field(default=12000, ge=256, le=60000)
+    session_id: int = Field(ge=1, description="Session id returned by a still-running exec_command call.")
+    chars: str = Field(default="", description="Characters to write; leave empty to poll without writing.")
+    yield_time_ms: int = Field(
+        default=1000,
+        ge=0,
+        le=10000,
+        description="Milliseconds to wait for fresh output after the optional write.",
+    )
+    max_output_chars: int = Field(
+        default=12000,
+        ge=256,
+        le=60000,
+        description="Maximum fresh output characters returned by this call.",
+    )
 
 
 class ReadFileArgs(BaseModel):
-    path: str
-    start_char: int = Field(default=0, ge=0)
-    max_chars: int = Field(default=200000, ge=128, le=1000000)
-    start_line: int = Field(default=0, ge=0)
-    max_lines: int = Field(default=0, ge=0, le=200000)
+    path: str = Field(description="Existing local file path under an allowed read root.")
+    start_char: int = Field(default=0, ge=0, description="Zero-based character offset in character mode.")
+    max_chars: int = Field(
+        default=200000,
+        ge=128,
+        le=1000000,
+        description="Maximum extracted characters returned in either character or line mode.",
+    )
+    start_line: int = Field(
+        default=0,
+        ge=0,
+        description="One-based first line; 0 keeps character mode unless max_lines is set.",
+    )
+    max_lines: int = Field(
+        default=0,
+        ge=0,
+        le=200000,
+        description="Maximum lines to return; a value above 0 enables line mode.",
+    )
 
 
 class ListDirArgs(BaseModel):
-    path: str = Field(default=".")
-    max_entries: int = Field(default=200, ge=1, le=500)
+    path: str = Field(default=".", description="Existing directory under an allowed read root.")
+    max_entries: int = Field(default=200, ge=1, le=500, description="Maximum entries to return.")
 
 
 class SearchContentsInFileArgs(BaseModel):
-    path: str
-    query: str
-    max_matches: int = Field(default=8, ge=1, le=20)
-    context_chars: int = Field(default=280, ge=40, le=2000)
+    path: str = Field(description="Known local file or document path.")
+    query: str = Field(description="Text to find in extracted file contents.")
+    max_matches: int = Field(default=8, ge=1, le=20, description="Maximum matching snippets.")
+    context_chars: int = Field(default=280, ge=40, le=2000, description="Context characters around each match.")
 
 
 class SearchContentsInFileMultiArgs(BaseModel):
-    path: str
-    queries: list[str]
-    per_query_max_matches: int = Field(default=3, ge=1, le=10)
-    context_chars: int = Field(default=280, ge=40, le=2000)
+    path: str = Field(description="Known local file or document path.")
+    queries: list[str] = Field(description="Distinct text queries to run against the same extracted contents.")
+    per_query_max_matches: int = Field(default=3, ge=1, le=10, description="Maximum snippets contributed by each query.")
+    context_chars: int = Field(default=280, ge=40, le=2000, description="Context characters around each match.")
 
 
 class GlobFileSearchArgs(BaseModel):
-    pattern: str
-    path: str = Field(default=".")
-    max_results: int = Field(default=200, ge=1, le=500)
+    pattern: str = Field(description="Glob pattern such as `**/*.cpp`; use a narrower pattern on large trees.")
+    path: str = Field(default=".", description="Directory root under an allowed read root.")
+    max_results: int = Field(default=200, ge=1, le=500, description="Maximum matching file paths.")
 
 
 class ReadSectionArgs(BaseModel):
-    path: str
-    heading: str
-    max_chars: int = Field(default=12000, ge=512, le=50000)
+    path: str = Field(description="Local document path.")
+    heading: str = Field(description="Heading text or section number to match.")
+    max_chars: int = Field(default=12000, ge=512, le=50000, description="Maximum section characters returned.")
 
 
 class TableExtractArgs(BaseModel):
-    path: str
-    query: str = ""
-    page_hint: int = Field(default=0, ge=0)
-    max_tables: int = Field(default=5, ge=1, le=20)
-    max_rows: int = Field(default=25, ge=1, le=200)
+    path: str = Field(description="Local PDF or OpenXML Excel workbook path (.xlsx/.xlsm/.xltx/.xltm).")
+    query: str = Field(default="", description="Optional text used to narrow matching tables or rows.")
+    page_hint: int = Field(default=0, ge=0, description="One-based PDF page hint; 0 searches without a fixed page.")
+    max_tables: int = Field(default=5, ge=1, le=20, description="Maximum tables or worksheets returned.")
+    max_rows: int = Field(default=25, ge=1, le=200, description="Maximum rows returned per table or worksheet.")
 
 
 class FactCheckFileArgs(BaseModel):
-    path: str
-    claim: str
-    queries: list[str] = Field(default_factory=list)
-    max_evidence: int = Field(default=6, ge=1, le=12)
+    path: str = Field(description="Local document whose extracted text will be searched for related evidence.")
+    claim: str = Field(description="Claim to investigate; the heuristic verdict still requires model judgment.")
+    queries: list[str] = Field(default_factory=list, description="Optional explicit evidence-search phrases.")
+    max_evidence: int = Field(default=6, ge=1, le=12, description="Maximum evidence snippets returned.")
 
 
 class SearchCodebaseArgs(BaseModel):
-    query: str
-    root: str = "."
-    max_matches: int = Field(default=20, ge=1, le=100)
-    file_glob: str = ""
-    use_regex: bool = False
-    case_sensitive: bool = False
+    query: str = Field(description="Literal text by default, or a regular expression when use_regex is true.")
+    root: str = Field(default=".", description="Directory root under an allowed read root.")
+    max_matches: int = Field(default=20, ge=1, le=100, description="Maximum line matches returned.")
+    file_glob: str = Field(default="", description="Optional file filter such as `*.py` or `**/*.cpp`.")
+    use_regex: bool = Field(default=False, description="Interpret query as a regular expression when true.")
+    case_sensitive: bool = Field(default=False, description="Use case-sensitive matching when true.")
 
 
 class ArchiveExtractArgs(BaseModel):
-    zip_path: str
+    zip_path: str = Field(description="Existing local .zip archive.")
     dst_dir: str = Field(default="", description="Destination directory. Empty means sibling folder next to zip file.")
-    overwrite: bool = True
-    create_dirs: bool = True
-    max_entries: int = Field(default=20000, ge=1, le=100000)
-    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+    overwrite: bool = Field(default=True, description="Replace existing destination files when true.")
+    create_dirs: bool = Field(default=True, description="Create the destination directory when missing.")
+    max_entries: int = Field(default=20000, ge=1, le=100000, description="Maximum archive entries allowed.")
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648, description="Maximum total uncompressed bytes allowed.")
 
 
 class MailExtractAttachmentsArgs(BaseModel):
-    msg_path: str
+    msg_path: str = Field(description="Existing local Outlook .msg file.")
     dst_dir: str = Field(default="", description="Destination directory. Empty means <msg_stem>_attachments.")
-    overwrite: bool = True
-    create_dirs: bool = True
-    max_attachments: int = Field(default=500, ge=1, le=5000)
-    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+    overwrite: bool = Field(default=True, description="Replace existing attachment files when true.")
+    create_dirs: bool = Field(default=True, description="Create the destination directory when missing.")
+    max_attachments: int = Field(default=500, ge=1, le=5000, description="Maximum attachments allowed.")
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648, description="Maximum total extracted bytes allowed.")
 
 
 class WebSearchArgs(BaseModel):
-    query: str
-    max_results: int = Field(default=5, ge=1, le=20)
-    timeout_sec: int = Field(default=12, ge=3, le=30)
+    query: str = Field(description="Web search query.")
+    max_results: int = Field(default=5, ge=1, le=20, description="Maximum candidate results.")
+    timeout_sec: int = Field(default=12, ge=3, le=30, description="Provider timeout in seconds.")
 
 
 class WebFetchArgs(BaseModel):
-    url: str
-    max_chars: int = Field(default=120000, ge=512, le=500000)
-    timeout_sec: int = Field(default=12, ge=3, le=30)
+    url: str = Field(description="HTTP or HTTPS page/document URL to fetch as readable content.")
+    max_chars: int = Field(default=120000, ge=512, le=500000, description="Maximum extracted text characters.")
+    timeout_sec: int = Field(default=12, ge=3, le=30, description="Fetch timeout in seconds.")
 
 
 class WebDownloadArgs(BaseModel):
-    url: str
-    dst_path: str = ""
-    overwrite: bool = True
-    create_dirs: bool = True
-    timeout_sec: int = Field(default=20, ge=3, le=120)
-    max_bytes: int = Field(default=52428800, ge=1024, le=209715200)
+    url: str = Field(description="HTTP or HTTPS URL of the remote file.")
+    dst_path: str = Field(default="", description="Destination under an allowed writable root; empty derives a filename.")
+    overwrite: bool = Field(default=True, description="Replace an existing destination file when true.")
+    create_dirs: bool = Field(default=True, description="Create missing parent directories when true.")
+    timeout_sec: int = Field(default=20, ge=3, le=120, description="Download timeout in seconds.")
+    max_bytes: int = Field(default=52428800, ge=1024, le=209715200, description="Maximum downloaded bytes.")
 
 
 class ApplyPatchArgs(BaseModel):
-    patch: str
-    cwd: str = "."
-    check: bool = False
+    patch: str = Field(description=APPLY_PATCH_ARGUMENT_DESCRIPTION)
+    cwd: str = Field(default=".", description="Base directory used to resolve relative patch paths.")
+    check: bool = Field(default=False, description="Validate the complete patch without changing files when true.")
 
 
 class ImageInspectArgs(BaseModel):
-    path: str
+    path: str = Field(description="Existing local image path.")
 
 
 class ImageReadArgs(BaseModel):
-    path: str
-    prompt: str = ""
-    max_output_chars: int = Field(default=12000, ge=256, le=24000)
+    path: str = Field(description="Existing local image path.")
+    prompt: str = Field(default="", description="Optional focus for OCR or visual analysis.")
+    max_output_chars: int = Field(default=12000, ge=256, le=24000, description="Maximum visible-text and analysis characters.")
 
 
 class BrowserOpenArgs(BaseModel):
-    url: str
-    timeout_ms: int = Field(default=20000, ge=1000, le=60000)
+    url: str = Field(description="HTTP or HTTPS URL to open in the current browser session.")
+    timeout_ms: int = Field(default=20000, ge=1000, le=60000, description="Navigation timeout in milliseconds.")
 
 
 class BrowserClickArgs(BaseModel):
-    selector: str
-    timeout_ms: int = Field(default=12000, ge=1000, le=60000)
+    selector: str = Field(description="CSS selector; the first matching element is clicked.")
+    timeout_ms: int = Field(default=12000, ge=1000, le=60000, description="Element-action timeout in milliseconds.")
 
 
 class BrowserTypeArgs(BaseModel):
-    selector: str
-    text: str
-    submit: bool = False
-    clear: bool = True
-    timeout_ms: int = Field(default=12000, ge=1000, le=60000)
+    selector: str = Field(description="CSS selector; the first matching input is used.")
+    text: str = Field(description="Text to enter.")
+    submit: bool = Field(default=False, description="Press Enter after typing when true.")
+    clear: bool = Field(default=True, description="Replace existing content when true; append/type when false.")
+    timeout_ms: int = Field(default=12000, ge=1000, le=60000, description="Element-action timeout in milliseconds.")
 
 
 class BrowserWaitArgs(BaseModel):
-    selector: str = ""
-    timeout_ms: int = Field(default=5000, ge=250, le=60000)
-    state: str = "visible"
+    selector: str = Field(default="", description="CSS selector to wait for; empty means wait only for timeout_ms.")
+    timeout_ms: int = Field(default=5000, ge=250, le=60000, description="Maximum wait in milliseconds.")
+    state: Literal["attached", "detached", "visible", "hidden"] = Field(
+        default="visible",
+        description="Required selector state; ignored when selector is empty.",
+    )
 
 
 class BrowserScrollArgs(BaseModel):
-    direction: str = "down"
-    amount: int = Field(default=900, ge=1, le=5000)
-    selector: str = ""
-    timeout_ms: int = Field(default=5000, ge=250, le=60000)
+    direction: Literal["down", "up", "left", "right"] = Field(
+        default="down",
+        description="Page scroll direction when selector is empty.",
+    )
+    amount: int = Field(default=900, ge=1, le=5000, description="Pixels to scroll when selector is empty.")
+    selector: str = Field(default="", description="CSS selector to bring into view instead of scrolling by direction.")
+    timeout_ms: int = Field(default=5000, ge=250, le=60000, description="Selector scroll timeout in milliseconds.")
 
 
 class BrowserSnapshotArgs(BaseModel):
-    max_chars: int = Field(default=12000, ge=400, le=50000)
+    max_chars: int = Field(default=12000, ge=400, le=50000, description="Maximum visible page-text characters.")
 
 
 class BrowserScreenshotArgs(BaseModel):
-    path: str = ""
-    full_page: bool = True
+    path: str = Field(default="", description="Destination under an allowed writable root; empty uses an automatic path.")
+    full_page: bool = Field(default=True, description="Capture the full page when true, otherwise the viewport.")
+
+
+class PlanItemArgs(BaseModel):
+    step: str = Field(description="Human-readable checklist step.")
+    status: Literal["pending", "in_progress", "completed"] = Field(description="Current step status.")
+    description: str = Field(
+        default="",
+        description="Compatibility detail for placeholder step names; normally leave empty and put the real text in step.",
+    )
 
 
 class UpdatePlanArgs(BaseModel):
-    explanation: str = ""
-    plan: list[dict[str, str]]
+    explanation: str = Field(default="", description="Optional concise reason for this plan update.")
+    plan: list[PlanItemArgs] = Field(
+        min_length=1,
+        description="Full current checklist. Use exactly one in_progress item until all items are completed.",
+    )
+
+
+class UserInputOptionArgs(BaseModel):
+    label: str = Field(description="Short user-facing option label.")
+    description: str = Field(description="One sentence explaining the option's impact or tradeoff.")
+
+
+class UserInputQuestionArgs(BaseModel):
+    header: str = Field(max_length=12, description="Short header label of at most 12 characters.")
+    id: str = Field(description="Stable snake_case identifier for mapping the answer.")
+    question: str = Field(description="Single-sentence question shown to the user.")
+    options: list[UserInputOptionArgs] = Field(
+        min_length=2,
+        max_length=3,
+        description="Two or three mutually exclusive choices; the client adds free-form Other automatically.",
+    )
 
 
 class RequestUserInputArgs(BaseModel):
-    questions: list[dict[str, Any]]
+    questions: list[UserInputQuestionArgs] = Field(
+        min_length=1,
+        max_length=3,
+        description="One to three structured questions.",
+    )
 
 
 class SpawnSubagentArgs(BaseModel):
     task: str = Field(description="Self-contained assignment with scope, relevant paths, and expected result.")
-    role: str = Field(
+    role: Literal["explorer", "tester", "analyst", "summarizer"] = Field(
         default="explorer",
         description="Builtin role: explorer, tester, analyst, or summarizer.",
     )
@@ -221,20 +301,20 @@ class WaitSubagentsArgs(BaseModel):
 
 
 class SaveSkillArgs(BaseModel):
-    name: str
-    description: str
-    body: str
-    enabled: bool = True
-    overwrite: bool = False
+    name: str = Field(description="Team Skill name using lowercase letters, digits, hyphens, or underscores.")
+    description: str = Field(description="Trigger description that tells models when this Skill should be used.")
+    body: str = Field(description="Markdown instruction body only; do not include YAML frontmatter.")
+    enabled: bool = Field(default=True, description="Whether the Team Skill is enabled after saving.")
+    overwrite: bool = Field(default=False, description="Set true only to replace an existing Team SKILL.md of the same name.")
 
 
 class SessionsListArgs(BaseModel):
-    limit: int = Field(default=20, ge=1, le=200)
+    limit: int = Field(default=20, ge=1, le=200, description="Maximum recent sessions from the current project.")
 
 
 class SessionsHistoryArgs(BaseModel):
-    session_id: str
-    max_turns: int = Field(default=80, ge=1, le=800)
+    session_id: str = Field(description="Session id returned by sessions_list.")
+    max_turns: int = Field(default=80, ge=1, le=800, description="Maximum most-recent turns returned.")
 
 
 class VPRuntimeBackend:
@@ -554,13 +634,13 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="write_stdin",
-                description="Write bytes to a running exec_command session, or poll for more output.",
+                description="Write characters to a running exec_command session, or poll for more output.",
                 args_schema=WriteStdinArgs,
                 func=self._write_stdin_tool,
             ),
             self._StructuredTool.from_function(
                 name="apply_patch",
-                description="Apply a freeform patch inside the workspace.",
+                description=APPLY_PATCH_TOOL_DESCRIPTION,
                 args_schema=ApplyPatchArgs,
                 func=self._apply_patch_tool,
             ),
@@ -602,13 +682,13 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="table_extract",
-                description="Extract table-like rows from a local PDF, spreadsheet, or document.",
+                description="Extract table-like rows from a local PDF or OpenXML Excel workbook.",
                 args_schema=TableExtractArgs,
                 func=self._table_extract_tool,
             ),
             self._StructuredTool.from_function(
                 name="fact_check_file",
-                description="Check whether one local document supports or contradicts a claim and return evidence snippets.",
+                description="Retrieve document snippets related to a claim and return a heuristic evidence verdict that still requires model judgment.",
                 args_schema=FactCheckFileArgs,
                 func=self._fact_check_file_tool,
             ),
@@ -632,13 +712,13 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="web_download",
-                description="Download one remote file to local storage so follow-up tools can read it from the workspace.",
+                description="Download one remote file under allowed writable roots. Downloaded content is marked untrusted; executing it may require approval.",
                 args_schema=WebDownloadArgs,
                 func=self._web_download_tool,
             ),
             self._StructuredTool.from_function(
                 name="sessions_list",
-                description="List recent local chat sessions so the agent can locate past context.",
+                description="List recent local chat sessions for the current project so the agent can locate past context.",
                 args_schema=SessionsListArgs,
                 func=self._sessions_list_tool,
             ),
@@ -662,7 +742,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="archive_extract",
-                description="Extract a local .zip archive into a target directory under allowed roots.",
+                description="Extract a local .zip archive under allowed writable roots; files inherit untrusted provenance from a downloaded archive.",
                 args_schema=ArchiveExtractArgs,
                 func=self._archive_extract_tool,
             ),
@@ -686,7 +766,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="update_plan",
-                description="Synchronize a lightweight checklist for the current turn.",
+                description="Synchronize the full current checklist. Keep exactly one step in_progress until every step is completed.",
                 args_schema=UpdatePlanArgs,
                 func=self._update_plan_tool,
             ),
@@ -698,7 +778,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="save_skill",
-                description="Create or update a repository-shared Team Skill through the global VP Skill Registry.",
+                description="Create a repository-shared Team SKILL.md in the global VP Skill Registry, or replace it only when overwrite is true. Use apply_patch for Team Skill scripts, references, or partial edits; Built-in Skills are read-only.",
                 args_schema=SaveSkillArgs,
                 func=self._save_skill_tool,
             ),
@@ -722,13 +802,13 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="browser_wait",
-                description="Wait for a selector or a timeout in the current browser session.",
+                description="Wait for a selector state, or wait only for timeout_ms when selector is empty.",
                 args_schema=BrowserWaitArgs,
                 func=self._browser_wait_tool,
             ),
             self._StructuredTool.from_function(
                 name="browser_scroll",
-                description="Scroll the current browser page or scroll one selector into view.",
+                description="Scroll by direction/amount, or ignore those fields and bring selector into view when selector is set.",
                 args_schema=BrowserScrollArgs,
                 func=self._browser_scroll_tool,
             ),
@@ -1129,11 +1209,25 @@ class VPRuntimeBackend:
             ensure_ascii=False,
         )
 
-    def _update_plan_tool(self, plan: list[dict[str, str]], explanation: str = "") -> str:
-        return json.dumps(self.tools.update_plan(plan=plan, explanation=explanation), ensure_ascii=False)
+    def _update_plan_tool(self, plan: list[PlanItemArgs], explanation: str = "") -> str:
+        normalized_plan = [
+            dict(safe_model_dump(item) or {})
+            for item in list(plan or [])
+        ]
+        return json.dumps(
+            self.tools.update_plan(plan=normalized_plan, explanation=explanation),
+            ensure_ascii=False,
+        )
 
-    def _request_user_input_tool(self, questions: list[dict[str, Any]]) -> str:
-        return json.dumps(self.tools.request_user_input(questions=questions), ensure_ascii=False)
+    def _request_user_input_tool(self, questions: list[UserInputQuestionArgs]) -> str:
+        normalized_questions = [
+            dict(safe_model_dump(item) or {})
+            for item in list(questions or [])
+        ]
+        return json.dumps(
+            self.tools.request_user_input(questions=normalized_questions),
+            ensure_ascii=False,
+        )
 
     def _spawn_subagent_tool(self, task: str, role: str = "explorer", label: str = "") -> str:
         return json.dumps(

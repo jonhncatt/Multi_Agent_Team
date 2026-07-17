@@ -11,7 +11,7 @@
 - Use `list_dir` for directory structure, `glob_file_search` for path or filename patterns, and `search_codebase` for repo-wide code search.
 - Use `read_file` for small files or full context; use `search_contents_in_file` for known-file search and `search_contents_in_file_multi` for multiple keywords.
 - Use `read_section`, `table_extract`, and `fact_check_file` for sections, tables, and file fact checks.
-- File edits use `apply_patch`; do not degrade into shell overwrites or large full-file replacement blobs.
+- File edits use `apply_patch`; do not degrade into shell overwrites or large full-file replacement blobs. Use `*** Add File` only for a target known not to exist, `*** Update File` for every existing or previously read file, and `*** Delete File` only for an existing file.
 
 ## Commands And Python
 

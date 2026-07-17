@@ -11,7 +11,7 @@
 - ディレクトリ構造は `list_dir`、パス名やファイル名パターンは `glob_file_search`、リポジトリ全体のコード検索は `search_codebase` を優先する。
 - 小さいファイルや全体コンテキストは `read_file`、既知ファイル内検索は `search_contents_in_file`、複数キーワードは `search_contents_in_file_multi`。
 - セクション、表、ファイル内の根拠確認は `read_section`、`table_extract`、`fact_check_file` を使う。
-- ファイル編集は `apply_patch` を使い、shell 上書きや巨大な全ファイル置換に退化させない。
+- ファイル編集は `apply_patch` を使い、shell 上書きや巨大な全ファイル置換に退化させない。`*** Add File` は存在しないと確認済みの対象だけに使い、既存または読み取り済みのファイルには `*** Update File`、既存ファイルの削除には `*** Delete File` を使う。
 
 ## コマンドと Python
 

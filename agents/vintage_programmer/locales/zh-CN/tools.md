@@ -11,7 +11,7 @@
 - 目录结构用 `list_dir`；路径或文件名模式用 `glob_file_search`；仓库级代码搜索优先 `search_codebase`。
 - 小文件或需要完整上下文时用 `read_file`；已知文件内搜索用 `search_contents_in_file`，多关键词用 `search_contents_in_file_multi`。
 - 章节、表格和文件事实核查分别用 `read_section`、`table_extract`、`fact_check_file`。
-- 修改文件优先 `apply_patch`，不要退化成 shell 覆盖写文件或大段整文件替换。
+- 修改文件优先 `apply_patch`，不要退化成 shell 覆盖写文件或大段整文件替换。只有确认目标不存在时才使用 `*** Add File`；已有或已经读取的文件必须使用 `*** Update File`，删除已有文件使用 `*** Delete File`。
 
 ## 命令和 Python
 
