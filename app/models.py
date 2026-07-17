@@ -40,7 +40,7 @@ class ChatSteerRequest(BaseModel):
 
 
 class EvalRunRequest(BaseModel):
-    cases: str = "evals/codex_alignment_cases.json"
+    cases: str = "evals/agent_workflow_cases.json"
     name: str = ""
     repeat: int = Field(default=3, ge=1, le=10)
     provider: str = ""
@@ -48,6 +48,15 @@ class EvalRunRequest(BaseModel):
     output: str = ""
     live: bool = False
     keep_workspaces: bool = False
+
+
+class ProviderModelsRefreshResponse(BaseModel):
+    ok: bool = True
+    provider: str
+    models: list[str] = Field(default_factory=list)
+    model_options: list[str] = Field(default_factory=list)
+    updated_at: str = ""
+    provider_options: list[dict[str, object]] = Field(default_factory=list)
 
 
 class ToolEvent(BaseModel):

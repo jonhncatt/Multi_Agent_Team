@@ -122,7 +122,7 @@ class EvalJobManager:
         return suites
 
     def _resolve_suite(self, raw: str) -> tuple[Path, dict[str, Any]]:
-        candidate = Path(str(raw or "evals/codex_alignment_cases.json").strip())
+        candidate = Path(str(raw or "evals/agent_workflow_cases.json").strip())
         if not candidate.is_absolute():
             candidate = self.repo_root / candidate
         resolved = candidate.expanduser().resolve()

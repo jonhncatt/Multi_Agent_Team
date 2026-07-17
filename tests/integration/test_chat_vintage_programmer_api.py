@@ -1281,6 +1281,48 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert detail_after_delete.status_code == 404
 
 
+def test_provider_models_refresh_is_manual_and_updates_cached_presets(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+
+    class FakeProviderModelCatalog:
+        def __init__(self) -> None:
+            self.models: dict[str, list[str]] = {}
+            self.refresh_calls = 0
+
+        def models_for(self, provider: str) -> list[str]:
+            return list(self.models.get(provider, []))
+
+        def refresh(self, provider: str, _config) -> dict[str, object]:
+            self.refresh_calls += 1
+            self.models[provider] = ["company-model-new", "company-model-small"]
+            return {
+                "provider": provider,
+                "models": list(self.models[provider]),
+                "updated_at": "2026-07-17T00:00:00+00:00",
+            }
+
+    catalog = FakeProviderModelCatalog()
+    monkeypatch.setattr(main_app, "provider_model_catalog", catalog)
+    main_app._invalidate_provider_payload_cache()
+    client = TestClient(main_app.app)
+    provider = str(main_app.config.llm_provider)
+
+    bootstrap_response = client.get("/api/bootstrap")
+    assert bootstrap_response.status_code == 200
+    assert catalog.refresh_calls == 0
+
+    refresh_response = client.post(f"/api/providers/{provider}/models/refresh")
+
+    assert refresh_response.status_code == 200
+    payload = refresh_response.json()
+    assert catalog.refresh_calls == 1
+    assert payload["provider"] == provider
+    assert payload["models"] == ["company-model-new", "company-model-small"]
+    assert "company-model-new" in payload["model_options"]
+    active = next(item for item in payload["provider_options"] if item["provider"] == provider)
+    assert "company-model-small" in active["model_options"]
+
+
 def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)

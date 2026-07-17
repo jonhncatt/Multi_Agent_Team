@@ -36,9 +36,9 @@ python scripts/run_evals.py \
 
 The home-page `Eval` button exposes the same runner as a persisted background job. The UI submits structured fields rather than a shell command, the server executes one Eval job at a time, and job state is stored under `artifacts/evals/jobs/`. Suite paths are restricted to `evals/` and report paths to `artifacts/evals/`.
 
-## Codex alignment suite
+## Agent workflow suite
 
-`evals/codex_alignment_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:
+`evals/agent_workflow_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:
 
 - queued guidance accepted at a safe model boundary;
 - model-selected parallel `spawn_subagent` delegation, `wait_subagents` collection, and parent summary;
@@ -51,19 +51,19 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
 Validate without provider calls:
 
 ```bash
-python scripts/run_evals.py --cases evals/codex_alignment_cases.json --validate-only
+python scripts/run_evals.py --cases evals/agent_workflow_cases.json --validate-only
 ```
 
 Run the company baseline from PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_evals.py `
-  --cases evals\codex_alignment_cases.json `
+  --cases evals\agent_workflow_cases.json `
   --live `
   --repeat 3 `
   --provider openai_compatible `
   --model gpt-5.4 `
-  --output artifacts\evals\company-gpt54-codex-alignment.json
+  --output artifacts\evals\company-gpt54-agent-workflow.json
 ```
 
 The report's `scenario` section records required tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters.

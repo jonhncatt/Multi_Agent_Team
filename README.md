@@ -233,6 +233,12 @@ VP_OLLAMA_API_KEY=ollama
 VP_OLLAMA_DEFAULT_MODEL=qwen2.5-coder:7b
 ```
 
+### 手动更新模型预设
+
+Settings 的“模型预设”旁提供“更新列表”按钮。只有点击该按钮时，VP 才会向当前 Provider 的 `/models` 接口查询可用模型；查询结果保存在本机缓存，并与 `.env` 中的默认模型和静态预设合并。启动 VP、打开 Settings 和切换项目都不会自动访问模型列表接口。
+
+如果公司的 OpenAI-compatible 网关没有开放 `/models`，按钮会显示失败，但不会覆盖已有预设；此时仍可在“自定义模型”中填写部署名称。
+
 更多选项见 [.env.example](.env.example)。
 
 ## 常用接口

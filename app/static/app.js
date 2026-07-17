@@ -3994,8 +3994,10 @@ function App() {
   const [evalRuns, setEvalRuns] = useState([]);
   const [evalSubmitting, setEvalSubmitting] = useState(false);
   const [evalError, setEvalError] = useState("");
+  const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
+  const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
   const [evalForm, setEvalForm] = useState({
-    cases: "evals/codex_alignment_cases.json",
+    cases: "evals/agent_workflow_cases.json",
     name: "",
     repeat: 3,
     provider: "",
@@ -4872,6 +4874,38 @@ function App() {
     setModelTouched(false);
     setChatSettings((prev) => ({ ...prev, provider: normalized, model: nextModel }));
     setSelectedPresetModel(resolvePresetModelValue(nextModel, nextModelOptions, allowCustomModel));
+  }
+
+  async function refreshModelPresets() {
+    if (modelPresetRefreshing || !activeProvider || activeProvider === "default") return;
+    setModelPresetRefreshing(true);
+    setModelPresetRefreshMessage("");
+    try {
+      const payload = await fetchJson(
+        `/api/providers/${encodeURIComponent(activeProvider)}/models/refresh`,
+        { method: "POST" },
+      );
+      const nextProviderOptions = Array.isArray(payload.provider_options) ? payload.provider_options : [];
+      const nextModelOptions = dedupeStrings(Array.isArray(payload.model_options) ? payload.model_options : []);
+      setHealth((prev) => ({
+        ...(prev || {}),
+        provider_options: nextProviderOptions.length
+          ? nextProviderOptions
+          : (Array.isArray(prev && prev.provider_options) ? prev.provider_options : []),
+        model_options: nextModelOptions.length
+          ? nextModelOptions
+          : (Array.isArray(prev && prev.model_options) ? prev.model_options : []),
+      }));
+      const currentModel = String(chatSettings.model || "").trim();
+      setSelectedPresetModel(resolvePresetModelValue(currentModel, nextModelOptions, allowCustomModel));
+      setModelPresetRefreshMessage(t("settings.model_presets.updated", { count: nextModelOptions.length }));
+      clearUiError();
+    } catch (err) {
+      const nextError = applyUiError(err, t("settings.model_presets.failed"));
+      setModelPresetRefreshMessage(nextError.summary || t("settings.model_presets.failed"));
+    } finally {
+      setModelPresetRefreshing(false);
+    }
   }
 
   async function fetchJson(url, options = {}) {
@@ -10519,8 +10553,20 @@ function App() {
                         </label>
                       `
                     : null}
-                  <label className="form-field">
-                    <span>${t("settings.model_preset")}</span>
+                  <div className="form-field">
+                    <div className="model-preset-heading">
+                      <span>${t("settings.model_preset")}</span>
+                      <button
+                        className="mini-btn model-preset-refresh-btn"
+                        type="button"
+                        disabled=${modelPresetRefreshing || !activeProvider || activeProvider === "default"}
+                        onClick=${refreshModelPresets}
+                      >
+                        ${modelPresetRefreshing
+                          ? t("settings.model_presets.refreshing")
+                          : t("settings.model_presets.refresh")}
+                      </button>
+                    </div>
                     <select
                       className="drawer-input"
                       id="modelPresetSelect"
@@ -10536,7 +10582,8 @@ function App() {
                       ${modelOptions.map((item) => html`<option key=${item} value=${item}>${item}</option>`)}
                       ${allowCustomModel ? html`<option value=${CUSTOM_MODEL_VALUE}>${t("labels.custom")}</option>` : null}
                     </select>
-                  </label>
+                    <div className="field-help">${modelPresetRefreshMessage || t("settings.model_presets.help")}</div>
+                  </div>
                   <label className="form-field">
                     <span>${t("settings.locale")}</span>
                     <select

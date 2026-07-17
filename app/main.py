@@ -57,6 +57,7 @@ from app.models import (
     ProjectDeleteResponse,
     ProjectListResponse,
     ProjectUpdateRequest,
+    ProviderModelsRefreshResponse,
     RuntimeStatusResponse,
     SessionDetailResponse,
     SessionListItem,
@@ -89,6 +90,7 @@ from app.models import (
 from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.pricing import estimate_usage_cost
+from app.provider_model_catalog import ProviderModelCatalog, ProviderModelRefreshError
 from app.serialization import dump_model
 from app.runtime_boundary import build_turn_runtime_boundary
 from app.runtime_contract import build_full_auto_runtime_contract
@@ -111,6 +113,9 @@ session_store = SessionStore(
 )
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
+provider_model_catalog = ProviderModelCatalog(
+    Path(__file__).resolve().parent / "data" / "runtime" / "provider_models.json"
+)
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     agent_dir=AGENT_DIR,
@@ -444,12 +449,24 @@ def _build_provider_payload_uncached() -> dict[str, Any]:
         if not provider:
             continue
         provider_config = build_provider_config(config, provider)
+        model_options: list[str] = []
+        seen_models: set[str] = set()
+        for model in [
+            str(item.get("default_model") or provider_config.default_model or ""),
+            *provider_model_catalog.models_for(provider),
+            *list(item.get("model_options") or provider_config.model_options or []),
+        ]:
+            normalized_model = str(model or "").strip()
+            if not normalized_model or normalized_model in seen_models:
+                continue
+            seen_models.add(normalized_model)
+            model_options.append(normalized_model)
         provider_options.append(
             {
                 "provider": provider,
                 "label": str(item.get("label") or provider),
                 "default_model": str(item.get("default_model") or provider_config.default_model or ""),
-                "model_options": list(item.get("model_options") or provider_config.model_options or []),
+                "model_options": model_options,
             }
         )
     provider_options_ms = int((time.perf_counter() - provider_options_started) * 1000)
@@ -778,6 +795,42 @@ def runtime_status(project_id: str | None = None, model: str | None = None, max_
         project_id=project_id,
         model=model,
         max_output_tokens=max_output_tokens,
+    )
+
+
+@app.post("/api/providers/{provider}/models/refresh", response_model=ProviderModelsRefreshResponse)
+def refresh_provider_models(provider: str) -> ProviderModelsRefreshResponse:
+    normalized = normalize_llm_provider_name(provider)
+    configured_providers = {
+        str(item.get("provider") or "").strip()
+        for item in list_provider_profiles(config)
+        if str(item.get("provider") or "").strip()
+    }
+    if normalized not in configured_providers:
+        raise HTTPException(status_code=404, detail="Provider is not configured.")
+    provider_config = build_provider_config(config, normalized)
+    try:
+        refreshed = provider_model_catalog.refresh(normalized, provider_config)
+    except ProviderModelRefreshError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _invalidate_provider_payload_cache()
+    provider_options = _provider_options_payload(refresh=True)
+    active = next(
+        (
+            item
+            for item in provider_options
+            if str(item.get("provider") or "").strip() == normalized
+        ),
+        {},
+    )
+    return ProviderModelsRefreshResponse(
+        provider=normalized,
+        models=list(refreshed.get("models") or []),
+        model_options=list(active.get("model_options") or []),
+        updated_at=str(refreshed.get("updated_at") or ""),
+        provider_options=provider_options,
     )
 
 

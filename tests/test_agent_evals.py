@@ -60,8 +60,8 @@ def test_default_agent_quality_suite_is_valid() -> None:
     assert suite["cases"][0]["kind"] == "agent_workspace"
 
 
-def test_codex_alignment_suite_reserves_modalities_and_scenario_hooks() -> None:
-    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+def test_agent_workflow_suite_reserves_modalities_and_scenario_hooks() -> None:
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
 
     assert len(suite["cases"]) == 6
     assert {"pdf", "excel", "markdown", "c", "cpp"}.issubset(
@@ -785,7 +785,7 @@ def test_eval_attempt_records_run_time_guidance_acceptance_without_live_model(tm
 
 
 def test_eval_attempt_snapshots_real_isolated_team_skill_update(tmp_path: Path) -> None:
-    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
     case = next(item for item in suite["cases"] if item["name"] == "update_existing_team_skill")
 
     result = run_eval_attempt(
@@ -804,7 +804,7 @@ def test_eval_attempt_snapshots_real_isolated_team_skill_update(tmp_path: Path) 
 
 
 def test_eval_attempt_requires_failed_test_then_successful_recovery(tmp_path: Path) -> None:
-    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
     case = next(item for item in suite["cases"] if item["name"] == "failed_test_then_recover_c_style_cpp")
 
     result = run_eval_attempt(
@@ -823,7 +823,7 @@ def test_eval_attempt_requires_failed_test_then_successful_recovery(tmp_path: Pa
 
 
 def test_eval_attempt_fails_when_reference_command_is_executed(tmp_path: Path) -> None:
-    suite = load_eval_suite(ROOT / "evals" / "codex_alignment_cases.json")
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
     case = next(
         item
         for item in suite["cases"]

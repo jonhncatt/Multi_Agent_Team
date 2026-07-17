@@ -33,6 +33,11 @@ REQUIRED_CORE_KEYS = (
     "settings.locale.en",
     "settings.provider",
     "settings.model_preset",
+    "settings.model_presets.refresh",
+    "settings.model_presets.refreshing",
+    "settings.model_presets.updated",
+    "settings.model_presets.failed",
+    "settings.model_presets.help",
     "settings.model_name",
     "settings.response_style",
     "buttons.save",
@@ -1039,6 +1044,19 @@ def test_context_turns_help_text_is_wired_into_frontend() -> None:
     assert '"settings.context_turns.help": "本次请求构建模型上下文时，最多纳入的历史对话轮数；不是当前 thread 的总轮数。"' in locales
     assert '"settings.context_turns.help": "今回のモデル文脈に含める履歴ターン数の上限です。スレッド全体の総ターン数ではありません。"' in locales
     assert '"settings.context_turns.help": "Maximum historical turns considered for the current model context, not the total thread turn count."' in locales
+
+
+def test_model_presets_refresh_only_from_explicit_settings_action() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "async function refreshModelPresets()" in script
+    assert "onClick=${refreshModelPresets}" in script
+    assert "models/refresh`" in script
+    assert '{ method: "POST" }' in script
+    assert 't("settings.model_presets.help")' in script
+    assert '"settings.model_presets.help": "只在点击时访问当前 Provider；结果会保存到本机，启动时不会联网更新。"' in locales
+    assert "refreshModelPresets();" not in script
 
 
 def test_settings_theme_color_selector_drives_accent_variables() -> None:

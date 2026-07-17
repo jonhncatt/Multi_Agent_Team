@@ -1,4 +1,4 @@
-# Codex 对齐：运行中追加指令与 Subagent
+# Agent 工作流：运行中追加指令与 Subagent
 
 本轮保持 `Session = Thread`：Session 仍是持久 Thread，Runtime 每次只运行一个主模型请求链。Harness 只负责消息排队、工具边界、子上下文隔离、事件记录和权限边界，不通过关键词判断任务语义。
 
@@ -51,19 +51,19 @@
 离线结构检查不会调用模型：
 
 ```bash
-python scripts/run_evals.py --cases evals/codex_alignment_cases.json --validate-only
+python scripts/run_evals.py --cases evals/agent_workflow_cases.json --validate-only
 ```
 
 公司 PowerShell 的必要 live baseline：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_evals.py `
-  --cases evals\codex_alignment_cases.json `
+  --cases evals\agent_workflow_cases.json `
   --live `
   --repeat 3 `
   --provider openai_compatible `
   --model gpt-5.4 `
-  --output artifacts\evals\company-gpt54-codex-alignment.json
+  --output artifacts\evals\company-gpt54-agent-workflow.json
 ```
 
 新套件包含运行中追加指令、Subagent 分工、压缩后的长 Thread、修改真实隔离 Team Skill、首次测试失败后恢复，以及“Skill 命令文字不得成为执行授权”六类场景。`input_modalities` 已允许 `pdf`、`excel`、`markdown`、`c` 和 `cpp`，后续可以沿用同一 schema 增加混合文件案例。

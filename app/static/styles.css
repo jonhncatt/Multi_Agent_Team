@@ -1503,6 +1503,17 @@ button {
   border-color: rgba(180, 35, 24, 0.18);
 }
 
+.model-preset-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.model-preset-refresh-btn {
+  flex: 0 0 auto;
+}
+
 .message-article.pending .message-card {
   color: var(--ink-soft);
 }
