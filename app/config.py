@@ -305,41 +305,38 @@ def _load_dotenv_if_present() -> None:
     if skip_raw in {"1", "true", "yes", "on"}:
         return
 
-    candidates = [
-        (Path.cwd() / ".env").resolve(),
-        (Path(__file__).resolve().parent.parent / ".env").resolve(),
-    ]
+    application_root = Path(__file__).resolve().parent.parent
+    configured_path = str(os.environ.get("VP_DOTENV_PATH") or "").strip()
+    dotenv_path = Path(configured_path).expanduser() if configured_path else application_root / ".env"
+    if not dotenv_path.is_absolute():
+        dotenv_path = application_root / dotenv_path
+    dotenv_path = dotenv_path.resolve()
+    if not dotenv_path.is_file():
+        return
 
-    seen: set[str] = set()
-    for dotenv_path in candidates:
-        key = str(dotenv_path)
-        if key in seen or not dotenv_path.is_file():
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
             continue
-        seen.add(key)
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
 
-        for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip().lstrip("\ufeff")
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[7:].strip()
-            if "=" not in line:
-                continue
+        env_key, env_value = line.split("=", 1)
+        env_key = env_key.strip()
+        env_value = env_value.strip()
+        if not env_key:
+            continue
 
-            env_key, env_value = line.split("=", 1)
-            env_key = env_key.strip()
-            env_value = env_value.strip()
-            if not env_key:
-                continue
+        env_value = _strip_optional_quotes(env_value)
+        if " #" in env_value:
+            env_value = env_value.split(" #", 1)[0].rstrip()
 
-            env_value = _strip_optional_quotes(env_value)
-            if " #" in env_value:
-                env_value = env_value.split(" #", 1)[0].rstrip()
-
-            if _should_dotenv_override(env_key):
-                os.environ[env_key] = env_value
-            else:
-                os.environ.setdefault(env_key, env_value)
+        if _should_dotenv_override(env_key):
+            os.environ[env_key] = env_value
+        else:
+            os.environ.setdefault(env_key, env_value)
 
 
 @dataclass(slots=True)

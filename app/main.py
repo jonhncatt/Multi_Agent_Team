@@ -2792,6 +2792,11 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_approval"), dict)
             else {}
         )
+        command_approval_notice = bool(
+            turn_status == "needs_user_input"
+            and str(pending_approval.get("type") or "") == "command_execution"
+            and str(pending_approval.get("command") or "").strip()
+        )
         activity = dict(runtime_result.get("activity") or {})
         inspector = dict(runtime_result.get("inspector") or {})
         runtime_phase_timings = dict(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("phase_timings") or {})
@@ -2876,7 +2881,7 @@ def _process_chat_request(
             _emit_progress(progress_cb, "trace", message=cleared_msg, run_id=run_id)
         inspector["notes"] = inspector_notes
 
-        if not bool(answer_stream.get("streamed")):
+        if not bool(answer_stream.get("streamed")) and not command_approval_notice:
             _emit_agent_message_events(
                 progress_cb,
                 thread_id=session_id,
@@ -2919,8 +2924,15 @@ def _process_chat_request(
                 activity=dict(item.get("activity") or {}),
                 record_transcript=False,
             )
-        assistant_turn = session_store.append_turn(session, role="assistant", text=text, answer_bundle=answer_bundle, activity=activity)
-        assistant_turn_id = str(assistant_turn.get("id") or "")
+        response_turn = session_store.append_turn(
+            session,
+            role="runtime" if command_approval_notice else "assistant",
+            text=text,
+            answer_bundle=answer_bundle,
+            activity=activity,
+            record_transcript=not command_approval_notice,
+        )
+        response_turn_id = str(response_turn.get("id") or "")
         inspector_run_state = (inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}
         inspector_evidence = (inspector.get("evidence") or {}) if isinstance(inspector.get("evidence"), dict) else {}
         inspector_available_skills = list(
@@ -3240,7 +3252,7 @@ def _process_chat_request(
             attachment_ids=resolved_attachment_ids,
             route_state=route_state,
         )
-        if assistant_turn_id:
+        if response_turn_id:
             turn_artifact_extra = {
                 "route_state": route_state,
                 "token_usage": token_usage,
@@ -3257,7 +3269,7 @@ def _process_chat_request(
                 turn_artifact_extra["task_state_validation"] = dict(response_task_state_validation)
             session_store.persist_turn_artifact(
                 session,
-                turn_id=assistant_turn_id,
+                turn_id=response_turn_id,
                 run_id=run_id,
                 activity=activity,
                 answer_bundle=answer_bundle,
@@ -3280,7 +3292,7 @@ def _process_chat_request(
             thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or req.message),
-                turn_id=assistant_turn_id,
+                turn_id=response_turn_id,
                 current_task_focus=current_task_focus,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
@@ -3362,7 +3374,7 @@ def _process_chat_request(
         response = ChatResponse(
             session_id=session["id"],
             thread_id=session["id"],
-            turn_id=assistant_turn_id,
+            turn_id=response_turn_id,
             run_id=run_id,
             agent_id="vintage_programmer",
             agent_title=str((inspector.get("agent") or {}).get("title") or "Vintage Programmer"),

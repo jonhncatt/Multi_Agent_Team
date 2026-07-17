@@ -1496,7 +1496,8 @@ button {
   background: #eef2f6;
 }
 
-.role-system .message-card {
+.role-system .message-card,
+.role-runtime .message-card {
   width: min(760px, 100%);
   background: var(--danger-soft);
   border-color: rgba(180, 35, 24, 0.18);

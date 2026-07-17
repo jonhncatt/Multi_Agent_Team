@@ -20,6 +20,7 @@
       "app.title": "Vintage Programmer",
       "role.user": "你",
       "role.assistant": "Vintage Programmer",
+      "role.runtime": "运行时",
       "role.system": "系统",
       "starter.prompts": [
         "帮我梳理这个仓库的主链路",
@@ -649,6 +650,7 @@
       "app.title": "Vintage Programmer",
       "role.user": "あなた",
       "role.assistant": "Vintage Programmer",
+      "role.runtime": "Runtime",
       "role.system": "System",
       "starter.prompts": [
         "このリポジトリの主要フローを整理して",
@@ -1278,6 +1280,7 @@
       "app.title": "Vintage Programmer",
       "role.user": "You",
       "role.assistant": "Vintage Programmer",
+      "role.runtime": "Runtime",
       "role.system": "System",
       "starter.prompts": [
         "Map the main flow of this repository",

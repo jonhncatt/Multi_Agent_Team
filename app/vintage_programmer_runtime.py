@@ -413,7 +413,7 @@ class VintageProgrammerRuntime:
             return "[available_skills]\nNo enabled skills are currently available."
         lines = [
             "[available_skills]",
-            "Enabled Skills are listed as lightweight metadata with their SKILL.md paths. When a Skill is relevant, read its complete SKILL.md with read_file before following it. Resolve referenced files relative to the directory containing SKILL.md, and run bundled scripts directly with exec_command from the current business project. Skills do not require a separate load or unlock step.",
+            "Enabled Skills are listed as lightweight metadata with their absolute SKILL.md paths. When a Skill is relevant, read that exact SKILL.md with read_file before following it; do not search the active business project for another copy. Resolve bundled references and scripts from the directory containing SKILL.md. Run bundled scripts by their absolute paths with exec_command while keeping the active business project as cwd. The Runtime injects VP_SKILL_ROOT, VP_SKILL_SCRIPT, VP_PROJECT_ROOT, and VP_PROJECT_CWD for direct Skill scripts. Scripts must read credentials from inherited environment variables; never search for, read, or parse .env files through model tools. Skills do not require a separate load or unlock step.",
         ]
         char_budget = 8000
         used = sum(len(line) + 1 for line in lines)

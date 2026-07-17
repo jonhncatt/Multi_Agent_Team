@@ -325,6 +325,98 @@ class _FailingVintageRuntime(_FakeVintageRuntime):
         )
 
 
+class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        command = 'python -c "print(\'x\')"'
+        approval = {
+            "type": "command_execution",
+            "command": command,
+            "cwd": str((context.get("project") or {}).get("cwd") or ""),
+            "approval_token": "approval-token",
+            "single_use": True,
+            "default_action": "cancel",
+            "risks": [
+                {
+                    "kind": "blocked_supply_chain_command",
+                    "message": "Command is blocked because inline Python execution bypasses file provenance checks.",
+                }
+            ],
+        }
+        summary = (
+            "Approval required to run this command: Command is blocked because "
+            "inline Python execution bypasses file provenance checks."
+        )
+        result.update(
+            {
+                "text": summary,
+                "final_answer": "",
+                "model_draft": "",
+                "turn_status": "needs_user_input",
+                "pending_user_input": {
+                    "summary": summary,
+                    "approval_request": approval,
+                    "questions": [],
+                },
+                "pending_approval": approval,
+                "tool_events": [],
+                "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
+                "transcript_delta": [
+                    {
+                        "id": "approval-model-call",
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "approval-tool-call",
+                                "name": "exec_command",
+                                "args": {"cmd": command},
+                            }
+                        ],
+                    },
+                    {
+                        "id": "approval-tool-result",
+                        "role": "tool",
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "approval_required": True,
+                                "error_kind": "command_execution_approval_required",
+                            }
+                        ),
+                        "tool_call_id": "approval-tool-call",
+                        "name": "exec_command",
+                    },
+                ],
+            }
+        )
+        result["activity"] = {
+            **dict(result.get("activity") or {}),
+            "status": "needs_user_input",
+            "final_answer": "",
+            "model_draft": "",
+        }
+        inspector = dict(result.get("inspector") or {})
+        run_state = dict(inspector.get("run_state") or {})
+        run_state.update(
+            {
+                "turn_status": "needs_user_input",
+                "pending_user_input": dict(result["pending_user_input"]),
+                "pending_approval": dict(approval),
+                "final_answer": "",
+                "model_draft": "",
+            }
+        )
+        inspector["run_state"] = run_state
+        result["inspector"] = inspector
+        return result
+
+
 class _FailedResultVintageRuntime(_FakeVintageRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings)
@@ -1722,6 +1814,47 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     assert session_payload["agent_state"]["compaction_status"]["mode"] == "token_budget"
     assert session_payload["context_meter"]["auto_compact_token_limit"] > 0
     assert session_payload["compaction_status"]["mode"] == "token_budget"
+
+
+def test_command_approval_notice_is_runtime_turn_not_model_history(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _PendingCommandApprovalRuntime())
+    client = TestClient(main_app.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "运行这条命令",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["turn_status"] == "needs_user_input"
+    assert payload["pending_approval"]["type"] == "command_execution"
+
+    session = main_app.session_store.load(payload["session_id"])
+    assert session is not None
+    assert [item["role"] for item in session["turns"]] == ["user", "runtime"]
+    assert session["turns"][-1]["text"].startswith("Approval required to run this command")
+    transcript_items = list((session.get("thread_transcript") or {}).get("items") or [])
+    assert [item["role"] for item in transcript_items] == ["user", "assistant", "tool"]
+    assert not any(
+        item.get("role") == "assistant"
+        and str(item.get("content") or "").startswith("Approval required to run this command")
+        for item in transcript_items
+    )
+
+    thread_response = client.get(f"/api/thread/{payload['session_id']}?view=summary")
+    assert thread_response.status_code == 200
+    assert thread_response.json()["turns"][-1]["role"] == "runtime"
 
 
 def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(monkeypatch, tmp_path: Path) -> None:

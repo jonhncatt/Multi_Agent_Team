@@ -311,7 +311,13 @@ runtime 启动和每次 run 只读取轻量 metadata，并把启用 Skill 的规
 
 Agent 可以调用 `save_skill` 创建 Team Skill 或整体替换 `SKILL.md`；已有 Team Skill 的 `SKILL.md`、`scripts/` 和 `references/` 使用普通 `apply_patch` 修改。Runtime 的写权限开启时，已启用 Team Skill 目录会加入可写边界；模型根据完整 thread 判断是否应当修改，Harness 不解析“更新”“做吧”或否定句等自然语言关键词。团队也可以通过管理界面或正常 Git 评审流程改进 Team Skill。只有 Built-in Skill 始终只读。旧的 `system:` / `workspace:` key 和 API scope 暂时分别作为 `builtin:` / `team:` 的兼容别名。
 
-已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 直接执行 `SKILL.md` 所在目录下的 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
+已启用的 Skill 如果包含脚本，Agent 使用普通 `exec_command` 和 Skill 目录下的绝对脚本路径，直接执行 Python、Shell、Node 或 PowerShell 脚本。脚本路径受统一 `RuntimeBoundary` 校验，执行工作目录仍是当前业务项目；禁用 Skill 不展示，也不会被加入本轮 Skill 读取/命令范围。`load_skill` 和 `run_skill_script` 不再属于模型工具。
+
+直接运行 Skill 脚本时，Runtime 注入四个非密钥定位变量：`VP_SKILL_ROOT`、`VP_SKILL_SCRIPT`、`VP_PROJECT_ROOT`、`VP_PROJECT_CWD`。Skill 自带资源必须基于脚本自身位置或 `VP_SKILL_ROOT` 解析，业务输入输出基于 `VP_PROJECT_ROOT` / `VP_PROJECT_CWD`；不得依赖进程 cwd 去寻找 Skill 文件。
+
+Skill 所需密钥统一写在 VP 安装仓库根目录的 `.env`，或由启动 VP 的进程环境提供。VP 不再读取启动目录或当前业务项目的 `.env`；如果需要把凭证文件放在仓库外，可在启动进程中设置绝对路径 `VP_DOTENV_PATH`。`.env` 只在 VP 启动时加载，修改后需要重启。Skill 脚本只读取例如 `os.environ["REDMINE_API_KEY"]` 这样的继承环境变量，不得搜索、读取、解析、打印或记录 `.env` 和密钥值。
+
+完整的脚本模板和迁移清单见 [`docs/skill_runtime_contract.md`](docs/skill_runtime_contract.md)。
 
 团队提交前运行：
 

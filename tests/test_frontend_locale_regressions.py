@@ -650,6 +650,7 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
 
 def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert 'String(candidate.type || "") !== "command_execution"' in script
@@ -662,6 +663,10 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert 'approval_token: approvalToken' in script
     assert 'event === "request_user_input"' in script
     assert 'pending_approval: nextApproval' in script
+    assert 'markPendingAsRuntimeNotice' in script
+    assert 'createMessage("runtime", noticeText' in script
+    assert 'finalMessageRole' in script
+    assert '["user", "assistant", "runtime", "system"].includes(storedRole)' in script
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "clearVisibleCommandApprovalState();" in script
@@ -676,6 +681,8 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert '"approval_modal.remote_url": "Remote 地址"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；批准只对这一个精确命令生效一次。"' in locales
+    assert '"role.runtime": "运行时"' in locales
+    assert ".role-runtime .message-card" in styles
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:

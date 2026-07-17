@@ -4,11 +4,47 @@ from pathlib import Path
 
 import pytest
 
+import app.config as config_mod
 from app.config import list_provider_profiles, load_config, resolve_python_command
 from app.models import ChatSettings
 from app.openai_auth import OpenAIAuthManager
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_dotenv_uses_vp_application_root_not_process_cwd(monkeypatch, tmp_path) -> None:
+    app_root = tmp_path / "vintage-programmer"
+    project_root = tmp_path / "business-project"
+    (app_root / "app").mkdir(parents=True)
+    project_root.mkdir()
+    (app_root / ".env").write_text("TEAM_SKILL_TEST_KEY=from-vp\n", encoding="utf-8")
+    (project_root / ".env").write_text("TEAM_SKILL_TEST_KEY=from-project\n", encoding="utf-8")
+    monkeypatch.chdir(project_root)
+    monkeypatch.setattr(config_mod, "__file__", str(app_root / "app" / "config.py"))
+    monkeypatch.delenv("VP_DOTENV_PATH", raising=False)
+    monkeypatch.delenv("VP_SKIP_DOTENV", raising=False)
+    monkeypatch.delenv("TEAM_SKILL_TEST_KEY", raising=False)
+
+    config_mod._load_dotenv_if_present()
+
+    assert config_mod.os.environ["TEAM_SKILL_TEST_KEY"] == "from-vp"
+
+
+def test_dotenv_supports_explicit_vp_path_and_preserves_process_secret(monkeypatch, tmp_path) -> None:
+    dotenv_path = tmp_path / "vp-secrets.env"
+    dotenv_path.write_text(
+        "TEAM_SKILL_FILE_ONLY=file-value\nTEAM_SKILL_PROCESS_WINS=file-value\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VP_DOTENV_PATH", str(dotenv_path))
+    monkeypatch.delenv("VP_SKIP_DOTENV", raising=False)
+    monkeypatch.delenv("TEAM_SKILL_FILE_ONLY", raising=False)
+    monkeypatch.setenv("TEAM_SKILL_PROCESS_WINS", "process-value")
+
+    config_mod._load_dotenv_if_present()
+
+    assert config_mod.os.environ["TEAM_SKILL_FILE_ONLY"] == "file-value"
+    assert config_mod.os.environ["TEAM_SKILL_PROCESS_WINS"] == "process-value"
 
 
 def test_vp_openai_compatible_env_is_first_class(monkeypatch, tmp_path) -> None:

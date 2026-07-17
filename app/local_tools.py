@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import itertools
 import importlib
+import os
 import re
 import secrets
 import shlex
@@ -2854,55 +2855,55 @@ class LocalToolExecutor:
                 return error
         return ""
 
-    def _is_direct_enabled_skill_script_command(self, command: str, *, cwd: Path) -> bool:
-        """Allow normal interpreter execution for a script in an enabled Skill."""
+    def _direct_enabled_skill_script_context(self, command: str, *, cwd: Path) -> dict[str, str]:
+        """Resolve a directly executed script and its enabled Skill root."""
 
         if self._is_compound_shell_command(command):
-            return False
+            return {}
         try:
             argv = shlex.split(str(command or "").strip())
         except Exception:
-            return False
+            return {}
         if len(argv) < 2:
-            return False
+            return {}
         base = self._command_base_name(argv[0])
         script_arg = ""
         allowed_suffixes: set[str] = set()
         if self._is_python_command(base):
             if any(arg in {"-c", "-m"} for arg in argv[1:]):
-                return False
+                return {}
             script_arg = next((arg for arg in argv[1:] if arg and not arg.startswith("-")), "")
             allowed_suffixes = {".py"}
         elif self._is_shell_command(base):
             if any(arg in {"-c", "--command"} for arg in argv[1:]):
-                return False
+                return {}
             script_arg = next((arg for arg in argv[1:] if arg and not arg.startswith("-")), "")
             allowed_suffixes = {".sh"}
         elif self._is_node_command(base):
             if any(arg in {"-e", "--eval"} for arg in argv[1:]):
-                return False
+                return {}
             script_arg = next((arg for arg in argv[1:] if arg and not arg.startswith("-")), "")
             allowed_suffixes = {".js", ".mjs", ".cjs"}
         elif base in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
             lowered = [str(arg or "").strip().lower() for arg in argv[1:]]
             if any(arg in {"-command", "-encodedcommand", "-c"} for arg in lowered):
-                return False
+                return {}
             for index, arg in enumerate(lowered):
                 if arg in {"-file", "-f"} and index + 2 < len(argv):
                     script_arg = argv[index + 2]
                     break
             allowed_suffixes = {".ps1"}
         if not script_arg:
-            return False
+            return {}
         candidate = Path(script_arg).expanduser()
         if not candidate.is_absolute():
             candidate = cwd / candidate
         try:
             resolved = candidate.resolve()
         except Exception:
-            return False
+            return {}
         if not resolved.is_file() or resolved.suffix.lower() not in allowed_suffixes:
-            return False
+            return {}
         boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
         enabled_roots: list[Path] = []
         if isinstance(boundary, dict):
@@ -2913,7 +2914,36 @@ class LocalToolExecutor:
                     enabled_roots.append(Path(str(item)).expanduser().resolve())
                 except Exception:
                     continue
-        return any(_is_within(resolved, root) for root in enabled_roots)
+        skill_root = next((root for root in enabled_roots if _is_within(resolved, root)), None)
+        if skill_root is None:
+            return {}
+        return {
+            "skill_root": str(skill_root),
+            "script_path": str(resolved),
+        }
+
+    def _is_direct_enabled_skill_script_command(self, command: str, *, cwd: Path) -> bool:
+        """Allow normal interpreter execution for a script in an enabled Skill."""
+
+        return bool(self._direct_enabled_skill_script_context(command, cwd=cwd))
+
+    def _skill_script_environment(self, skill_context: dict[str, str], *, cwd: Path) -> dict[str, str]:
+        env = dict(os.environ)
+        project_root_raw = str(getattr(self._runtime_ctx, "project_root", "") or "").strip()
+        project_root = Path(project_root_raw).expanduser() if project_root_raw else cwd
+        try:
+            project_root = project_root.resolve()
+        except Exception:
+            project_root = cwd
+        env.update(
+            {
+                "VP_SKILL_ROOT": str(skill_context.get("skill_root") or ""),
+                "VP_SKILL_SCRIPT": str(skill_context.get("script_path") or ""),
+                "VP_PROJECT_ROOT": str(project_root),
+                "VP_PROJECT_CWD": str(cwd.resolve()),
+            }
+        )
+        return env
 
     def _spawn_command_reader(self, session_id: int, proc: subprocess.Popen[bytes]) -> None:
         def reader() -> None:
@@ -3808,6 +3838,7 @@ class LocalToolExecutor:
             return self._command_failure_result(command=cmd, cwd=cwd, error=str(exc), returncode=1)
         if not real_cwd.exists() or not real_cwd.is_dir():
             return self._command_failure_result(command=cmd, cwd=cwd, error=f"Invalid cwd: {cwd}", returncode=1)
+        skill_script_context = self._direct_enabled_skill_script_context(cmd, cwd=real_cwd)
         reserved_skill_error = self._reserved_skill_command_error(cmd, cwd=real_cwd)
         if reserved_skill_error:
             return self._command_failure_result(
@@ -3991,6 +4022,11 @@ class LocalToolExecutor:
             proc = subprocess.Popen(
                 argv,
                 cwd=str(real_cwd),
+                env=(
+                    self._skill_script_environment(skill_script_context, cwd=real_cwd)
+                    if skill_script_context
+                    else None
+                ),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

@@ -521,6 +521,7 @@ function parseSseChunk(chunk) {
 function roleLabel(role, locale) {
   if (role === "user") return translateUi(locale, "role.user");
   if (role === "assistant") return translateUi(locale, "role.assistant");
+  if (role === "runtime") return translateUi(locale, "role.runtime");
   return translateUi(locale, "role.system");
 }
 
@@ -725,9 +726,13 @@ function projectLabel(project, fallbackHealth) {
 
 function extractSessionMessages(data) {
   const turns = Array.isArray(data.turns) ? data.turns : [];
-  return turns.map((turn, index) =>
-    createMessage(
-      String(turn.role || "").toLowerCase() === "user" ? "user" : "assistant",
+  return turns.map((turn, index) => {
+    const storedRole = String(turn.role || "").toLowerCase();
+    const displayRole = ["user", "assistant", "runtime", "system"].includes(storedRole)
+      ? storedRole
+      : "system";
+    return createMessage(
+      displayRole,
       String(turn.text || ""),
       {
         id: String(turn.id || `${index}-${turn.role || "turn"}-${turn.created_at || ""}`),
@@ -736,8 +741,8 @@ function extractSessionMessages(data) {
         answerBundle: turn.answer_bundle || {},
         runArtifact: turn.run_artifact || {},
       },
-    ),
-  );
+    );
+  });
 }
 
 function appendMessagesOnceById(previousMessages, incomingMessages) {
@@ -7044,7 +7049,7 @@ function App() {
         updateOwnerMessages((prev) =>
           prev.map((item) => (
             item.id === pendingMessage.id
-              ? createMessage("assistant", text, {
+              ? createMessage(item.role === "runtime" ? "runtime" : "assistant", text, {
                   id: item.id,
                   activity: item.activity,
                   answerBundle: item.answerBundle,
@@ -7055,6 +7060,24 @@ function App() {
               : item
           )),
         );
+      };
+      const markPendingAsRuntimeNotice = (text) => {
+        const noticeText = String(text || t("labels.pending_input"));
+        updateOwnerMessages((prev) =>
+          prev.map((item) => (
+            item.id === pendingMessage.id
+              ? createMessage("runtime", noticeText, {
+                  id: item.id,
+                  activity: item.activity,
+                  answerBundle: item.answerBundle,
+                  runArtifact: item.runArtifact,
+                  fullTurnLoading: item.fullTurnLoading,
+                  fullTurnError: item.fullTurnError,
+                })
+              : item
+          )),
+        );
+        pendingMessage = { ...pendingMessage, role: "runtime", text: noticeText };
       };
       const completeCurrentAssistantSegment = (segment) => {
         flushAssistantDelta();
@@ -7694,7 +7717,11 @@ function App() {
                   pending_user_input: nextPending,
                   pending_approval: nextApproval,
                 }));
-                replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+                if (isCommandExecutionApproval(nextApproval)) {
+                  markPendingAsRuntimeNotice(String(nextPending.summary || t("labels.pending_input")));
+                } else {
+                  replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+                }
                 updateOwnerLiveHeartbeat({
                   status: "blocked",
                   action: String(nextPending.summary || t("labels.pending_input")),
@@ -7726,7 +7753,11 @@ function App() {
                 pending_user_input: nextPending,
                 pending_approval: nextApproval,
               }));
-              replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+              if (isCommandExecutionApproval(nextApproval)) {
+                markPendingAsRuntimeNotice(String(nextPending.summary || t("labels.pending_input")));
+              } else {
+                replacePendingText(String(nextPending.summary || t("labels.pending_input")));
+              }
               updateOwnerLiveHeartbeat({
                 status: "blocked",
                 action: String(nextPending.summary || t("labels.pending_input")),
@@ -7816,10 +7847,16 @@ function App() {
       });
       const previousPendingMessageId = pendingMessage.id;
       const finalizedTurnId = String(finalPayload.turn_id || latestRunSnapshot.turn_id || previousPendingMessageId || "").trim() || previousPendingMessageId;
+      const finalPendingApproval = finalPayload.pending_approval
+        || (((finalPayload.inspector || {}).run_state || {}).pending_approval)
+        || {};
+      const finalMessageRole = isCommandExecutionApproval(finalPendingApproval) || pendingMessage.role === "runtime"
+        ? "runtime"
+        : "assistant";
       updateOwnerMessages((prev) =>
         prev.map((item) =>
           item.id === previousPendingMessageId
-            ? createMessage("assistant", String(finalPayload.text || assistantText || "(empty response)"), {
+            ? createMessage(finalMessageRole, String(finalPayload.text || assistantText || "(empty response)"), {
               id: finalizedTurnId,
               activity: finalActivity,
               answerBundle: finalPayload.answer_bundle || item.answerBundle || {},

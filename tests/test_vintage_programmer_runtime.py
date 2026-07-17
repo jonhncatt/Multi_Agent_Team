@@ -4607,6 +4607,9 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
     assert str((skill_dir / "SKILL.md").resolve()) in available_section
     assert "read_file" in available_section
     assert "exec_command" in available_section
+    assert "VP_SKILL_ROOT" in available_section
+    assert "VP_PROJECT_ROOT" in available_section
+    assert "never search for, read, or parse .env" in available_section
     assert "load_skill" not in available_section
 
 

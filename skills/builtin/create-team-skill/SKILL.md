@@ -25,6 +25,14 @@ Do not create a skill for a one-off answer, temporary project detail, secret, cr
 5. Call `save_skill` with `overwrite: false` unless the user clearly requested an update to an existing Team Skill.
 6. Report the logical key, enabled state, and whether the Team Skill was created or replaced. Do not report or guess a physical filesystem path.
 
+## Script And Secret Contract
+
+- Resolve bundled files from the Skill itself, never from the active business project's current directory. In Python use `Path(__file__).resolve()`; use the equivalent script-location primitive in Shell, Node, or PowerShell.
+- Treat `VP_SKILL_ROOT` as the Skill package root and `VP_PROJECT_ROOT` / `VP_PROJECT_CWD` as the selected business project. Runtime injects these only when an enabled Skill script is executed directly.
+- Read credentials only from inherited environment variables such as `os.environ["REDMINE_API_KEY"]`. Never search for, open, parse, print, return, or log `.env` files or secret values.
+- Keep secret values out of `SKILL.md`, scripts, references, examples, command arguments, and Git. Document only the required environment-variable names.
+- If a required variable is missing, fail with the variable name and setup guidance, never with a guessed file path or the contents of the environment.
+
 ## Tool Call Shape
 
 ```json

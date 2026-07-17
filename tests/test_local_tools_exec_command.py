@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import zipfile
 
 import pytest
@@ -62,6 +63,51 @@ def test_exec_command_allows_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
     assert error is None
     assert argv[0] == "dir"
+
+
+def test_enabled_skill_script_gets_skill_project_roots_and_inherited_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "business-project"
+    skill_root = tmp_path / "vintage-programmer" / "skills" / "team" / "ticket-reader"
+    scripts_dir = skill_root / "scripts"
+    project_root.mkdir()
+    scripts_dir.mkdir(parents=True)
+    script_path = scripts_dir / "show_context.py"
+    script_path.write_text(
+        "import os\n"
+        "print('skill=' + os.environ.get('VP_SKILL_ROOT', ''))\n"
+        "print('project=' + os.environ.get('VP_PROJECT_ROOT', ''))\n"
+        "print('cwd=' + os.environ.get('VP_PROJECT_CWD', ''))\n"
+        "print('secret=' + os.environ.get('TEAM_SKILL_TEST_SECRET', ''))\n",
+        encoding="utf-8",
+    )
+    manager = _make_manager(monkeypatch, tmp_path)
+    monkeypatch.setenv("TEAM_SKILL_TEST_SECRET", "inherited-value")
+    boundary = _runtime_boundary(project_root, permission_profile="full_access")
+    boundary["allowed_roots"] = [str(project_root.resolve()), str(skill_root.resolve())]
+    boundary["command_allowed_roots"] = [str(project_root.resolve()), str(skill_root.resolve())]
+    boundary["enabled_skill_roots"] = [str(skill_root.resolve())]
+    manager.set_runtime_context(
+        execution_mode="host",
+        session_id="skill-script-session",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        permission_profile="full_access",
+        runtime_boundary=boundary,
+        team_skill_roots=[str(skill_root.parent)],
+    )
+    command = f"{shlex.quote(manager.config.python_command)} {shlex.quote(str(script_path))}"
+
+    result = manager.exec_command(cmd=command, cwd=str(project_root), yield_time_ms=2000)
+
+    assert result["ok"] is True
+    output = str(result["output"])
+    assert f"skill={skill_root.resolve()}" in output
+    assert f"project={project_root.resolve()}" in output
+    assert f"cwd={project_root.resolve()}" in output
+    assert "secret=inherited-value" in output
 
 
 @pytest.mark.parametrize(
