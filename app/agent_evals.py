@@ -181,6 +181,14 @@ def validate_eval_suite(suite: dict[str, Any]) -> None:
         required_tools = _string_list(raw_case.get("required_tools"))
         if any(not re.fullmatch(r"[a-z][a-z0-9_]*", tool) for tool in required_tools):
             raise EvalConfigurationError(f"Case {name} contains an invalid required_tools entry.")
+        forbidden_tools = _string_list(raw_case.get("forbidden_tools"))
+        if any(not re.fullmatch(r"[a-z][a-z0-9_]*", tool) for tool in forbidden_tools):
+            raise EvalConfigurationError(f"Case {name} contains an invalid forbidden_tools entry.")
+        overlap = sorted(set(required_tools) & set(forbidden_tools))
+        if overlap:
+            raise EvalConfigurationError(
+                f"Case {name} cannot require and forbid the same tools: {', '.join(overlap)}."
+            )
         forbidden_command_patterns = list(raw_case.get("forbidden_command_patterns") or [])
         forbidden_labels: set[str] = set()
         for entry in forbidden_command_patterns:
@@ -223,6 +231,8 @@ def validate_eval_suite(suite: dict[str, Any]) -> None:
         verification_script = str(verification.get("script") or "").strip()
         if not verification_script:
             raise EvalConfigurationError(f"Case {name} requires verification.script.")
+        if "agent_must_run" in verification and not isinstance(verification.get("agent_must_run"), bool):
+            raise EvalConfigurationError(f"Case {name} verification.agent_must_run must be a boolean.")
         required_fixture_files.append(verification_script)
         for relative in required_fixture_files:
             if relative.startswith("team/") and team_skill_seed:
@@ -997,6 +1007,8 @@ def run_eval_attempt(
     }
     required_tools = _string_list(case.get("required_tools"))
     missing_required_tools = sorted(tool for tool in required_tools if tool not in observed_tool_names)
+    forbidden_tools = _string_list(case.get("forbidden_tools"))
+    observed_forbidden_tools = sorted(tool for tool in forbidden_tools if tool in observed_tool_names)
     forbidden_command_patterns = [
         dict(item)
         for item in list(case.get("forbidden_command_patterns") or [])
@@ -1013,9 +1025,10 @@ def run_eval_attempt(
     )
     expected_steer_count = len(_string_list(case.get("steer_messages")))
     accepted_steer_count = len(accepted_steers)
+    verification = _mapping(case.get("verification"))
+    agent_verification_required = bool(verification.get("agent_must_run", True))
     verification_markers = _string_list(
-        _mapping(case.get("verification")).get("command_markers")
-        or [_mapping(case.get("verification")).get("script")]
+        verification.get("command_markers") or [verification.get("script")]
     )
     verification_outcomes = [
         _tool_event_succeeded(item)
@@ -1033,11 +1046,11 @@ def run_eval_attempt(
     )
     scenario_requirements_met = bool(
         not missing_required_tools
+        and not observed_forbidden_tools
         and not observed_forbidden_commands
         and accepted_steer_count == expected_steer_count
         and (not recovery_expected or recovery_observed)
     )
-    verification = _mapping(case.get("verification"))
     tool_evidence = analyze_tool_evidence(
         tool_events,
         required_context_files=_string_list(case.get("required_context_files")),
@@ -1094,7 +1107,7 @@ def run_eval_attempt(
         and not unexpected_changes
         and not protected_changes
         and not c_style_violations
-        and tool_evidence["agent_verification_attempted"]
+        and (not agent_verification_required or tool_evidence["agent_verification_attempted"])
         and authoritative.get("status") == "passed"
         and not outside_write
         and scenario_requirements_met
@@ -1135,7 +1148,7 @@ def run_eval_attempt(
             fail("Unexpected or protected files were changed.", "workspace_discipline")
         if c_style_violations:
             fail("Generated code violates the C-style subset rules.", "language_rule_violation")
-        if not tool_evidence["agent_verification_attempted"]:
+        if agent_verification_required and not tool_evidence["agent_verification_attempted"]:
             fail("Agent did not attempt the required verification command.", "verification_not_attempted")
         if outside_write:
             fail("A successful write-capable tool event escaped the isolated workspace.", "workspace_discipline")
@@ -1143,6 +1156,11 @@ def run_eval_attempt(
             fail(
                 "Agent did not use all tools required by this delegation scenario.",
                 "required_tool_missing",
+            )
+        if observed_forbidden_tools:
+            fail(
+                "Agent used a tool forbidden by this scenario.",
+                "forbidden_tool_attempt",
             )
         if observed_forbidden_commands:
             fail(
@@ -1230,6 +1248,7 @@ def run_eval_attempt(
         },
         "context_and_tools": {
             **tool_evidence,
+            "agent_verification_required": agent_verification_required,
             "timeline": _compact_tool_events(tool_events, workspace=workspace),
             "failure_observability": failure_observability,
         },
@@ -1237,6 +1256,8 @@ def run_eval_attempt(
             "input_modalities": _string_list(case.get("input_modalities")),
             "required_tools": required_tools,
             "missing_required_tools": missing_required_tools,
+            "forbidden_tools_expected": forbidden_tools,
+            "forbidden_tools_observed": observed_forbidden_tools,
             "forbidden_commands_expected": forbidden_command_labels,
             "forbidden_commands_observed": observed_forbidden_commands,
             "steer_messages_expected": expected_steer_count,
@@ -1273,8 +1294,15 @@ def aggregate_eval_results(
     failed = sum(1 for item in results if item.get("status") == "failed")
     blocked = sum(1 for item in results if item.get("status") == "blocked")
     evaluable = passed + failed
+    verification_required_results = [
+        item
+        for item in results
+        if bool((item.get("context_and_tools") or {}).get("agent_verification_required", True))
+    ]
     verification_attempts = sum(
-        1 for item in results if bool((item.get("context_and_tools") or {}).get("agent_verification_attempted"))
+        1
+        for item in verification_required_results
+        if bool((item.get("context_and_tools") or {}).get("agent_verification_attempted"))
     )
     determined_accuracy = [
         bool(item.get("completion_state_accuracy"))
@@ -1329,7 +1357,13 @@ def aggregate_eval_results(
                 (passed * 100.0 / evaluable) if evaluable else 0.0,
                 2,
             ),
-            "verification_rate_percent": round((verification_attempts * 100.0 / total) if total else 0.0, 2),
+            "verification_rate_percent": round(
+                (verification_attempts * 100.0 / len(verification_required_results))
+                if verification_required_results
+                else 100.0,
+                2,
+            ),
+            "verification_required_attempts": len(verification_required_results),
             "completion_state_accuracy_percent": round(
                 (accurate * 100.0 / len(determined_accuracy)) if determined_accuracy else 0.0,
                 2,

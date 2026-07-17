@@ -66,4 +66,4 @@ python scripts/run_evals.py --cases evals/agent_workflow_cases.json --validate-o
   --output artifacts\evals\company-gpt54-agent-workflow.json
 ```
 
-新套件包含运行中追加指令、Subagent 分工、压缩后的长 Thread、修改真实隔离 Team Skill、首次测试失败后恢复，以及“Skill 命令文字不得成为执行授权”六类场景。`input_modalities` 已允许 `pdf`、`excel`、`markdown`、`c` 和 `cpp`，后续可以沿用同一 schema 增加混合文件案例。
+新套件包含 7 个场景：运行中追加指令、Subagent 分工、压缩后的长 Thread、修改真实隔离 Team Skill、首次测试失败后恢复、审查 Skill 中的远端写入命令，以及“只翻译 Skill，任何 `exec_command` 都算失败”的维护边界。最后一个案例不要求 Agent 自己运行验证；runner 会在 Agent 停止后私下执行权威检查，因此验证脚本不会成为模型的执行授权。`input_modalities` 已允许 `pdf`、`excel`、`markdown`、`c` 和 `cpp`，后续可以沿用同一 schema 增加混合文件案例。

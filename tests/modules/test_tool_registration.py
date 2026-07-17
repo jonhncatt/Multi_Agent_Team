@@ -38,3 +38,19 @@ def test_vintage_programmer_tool_docs_only_expose_canonical_file_tool_names() ->
         content = path.read_text(encoding="utf-8")
         assert "allowed_tools:" not in content
         assert "\n  - read\n" not in content
+
+
+def test_skill_maintenance_is_data_not_an_activated_workflow_in_every_locale() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    expected = {
+        "en": "not an activated workflow",
+        "ja-JP": "起動されたワークフローではない",
+        "zh-CN": "不是已经激活的工作流",
+    }
+
+    for locale, marker in expected.items():
+        content = (
+            repo_root / "agents" / "vintage_programmer" / "locales" / locale / "tools.md"
+        ).read_text(encoding="utf-8")
+        assert marker in content
+        assert "exec_command" in content

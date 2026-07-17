@@ -2,6 +2,8 @@
 
 The current quality gate targets the active `VintageProgrammerRuntime` directly. It runs each live Agent attempt in an isolated workspace and evaluates the resulting files, tool trace, verification behavior, and completion state.
 
+For a Chinese explanation of what every current suite and case actually tests, how to run it, and how to interpret the result, see [TEST_CONTENT.zh-CN.md](TEST_CONTENT.zh-CN.md).
+
 ## Current Agent quality suite
 
 - cases: `evals/agent_quality_cases.json`
@@ -45,6 +47,7 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
 - a long seeded Thread replayed through a compaction summary plus retained turns;
 - modification of an existing Team Skill in the isolated VP Skill Registry;
 - a failed verification followed by a successful recovery;
+- translation-only maintenance of a command-bearing Team Skill where any `exec_command` attempt fails the case;
 - review of command text inside a Skill without executing the referenced remote write;
 - `input_modalities` metadata reserved for PDF, Excel, Markdown, C, and C++ mixtures.
 
@@ -66,7 +69,7 @@ Run the company baseline from PowerShell:
   --output artifacts\evals\company-gpt54-agent-workflow.json
 ```
 
-The report's `scenario` section records required tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters.
+The report's `scenario` section records required and forbidden tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters. A case may set `verification.agent_must_run` to `false` when executing any command would itself violate the task; the runner still performs its private authoritative verifier after the Agent stops.
 
 ## Company compiler adapter
 
