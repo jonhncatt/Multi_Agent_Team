@@ -69,7 +69,7 @@ Run the company baseline from PowerShell:
   --output artifacts\evals\company-gpt54-agent-workflow.json
 ```
 
-The report's `scenario` section records required and forbidden tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters. A case may set `verification.agent_must_run` to `false` when executing any command would itself violate the task; the runner still performs its private authoritative verifier after the Agent stops.
+The report's `scenario` section records required and forbidden tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters. A case may set `verification.agent_must_run` to `false` when executing any command would itself violate the task; the runner still performs its private authoritative verifier after the Agent stops. For those cases only, a Runtime `verification_missing` state does not override a normal model final answer and the passing private verifier; unfinished plans and missing final answers still fail completion accuracy.
 
 ## Company compiler adapter
 

@@ -856,13 +856,53 @@ def _outside_workspace_write_detected(events: list[dict[str, Any]], workspace: P
     return False
 
 
-def _runtime_declared_completed(result: dict[str, Any]) -> bool:
+def _runtime_has_final_answer(result: dict[str, Any]) -> bool:
+    """Return whether the Runtime delivered a model final answer without retaining its text."""
+
+    if not str(result.get("final_answer") or "").strip():
+        return False
+    model_action = result.get("model_action") if isinstance(result.get("model_action"), dict) else {}
+    if not model_action:
+        return True
+    action_type = str(model_action.get("action_type") or "").strip().lower()
+    if action_type and action_type != "final_answer":
+        return False
+    if model_action.get("accepted") is False:
+        return False
+    text_chars = model_action.get("text_chars")
+    return not isinstance(text_chars, int) or text_chars > 0
+
+
+def _runtime_declared_completed(
+    result: dict[str, Any],
+    *,
+    agent_verification_required: bool = True,
+) -> bool:
     runtime_error = result.get("runtime_error") if isinstance(result.get("runtime_error"), dict) else {}
     task_completion = result.get("task_completion") if isinstance(result.get("task_completion"), dict) else {}
+    turn_delivered = bool(
+        str(result.get("turn_status") or "").strip().lower() == "completed"
+        and not runtime_error
+        and not dict(result.get("pending_user_input") or {})
+        and not dict(result.get("pending_approval") or {})
+        and _runtime_has_final_answer(result)
+    )
     if task_completion.get("task_completed") is False:
+        completion_reasons = {
+            str(reason or "").strip()
+            for reason in list(task_completion.get("reasons") or [])
+            if str(reason or "").strip()
+        }
+        private_verification_only = bool(completion_reasons) and completion_reasons.issubset(
+            {"verification_missing", "plan_reopened_for_verification"}
+        )
+        if not agent_verification_required and private_verification_only:
+            return turn_delivered
         return False
     if task_completion.get("task_completed") is True:
         return True
+    if not agent_verification_required:
+        return turn_delivered
     return (
         str(result.get("turn_status") or "").strip().lower() == "completed"
         and not runtime_error
@@ -1098,7 +1138,10 @@ def run_eval_attempt(
             verifier_script=verifier_script,
         )
 
-    runtime_completed = _runtime_declared_completed(result)
+    runtime_completed = _runtime_declared_completed(
+        result,
+        agent_verification_required=agent_verification_required,
+    )
     completion_determinable = not runtime_exception and authoritative.get("status") in {"passed", "failed"}
     factual_completion = bool(
         completion_determinable
@@ -1233,6 +1276,7 @@ def run_eval_attempt(
             ),
             "effective_model": str(result.get("effective_model") or settings.model or ""),
             "final_answer": "",
+            "final_answer_present": _runtime_has_final_answer(result),
             "final_answer_omitted": True,
             "token_usage": token_usage,
             "llm_calls": int(token_usage.get("llm_calls") or len(list(result.get("llm_exchanges") or [])) or 0),

@@ -672,6 +672,14 @@ class _SkillMaintenanceTranslationFakeRuntime:
             )
         return {
             "turn_status": "completed",
+            "final_answer": "Translated the Team Skill without executing its command examples.",
+            "task_completion": {
+                "turn_ended": True,
+                "task_completed": False,
+                "task_status": "in_progress",
+                "verification": {"status": "missing"},
+                "reasons": ["verification_missing"],
+            },
             "runtime_error": {},
             "pending_user_input": {},
             "pending_approval": {},
@@ -683,6 +691,35 @@ class _SkillMaintenanceTranslationFakeRuntime:
 
 class _SkillMaintenanceTranslationCommandFakeRuntime(_SkillMaintenanceTranslationFakeRuntime):
     include_command_attempt = True
+
+
+class _SkillMaintenanceTranslationNoFinalAnswerFakeRuntime(_SkillMaintenanceTranslationFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        result["final_answer"] = "Runtime status: this turn ended, but the task is still open."
+        result["model_action"] = {
+            "action_type": "tool_call",
+            "accepted": True,
+            "text_chars": 0,
+        }
+        return result
+
+
+class _SkillMaintenanceTranslationIncompletePlanFakeRuntime(_SkillMaintenanceTranslationFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        result["task_completion"]["reasons"] = ["plan_incomplete", "verification_missing"]
+        return result
 
 
 class _FailureRecoveryFakeRuntime:
@@ -907,6 +944,43 @@ def test_skill_maintenance_translation_passes_without_agent_command_execution(tm
     assert result["scenario"]["forbidden_tools_expected"] == ["exec_command"]
     assert result["scenario"]["forbidden_tools_observed"] == []
     assert result["verification"]["status"] == "passed"
+    assert result["runtime"]["declared_completed"] is True
+    assert result["runtime"]["final_answer_present"] is True
+    assert result["completion_state_accuracy"] is True
+
+
+@pytest.mark.parametrize(
+    "runtime_factory",
+    [
+        _SkillMaintenanceTranslationNoFinalAnswerFakeRuntime,
+        _SkillMaintenanceTranslationIncompletePlanFakeRuntime,
+    ],
+)
+def test_private_verification_does_not_hide_other_incomplete_states(
+    tmp_path: Path,
+    runtime_factory,
+) -> None:
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
+    case = next(
+        item
+        for item in suite["cases"]
+        if item["name"] == "skill_maintenance_translation_treats_commands_as_data"
+    )
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / runtime_factory.__name__,
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=runtime_factory,
+    )
+
+    assert result["status"] == "failed"
+    assert result["completion_state_accuracy"] is False
+    assert "completion_honesty" in result["failure_categories"]
+    if runtime_factory is _SkillMaintenanceTranslationNoFinalAnswerFakeRuntime:
+        assert result["runtime"]["final_answer_present"] is False
 
 
 def test_skill_maintenance_translation_fails_on_any_exec_command_attempt(tmp_path: Path) -> None:
