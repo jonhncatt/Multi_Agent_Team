@@ -1901,6 +1901,7 @@ def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     assert 'const acceptedMessage = createMessage("user", String(steer.message || ""), {' in script
     assert "if (existingIndex < 0) return [...previous, acceptedMessage];" in script
     assert "pendingGuidance: (Array.isArray(prev.pendingGuidance) ? prev.pendingGuidance : [])" in script
+    assert "setPendingGuidance(nextTurn.pendingGuidance);" in script
     assert 'beginNextAssistantSegment(String(payload.next_segment_id || ""))' in script
     assert "const nextQueuedIndex = next.findIndex" in script
     assert "next.splice(nextQueuedIndex, 0, nextPending)" in script

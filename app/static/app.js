@@ -6758,6 +6758,7 @@ function App() {
         setLiveEvidence(nextTurn.liveEvidence);
         setLiveRunLogs(nextTurn.liveRunLogs);
         setStageTimeline(nextTurn.stageTimeline);
+        setPendingGuidance(nextTurn.pendingGuidance);
         setActiveRunId(nextTurn.activeRunId);
         setActiveRunThreadId(nextTurn.activeRunThreadId);
         setActiveRunStartedAt(nextTurn.startedAt);
