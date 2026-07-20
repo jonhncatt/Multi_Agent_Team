@@ -67,6 +67,7 @@ const DEFAULT_SETTINGS = {
   max_output_tokens: 16384,
   max_context_turns: 2000,
   enable_tools: true,
+  debug_raw: false,
   permission_profile: "auto",
   response_style: "normal",
 };
@@ -194,8 +195,10 @@ function createMessage(role, text, options = {}) {
     activity: normalizeMessageActivity(options.activity || null),
     answerBundle: options.answerBundle && typeof options.answerBundle === "object" ? options.answerBundle : {},
     runArtifact: options.runArtifact && typeof options.runArtifact === "object" ? options.runArtifact : {},
-    fullTurnLoading: Boolean(options.fullTurnLoading),
-    fullTurnError: String(options.fullTurnError || ""),
+    runActivityLoading: Boolean(options.runActivityLoading),
+    runActivityError: String(options.runActivityError || ""),
+    runDebugLoading: Boolean(options.runDebugLoading),
+    runDebugError: String(options.runDebugError || ""),
   };
 }
 
@@ -799,8 +802,10 @@ function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages
         (previous.runArtifact && Object.keys(previous.runArtifact || {}).length)
           ? previous.runArtifact
           : message.runArtifact,
-      fullTurnLoading: Boolean(previous.fullTurnLoading),
-      fullTurnError: String(previous.fullTurnError || ""),
+      runActivityLoading: Boolean(previous.runActivityLoading),
+      runActivityError: String(previous.runActivityError || ""),
+      runDebugLoading: Boolean(previous.runDebugLoading),
+      runDebugError: String(previous.runDebugError || ""),
     };
   });
   const firstAuthoritativeIndex = current.findIndex((item) => (
@@ -1182,6 +1187,8 @@ function normalizeMessageActivity(raw) {
     run_id: String(item.run_id || ""),
     status,
     summary: String(item.summary || ""),
+    activity_loaded: Boolean(item.activity_loaded || item.activityLoaded || item.full_loaded || item.fullLoaded),
+    debug_loaded: Boolean(item.debug_loaded || item.debugLoaded || item.full_loaded || item.fullLoaded),
     full_loaded: Boolean(item.full_loaded || item.fullLoaded || item.run_artifact_loaded || item.runArtifactLoaded),
     started_at: startedAt,
     turn_started_at: turnStartedAt,
@@ -1200,11 +1207,16 @@ function normalizeMessageActivity(raw) {
     model_draft: String(item.model_draft || item.modelDraft || ""),
     final_answer: String(item.final_answer || item.finalAnswer || ""),
     runtime_error: normalizeRuntimeErrorPayload(item.runtime_error),
+    runtime_inspector: item.runtime_inspector && typeof item.runtime_inspector === "object"
+      ? item.runtime_inspector
+      : {},
     tool_boundary_clean:
       typeof item.tool_boundary_clean === "boolean"
         ? item.tool_boundary_clean
         : null,
     llm_exchanges: Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [],
+    thread_items: Array.isArray(item.thread_items) ? item.thread_items : [],
+    turn_trace: item.turn_trace && typeof item.turn_trace === "object" ? item.turn_trace : {},
     plan: normalizePlanChecklist(item.plan),
     plan_explanation: String(item.plan_explanation || ""),
     tool_items: normalizeActivityToolItems(item.tool_items),
@@ -2408,164 +2420,6 @@ function buildActivityProjection(activity, locale, nowMs = Date.now()) {
   };
 }
 
-function buildStructuredDebugView(activity, inspector = {}, locale = "zh-CN") {
-  const item = normalizeMessageActivity(activity || {});
-  const traces = item.trace_events.filter(Boolean);
-  const toolGroups = buildToolProgressGroups(item);
-  const modelRounds = [];
-  let currentRound = null;
-  traces.forEach((trace) => {
-    const type = String(trace.type || "").trim();
-    const payload = trace.payload && typeof trace.payload === "object" ? trace.payload : {};
-    if (type === "llm.started") {
-      currentRound = {
-        index: modelRounds.length + 1,
-        model: String(payload.model || ""),
-        phase: String(payload.phase || payload.stream_stage || ""),
-        status: "running",
-        decision: "",
-        tool_count_total: 0,
-        events: [trace],
-      };
-      modelRounds.push(currentRound);
-      return;
-    }
-    if (!currentRound && (type.startsWith("llm.") || type === "model_action" || type.startsWith("tool_drain.") || type.startsWith("answer."))) {
-      currentRound = {
-        index: modelRounds.length + 1,
-        model: String(payload.model || ""),
-        phase: String(payload.phase || ""),
-        status: "running",
-        decision: "",
-        tool_count_total: 0,
-        events: [],
-      };
-      modelRounds.push(currentRound);
-    }
-    if (!currentRound) return;
-    currentRound.events.push(trace);
-    if (payload.model && !currentRound.model) currentRound.model = String(payload.model || "");
-    if ((payload.phase || payload.stream_stage) && !currentRound.phase) currentRound.phase = String(payload.phase || payload.stream_stage || "");
-    const modelAction = payload.model_action && typeof payload.model_action === "object" ? payload.model_action : {};
-    if (modelAction.action_type) currentRound.decision = String(modelAction.action_type || "");
-    if (type === "tool_drain.started" || type === "tool_drain.finished") {
-      currentRound.decision = "tool_call";
-      currentRound.tool_count_total = Math.max(
-        Number(currentRound.tool_count_total || 0) || 0,
-        Number(payload.tool_count_total || payload.tool_count_drained || 0) || 0,
-      );
-    }
-    if (type === "answer.started" || type === "answer.delta" || type === "answer.done" || type === "answer.finished") {
-      currentRound.decision = currentRound.decision || "final_answer";
-    }
-    if (type === "llm.finished" || type === "answer.done" || type === "answer.finished") {
-      currentRound.status = "completed";
-    } else if (type === "llm.failed") {
-      currentRound.status = "failed";
-    }
-  });
-  const latestHarnessPayload = [...traces].reverse().find((trace) => {
-    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
-    return Object.prototype.hasOwnProperty.call(payload, "tool_boundary_clean")
-      || Object.prototype.hasOwnProperty.call(payload, "blocked_reason")
-      || Object.prototype.hasOwnProperty.call(payload, "turn_status")
-      || Object.prototype.hasOwnProperty.call(payload, "usage")
-      || Object.prototype.hasOwnProperty.call(payload, "token_usage");
-  });
-  const latestHarness = latestHarnessPayload && latestHarnessPayload.payload && typeof latestHarnessPayload.payload === "object"
-    ? latestHarnessPayload.payload
-    : {};
-  const inspectorRuntimeState = inspector && inspector.run_state && typeof inspector.run_state === "object"
-    ? inspector.run_state
-    : {};
-  const runtimeError = Object.keys(item.runtime_error || {}).some((key) => {
-    const value = item.runtime_error[key];
-    return value !== "" && value !== null && value !== 0;
-  })
-    ? item.runtime_error
-    : normalizeRuntimeErrorPayload(inspectorRuntimeState.runtime_error);
-  const sentToModel = inspectorRuntimeState.thread_context && typeof inspectorRuntimeState.thread_context === "object"
-    ? inspectorRuntimeState.thread_context
-    : ((inspector && inspector.sent_to_model && typeof inspector.sent_to_model === "object") ? inspector.sent_to_model : {});
-  const runtimeBoundary = inspectorRuntimeState.runtime_boundary && typeof inspectorRuntimeState.runtime_boundary === "object"
-    ? inspectorRuntimeState.runtime_boundary
-    : {};
-  const explicitBoundaryModelView = inspectorRuntimeState.runtime_boundary_model_view && typeof inspectorRuntimeState.runtime_boundary_model_view === "object"
-    ? inspectorRuntimeState.runtime_boundary_model_view
-    : {};
-  const boundaryModelView = Object.keys(explicitBoundaryModelView).length
-    ? explicitBoundaryModelView
-    : ((runtimeBoundary.model_view && typeof runtimeBoundary.model_view === "object") ? runtimeBoundary.model_view : runtimeBoundary);
-  return {
-    sent_to_model: sentToModel,
-    user_context: {
-      triggering_user_message: item.triggering_user_message,
-      triggering_user_turn_id: item.triggering_user_turn_id,
-      session_id: item.session_id,
-      thread_id: item.thread_id,
-      project: (inspector && inspector.project) || {},
-      model: latestHarness.model || "",
-      provider: latestHarness.provider || "",
-      attachments_count: Number(latestHarness.attachments_count || latestHarness.attachment_count || 0) || 0,
-      permission_profile: latestHarness.permission_profile || inspectorRuntimeState.permission_profile || "",
-    },
-    model_rounds: modelRounds,
-    tool_groups: toolGroups.map((group) => ({
-      call_id: group.id,
-      tool: group.tool_name,
-      status: normalizeProgressStatus(group.status),
-      arguments: group.raw_arguments,
-      normalized_arguments: group.normalized_arguments,
-      validation: group.validation_result,
-      schema_validation: group.schema_validation,
-      result_summary: group.summary,
-      result_preview: group.result_preview,
-      trace_types: group.trace_types,
-    })),
-    harness: {
-      permission_profile:
-        latestHarness.permission_profile
-        || inspectorRuntimeState.permission_profile
-        || boundaryModelView.permission_profile
-        || "",
-      file_read_scope: boundaryModelView.file_read_scope || "",
-      file_write_scope: boundaryModelView.file_write_scope || "",
-      command_scope: boundaryModelView.command_scope || "",
-      network_allowed: boundaryModelView.network_allowed,
-      network_reason: boundaryModelView.network_reason || "",
-      tool_boundary_clean: latestHarness.tool_boundary_clean,
-      compaction_happened: traces.some((trace) => String(trace.type || "") === "context.compacted"),
-      retry_happened: traces.some((trace) => String(trace.type || "").startsWith("llm.retry")),
-      blocked_reason: latestHarness.blocked_reason || "",
-      runtime_error_kind: runtimeError.kind || "",
-      runtime_error_phase: runtimeError.phase || "",
-      runtime_error_message: runtimeError.message || "",
-      pending_user_input: latestHarness.pending_user_input || {},
-      turn_status: latestHarness.turn_status || item.status,
-      last_successful_round: Number(runtimeError.last_successful_round || 0) || 0,
-      failed_round: Number(runtimeError.failed_round || 0) || 0,
-      context_version: Number(inspectorRuntimeState.context_version || 0) || 0,
-      run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
-      token_usage: latestHarness.token_usage || latestHarness.usage || {},
-    },
-    runtime_error: runtimeError,
-    final_status: {
-      status: item.status,
-      activity_summary: item.activity_summary,
-      finished_at: item.finished_at,
-      run_duration_ms: item.run_duration_ms || item.final_elapsed_ms || 0,
-      model_draft: item.model_draft,
-      final_answer: item.final_answer,
-    },
-    raw: {
-      activity: item,
-      inspector: inspector || {},
-      trace_events: traces,
-      locale,
-    },
-  };
-}
-
 function formatLocaleLabel(locale, value) {
   const normalized = String(value || "").trim();
   if (!normalized) return "-";
@@ -3469,6 +3323,8 @@ function mergeActivityState(previous, patch = {}) {
     run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
     summary: String(nextPatch.summary || prev.summary || ""),
+    activity_loaded: Boolean(nextPatch.activity_loaded || nextPatch.activityLoaded || prev.activity_loaded || nextPatch.full_loaded || nextPatch.fullLoaded),
+    debug_loaded: Boolean(nextPatch.debug_loaded || nextPatch.debugLoaded || prev.debug_loaded || nextPatch.full_loaded || nextPatch.fullLoaded),
     full_loaded: Boolean(nextPatch.full_loaded || nextPatch.fullLoaded || prev.full_loaded),
     activity_summary: String(nextPatch.activity_summary || prev.activity_summary || ""),
     live_model_started: Boolean(nextPatch.live_model_started || nextPatch.liveModelStarted || prev.live_model_started),
@@ -3476,6 +3332,10 @@ function mergeActivityState(previous, patch = {}) {
     model_draft: nextModelDraft,
     final_answer: nextFinalAnswer,
     runtime_error: nextRuntimeErrorDefined ? nextRuntimeError : prev.runtime_error,
+    runtime_inspector:
+      nextPatch.runtime_inspector && typeof nextPatch.runtime_inspector === "object"
+        ? nextPatch.runtime_inspector
+        : prev.runtime_inspector,
     tool_boundary_clean:
       typeof nextPatch.tool_boundary_clean === "boolean"
         ? nextPatch.tool_boundary_clean
@@ -4020,6 +3880,7 @@ function App() {
   const [renameError, setRenameError] = useState("");
   const [renamingThread, setRenamingThread] = useState(false);
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
+  const [debugOpenByMessageId, setDebugOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState("");
@@ -4045,7 +3906,7 @@ function App() {
   const activeThreadAbortRef = useRef(null);
   const threadDetailCacheRef = useRef(new Map());
   const activeSendThreadIdsRef = useRef(new Set());
-  const fullTurnRequestRef = useRef(new Set());
+  const runDetailRequestRef = useRef(new Set());
   const activeSessionIdRef = useRef("");
   const pendingThreadCreationPromiseRef = useRef(null);
   const pendingTempThreadIdRef = useRef("");
@@ -5338,8 +5199,10 @@ function App() {
                 (previous.runArtifact && Object.keys(previous.runArtifact || {}).length)
                   ? previous.runArtifact
                   : message.runArtifact,
-              fullTurnLoading: Boolean(previous.fullTurnLoading),
-              fullTurnError: String(previous.fullTurnError || ""),
+              runActivityLoading: Boolean(previous.runActivityLoading),
+              runActivityError: String(previous.runActivityError || ""),
+              runDebugLoading: Boolean(previous.runDebugLoading),
+              runDebugError: String(previous.runDebugError || ""),
             };
           }),
       sessionRuntimeState: preserveRuntimeState
@@ -6508,9 +6371,24 @@ function App() {
       }
       return;
     }
-    const structuredUserInputResponse = userInputResponse && typeof userInputResponse === "object"
+    const explicitUserInputResponse = userInputResponse && typeof userInputResponse === "object"
       ? userInputResponse
       : {};
+    const storedPendingInput = sessionRuntimeState.pending_user_input
+      && typeof sessionRuntimeState.pending_user_input === "object"
+      ? sessionRuntimeState.pending_user_input
+      : {};
+    const structuredUserInputResponse = Object.keys(explicitUserInputResponse).length
+      ? explicitUserInputResponse
+      : (String(storedPendingInput.type || "") === "request_user_input"
+        ? {
+            type: "request_user_input",
+            tool_call_id: String(storedPendingInput.tool_call_id || ""),
+            response: messageText,
+          }
+        : {});
+    const isTurnResume = ["command_execution", "request_user_input"]
+      .includes(String(structuredUserInputResponse.type || ""));
     const clientSubmittedAtMs = Date.now();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
@@ -6566,7 +6444,7 @@ function App() {
         setActiveRunThreadId(runOwnerThreadId);
       }
 
-      const userMessage = createMessage("user", messageText);
+      const userMessage = isTurnResume ? null : createMessage("user", messageText);
       const runModelName = String(
         chatSettings.model ||
         (activeProviderProfile && activeProviderProfile.default_model) ||
@@ -6584,10 +6462,10 @@ function App() {
         },
       });
       const nextInitialRuntimeState = {
-        goal: messageText,
+        goal: isTurnResume ? String(sessionRuntimeState.goal || messageText) : messageText,
         permission_profile: normalizePermissionProfile(chatSettings.permission_profile || "auto"),
         turn_status: "running",
-        plan: [],
+        plan: isTurnResume && Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : [],
         pending_user_input: {},
         pending_approval: {},
       };
@@ -6619,7 +6497,7 @@ function App() {
           Array.isArray(existing.messages) && existing.messages.length
             ? existing.messages
             : (ownerThreadVisible() ? messages : []),
-          [userMessage, pendingMessage],
+          [userMessage, pendingMessage].filter(Boolean),
         ),
         sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, nextInitialRuntimeState),
         activeTurn: initialActiveTurn(existing.activeTurn),
@@ -6627,7 +6505,7 @@ function App() {
       if (ownerThreadVisible()) {
         setMessages((prev) => (
           ownerThreadVisible()
-            ? appendMessagesOnceById(prev, [userMessage, pendingMessage])
+            ? appendMessagesOnceById(prev, [userMessage, pendingMessage].filter(Boolean))
             : prev
         ));
         setLiveTurnState(nextInitialRuntimeState);
@@ -6644,7 +6522,7 @@ function App() {
           session_id: sid,
           project_id: projectId,
           message: messageText,
-          client_message_id: String(userMessage.id || ""),
+          client_message_id: String((userMessage && userMessage.id) || ""),
           client_submitted_at_ms: clientSubmittedAtMs,
           attachment_ids: readyAttachmentIds,
           user_input_response: structuredUserInputResponse,
@@ -6777,7 +6655,7 @@ function App() {
           if (!authoritativeMessages.length) return false;
           updateOwnerMessages((prev) => (
             mergeAuthoritativeThreadMessages(authoritativeMessages, prev, {
-              optimisticMessageIds: [String(userMessage.id || "")],
+              optimisticMessageIds: userMessage ? [String(userMessage.id || "")] : [],
             })
           ));
           updateThreadSnapshot(ownerId, (existing) => ({ ...existing, detail }));
@@ -7089,8 +6967,10 @@ function App() {
                   activity: item.activity,
                   answerBundle: item.answerBundle,
                   runArtifact: item.runArtifact,
-                  fullTurnLoading: item.fullTurnLoading,
-                  fullTurnError: item.fullTurnError,
+                  runActivityLoading: item.runActivityLoading,
+                  runActivityError: item.runActivityError,
+                  runDebugLoading: item.runDebugLoading,
+                  runDebugError: item.runDebugError,
                 })
               : item
           )),
@@ -7106,8 +6986,10 @@ function App() {
                   activity: item.activity,
                   answerBundle: item.answerBundle,
                   runArtifact: item.runArtifact,
-                  fullTurnLoading: item.fullTurnLoading,
-                  fullTurnError: item.fullTurnError,
+                  runActivityLoading: item.runActivityLoading,
+                  runActivityError: item.runActivityError,
+                  runDebugLoading: item.runDebugLoading,
+                  runDebugError: item.runDebugError,
                 })
               : item
           )),
@@ -7428,10 +7310,6 @@ function App() {
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
         pending_approval: latestRunSnapshot.pending_approval || {},
-        work_cursor: latestRunSnapshot.work_cursor || {},
-        task_state: latestRunSnapshot.task_state || {},
-        task_state_delta: latestRunSnapshot.task_state_delta || {},
-        task_state_validation: latestRunSnapshot.task_state_validation || {},
         activity: latestActivity,
         context_meter: latestRunSnapshot.context_meter || {},
         compaction_status: latestRunSnapshot.compaction_status || {},
@@ -7922,8 +7800,6 @@ function App() {
           plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : ((((finalPayload.inspector || {}).run_state || {}).plan) || []),
           pending_user_input: finalPayload.pending_user_input || (((finalPayload.inspector || {}).run_state || {}).pending_user_input) || {},
           pending_approval: finalPayload.pending_approval || (((finalPayload.inspector || {}).run_state || {}).pending_approval) || {},
-          work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
-          task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
         }),
         liveEvidence: {
           ...(prev.liveEvidence || {}),
@@ -7964,8 +7840,6 @@ function App() {
           last_run_id: String(finalPayload.run_id || ""),
           last_model: String(finalPayload.effective_model || ""),
           context_meter: finalPayload.context_meter || (((finalPayload.inspector || {}).run_state || {}).context_meter) || (((finalPayload.inspector || {}).session || {}).context_meter) || {},
-          work_cursor: finalPayload.work_cursor || (((finalPayload.inspector || {}).run_state || {}).work_cursor) || (((finalPayload.inspector || {}).session || {}).work_cursor) || {},
-          task_state: finalPayload.task_state || (((finalPayload.inspector || {}).run_state || {}).task_state) || (((finalPayload.inspector || {}).session || {}).task_state) || {},
           tool_hits: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events : [],
           tool_count: Array.isArray(finalPayload.tool_events) ? finalPayload.tool_events.length : 0,
           evidence_status: String((((finalPayload.inspector || {}).evidence || {}).status) || "not_needed"),
@@ -8259,33 +8133,27 @@ function App() {
   );
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
   const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
-  const activeTaskState = (
-    runState.task_state && typeof runState.task_state === "object"
-  )
-    ? runState.task_state
-    : ((sessionRuntimeState.task_state && typeof sessionRuntimeState.task_state === "object") ? sessionRuntimeState.task_state : {});
-  const activeWorkCursor = (
-    runState.work_cursor && typeof runState.work_cursor === "object"
-  )
-    ? runState.work_cursor
-    : ((sessionRuntimeState.work_cursor && typeof sessionRuntimeState.work_cursor === "object") ? sessionRuntimeState.work_cursor : {});
+  const activePlan = Array.isArray(runState.plan) && runState.plan.length
+    ? runState.plan
+    : (Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : []);
+  const currentPlanStep = activePlan.find((item) => String((item && item.status) || "") === "in_progress") || null;
   const activeTaskCheckpoint = {
-    task_id: String(activeTaskState.task_id || ""),
-    goal: String(activeTaskState.goal || runState.goal || sessionRuntimeState.goal || ""),
-    status: String(activeTaskState.status || runState.turn_status || sessionRuntimeState.turn_status || ""),
-    current_step_id: String(activeTaskState.current_step_id || ""),
-    cwd: String(activeWorkCursor.cwd || runState.cwd || sessionRuntimeState.cwd || ""),
-    next_action: String(activeTaskState.next_required_action || ""),
-    blocked_reason: String(activeTaskState.blocked_reason || ""),
-    active_files: Array.isArray(activeWorkCursor.active_files) ? activeWorkCursor.active_files : [],
-    active_attachments: Array.isArray(activeWorkCursor.active_attachments) ? activeWorkCursor.active_attachments : [],
-    completed_steps: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps : [],
-    failed_attempts: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts : [],
-    completed_steps_count: Array.isArray(activeTaskState.completed_steps) ? activeTaskState.completed_steps.length : 0,
-    failed_attempts_count: Array.isArray(activeTaskState.failed_attempts) ? activeTaskState.failed_attempts.length : 0,
-    progress_basis: Array.isArray(activeTaskState.progress_basis) ? activeTaskState.progress_basis : [],
-    evidence_refs: Array.isArray(activeTaskState.evidence_refs) ? activeTaskState.evidence_refs : [],
-    validation_warnings: Array.isArray(activeTaskState.validation_warnings) ? activeTaskState.validation_warnings : [],
+    task_id: "",
+    goal: String(runState.goal || sessionRuntimeState.goal || ""),
+    status: String(runState.turn_status || sessionRuntimeState.turn_status || ""),
+    current_step_id: String((currentPlanStep && (currentPlanStep.id || currentPlanStep.step)) || ""),
+    cwd: String(runState.cwd || sessionRuntimeState.cwd || ""),
+    next_action: String((currentPlanStep && (currentPlanStep.step || currentPlanStep.title || currentPlanStep.content)) || ""),
+    blocked_reason: String((runState.runtime_error || {}).message || runState.blocked_reason || ""),
+    active_files: [],
+    active_attachments: [],
+    completed_steps: activePlan.filter((item) => String((item && item.status) || "") === "completed"),
+    failed_attempts: [],
+    completed_steps_count: activePlan.filter((item) => String((item && item.status) || "") === "completed").length,
+    failed_attempts_count: 0,
+    progress_basis: [],
+    evidence_refs: [],
+    validation_warnings: [],
   };
   const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedThemeColor = themeColorOptionById(themeColor).id;
@@ -8304,17 +8172,7 @@ function App() {
     ? runState.runtime_boundary_model_view
     : {};
   const activeTurnStatus = String(runState.turn_status || sessionRuntimeState.turn_status || "idle");
-  const activePlan = Array.isArray(runState.plan) && runState.plan.length
-    ? runState.plan
-    : (Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : []);
-  const hasTaskCheckpoint = Boolean(
-    activeTaskCheckpoint.task_id
-    || activeTaskCheckpoint.current_step_id
-    || activeTaskCheckpoint.completed_steps_count
-    || activeTaskCheckpoint.failed_attempts_count
-    || activeTaskCheckpoint.next_action,
-  );
-  const hasPlanMode = Boolean(activePlan.length || hasTaskCheckpoint);
+  const hasPlanMode = Boolean(activePlan.length);
   const showExecutionProgress = Boolean(
     hasPlanMode
     || hasLiveRuntimeState
@@ -8377,6 +8235,7 @@ function App() {
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
     const approvalToken = String(activePendingApproval.approval_token || "").trim();
+    const toolCallId = String(activePendingApproval.tool_call_id || "").trim();
     if (!command) return;
     if (normalizedAction === "approve_once" && !approvalToken) return;
     const message = normalizedAction === "approve_once"
@@ -8387,6 +8246,7 @@ function App() {
       type: "command_execution",
       action: normalizedAction,
       approval_token: approvalToken,
+      tool_call_id: toolCallId,
       command,
       cwd,
     });
@@ -8552,41 +8412,52 @@ function App() {
     liveTurnState,
   ]);
 
-  async function ensureFullTurnActivity(messageId) {
+  async function ensureRunDetail(messageId, view) {
     const sid = String(sessionId || "").trim();
     const turnId = String(messageId || "").trim();
+    const detailView = view === "debug" ? "debug" : "activity";
     if (!sid || !turnId || isTempThreadId(sid)) return;
     const currentMessage = (Array.isArray(messages) ? messages : []).find((entry) => String(entry.id || "") === turnId);
     if (!currentMessage || currentMessage.role !== "assistant") return;
     if (currentMessage.pending) return;
     const currentActivity = normalizeMessageActivity(currentMessage.activity || {});
-    const alreadyFull = Boolean(currentActivity.full_loaded);
-    if (alreadyFull || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
-    const requestKey = `${sid}:${turnId}`;
-    if (fullTurnRequestRef.current.has(requestKey)) return;
-    fullTurnRequestRef.current.add(requestKey);
+    const alreadyLoaded = detailView === "debug"
+      ? Boolean(currentActivity.debug_loaded)
+      : Boolean(currentActivity.activity_loaded);
+    if (alreadyLoaded || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
+    const requestKey = `${sid}:${turnId}:${detailView}`;
+    if (runDetailRequestRef.current.has(requestKey)) return;
+    runDetailRequestRef.current.add(requestKey);
     setMessages((prev) => {
       const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
         String(entry.id || "") === turnId
-          ? { ...entry, fullTurnLoading: true, fullTurnError: "" }
+          ? {
+              ...entry,
+              ...(detailView === "debug"
+                ? { runDebugLoading: true, runDebugError: "" }
+                : { runActivityLoading: true, runActivityError: "" }),
+            }
           : entry
       ));
       updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
       return nextMessages;
     });
     try {
-      const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=full`);
-      const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });
+      const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=${detailView}`);
+      const loadedActivity = normalizeMessageActivity({
+        ...((payload && payload.activity) || {}),
+        activity_loaded: true,
+        debug_loaded: detailView === "debug",
+      });
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
             ? {
                 ...entry,
-                activity: mergeActivityState(entry.activity || {}, fullActivity),
-                answerBundle: ((payload && payload.answer_bundle) && typeof payload.answer_bundle === "object") ? payload.answer_bundle : {},
-                runArtifact: ((payload && payload.run_artifact) && typeof payload.run_artifact === "object") ? payload.run_artifact : {},
-                fullTurnLoading: false,
-                fullTurnError: "",
+                activity: mergeActivityState(entry.activity || {}, loadedActivity),
+                ...(detailView === "debug"
+                  ? { runDebugLoading: false, runDebugError: "" }
+                  : { runActivityLoading: false, runActivityError: "" }),
               }
             : entry
         ));
@@ -8605,7 +8476,12 @@ function App() {
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
-            ? { ...entry, fullTurnLoading: false, fullTurnError: String(nextError.summary || t("errors.load_thread_failed")) }
+            ? {
+                ...entry,
+                ...(detailView === "debug"
+                  ? { runDebugLoading: false, runDebugError: String(nextError.summary || t("errors.load_thread_failed")) }
+                  : { runActivityLoading: false, runActivityError: String(nextError.summary || t("errors.load_thread_failed")) }),
+              }
             : entry
         ));
         updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
@@ -8613,9 +8489,12 @@ function App() {
       });
       pushLogWithLimit(setLogs, "error", t("log.refresh_state_failed", { summary: nextError.summary }));
     } finally {
-      fullTurnRequestRef.current.delete(requestKey);
+      runDetailRequestRef.current.delete(requestKey);
     }
   }
+
+  const ensureRunActivity = (messageId) => ensureRunDetail(messageId, "activity");
+  const ensureRunDebug = (messageId) => ensureRunDetail(messageId, "debug");
 
   const toggleMessageActivity = (messageId) => {
     const willOpen = !activityOpenByMessageId[messageId];
@@ -8624,8 +8503,14 @@ function App() {
       [messageId]: !prev[messageId],
     }));
     if (willOpen) {
-      ensureFullTurnActivity(messageId);
+      ensureRunActivity(messageId);
     }
+  };
+
+  const toggleMessageDebug = (messageId, open) => {
+    const isOpen = Boolean(open);
+    setDebugOpenByMessageId((prev) => ({ ...prev, [messageId]: isOpen }));
+    if (isOpen) ensureRunDebug(messageId);
   };
 
   const renderDetailBlock = (label, value, options = {}) => {
@@ -8722,47 +8607,6 @@ function App() {
               <details key=${`execution-trace-${index}`} className="activity-payload" open=${index === entries.length - 1 ? true : undefined}>
                 <summary>${String(item.title || `${t("activity.execution_trace")} ${index + 1}`)}</summary>
                 <pre>${lines.join("\n")}</pre>
-              </details>
-            `;
-          })}
-        </div>
-      </details>
-    `;
-  };
-
-  const hasTruncatedMarker = (value) => {
-    if (!value || typeof value !== "object") return false;
-    if (!Array.isArray(value) && value.truncated === true) return true;
-    if (Array.isArray(value)) return value.some((entry) => hasTruncatedMarker(entry));
-    return Object.values(value).some((entry) => hasTruncatedMarker(entry));
-  };
-
-  const renderRawModelIo = (exchanges) => {
-    const items = Array.isArray(exchanges) ? exchanges : [];
-    if (!items.length) return null;
-    return html`
-      <details className="activity-payload" open>
-        <summary>${t("runtime.raw_model_io.title")}</summary>
-        <div className="activity-structured-details">
-          ${items.map((entry, index) => {
-            const round = entry && typeof entry === "object" ? entry : {};
-            const phase = String(round.phase || "-").trim() || "-";
-            const status = String(round.status || "-").trim() || "-";
-            const summaryParts = [
-              t("runtime.raw_model_io.round", { n: Number(round.round || index + 1) || (index + 1) }),
-              phase,
-              status,
-            ];
-            if (hasTruncatedMarker(round)) summaryParts.push(t("runtime.raw_model_io.truncated"));
-            return html`
-              <details key=${`raw-model-io-${round.round || index + 1}`} className="activity-payload">
-                <summary>${summaryParts.join(" · ")}</summary>
-                <div className="activity-structured-details">
-                  ${renderDetailBlock(t("runtime.raw_model_io.sent_messages_exact"), round.sent_messages_exact)}
-                  ${renderDetailBlock(t("runtime.raw_model_io.model_returned_exact"), round.model_returned_exact)}
-                  ${renderDetailBlock(t("runtime.raw_model_io.error"), round.error)}
-                  ${renderDetailBlock(t("runtime.raw_model_io.harness_interpretation"), round.harness_interpretation)}
-                </div>
               </details>
             `;
           })}
@@ -8942,147 +8786,176 @@ function App() {
     `;
   };
 
-  const renderActivityDebugDetails = (message, projection) => {
-    const activity = normalizeMessageActivity((message && message.activity) || {});
-    const item = normalizeMessageActivity(activity || {});
-    const runArtifact = message && message.runArtifact && typeof message.runArtifact === "object" ? message.runArtifact : {};
-    const answerBundle = message && message.answerBundle && typeof message.answerBundle === "object" ? message.answerBundle : {};
-    const inspector = runArtifact.inspector && typeof runArtifact.inspector === "object" ? runArtifact.inspector : {};
-    const debugRunState = inspector.run_state && typeof inspector.run_state === "object" ? inspector.run_state : {};
-    const debugSessionState = inspector.session && typeof inspector.session === "object" ? inspector.session : {};
-    const debugTaskState = runArtifact.task_state && typeof runArtifact.task_state === "object"
-      ? runArtifact.task_state
-      : (debugRunState.task_state && typeof debugRunState.task_state === "object"
-        ? debugRunState.task_state
-        : ((debugSessionState.task_state && typeof debugSessionState.task_state === "object") ? debugSessionState.task_state : {}));
-    const debugTaskStateDelta = runArtifact.task_state_delta && typeof runArtifact.task_state_delta === "object"
-      ? runArtifact.task_state_delta
-      : (debugRunState.task_state_delta && typeof debugRunState.task_state_delta === "object"
-        ? debugRunState.task_state_delta
-        : ((debugSessionState.task_state_delta && typeof debugSessionState.task_state_delta === "object") ? debugSessionState.task_state_delta : {}));
-    const debugTaskStateValidation = runArtifact.task_state_validation && typeof runArtifact.task_state_validation === "object"
-      ? runArtifact.task_state_validation
-      : (debugRunState.task_state_validation && typeof debugRunState.task_state_validation === "object"
-        ? debugRunState.task_state_validation
-        : ((debugSessionState.task_state_validation && typeof debugSessionState.task_state_validation === "object") ? debugSessionState.task_state_validation : {}));
-    const structured = buildStructuredDebugView(item, inspector, uiLocale);
+  const renderActivityToolDetails = (message, projection) => {
     const messageId = String((message && message.id) || "");
-    const traces = Array.isArray((projection && projection.trace_events)) ? projection.trace_events : [];
-    const exchanges = Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [];
-    const sentToModelDetails = renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true });
-    const modelOutputSections = [
-      renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message),
-      renderDetailBlock(
-        t("runtime.model_draft.title"),
-        String(item.model_draft || "").trim() || t("runtime.model_draft.empty"),
-      ),
-      Object.keys(structured.runtime_error || {}).some((key) => {
-        const value = structured.runtime_error[key];
-        return value !== "" && value !== null && value !== 0;
-      })
-        ? renderDetailBlock(t("runtime.error.llm_request_failed"), structured.runtime_error)
-        : null,
-      item.plan.length
-        ? renderDetailBlock(t("run.checklist"), {
-            explanation: item.plan_explanation,
-            plan: item.plan,
-          })
-        : null,
-      renderRawModelIo(exchanges),
-      renderPlanDetails(t("activity.model_action"), projection.model_action),
-      renderRevisionSummaryDetails(projection.revision_summary),
-      Object.keys(debugTaskState).length
-        ? renderDetailBlock("task_state", debugTaskState)
-        : null,
-      Object.keys(debugTaskStateDelta).length
-        ? renderDetailBlock("task_state_delta", debugTaskStateDelta)
-        : null,
-      Object.keys(debugTaskStateValidation).length
-        ? renderDetailBlock("task_state_validation", debugTaskStateValidation)
-        : null,
-      Object.keys(answerBundle).length
-        ? renderDetailBlock(t("activity.debug.answer_bundle"), answerBundle)
-        : null,
-    ].filter(Boolean);
-    const modelRoundDetails = structured.model_rounds.length
-      ? html`
-          <details className="activity-payload" open>
-            <summary>${t("activity.debug.model_rounds")}</summary>
-            <div className="activity-structured-details">
-              ${structured.model_rounds.map((round) => html`
-                <details key=${`round-${round.index}`} className="activity-payload">
-                  <summary>${t("activity.debug.round_n", { n: round.index })} · ${round.status || "-"}</summary>
-                  ${renderDetailBlock(t("labels.payload"), {
-                    model: round.model,
-                    phase: round.phase,
-                    status: round.status,
-                    decision: round.decision,
-                    tool_count_total: round.tool_count_total,
-                  })}
-                </details>
-              `)}
-            </div>
-          </details>
-        `
-      : null;
-    const toolDebugDetails = structured.tool_groups.length
-      ? html`
-          <details className="activity-payload">
-            <summary>${t("activity.debug.tool_execution")}</summary>
-            <div className="activity-structured-details">
-              ${structured.tool_groups.map((toolItem, index) => html`
-                <details key=${toolItem.call_id || `${messageId}-tool-${index}`} className="activity-payload">
-                  <summary>${toolItem.tool || "tool"} · ${toolItem.call_id || "-"}</summary>
-                  ${renderToolAuditDetails({
-                    raw_arguments: toolItem.arguments,
-                    normalized_arguments: toolItem.normalized_arguments,
-                    validation_result: toolItem.validation,
-                    schema_validation: toolItem.schema_validation,
-                    result_preview: toolItem.result_preview,
-                  })}
-                  ${renderDetailBlock(t("labels.payload"), toolItem)}
-                </details>
-              `)}
-            </div>
-          </details>
-        `
-      : null;
-    const harnessDetails = renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true });
-    const finalStatusDetails = renderDetailBlock(t("activity.debug.final_status"), structured.final_status);
-    const modelOutputDetails = modelRoundDetails || modelOutputSections.length || finalStatusDetails
-      ? html`
-          <details className="activity-payload" open>
-            <summary>${t("activity.debug.model_output")}</summary>
-            <div className="activity-structured-details">
-              ${modelOutputSections}
-              ${modelRoundDetails}
-              ${finalStatusDetails}
-            </div>
-          </details>
-        `
-      : null;
-    const rawTraceList = traces.length
-      ? html`
-          <details className="activity-payload">
-            <summary>${t("activity.debug.advanced_raw")}</summary>
-            ${renderDetailBlock(t("activity.debug.raw_json"), structured.raw)}
-          </details>
-        `
-      : null;
-    const loadError = String((message && message.fullTurnError) || "").trim();
-    const loading = Boolean(message && message.fullTurnLoading);
-    if (!sentToModelDetails && !modelOutputDetails && !toolDebugDetails && !harnessDetails && !rawTraceList && !loadError && !loading) return null;
+    const toolGroups = Array.isArray(projection && projection.tool_groups) ? projection.tool_groups : [];
+    if (!toolGroups.length) return null;
     return html`
-      <details className="activity-debug-drawer">
+      <details className="activity-payload">
+        <summary>${t("activity.debug.tool_execution")}</summary>
+        <div className="activity-structured-details">
+          ${toolGroups.map((toolItem, index) => html`
+            <details key=${toolItem.id || `${messageId}-tool-${index}`} className="activity-payload">
+              <summary>${toolItem.tool_name || "tool"} · ${toolItem.id || "-"}</summary>
+              ${renderToolAuditDetails({
+                raw_arguments: toolItem.raw_arguments,
+                normalized_arguments: toolItem.normalized_arguments,
+                validation_result: toolItem.validation_result,
+                schema_validation: toolItem.schema_validation,
+                result_preview: toolItem.result_preview,
+              })}
+              ${renderDetailBlock(t("labels.payload"), toolItem)}
+            </details>
+          `)}
+        </div>
+      </details>
+    `;
+  };
+
+  const renderActivityDebugDetails = (message) => {
+    const activity = normalizeMessageActivity((message && message.activity) || {});
+    const messageId = String((message && message.id) || "");
+    const threadItems = Array.isArray(activity.thread_items) ? activity.thread_items : [];
+    const turnTrace = activity.turn_trace && typeof activity.turn_trace === "object" ? activity.turn_trace : {};
+    const traceSteps = Array.isArray(turnTrace.steps) ? turnTrace.steps : [];
+    const contexts = Array.isArray(turnTrace.contexts) ? turnTrace.contexts : [];
+    const legacyExchanges = Array.isArray(activity.llm_exchanges) ? activity.llm_exchanges : [];
+    const traceStepByItemId = new Map(
+      traceSteps
+        .filter((step) => step && step.item_id)
+        .map((step) => [String(step.item_id), step]),
+    );
+    const toolCallOwner = new Map();
+    threadItems.forEach((item) => {
+      if (String((item && item.role) || "") !== "assistant") return;
+      (Array.isArray(item.tool_calls) ? item.tool_calls : []).forEach((call) => {
+        const callId = String((call && call.id) || "");
+        if (callId) toolCallOwner.set(callId, item);
+      });
+    });
+
+    const roleLabel = (role) => translateUiOrFallback(
+      uiLocale,
+      `activity.debug.thread_role.${String(role || "")}`,
+      String(role || ""),
+    );
+    const traceDurationLabel = (durationMs) => {
+      const value = Math.max(0, Number(durationMs || 0) || 0);
+      if (!value) return "-";
+      if (value < 1000) return `${Math.round(value)} ms`;
+      return formatElapsedSeconds(Math.max(1, Math.round(value / 1000)), uiLocale);
+    };
+
+    const renderTraceDetails = (step) => {
+      if (!step || typeof step !== "object") return null;
+      const rows = [
+        [t("activity.debug.trace_status"), String(step.status || "-")],
+        [t("activity.debug.trace_duration"), traceDurationLabel(step.duration_ms)],
+        [t("activity.debug.trace_validation"), displayValueText(step.validation || {}) || "-"],
+        [t("activity.debug.trace_error_kind"), String(step.error_kind || "-")],
+        [t("activity.debug.trace_retry"), String(step.retry_count || 0)],
+        [t("activity.debug.trace_recovery"), String(step.recovery_result || "-")],
+        ["assistant_item_id", String(step.requested_by_item_id || "-")],
+        ["tool_call_id", String(step.tool_call_id || "-")],
+        ["tool_result_item_id", String(step.item_id || "-")],
+      ];
+      return html`
+        <div className="thread-trace-grid">
+          ${rows.map(([label, value]) => html`
+            <div className="thread-trace-row" key=${label}>
+              <span>${label}</span>
+              <code>${value}</code>
+            </div>
+          `)}
+        </div>
+      `;
+    };
+
+    const renderThreadItem = (item, index) => {
+      const role = String((item && item.role) || "");
+      const itemId = String((item && item.id) || `thread-item-${index}`);
+      const content = String((item && item.content) || "");
+      const toolCalls = Array.isArray(item && item.tool_calls) ? item.tool_calls : [];
+      const traceStep = traceStepByItemId.get(itemId) || null;
+      const toolCallId = String((item && item.tool_call_id) || "");
+      const owner = toolCallOwner.get(toolCallId) || null;
+      return html`
+        <div className=${`thread-history-item role-${role}`} key=${itemId}>
+          <div className="thread-history-item-head">
+            <strong>${roleLabel(role)}${role === "tool" && item.name ? ` · ${item.name}` : ""}</strong>
+            <code>${itemId}</code>
+          </div>
+          ${content ? html`<pre className="thread-history-content">${content}</pre>` : null}
+          ${toolCalls.map((call, callIndex) => html`
+            <details className="thread-tool-call" key=${String(call.id || `${itemId}-call-${callIndex}`)}>
+              <summary>${t("activity.debug.tool_call")} · ${String(call.name || "tool")}</summary>
+              <div className="thread-tool-call-meta"><code>${String(call.id || "-")}</code></div>
+              ${renderDetailBlock(t("activity.raw_arguments"), call.args || {})}
+            </details>
+          `)}
+          ${role === "tool" && owner ? html`
+            <div className="thread-tool-link">
+              ${t("activity.debug.requested_by")} <code>${String(owner.id || "-")}</code>
+            </div>
+          ` : null}
+          ${role === "tool" && traceStep ? html`
+            <details className="thread-trace-details">
+              <summary>${t("activity.debug.view_trace")}</summary>
+              ${renderTraceDetails(traceStep)}
+            </details>
+          ` : null}
+        </div>
+      `;
+    };
+
+    const threadHistory = threadItems.length
+      ? html`
+          <section className="thread-history-debug">
+            <div className="thread-history-title">${t("activity.debug.thread_history")}</div>
+            <div className="thread-history-list">
+              ${threadItems.map(renderThreadItem)}
+            </div>
+          </section>
+        `
+      : null;
+
+    const legacySystemMessages = legacyExchanges
+      .flatMap((exchange) => Array.isArray(exchange && exchange.sent_messages_exact) ? exchange.sent_messages_exact : [])
+      .filter((item) => String((item && item.role) || "") === "system")
+      .map((item) => String((item && item.content) || ""))
+      .filter(Boolean);
+    const systemPromptContexts = contexts.length
+      ? contexts
+      : (legacySystemMessages.length ? [{ context_id: "legacy-context", system_message: legacySystemMessages[0] }] : []);
+    const systemPrompt = systemPromptContexts.length
+      ? html`
+          <details className="system-prompt-debug">
+            <summary>${t("activity.debug.view_system_prompt")}</summary>
+            ${systemPromptContexts.map((context, index) => html`
+              <div className="system-prompt-context" key=${String(context.context_id || index)}>
+                ${systemPromptContexts.length > 1 ? html`<code>${String(context.context_id || `context-${index + 1}`)}</code>` : null}
+                <pre>${String(context.system_message || "")}</pre>
+              </div>
+            `)}
+          </details>
+        `
+      : null;
+    const loadError = String((message && message.runDebugError) || "").trim();
+    const loading = Boolean(message && message.runDebugLoading);
+    const canLoad = Boolean(activity.trace_ref || activity.run_id);
+    if (!canLoad && !threadHistory && !systemPrompt && !loadError && !loading) return null;
+    return html`
+      <details
+        className="activity-debug-drawer"
+        open=${Boolean(debugOpenByMessageId[messageId])}
+        onToggle=${(event) => toggleMessageDebug(messageId, Boolean(event.currentTarget && event.currentTarget.open))}
+      >
         <summary>${t("activity.debug_details")}</summary>
         <div className="activity-debug-sections">
           ${loading ? html`<div className="activity-flow-note">${t("activity.debug_loading")}</div>` : null}
           ${loadError ? html`<div className="status-error">${loadError}</div>` : null}
-          ${sentToModelDetails}
-          ${modelOutputDetails}
-          ${toolDebugDetails}
-          ${harnessDetails}
-          ${rawTraceList}
+          ${threadHistory}
+          ${systemPrompt}
         </div>
       </details>
     `;
@@ -9182,8 +9055,11 @@ function App() {
                   <div className="activity-panel-title">${t("activity.title")}</div>
                   <div className=${`activity-badge tone-${tone}`}>${pillLabel}</div>
                 </div>
+                ${item.runActivityLoading ? html`<div className="activity-flow-note">${t("activity.loading_execution")}</div>` : null}
+                ${item.runActivityError ? html`<div className="status-error">${item.runActivityError}</div>` : null}
                 ${renderActivityProgressList(projection, displayActivity)}
-                ${renderActivityDebugDetails(item, projection)}
+                ${renderActivityToolDetails(item, projection)}
+                ${renderActivityDebugDetails(item)}
               </div>
             `
           : null}
@@ -10660,6 +10536,18 @@ function App() {
                       }}
                     />
                     ${t("settings.enable_tools")}
+                  </label>
+                  <label className="tool-toggle drawer-toggle">
+                    <input
+                      type="checkbox"
+                      checked=${chatSettings.debug_raw}
+                      onChange=${(event) => {
+                        const target = event.currentTarget;
+                        const nextValue = Boolean(target && target.checked);
+                        setChatSettings((prev) => ({ ...prev, debug_raw: nextValue }));
+                      }}
+                    />
+                    ${t("settings.debug_raw")}
                   </label>
                   <label className="form-field">
                     <span>${t("settings.output_limit")}</span>

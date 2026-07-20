@@ -9,19 +9,21 @@ This document records the reliability behavior that must remain stable after the
 - GPT-5.4 uses a 272,000-token default usable window and a 90% automatic compaction threshold. A verified company deployment may override the usable window with `VP_CONTEXT_WINDOW_TOKENS` or the threshold with `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`.
 - The latest provider-reported `input_tokens` is preferred. When it is unavailable, the Runtime estimates the complete request, including the system prompt, project instructions, compacted summary, transcript, attachments, current request, tool transactions, and selected tool schemas.
 - Retained history is selected as complete user-started transactions and is also token-bounded, so a single large tool result cannot silently defeat compaction.
+- Compaction is an internal Thread operation, not a chat Turn. Its minimal persisted record is `Thread.compaction = {generation, summary, compacted_until_item_id, compacted_at}`. `compaction_summary_chars` remains diagnostic metadata only. A Turn paused on an unresolved tool call cannot be compacted.
 
-## Turn completion and task completion
+## Paused Turn lifecycle
 
-`turn_status=completed` means the Runtime produced a response for the current turn. It does not by itself mean the user's multi-step task is complete.
+- A command approval or `request_user_input` pauses the current Turn instead of ending it and creating a new user Turn.
+- The Assistant tool call remains in `thread_transcript` without a placeholder result while the UI waits.
+- Approve, decline, and answer actions produce exactly one ToolMessage with the original `tool_call_id`; they never produce synthetic HumanMessages.
+- The active Plan is retained only while the Turn is paused. Once the Turn ends, the Plan remains available through transcript history but is not restored as the next Turn's active Plan.
+- Loop safeguards remain Harness-owned, but `[checkpoint_replan]` is telemetry only and is never inserted into model-visible history.
 
-The additive `task_completion` result records:
+## Technical Turn status
 
-- whether the turn ended;
-- whether a plan is tracked and fully complete;
-- whether post-change verification passed, failed, is missing, or is still running;
-- whether the task is completed, still in progress, blocked, or not explicitly tracked.
+The persisted Turn Trace has one technical status: `running`, `waiting_user`, `completed`, `failed`, `cancelled`, or `interrupted`. `completed` means the Runtime delivered the current Turn successfully; it does not claim that the user's larger business task is complete.
 
-An active plan has exactly one `in_progress` step. A fully complete plan contains only `completed` steps. If the model marks every step complete after a failed or missing post-change check, the Runtime reopens the last step and adds an explicit runtime note to the answer.
+The Runtime no longer derives a separate semantic `task_completion` object from command keywords, reopens the model's Plan, or appends a Harness-authored completion note. The model owns task meaning and Plan content. Harness still enforces technical truth: a failed/cancelled/waiting Turn cannot be stored as completed, tool results remain paired, and the Eval runner independently compares the model's final delivery with authoritative verification.
 
 The quality Eval suite in `evals/agent_quality_cases.json` covers three real task shapes: C-style `.cpp` implementation, multi-file protocol analysis, and Markdown integration documentation. Validation-only mode never calls a model:
 
@@ -82,6 +84,8 @@ Compare `success_rate_percent`, `failed_tool_calls`, `average_tool_calls_per_att
 Plan state and execution activity are separate UI layers. A plan never replaces current tool/model activity. During a run the UI shows the current step, tool, wait state, action, command, elapsed time, last semantic progress, and connection state.
 
 SSE `heartbeat` events update transport liveness only. They do not update semantic progress or make a stalled task appear active. Heartbeats arrive at low frequency and the existing streaming text update path is unchanged, avoiding a new per-token rendering cost.
+
+Historical Turn details use progressive disclosure. The developer drawer loads the persisted Thread history through that Assistant Item. Each Tool Item links to its matching Trace step through `assistant_item_id`, `tool_call_id`, and `tool_result_item_id`; timing, validation, errors, retries, and recovery stay collapsed until requested. The effective System Prompt is stored once per distinct context in the Turn Trace and is also collapsed by default. Runtime Inspector, replay counters, duplicated model-output panels, and the large Raw JSON view are no longer rendered.
 
 ## External-write approval boundary
 

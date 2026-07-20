@@ -19,7 +19,8 @@ def test_pre_turn_compaction_emits_started_before_running_compactor() -> None:
         '\"type\": \"contextCompaction\"',
         '\"status\": \"inProgress\"',
         '\"summary\": translate(locale, \"chat.replacement_history_compacting\")',
-        "compaction_result = maybe_auto_compact_session(",
+        "else maybe_auto_compact_session(",
+        '"reason": "pending_turn_resume"',
         "if not pre_compaction_started_item:",
         "elif pre_compaction_started_item:",
         '\"summary\": translate(locale, \"chat.replacement_history_compaction_checked\")',
@@ -28,7 +29,7 @@ def test_pre_turn_compaction_emits_started_before_running_compactor() -> None:
         assert token in source, token
 
     started_index = source.index('\"summary\": translate(locale, \"chat.replacement_history_compacting\")')
-    compactor_index = source.index("compaction_result = maybe_auto_compact_session(")
+    compactor_index = source.index("else maybe_auto_compact_session(")
     assert started_index < compactor_index
 
 

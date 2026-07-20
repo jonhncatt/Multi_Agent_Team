@@ -52,22 +52,9 @@ from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
 from app.runtime_errors import classify_llm_exception, runtime_error_user_text
-from app.runtime_hints import (
-    extract_activity_excerpt,
-    looks_like_inline_document_payload,
-    looks_like_japanese_review_request,
-    looks_like_revision_request,
-)
+from app.runtime_hints import looks_like_inline_document_payload
 from app.runtime_trace_labels import trace_label
 from app.serialization import dump_model, safe_model_dump
-from app.session_context import (
-    compat_task_checkpoint_from_focus,
-    focus_from_work_cursor_task_state,
-    merge_task_state_after_turn,
-    normalize_task_state,
-    normalize_task_state_delta,
-    normalize_work_cursor,
-)
 from app.subagent_registry import BuiltinSubagentRegistry, SubagentSpecError
 from app.tool_name_normalizer import normalize_tool_name
 from app.tool_trace_summary import (
@@ -606,9 +593,17 @@ class VintageProgrammerRuntime:
         return message
 
     def _thread_messages(self, context: dict[str, Any]) -> tuple[str, list[Any]]:
+        compaction_state = (
+            dict(context.get("compaction_status") or {})
+            if isinstance(context.get("compaction_status"), dict)
+            else {}
+        )
+        persisted_summary = str(context.get("summary") or "").strip()
+        if persisted_summary and not str(compaction_state.get("compacted_history") or "").strip():
+            compaction_state["compacted_history"] = persisted_summary
         summary, items = transcript_items_after_compaction(
             context.get("thread_transcript") if isinstance(context.get("thread_transcript"), dict) else {},
-            context.get("compaction_status") if isinstance(context.get("compaction_status"), dict) else {},
+            compaction_state,
         )
         messages: list[Any] = []
         for item in items:
@@ -634,7 +629,11 @@ class VintageProgrammerRuntime:
         return summary, messages
 
     @staticmethod
-    def _transcript_delta(messages: list[Any]) -> list[dict[str, Any]]:
+    def _transcript_delta(
+        messages: list[Any],
+        *,
+        turn_id: str = "",
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for message in messages:
             tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
@@ -659,6 +658,7 @@ class VintageProgrammerRuntime:
             raw = {
                 "role": role,
                 "content": getattr(message, "content", ""),
+                "turn_id": str(turn_id or ""),
                 "tool_calls": tool_calls if isinstance(tool_calls, list) else [],
                 "tool_call_id": tool_call_id,
                 "name": str(getattr(message, "name", "") or ""),
@@ -783,15 +783,13 @@ class VintageProgrammerRuntime:
     def _build_run_snapshot(
         *,
         goal: str,
-        current_task_focus: dict[str, Any],
+        run_workspace_state: dict[str, Any],
         turn_status: str,
         plan_state: list[dict[str, Any]],
         pending_user_input: dict[str, Any],
         effective_cwd: str,
         evidence_status: str,
         tool_events: list[ToolEvent],
-        task_state: dict[str, Any] | None = None,
-        task_state_delta: dict[str, Any] | None = None,
         model_draft: str = "",
         final_answer: str = "",
         runtime_error: dict[str, Any] | None = None,
@@ -800,18 +798,13 @@ class VintageProgrammerRuntime:
         payload = {
             "goal": str(goal or "").strip(),
             "turn_status": str(turn_status or "running"),
-            "cwd": str(effective_cwd or current_task_focus.get("cwd") or "").strip(),
-            "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
+            "cwd": str(effective_cwd or run_workspace_state.get("cwd") or "").strip(),
             "plan": [dict(item) for item in list(plan_state or [])[:12] if isinstance(item, dict)],
             "pending_user_input": dict(pending_user_input or {}),
             "pending_approval": dict(pending_approval or {}),
             "tool_count": len(tool_events),
             "evidence_status": str(evidence_status or "not_needed"),
         }
-        if isinstance(task_state, dict) and task_state:
-            payload["task_state"] = normalize_task_state(task_state)
-        if isinstance(task_state_delta, dict) and task_state_delta:
-            payload["task_state_delta"] = normalize_task_state_delta(task_state_delta)
         if str(model_draft or "").strip():
             payload["model_draft"] = str(model_draft or "")
         if str(final_answer or "").strip():
@@ -925,18 +918,6 @@ class VintageProgrammerRuntime:
                 }
             )
         return str(trace.get("id") or "")
-
-    @staticmethod
-    def _thread_trace_summary(*, summary: str, messages: list[Any]) -> dict[str, Any]:
-        return {
-            "architecture": "thread_transcript",
-            "compaction_summary_chars": len(str(summary or "")),
-            "replayed_message_count": len(messages),
-            "roles": [
-                str(item.get("role") or "")
-                for item in snapshot_messages(messages, max_content_chars=0)
-            ],
-        }
 
     @staticmethod
     def _emit_message_item_event(
@@ -1590,7 +1571,7 @@ class VintageProgrammerRuntime:
         tool_events: list[ToolEvent],
         stream_items: list[dict[str, Any]],
         current_goal: str,
-        current_task_focus: dict[str, Any],
+        run_workspace_state: dict[str, Any],
         turn_status: str,
         plan_state: list[dict[str, Any]],
         pending_user_input: dict[str, Any],
@@ -1668,7 +1649,7 @@ class VintageProgrammerRuntime:
         )
         run_snapshot = self._build_run_snapshot(
             goal=current_goal,
-            current_task_focus=current_task_focus,
+            run_workspace_state=run_workspace_state,
             turn_status=turn_status,
             plan_state=plan_state,
             pending_user_input=pending_user_input,
@@ -1783,7 +1764,7 @@ class VintageProgrammerRuntime:
         return compacted[:4]
 
     @staticmethod
-    def _normalize_task_checkpoint(raw: Any) -> dict[str, Any]:
+    def _normalize_run_workspace_state(raw: Any) -> dict[str, Any]:
         if not isinstance(raw, dict):
             return {}
         active_files: list[str] = []
@@ -1808,44 +1789,24 @@ class VintageProgrammerRuntime:
             seen_attachment_keys.add(key)
             active_attachments.append(ref)
         return {
-            "task_id": str(raw.get("task_id") or "").strip(),
-            "goal": str(raw.get("goal") or "").strip(),
             "project_root": str(raw.get("project_root") or "").strip(),
             "cwd": str(raw.get("cwd") or "").strip(),
             "active_files": active_files,
             "active_attachments": active_attachments,
-            "last_completed_step": str(raw.get("last_completed_step") or "").strip(),
-            "next_action": str(raw.get("next_action") or "").strip(),
         }
 
-    def _initial_task_checkpoint(
+    def _initial_run_workspace_state(
         self,
         *,
-        route_state: dict[str, Any],
         project_root: str,
         cwd: str,
-        goal: str,
         attachments: list[dict[str, Any]],
-        prefer_goal: bool = False,
     ) -> dict[str, Any]:
-        restored = self._normalize_task_checkpoint((route_state or {}).get("task_checkpoint"))
-        if restored:
-            restored["task_id"] = restored.get("task_id") or str(uuid.uuid4())
-            restored["project_root"] = restored.get("project_root") or project_root
-            restored["cwd"] = restored.get("cwd") or cwd or project_root
-            restored["goal"] = goal if prefer_goal and goal else (restored.get("goal") or goal)
-            if attachments:
-                restored["active_attachments"] = self._attachment_refs(attachments)
-            return restored
         return {
-            "task_id": str(uuid.uuid4()),
-            "goal": goal,
             "project_root": project_root,
             "cwd": cwd or project_root,
             "active_files": [],
             "active_attachments": self._attachment_refs(attachments),
-            "last_completed_step": "",
-            "next_action": "",
         }
 
     @staticmethod
@@ -1864,10 +1825,10 @@ class VintageProgrammerRuntime:
         if value not in paths:
             paths.append(value)
 
-    def _task_checkpoint_from_tool(
+    def _run_workspace_state_from_tool(
         self,
         *,
-        checkpoint: dict[str, Any],
+        state: dict[str, Any],
         tool_name: str,
         arguments: dict[str, Any],
         result: dict[str, Any],
@@ -1875,13 +1836,11 @@ class VintageProgrammerRuntime:
         fallback_project_root: str,
         fallback_cwd: str,
     ) -> dict[str, Any]:
-        updated = self._normalize_task_checkpoint(checkpoint)
+        updated = self._normalize_run_workspace_state(state)
         if not updated:
-            updated = self._initial_task_checkpoint(
-                route_state={},
+            updated = self._initial_run_workspace_state(
                 project_root=fallback_project_root,
                 cwd=fallback_cwd,
-                goal="",
                 attachments=attachments,
             )
         updated["project_root"] = str(result.get("project_root") or updated.get("project_root") or fallback_project_root or "").strip()
@@ -1962,33 +1921,7 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
-    def _completion_event_command(event: ToolEvent) -> str:
-        for payload in (
-            getattr(event, "normalized_arguments", None),
-            getattr(event, "input", None),
-            getattr(event, "result_preview", None),
-            getattr(event, "diagnostics", None),
-        ):
-            if not isinstance(payload, dict):
-                continue
-            command = str(payload.get("cmd") or payload.get("command") or "").strip()
-            if command:
-                return command
-        return ""
-
-    @staticmethod
-    def _completion_event_returncode(event: ToolEvent) -> int | None:
-        for payload in (getattr(event, "result_preview", None), getattr(event, "diagnostics", None)):
-            if not isinstance(payload, dict) or payload.get("returncode") in (None, ""):
-                continue
-            try:
-                return int(payload.get("returncode"))
-            except Exception:
-                return None
-        return None
-
-    @classmethod
-    def _looks_like_verification_command(cls, command: str) -> bool:
+    def _looks_like_verification_command(command: str) -> bool:
         text = str(command or "").strip().lower()
         if not text:
             return False
@@ -2000,118 +1933,6 @@ class VintageProgrammerRuntime:
                 text,
             )
         )
-
-    @classmethod
-    def _looks_like_mutating_command(cls, command: str) -> bool:
-        text = str(command or "").strip().lower()
-        return bool(
-            re.search(
-                r"(?:^|[;&|]\s*|\s)(?:sed\s+-i|perl\s+-pi|tee|touch|mkdir|cp|mv|git\s+(?:commit|push)|"
-                r"python(?:3)?\s+[^\n]*\b(?:write_text|write_bytes)\b)",
-                text,
-            )
-        )
-
-    def _assess_task_completion(
-        self,
-        *,
-        turn_status: str,
-        plan_state: list[dict[str, Any]],
-        tool_events: list[ToolEvent],
-        pending_user_input: dict[str, Any],
-        runtime_error: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        normalized_plan = [
-            {
-                "step": str(item.get("step") or item.get("title") or "").strip(),
-                "status": str(item.get("status") or "pending").strip(),
-            }
-            for item in list(plan_state or [])
-            if isinstance(item, dict) and str(item.get("step") or item.get("title") or "").strip()
-        ]
-        plan_tracked = bool(normalized_plan)
-        model_plan_claimed_complete = bool(normalized_plan) and all(
-            item.get("status") == "completed" for item in normalized_plan
-        )
-        successful_mutation = False
-        verification_events: list[ToolEvent] = []
-        mutation_tools = {"apply_patch", "save_skill", "web_download", "archive_extract", "mail_extract_attachments"}
-        for event in list(tool_events or []):
-            name = str(getattr(event, "name", "") or "").strip().lower()
-            status = str(getattr(event, "status", "") or "").strip().lower()
-            successful = status in {"ok", "success", "completed", "complete", "done"}
-            command = self._completion_event_command(event)
-            if successful and (name in mutation_tools or (name == "exec_command" and self._looks_like_mutating_command(command))):
-                successful_mutation = True
-            if name in {"exec_command", "write_stdin"} and self._looks_like_verification_command(command):
-                verification_events.append(event)
-
-        verification_status = "not_required"
-        verification_command = ""
-        if verification_events:
-            latest_verification = verification_events[-1]
-            verification_command = self._completion_event_command(latest_verification)[:500]
-            returncode = self._completion_event_returncode(latest_verification)
-            event_status = str(getattr(latest_verification, "status", "") or "").strip().lower()
-            if returncode == 0 and event_status in {"ok", "success", "completed", "complete", "done"}:
-                verification_status = "passed"
-            elif returncode is None and event_status in {"ok", "success", "running"}:
-                verification_status = "running"
-            else:
-                verification_status = "failed"
-        elif successful_mutation:
-            verification_status = "missing"
-
-        reasons: list[str] = []
-        normalized_turn_status = str(turn_status or "").strip() or "completed"
-        if normalized_turn_status in {"failed", "blocked", "cancelled", "needs_user_input"}:
-            task_status = normalized_turn_status
-            task_completed = False
-            reasons.append("turn_not_successful")
-        else:
-            if plan_tracked and not model_plan_claimed_complete:
-                reasons.append("plan_incomplete")
-            if verification_status in {"failed", "missing", "running"}:
-                reasons.append(f"verification_{verification_status}")
-            if reasons:
-                task_status = "in_progress"
-                task_completed = False
-            elif plan_tracked:
-                task_status = "completed"
-                task_completed = True
-            else:
-                task_status = "not_tracked"
-                task_completed = None
-
-        guarded_plan = [dict(item) for item in normalized_plan]
-        if (
-            model_plan_claimed_complete
-            and verification_status in {"failed", "missing", "running"}
-            and guarded_plan
-        ):
-            guarded_plan[-1]["status"] = "in_progress"
-            task_status = "in_progress"
-            task_completed = False
-            if "plan_reopened_for_verification" not in reasons:
-                reasons.append("plan_reopened_for_verification")
-
-        return {
-            "turn_finished": normalized_turn_status != "running",
-            "turn_status": normalized_turn_status,
-            "task_status": task_status,
-            "task_completed": task_completed,
-            "plan_tracked": plan_tracked,
-            "plan_complete": bool(guarded_plan) and all(item.get("status") == "completed" for item in guarded_plan),
-            "model_plan_claimed_complete": model_plan_claimed_complete,
-            "verification": {
-                "required": successful_mutation,
-                "status": verification_status,
-                "command": verification_command,
-            },
-            "reasons": reasons,
-            "runtime_error_present": bool(runtime_error),
-            "waiting_for_user": bool(pending_user_input),
-        }, guarded_plan
 
     @staticmethod
     def _activity_detail(**fields: Any) -> str:
@@ -3499,12 +3320,12 @@ class VintageProgrammerRuntime:
         *,
         locale: str,
         current_goal: str,
-        current_task_focus: dict[str, Any],
+        run_workspace_state: dict[str, Any],
         progress_signals: list[dict[str, Any]],
         tool_events: list[ToolEvent],
         trigger: str,
     ) -> str:
-        active_files = [str(item) for item in list(current_task_focus.get("active_files") or []) if str(item or "").strip()]
+        active_files = [str(item) for item in list(run_workspace_state.get("active_files") or []) if str(item or "").strip()]
         recent_progress = self._recent_action_summaries(progress_signals)
         recent_failures = self._recent_failed_action_summaries(tool_events)
         structured_failures = self._recent_structured_failures(tool_events)
@@ -3561,29 +3382,6 @@ class VintageProgrammerRuntime:
             ]
         ).strip()
 
-    @staticmethod
-    def _extract_task_state_delta(ai_text: str) -> tuple[str, dict[str, Any], str]:
-        raw = str(ai_text or "")
-        if not raw.strip():
-            return "", {}, ""
-        patterns = [
-            re.compile(r"<task_state_delta>\s*(\{.*?\})\s*</task_state_delta>", flags=re.IGNORECASE | re.DOTALL),
-            re.compile(r"\[task_state_delta\]\s*```(?:json)?\s*(\{.*?\})\s*```", flags=re.IGNORECASE | re.DOTALL),
-            re.compile(r"\[task_state_delta\]\s*(\{.*?\})", flags=re.IGNORECASE | re.DOTALL),
-        ]
-        for pattern in patterns:
-            match = pattern.search(raw)
-            if not match:
-                continue
-            payload_text = str(match.group(1) or "").strip()
-            cleaned = (raw[: match.start()] + raw[match.end() :]).strip()
-            try:
-                decoded = json.loads(payload_text)
-            except Exception:
-                return cleaned, {}, "task_state_delta_parse_failed"
-            return cleaned, normalize_task_state_delta(decoded), ""
-        return raw.strip(), {}, ""
-
     def _resolve_model_step(
         self,
         *,
@@ -3592,7 +3390,7 @@ class VintageProgrammerRuntime:
         invalid_tool_calls: Any = None,
         step_index: int,
     ) -> dict[str, Any]:
-        cleaned_text, task_state_delta, delta_warning = self._extract_task_state_delta(str(ai_text or ""))
+        cleaned_text = str(ai_text or "").strip()
         model_action = self._resolve_model_action(
             ai_text=cleaned_text,
             tool_calls=tool_calls,
@@ -3603,40 +3401,6 @@ class VintageProgrammerRuntime:
             "clean_text": cleaned_text,
             "model_action": dict(model_action),
             "activity_context": self._activity_context_from_action(model_action),
-            "task_state_delta": dict(task_state_delta),
-            "task_state_delta_warning": delta_warning,
-        }
-
-    def _build_revision_summary(
-        self,
-        *,
-        prompt_message: str,
-        raw_text: str,
-        activity_context: dict[str, Any],
-    ) -> dict[str, Any]:
-        context = dict(activity_context or {})
-        if not bool(context.get("prefer_change_summary")):
-            return {}
-        task_type = str(context.get("task_type") or "").strip()
-        prefer_japanese = task_type == "japanese_grammar_review"
-        original_excerpt = extract_activity_excerpt(prompt_message, prefer_japanese=prefer_japanese)
-        result_excerpt = extract_activity_excerpt(raw_text, prefer_japanese=prefer_japanese)
-        if prefer_japanese and result_excerpt == original_excerpt:
-            fallback_excerpt = extract_activity_excerpt(raw_text, prefer_japanese=False)
-            if fallback_excerpt:
-                result_excerpt = fallback_excerpt
-        if not original_excerpt or not result_excerpt:
-            return {}
-        return {
-            "task_type": task_type,
-            "output_mode": str(context.get("output_mode") or ""),
-            "items": [
-                {
-                    "original_excerpt": original_excerpt,
-                    "result_excerpt": result_excerpt,
-                    "reason": str(context.get("summary_reason") or ""),
-                }
-            ],
         }
 
     @staticmethod
@@ -3888,6 +3652,13 @@ class VintageProgrammerRuntime:
 
     @staticmethod
     def _append_llm_exchange(llm_exchanges: list[dict[str, Any]], exchange: dict[str, Any]) -> None:
+        started_perf = exchange.pop("_started_perf", None)
+        exchange["finished_at"] = time.time()
+        if started_perf is not None:
+            try:
+                exchange["duration_ms"] = max(0, int((time.perf_counter() - float(started_perf)) * 1000))
+            except Exception:
+                exchange["duration_ms"] = 0
         llm_exchanges.append(exchange)
         if len(llm_exchanges) > MAX_EXCHANGES_PER_TURN:
             del llm_exchanges[:-MAX_EXCHANGES_PER_TURN]
@@ -4323,6 +4094,23 @@ class VintageProgrammerRuntime:
             raise ValueError("message cannot be empty")
 
         context_payload = dict(context or {})
+        pending_turn_context = (
+            dict(context_payload.get("pending_turn") or {})
+            if isinstance(context_payload.get("pending_turn"), dict)
+            else {}
+        )
+        user_input_response = (
+            dict(context_payload.get("user_input_response") or {})
+            if isinstance(context_payload.get("user_input_response"), dict)
+            else {}
+        )
+        is_turn_resume = bool(
+            pending_turn_context
+            and str(pending_turn_context.get("type") or "").strip()
+            == str(user_input_response.get("type") or "").strip()
+            and str(user_input_response.get("type") or "").strip()
+            in {"command_execution", "request_user_input"}
+        )
         phase_timer = PhaseTimer(
             offset_base_ms=max(0, int(context_payload.get("phase_timing_base_ms") or 0) or 0),
         )
@@ -4335,6 +4123,7 @@ class VintageProgrammerRuntime:
         pre_model_started_perf = time.perf_counter()
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         run_id = str(context_payload.get("run_id") or "")
+        logical_turn_id = str(context_payload.get("logical_turn_id") or run_id).strip() or run_id
         session_id = str(context_payload.get("session_id") or "")
         attachment_metas = [
             item for item in list(context_payload.get("attachments") or [])
@@ -4407,55 +4196,18 @@ class VintageProgrammerRuntime:
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
-        work_cursor = normalize_work_cursor(
-            {
-                "project_root": project_root,
-                "cwd": effective_cwd,
-                **(
-                    dict(context_payload.get("work_cursor") or {})
-                    if isinstance(context_payload.get("work_cursor"), dict)
-                    else {}
-                ),
-            }
-        )
-        task_state = normalize_task_state(
-            context_payload.get("task_state")
-            if isinstance(context_payload.get("task_state"), dict)
-            else {}
-        )
-        canonical_focus = self._normalize_task_checkpoint(
-            focus_from_work_cursor_task_state(work_cursor, task_state)
-        )
         compaction_status = dict(context_payload.get("compaction_status") or {})
         auto_compact_token_limit = max(0, int(compaction_status.get("auto_compact_token_limit") or 0))
         context_window_known = bool(compaction_status.get("context_window_known"))
         live_compaction_status = dict(compaction_status)
-        route_state_input = dict(context_payload.get("route_state") or {})
-        current_turn_context = dict(context_payload.get("current_turn") or {})
-        revision_requested = looks_like_revision_request(prompt_message, route_state=route_state_input)
-        japanese_review_requested = looks_like_japanese_review_request(prompt_message, route_state=route_state_input)
-        active_task_focus = self._normalize_task_checkpoint(
-            context_payload.get("active_task_focus")
-            or context_payload.get("current_task_focus")
-            or canonical_focus
-            or route_state_input.get("current_task_focus")
-            or route_state_input.get("task_checkpoint")
-        )
-        current_task_focus = self._initial_task_checkpoint(
-            route_state={
-                **route_state_input,
-                "task_checkpoint": route_state_input.get("task_checkpoint") or canonical_focus,
-            },
+        run_workspace_state = self._initial_run_workspace_state(
             project_root=project_root,
             cwd=effective_cwd,
-            goal=str(current_turn_context.get("goal") or task_state.get("goal") or _truncate_goal(prompt_message)),
             attachments=attachment_metas,
-            prefer_goal=bool(str(current_turn_context.get("goal") or "").strip()),
         )
-        current_goal = str(current_task_focus.get("goal") or current_turn_context.get("goal") or _truncate_goal(prompt_message))
-        current_task_focus["goal"] = current_goal
-        if current_task_focus.get("cwd"):
-            effective_cwd = str(current_task_focus.get("cwd") or effective_cwd)
+        current_goal = _truncate_goal(prompt_message)
+        if run_workspace_state.get("cwd"):
+            effective_cwd = str(run_workspace_state.get("cwd") or effective_cwd)
         with phase_timer.measure("runtime_boundary_ms"):
             turn_runtime_boundary = build_turn_runtime_boundary(
                 config=self._config,
@@ -4545,7 +4297,7 @@ class VintageProgrammerRuntime:
                     model=requested_model,
                     max_output_tokens=int(settings.max_output_tokens),
                 )
-            if attachment_manifest or model_visible_attachment_evidence:
+            if not is_turn_resume and (attachment_manifest or model_visible_attachment_evidence):
                 attachment_payload = {
                     **({"current_attachments": attachment_manifest} if attachment_manifest else {}),
                     **(
@@ -4563,7 +4315,8 @@ class VintageProgrammerRuntime:
                         )
                     )
                 )
-            messages.append(self._backend._HumanMessage(content=visible_request))
+            if not is_turn_resume:
+                messages.append(self._backend._HumanMessage(content=visible_request))
             turn_transcript_messages: list[Any] = []
 
         usage_total = self._backend._empty_usage()
@@ -4583,15 +4336,17 @@ class VintageProgrammerRuntime:
             notes.append("workspace_write_capable")
         if has_image_attachments:
             notes.append("image_attachment_context")
-        if route_state_input.get("current_task_focus") or route_state_input.get("task_checkpoint"):
-            notes.append("current_task_focus_restored")
-            notes.append("task_checkpoint_restored")
         tool_events: list[ToolEvent] = []
         stream_items: list[dict[str, Any]] = []
         effective_model = requested_model
-        plan_state: list[dict[str, Any]] = []
+        plan_state: list[dict[str, Any]] = [
+            dict(item)
+            for item in list(pending_turn_context.get("plan") or [])
+            if isinstance(item, dict)
+        ][:12]
         pending_user_input: dict[str, Any] = {}
         pending_approval: dict[str, Any] = {}
+        pending_turn: dict[str, Any] = {}
         turn_status = "running"
         forced_text = ""
         model_action: dict[str, Any] = {}
@@ -4605,8 +4360,6 @@ class VintageProgrammerRuntime:
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
-        task_state_delta: dict[str, Any] = {}
-        task_state_validation: dict[str, Any] = {}
         blocked_stop_diagnostics: dict[str, Any] = {}
         last_successful_round = 0
         turn_activity_context = {
@@ -4807,10 +4560,8 @@ class VintageProgrammerRuntime:
                         "subagent_read_only": True,
                         "subagent_spec": dict(role_spec),
                         "project": dict(project_context),
-                        "work_cursor": dict(work_cursor),
                         "attachments": [dict(item) for item in attachment_metas],
                         "attachment_evidence_pack": [dict(item) for item in attachment_evidence_pack],
-                        "history_turns": [],
                         "thread_transcript": {"schema_version": 1, "items": []},
                     },
                     progress_cb=record_child_progress,
@@ -5058,7 +4809,15 @@ class VintageProgrammerRuntime:
                 "phase": str(phase or ""),
                 "model": str(model_name or ""),
                 "status": "running",
+                "started_at": time.time(),
+                "_started_perf": time.perf_counter(),
                 "sent_messages_exact": snapshot_messages(outgoing_messages),
+                "request_composition": {
+                    "message_count": len(list(outgoing_messages or [])),
+                    "bound_tool_count": len(runnable_tools),
+                    "bound_tool_names": list(runnable_tools),
+                    "note": "Tool schemas are bound separately from the LangChain messages array.",
+                },
                 "model_returned_exact": None,
                 "error": None,
                 "harness_interpretation": {},
@@ -5077,17 +4836,13 @@ class VintageProgrammerRuntime:
             emit_runtime_activity(
                 "activity.started",
                 "request_analysis",
-                "Inspecting the request, restored task focus, attachment context, and runtime contract.",
+                "Inspecting the request, attachment context, and runtime contract.",
                 payload={
                     "attachments": len(attachment_metas),
                     "tools_available": tools_available,
                     "tool_count": tool_count,
                     "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                     "context_architecture": "thread_transcript",
-                    "sent_to_model": self._thread_trace_summary(
-                        summary=thread_summary,
-                        messages=replay_messages,
-                    ),
                     "runtime_boundary": turn_runtime_boundary.to_model_view(),
                 },
                 visible=False,
@@ -5140,7 +4895,6 @@ class VintageProgrammerRuntime:
             nonlocal turn_activity_context
             nonlocal notes
             nonlocal model_draft
-            nonlocal task_state_delta
             current_step_index += 1
             raw_ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
             current_tool_calls = list(getattr(ai_msg, "tool_calls", None) or [])
@@ -5154,7 +4908,6 @@ class VintageProgrammerRuntime:
             cleaned_text = str(step_state.get("clean_text") or raw_ai_text).strip()
             model_action = dict(step_state.get("model_action") or {})
             turn_activity_context = dict(step_state.get("activity_context") or self._activity_context_from_action(model_action))
-            task_state_delta = dict(step_state.get("task_state_delta") or {})
             if current_tool_calls and cleaned_text:
                 model_draft = cleaned_text
             try:
@@ -5163,8 +4916,6 @@ class VintageProgrammerRuntime:
                 pass
             if model_action.get("normalization_notes"):
                 notes.extend(f"model_action_normalized:{item}" for item in list(model_action.get("normalization_notes") or []))
-            if str(step_state.get("task_state_delta_warning") or "").strip():
-                notes.append(str(step_state.get("task_state_delta_warning") or "").strip())
             emit_runtime_activity(
                 event_type,
                 "model_action",
@@ -5173,7 +4924,6 @@ class VintageProgrammerRuntime:
                 payload={
                     "model_action": dict(model_action),
                     "model_draft": model_draft,
-                    "task_state_delta": dict(task_state_delta),
                     "revision_index": int(current_step_index),
                     "runtime_boundary": dump_model(turn_runtime_boundary),
                 },
@@ -5197,19 +4947,55 @@ class VintageProgrammerRuntime:
                 subagent_read_only=bool(context_payload.get("subagent_read_only")),
             )
 
-        user_input_response = (
-            dict(context_payload.get("user_input_response") or {})
-            if isinstance(context_payload.get("user_input_response"), dict)
-            else {}
-        )
         if str(user_input_response.get("type") or "").strip() == "command_execution":
             approval_action = str(user_input_response.get("action") or "").strip()
-            approval_command = str(user_input_response.get("command") or "").strip()
-            approval_cwd = str(user_input_response.get("cwd") or effective_cwd or project_root or "").strip()
+            pending_tool_call = (
+                dict(pending_turn_context.get("tool_call") or {})
+                if isinstance(pending_turn_context.get("tool_call"), dict)
+                else {}
+            )
+            pending_arguments = (
+                dict(pending_tool_call.get("args") or {})
+                if isinstance(pending_tool_call.get("args"), dict)
+                else {}
+            )
+            approval_call_id = str(
+                pending_tool_call.get("id")
+                or pending_turn_context.get("tool_call_id")
+                or user_input_response.get("tool_call_id")
+                or ""
+            ).strip()
+            approval_command = str(
+                pending_arguments.get("cmd")
+                or pending_turn_context.get("command")
+                or user_input_response.get("command")
+                or ""
+            ).strip()
+            approval_cwd = str(
+                pending_arguments.get("cwd")
+                or pending_turn_context.get("cwd")
+                or user_input_response.get("cwd")
+                or effective_cwd
+                or project_root
+                or ""
+            ).strip()
             approval_token = str(user_input_response.get("approval_token") or "").strip()
             pending_approval = {}
+            if not is_turn_resume or not approval_call_id:
+                raise RuntimeError("command approval response does not match a pending tool call")
             if approval_action == "cancel":
                 notes.append("approval.cancelled:command_execution")
+                approval_result = {
+                    "ok": False,
+                    "error_kind": "user_declined",
+                    "error": {
+                        "kind": "user_declined",
+                        "tool": "exec_command",
+                        "tool_call_id": approval_call_id,
+                        "message": "Command execution was declined by the user.",
+                    },
+                    "summary": "Command execution was declined by the user.",
+                }
                 self._emit_trace(
                     progress_cb,
                     run_id=run_id,
@@ -5224,22 +5010,36 @@ class VintageProgrammerRuntime:
                     },
                     trace_events=trace_events,
                 )
-                messages.append(
-                    self._backend._HumanMessage(
-                        content="[command_execution_cancelled]\n"
-                        + json.dumps(
-                            {
-                                "type": "command_execution",
-                                "action": "cancel",
-                                "command": approval_command,
-                                "cwd": approval_cwd,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
+                approval_event = self._build_tool_event(
+                    name="exec_command",
+                    arguments=pending_arguments,
+                    result=approval_result,
+                    locale=locale,
+                    raw_tool_call={
+                        "id": approval_call_id,
+                        "name": "exec_command",
+                        "arguments": pending_arguments,
+                        "source": "approval_response",
+                    },
+                    validation_result={
+                        "allowed": False,
+                        "code": "user_declined",
+                        "message": "The user declined this command.",
+                        "normalized_arguments": pending_arguments,
+                    },
+                    raw_arguments=pending_arguments,
                 )
+                tool_events.append(approval_event)
+                approval_tool_message = self._tool_message_for_result(
+                    result=approval_result,
+                    call_id=approval_call_id,
+                    name="exec_command",
+                )
+                messages.append(approval_tool_message)
+                turn_transcript_messages.append(approval_tool_message)
             elif approval_action == "approve_once":
                 approval_arguments = {
+                    **pending_arguments,
                     "cmd": approval_command,
                     "cwd": approval_cwd,
                     "approval_token": approval_token,
@@ -5272,10 +5072,10 @@ class VintageProgrammerRuntime:
                     result=approval_result,
                     locale=locale,
                     raw_tool_call={
-                        "id": f"{spec.agent_id}_command_approval",
+                        "id": approval_call_id,
                         "name": "exec_command",
                         "arguments": approval_arguments,
-                        "source": "user_input_response",
+                        "source": "approval_response",
                     },
                     validation_result={
                         "allowed": True,
@@ -5288,12 +5088,17 @@ class VintageProgrammerRuntime:
                 tool_events.append(approval_event)
                 if bool(approval_result.get("approval_required")):
                     pending_approval = dict(approval_result.get("approval_request") or {})
+                    pending_approval["tool_call_id"] = approval_call_id
                     pending_user_input = {
                         "summary": str(approval_result.get("summary") or "Command execution still requires approval."),
                         "approval_request": pending_approval,
                         "questions": [],
                     }
                     turn_status = "needs_user_input"
+                    pending_turn = {
+                        **pending_turn_context,
+                        "approval_request": dict(pending_approval),
+                    }
                 approval_trace_payload = {
                     "tool_name": "exec_command",
                     "command": approval_command,
@@ -5311,12 +5116,76 @@ class VintageProgrammerRuntime:
                     payload=approval_trace_payload,
                     trace_events=trace_events,
                 )
-                messages.append(
-                    self._backend._HumanMessage(
-                        content="[approved_command_execution_result]\n"
-                        + json.dumps(safe_preview(approval_result, limit=12000), ensure_ascii=False)
-                    )
+                approval_tool_message = self._tool_message_for_result(
+                    result=approval_result,
+                    call_id=approval_call_id,
+                    name="exec_command",
                 )
+                messages.append(approval_tool_message)
+                turn_transcript_messages.append(approval_tool_message)
+            else:
+                raise RuntimeError(f"unsupported command approval action: {approval_action or '(empty)'}")
+        elif str(user_input_response.get("type") or "").strip() == "request_user_input":
+            pending_tool_call = (
+                dict(pending_turn_context.get("tool_call") or {})
+                if isinstance(pending_turn_context.get("tool_call"), dict)
+                else {}
+            )
+            response_call_id = str(
+                pending_tool_call.get("id")
+                or pending_turn_context.get("tool_call_id")
+                or user_input_response.get("tool_call_id")
+                or ""
+            ).strip()
+            if not is_turn_resume or not response_call_id:
+                raise RuntimeError("user input response does not match a pending tool call")
+            response_text = str(user_input_response.get("response") or "").strip()
+            input_result = {
+                "ok": True,
+                "answered": True,
+                "response": response_text,
+                "summary": "The user supplied the requested input.",
+            }
+            input_event = self._build_tool_event(
+                name="request_user_input",
+                arguments=(
+                    dict(pending_tool_call.get("args") or {})
+                    if isinstance(pending_tool_call.get("args"), dict)
+                    else {}
+                ),
+                result=input_result,
+                locale=locale,
+                raw_tool_call={
+                    "id": response_call_id,
+                    "name": "request_user_input",
+                    "source": "user_input_response",
+                },
+                validation_result={
+                    "allowed": True,
+                    "code": "user_input_supplied",
+                    "message": "The user answered the pending request.",
+                },
+                raw_arguments=dict(pending_tool_call.get("args") or {}),
+            )
+            tool_events.append(input_event)
+            input_tool_message = self._tool_message_for_result(
+                result=input_result,
+                call_id=response_call_id,
+                name="request_user_input",
+            )
+            messages.append(input_tool_message)
+            turn_transcript_messages.append(input_tool_message)
+            notes.append("user_input.supplied:request_user_input")
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="approval.approved",
+                title="User input received",
+                detail="The pending Turn resumed with structured user input.",
+                status="success",
+                payload={"type": "request_user_input", "tool_call_id": response_call_id},
+                trace_events=trace_events,
+            )
 
         ai_msg: Any = None
         try:
@@ -5637,7 +5506,7 @@ class VintageProgrammerRuntime:
                         status="cancelled",
                         run_snapshot=self._build_run_snapshot(
                             goal=current_goal,
-                            current_task_focus=current_task_focus,
+                            run_workspace_state=run_workspace_state,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -5722,7 +5591,7 @@ class VintageProgrammerRuntime:
                         recovery_prompt = self._build_replan_checkpoint_prompt(
                             locale=locale,
                             current_goal=current_goal,
-                            current_task_focus=current_task_focus,
+                            run_workspace_state=run_workspace_state,
                             progress_signals=progress_signals,
                             tool_events=tool_events,
                             trigger="empty_after_tool_failure",
@@ -5972,7 +5841,7 @@ class VintageProgrammerRuntime:
                         )
                         run_snapshot = self._build_run_snapshot(
                             goal=current_goal,
-                            current_task_focus=current_task_focus,
+                            run_workspace_state=run_workspace_state,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -6157,7 +6026,7 @@ class VintageProgrammerRuntime:
                             tool_events=tool_events,
                             stream_items=stream_items,
                             current_goal=current_goal,
-                            current_task_focus=current_task_focus,
+                            run_workspace_state=run_workspace_state,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -6213,7 +6082,7 @@ class VintageProgrammerRuntime:
                         )
                         run_snapshot = self._build_run_snapshot(
                             goal=current_goal,
-                            current_task_focus=current_task_focus,
+                            run_workspace_state=run_workspace_state,
                             turn_status=turn_status,
                             plan_state=plan_state,
                             pending_user_input=pending_user_input,
@@ -6279,8 +6148,8 @@ class VintageProgrammerRuntime:
                             usage_total,
                             dict(result.get("token_usage") or {}),
                         )
-                    current_task_focus = self._task_checkpoint_from_tool(
-                        checkpoint=current_task_focus,
+                    run_workspace_state = self._run_workspace_state_from_tool(
+                        state=run_workspace_state,
                         tool_name=name,
                         arguments=arguments,
                         result=result,
@@ -6288,7 +6157,7 @@ class VintageProgrammerRuntime:
                         fallback_project_root=project_root,
                         fallback_cwd=effective_cwd,
                     )
-                    effective_cwd = str(current_task_focus.get("cwd") or effective_cwd or project_root)
+                    effective_cwd = str(run_workspace_state.get("cwd") or effective_cwd or project_root)
                     self._set_tools_runtime_context(
                         execution_mode=settings.execution_mode,
                         session_id=str(context_payload.get("session_id") or ""),
@@ -6397,7 +6266,7 @@ class VintageProgrammerRuntime:
                         if progress_cb is not None:
                             plan_snapshot = self._build_run_snapshot(
                                 goal=current_goal,
-                                current_task_focus=current_task_focus,
+                                run_workspace_state=run_workspace_state,
                                 turn_status=turn_status,
                                 plan_state=plan_state,
                                 pending_user_input=pending_user_input,
@@ -6418,7 +6287,7 @@ class VintageProgrammerRuntime:
                                 {
                                     "event": "turn/plan/updated",
                                     "thread_id": session_id,
-                                    "turn_id": run_id,
+                                    "turn_id": logical_turn_id,
                                     "plan": plan_state,
                                     "explanation": str(result.get("explanation") or ""),
                                     "run_snapshot": plan_snapshot,
@@ -6450,6 +6319,7 @@ class VintageProgrammerRuntime:
                         )
                     if name == "exec_command" and bool(result.get("approval_required")):
                         approval_request = dict(result.get("approval_request") or {})
+                        approval_request["tool_call_id"] = call_id
                         approval_token = str(approval_request.get("approval_token") or "")
                         command_text = str(approval_request.get("command") or arguments.get("cmd") or "").strip()
                         files = [dict(item) for item in list(approval_request.get("files") or []) if isinstance(item, dict)]
@@ -6469,6 +6339,23 @@ class VintageProgrammerRuntime:
                         elif risk_labels:
                             summary = f"{summary}: {', '.join(risk_labels)}"
                         pending_approval = approval_request
+                        pending_turn = {
+                            "schema_version": 1,
+                            "type": "command_execution",
+                            "turn_id": str(context_payload.get("logical_turn_id") or run_id),
+                            "triggering_user_turn_id": str(context_payload.get("triggering_user_turn_id") or ""),
+                            "request_message": prompt_message,
+                            "tool_call_id": call_id,
+                            "tool_call": {
+                                "id": call_id,
+                                "name": name,
+                                "args": dict(arguments),
+                            },
+                            "approval_request": dict(approval_request),
+                            "command": command_text,
+                            "cwd": str(arguments.get("cwd") or effective_cwd or ""),
+                            "plan": [dict(item) for item in list(plan_state or []) if isinstance(item, dict)][:12],
+                        }
                         pending_user_input = {
                             "summary": summary,
                             "approval_request": approval_request,
@@ -6515,7 +6402,7 @@ class VintageProgrammerRuntime:
                                     "turn_status": turn_status,
                                     "run_snapshot": self._build_run_snapshot(
                                         goal=current_goal,
-                                        current_task_focus=current_task_focus,
+                                        run_workspace_state=run_workspace_state,
                                         turn_status=turn_status,
                                         plan_state=plan_state,
                                         pending_user_input=pending_user_input,
@@ -6528,8 +6415,24 @@ class VintageProgrammerRuntime:
                             )
                     if name == "request_user_input" and bool(result.get("ok")):
                         pending_user_input = {
+                            "type": "request_user_input",
+                            "tool_call_id": call_id,
                             "questions": list(result.get("questions") or []),
                             "summary": str(result.get("summary") or translate(locale, "runtime.pending_user_input.summary")),
+                        }
+                        pending_turn = {
+                            "schema_version": 1,
+                            "type": "request_user_input",
+                            "turn_id": str(context_payload.get("logical_turn_id") or run_id),
+                            "triggering_user_turn_id": str(context_payload.get("triggering_user_turn_id") or ""),
+                            "request_message": prompt_message,
+                            "tool_call_id": call_id,
+                            "tool_call": {
+                                "id": call_id,
+                                "name": name,
+                                "args": dict(arguments),
+                            },
+                            "plan": [dict(item) for item in list(plan_state or []) if isinstance(item, dict)][:12],
                         }
                         turn_status = "needs_user_input"
                         halt_for_user_input = True
@@ -6551,7 +6454,7 @@ class VintageProgrammerRuntime:
                                     "turn_status": turn_status,
                                     "run_snapshot": self._build_run_snapshot(
                                         goal=current_goal,
-                                        current_task_focus=current_task_focus,
+                                        run_workspace_state=run_workspace_state,
                                         turn_status=turn_status,
                                         plan_state=plan_state,
                                         pending_user_input=pending_user_input,
@@ -6561,13 +6464,17 @@ class VintageProgrammerRuntime:
                                     ),
                                 }
                             )
-                    tool_message = self._tool_message_for_result(
-                        result=result,
-                        call_id=call_id,
-                        name=name or "unknown_tool",
-                    )
-                    messages.append(tool_message)
-                    turn_transcript_messages.append(tool_message)
+                    if not (
+                        (name == "exec_command" and bool(result.get("approval_required")))
+                        or (name == "request_user_input" and bool(result.get("ok")))
+                    ):
+                        tool_message = self._tool_message_for_result(
+                            result=result,
+                            call_id=call_id,
+                            name=name or "unknown_tool",
+                        )
+                        messages.append(tool_message)
+                        turn_transcript_messages.append(tool_message)
                     if (
                         same_action_repeat_guard_enabled
                         and max_same_action_repeats
@@ -6586,13 +6493,22 @@ class VintageProgrammerRuntime:
                         stop_after_tools = True
 
                 tool_boundary_clean = self._messages_at_tool_boundary(messages)
+                expected_pause = bool(halt_for_user_input and pending_turn)
                 self._emit_trace(
                     progress_cb,
                     run_id=run_id,
-                    type="tool_drain.finished" if tool_boundary_clean else "tool_invariant.failed",
-                    title="Tool drain finished" if tool_boundary_clean else "Tool drain invariant failed",
+                    type=(
+                        "tool_drain.paused"
+                        if expected_pause
+                        else ("tool_drain.finished" if tool_boundary_clean else "tool_invariant.failed")
+                    ),
+                    title=(
+                        "Tool drain paused for user decision"
+                        if expected_pause
+                        else ("Tool drain finished" if tool_boundary_clean else "Tool drain invariant failed")
+                    ),
                     detail=f"Drained {len(round_signature_parts)} of {len(tool_calls)} model tool call(s).",
-                    status="success" if tool_boundary_clean else "failed",
+                    status="blocked" if expected_pause else ("success" if tool_boundary_clean else "failed"),
                     payload={
                         "tool_count_total": len(tool_calls),
                         "tool_count_drained": len(round_signature_parts),
@@ -6601,14 +6517,15 @@ class VintageProgrammerRuntime:
                     },
                     trace_events=trace_events,
                 )
-                self._assert_tool_message_invariants(
-                    messages,
-                    phase="after_tool_drain",
-                    trace_events=trace_events,
-                    progress_cb=progress_cb,
-                    run_id=run_id,
-                    locale=locale,
-                )
+                if not expected_pause:
+                    self._assert_tool_message_invariants(
+                        messages,
+                        phase="after_tool_drain",
+                        trace_events=trace_events,
+                        progress_cb=progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                    )
                 latest_tool_round_had_failure = any(
                     str(item.get("status") or "").strip().lower() == "error"
                     for item in round_signature_parts
@@ -6697,7 +6614,7 @@ class VintageProgrammerRuntime:
                     replan_prompt = self._build_replan_checkpoint_prompt(
                         locale=locale,
                         current_goal=current_goal,
-                        current_task_focus=current_task_focus,
+                        run_workspace_state=run_workspace_state,
                         progress_signals=progress_signals,
                         tool_events=tool_events,
                         trigger=replan_trigger or "no_progress",
@@ -6715,7 +6632,6 @@ class VintageProgrammerRuntime:
                     }
                     replan_history = [*replan_history, replan_payload][-8:]
                     notes.append(f"replan_requested:{replan_trigger or 'no_progress'}")
-                    messages.append(self._backend._HumanMessage(content=replan_prompt))
                     emit_runtime_activity(
                         "activity.delta",
                         "loop.safeguard",
@@ -7176,58 +7092,6 @@ class VintageProgrammerRuntime:
             final_answer = str(final_answer or raw_assistant_text).strip()
         else:
             final_answer = ""
-        task_completion, plan_state = self._assess_task_completion(
-            turn_status=turn_status,
-            plan_state=plan_state,
-            tool_events=tool_events,
-            pending_user_input=pending_user_input,
-            runtime_error=runtime_error,
-        )
-        if turn_status == "completed" and task_completion.get("task_status") == "in_progress":
-            reason_labels = {
-                "plan_incomplete": self._localized_text(
-                    locale,
-                    zh_cn="计划仍有未完成步骤",
-                    ja_jp="plan に未完了 step があります",
-                    en="the plan still has unfinished steps",
-                ),
-                "verification_failed": self._localized_text(
-                    locale,
-                    zh_cn="最近一次验证失败",
-                    ja_jp="直近の検証が失敗しました",
-                    en="the latest verification failed",
-                ),
-                "verification_missing": self._localized_text(
-                    locale,
-                    zh_cn="修改后尚未运行验证",
-                    ja_jp="変更後の検証がまだ実行されていません",
-                    en="changes have not been verified yet",
-                ),
-                "verification_running": self._localized_text(
-                    locale,
-                    zh_cn="验证仍在运行",
-                    ja_jp="検証がまだ実行中です",
-                    en="verification is still running",
-                ),
-                "plan_reopened_for_verification": self._localized_text(
-                    locale,
-                    zh_cn="验证步骤已重新打开",
-                    ja_jp="検証 step を再開しました",
-                    en="the verification step was reopened",
-                ),
-            }
-            reason_text = "；".join(
-                reason_labels.get(str(reason), str(reason))
-                for reason in list(task_completion.get("reasons") or [])
-                if str(reason) in reason_labels
-            )
-            completion_note = self._localized_text(
-                locale,
-                zh_cn=f"运行时状态：本轮回复已结束，但用户任务仍未完成（{reason_text or '仍有后续工作'}）。",
-                ja_jp=f"Runtime 状態: この turn の応答は終了しましたが、ユーザー task は未完了です（{reason_text or '後続作業があります'}）。",
-                en=f"Runtime status: this turn ended, but the user task is still open ({reason_text or 'follow-up work remains'}).",
-            )
-            final_answer = f"{final_answer}\n\n{completion_note}".strip()
         display_text = final_answer
         if turn_status == "failed":
             display_text = runtime_error_user_text(runtime_error, locale=locale)
@@ -7239,19 +7103,7 @@ class VintageProgrammerRuntime:
             display_text = raw_assistant_text or blocked_reason or translate(locale, "runtime.empty_response.default")
         elif not display_text:
             display_text = translate(locale, "runtime.empty_response.default")
-        revision_summary = self._build_revision_summary(
-            prompt_message=prompt_message,
-            raw_text=final_answer or display_text,
-            activity_context={
-                **turn_activity_context,
-                "prefer_change_summary": bool(revision_requested or japanese_review_requested),
-                "task_type": (
-                    "japanese_grammar_review"
-                    if japanese_review_requested
-                    else ("rewrite_review" if revision_requested else str(turn_activity_context.get("task_type") or ""))
-                ),
-            },
-        )
+        revision_summary: dict[str, Any] = {}
         answer_stream = answer_stream_diagnostics(answer_stream_state)
         if final_answer and turn_status == "completed":
             answer_stream = self._finalize_answer_stream(
@@ -7322,19 +7174,6 @@ class VintageProgrammerRuntime:
             payload={"turn_status": turn_status},
             trace_events=trace_events,
         )
-        current_task_focus["project_root"] = project_root
-        current_task_focus["cwd"] = effective_cwd or project_root
-        current_task_focus["active_attachments"] = self._attachment_refs(attachment_metas)
-        if pending_user_input:
-            current_task_focus["next_action"] = str(pending_user_input.get("summary") or translate(locale, "runtime.pending_user_input.summary"))
-        elif turn_status == "blocked":
-            current_task_focus["next_action"] = "blocked"
-        elif turn_status == "failed":
-            current_task_focus["next_action"] = "failed"
-        elif turn_status == "cancelled":
-            current_task_focus["next_action"] = "cancelled"
-        else:
-            current_task_focus["next_action"] = ""
         answer_bundle = self._build_answer_bundle(
             raw_text=final_answer,
             tool_events=tool_events,
@@ -7365,35 +7204,6 @@ class VintageProgrammerRuntime:
             execution_trace = self._append_execution_trace(execution_trace, final_execution_entry)
 
         runtime_phase = "running" if turn_status == "running" else turn_status
-        base_task_state = {
-            **dict(task_state or {}),
-            "task_id": current_task_focus.get("task_id") or task_state.get("task_id") or "",
-            "goal": current_goal or task_state.get("goal") or "",
-            "plan_items": plan_state or task_state.get("plan_items") or [],
-        }
-        has_successful_update_plan = any(
-            str(getattr(item, "name", "") or "").strip().lower() == "update_plan"
-            and str(getattr(item, "status", "") or "").strip().lower() in {"ok", "success", "completed", "complete", "done"}
-            for item in list(tool_events or [])
-        )
-        has_existing_task = bool(
-            str(base_task_state.get("task_id") or "").strip()
-            or str(base_task_state.get("goal") or "").strip()
-            or list(base_task_state.get("plan_items") or [])
-        )
-        if has_successful_update_plan:
-            final_task_state = merge_task_state_after_turn(
-                base_task_state,
-                plan_state,
-                [dump_model(item) for item in tool_events],
-                progress_signals,
-                turn_status,
-                runtime_error,
-                pending_user_input,
-            )
-        else:
-            final_task_state = normalize_task_state(base_task_state if has_existing_task else {})
-        task_state_validation = {}
         active_context_usage = {
             "input_tokens": max(0, int(latest_call_usage.get("input_tokens") or 0)),
             "output_tokens": max(0, int(latest_call_usage.get("output_tokens") or 0)),
@@ -7413,11 +7223,10 @@ class VintageProgrammerRuntime:
                 "phase": runtime_phase,
                 "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
                 "turn_status": turn_status,
-                "task_completion": dict(task_completion),
                 "plan": plan_state,
-                "task_state": dict(final_task_state),
                 "pending_user_input": pending_user_input,
                 "pending_approval": pending_approval,
+                "pending_turn": dict(pending_turn),
                 "write_capability_state": dict(write_capability_state),
                 "blocked_reason": blocked_reason,
                 "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
@@ -7437,9 +7246,6 @@ class VintageProgrammerRuntime:
                 "runtime_contract": runtime_contract.as_payload(),
                 "network_mode": spec.network_mode,
                 "inline_document": inline_document,
-                "thread_memory": dict(context_payload.get("thread_memory") or {}),
-                "recent_tasks": list(context_payload.get("recent_tasks") or []),
-                "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
                 "answer_stream": dict(answer_stream),
                 "model_draft": model_draft,
@@ -7451,33 +7257,20 @@ class VintageProgrammerRuntime:
                     if isinstance(runtime_error.get("tool_boundary_clean"), bool)
                     else None
                 ),
-                "thread_context": self._thread_trace_summary(
-                    summary=thread_summary,
-                    messages=replay_messages,
-                ),
                 "runtime_boundary": dump_model(turn_runtime_boundary),
                 "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),
-                "current_turn": dict(current_turn_context),
-                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
-                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
                 "model_action": dict(model_action),
                 "execution_trace": list(execution_trace),
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
                 "failure_recovery": dict(failure_recovery),
                 "project_contract_loaded": bool(project_contract_text),
-                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
-                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
                 "project_root": project_root,
                 "cwd": effective_cwd,
                 "phase_timings": dict(phase_timings),
             },
             "tool_timeline": [dump_model(item) for item in tool_events],
             "trace_events": [dict(item) for item in trace_events],
-            "sent_to_model": self._thread_trace_summary(
-                summary=thread_summary,
-                messages=replay_messages,
-            ),
             "evidence": {
                 "status": evidence_status,
                 "warning": answer_bundle["warnings"][0] if answer_bundle["warnings"] else "",
@@ -7491,17 +7284,7 @@ class VintageProgrammerRuntime:
                 "project_root": project_root,
                 "git_branch": str(project_context.get("git_branch") or ""),
                 "cwd": effective_cwd,
-                "current_turn": dict(current_turn_context),
-                "active_task_focus": compat_task_checkpoint_from_focus(active_task_focus),
-                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
-                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
-                "recent_user_messages": list(context_payload.get("recent_user_messages") or []),
-                "thread_memory": dict(context_payload.get("thread_memory") or {}),
-                "recent_tasks": list(context_payload.get("recent_tasks") or []),
-                "artifact_memory_preview": list(context_payload.get("artifact_memory_preview") or []),
                 "compaction_status": dict(live_compaction_status),
-                "task_state": dict(final_task_state),
-                "task_completion": dict(task_completion),
                 "history_turn_count": len(replay_messages),
                 "attachment_count": len(list(context_payload.get("attachments") or [])),
                 "phase_timings": dict(phase_timings),
@@ -7515,13 +7298,6 @@ class VintageProgrammerRuntime:
         activity_summary = " · ".join(
             [str(item.get("title") or "") for item in trace_events if str(item.get("title") or "").strip()][-5:]
         )[:400]
-        if isinstance(task_state_delta, dict) and task_state_delta:
-            inspector["run_state"]["task_state_delta"] = dict(task_state_delta)
-            inspector["session"]["task_state_delta"] = dict(task_state_delta)
-        if isinstance(task_state_validation, dict) and task_state_validation:
-            inspector["run_state"]["task_state_validation"] = dict(task_state_validation)
-            inspector["session"]["task_state_validation"] = dict(task_state_validation)
-
         result = {
             "ok": True,
             "agent_id": spec.agent_id,
@@ -7533,10 +7309,10 @@ class VintageProgrammerRuntime:
             "effective_model": effective_model or requested_model,
             "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
             "turn_status": turn_status,
-            "task_completion": dict(task_completion),
             "plan": plan_state,
             "pending_user_input": pending_user_input,
             "pending_approval": pending_approval,
+            "pending_turn": dict(pending_turn),
             "write_capability_state": dict(write_capability_state),
             "blocked_reason": blocked_reason,
             "blocked_stop_diagnostics": dict(blocked_stop_diagnostics),
@@ -7550,15 +7326,8 @@ class VintageProgrammerRuntime:
                 for item in attachment_evidence_pack[:6]
                 if isinstance(item, dict)
             ],
-            "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
-            "task_state": dict(final_task_state),
-            "recent_tasks": list(context_payload.get("recent_tasks") or []),
             "runtime_boundary": dump_model(turn_runtime_boundary),
             "runtime_boundary_model_view": turn_runtime_boundary.to_model_view(),
-            "thread_context": self._thread_trace_summary(
-                summary=thread_summary,
-                messages=replay_messages,
-            ),
             "model_action": dict(model_action),
             "execution_trace": list(execution_trace),
             "progress_signals": list(progress_signals),
@@ -7567,7 +7336,6 @@ class VintageProgrammerRuntime:
             "activity": {
                 "run_id": run_id,
                 "status": turn_status,
-                "task_completion": dict(task_completion),
                 "started_at": trace_events[0]["timestamp"] if trace_events else 0.0,
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
@@ -7599,46 +7367,15 @@ class VintageProgrammerRuntime:
             "compaction_status": dict(live_compaction_status),
             "answer_stream": dict(answer_stream),
             "tool_events": [dump_model(item) for item in tool_events],
-            "transcript_delta": self._transcript_delta(turn_transcript_messages),
+            "transcript_delta": self._transcript_delta(
+                turn_transcript_messages,
+                turn_id=logical_turn_id,
+            ),
             "steered_user_messages": [dict(item) for item in steered_user_messages],
             "intermediate_turns": [dict(item) for item in intermediate_turns],
             "token_usage": usage_total,
             "active_context_usage": dict(active_context_usage),
             "inspector": inspector,
             "answer_bundle": answer_bundle,
-            "route_state": {
-                "agent_id": spec.agent_id,
-                "tool_scope": spec.tool_scope,
-                "tool_policy": spec.tool_policy,
-                "phase": runtime_phase,
-                "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
-                "turn_status": turn_status,
-                "network_mode": spec.network_mode,
-                "evidence_status": evidence_status,
-                "tool_count": len(tool_events),
-                "loaded_skill_keys": [],
-                "loaded_skill_ids": [],
-                "inline_document": inline_document,
-                "route_state_input": dict(route_state_input),
-                "model_action": dict(model_action),
-                "execution_trace": list(execution_trace),
-                "progress_signals": list(progress_signals),
-                "replan_history": list(replan_history),
-                "failure_recovery": dict(failure_recovery),
-                "model_draft": model_draft,
-                "final_answer": final_answer,
-                "runtime_error": dict(runtime_error),
-                "project_id": project_id,
-                "project_root": project_root,
-                "cwd": effective_cwd,
-                "current_task_focus": compat_task_checkpoint_from_focus(current_task_focus),
-                "task_checkpoint": compat_task_checkpoint_from_focus(current_task_focus),
-            },
         }
-        if isinstance(task_state_delta, dict) and task_state_delta:
-            result["task_state_delta"] = dict(task_state_delta)
-            result["route_state"]["task_state_delta"] = dict(task_state_delta)
-        if isinstance(task_state_validation, dict) and task_state_validation:
-            result["task_state_validation"] = dict(task_state_validation)
-            result["route_state"]["task_state_validation"] = dict(task_state_validation)
         return result

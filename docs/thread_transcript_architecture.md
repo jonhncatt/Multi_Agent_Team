@@ -2,85 +2,181 @@
 
 ## 结论
 
-`Session` 是持久 Thread，`thread_transcript` 是模型对话历史的唯一事实源。`ModelContext` 六/八要素 JSON 和任务关系分类器已经删除。
+在产品概念中，原来的 `Session` 现在就是 `Thread`。磁盘目录仍保留为 `app/data/sessions/`，避免破坏旧数据路径和已有 API；其中每个 JSON 文件保存一条最小 Thread，而不是以前的 Harness 语义状态集合。
 
 ```text
-Session / Thread
-  thread_transcript: user -> assistant(tool_calls) -> tool -> assistant
-  task_state: Harness 任务/checklist 状态
-  work_cursor: Harness 工作位置
-  turns: 现有前端/API 的兼容投影
+Thread（长期、可重放）
+  ├─ metadata / project / cwd
+  ├─ thread_transcript
+  ├─ compaction
+  ├─ active_attachment_ids
+  └─ pending_interaction
+
+Turn Trace（按 Turn 保存的执行事实）
+  ├─ contexts / System Prompt
+  ├─ steps（引用 transcript item_id）
+  └─ timing / validation / error / terminal
+
+UI
+  ├─ Thread transcript
+  ├─ 当前 SSE 事件
+  ├─ pending interaction
+  └─ 按需读取工具 Trace
 ```
 
-## 每次模型调用看到什么
+`task_state`、`work_cursor`、`thread_memory`、`artifact_memory`、`current_task_focus`、`task_checkpoint` 和 `route_state` 不再是持久状态，也不参与模型输入。Plan 由模型通过 `update_plan` 形成 transcript 中的真实工具事务；Harness 不再另建一份长期任务真相。
 
-按以下顺序构造 Chat Completions messages：
+## 磁盘上的 Thread V4
 
-1. 一条 SystemMessage：静态 agent 规则、工具规则、Harness 协议，以及当前目录和权限边界 `current_runtime_context`。
-2. 仓库存在 `AGENTS.md` 时，以带来源标记的 contextual HumanMessage 提供项目指令。
-3. 如果发生过压缩，以 contextual HumanMessage 加入替代更早历史的未验证 working summary。
-4. 回放未被压缩的 typed transcript（HumanMessage、AIMessage、ToolMessage）。
-5. 当前附件清单或预览仅在需要时作为 contextual HumanMessage 加入。
-6. 当前用户原始请求作为 HumanMessage，始终最后且不重复包装。
-
-工具 schema 仍由 provider/backend 单独绑定，不写进 transcript。
-
-## 提示词职责分层
-
-```text
-soul.md       表达风格与价值取向
-identity.md   角色和工作范围
-agent.md      执行、计划与交付流程
-tools.md      工具选择和具体使用规则
-Runtime       实时环境、权限、上下文权威、证据优先级和工具校验
-```
-
-- 同一条行为规则只保留一个主要归属，不再由多个静态文件和 Runtime 重复强调。
-- `AGENTS.md` 是仓库范围的上下文指令，不提升为产品级 System 规则。
-- compaction summary 和历史 assistant 文本都是未验证上下文，不提升为 Runtime 事实。
-- 工具循环中的审批结果、重规划提示和中途压缩也作为带标记的上下文消息追加，不再生成额外 SystemMessage。
-- Runtime 继续兼容读取旧的 `task_state_delta` 输出，但默认提示词不再要求模型生成它；计划由 `update_plan` 工具和 Harness 状态维护。
-
-## 持久化结构
+一个新 Thread 文件只允许保存以下结构：
 
 ```json
 {
-  "thread_schema_version": 1,
+  "thread_record_schema_version": 4,
+  "id": "thread-id",
+  "created_at": "...",
+  "updated_at": "...",
+  "activity_at": "...",
+  "activity_revision": 3,
+  "activity_kind": "turn_completed",
+  "title": "...",
+  "project_id": "...",
+  "project_title": "...",
+  "project_root": "...",
+  "git_branch": "main",
+  "cwd": "...",
   "thread_transcript": {
-    "schema_version": 1,
-    "items": [
-      {"id": "...", "role": "user", "content": "...", "turn_id": "..."},
-      {
-        "id": "...",
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}]
-      },
-      {"id": "...", "role": "tool", "tool_call_id": "call-1", "name": "read_file", "content": "..."},
-      {"id": "...", "role": "assistant", "content": "完成。", "turn_id": "..."}
-    ]
-  }
+    "schema_version": 2,
+    "items": []
+  },
+  "thread_schema_version": 2,
+  "active_attachment_ids": [],
+  "attachment_context_cleared": false,
+  "compaction": {},
+  "pending_interaction": {}
 }
 ```
 
-`turns` 暂时继续保存 user/assistant UI 消息，保证现有接口和前端兼容；Runtime 不再用它构造模型输入。新消息由 `SessionStore` 同时写入 transcript 与 UI 投影，中间工具消息只写 transcript。
+`turns` 不再写入磁盘。为了兼容现有前端和 API，加载 Thread 后可以从 transcript 临时投影出 `turns`；它不是第二份历史，也不会反向覆盖 transcript。
 
-## Harness 状态边界
+## Transcript 保存什么
 
-- `task_state`、`work_cursor`、`route_state`、`thread_memory`、RuntimeTrace 仍可服务于计划、恢复、界面和审计。
-- 这些字段不再在每轮拼成 Supporting Context JSON 发给模型。
-- 当前工具结果保存在 ToolMessage 和运行记录中，不自动提升为长期 `verified_facts`。
-- 权限由 RuntimeBoundary 强制执行，历史消息不能覆盖权限边界。
+`thread_transcript.items` 是模型历史的唯一事实源，保存 typed message：
 
-## 压缩
+```json
+[
+  {"id": "u1", "turn_id": "t1", "role": "user", "content": "读取 README"},
+  {
+    "id": "a1",
+    "turn_id": "t1",
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}]
+  },
+  {
+    "id": "tool-1",
+    "turn_id": "t1",
+    "role": "tool",
+    "tool_call_id": "call-1",
+    "name": "read_file",
+    "content": "..."
+  },
+  {"id": "a2", "turn_id": "t1", "role": "assistant", "content": "读取完成。"}
+]
+```
 
-context meter 只估算实际 transcript、compaction summary 和待发送用户消息，不再把 Harness side state 算成模型上下文。达到阈值时，较早的 transcript 被总结；之后只发送 summary 与未压缩的新消息。summary 不覆盖 Harness 的 task state 或 work cursor。
+最终 Assistant item 可带一个很小的 `trace` 引用，用于 UI 定位本轮 Trace；执行耗时、校验和错误不会复制进 Thread。
 
-## 旧 Session 迁移
+## Compaction 和附件给谁用
 
-- 没有 `thread_transcript` 的 Session，从现有 `turns` 生成 user/assistant transcript。
-- 保留原 turn id 作为 transcript item id/turn_id，便于 compaction 定位。
-- 已存在 transcript 时，以 transcript 为准，不从 UI 投影反向覆盖。
-- 迁移幂等，读取旧 Session 后统一写入 schema version 1。
+`compaction` 不是仅供显示。它首先服务于下一次模型输入：
 
-旧 `ContextManager` 数据仍可读取，供历史迁移和诊断兼容；它不再参与正常模型输入，也不再在每轮自动更新事实或对话副本。
+```json
+{
+  "generation": 2,
+  "summary": "较早历史的压缩摘要",
+  "compacted_until_item_id": "item-123",
+  "compacted_at": "..."
+}
+```
+
+Runtime 用切点跳过较早 transcript，发送 summary 和切点后的完整消息事务。Harness 还用 generation、切点和时间判断压缩生命周期；UI 只展示其诊断信息。压缩不创建聊天消息，也不改变 Thread 身份。
+
+附件内容不是永久复制进 transcript。用户消息可保存当轮附件引用；`active_attachment_ids` 保存当前 Thread 的 sticky 附件上下文。下一轮构造请求时，Runtime 根据这些 ID 读取附件元数据或预览并形成来源明确的 contextual message。用户显式清除后，`attachment_context_cleared` 记录该状态。
+
+## 每次实际发送给模型的内容
+
+一次 provider 请求大致为：
+
+```text
+messages = [
+  SystemMessage(agent spec + runtime boundary),
+  HumanMessage([project_instructions] ...),       # 仅在有 AGENTS.md 时
+  HumanMessage([compaction_summary] ...),         # 仅在发生过压缩时
+  ...未被压缩的 typed transcript messages,
+  HumanMessage([attachments] ...),                # 仅在当前上下文有附件时
+  HumanMessage(当前用户原始请求)                   # 新 Turn 时位于最后
+]
+
+tools = provider 绑定的工具 schema
+```
+
+恢复一个暂停的 Turn 时，不再伪造新的用户请求；Runtime 保留原 Assistant tool call，追加同一 `tool_call_id` 的真实 ToolMessage 后继续模型循环。
+
+开发者调试不再显示容易误解的 `architecture`、`replayed_message_count`、`roles` 和 `compaction_summary_chars` 摘要。UI 直接展示持久 Thread 历史；System Prompt 作为本轮 Trace 的上下文快照按需查看。
+
+## Turn Trace 为什么保留
+
+Turn Trace 不是第二份历史，也不是任务记忆。它只解释 Thread Item 是怎样产生的：
+
+- 模型生成哪个 Assistant Item、使用哪个 System Prompt；
+- 工具调用由哪个 Assistant Item 发起、生成哪个 Tool Item；
+- 工具耗时、边界检查、错误类型、重试与恢复结果；
+- Turn 最终以完成、失败、取消还是等待结束。
+
+Trace 只有一个技术状态：`running`、`waiting_user`、`completed`、`failed`、`cancelled` 或 `interrupted`。`completed` 只表示本 Turn 正常结束，不是 Harness 对业务任务完成度的判断。
+
+新 Trace 位于 `app/data/turn_traces/<thread_id>/<turn_id>.json`，使用稳定 Turn ID，而不是一次 HTTP 执行的临时 `run_id`。旧 `app/data/runs/` 只读兼容，不再接收新记录。Thread 的最终 Assistant Item 只保存 `trace_ref`、状态、耗时和工具数。
+
+执行详情采用两级读取，避免为了普通进度展示加载完整调试记录：
+
+- 普通 Thread 页面不读取 Trace；
+- 展开执行过程时按需读取本 Turn 的技术记录；
+- 展开“开发者调试”后，首先显示截至该 Assistant Item 的完整 Thread 历史；
+- 工具结果旁的“查看 Trace”只展开该工具的耗时、校验、错误和恢复信息；
+- System Prompt 通过一个独立的小入口按需展开；不再展示 Runtime Inspector 和大块 Raw JSON。
+
+Trace 的 `steps` 按 transcript 顺序保存 `item_id`。例如 Assistant `a1` 发起 `call-1`，Tool Item `tool-1` 返回结果，Trace 会同时保存 `requested_by_item_id=a1`、`tool_call_id=call-1` 和 `item_id=tool-1`。调试人员不需要在两套无关时间线之间猜测对应关系。
+
+## 暂停和恢复
+
+- 命令审批与 `request_user_input` 属于原 Turn，不创建新 Turn。
+- 等待时只把最小恢复信息保存在 `pending_interaction`；Plan 快照只在这里为恢复当前 Turn 而保留。
+- 用户批准时执行原 tool call，写入真实 ToolMessage；用户拒绝时写入一个 `user_declined` ToolMessage。
+- 用户决定不是 HumanMessage，Harness 检查点也不是 HumanMessage。
+- Turn 正常结束后清空 `pending_interaction`。旧 Plan 仍作为 `update_plan` 工具事务留在 transcript 中；新 Turn 是否重建 Plan 由模型决定。
+
+## 旧 Session 自动迁移
+
+- `app/data/sessions/` 不改名，原 URL、Session ID 和聊天入口继续使用。
+- 首次读取 V1/V2 文件时，从旧 `turns` 生成 transcript；已有 transcript 时始终以 transcript 为准。
+- 保留标题、项目、cwd、附件、压缩摘要、待审批状态和可定位的旧 Run 证据。
+- 旧 `agent_state.pending_*` 迁入 `pending_interaction`；旧 Plan 只在存在暂停 Turn 时作为恢复快照迁入。
+- 迁移完成后统一写成 V4，并移除旧 Harness 语义字段和 `latest_run_id`。
+- 第一次改写前自动把原文件备份到 `app/data/session_backups/<thread_id>.v2.json`；已有备份不会覆盖。
+- 迁移幂等；之后重复加载不会再次改写或重复生成消息。
+
+用户不需要运行迁移脚本。升级后正常打开旧聊天即可触发迁移；旧聊天记录和 Session ID 不变。
+
+## Harness 最终职责
+
+Harness 只负责模型不应自行决定的技术边界：
+
+- Thread/Turn 生命周期和消息顺序；
+- 工具 schema、tool call/result 配对与执行；
+- 文件、命令、网络、权限和审批边界；
+- pending interaction、运行中追加指令和取消；
+- context 估算与 compaction；
+- Turn Trace 和实时事件。
+
+任务理解、计划内容、工具策略和“用户目标是否真正完成”的语义判断仍交给模型。这样既保留可恢复、可调试的产品能力，也避免 Harness 用多套状态替模型管理任务。

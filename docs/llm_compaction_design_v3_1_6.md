@@ -1,5 +1,10 @@
 # LLM Compaction Design (v3.1.6)
 
+> Legacy design record. The current Thread V4 implementation is defined in
+> `docs/thread_transcript_architecture.md`. In particular, `task_state`,
+> `work_cursor`, `context_manager`, and the expanded `compaction_state` below
+> are no longer current persistence or model-input contracts.
+
 ## Scope
 
 This document fixes the target contract for a later compaction pass. It does not change runtime behavior in `v3.1.6`.

@@ -336,6 +336,7 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
         command = 'python -c "print(\'x\')"'
         approval = {
             "type": "command_execution",
+            "tool_call_id": "approval-tool-call",
             "command": command,
             "cwd": str((context.get("project") or {}).get("cwd") or ""),
             "approval_token": "approval-token",
@@ -364,6 +365,20 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
                     "questions": [],
                 },
                 "pending_approval": approval,
+                "pending_turn": {
+                    "schema_version": 1,
+                    "type": "command_execution",
+                    "turn_id": str(context.get("logical_turn_id") or context.get("run_id") or "turn-approval"),
+                    "request_message": str(message or ""),
+                    "triggering_user_turn_id": str(context.get("triggering_user_turn_id") or ""),
+                    "tool_call_id": "approval-tool-call",
+                    "tool_call": {
+                        "id": "approval-tool-call",
+                        "name": "exec_command",
+                        "args": {"cmd": command, "cwd": str((context.get("project") or {}).get("cwd") or "")},
+                    },
+                    "plan": [],
+                },
                 "tool_events": [],
                 "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
                 "transcript_delta": [
@@ -378,19 +393,6 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
                                 "args": {"cmd": command},
                             }
                         ],
-                    },
-                    {
-                        "id": "approval-tool-result",
-                        "role": "tool",
-                        "content": json.dumps(
-                            {
-                                "ok": False,
-                                "approval_required": True,
-                                "error_kind": "command_execution_approval_required",
-                            }
-                        ),
-                        "tool_call_id": "approval-tool-call",
-                        "name": "exec_command",
                     },
                 ],
             }
@@ -408,8 +410,68 @@ class _PendingCommandApprovalRuntime(_FakeVintageRuntime):
                 "turn_status": "needs_user_input",
                 "pending_user_input": dict(result["pending_user_input"]),
                 "pending_approval": dict(approval),
+                "pending_turn": dict(result["pending_turn"]),
                 "final_answer": "",
                 "model_draft": "",
+            }
+        )
+        inspector["run_state"] = run_state
+        result["inspector"] = inspector
+        return result
+
+
+class _ResumableCommandApprovalRuntime(_PendingCommandApprovalRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        response = dict(context.get("user_input_response") or {})
+        if str(response.get("type") or "") != "command_execution":
+            return super().run(
+                message=message,
+                settings=settings,
+                context=context,
+                progress_cb=progress_cb,
+            )
+        pending_turn = dict(context.get("pending_turn") or {})
+        assert pending_turn.get("tool_call_id") == "approval-tool-call"
+        assert str(context.get("logical_turn_id") or "") == str(pending_turn.get("turn_id") or "")
+        result = _FakeVintageRuntime.run(
+            self,
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        tool_result = {
+            "ok": False,
+            "error_kind": "user_declined",
+            "error": {"kind": "user_declined", "message": "Command execution was declined by the user."},
+        }
+        result.update(
+            {
+                "text": "Continued without running the command.",
+                "final_answer": "Continued without running the command.",
+                "turn_status": "completed",
+                "pending_user_input": {},
+                "pending_approval": {},
+                "pending_turn": {},
+                "transcript_delta": [
+                    {
+                        "role": "tool",
+                        "content": json.dumps(tool_result),
+                        "tool_call_id": "approval-tool-call",
+                        "name": "exec_command",
+                    }
+                ],
+            }
+        )
+        inspector = dict(result.get("inspector") or {})
+        run_state = dict(inspector.get("run_state") or {})
+        run_state.update(
+            {
+                "turn_status": "completed",
+                "pending_user_input": {},
+                "pending_approval": {},
+                "pending_turn": {},
+                "final_answer": result["final_answer"],
             }
         )
         inspector["run_state"] = run_state
@@ -877,15 +939,24 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
         self.calls: list[dict[str, object]] = []
 
     def run(self, *, message, settings, context, progress_cb=None):
-        history_turns = list(context.get("history_turns") or [])
-        current_turn = dict(context.get("current_turn") or {})
-        active_task_focus = dict(context.get("active_task_focus") or context.get("current_task_focus") or {})
-        recent_user_messages = [str(item or "") for item in list(context.get("recent_user_messages") or []) if str(item or "").strip()]
+        transcript_items = [
+            dict(item)
+            for item in list((context.get("thread_transcript") or {}).get("items") or [])
+            if isinstance(item, dict)
+        ]
+        history_turns = [
+            {"role": str(item.get("role") or ""), "text": str(item.get("content") or "")}
+            for item in transcript_items
+            if str(item.get("role") or "") in {"user", "assistant"}
+        ]
+        recent_user_messages = [
+            str(item.get("content") or "")
+            for item in transcript_items
+            if str(item.get("role") or "") == "user" and str(item.get("content") or "").strip()
+        ][-8:]
         self.calls.append(
             {
                 "message": str(message or ""),
-                "current_turn": dict(current_turn),
-                "active_task_focus": dict(active_task_focus),
                 "recent_user_messages": list(recent_user_messages),
                 "history_turns": [
                     {
@@ -907,9 +978,9 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
             ),
             "",
         )
-        goal = str(current_turn.get("goal") or active_task_focus.get("goal") or current).strip()
-        followup_type = str(current_turn.get("followup_type") or "").strip()
-        if current == "题目" and followup_type == "subject_request":
+        goal = current
+        prior_context = "\n".join(str(item.get("text") or "") for item in history_turns)
+        if current == "题目" and ("メール" in prior_context or "邮件" in prior_context):
             text = "件名：明日の会議時間変更のお願い"
         elif current == "题目":
             text = (
@@ -918,15 +989,11 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
                 "明日は検査のため、一日お休みをいただきたく存じます。\n\n"
                 "よろしくお願いいたします。"
             )
-        elif current == "刚刚我问你什么了" and followup_type == "recent_user_message_recall":
+        elif current == "刚刚我问你什么了":
             recalled = recent_user_messages[-1] if recent_user_messages else latest_previous_user
             text = f"你刚刚问的是“{recalled}”。"
-        elif current == "刚刚我问你什么了":
-            text = f"你刚刚问的是“{goal}”。"
-        elif current == "我刚才问你的所有问题，罗列一下" and followup_type == "recent_user_messages_list":
-            text = "\n".join(f"{index + 1}. {entry}" for index, entry in enumerate(recent_user_messages))
         elif current == "我刚才问你的所有问题，罗列一下":
-            text = goal
+            text = "\n".join(f"{index + 1}. {entry}" for index, entry in enumerate(recent_user_messages))
         elif "メール" in current or "邮件" in current or "メールを書いて" in current:
             text = (
                 "お世話になっております。\n\n"
@@ -940,8 +1007,6 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
         payload["activity"] = {
             **dict(payload.get("activity") or {}),
             "current_turn_goal": goal,
-            "current_turn_followup_type": followup_type,
-            "active_task_focus": dict(active_task_focus),
             "recent_user_messages": list(recent_user_messages),
         }
         payload["inspector"] = {
@@ -949,8 +1014,6 @@ class _FollowupContextRuntime(_FakeVintageRuntime):
             "run_state": {
                 **dict(((payload.get("inspector") or {}).get("run_state") or {})),
                 "goal": goal,
-                "current_turn": dict(current_turn),
-                "active_task_focus": dict(active_task_focus),
                 "recent_user_messages": list(recent_user_messages),
             },
         }
@@ -1594,19 +1657,13 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     main_app.session_store.save(session)
 
     calls = {"load": 0, "load_by_ref": 0}
-    original_load = main_app.session_store.run_artifact_store.load
-    original_load_by_ref = main_app.session_store.run_artifact_store.load_by_ref
+    original_load_by_ref = main_app.session_store.turn_trace_store.load_by_ref
 
     def _load_by_ref(trace_ref: str):
         calls["load_by_ref"] += 1
         return original_load_by_ref(trace_ref)
 
-    def _load(*, session_id: str, run_id: str):
-        calls["load"] += 1
-        return original_load(session_id=session_id, run_id=run_id)
-
-    monkeypatch.setattr(main_app.session_store.run_artifact_store, "load_by_ref", _load_by_ref)
-    monkeypatch.setattr(main_app.session_store.run_artifact_store, "load", _load)
+    monkeypatch.setattr(main_app.session_store.turn_trace_store, "load_by_ref", _load_by_ref)
 
     summary_response = client.get(f"/api/thread/{session['id']}?view=summary")
 
@@ -1627,15 +1684,36 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert "answer_bundle" not in summary_turn
     assert "run_artifact" not in summary_turn
 
+    activity_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=activity")
+
+    assert activity_response.status_code == 200
+    assert calls == {"load": 0, "load_by_ref": 1}
+    activity_turn = activity_response.json()
+    assert activity_turn["activity"]["activity_loaded"] is True
+    assert "llm_exchanges" not in activity_turn["activity"]
+    assert "run_artifact" not in activity_turn
+    assert "answer_bundle" not in activity_turn
+
+    debug_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=debug")
+
+    assert debug_response.status_code == 200
+    assert calls == {"load": 0, "load_by_ref": 2}
+    debug_turn = debug_response.json()
+    assert debug_turn["activity"]["debug_loaded"] is True
+    assert debug_turn["activity"]["turn_trace"]["turn_trace_schema_version"] == 1
+    assert [item["role"] for item in debug_turn["activity"]["thread_items"]] == ["user", "assistant"]
+    assert "answer_bundle" not in debug_turn
+    assert "run_artifact" not in debug_turn
+
     full_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=full")
 
     assert full_response.status_code == 200
-    assert calls["load_by_ref"] == 1
-    assert calls["load"] == 1
+    assert calls["load_by_ref"] == 3
+    assert calls["load"] == 0
     full_turn = full_response.json()
-    assert full_turn["answer_bundle"]["summary"] == "done"
-    assert full_turn["activity"]["llm_exchanges"][0]["round"] == 1
-    assert full_turn["run_artifact"]["run_id"] == "run-1"
+    assert full_turn["activity"]["turn_trace"]["turn_trace_schema_version"] == 1
+    assert "answer_bundle" not in full_turn
+    assert "run_artifact" not in full_turn
 
 
 def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp_path: Path) -> None:
@@ -1659,8 +1737,6 @@ def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp
         ),
         encoding="utf-8",
     )
-    original_body = session_path.read_text(encoding="utf-8")
-
     monkeypatch.setattr(
         main_app,
         "_default_project",
@@ -1684,7 +1760,10 @@ def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp
     assert full_turn_response.status_code == 200
     assert [item["text"] for item in detail_response.json()["turns"]] == ["hello", "hi"]
     assert full_turn_response.json()["text"] == "hi"
-    assert session_path.read_text(encoding="utf-8") == original_body
+    migrated = json.loads(session_path.read_text(encoding="utf-8"))
+    assert migrated["thread_record_schema_version"] == 4
+    assert "turns" not in migrated
+    assert (tmp_path / "session_backups" / f"{session_id}.v2.json").exists()
 
 
 def test_thread_new_uses_cached_project_without_live_metadata_refresh(monkeypatch, tmp_path: Path) -> None:
@@ -1846,16 +1925,14 @@ def test_chat_endpoint_uses_single_agent_runtime(monkeypatch, tmp_path: Path) ->
     session_payload = session_response.json()
     assert session_payload["project_id"]
     assert session_payload["project_root"] == str(tmp_path)
-    assert session_payload["agent_state"]["phase"] == "completed"
-    assert session_payload["agent_state"]["permission_profile"] == "auto"
-    assert session_payload["agent_state"]["turn_status"] == "completed"
-    assert session_payload["agent_state"]["evidence_status"] == "collected"
-    assert session_payload["agent_state"]["enabled_skill_ids"] == ["example-refactor-helper"]
-    assert session_payload["agent_state"]["task_checkpoint"]["task_id"] == "task-fake-1"
-    assert session_payload["agent_state"]["context_meter"]["auto_compact_token_limit"] > 0
-    assert session_payload["agent_state"]["compaction_status"]["mode"] == "token_budget"
-    assert session_payload["context_meter"]["auto_compact_token_limit"] > 0
-    assert session_payload["compaction_status"]["mode"] == "token_budget"
+    assert session_payload["agent_state"]["phase"] == "idle"
+    assert session_payload.get("pending_interaction", {}) == {}
+    assert session_payload["agent_state"]["turn_status"] == "idle"
+    assert session_payload["agent_state"]["last_run_id"] == ""
+    assert "task_checkpoint" not in session_payload["agent_state"]
+    assert [item["role"] for item in session_payload["thread_items"]] == ["user", "assistant"]
+    assert session_payload.get("context_meter", {}) == {}
+    assert session_payload.get("compaction_status", {}) == {}
 
 
 def test_command_approval_notice_is_runtime_turn_not_model_history(monkeypatch, tmp_path: Path) -> None:
@@ -1887,7 +1964,7 @@ def test_command_approval_notice_is_runtime_turn_not_model_history(monkeypatch, 
     assert [item["role"] for item in session["turns"]] == ["user", "runtime"]
     assert session["turns"][-1]["text"].startswith("Approval required to run this command")
     transcript_items = list((session.get("thread_transcript") or {}).get("items") or [])
-    assert [item["role"] for item in transcript_items] == ["user", "assistant", "tool"]
+    assert [item["role"] for item in transcript_items] == ["user", "assistant"]
     assert not any(
         item.get("role") == "assistant"
         and str(item.get("content") or "").startswith("Approval required to run this command")
@@ -1897,6 +1974,117 @@ def test_command_approval_notice_is_runtime_turn_not_model_history(monkeypatch, 
     thread_response = client.get(f"/api/thread/{payload['session_id']}?view=summary")
     assert thread_response.status_code == 200
     assert thread_response.json()["turns"][-1]["role"] == "runtime"
+
+
+def test_command_approval_decision_resumes_same_turn_without_new_human_message(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _ResumableCommandApprovalRuntime())
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "运行这条命令",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+    session_id = first_payload["session_id"]
+    original_turn_id = str(first_payload["pending_approval"].get("tool_call_id") or "")
+    assert original_turn_id == "approval-tool-call"
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "取消执行 Python",
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "cancel",
+                "tool_call_id": "approval-tool-call",
+            },
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert second.status_code == 200
+    assert second.json()["turn_status"] == "completed"
+    session = main_app.session_store.load(session_id)
+    assert session is not None
+    assert [item["role"] for item in session["turns"]] == ["user", "assistant"]
+    transcript_items = list((session.get("thread_transcript") or {}).get("items") or [])
+    assert [item["role"] for item in transcript_items] == ["user", "assistant", "tool", "assistant"]
+    assert transcript_items[2]["tool_call_id"] == "approval-tool-call"
+    assert "user_declined" in transcript_items[2]["content"]
+    assert not any("command_execution_cancelled" in str(item.get("content") or "") for item in transcript_items)
+    assert session["pending_interaction"] == {}
+
+
+def test_legacy_command_approval_placeholder_migrates_to_pending_turn() -> None:
+    session = {
+        "cwd": "/tmp/project",
+        "task_state": {"plan_items": [{"step": "Run check", "status": "in_progress"}]},
+        "agent_state": {
+            "last_run_id": "legacy-turn",
+            "pending_approval": {
+                "type": "command_execution",
+                "command": "python check.py",
+                "cwd": "/tmp/project",
+                "approval_token": "token",
+            },
+            "pending_user_input": {"summary": "Approval required"},
+        },
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"id": "u1", "turn_id": "u1", "role": "user", "content": "Run the check"},
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc-legacy",
+                            "name": "exec_command",
+                            "args": {"cmd": "python check.py", "cwd": "/tmp/project"},
+                        }
+                    ],
+                },
+                {
+                    "id": "tool-placeholder",
+                    "role": "tool",
+                    "content": json.dumps(
+                        {"ok": False, "approval_required": True, "error_kind": "command_execution_approval_required"}
+                    ),
+                    "tool_call_id": "tc-legacy",
+                    "name": "exec_command",
+                },
+            ],
+        },
+    }
+
+    pending = main_app._migrate_legacy_pending_command_turn(session)
+
+    assert pending["tool_call_id"] == "tc-legacy"
+    assert pending["turn_id"] == "legacy-turn"
+    assert pending["request_message"] == "Run the check"
+    assert pending["plan"] == [{"step": "Run check", "status": "in_progress"}]
+    assert [item["role"] for item in session["thread_transcript"]["items"]] == ["user", "assistant"]
+    assert session["pending_interaction"]["approval"]["tool_call_id"] == "tc-legacy"
+    assert session["pending_interaction"]["turn"]["tool_call_id"] == "tc-legacy"
 
 
 def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(monkeypatch, tmp_path: Path) -> None:
@@ -2013,25 +2201,21 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     assert loaded["compaction_state"]["generation"] >= 1
     assert loaded["compaction_state"]["compacted_history"]
     assert loaded["summary"] == loaded["compaction_state"]["compacted_history"]
-    assert loaded["compaction_state"]["last_compaction_phase"] == "pre_turn"
-    assert loaded["compaction_state"]["reason"] in {
-        "context_auto_limit",
-        "context_danger_limit",
-        "history_soft_limit",
+    assert loaded["compaction"]["compacted_at"]
+    assert set(loaded["compaction"]) == {
+        "generation", "summary", "compacted_until_item_id", "compacted_at",
     }
-    assert loaded["compaction_state"]["compaction_source"] == "deterministic_fallback"
-    assert loaded["compaction_state"]["after_tokens"] > 0
-    assert len(loaded["compaction_state"]["retained_turn_ids"]) <= 12
 
     assert capture_runtime.seen_contexts
     seen = capture_runtime.seen_contexts[0]
     assert seen["summary"] == loaded["compaction_state"]["compacted_history"]
     assert seen["compaction_status"]["generation"] == loaded["compaction_state"]["generation"]
     assert seen["compaction_status"]["last_compaction_phase"] == "pre_turn"
-    assert seen["compaction_status"]["reason"] == loaded["compaction_state"]["reason"]
+    assert seen["compaction_status"]["reason"] in {
+        "context_auto_limit", "context_danger_limit", "history_soft_limit",
+    }
     assert seen["compaction_status"]["compaction_source"] == "deterministic_fallback"
-    assert 1 <= len(seen["history_turns"]) <= 12
-    assert all(turn["text"] != "继续总结" for turn in seen["history_turns"])
+    assert "history_turns" not in seen
     seen_transcript = list(dict(seen["thread_transcript"]).get("items") or [])
     assert seen_transcript
     assert all(item["content"] != "继续总结" for item in seen_transcript)
@@ -2448,19 +2632,15 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     full_response = client.get(f"/api/thread/{session_id}/turn/{last_turn['id']}?view=full")
     assert full_response.status_code == 200
     full_turn = full_response.json()
-    assert full_turn["activity"]["runtime_error"]["kind"] == "llm_empty_response"
-    assert full_turn["activity"]["model_draft"] == payload["model_draft"]
-    assert len(full_turn["activity"]["llm_exchanges"]) == 2
-    assert full_turn["activity"]["llm_exchanges"][-1]["error"]["kind"] == "llm_empty_response"
-    assert full_turn["run_artifact"]["inspector"]["run_state"]["llm_exchanges"] == full_turn["activity"]["llm_exchanges"]
+    assert full_turn["activity"]["turn_trace"]["terminal"]["error_kind"] == "llm_empty_response"
+    assert full_turn["activity"]["turn_trace"]["steps"][-1]["type"] == "model_failed"
     assert payload["inspector"]["run_state"]["llm_exchanges"] == payload["activity"]["llm_exchanges"]
 
-    clean_turns = list(((session.get("context_manager") or {}).get("clean_turns")) or [])
-    assert all("model_dump" not in str((turn or {}).get("text") or "") for turn in clean_turns)
-    assert all("llm_exchanges" not in str(turn or "") for turn in clean_turns)
+    assert all("model_dump" not in str(item.get("content") or "") for item in session["thread_transcript"]["items"])
+    assert all("llm_exchanges" not in str(item or "") for item in session["thread_transcript"]["items"])
 
 
-def test_chat_endpoint_keeps_task_state_canonical_on_update_plan_without_delta_merge(monkeypatch, tmp_path: Path) -> None:
+def test_chat_endpoint_ignores_legacy_task_state_and_delta_payloads(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DeltaTaskStateRuntime())
     client = TestClient(main_app.app)
@@ -2514,31 +2694,22 @@ def test_chat_endpoint_keeps_task_state_canonical_on_update_plan_without_delta_m
     payload = response.json()
     assert delta_calls["count"] == 0
     assert fallback_calls["count"] == 0
-    assert payload["task_state_delta"]["next_required_action"] == "Run focused tests"
-    assert payload["task_state"]["task_id"] != "wrong-task"
-    assert payload["task_state"]["completed_steps"] == []
-    assert payload["task_state"]["progress_basis"] == []
-    assert payload["task_state"]["next_required_action"] == ""
-    assert payload["task_state"]["plan_items"][0]["status"] == "in_progress"
-    assert "task_state_validation" not in payload
+    assert payload.get("task_state") == {}
+    assert "task_state_delta" not in payload
+    assert payload["plan"][0]["status"] == "in_progress"
 
     saved = main_app.session_store.load(session["id"], default_project=main_app.project_store.ensure_default_project())
     assert saved is not None
-    assert saved["task_state"]["completed_steps"] == []
-    assert saved["task_state"]["task_id"] != "wrong-task"
-    assert saved["task_state"]["progress_basis"] == []
-    assert saved["task_state"]["next_required_action"] == ""
+    assert "task_state" not in saved
     assistant_turn = saved["turns"][-1]
     full_turn_response = client.get(f"/api/thread/{session['id']}/turn/{assistant_turn['id']}?view=full")
     assert full_turn_response.status_code == 200
     full_turn = full_turn_response.json()
-    assert full_turn["run_artifact"]["task_state"]["completed_steps"] == []
-    assert full_turn["run_artifact"]["task_state_delta"]["next_required_action"] == "Run focused tests"
-    assert "task_state_validation" not in full_turn["run_artifact"]
-    assert full_turn["run_artifact"]["inspector"]["run_state"]["task_state_delta"]["next_required_action"] == "Run focused tests"
+    assert "task_state" not in full_turn["activity"]["turn_trace"]
+    assert "task_state_delta" not in full_turn["activity"]["turn_trace"]
 
 
-def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch, tmp_path: Path) -> None:
+def test_chat_endpoint_does_not_run_after_turn_task_merge(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _NoDeltaTaskStateRuntime())
     client = TestClient(main_app.app)
@@ -2588,11 +2759,10 @@ def test_chat_endpoint_falls_back_to_after_turn_merge_when_no_delta(monkeypatch,
     assert response.status_code == 200
     payload = response.json()
     assert delta_calls["count"] == 0
-    assert fallback_calls["count"] == 1
+    assert fallback_calls["count"] == 0
     assert "task_state_delta" not in payload
-    assert payload["task_state"]["task_id"] != "wrong-task"
-    assert payload["task_state"]["completed_steps"][-1]["step"] == "Inspect workspace"
-    assert "task_state_validation" not in payload
+    assert payload.get("task_state") == {}
+    assert payload["plan"] == [{"step": "Inspect workspace", "status": "completed"}]
 
 
 def test_chat_greeting_does_not_enter_task_mode_without_update_plan(monkeypatch, tmp_path: Path) -> None:
@@ -2616,14 +2786,10 @@ def test_chat_greeting_does_not_enter_task_mode_without_update_plan(monkeypatch,
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task_state"]["goal"] == ""
-    assert payload["task_state"]["status"] == "idle"
-    assert payload["task_state"]["plan_items"] == []
-    assert "task_state_validation" not in payload
+    assert payload.get("task_state") == {}
     session = main_app.session_store.load(payload["session_id"], default_project=main_app.project_store.ensure_default_project())
     assert session is not None
-    assert session["task_state"]["goal"] == ""
-    assert session["task_state"]["status"] == "idle"
+    assert "task_state" not in session
 
 
 def test_chat_tool_evidence_alone_does_not_create_task_state(monkeypatch, tmp_path: Path) -> None:
@@ -2648,12 +2814,10 @@ def test_chat_tool_evidence_alone_does_not_create_task_state(monkeypatch, tmp_pa
     assert response.status_code == 200
     payload = response.json()
     assert payload["tool_events"]
-    assert payload["task_state"]["goal"] == ""
-    assert payload["task_state"]["status"] == "idle"
-    assert "task_state_validation" not in payload
+    assert payload.get("task_state") == {}
 
 
-def test_chat_simple_chat_does_not_overwrite_existing_task_state(monkeypatch, tmp_path: Path) -> None:
+def test_chat_discards_legacy_task_state_in_favor_of_thread_history(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DirectAnswerNoTaskRuntime())
     client = TestClient(main_app.app)
@@ -2687,16 +2851,13 @@ def test_chat_simple_chat_does_not_overwrite_existing_task_state(monkeypatch, tm
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task_state"]["goal"] == "Fix update_plan schema"
-    assert payload["task_state"]["updated_at"] == "2026-06-01T00:00:00Z"
-    assert "task_state_validation" not in payload
+    assert payload.get("task_state") == {}
     saved = main_app.session_store.load(session["id"], default_project=main_app.project_store.ensure_default_project())
     assert saved is not None
-    assert saved["task_state"]["goal"] == "Fix update_plan schema"
-    assert saved["task_state"]["updated_at"] == "2026-06-01T00:00:00Z"
+    assert "task_state" not in saved
 
 
-def test_chat_continue_like_request_inherits_previous_task_goal(monkeypatch, tmp_path: Path) -> None:
+def test_chat_continue_request_does_not_use_legacy_task_goal_heuristics(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _DirectAnswerNoTaskRuntime())
     client = TestClient(main_app.app)
@@ -2729,11 +2890,11 @@ def test_chat_continue_like_request_inherits_previous_task_goal(monkeypatch, tmp
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task_state"]["goal"] == "Fix update_plan schema"
-    assert payload["task_state"]["goal"] != "继续"
+    assert payload.get("task_state") == {}
+    assert payload["text"] == "echo:继续"
 
 
-def test_chat_successful_update_plan_creates_task_state(monkeypatch, tmp_path: Path) -> None:
+def test_chat_successful_update_plan_stays_run_scoped(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _UpdatePlanCreatesTaskRuntime())
     client = TestClient(main_app.app)
@@ -2754,40 +2915,22 @@ def test_chat_successful_update_plan_creates_task_state(monkeypatch, tmp_path: P
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task_state"]["task_id"]
-    assert payload["task_state"]["goal"] in {
-        "This is a multi-step code change, so a plan is useful.",
-        "Fix update_plan schema",
-    }
-    assert len(payload["task_state"]["plan_items"]) == 3
-    assert payload["task_state"]["status"] == "in_progress"
+    assert payload.get("task_state") == {}
+    assert len(payload["plan"]) == 3
+    saved = main_app.session_store.load(payload["session_id"])
+    assert saved is not None
+    assert "task_state" not in saved
 
 
-def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) -> None:
+def test_chat_passes_thread_transcript_without_legacy_memory_state(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     capture_runtime = _ContextCapturingRuntime()
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", capture_runtime)
     client = TestClient(main_app.app)
 
     session = main_app.session_store.create(main_app.project_store.ensure_default_project())
-    session["summary"] = "old summary"
-    session["turns"] = [
-        {"role": "user", "text": "先看一下这个仓库", "attachments": [], "answer_bundle": {}, "created_at": "2026-04-20T00:00:00Z"},
-        {"role": "assistant", "text": "我已经看过仓库", "attachments": [], "answer_bundle": {}, "created_at": "2026-04-20T00:00:01Z"},
-    ]
-    session["route_state"] = {
-        "task_checkpoint": {
-            "task_id": "task-old",
-            "goal": "Inspect old task",
-            "project_root": str(tmp_path),
-            "cwd": str(tmp_path),
-            "active_files": [str(tmp_path / "old.py")],
-            "active_attachments": [],
-            "last_completed_step": "read_file: old.py",
-            "next_action": "modify old.py",
-        }
-    }
-    session["agent_state"]["task_checkpoint"] = dict(session["route_state"]["task_checkpoint"])
+    main_app.session_store.append_turn(session, role="user", text="先看一下这个仓库")
+    main_app.session_store.append_turn(session, role="assistant", text="我已经看过仓库")
     main_app.session_store.save(session)
 
     response = client.post(
@@ -2807,15 +2950,17 @@ def test_chat_preserves_thread_memory_for_new_turn(monkeypatch, tmp_path: Path) 
 
     assert response.status_code == 200
     seen = capture_runtime.seen_contexts[0]
-    assert seen["summary"] == "old summary"
-    assert len(seen["history_turns"]) == 2
-    assert seen["thread_memory"]["summary"] == "old summary"
+    assert seen["summary"] == ""
     assert [item["content"] for item in dict(seen["thread_transcript"])["items"]] == [
         "先看一下这个仓库",
         "我已经看过仓库",
     ]
-    assert seen["current_task_focus"]["task_id"] == ""
-    assert seen["route_state"]["task_checkpoint"]["task_id"] == "task-old"
+    for removed_key in (
+        "history_turns", "thread_memory", "current_turn", "recent_user_messages",
+        "active_task_focus", "current_task_focus", "work_cursor", "task_state",
+        "recent_tasks", "artifact_memory_preview", "recalled_context",
+    ):
+        assert removed_key not in seen
 
 
 def test_chat_stream_persists_latest_user_turn_before_runtime_completes(monkeypatch, tmp_path: Path) -> None:
@@ -2897,9 +3042,6 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     )
     assert second.status_code == 200
     assert second.json()["text"] == "件名：明日の会議時間変更のお願い"
-    assert runtime.calls[1]["current_turn"]["followup_type"] == "subject_request"
-    assert runtime.calls[1]["current_turn"]["goal"] == "Provide only a subject/title for the previous email or draft."
-    assert runtime.calls[1]["active_task_focus"]["goal"] != runtime.calls[1]["current_turn"]["goal"]
     assert runtime.calls[1]["recent_user_messages"] == ["日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。"]
 
     third = client.post(
@@ -2918,7 +3060,6 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     )
     assert third.status_code == 200
     assert third.json()["text"] == "你刚刚问的是“题目”。"
-    assert runtime.calls[2]["current_turn"]["followup_type"] == "recent_user_message_recall"
     assert runtime.calls[2]["recent_user_messages"][-1] == "题目"
 
     fourth = client.post(
@@ -2943,7 +3084,6 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
             "3. 刚刚我问你什么了",
         ]
     )
-    assert runtime.calls[3]["current_turn"]["followup_type"] == "recent_user_messages_list"
     assert runtime.calls[3]["recent_user_messages"] == [
         "日语で丁寧なメールを書いて。内容は、明日の会議を10時から11時に変更したいです。",
         "题目",
@@ -2975,7 +3115,10 @@ def test_chat_followup_short_message_is_persisted_and_visible_in_context(monkeyp
     full_subject_response = client.get(f"/api/thread/{session_id}/turn/{subject_assistant_turn['id']}?view=full")
     assert full_subject_response.status_code == 200
     full_subject_activity = full_subject_response.json()["activity"]
-    assert full_subject_activity["triggering_user_message"] == "题目"
+    assert any(
+        item.get("role") == "user" and item.get("content") == "题目"
+        for item in full_subject_activity["thread_items"]
+    )
     assert "current_turn_goal" not in full_subject_activity
     assert "current_turn_followup_type" not in full_subject_activity
     assert "active_task_focus" not in full_subject_activity
@@ -3021,8 +3164,10 @@ def test_assistant_activity_exposes_triggering_user_message(monkeypatch, tmp_pat
     full_response = client.get(f"/api/thread/{payload['session_id']}/turn/{assistant_turn['id']}?view=full")
     assert full_response.status_code == 200
     full_activity = full_response.json()["activity"]
-    assert full_activity["triggering_user_message"] == "题目"
-    assert full_activity["triggering_user_turn_id"]
+    assert any(
+        item.get("role") == "user" and item.get("content") == "题目"
+        for item in full_activity["thread_items"]
+    )
     assert "current_turn_goal" not in full_activity
 
 

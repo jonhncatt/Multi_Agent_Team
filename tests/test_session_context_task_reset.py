@@ -95,7 +95,7 @@ def test_derive_current_turn_context_uses_recent_user_history_for_recall() -> No
     assert current_turn["recent_user_messages"] == ["帮我写个请假邮件", "题目"]
 
 
-def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment() -> None:
+def test_attachment_context_uses_explicit_sticky_ids_without_semantic_recall() -> None:
     session = {
         "agent_state": {
             "current_task_focus": {
@@ -164,5 +164,7 @@ def test_recalled_attachment_prefers_matching_image_kind_over_latest_attachment(
 
     resolved = session_context.resolve_attachment_context(session, message="我之前让你解释的图片内容，你还记得吗？", requested_attachment_ids=[])
 
-    assert resolved["effective_attachment_ids"] == ["img-1"]
-    assert resolved["recalled_task"]["task_id"] == "task-image"
+    assert resolved["effective_attachment_ids"] == ["mail-1"]
+    assert resolved["auto_linked_attachment_ids"] == ["mail-1"]
+    assert resolved["recalled_artifacts"] == []
+    assert resolved["recalled_task"] == {}

@@ -1347,7 +1347,148 @@ button {
 .activity-debug-sections {
   display: grid;
   gap: 8px;
+  min-width: 0;
+  margin: 8px 0 0 10px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(152, 164, 181, 0.32);
+}
+
+.activity-debug-sections > .activity-payload {
+  min-width: 0;
+  margin-top: 0;
+}
+
+.activity-debug-sections .activity-structured-details {
+  min-width: 0;
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(152, 164, 181, 0.22);
+}
+
+.thread-history-debug,
+.system-prompt-debug {
+  min-width: 0;
+}
+
+.thread-history-title {
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.thread-history-list {
+  display: grid;
+  gap: 8px;
+}
+
+.thread-history-item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(152, 164, 181, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.thread-history-item.role-tool {
+  margin-left: 14px;
+  border-left: 3px solid rgba(70, 116, 173, 0.42);
+  background: rgba(246, 248, 251, 0.88);
+}
+
+.thread-history-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.thread-history-item-head code,
+.thread-tool-call-meta code,
+.thread-tool-link code,
+.system-prompt-context > code {
+  color: var(--ink-faint);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.thread-history-content,
+.system-prompt-context pre {
+  max-height: 360px;
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border-radius: 10px;
+  background: rgba(246, 248, 251, 0.82);
+  color: var(--ink);
+  font: 12px/1.55 "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.thread-tool-call,
+.thread-trace-details,
+.system-prompt-debug {
   margin-top: 8px;
+}
+
+.thread-tool-call > summary,
+.thread-trace-details > summary,
+.system-prompt-debug > summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.thread-tool-call-meta,
+.thread-tool-link {
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+
+.thread-trace-grid {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(152, 164, 181, 0.28);
+}
+
+.thread-trace-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.32fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  font-size: 11.5px;
+}
+
+.thread-trace-row span {
+  color: var(--ink-faint);
+}
+
+.thread-trace-row code {
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.system-prompt-context {
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .activity-debug-sections {
+    margin-left: 4px;
+    padding-left: 10px;
+  }
+
+  .activity-debug-sections .activity-structured-details {
+    margin-left: 4px;
+    padding-left: 8px;
+  }
 }
 
 @keyframes activity-progress-enter {

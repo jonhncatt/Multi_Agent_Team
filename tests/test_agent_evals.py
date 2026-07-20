@@ -583,6 +583,7 @@ class _TeamSkillUpdateFakeRuntime:
         )
         return {
             "turn_status": "completed",
+            "final_answer": "Updated the Team Skill and verified the result.",
             "runtime_error": {},
             "pending_user_input": {},
             "pending_approval": {},
@@ -743,6 +744,7 @@ class _FailureRecoveryFakeRuntime:
         )
         return {
             "turn_status": "completed",
+            "final_answer": "Implemented the change and recovered after the failed check.",
             "runtime_error": {},
             "pending_user_input": {},
             "pending_approval": {},
@@ -949,17 +951,7 @@ def test_skill_maintenance_translation_passes_without_agent_command_execution(tm
     assert result["completion_state_accuracy"] is True
 
 
-@pytest.mark.parametrize(
-    "runtime_factory",
-    [
-        _SkillMaintenanceTranslationNoFinalAnswerFakeRuntime,
-        _SkillMaintenanceTranslationIncompletePlanFakeRuntime,
-    ],
-)
-def test_private_verification_does_not_hide_other_incomplete_states(
-    tmp_path: Path,
-    runtime_factory,
-) -> None:
+def test_private_verification_still_requires_a_real_final_answer(tmp_path: Path) -> None:
     suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
     case = next(
         item
@@ -970,17 +962,37 @@ def test_private_verification_does_not_hide_other_incomplete_states(
     result = run_eval_attempt(
         case,
         attempt=1,
-        workspace=tmp_path / runtime_factory.__name__,
+        workspace=tmp_path / "missing-final-answer",
         base_config=load_config(),
         model="gpt-test",
-        runtime_factory=runtime_factory,
+        runtime_factory=_SkillMaintenanceTranslationNoFinalAnswerFakeRuntime,
     )
 
     assert result["status"] == "failed"
     assert result["completion_state_accuracy"] is False
     assert "completion_honesty" in result["failure_categories"]
-    if runtime_factory is _SkillMaintenanceTranslationNoFinalAnswerFakeRuntime:
-        assert result["runtime"]["final_answer_present"] is False
+    assert result["runtime"]["final_answer_present"] is False
+
+
+def test_eval_ignores_legacy_runtime_task_state_when_final_delivery_is_real(tmp_path: Path) -> None:
+    suite = load_eval_suite(ROOT / "evals" / "agent_workflow_cases.json")
+    case = next(
+        item
+        for item in suite["cases"]
+        if item["name"] == "skill_maintenance_translation_treats_commands_as_data"
+    )
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / "legacy-task-state",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_SkillMaintenanceTranslationIncompletePlanFakeRuntime,
+    )
+
+    assert result["status"] == "passed"
+    assert result["runtime"]["task_completed"] is True
 
 
 def test_skill_maintenance_translation_fails_on_any_exec_command_attempt(tmp_path: Path) -> None:
@@ -1098,7 +1110,7 @@ def test_eval_attempt_is_blocked_when_authoritative_compiler_is_unavailable(tmp_
     assert result["hard_failures"] == []
     assert result["failure_categories"] == ["environment_blocked"]
     assert result["runtime"]["turn_ended"] is True
-    assert result["runtime"]["task_completed"] is False
+    assert result["runtime"]["task_completed"] is True
 
 
 CORRECT_IMPLEMENTATION = r'''#include "frame_parser.h"

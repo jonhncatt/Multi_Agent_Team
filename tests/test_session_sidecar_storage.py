@@ -18,11 +18,33 @@ def _project(tmp_path: Path) -> dict[str, str]:
 def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, object], dict[str, object]]:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))
-    store.append_turn(session, role="user", text="inspect")
+    logical_turn_id = "turn-1"
+    user_turn = store.append_turn(session, role="user", text="inspect", logical_turn_id=logical_turn_id)
+    store.append_thread_items(
+        session,
+        [
+            {
+                "id": "assistant-tool-1",
+                "turn_id": logical_turn_id,
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+            },
+            {
+                "id": "tool-result-1",
+                "turn_id": logical_turn_id,
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "name": "read_file",
+                "content": '{"ok": true}',
+            },
+        ],
+    )
     assistant_turn = store.append_turn(
         session,
         role="assistant",
         text="done",
+        logical_turn_id=logical_turn_id,
         answer_bundle={"summary": "done", "claims": [], "citations": [], "warnings": []},
         activity={
             "run_id": "run-1",
@@ -34,8 +56,43 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
             "tool_boundary_clean": True,
             "plan": [{"step": "inspect", "status": "completed"}],
             "plan_explanation": "plan detail",
-            "trace_events": [{"id": "trace-1", "type": "tool.started", "payload": {"call_id": "call-1"}}],
-            "llm_exchanges": [{"round": 1, "status": "completed"}],
+            "trace_events": [
+                {"id": "trace-1", "type": "tool.started", "timestamp": 10.0, "payload": {"call_id": "call-1"}},
+                {"id": "trace-2", "type": "tool.finished", "timestamp": 10.02, "payload": {"call_id": "call-1"}},
+            ],
+            "llm_exchanges": [
+                {
+                    "round": 1,
+                    "model": "gpt-test",
+                    "status": "completed",
+                    "duration_ms": 7,
+                    "sent_messages_exact": [
+                        {"role": "system", "content": "[agent.md]\nRules"},
+                        {"role": "user", "content": "inspect"},
+                    ],
+                    "request_composition": {"bound_tool_names": ["read_file"]},
+                    "model_returned_exact": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+                        "finish_reason": "tool_calls",
+                    },
+                },
+                {
+                    "round": 2,
+                    "model": "gpt-test",
+                    "status": "completed",
+                    "duration_ms": 5,
+                    "sent_messages_exact": [
+                        {"role": "system", "content": "[agent.md]\nRules"},
+                        {"role": "user", "content": "inspect"},
+                        {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}]},
+                        {"role": "tool", "tool_call_id": "call-1", "name": "read_file", "content": '{"ok": true}'},
+                    ],
+                    "request_composition": {"bound_tool_names": ["read_file"]},
+                    "model_returned_exact": {"role": "assistant", "content": "done", "finish_reason": "stop"},
+                },
+            ],
             "model_draft": "draft",
             "final_answer": "done",
             "runtime_error": {"kind": "debug"},
@@ -49,51 +106,44 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
         run_id="run-1",
         activity=assistant_turn["activity"],
         answer_bundle=assistant_turn["answer_bundle"],
-        tool_events=[{"name": "read_file", "status": "ok", "summary": "read"}],
+        logical_turn_id=logical_turn_id,
+        tool_events=[
+            {
+                "name": "read_file",
+                "status": "ok",
+                "raw_tool_call": {"id": "call-1", "name": "read_file"},
+                "validation_result": {"allowed": True, "code": "allowed"},
+            }
+        ],
         inspector={"run_state": {"turn_status": "completed"}},
-        extra={
-            "task_state": {
-                "task_id": "task-1",
-                "goal": "Inspect sidecar payload",
-                "status": "in_progress",
-                "current_step_id": "step-2",
-                "completed_steps": [{"id": "step-1", "step": "Read activity", "progress_basis": ["read_file: app/static/app.js"]}],
-                "failed_attempts": [],
-                "progress_basis": ["read_file: app/static/app.js"],
-                "evidence_refs": [{"tool": "read_file", "ref": "app/static/app.js"}],
-                "validation_warnings": [],
-            },
-            "task_state_delta": {
-                "current_step_id": "step-2",
-                "step_updates": [{"step_id": "step-1", "status": "completed", "evidence_refs": [{"tool": "read_file", "ref": "app/static/app.js"}]}],
-                "next_required_action": "Run focused tests",
-            },
-            "task_state_validation": {
-                "accepted": True,
-                "applied_step_ids": ["step-1"],
-                "rejected_step_ids": [],
-                "validation_warnings": [],
-            },
-        },
+        extra={"effective_model": "gpt-test", "permission_profile": "auto", "turn_status": "completed"},
     )
     store.save(session)
     raw_session = json.loads((tmp_path / "sessions" / f"{session['id']}.json").read_text(encoding="utf-8"))
     return store, session, raw_session
 
 
-def test_assistant_activity_is_slimmed_to_run_sidecar(tmp_path: Path) -> None:
+def _assistant_item(raw_session: dict[str, object]) -> dict[str, object]:
+    items = list((raw_session.get("thread_transcript") or {}).get("items") or [])
+    return next(dict(item) for item in reversed(items) if isinstance(item, dict) and item.get("role") == "assistant")
+
+
+def _projected_assistant_turn(store: SessionStore, session_id: str) -> dict[str, object]:
+    loaded = store.load(session_id)
+    assert loaded is not None
+    return dict(loaded["turns"][-1])
+
+
+def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     store, session, raw_session = _build_sidecar_session(tmp_path)
-    raw_activity = raw_session["turns"][-1]["activity"]
-    assert raw_activity["trace_ref"] == f"{session['id']}/run-1"
-    assert raw_activity["tool_count"] == 1
-    assert set(raw_activity) <= {
-        "run_id",
+    raw_trace = dict(_assistant_item(raw_session).get("trace") or {})
+    assert raw_trace["trace_ref"] == f"turn_traces/{session['id']}/turn-1"
+    assert raw_trace["tool_count"] == 1
+    assert set(raw_trace) <= {
         "trace_ref",
         "status",
-        "summary",
-        "activity_summary",
         "tool_count",
-        "run_duration_ms",
+        "duration_ms",
     }
     for heavy_key in (
         "trace_events",
@@ -110,37 +160,77 @@ def test_assistant_activity_is_slimmed_to_run_sidecar(tmp_path: Path) -> None:
         "answer_bundle",
         "inspector",
     ):
-        assert heavy_key not in raw_activity
-    assert raw_session["turns"][-1]["answer_bundle"] == {}
+        assert heavy_key not in raw_trace
+    assert "turns" not in raw_session
+    assert "latest_run_id" not in raw_session
 
-    sidecar = json.loads((tmp_path / "runs" / session["id"] / "run-1.json").read_text(encoding="utf-8"))
-    assert sidecar["activity"]["trace_events"][0]["id"] == "trace-1"
-    assert sidecar["answer_bundle"]["summary"] == "done"
-    assert sidecar["tool_events"][0]["name"] == "read_file"
-    assert sidecar["task_state"]["current_step_id"] == "step-2"
-    assert sidecar["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
-    assert sidecar["task_state_validation"]["accepted"] is True
+    trace = json.loads((tmp_path / "turn_traces" / session["id"] / "turn-1.json").read_text(encoding="utf-8"))
+    assert trace["turn_trace_schema_version"] == 1
+    assert trace["turn_id"] == "turn-1"
+    assert trace["contexts"] == [
+        {
+            "context_id": "context-1",
+            "system_message": "[agent.md]\nRules",
+            "components": ["agent.md"],
+            "supporting_messages": [],
+            "tool_names": ["read_file"],
+        }
+    ]
+    raw_items = list((raw_session.get("thread_transcript") or {}).get("items") or [])
+    user_item_id = str(next(item["id"] for item in raw_items if item.get("role") == "user"))
+    final_assistant_id = str(_assistant_item(raw_session)["id"])
+    assert [(step["type"], step.get("item_id")) for step in trace["steps"]] == [
+        ("user_received", user_item_id),
+        ("assistant_generated", "assistant-tool-1"),
+        ("tool_completed", "tool-result-1"),
+        ("assistant_generated", final_assistant_id),
+    ]
+    tool_step = trace["steps"][2]
+    assert tool_step["requested_by_item_id"] == "assistant-tool-1"
+    assert tool_step["tool_call_id"] == "call-1"
+    assert tool_step["duration_ms"] in {19, 20}
 
-    summary_turn = store.expand_turn_for_view(session["id"], raw_session["turns"][-1], view="summary")
+    projected_turn = _projected_assistant_turn(store, str(session["id"]))
+    summary_turn = store.expand_turn_for_view(session["id"], projected_turn, view="summary")
     assert summary_turn["answer_bundle"] == {}
     assert "trace_events" not in summary_turn["activity"]
     assert "model_draft" not in summary_turn["activity"]
     assert "runtime_error" not in summary_turn["activity"]
 
-    full_turn = store.expand_turn_for_view(session["id"], raw_session["turns"][-1], view="full")
-    assert full_turn["answer_bundle"]["summary"] == "done"
+    activity_turn = store.expand_turn_for_view(session["id"], projected_turn, view="activity")
+    assert activity_turn["activity"]["activity_loaded"] is True
+    assert activity_turn["activity"]["debug_loaded"] is False
+    assert activity_turn["activity"]["full_loaded"] is False
+    assert activity_turn["activity"]["trace_events"] == []
+    assert activity_turn["activity"]["tool_items"][0]["raw_tool_call"]["id"] == "call-1"
+    assert "llm_exchanges" not in activity_turn["activity"]
+    assert "model_draft" not in activity_turn["activity"]
+    assert "final_answer" not in activity_turn["activity"]
+    assert "runtime_error" not in activity_turn["activity"]
+    assert "triggering_user_message" not in activity_turn["activity"]
+    assert "answer_stream" not in activity_turn["activity"]
+    assert activity_turn["answer_bundle"] == {}
+    assert activity_turn["run_artifact"] == {}
+
+    debug_turn = store.expand_turn_for_view(session["id"], projected_turn, view="debug")
+    assert debug_turn["activity"]["activity_loaded"] is True
+    assert debug_turn["activity"]["debug_loaded"] is True
+    assert debug_turn["activity"]["full_loaded"] is False
+    assert debug_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
+    assert "llm_exchanges" not in debug_turn["activity"]
+    assert "triggering_user_message" not in debug_turn["activity"]
+    assert "answer_stream" not in debug_turn["activity"]
+    assert debug_turn["answer_bundle"] == {}
+    assert debug_turn["run_artifact"] == {}
+
+    full_turn = store.expand_turn_for_view(session["id"], projected_turn, view="full")
+    assert full_turn["answer_bundle"] == {}
     assert full_turn["activity"]["full_loaded"] is True
-    assert full_turn["activity"]["trace_events"][0]["id"] == "trace-1"
-    assert full_turn["activity"]["llm_exchanges"][0]["round"] == 1
-    assert full_turn["activity"]["model_draft"] == "draft"
-    assert full_turn["activity"]["runtime_error"]["kind"] == "debug"
-    assert full_turn["run_artifact"]["inspector"]["run_state"]["turn_status"] == "completed"
-    assert full_turn["run_artifact"]["task_state"]["current_step_id"] == "step-2"
-    assert full_turn["run_artifact"]["task_state_delta"]["step_updates"][0]["step_id"] == "step-1"
-    assert full_turn["run_artifact"]["task_state_validation"]["accepted"] is True
+    assert full_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
+    assert full_turn["run_artifact"] == {}
 
 
-def test_expand_turn_summary_does_not_load_run_artifact(monkeypatch, tmp_path: Path) -> None:
+def test_expand_turn_summary_does_not_load_turn_trace(monkeypatch, tmp_path: Path) -> None:
     store, session, raw_session = _build_sidecar_session(tmp_path)
 
     def _boom(*args, **kwargs):
@@ -148,117 +238,47 @@ def test_expand_turn_summary_does_not_load_run_artifact(monkeypatch, tmp_path: P
 
     monkeypatch.setattr(store.run_artifact_store, "load_by_ref", _boom)
     monkeypatch.setattr(store.run_artifact_store, "load", _boom)
+    monkeypatch.setattr(store.turn_trace_store, "load_by_ref", _boom)
 
-    summary_turn = store.expand_turn_for_view(session["id"], raw_session["turns"][-1], view="summary")
+    projected_turn = _projected_assistant_turn(store, str(session["id"]))
+    summary_turn = store.expand_turn_for_view(session["id"], projected_turn, view="summary")
 
-    assert summary_turn["activity"] == raw_session["turns"][-1]["activity"]
+    assert summary_turn["activity"] == projected_turn["activity"]
     assert summary_turn["answer_bundle"] == {}
     assert summary_turn["run_artifact"] == {}
 
 
-def test_expand_turn_full_loads_run_artifact(monkeypatch, tmp_path: Path) -> None:
+def test_expand_turn_debug_loads_turn_trace_without_legacy_run(monkeypatch, tmp_path: Path) -> None:
     store, session, raw_session = _build_sidecar_session(tmp_path)
     calls = {"load": 0, "load_by_ref": 0}
-    original_load = store.run_artifact_store.load
-    original_load_by_ref = store.run_artifact_store.load_by_ref
+    original_load_by_ref = store.turn_trace_store.load_by_ref
 
     def _load_by_ref(trace_ref: str):
         calls["load_by_ref"] += 1
         return original_load_by_ref(trace_ref)
 
-    def _load(*, session_id: str, run_id: str):
-        calls["load"] += 1
-        return original_load(session_id=session_id, run_id=run_id)
+    monkeypatch.setattr(store.turn_trace_store, "load_by_ref", _load_by_ref)
 
-    monkeypatch.setattr(store.run_artifact_store, "load_by_ref", _load_by_ref)
-    monkeypatch.setattr(store.run_artifact_store, "load", _load)
-
-    full_turn = store.expand_turn_for_view(session["id"], raw_session["turns"][-1], view="full")
+    projected_turn = _projected_assistant_turn(store, str(session["id"]))
+    full_turn = store.expand_turn_for_view(session["id"], projected_turn, view="debug")
 
     assert calls["load_by_ref"] == 1
-    assert calls["load"] == 1
-    assert full_turn["answer_bundle"]["summary"] == "done"
-    assert full_turn["run_artifact"]["run_id"] == "run-1"
+    assert calls["load"] == 0
+    assert full_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
+    assert full_turn["run_artifact"] == {}
 
 
-def test_session_load_backfills_missing_light_activity_from_sidecar_once(monkeypatch, tmp_path: Path) -> None:
+def test_turn_trace_reload_is_idempotent(tmp_path: Path) -> None:
     store, session, raw_session = _build_sidecar_session(tmp_path)
     session_path = tmp_path / "sessions" / f"{session['id']}.json"
-    payload = json.loads(session_path.read_text(encoding="utf-8"))
-    payload["turns"][-1]["activity"] = {
-        "run_id": raw_session["turns"][-1]["activity"]["run_id"],
-        "trace_ref": raw_session["turns"][-1]["activity"]["trace_ref"],
-    }
-    session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    persisted_once = session_path.read_bytes()
 
-    loaded = store.load(session["id"], default_project=_project(tmp_path))
+    loaded = store.load(str(session["id"]), default_project=_project(tmp_path))
+    reloaded = store.load(str(session["id"]), default_project=_project(tmp_path))
 
-    assert loaded is not None
-    restored_activity = loaded["turns"][-1]["activity"]
-    assert restored_activity["status"] == "completed"
-    assert restored_activity["tool_count"] == 1
-    assert restored_activity["summary"] == "read and answered"
-    assert restored_activity["activity_summary"] == "read and answered"
-
-    persisted = json.loads(session_path.read_text(encoding="utf-8"))
-    assert persisted["turns"][-1]["activity"] == restored_activity
-
-    def _boom(*args, **kwargs):
-        raise AssertionError("backfilled summary activity should not reload run artifacts")
-
-    monkeypatch.setattr(store.run_artifact_store, "load_by_ref", _boom)
-    monkeypatch.setattr(store.run_artifact_store, "load", _boom)
-
-    reloaded = store.load(session["id"], default_project=_project(tmp_path))
-    assert reloaded is not None
-    assert reloaded["turns"][-1]["activity"] == restored_activity
-
-
-def test_rebuild_metadata_index_backfills_missing_light_activity(tmp_path: Path) -> None:
-    store, session, raw_session = _build_sidecar_session(tmp_path)
-    session_path = tmp_path / "sessions" / f"{session['id']}.json"
-    payload = json.loads(session_path.read_text(encoding="utf-8"))
-    payload["turns"][-1]["activity"] = {
-        "run_id": raw_session["turns"][-1]["activity"]["run_id"],
-        "trace_ref": raw_session["turns"][-1]["activity"]["trace_ref"],
-    }
-    session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    rebuilt = store.rebuild_metadata_index(default_project=_project(tmp_path))
-
-    assert rebuilt == 1
-    persisted = json.loads(session_path.read_text(encoding="utf-8"))
-    assert persisted["turns"][-1]["activity"]["status"] == "completed"
-    assert persisted["turns"][-1]["activity"]["tool_count"] == 1
-
-
-def test_repair_sessions_reuses_backfill_and_is_idempotent(tmp_path: Path) -> None:
-    store, session, raw_session = _build_sidecar_session(tmp_path)
-    session_path = tmp_path / "sessions" / f"{session['id']}.json"
-    payload = json.loads(session_path.read_text(encoding="utf-8"))
-    payload["turns"][-1]["activity"] = {
-        "run_id": raw_session["turns"][-1]["activity"]["run_id"],
-        "trace_ref": raw_session["turns"][-1]["activity"]["trace_ref"],
-    }
-    session_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    first = store.repair_sessions(default_project=_project(tmp_path))
-    assert first["scanned_sessions"] == 1
-    assert first["migrated_sessions"] == 1
-    assert first["backfilled_turns"] == 1
-    assert first["rebuilt_meta"] == 1
-    assert first["errors"] == []
-
-    repaired = json.loads(session_path.read_text(encoding="utf-8"))
-    assert repaired["turns"][-1]["activity"]["status"] == "completed"
-    assert repaired["turns"][-1]["activity"]["tool_count"] == 1
-
-    second = store.repair_sessions(default_project=_project(tmp_path))
-    assert second["scanned_sessions"] == 1
-    assert second["migrated_sessions"] == 0
-    assert second["backfilled_turns"] == 0
-    assert second["skipped"] == 1
-    assert second["errors"] == []
+    assert loaded is not None and reloaded is not None
+    assert session_path.read_bytes() == persisted_once
+    assert dict(_assistant_item(raw_session).get("trace") or {})["status"] == "completed"
 
 
 def test_session_list_reads_metadata_without_parsing_session_file(tmp_path: Path) -> None:
@@ -317,7 +337,7 @@ def test_legacy_session_activity_fields_migrate_idempotently(tmp_path: Path) -> 
     assert isinstance(changed_again, bool)
 
 
-def test_session_load_migrates_derived_top_level_memory_fields(tmp_path: Path) -> None:
+def test_session_load_discards_legacy_derived_memory_fields(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))
     session_path = tmp_path / "sessions" / f"{session['id']}.json"
@@ -364,11 +384,17 @@ def test_session_load_migrates_derived_top_level_memory_fields(tmp_path: Path) -
     assert "artifact_memory_preview" not in loaded
     assert "context_meter" not in loaded
     assert "compaction_status" not in loaded
-    assert loaded["thread_memory"]["recent_tasks"][0]["task_id"] == "legacy-task"
-    assert loaded["artifact_memory"][0]["artifact_id"] == "legacy-artifact"
+    assert "thread_memory" not in loaded
+    assert "artifact_memory" not in loaded
     assert loaded["compaction_state"]["generation"] == 2
-    assert loaded["compaction_state"]["estimated_context_tokens"] == 1234
+    assert loaded["compaction"]["compacted_at"] == "2026-06-01T00:00:01Z"
 
     persisted = json.loads(session_path.read_text(encoding="utf-8"))
     for key in ("recent_tasks", "artifact_memory_preview", "context_meter", "compaction_status"):
         assert key not in persisted
+    assert persisted["compaction"] == {
+        "generation": 2,
+        "summary": "",
+        "compacted_until_item_id": "",
+        "compacted_at": "2026-06-01T00:00:01Z",
+    }

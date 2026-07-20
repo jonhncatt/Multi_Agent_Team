@@ -697,7 +697,7 @@ def test_model_request_estimate_includes_full_messages_and_selected_tool_schemas
     assert with_tools > without_tools
 
 
-def test_completion_guard_reopens_completed_plan_after_failed_verification(tmp_path: Path) -> None:
+def test_runtime_does_not_create_a_second_semantic_task_completion_state(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     runtime = VintageProgrammerRuntime(
@@ -706,70 +706,16 @@ def test_completion_guard_reopens_completed_plan_after_failed_verification(tmp_p
         agent_dir=agent_dir,
         backend=_FakeBackend([_FakeMessage(content="ok")]),
     )
-    events = [
-        ToolEvent(name="apply_patch", status="ok", output_preview="patched", result_preview={"ok": True}),
-        ToolEvent(
-            name="exec_command",
-            status="error",
-            output_preview="1 failed",
-            normalized_arguments={"cmd": "pytest -q"},
-            result_preview={"ok": False, "returncode": 1, "command": "pytest -q"},
-        ),
-    ]
-
-    assessment, guarded_plan = runtime._assess_task_completion(
-        turn_status="completed",
-        plan_state=[
-            {"step": "Patch code", "status": "completed"},
-            {"step": "Run tests", "status": "completed"},
-        ],
-        tool_events=events,
-        pending_user_input={},
-        runtime_error={},
+    result = runtime.run(
+        message="say ok",
+        settings=ChatSettings(model="gpt-test", enable_tools=False, response_style="short"),
+        context={"session_id": "thread-1", "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)}},
     )
 
-    assert assessment["task_status"] == "in_progress"
-    assert assessment["task_completed"] is False
-    assert assessment["verification"]["status"] == "failed"
-    assert assessment["model_plan_claimed_complete"] is True
-    assert guarded_plan[-1]["status"] == "in_progress"
-
-
-def test_completion_guard_accepts_completed_plan_with_passing_verification(tmp_path: Path) -> None:
-    agent_dir = tmp_path / "agents" / "vintage_programmer"
-    _write_specs(agent_dir)
-    runtime = VintageProgrammerRuntime(
-        config=_isolated_config(tmp_path),
-        kernel_runtime=object(),
-        agent_dir=agent_dir,
-        backend=_FakeBackend([_FakeMessage(content="ok")]),
-    )
-    events = [
-        ToolEvent(name="apply_patch", status="ok", output_preview="patched", result_preview={"ok": True}),
-        ToolEvent(
-            name="exec_command",
-            status="ok",
-            output_preview="passed",
-            normalized_arguments={"cmd": "pytest -q"},
-            result_preview={"ok": True, "returncode": 0, "command": "pytest -q"},
-        ),
-    ]
-
-    assessment, guarded_plan = runtime._assess_task_completion(
-        turn_status="completed",
-        plan_state=[
-            {"step": "Patch code", "status": "completed"},
-            {"step": "Run tests", "status": "completed"},
-        ],
-        tool_events=events,
-        pending_user_input={},
-        runtime_error={},
-    )
-
-    assert assessment["task_status"] == "completed"
-    assert assessment["task_completed"] is True
-    assert assessment["verification"]["status"] == "passed"
-    assert all(item["status"] == "completed" for item in guarded_plan)
+    assert result["turn_status"] == "completed"
+    assert result["final_answer"] == "ok"
+    assert "task_completion" not in result
+    assert "task_completion" not in result["inspector"]["run_state"]
 
 
 def test_runtime_requires_soul_and_agent_specs(tmp_path: Path) -> None:
@@ -1366,7 +1312,7 @@ def test_runtime_short_input_skips_exact_tokenizer(tmp_path: Path, monkeypatch: 
     assert phase_timings["runtime_user_request_limit_ms"] >= 0
 
 
-def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: Path) -> None:
+def test_runtime_emits_non_tool_activity_without_route_semantic_inference(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _StreamingBackend(
@@ -1415,16 +1361,12 @@ def test_runtime_emits_non_tool_activity_details_and_revision_summary(tmp_path: 
     )
     answer_done = next(item for item in trace_payloads if str(item.get("type") or "") == "answer.done")
     revision_summary = dict((answer_done.get("payload") or {}).get("revision_summary") or {})
-    summary_items = list(revision_summary.get("items") or [])
     model_action_payload = dict((model_action_done.get("payload") or {}).get("model_action") or {})
     execution_payload = dict((execution_done.get("payload") or {}).get("execution_trace_entry") or {})
 
     assert model_action_payload["action_type"] == "final_answer"
     assert model_action_payload["accepted"] is True
-    assert revision_summary["task_type"] == "japanese_grammar_review"
-    assert summary_items
-    assert summary_items[0]["original_excerpt"] == "今日は駅に行きます。"
-    assert "今日は駅へ行きます。" in summary_items[0]["result_excerpt"]
+    assert revision_summary == {}
     assert execution_payload["action_type"] == "final_answer"
     assert result["model_action"]["action_type"] == "final_answer"
     assert result["execution_trace"]
@@ -1823,6 +1765,8 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     assert result["pending_approval"]["type"] == "command_execution"
     assert result["pending_approval"]["approval_token"] == "approval-token-1"
     assert result["pending_user_input"]["approval_request"]["type"] == "command_execution"
+    assert result["pending_turn"]["tool_call_id"] == "tc-approval"
+    assert [item["role"] for item in result["transcript_delta"]] == ["assistant"]
     assert result["inspector"]["run_state"]["pending_approval"]["command"] == "python -c \"print('x')\""
     request_event = next(item for item in progress_events if str(item.get("event") or "") == "request_user_input")
     assert request_event["pending_approval"]["type"] == "command_execution"
@@ -1851,6 +1795,36 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
             "history_turns": [],
             "attachments": [],
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "run risky command"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "tc-approval",
+                                "name": "exec_command",
+                                "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                            }
+                        ],
+                    },
+                ],
+            },
+            "pending_turn": {
+                "schema_version": 1,
+                "type": "command_execution",
+                "turn_id": "turn-original",
+                "request_message": "run risky command",
+                "tool_call_id": "tc-approval",
+                "tool_call": {
+                    "id": "tc-approval",
+                    "name": "exec_command",
+                    "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                },
+                "plan": [{"step": "Run the requested check", "status": "in_progress"}],
+            },
             "user_input_response": {
                 "type": "command_execution",
                 "action": "approve_once",
@@ -1870,7 +1844,7 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
             "tainted_approval_token": "approval-token-1",
         },
     )
-    assert result["text"] == "approved summary"
+    assert result["text"].startswith("approved summary")
     assert result["tool_events"][0]["name"] == "exec_command"
     assert result["tool_events"][0]["status"] == "ok"
     assert result["inspector"]["run_state"]["pending_approval"] == {}
@@ -1878,11 +1852,191 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
     assert len(
         [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
     ) == 1
-    assert any(
+    sent_messages = backend.invocations[0]["messages"]
+    assert not any(
         "[approved_command_execution_result]" in str(item.content or "")
-        for item in backend.invocations[0]["messages"]
+        for item in sent_messages
         if isinstance(item, _FakeHumanMessage)
     )
+    approval_results = [item for item in sent_messages if isinstance(item, _FakeToolMessage)]
+    assert approval_results[-1].tool_call_id == "tc-approval"
+    assert result["plan"] == [{"step": "Run the requested check", "status": "in_progress"}]
+
+
+def test_runtime_declined_command_resumes_with_one_tool_result_and_no_human_message(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ApprovedCommandTools()
+    backend = _FakeBackendWithTools([_FakeMessage(content="I will continue without that command.")], tools)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    context = {
+        "session_id": "s-command-declined",
+        "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"role": "user", "content": "run risky command"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc-declined",
+                            "name": "exec_command",
+                            "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                        }
+                    ],
+                },
+            ],
+        },
+        "pending_turn": {
+            "schema_version": 1,
+            "type": "command_execution",
+            "turn_id": "turn-original",
+            "request_message": "run risky command",
+            "tool_call_id": "tc-declined",
+            "tool_call": {
+                "id": "tc-declined",
+                "name": "exec_command",
+                "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+            },
+        },
+        "user_input_response": {
+            "type": "command_execution",
+            "action": "cancel",
+            "tool_call_id": "tc-declined",
+        },
+        "attachments": [],
+    }
+
+    result = runtime.run(
+        message="run risky command",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context=context,
+    )
+
+    assert tools.calls == []
+    sent_messages = backend.invocations[0]["messages"]
+    human_messages = [item for item in sent_messages if isinstance(item, _FakeHumanMessage)]
+    assert len(human_messages) == 1
+    assert human_messages[0].content == "run risky command"
+    tool_results = [item for item in sent_messages if isinstance(item, _FakeToolMessage)]
+    assert len(tool_results) == 1
+    assert tool_results[0].tool_call_id == "tc-declined"
+    assert "user_declined" in str(tool_results[0].content)
+    assert [item["role"] for item in result["transcript_delta"]] == ["tool"]
+    assert result["pending_turn"] == {}
+
+
+def test_runtime_request_user_input_pauses_and_resumes_the_same_turn(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    first_tools = _ScriptedTools(
+        [
+            {
+                "ok": True,
+                "pending": True,
+                "summary": "Choose the target format.",
+                "questions": [
+                    {
+                        "id": "format",
+                        "header": "Format",
+                        "question": "Which format?",
+                        "options": [{"label": "Markdown"}, {"label": "JSON"}],
+                    }
+                ],
+            }
+        ]
+    )
+    first_backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-input", "name": "request_user_input", "args": {}}],
+            )
+        ],
+        first_tools,
+    )
+    first_runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=first_backend,
+    )
+
+    first = first_runtime.run(
+        message="Prepare the report.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-user-input-resume",
+            "run_id": "run-first",
+            "logical_turn_id": "turn-original",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "attachments": [],
+        },
+    )
+
+    assert first["turn_status"] == "needs_user_input"
+    assert first["pending_user_input"]["type"] == "request_user_input"
+    assert first["pending_turn"]["turn_id"] == "turn-original"
+    assert [item["role"] for item in first["transcript_delta"]] == ["assistant"]
+
+    second_tools = _ApprovedCommandTools()
+    second_backend = _FakeBackendWithTools(
+        [_FakeMessage(content="I will deliver the report as Markdown.")],
+        second_tools,
+    )
+    second_runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=second_backend,
+    )
+    second = second_runtime.run(
+        message="Prepare the report.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-user-input-resume",
+            "run_id": "run-resume",
+            "logical_turn_id": "turn-original",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "Prepare the report."},
+                    *first["transcript_delta"],
+                ],
+            },
+            "pending_turn": first["pending_turn"],
+            "user_input_response": {
+                "type": "request_user_input",
+                "tool_call_id": "tc-input",
+                "response": "Markdown",
+            },
+            "attachments": [],
+        },
+    )
+
+    sent_messages = second_backend.invocations[0]["messages"]
+    human_messages = [item for item in sent_messages if isinstance(item, _FakeHumanMessage)]
+    assert len(human_messages) == 1
+    assert human_messages[0].content == "Prepare the report."
+    input_results = [item for item in sent_messages if isinstance(item, _FakeToolMessage)]
+    assert len(input_results) == 1
+    assert input_results[0].tool_call_id == "tc-input"
+    assert "Markdown" in str(input_results[0].content)
+    assert second["turn_status"] == "completed"
+    assert second["pending_turn"] == {}
 
 
 def test_runtime_guard_normalizes_alias_arguments_and_executes_tool(tmp_path: Path) -> None:
@@ -3016,6 +3170,52 @@ def test_runtime_message_layers_keep_context_below_single_system_message(tmp_pat
     assert messages[5].content == "current request"
 
 
+def test_runtime_replays_persisted_compaction_summary_when_status_only_has_metadata(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="done")])
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    runtime.run(
+        message="current request",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-compaction-summary-wire",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "turn_id": "u1", "role": "user", "content": "old"},
+                    {"id": "a1", "turn_id": "a1", "role": "assistant", "content": "old answer"},
+                    {"id": "u2", "turn_id": "u2", "role": "user", "content": "recent"},
+                ],
+            },
+            "summary": "persisted replacement summary",
+            "compaction_status": {
+                "compacted_history_present": True,
+                "compacted_history_chars": 29,
+                "compacted_until_turn_id": "a1",
+            },
+            "attachments": [],
+        },
+    )
+
+    messages = backend.invocations[0]["messages"]
+    assert any(
+        "[thread_compaction_summary]" in str(item.content or "")
+        and "persisted replacement summary" in str(item.content or "")
+        for item in messages
+        if isinstance(item, _FakeHumanMessage)
+    )
+    assert not any(str(item.content or "") == "old" for item in messages)
+    assert any(str(item.content or "") == "recent" for item in messages)
+
+
 def test_authorized_write_final_answer_is_not_runtime_steered(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -3459,7 +3659,7 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
         len([item for item in invocation["messages"] if isinstance(item, _FakeSystemMessage)]) == 1
         for invocation in backend.invocations
     )
-    assert any(
+    assert not any(
         "[checkpoint_replan]" in str(item.content or "")
         for item in backend.invocations[-1]["messages"]
         if isinstance(item, _FakeHumanMessage)
@@ -3626,7 +3826,7 @@ def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -
     assert len(tools.calls) == 3
     assert result["failure_recovery"]["failure_categories"] == {"tool_call_failure": 3}
     assert result["failure_recovery"]["repeated_failure_count"] == 2
-    assert result["task_completion"]["task_completed"] is False
+    assert "task_completion" not in result
     assert "should not claim completion" not in result["text"]
 
 
@@ -3678,7 +3878,7 @@ def test_runtime_allows_model_to_recover_when_verification_precedes_target_mutat
     assert first_failure["category"] == "verification_failure"
     assert "precondition" not in first_failure
     assert result["replan_history"] == []
-    assert result["task_completion"]["verification"]["status"] == "passed"
+    assert "task_completion" not in result
 
 
 def test_runtime_blocked_message_details_after_replan_no_progress(
@@ -4297,7 +4497,7 @@ def test_runtime_does_not_override_model_answer_after_image_read(tmp_path: Path)
     assert "Vintage" in result["tool_events"][0]["diagnostics"]["visible_text_preview"]
 
 
-def test_runtime_restores_task_checkpoint_for_followup_turn(tmp_path: Path) -> None:
+def test_runtime_ignores_legacy_task_checkpoint_for_followup_turn(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend([_FakeMessage(content="继续沿用当前任务上下文处理")])
@@ -4330,13 +4530,13 @@ def test_runtime_restores_task_checkpoint_for_followup_turn(tmp_path: Path) -> N
         },
     )
 
-    assert result["inspector"]["run_state"]["goal"] == "Inspect the current code and patch it"
-    assert result["inspector"]["run_state"]["task_checkpoint"]["task_id"] == "task-1"
-    assert result["route_state"]["task_checkpoint"]["active_files"] == [str(tmp_path / "app.py")]
-    assert "task_checkpoint_restored" in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["goal"] == "让其修改"
+    assert "task_checkpoint" not in result["inspector"]["run_state"]
+    assert "route_state" not in result
+    assert "task_checkpoint_restored" not in result["inspector"]["notes"]
 
 
-def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) -> None:
+def test_runtime_keeps_successful_tool_evidence_without_task_checkpoint(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -4374,15 +4574,13 @@ def test_runtime_updates_task_checkpoint_from_successful_tool(tmp_path: Path) ->
         },
     )
 
-    checkpoint = result["route_state"]["task_checkpoint"]
-    assert checkpoint["cwd"] == str(tmp_path)
-    assert checkpoint["active_files"] == [str(image_path)]
-    assert checkpoint["active_attachments"][0]["id"] == "img-1"
-    assert checkpoint["last_completed_step"] == ""
-    assert result["task_state"]["progress_basis"] == []
+    assert "route_state" not in result
+    assert "task_state" not in result
+    assert result["tool_events"][0]["name"] == "image_read"
+    assert result["tool_events"][0]["status"] == "ok"
 
 
-def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path: Path) -> None:
+def test_runtime_does_not_interpret_task_state_delta_markup(tmp_path: Path) -> None:
     class _PatchTools(_FakeTools):
         def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             self.calls.append((name, dict(arguments)))
@@ -4441,12 +4639,10 @@ def test_runtime_extracts_and_merges_task_state_delta_from_final_answer(tmp_path
     )
 
     assert result["text"].startswith("Patched the task_state merge path.")
-    assert result["task_completion"]["task_status"] == "in_progress"
-    assert result["task_completion"]["verification"]["status"] == "missing"
-    assert result["task_state_delta"]["next_required_action"] == "Run focused tests"
-    assert result["task_state"]["completed_steps"] == []
-    assert result["task_state"]["next_required_action"] == ""
-    assert result["task_state"]["progress_basis"] == []
+    assert "task_completion" not in result
+    assert "<task_state_delta>" in result["text"]
+    assert "task_state_delta" not in result
+    assert "task_state" not in result
     assert "task_state_validation" not in result["inspector"]["run_state"]
 
 

@@ -1788,12 +1788,13 @@ def resolve_attachment_context(
     *,
     message: str,
     requested_attachment_ids: list[str] | None,
+    clear_attachment_context: bool = False,
 ) -> dict[str, Any]:
     requested = normalize_attachment_ids(requested_attachment_ids)
     remembered = infer_session_active_attachment_ids(session)
-    recalled_entries = select_recalled_artifacts(session, message=message, limit=4)
-    recalled_ids = normalize_attachment_ids([str(item.get("artifact_id") or "") for item in recalled_entries])
-    clear_context = message_clears_attachment_context(message)
+    recalled_entries: list[dict[str, Any]] = []
+    recalled_ids: list[str] = []
+    clear_context = bool(clear_attachment_context)
     attachment_context_mode = "none"
     auto_linked_attachment_ids: list[str] = []
 
@@ -1803,18 +1804,13 @@ def resolve_attachment_context(
     elif requested:
         effective_attachment_ids = requested
         attachment_context_mode = "explicit"
-    elif recalled_ids:
-        effective_attachment_ids = recalled_ids
-        attachment_context_mode = "auto_linked"
-        auto_linked_attachment_ids = list(recalled_ids)
-    elif remembered and message_requests_attachment_context(message):
+    elif remembered:
         effective_attachment_ids = remembered
         attachment_context_mode = "auto_linked"
         auto_linked_attachment_ids = list(remembered)
     else:
         effective_attachment_ids = []
 
-    recalled_task = select_recalled_task(session, message=message, artifact_ids=effective_attachment_ids)
     return {
         "requested_attachment_ids": requested,
         "remembered_attachment_ids": remembered,
@@ -1825,7 +1821,7 @@ def resolve_attachment_context(
         "clear_attachment_context": clear_context,
         "attachment_context_key": attachment_context_key(effective_attachment_ids),
         "recalled_artifacts": recalled_entries,
-        "recalled_task": recalled_task,
+        "recalled_task": {},
     }
 
 
@@ -2026,11 +2022,14 @@ def sync_session_memory_state(session: dict[str, Any]) -> bool:
         "tool_names",
         "goal",
         "current_goal",
-        "plan",
     ):
         if legacy_key in agent_state:
             agent_state.pop(legacy_key, None)
             changed = True
+    pending_turn = agent_state.get("pending_turn")
+    if not (isinstance(pending_turn, dict) and pending_turn) and "plan" in agent_state:
+        agent_state.pop("plan", None)
+        changed = True
     return changed
 
 

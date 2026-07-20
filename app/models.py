@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     client_message_id: str | None = Field(default=None, max_length=160)
     client_submitted_at_ms: int | None = None
     attachment_ids: list[str] = Field(default_factory=list)
+    clear_attachment_context: bool = False
     user_input_response: dict[str, Any] = Field(default_factory=dict)
     settings: ChatSettings = Field(default_factory=ChatSettings)
 
@@ -126,6 +127,8 @@ class MessageActivity(BaseModel):
     tool_count: int = 0
     status: str = "idle"
     summary: str = ""
+    activity_loaded: bool = False
+    debug_loaded: bool = False
     full_loaded: bool = False
     started_at: float = 0.0
     turn_started_at: float = 0.0
@@ -140,6 +143,7 @@ class MessageActivity(BaseModel):
     model_draft: str = ""
     final_answer: str = ""
     runtime_error: dict[str, Any] = Field(default_factory=dict)
+    runtime_inspector: dict[str, Any] = Field(default_factory=dict)
     task_completion: dict[str, Any] = Field(default_factory=dict)
     tool_boundary_clean: bool | None = None
     plan: list[dict[str, Any]] = Field(default_factory=list)
@@ -147,6 +151,8 @@ class MessageActivity(BaseModel):
     tool_items: list[dict[str, Any]] = Field(default_factory=list)
     live_items: list[dict[str, Any]] = Field(default_factory=list)
     llm_exchanges: list[dict[str, Any]] = Field(default_factory=list)
+    thread_items: list[dict[str, Any]] = Field(default_factory=list)
+    turn_trace: dict[str, Any] = Field(default_factory=dict)
     trace_events: list[TraceEventPayload] = Field(default_factory=list)
 
 
@@ -431,6 +437,8 @@ class SessionDetailResponse(BaseModel):
     artifact_memory_preview: list[dict[str, Any]] = Field(default_factory=list)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
+    pending_interaction: dict[str, Any] = Field(default_factory=dict)
+    thread_items: list[dict[str, Any]] = Field(default_factory=list)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
@@ -480,6 +488,8 @@ class ThreadDetailResponse(BaseModel):
     artifact_memory_preview: list[dict[str, Any]] = Field(default_factory=list)
     context_meter: ContextMeter = Field(default_factory=ContextMeter)
     compaction_status: CompactionStatus = Field(default_factory=CompactionStatus)
+    pending_interaction: dict[str, Any] = Field(default_factory=dict)
+    thread_items: list[dict[str, Any]] = Field(default_factory=list)
     turns: list[SessionTurn] = Field(default_factory=list)
 
 

@@ -40,6 +40,7 @@ REQUIRED_CORE_KEYS = (
     "settings.model_presets.help",
     "settings.model_name",
     "settings.response_style",
+    "settings.debug_raw",
     "buttons.save",
     "buttons.deleting",
     "buttons.select_all_threads",
@@ -65,15 +66,15 @@ REQUIRED_CORE_KEYS = (
     "activity.execution_summary_counts",
     "activity.more_steps",
     "activity.debug_details",
+    "activity.debug.model_output",
+    "activity.debug.runtime",
+    "activity.debug.advanced_raw",
+    "activity.debug.raw_json",
+    "activity.loading_execution",
     "activity.raw_events",
-    "activity.debug.user_context",
-    "activity.debug.model_rounds",
-    "activity.debug.round_n",
     "activity.debug.tools",
     "activity.debug.harness",
-    "activity.debug.final_status",
     "activity.debug.legacy_details",
-    "activity.debug.raw_json",
     "activity.live.model_thinking",
     "activity.live.model_finished",
     "activity.live.model_failed",
@@ -438,7 +439,6 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         "function buildMainCompletionSummary(",
         "function buildLiveAgentTimelineItems(",
         "function formatToolTitle(",
-        "function buildStructuredDebugView(",
         "function buildRuntimeStatsSummary(",
         "function buildToolProgressGroups(",
         "function toolCallIdentityFromSource(",
@@ -473,6 +473,8 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
         ".activity-progress-item",
         ".activity-progress-divider",
         ".activity-debug-drawer",
+        ".activity-debug-sections > .activity-payload",
+        ".activity-debug-sections .activity-structured-details",
         "@keyframes activity-progress-pulse",
         ".activity-flow-summary",
         ".activity-flow-stages",
@@ -496,9 +498,9 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
         "live_items: [liveRunItemFromStreamItem(item, event)]",
         "plan_explanation: explanation",
         'summary>${t("activity.debug_details")}</summary>',
-        'summary>${t("activity.debug.advanced_raw")}</summary>',
         'summary>${t("activity.debug.tool_execution")}</summary>',
-        't("activity.debug.raw_json")',
+        't("activity.debug.thread_history")',
+        't("activity.debug.view_trace")',
     )
     for token in required_tokens:
         assert token in script, token
@@ -553,29 +555,26 @@ def test_live_agent_timeline_items_are_wired_into_activity_projection() -> None:
         assert token in script, token
 
 
-def test_structured_debug_view_groups_runtime_details() -> None:
+def test_developer_debug_view_is_thread_first_and_trace_on_demand() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     required_tokens = (
-        "function buildStructuredDebugView(activity, inspector = {}, locale = \"zh-CN\")",
-        "user_context",
-        "model_rounds",
-        "tool_groups",
-        "tool_boundary_clean",
-        "retry_happened",
-        "final_status",
-        "raw: {",
-        'summary>${t("activity.debug.model_rounds")}</summary>',
-        'renderDetailBlock(t("activity.debug.runtime")',
-        'summary>${t("activity.debug.model_output")}</summary>',
-        'summary>${t("activity.debug.tool_execution")}</summary>',
-        'summary>${t("activity.debug.advanced_raw")}</summary>',
+        "const threadItems = Array.isArray(activity.thread_items)",
+        "const traceSteps = Array.isArray(turnTrace.steps)",
+        't("activity.debug.thread_history")',
+        't("activity.debug.view_trace")',
+        't("activity.debug.view_system_prompt")',
+        "traceStepByItemId.get(itemId)",
+        "requested_by_item_id",
+        "tool_result_item_id",
     )
     for token in required_tokens:
         assert token in script, token
 
     debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
     assert "phaseTimingDetails" not in debug_block
+    assert "sent_to_model" not in debug_block
+    assert "model_rounds" not in debug_block
 
 
 def test_early_activity_copy_and_visibility_are_updated() -> None:
@@ -666,6 +665,9 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert 'type: "command_execution"' in script
     assert 'action: normalizedAction' in script
     assert 'approval_token: approvalToken' in script
+    assert 'tool_call_id: toolCallId' in script
+    assert 'const isTurnResume = ["command_execution", "request_user_input"]' in script
+    assert 'const userMessage = isTurnResume ? null : createMessage("user", messageText);' in script
     assert 'event === "request_user_input"' in script
     assert 'pending_approval: nextApproval' in script
     assert 'markPendingAsRuntimeNotice' in script
@@ -904,7 +906,7 @@ def test_run_execution_progress_panel_is_split_from_plan_checklist() -> None:
         "function currentChecklistStepLabel(plan, checkpoint = {})",
         "function executionProgressCommandFromSource(source)",
         "function formatRunProgressStatus(locale, status)",
-        "const hasPlanMode = Boolean(activePlan.length || hasTaskCheckpoint);",
+        "const hasPlanMode = Boolean(activePlan.length);",
         'className="panel-card run-progress-card"',
         'formatRunFieldLabel(uiLocale, "current_tool")',
         'formatRunFieldLabel(uiLocale, "current_action")',
@@ -1508,56 +1510,66 @@ def test_message_copy_button_is_rendered_below_message_and_revealed_on_hover() -
     assert ".message-copy-icon::after" in styles
 
 
-def test_activity_debug_full_turn_loading_is_explicitly_lazy() -> None:
+def test_run_activity_and_debug_loading_are_separate_and_lazy() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     match = re.search(
-        r"async function ensureFullTurnActivity\(messageId\) \{(?P<body>.*?)\n  \}",
+        r"async function ensureRunDetail\(messageId, view\) \{(?P<body>.*?)\n  \}",
         script,
         re.S,
     )
-    assert match, "ensureFullTurnActivity function not found"
+    assert match, "ensureRunDetail function not found"
     body = match.group("body")
 
-    assert "currentActivity.full_loaded" in body
+    assert 'detailView === "debug"' in body
+    assert "currentActivity.activity_loaded" in body
+    assert "currentActivity.debug_loaded" in body
     assert "currentActivity.tool_items.length" not in body
     assert "currentActivity.live_items.length" not in body
     assert "currentActivity.llm_exchanges.length" not in body
     assert "currentActivity.trace_events.length" not in body
-    assert "?view=full" in body
-    assert "full_loaded: true" in body
+    assert "?view=${detailView}" in body
+    assert "activity_loaded: true" in body
+    assert 'debug_loaded: detailView === "debug"' in body
+    assert 'const ensureRunActivity = (messageId) => ensureRunDetail(messageId, "activity");' in script
+    assert 'const ensureRunDebug = (messageId) => ensureRunDetail(messageId, "debug");' in script
+    assert "if (isOpen) ensureRunDebug(messageId);" in script
     assert "?view=summary&max_turns=" in script
-    assert 'const fullActivity = normalizeMessageActivity({ ...((payload && payload.activity) || {}), full_loaded: true });' in body
 
 
-def test_full_turn_loading_merges_message_scoped_debug_payloads() -> None:
+def test_debug_loading_merges_only_slim_activity_debug_payload() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     ensure_body = re.search(
-        r"async function ensureFullTurnActivity\(messageId\) \{(?P<body>.*?)\n  \}",
+        r"async function ensureRunDetail\(messageId, view\) \{(?P<body>.*?)\n  \}",
         script,
         re.S,
     )
-    assert ensure_body, "ensureFullTurnActivity function not found"
+    assert ensure_body, "ensureRunDetail function not found"
     body = ensure_body.group("body")
 
-    assert "answerBundle:" in body
-    assert "runArtifact:" in body
-    assert "fullTurnLoading: true" in body
-    assert "fullTurnLoading: false" in body
-    assert "fullTurnError" in body
+    assert "answerBundle:" not in body
+    assert "runArtifact:" not in body
+    assert "runtime_inspector" in script
+    assert "runActivityLoading: true" in body
+    assert "runActivityLoading: false" in body
+    assert "runDebugLoading: true" in body
+    assert "runDebugLoading: false" in body
+    assert "runActivityError" in body
+    assert "runDebugError" in body
     assert "if (currentMessage.pending) return;" in body
     assert "updateThreadSnapshot(sid" in body
 
     debug_body = re.search(
-        r"const renderActivityDebugDetails = \(message, projection\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
+        r"const renderActivityDebugDetails = \(message\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
         script,
         re.S,
     )
     assert debug_body, "renderActivityDebugDetails helper not found"
     debug = debug_body.group("body")
-    assert "const runArtifact = message && message.runArtifact" in debug
-    assert "const answerBundle = message && message.answerBundle" in debug
-    assert "const inspector = runArtifact.inspector" in debug
-    assert "buildStructuredDebugView(item, inspector, uiLocale)" in debug
+    assert "const runArtifact = message && message.runArtifact" not in debug
+    assert "const threadItems = Array.isArray(activity.thread_items)" in debug
+    assert "const turnTrace = activity.turn_trace" in debug
+    assert "traceStepByItemId" in debug
+    assert "chatSettings.debug_raw" not in debug
     assert "lastInspector || {}" not in debug
 
 
@@ -1645,55 +1657,45 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
-def test_run_panel_surfaces_task_state_validation_and_evidence_details() -> None:
+def test_run_panel_derives_progress_from_live_plan_without_task_state() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert "renderRunStateDetail" in script
-    assert "completed_steps: Array.isArray(activeTaskState.completed_steps)" in script
-    assert "failed_attempts: Array.isArray(activeTaskState.failed_attempts)" in script
+    assert "const currentPlanStep = activePlan.find" in script
+    assert "completed_steps: activePlan.filter" in script
     assert "completed_steps_count" in script
-    assert "failed_attempts_count" in script
-    assert "validation_warnings" in script
-    assert "progress_basis" in script
-    assert "evidence_refs" in script
-    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "completed_steps"), activeTaskCheckpoint.completed_steps)' in script
-    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "failed_attempts"), activeTaskCheckpoint.failed_attempts)' in script
-    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "validation_warnings"), activeTaskCheckpoint.validation_warnings)' in script
-    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "progress_basis"), activeTaskCheckpoint.progress_basis)' in script
-    assert 'renderRunStateDetail(formatRunFieldLabel(uiLocale, "evidence_refs"), activeTaskCheckpoint.evidence_refs)' in script
-    assert 'formatRunFieldLabel(uiLocale, "progress_basis")' in script
-    assert 'formatRunFieldLabel(uiLocale, "evidence_refs")' in script
+    assert "runState.task_state" not in script
+    assert "sessionRuntimeState.task_state" not in script
     assert '"run.field.progress_basis": "进展依据"' in locales
     assert '"run.field.evidence_refs": "证据引用"' in locales
 
 
-def test_debug_panel_reads_task_state_from_run_artifact_or_inspector_fallback() -> None:
+def test_debug_panel_does_not_render_removed_task_state_layers() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     debug_body = re.search(
-        r"const renderActivityDebugDetails = \(message, projection\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
+        r"const renderActivityDebugDetails = \(message\) => \{(?P<body>.*?)\n  \};\n\n  const renderMessageActivity",
         script,
         re.S,
     )
     assert debug_body, "renderActivityDebugDetails helper not found"
     body = debug_body.group("body")
-    assert "const debugRunState = inspector.run_state" in body
-    assert "const debugSessionState = inspector.session" in body
-    assert "const debugTaskState = runArtifact.task_state" in body
-    assert "const debugTaskStateDelta = runArtifact.task_state_delta" in body
-    assert "const debugTaskStateValidation = runArtifact.task_state_validation" in body
-    assert 'renderDetailBlock("task_state", debugTaskState)' in body
-    assert 'renderDetailBlock("task_state_delta", debugTaskStateDelta)' in body
-    assert 'renderDetailBlock("task_state_validation", debugTaskStateValidation)' in body
+    assert "runArtifact.task_state" not in body
+    assert 'renderDetailBlock("task_state"' not in body
+    assert 'renderDetailBlock("task_state_delta"' not in body
+    assert 'renderDetailBlock("task_state_validation"' not in body
 
 
-def test_runtime_projection_reads_harness_state_and_thread_diagnostics() -> None:
+def test_runtime_projection_does_not_restore_thread_replay_diagnostics() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "inspectorRuntimeState.thread_context" in script
-    assert "activeTaskState.goal" in script
-    assert "activeWorkCursor.active_files" in script
+    assert "inspectorRuntimeState.thread_context" not in script
+    assert "sent_to_model" not in script
+    assert "runState.goal" in script
+    assert "const currentPlanStep = activePlan.find" in script
+    assert "activeTaskState.goal" not in script
+    assert "activeWorkCursor.active_files" not in script
     assert "modelContextTask" not in script
 
 
@@ -1701,7 +1703,7 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     match = re.search(
-        r"const renderActivityProgressList = \(projection, activity, options = \{\}\) => \{(?P<body>.*?)\n  \};\n\n  const renderActivityDebugDetails",
+        r"const renderActivityProgressList = \(projection, activity, options = \{\}\) => \{(?P<body>.*?)\n  \};\n\n  const renderActivityToolDetails",
         script,
         re.S,
     )
@@ -1938,8 +1940,8 @@ def test_completed_steered_turn_reconciles_authoritative_thread_order_before_cle
     assert "!optimisticMessageIds.has(String(item.id || \"\").trim())" in script
     assert "const reconcileCompletedThreadMessages = async (threadId) => {" in body
     assert "mergeAuthoritativeThreadMessages(authoritativeMessages, prev, {" in body
-    assert "optimisticMessageIds: [String(userMessage.id || \"\")]" in body
-    assert "client_message_id: String(userMessage.id || \"\")," in body
+    assert "optimisticMessageIds: userMessage ? [String(userMessage.id || \"\")] : []" in body
+    assert "client_message_id: String((userMessage && userMessage.id) || \"\")," in body
     reconcile_call = "await reconcileCompletedThreadMessages(latestThreadId || runOwnerThreadId)"
     assert reconcile_call in body
     assert body.index(reconcile_call) < body.index("await cleanupRunUi();")
@@ -1990,7 +1992,7 @@ def test_optimistic_thread_messages_are_idempotent_by_message_id() -> None:
     assert "if (messageId && knownIds.has(messageId)) return;" in helper_body
     assert "knownIds.add(messageId);" in helper_body
     assert "messages: appendMessagesOnceById(" in script
-    assert "? appendMessagesOnceById(prev, [userMessage, pendingMessage])" in script
+    assert "? appendMessagesOnceById(prev, [userMessage, pendingMessage].filter(Boolean))" in script
     assert "appendMessagesOnceById([], messages)," in script
 
 
@@ -2138,21 +2140,20 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "activeRunThreadId: \"\"," in cleanup_body
 
 
-def test_activity_debug_drawer_surfaces_triggering_user_message() -> None:
+def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "triggering_user_message" in script
-    assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' in script
+    assert 'renderDetailBlock(t("activity.triggering_user_message"), item.triggering_user_message)' not in script
     assert 'renderDetailBlock(t("activity.current_turn_goal"), item.current_turn_goal)' not in script
-    assert 'renderDetailBlock(t("activity.debug.sent_to_model"), structured.sent_to_model, { open: true })' in script
-    assert 'renderDetailBlock(t("activity.debug.runtime"), structured.harness, { open: true })' in script
-    assert 'const exchanges = Array.isArray(item.llm_exchanges) ? item.llm_exchanges : [];' in script
-    assert 'renderRawModelIo(exchanges)' in script
-    assert 't("runtime.raw_model_io.title")' in script
-    assert 't("runtime.raw_model_io.sent_messages_exact")' in script
-    assert 't("runtime.raw_model_io.model_returned_exact")' in script
-    assert 't("runtime.raw_model_io.error")' in script
-    assert 't("runtime.raw_model_io.harness_interpretation")' in script
+    assert "structured.sent_to_model" not in script
+    assert 't("activity.debug.thread_history")' in script
+    assert 't("activity.debug.view_trace")' in script
+    assert 't("activity.debug.view_system_prompt")' in script
+    assert "${threadHistory}" in script
+    assert "${systemPrompt}" in script
+    debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
+    assert "const rawTraceList = chatSettings.debug_raw" not in debug_block
     assert "phase_timings: item.phase_timings || {}" not in script
 
 

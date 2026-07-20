@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import json
+
+from app.turn_trace import build_turn_trace
+
+
+def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
+    items = [
+        {"id": "u1", "turn_id": "t1", "role": "user", "content": "inspect"},
+        {
+            "id": "a1",
+            "turn_id": "t1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+        },
+        {
+            "id": "tool-1",
+            "turn_id": "t1",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "read_file",
+            "content": '{"ok": true}',
+        },
+        {"id": "a2", "turn_id": "t1", "role": "assistant", "content": "done"},
+    ]
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "t1",
+            "status": "completed",
+            "activity": {
+                "trace_events": [
+                    {"type": "tool.started", "timestamp": 10.0, "payload": {"call_id": "call-1"}},
+                    {"type": "tool.finished", "timestamp": 10.1, "payload": {"call_id": "call-1"}},
+                ],
+                "llm_exchanges": [
+                    {
+                        "model": "gpt-test",
+                        "status": "completed",
+                        "sent_messages_exact": [
+                            {"role": "system", "content": "[agent.md]\nRules"},
+                            {"role": "user", "content": "inspect"},
+                        ],
+                        "request_composition": {"bound_tool_names": ["read_file"]},
+                        "model_returned_exact": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}],
+                            "finish_reason": "tool_calls",
+                        },
+                    },
+                    {
+                        "model": "gpt-test",
+                        "status": "completed",
+                        "sent_messages_exact": [
+                            {"role": "system", "content": "[agent.md]\nRules"},
+                            {"role": "user", "content": "inspect"},
+                            {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "name": "read_file"}]},
+                            {"role": "tool", "tool_call_id": "call-1", "content": '{"ok": true}'},
+                        ],
+                        "request_composition": {"bound_tool_names": ["read_file"]},
+                        "model_returned_exact": {"role": "assistant", "content": "done", "finish_reason": "stop"},
+                    },
+                ],
+            },
+            "tool_events": [
+                {
+                    "name": "read_file",
+                    "status": "ok",
+                    "raw_tool_call": {"id": "call-1", "name": "read_file"},
+                    "validation_result": {"allowed": True, "code": "allowed"},
+                }
+            ],
+        },
+        thread_items=items,
+        turn_id="t1",
+    )
+
+    assert [(step["sequence"], step["type"], step.get("item_id")) for step in trace["steps"]] == [
+        (1, "user_received", "u1"),
+        (2, "assistant_generated", "a1"),
+        (3, "tool_completed", "tool-1"),
+        (4, "assistant_generated", "a2"),
+    ]
+    assert trace["steps"][2]["requested_by_item_id"] == "a1"
+    assert trace["steps"][2]["tool_call_id"] == "call-1"
+    assert trace["contexts"][0]["system_message"] == "[agent.md]\nRules"
+    assert trace["contexts"][0]["components"] == ["agent.md"]
+    assert len(trace["contexts"]) == 1
+    assert "sha256" not in json.dumps(trace)
+
+
+def test_turn_trace_matches_repeated_history_to_the_latest_item() -> None:
+    items = [
+        {"id": "old-user", "turn_id": "old", "role": "user", "content": "hi"},
+        {"id": "old-ai", "turn_id": "old", "role": "assistant", "content": "hello"},
+        {"id": "new-user", "turn_id": "new", "role": "user", "content": "hi"},
+        {"id": "new-ai", "turn_id": "new", "role": "assistant", "content": "hello again"},
+    ]
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "new",
+            "activity": {
+                "llm_exchanges": [
+                    {
+                        "status": "completed",
+                        "sent_messages_exact": [
+                            {"role": "system", "content": "rules"},
+                            {"role": "user", "content": "hi"},
+                        ],
+                        "model_returned_exact": {"role": "assistant", "content": "hello again"},
+                    }
+                ]
+            },
+        },
+        thread_items=items,
+        turn_id="new",
+    )
+
+    assistant_step = next(step for step in trace["steps"] if step["type"] == "assistant_generated")
+    assert assistant_step["input_item_ids"] == ["new-user"]
+
+
+def test_turn_trace_keeps_bounded_invalid_model_failure_without_raw_response() -> None:
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "t1",
+            "status": "failed",
+            "activity": {
+                "llm_exchanges": [
+                    {
+                        "model": "gpt-test",
+                        "status": "failed",
+                        "sent_messages_exact": [{"role": "system", "content": "rules"}],
+                        "model_returned_exact": {
+                            "role": "assistant",
+                            "invalid_tool_calls": [{"name": "apply_patch", "error": "invalid arguments"}],
+                        },
+                        "error": {"kind": "invalid_tool_calls", "message": "Provider returned an invalid call"},
+                    }
+                ]
+            },
+        },
+        thread_items=[],
+        turn_id="t1",
+    )
+
+    failed = trace["steps"][0]
+    assert failed["type"] == "model_failed"
+    assert failed["error_kind"] == "invalid_tool_calls"
+    assert failed["invalid_tool_calls"] == [{"name": "apply_patch", "error": "invalid arguments"}]
+    assert "model_returned_exact" not in json.dumps(trace)

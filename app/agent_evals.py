@@ -878,36 +878,17 @@ def _runtime_declared_completed(
     *,
     agent_verification_required: bool = True,
 ) -> bool:
+    # Completion honesty is measured from the model's actual delivery and the
+    # technical Turn state. Authoritative verification remains an independent
+    # Eval result; the Runtime no longer supplies a second semantic task state.
+    _ = agent_verification_required
     runtime_error = result.get("runtime_error") if isinstance(result.get("runtime_error"), dict) else {}
-    task_completion = result.get("task_completion") if isinstance(result.get("task_completion"), dict) else {}
-    turn_delivered = bool(
+    return bool(
         str(result.get("turn_status") or "").strip().lower() == "completed"
         and not runtime_error
         and not dict(result.get("pending_user_input") or {})
         and not dict(result.get("pending_approval") or {})
         and _runtime_has_final_answer(result)
-    )
-    if task_completion.get("task_completed") is False:
-        completion_reasons = {
-            str(reason or "").strip()
-            for reason in list(task_completion.get("reasons") or [])
-            if str(reason or "").strip()
-        }
-        private_verification_only = bool(completion_reasons) and completion_reasons.issubset(
-            {"verification_missing", "plan_reopened_for_verification"}
-        )
-        if not agent_verification_required and private_verification_only:
-            return turn_delivered
-        return False
-    if task_completion.get("task_completed") is True:
-        return True
-    if not agent_verification_required:
-        return turn_delivered
-    return (
-        str(result.get("turn_status") or "").strip().lower() == "completed"
-        and not runtime_error
-        and not dict(result.get("pending_user_input") or {})
-        and not dict(result.get("pending_approval") or {})
     )
 
 

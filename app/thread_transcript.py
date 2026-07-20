@@ -6,7 +6,7 @@ from typing import Any, Iterable
 import uuid
 
 
-THREAD_TRANSCRIPT_SCHEMA_VERSION = 1
+THREAD_TRANSCRIPT_SCHEMA_VERSION = 2
 _ROLES = {"user", "assistant", "tool"}
 
 
@@ -56,6 +56,25 @@ def _normalize_tool_calls(raw: Any) -> list[dict[str, Any]]:
     return calls
 
 
+def _normalize_trace_summary(raw: Any) -> dict[str, Any]:
+    payload = dict(raw or {}) if isinstance(raw, dict) else {}
+    if not payload:
+        return {}
+    summary: dict[str, Any] = {}
+    for key in ("trace_ref", "status"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            summary[key] = value
+    for key in ("duration_ms", "tool_count"):
+        if payload.get(key) in (None, ""):
+            continue
+        try:
+            summary[key] = max(0, int(payload.get(key) or 0))
+        except Exception:
+            continue
+    return summary
+
+
 def normalize_transcript_item(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -80,6 +99,9 @@ def normalize_transcript_item(raw: Any) -> dict[str, Any] | None:
         tool_calls = _normalize_tool_calls(raw.get("tool_calls"))
         if tool_calls:
             item["tool_calls"] = tool_calls
+        trace = _normalize_trace_summary(raw.get("trace") or raw.get("run"))
+        if trace:
+            item["trace"] = trace
     elif role == "tool":
         tool_call_id = str(raw.get("tool_call_id") or "").strip()
         name = str(raw.get("name") or "").strip()
@@ -239,7 +261,11 @@ def transcript_items_after_compaction(
     items = list(normalized.get("items") or [])
     state = dict(compaction_state or {})
     summary = str(state.get("compacted_history") or "").strip()
-    through_id = str(state.get("compacted_until_turn_id") or "").strip()
+    through_id = str(
+        state.get("compacted_until_item_id")
+        or state.get("compacted_until_turn_id")
+        or ""
+    ).strip()
     if not summary:
         return "", items
     if not through_id:
