@@ -36,6 +36,12 @@ def test_safe_preview_truncates_nested_payloads() -> None:
     assert isinstance(preview["nested"], list)
 
 
+def test_safe_preview_preserves_number_and_boolean_types() -> None:
+    preview = safe_preview({"count": 5, "checked": True, "ratio": 0.5})
+
+    assert preview == {"count": 5, "checked": True, "ratio": 0.5}
+
+
 def test_summarize_tool_args_and_result_for_common_tools() -> None:
     assert summarize_tool_args("search_codebase", {"query": "update_plan"}) == "query=update_plan"
     assert summarize_tool_args("update_plan", {"steps": [{"step": "Inspect", "status": "completed"}]}) == "items=1"

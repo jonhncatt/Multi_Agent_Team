@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.tool_trace_summary import safe_preview
+
 
 TURN_TRACE_SCHEMA_VERSION = 1
 
@@ -201,9 +203,11 @@ def _tool_call_id_from_event(event: dict[str, Any]) -> str:
     raw_call = _dict(event.get("raw_tool_call"))
     validation = _dict(event.get("validation_result"))
     return _text(
-        raw_call.get("id")
-        or event.get("tool_call_id")
+        event.get("tool_call_id")
+        or event.get("call_id")
+        or validation.get("call_id")
         or validation.get("tool_call_id")
+        or raw_call.get("id")
         or _dict(event.get("diagnostics")).get("tool_call_id")
     )
 
@@ -223,7 +227,16 @@ def _error_kind_from_tool_event(event: dict[str, Any]) -> str:
 
 def _trace_event_call_id(event: dict[str, Any]) -> str:
     payload = _dict(event.get("payload"))
-    return _text(payload.get("call_id") or payload.get("tool_call_id") or payload.get("id"))
+    raw_call = _dict(payload.get("raw_tool_call"))
+    validation = _dict(payload.get("validation_result"))
+    return _text(
+        payload.get("tool_call_id")
+        or payload.get("call_id")
+        or validation.get("call_id")
+        or validation.get("tool_call_id")
+        or raw_call.get("id")
+        or payload.get("id")
+    )
 
 
 def _tool_timing(call_id: str, trace_events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -255,6 +268,32 @@ def _validation_summary(event: dict[str, Any]) -> dict[str, Any]:
         result["allowed"] = bool(validation.get("allowed"))
     for key in ("code", "message"):
         value = _text(validation.get(key))
+        if value:
+            result[key] = value
+    return result
+
+
+def _tool_audit_summary(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep the bounded audit fields that explain one tool transaction.
+
+    ToolEvent already limits these previews before persistence. Grouping them
+    under ``audit`` keeps the Trace timeline small and readable while still
+    letting the UI inspect arguments, validation, and the result when a tool
+    looks wrong.
+    """
+
+    result: dict[str, Any] = {}
+    for key in (
+        "raw_arguments",
+        "normalized_arguments",
+        "schema_validation",
+        "result_preview",
+    ):
+        value = event.get(key)
+        if value not in (None, "", [], {}):
+            result[key] = safe_preview(value, limit=4000)
+    for key in ("arguments_preview", "preview_error", "summary"):
+        value = _text(safe_preview(event.get(key), limit=500))
         if value:
             result[key] = value
     return result
@@ -385,6 +424,7 @@ def build_turn_trace(
                 "status": result_status,
                 "error_kind": _error_kind_from_tool_event(event),
                 "validation": _validation_summary(event),
+                "audit": _tool_audit_summary(event),
                 **_tool_timing(call_id, trace_events),
             }
             diagnostics = _dict(event.get("diagnostics"))

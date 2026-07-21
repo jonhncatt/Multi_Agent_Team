@@ -26,8 +26,12 @@ def mask_sensitive_text(text: str) -> str:
 def safe_preview(value: Any, *, limit: int = 2000) -> Any:
     if value is None:
         return None
-    if isinstance(value, (str, int, float, bool)):
-        return mask_sensitive_text(str(value))[:limit]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return mask_sensitive_text(value)[:limit]
     if isinstance(value, dict):
         preview: dict[str, Any] = {}
         for index, (key, item) in enumerate(value.items()):

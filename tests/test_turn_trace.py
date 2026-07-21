@@ -32,8 +32,17 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
             "status": "completed",
             "activity": {
                 "trace_events": [
-                    {"type": "tool.started", "timestamp": 10.0, "payload": {"call_id": "call-1"}},
-                    {"type": "tool.finished", "timestamp": 10.1, "payload": {"call_id": "call-1"}},
+                    {
+                        "type": "tool.started",
+                        "timestamp": 10.0,
+                        "payload": {"raw_tool_call": {"id": "call-1"}},
+                    },
+                    {
+                        "type": "tool.finished",
+                        "timestamp": 10.1,
+                        "duration_ms": 100,
+                        "payload": {"raw_tool_call": {"id": "call-1"}},
+                    },
                 ],
                 "llm_exchanges": [
                     {
@@ -70,7 +79,11 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
                     "name": "read_file",
                     "status": "ok",
                     "raw_tool_call": {"id": "call-1", "name": "read_file"},
-                    "validation_result": {"allowed": True, "code": "allowed"},
+                    "raw_arguments": {"path": "README.md"},
+                    "normalized_arguments": {"path": "README.md"},
+                    "validation_result": {"call_id": "call-1", "allowed": True, "code": "allowed"},
+                    "schema_validation": {"status": "valid"},
+                    "result_preview": {"ok": True, "content": "preview"},
                 }
             ],
         },
@@ -86,6 +99,13 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
     ]
     assert trace["steps"][2]["requested_by_item_id"] == "a1"
     assert trace["steps"][2]["tool_call_id"] == "call-1"
+    assert trace["steps"][2]["duration_ms"] == 100
+    assert trace["steps"][2]["audit"] == {
+        "raw_arguments": {"path": "README.md"},
+        "normalized_arguments": {"path": "README.md"},
+        "schema_validation": {"status": "valid"},
+        "result_preview": {"ok": True, "content": "preview"},
+    }
     assert trace["contexts"][0]["system_message"] == "[agent.md]\nRules"
     assert trace["contexts"][0]["components"] == ["agent.md"]
     assert len(trace["contexts"]) == 1

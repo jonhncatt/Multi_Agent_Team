@@ -1486,6 +1486,26 @@ class VintageProgrammerRuntime:
                 refs.append(value)
         return refs[:6]
 
+    @staticmethod
+    def _safe_tool_call_preview(raw_tool_call: dict[str, Any] | None) -> dict[str, Any]:
+        """Mask arguments without destroying the protocol identity.
+
+        UUID-shaped tool call IDs are correlation keys, not credentials. The
+        generic text masker intentionally hides long opaque strings, so restore
+        only ``id`` and ``name`` after previewing the rest of the payload.
+        """
+
+        raw = dict(raw_tool_call or {})
+        if not raw:
+            return {}
+        preview = safe_preview(raw, limit=4000)
+        result = dict(preview) if isinstance(preview, dict) else {}
+        for key in ("id", "name"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                result[key] = value
+        return result
+
     def _build_tool_event(
         self,
         *,
@@ -1523,7 +1543,7 @@ class VintageProgrammerRuntime:
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
-            raw_tool_call=safe_preview(raw_call_payload, limit=4000) if raw_call_payload else {},
+            raw_tool_call=self._safe_tool_call_preview(raw_call_payload),
             raw_arguments=safe_preview(raw_argument_payload, limit=4000),
             normalized_arguments=safe_preview(arguments, limit=4000) if isinstance(arguments, dict) else {},
             validation_result=validation_payload,
@@ -5788,6 +5808,7 @@ class VintageProgrammerRuntime:
                         name = preview_name or raw_name or "unknown_tool"
                         arguments = preview_args
                         validation_payload = {
+                            "call_id": call_id,
                             "allowed": False,
                             "code": "tool_cancelled" if skip_kind == "cancelled" else "tool_skipped",
                             "message": skip_reason,
@@ -5967,6 +5988,7 @@ class VintageProgrammerRuntime:
                                 ),
                             }
                     validation_payload = dump_model(validation)
+                    validation_payload["call_id"] = call_id
                     name = str(validation.tool_name or preview_name or raw_name).strip()
                     arguments = dict(validation.normalized_arguments or {})
                     if raw_name and raw_name != name:

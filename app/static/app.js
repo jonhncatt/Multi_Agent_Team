@@ -866,14 +866,10 @@ function normalizeActivityToolItem(raw) {
   const schemaValidation =
     item.schema_validation && typeof item.schema_validation === "object" ? item.schema_validation : {};
   const diagnostics = item.diagnostics && typeof item.diagnostics === "object" ? item.diagnostics : {};
-  const resolvedId = String(
-    rawToolCall.id
-    || validationResult.call_id
-    || item.id
-    || item.tool_call_id
-    || item.call_id
-    || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  ).trim();
+  const resolvedId = toolCallIdentityFromSource(
+    item,
+    `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
   return {
     ...item,
     id: resolvedId,
@@ -908,6 +904,14 @@ function mergeActivityToolItems(previousItems, nextItems) {
     map.set(item.id, { ...(map.get(item.id) || {}), ...item });
   });
   return order.map((id) => map.get(id)).filter(Boolean).slice(-24);
+}
+
+function reconcileAuthoritativeActivityToolItems(previousItems, nextItems) {
+  const authoritative = normalizeActivityToolItems(nextItems);
+  if (!authoritative.length) return [];
+  const authoritativeIds = new Set(authoritative.map((item) => item.id));
+  return mergeActivityToolItems(previousItems, authoritative)
+    .filter((item) => authoritativeIds.has(item.id));
 }
 
 function normalizeLiveRunItem(raw) {
@@ -1595,15 +1599,20 @@ function toolCallIdentityFromSource(source, fallback = "") {
   const item = source && typeof source === "object" ? source : {};
   const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
   const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
-  const resolved = String(
-    rawToolCall.id
-    || validationResult.call_id
-    || item.tool_call_id
-    || item.call_id
-    || item.id
-    || fallback,
-  ).trim();
-  return resolved;
+  const candidates = [
+    item.tool_call_id,
+    item.call_id,
+    validationResult.call_id,
+    validationResult.tool_call_id,
+    rawToolCall.id,
+    item.id,
+    fallback,
+  ];
+  for (const candidate of candidates) {
+    const resolved = String(candidate || "").trim();
+    if (resolved && resolved !== "***") return resolved;
+  }
+  return "";
 }
 
 function toolCallTargetFromSource(source) {
@@ -1797,6 +1806,13 @@ function buildToolProgressGroups(activity) {
         result_preview: sourceItem.result_preview,
         summary: String(sourceItem.summary || "").trim(),
         detail: "",
+        duration_ms: Math.max(0, Number(sourceItem.duration_ms || 0) || 0),
+        requested_by_item_id: String(sourceItem.requested_by_item_id || "").trim(),
+        tool_call_id: String(sourceItem.tool_call_id || id || "").trim(),
+        item_id: String(sourceItem.item_id || "").trim(),
+        error_kind: String(sourceItem.error_kind || "").trim(),
+        retry_count: Math.max(0, Number(sourceItem.retry_count || 0) || 0),
+        recovery_result: String(sourceItem.recovery_result || "").trim(),
       });
     }
     return groups.get(id);
@@ -1829,6 +1845,7 @@ function buildToolProgressGroups(activity) {
     }
     if (!group.summary) group.summary = String(payload.summary || trace.detail || "").trim();
     if (!group.detail) group.detail = String(trace.detail || "").trim();
+    if (!group.duration_ms) group.duration_ms = Math.max(0, Number(trace.duration_ms || payload.duration_ms || 0) || 0);
     if (type === "tool.failed") {
       group.status = "failed";
     } else if (type === "tool.finished" && group.status !== "failed") {
@@ -1859,10 +1876,20 @@ function buildToolProgressGroups(activity) {
       group.result_preview = toolItem.result_preview;
     }
     if (!group.summary) group.summary = String(toolItem.summary || "").trim();
-    if (toolItem.status === "error" || toolItem.status === "failed") {
+    if (!group.duration_ms) group.duration_ms = Math.max(0, Number(toolItem.duration_ms || 0) || 0);
+    if (!group.requested_by_item_id) group.requested_by_item_id = String(toolItem.requested_by_item_id || "").trim();
+    if (!group.tool_call_id) group.tool_call_id = String(toolItem.tool_call_id || group.id || "").trim();
+    if (!group.item_id) group.item_id = String(toolItem.item_id || "").trim();
+    if (!group.error_kind) group.error_kind = String(toolItem.error_kind || "").trim();
+    if (!group.retry_count) group.retry_count = Math.max(0, Number(toolItem.retry_count || 0) || 0);
+    if (!group.recovery_result) group.recovery_result = String(toolItem.recovery_result || "").trim();
+    const toolStatus = normalizeProgressStatus(toolItem.status);
+    if (["failed", "blocked", "cancelled"].includes(toolStatus)) {
       group.status = "failed";
-    } else if (toolItem.status === "ok" && group.status !== "failed") {
+    } else if (toolStatus === "completed" && group.status !== "failed") {
       group.status = "completed";
+    } else if (["running", "waiting_tool", "validating"].includes(toolStatus) && group.status === "pending") {
+      group.status = "running";
     }
   });
 
@@ -1947,7 +1974,15 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
   const liveItems = buildLiveAgentTimelineItems(item, locale);
-  const hasLiveItems = Boolean(liveItems.length);
+  const groupedCallIds = new Set(
+    toolGroups.map((group) => String((group && group.id) || "").trim()).filter(Boolean),
+  );
+  const visibleLiveItems = liveItems.filter((entry) => {
+    const liveItem = entry && entry.live_item && typeof entry.live_item === "object" ? entry.live_item : {};
+    const callId = String(liveItem.call_id || "").trim();
+    return !callId || !groupedCallIds.has(callId);
+  });
+  const hasLiveItems = Boolean(visibleLiveItems.length);
   const hasStarted = Boolean(item.turn_started_at || item.started_at || traces.length);
   const llmStartedAt = latestTraceTimestampByTypes(traces, "llm.started");
   const modelWaitStartedAt = llmStartedAt || (
@@ -1979,7 +2014,7 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
       tool_group: group,
     });
   });
-  liveItems.forEach((entry) => {
+  visibleLiveItems.forEach((entry) => {
     progressItems.push(entry);
   });
   if (!hasLiveItems && !toolGroups.length && !modelStarted && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
@@ -3271,11 +3306,20 @@ function mergeActivityState(previous, patch = {}) {
   const nextPlan = Array.isArray(nextPatch.plan)
     ? normalizePlanChecklist(nextPatch.plan)
     : prev.plan;
+  const replaceExecutionDetails = nextPatch.replace_execution_details === true;
   const nextToolItems = Object.prototype.hasOwnProperty.call(nextPatch, "tool_items")
-    ? mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
+    ? (
+        replaceExecutionDetails
+          ? reconcileAuthoritativeActivityToolItems(prev.tool_items, nextPatch.tool_items)
+          : mergeActivityToolItems(prev.tool_items, nextPatch.tool_items)
+      )
     : prev.tool_items;
   const nextLiveItems = Object.prototype.hasOwnProperty.call(nextPatch, "live_items")
-    ? mergeLiveRunItems(prev.live_items, nextPatch.live_items)
+    ? (
+        replaceExecutionDetails
+          ? normalizeLiveRunItems(nextPatch.live_items)
+          : mergeLiveRunItems(prev.live_items, nextPatch.live_items)
+      )
     : prev.live_items;
   const nextLlmExchanges = Object.prototype.hasOwnProperty.call(nextPatch, "llm_exchanges")
     ? (Array.isArray(nextPatch.llm_exchanges) ? nextPatch.llm_exchanges : [])
@@ -8454,7 +8498,10 @@ function App() {
           String(entry.id || "") === turnId
             ? {
                 ...entry,
-                activity: mergeActivityState(entry.activity || {}, loadedActivity),
+                activity: mergeActivityState(entry.activity || {}, {
+                  ...loadedActivity,
+                  replace_execution_details: true,
+                }),
                 ...(detailView === "debug"
                   ? { runDebugLoading: false, runDebugError: "" }
                   : { runActivityLoading: false, runActivityError: "" }),
@@ -8665,7 +8712,30 @@ function App() {
     const normalizedStatus = normalizeProgressStatus(item.status);
     const suppressPreview = Boolean(options.suppressPreview) && preview;
     const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";
-    const recentExecutionItems = (preview ? mainLiveCards : progressItems).slice(-MAIN_LIVE_CARD_LIMIT);
+    const toolGroups = Array.isArray(projection && projection.tool_groups) ? projection.tool_groups : [];
+    const isToolProgressEntry = (entry) => {
+      const item = entry && typeof entry === "object" ? entry : {};
+      const rawRef = item.rawRef && typeof item.rawRef === "object" ? item.rawRef : {};
+      const liveItem = item.live_item && typeof item.live_item === "object"
+        ? item.live_item
+        : (rawRef.live_item && typeof rawRef.live_item === "object" ? rawRef.live_item : {});
+      const type = String(item.type || rawRef.type || liveItem.type || "").trim();
+      return Boolean(
+        item.source === "tool"
+        || rawRef.source === "tool"
+        || item.tool_group
+        || rawRef.tool_group
+        || item.tool
+        || liveItem.tool
+        || type.startsWith("tool.")
+        || type.startsWith("action.")
+        || type === "observation.returned"
+      );
+    };
+    const expandedProgressItems = toolGroups.length
+      ? progressItems.filter((entry) => !isToolProgressEntry(entry))
+      : progressItems;
+    const recentExecutionItems = (preview ? mainLiveCards : expandedProgressItems).slice(-MAIN_LIVE_CARD_LIMIT);
     const visibleItems = preview
       ? (suppressPreview || isTerminal ? [] : recentExecutionItems)
       : recentExecutionItems;
@@ -8786,27 +8856,105 @@ function App() {
     `;
   };
 
+  const traceDurationLabel = (durationMs) => {
+    const value = Math.max(0, Number(durationMs || 0) || 0);
+    if (!value) return "-";
+    if (value < 1000) return `${Math.round(value)} ms`;
+    return formatElapsedSeconds(Math.max(1, Math.round(value / 1000)), uiLocale);
+  };
+
+  const renderTraceDetails = (step) => {
+    if (!step || typeof step !== "object") return null;
+    const rows = [
+      [t("activity.debug.trace_status"), String(step.status || "-")],
+      [t("activity.debug.trace_duration"), traceDurationLabel(step.duration_ms)],
+      ...(hasDisplayValue(step.validation)
+        ? [[t("activity.debug.trace_validation"), displayValueText(step.validation)]]
+        : []),
+      [t("activity.debug.trace_error_kind"), String(step.error_kind || "-")],
+      [t("activity.debug.trace_retry"), String(step.retry_count || 0)],
+      [t("activity.debug.trace_recovery"), String(step.recovery_result || "-")],
+      ["assistant_item_id", String(step.requested_by_item_id || "-")],
+      ["tool_call_id", String(step.tool_call_id || step.id || "-")],
+      ["tool_result_item_id", String(step.item_id || "-")],
+    ];
+    return html`
+      <div className="thread-trace-grid">
+        ${rows.map(([label, value]) => html`
+          <div className="thread-trace-row" key=${label}>
+            <span>${label}</span>
+            <code>${value}</code>
+          </div>
+        `)}
+      </div>
+    `;
+  };
+
   const renderActivityToolDetails = (message, projection) => {
     const messageId = String((message && message.id) || "");
     const toolGroups = Array.isArray(projection && projection.tool_groups) ? projection.tool_groups : [];
     if (!toolGroups.length) return null;
     return html`
-      <details className="activity-payload">
-        <summary>${t("activity.debug.tool_execution")}</summary>
-        <div className="activity-structured-details">
-          ${toolGroups.map((toolItem, index) => html`
-            <details key=${toolItem.id || `${messageId}-tool-${index}`} className="activity-payload">
-              <summary>${toolItem.tool_name || "tool"} · ${toolItem.id || "-"}</summary>
-              ${renderToolAuditDetails({
-                raw_arguments: toolItem.raw_arguments,
-                normalized_arguments: toolItem.normalized_arguments,
-                validation_result: toolItem.validation_result,
-                schema_validation: toolItem.schema_validation,
-                result_preview: toolItem.result_preview,
-              })}
-              ${renderDetailBlock(t("labels.payload"), toolItem)}
-            </details>
-          `)}
+      <details className="activity-tool-transactions">
+        <summary>${t("activity.debug.tool_execution")} · ${toolGroups.length}</summary>
+        <div className="activity-tool-transaction-list">
+          ${toolGroups.map((toolItem, index) => {
+            const status = normalizeProgressStatus(toolItem.status);
+            const marker = status === "completed" ? "✓" : (["failed", "blocked", "cancelled"].includes(status) ? "!" : "○");
+            const target = toolCallTargetFromSource(toolItem);
+            const toolName = String(toolItem.tool_name || "tool");
+            const transactionLabel = target && target !== toolName ? `${toolName} · ${target}` : toolName;
+            const rawArguments = hasDisplayValue(toolItem.raw_arguments) ? toolItem.raw_arguments : {};
+            const normalizedArguments = hasDisplayValue(toolItem.normalized_arguments) ? toolItem.normalized_arguments : {};
+            const effectiveArguments = hasDisplayValue(normalizedArguments) ? normalizedArguments : rawArguments;
+            const argumentsChanged = Boolean(
+              hasDisplayValue(rawArguments)
+              && hasDisplayValue(normalizedArguments)
+              && displayValueText(rawArguments) !== displayValueText(normalizedArguments),
+            );
+            const resultSummary = String(toolItem.summary || toolItem.detail || "").trim();
+            const durationLabel = traceDurationLabel(toolItem.duration_ms);
+            const statusLabel = formatRunEnum(uiLocale, "turn_status", status, status || "-");
+            return html`
+              <details
+                key=${toolItem.id || `${messageId}-tool-${index}`}
+                className=${`activity-tool-transaction status-${status}`}
+              >
+                <summary>
+                  <span className="activity-tool-transaction-marker" aria-hidden="true">${marker}</span>
+                  <span>${transactionLabel}</span>
+                </summary>
+                <div className="activity-tool-transaction-body">
+                  <div className="activity-tool-transaction-summary">
+                    <span>${statusLabel}</span>
+                    ${durationLabel !== "-" ? html`<span>${durationLabel}</span>` : null}
+                  </div>
+                  ${resultSummary ? html`<div className="activity-tool-result-summary">${resultSummary}</div>` : null}
+                  ${renderDetailBlock(t("activity.parameters"), effectiveArguments)}
+                  ${renderDetailBlock(t("activity.result_preview"), toolItem.result_preview, {
+                    open: ["failed", "blocked", "cancelled"].includes(status),
+                  })}
+                  <details className="activity-tool-trace-details">
+                    <summary>${t("activity.debug.view_trace")}</summary>
+                    <div className="activity-tool-trace-body">
+                      <div className="activity-tool-call-id">
+                        <span>${t("activity.debug.tool_call_id")}</span>
+                        <code>${toolItem.id || "-"}</code>
+                      </div>
+                      ${argumentsChanged ? renderDetailBlock(t("activity.raw_arguments"), rawArguments) : null}
+                      ${argumentsChanged ? renderDetailBlock(t("activity.normalized_arguments"), normalizedArguments) : null}
+                      ${renderDetailBlock(t("activity.validation_result"), toolItem.validation_result)}
+                      ${renderDetailBlock(
+                        `${t("activity.schema_validation")} · ${formatValidationStatus(uiLocale, (toolItem.schema_validation || {}).status || "missing")}`,
+                        toolItem.schema_validation,
+                      )}
+                      ${renderTraceDetails(toolItem)}
+                    </div>
+                  </details>
+                </div>
+              </details>
+            `;
+          })}
         </div>
       </details>
     `;
@@ -8839,38 +8987,6 @@ function App() {
       `activity.debug.thread_role.${String(role || "")}`,
       String(role || ""),
     );
-    const traceDurationLabel = (durationMs) => {
-      const value = Math.max(0, Number(durationMs || 0) || 0);
-      if (!value) return "-";
-      if (value < 1000) return `${Math.round(value)} ms`;
-      return formatElapsedSeconds(Math.max(1, Math.round(value / 1000)), uiLocale);
-    };
-
-    const renderTraceDetails = (step) => {
-      if (!step || typeof step !== "object") return null;
-      const rows = [
-        [t("activity.debug.trace_status"), String(step.status || "-")],
-        [t("activity.debug.trace_duration"), traceDurationLabel(step.duration_ms)],
-        [t("activity.debug.trace_validation"), displayValueText(step.validation || {}) || "-"],
-        [t("activity.debug.trace_error_kind"), String(step.error_kind || "-")],
-        [t("activity.debug.trace_retry"), String(step.retry_count || 0)],
-        [t("activity.debug.trace_recovery"), String(step.recovery_result || "-")],
-        ["assistant_item_id", String(step.requested_by_item_id || "-")],
-        ["tool_call_id", String(step.tool_call_id || "-")],
-        ["tool_result_item_id", String(step.item_id || "-")],
-      ];
-      return html`
-        <div className="thread-trace-grid">
-          ${rows.map(([label, value]) => html`
-            <div className="thread-trace-row" key=${label}>
-              <span>${label}</span>
-              <code>${value}</code>
-            </div>
-          `)}
-        </div>
-      `;
-    };
-
     const renderThreadItem = (item, index) => {
       const role = String((item && item.role) || "");
       const itemId = String((item && item.id) || `thread-item-${index}`);

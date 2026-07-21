@@ -57,6 +57,7 @@ REQUIRED_CORE_KEYS = (
     "activity.blocked",
     "activity.cancelled",
     "activity.raw_arguments",
+    "activity.parameters",
     "activity.arguments_preview",
     "activity.preview_error",
     "activity.schema_validation",
@@ -66,6 +67,7 @@ REQUIRED_CORE_KEYS = (
     "activity.execution_summary_counts",
     "activity.more_steps",
     "activity.debug_details",
+    "activity.debug.tool_call_id",
     "activity.debug.model_output",
     "activity.debug.runtime",
     "activity.debug.advanced_raw",
@@ -498,7 +500,7 @@ def test_plan_updates_and_tool_items_are_projected_into_message_activity() -> No
         "live_items: [liveRunItemFromStreamItem(item, event)]",
         "plan_explanation: explanation",
         'summary>${t("activity.debug_details")}</summary>',
-        'summary>${t("activity.debug.tool_execution")}</summary>',
+        'summary>${t("activity.debug.tool_execution")} · ${toolGroups.length}</summary>',
         't("activity.debug.thread_history")',
         't("activity.debug.view_trace")',
     )
@@ -575,6 +577,38 @@ def test_developer_debug_view_is_thread_first_and_trace_on_demand() -> None:
     assert "phaseTimingDetails" not in debug_block
     assert "sent_to_model" not in debug_block
     assert "model_rounds" not in debug_block
+
+
+def test_tool_execution_ui_coalesces_one_call_into_one_indented_transaction() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "function reconcileAuthoritativeActivityToolItems(" in script
+    assert "replace_execution_details: true" in script
+    assert "const visibleLiveItems = liveItems.filter" in script
+    assert "!callId || !groupedCallIds.has(callId)" in script
+    assert "const expandedProgressItems = toolGroups.length" in script
+    assert "const toolStatus = normalizeProgressStatus(toolItem.status);" in script
+    assert 'toolStatus === "completed"' in script
+    assert 'className="activity-tool-transaction-list"' in script
+    assert 'className=${`activity-tool-transaction status-${status}`}' in script
+    assert 't("activity.debug.tool_call_id")' in script
+
+    tool_details = script.split("const renderActivityToolDetails", 1)[1].split(
+        "const renderActivityDebugDetails", 1
+    )[0]
+    assert 'renderDetailBlock(t("labels.payload"), toolItem)' not in tool_details
+    assert "renderToolAuditDetails(" not in tool_details
+    assert 'renderDetailBlock(t("activity.parameters"), effectiveArguments)' in tool_details
+    assert 'className="activity-tool-trace-details"' in tool_details
+    assert tool_details.index('className="activity-tool-trace-details"') < tool_details.index(
+        't("activity.debug.tool_call_id")'
+    )
+    assert "argumentsChanged ? renderDetailBlock" in tool_details
+    assert ".activity-tool-transaction-list" in styles
+    assert ".activity-tool-transaction-body" in styles
+    assert ".activity-tool-trace-body" in styles
+    assert "padding-left: 16px" in styles
 
 
 def test_early_activity_copy_and_visibility_are_updated() -> None:
@@ -1714,7 +1748,7 @@ def test_preview_progress_note_can_suppress_duplicate_live_summary() -> None:
     assert 'const suppressPreview = Boolean(options.suppressPreview) && preview;' in body
     assert 'const suppressCompletedPreview = Boolean(options.suppressCompletedPreview) && preview && normalizedStatus === "completed";' in body
     assert 'const liveSummaryText = suppressPreview || suppressCompletedPreview ? "" : formatLiveSummaryText(liveSummary);' in body
-    assert 'const recentExecutionItems = (preview ? mainLiveCards : progressItems).slice(-MAIN_LIVE_CARD_LIMIT);' in body
+    assert 'const recentExecutionItems = (preview ? mainLiveCards : expandedProgressItems).slice(-MAIN_LIVE_CARD_LIMIT);' in body
     assert 'suppressPreview || isTerminal ? [] : recentExecutionItems' in body
     assert "const showLiveStatusPanel = Boolean(" in body
     assert "showPlanSummary && (visibleItems.length || showLiveStatusPanel)" in body

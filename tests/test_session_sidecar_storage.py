@@ -112,7 +112,11 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
                 "name": "read_file",
                 "status": "ok",
                 "raw_tool_call": {"id": "call-1", "name": "read_file"},
-                "validation_result": {"allowed": True, "code": "allowed"},
+                "raw_arguments": {"path": "README.md"},
+                "normalized_arguments": {"path": "README.md"},
+                "validation_result": {"call_id": "call-1", "allowed": True, "code": "allowed"},
+                "schema_validation": {"status": "valid"},
+                "result_preview": {"ok": True, "content": "preview"},
             }
         ],
         inspector={"run_state": {"turn_status": "completed"}},
@@ -203,6 +207,17 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert activity_turn["activity"]["full_loaded"] is False
     assert activity_turn["activity"]["trace_events"] == []
     assert activity_turn["activity"]["tool_items"][0]["raw_tool_call"]["id"] == "call-1"
+    assert activity_turn["activity"]["tool_items"][0]["raw_arguments"] == {"path": "README.md"}
+    assert activity_turn["activity"]["tool_items"][0]["normalized_arguments"] == {"path": "README.md"}
+    assert activity_turn["activity"]["tool_items"][0]["validation_result"] == {
+        "allowed": True,
+        "code": "allowed",
+    }
+    assert activity_turn["activity"]["tool_items"][0]["schema_validation"] == {"status": "valid"}
+    assert activity_turn["activity"]["tool_items"][0]["result_preview"] == {
+        "ok": True,
+        "content": "preview",
+    }
     assert "llm_exchanges" not in activity_turn["activity"]
     assert "model_draft" not in activity_turn["activity"]
     assert "final_answer" not in activity_turn["activity"]

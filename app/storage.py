@@ -723,13 +723,26 @@ class SessionStore:
                     projected_tool_items = [
                         {
                             **step,
+                            **(
+                                dict(step.get("audit") or {})
+                                if isinstance(step.get("audit"), dict)
+                                else {}
+                            ),
                             "type": "toolCall",
                             "name": str(step.get("tool_name") or ""),
                             "raw_tool_call": {
                                 "id": str(step.get("tool_call_id") or ""),
                                 "name": str(step.get("tool_name") or ""),
                             },
-                            "validation_result": dict(step.get("validation") or {}),
+                            "validation_result": (
+                                dict(
+                                    (step.get("audit") or {}).get("validation_result")
+                                    or step.get("validation")
+                                    or {}
+                                )
+                                if isinstance(step.get("audit"), dict)
+                                else dict(step.get("validation") or {})
+                            ),
                         }
                         for step in tool_steps
                     ]

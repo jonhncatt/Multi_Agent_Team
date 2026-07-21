@@ -3005,6 +3005,23 @@ def test_runtime_cancel_during_tool_drain_closes_remaining_call_ids(tmp_path: Pa
     assert any("tool_cancelled" in str(item["output_preview"]) for item in result["tool_events"])
 
 
+def test_tool_call_preview_preserves_uuid_identity_but_masks_arguments() -> None:
+    call_id = "call-0a039f75-e4e2-445f-bdda-0bc6ebc35946"
+    opaque_token = "s" * 40
+
+    preview = VintageProgrammerRuntime._safe_tool_call_preview(
+        {
+            "id": call_id,
+            "name": "web_search",
+            "arguments": {"token": opaque_token},
+        }
+    )
+
+    assert preview["id"] == call_id
+    assert preview["name"] == "web_search"
+    assert opaque_token not in json.dumps(preview, ensure_ascii=False)
+
+
 def test_runtime_messages_at_tool_boundary_detects_missing_tool_output(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
