@@ -270,6 +270,16 @@ def test_exec_command_safe_command_allowed_when_shell_enabled(tmp_path: Path) ->
     assert result.allowed
 
 
+def test_exec_command_rejects_command_missing_from_allowlist_before_execution(tmp_path: Path) -> None:
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "select-string -Pattern PLP PLP_10.cpp", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+    assert "select-string" in result.message
+
+
 @pytest.mark.parametrize(
     "command",
     [

@@ -981,7 +981,7 @@ def _events_support_step(step_kind: str, events: list[dict[str, Any]]) -> bool:
 
 
 def _events_include_failure(events: list[dict[str, Any]]) -> bool:
-    return any(_event_status(event) in {"error", "failed", "failure", "blocked"} for event in events)
+    return any(_event_status(event) in {"error", "failed", "failure", "blocked", "rejected"} for event in events)
 
 
 def _fallback_next_required_action(plan_items: Any, current_step_id: str) -> str:
@@ -1131,7 +1131,7 @@ def merge_task_state_after_turn(
         }
         for event in events
         if _event_tool_name(event) != "update_plan"
-        and _event_status(event) in {"error", "failed", "failure", "blocked"}
+        and _event_status(event) in {"error", "failed", "failure", "blocked", "rejected"}
     ]
     failed_attempts = _normalize_failed_attempts(
         [*list(state.get("failed_attempts") or []), *event_failures]

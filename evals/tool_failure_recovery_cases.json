@@ -4,12 +4,24 @@
   "description": "Deterministic Runtime recovery evals. These cases use fake tools and never call a real model.",
   "cases": [
     {
-      "name": "recoverable_same_class_changed_strategy",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_recovers",
+      "name": "distinct_failure_targets_are_not_repeated",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_distinguishes_same_failure_class_with_different_targets",
       "failure_category": "tool_call_failure",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "repeated_tool_failure",
+      "expected_replan_trigger": "",
       "max_tool_calls": 3
+    },
+    {
+      "name": "replan_allows_rejected_then_new_command_strategy",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_call",
+      "failure_category": "mixed_failed_rejected",
+      "expected_turn_status": "completed",
+      "expected_replan_trigger": "repeated_tool_failure",
+      "expected_error_kinds": ["not_a_directory", "command_not_allowed"],
+      "expected_outcomes": ["failed", "rejected"],
+      "expected_skipped_calls": 1,
+      "expected_recovery_tool": "exec_command",
+      "max_tool_calls": 5
     },
     {
       "name": "unrecoverable_environment_block",
@@ -29,7 +41,7 @@
     },
     {
       "name": "verification_before_target_change",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_replans_when_verification_fails_before_target_mutation",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation",
       "failure_category": "verification_failure",
       "expected_turn_status": "completed",
       "expected_replan_trigger": "verification_before_change",

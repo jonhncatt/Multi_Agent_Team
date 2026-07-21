@@ -71,6 +71,17 @@ Run the company baseline from PowerShell:
 
 The report's `scenario` section records required and forbidden tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters. A case may set `verification.agent_must_run` to `false` when executing any command would itself violate the task; the runner still performs its private authoritative verifier after the Agent stops. For those cases only, a Runtime `verification_missing` state does not override a normal model final answer and the passing private verifier; unfinished plans and missing final answers still fail completion accuracy.
 
+## Deterministic tool-failure recovery suite
+
+`evals/tool_failure_recovery_cases.json` runs focused Runtime state-machine cases with fake tools and zero provider calls. It covers repeated-failure replanning, environment blocks, verification-before-change, no-progress stops, distinct failure targets, and the regression where repeated `search_codebase/not_a_directory` failures are followed by a skipped batch call, a rejected non-allowlisted command, and a successful `rg` strategy.
+
+```bash
+python scripts/run_recovery_evals.py --validate-only
+python scripts/run_recovery_evals.py
+```
+
+Use `--name replan_allows_rejected_then_new_command_strategy` to run only the FAILED/REJECTED/SKIPPED regression case.
+
 ## Company compiler adapter
 
 Set `VP_EVAL_CPP_VERIFY_SCRIPT` to the absolute path of a company-owned wrapper script when the portable fixture cannot use MSVC, `clang++`, or `g++` locally.

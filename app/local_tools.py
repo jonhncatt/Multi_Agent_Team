@@ -2587,6 +2587,13 @@ class LocalToolExecutor:
         if error_kind:
             payload["error_kind"] = str(error_kind)
             payload["error_detail"] = dict(error_detail or {})
+            if str(error_kind) in {
+                "command_not_allowed",
+                "command_path_outside_allowed_roots",
+                "dangerous_command",
+                "reserved_skill_path",
+            }:
+                payload["failure_outcome"] = "rejected"
         return payload
 
     def _normalize_python_command_argv(self, argv: list[str], *, execution_mode: str) -> list[str]:
@@ -4049,7 +4056,18 @@ class LocalToolExecutor:
             )
             if error:
                 if not raw_tainted_matches:
-                    return self._command_failure_result(command=cmd, cwd=cwd, error=error)
+                    error_kind = (
+                        "command_not_allowed"
+                        if str(error).lower().startswith("command not allowed:")
+                        else "invalid_arguments"
+                    )
+                    return self._command_failure_result(
+                        command=cmd,
+                        cwd=cwd,
+                        error=error,
+                        error_kind=error_kind,
+                        error_detail={"message": error},
+                    )
                 supply_chain_block = blocked_supply_chain_command(raw_argv)
                 if supply_chain_block is not None:
                     message = str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
@@ -6032,12 +6050,12 @@ class LocalToolExecutor:
         try:
             cleaned_query = str(query or "").strip()
             if not cleaned_query:
-                return {"ok": False, "error": "query is empty"}
+                return {"ok": False, "error_kind": "invalid_arguments", "error": "query is empty"}
             real_root = self._resolve_path(root)
             if not real_root.exists():
-                return {"ok": False, "error": f"Path not found: {root}"}
+                return {"ok": False, "error_kind": "path_not_found", "error": f"Path not found: {root}"}
             if not real_root.is_dir():
-                return {"ok": False, "error": f"Not a directory: {root}"}
+                return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
 
             limit = max(1, min(100, int(max_matches)))
             matches: list[dict[str, Any]] = []

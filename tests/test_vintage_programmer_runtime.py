@@ -13,6 +13,7 @@ from app.models import ChatSettings, ToolEvent
 from app.runtime_boundary import RuntimeBoundary
 from app.answer_stream_state import new_answer_stream_state
 from app import vintage_programmer_runtime as runtime_module
+from app.tool_failures import classify_tool_event
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -152,7 +153,10 @@ class _FakeTools:
                 "description": "search codebase",
                 "parameters": {
                     "type": "object",
-                    "properties": {"query": {"type": "string"}},
+                    "properties": {
+                        "query": {"type": "string"},
+                        "root": {"type": "string", "default": "."},
+                    },
                     "required": ["query"],
                     "additionalProperties": False,
                 },
@@ -2137,7 +2141,7 @@ def test_runtime_guard_rejects_removed_legacy_tool_name_and_returns_tool_error_t
     assert result["text"] == "I revised the tool choice after the guard rejection."
     assert backend.tools.calls == []
     assert result["tool_events"][0]["validation_result"]["allowed"] is False
-    assert result["tool_events"][0]["status"] == "error"
+    assert result["tool_events"][0]["status"] == "rejected"
     assert result["tool_events"][0]["raw_tool_call"]["name"] == "read"
     assert len(backend.invocations) == 2
     followup_messages = backend.invocations[1]["messages"]
@@ -3719,7 +3723,7 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
     )
 
 
-def test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_recovers(tmp_path: Path) -> None:
+def test_runtime_distinguishes_same_failure_class_with_different_targets(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -3764,12 +3768,12 @@ def test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_re
     assert result["turn_status"] == "completed"
     assert result["text"] == "recovered with a different strategy"
     assert [call[0] for call in tools.calls] == ["exec_command", "exec_command", "read_file"]
-    history = result["inspector"]["run_state"]["replan_history"]
-    assert history[0]["trigger"] == "repeated_tool_failure"
-    assert history[0]["structured_failures"][-1]["consecutive_occurrence"] == 2
+    assert result["inspector"]["run_state"]["replan_history"] == []
     recovery = result["failure_recovery"]
     assert recovery["failure_count"] == 2
-    assert recovery["repeated_failure_count"] == 1
+    assert recovery["repeated_failure_count"] == 0
+    assert recovery["records"][0]["target_fingerprint"] != recovery["records"][1]["target_fingerprint"]
+    assert all(item["consecutive_occurrence"] == 1 for item in recovery["records"])
     assert recovery["recoveries"][-1]["recovered_by_tool"] == "read_file"
     tool_messages = [
         str(message.content or "")
@@ -3778,8 +3782,6 @@ def test_runtime_replans_on_same_failure_class_even_when_arguments_change_and_re
         if isinstance(message, _FakeToolMessage)
     ]
     assert any("runtime_failure" in message and "command_path_outside_allowed_roots" in message for message in tool_messages)
-    assert "failure_contract:" in history[0]["prompt"]
-    assert any(token in history[0]["prompt"] for token in ("机械重复", "機械的に繰り返さず", "mechanically repeat"))
 
 
 def test_runtime_stops_unrecoverable_environment_failure_after_one_replan(tmp_path: Path) -> None:
@@ -3828,6 +3830,57 @@ def test_runtime_stops_unrecoverable_environment_failure_after_one_replan(tmp_pa
     assert len(result["replan_history"]) == 1
 
 
+def test_new_user_turn_resets_failure_tracker_and_stop_latch(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error_kind": "tool_unavailable"},
+            {"ok": False, "error_kind": "tool_unavailable"},
+            {"ok": False, "error_kind": "tool_unavailable"},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "one.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "two.md"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "three.md"}}]),
+            _FakeMessage(content="new turn can continue"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    context = {
+        "session_id": "s-reset-failure-latch",
+        "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+        "history_turns": [],
+        "attachments": [],
+    }
+
+    first = runtime.run(
+        message="first turn",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context=context,
+    )
+    second = runtime.run(
+        message="second user turn",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context=context,
+    )
+
+    assert first["turn_status"] == "blocked"
+    assert first["blocked_reason"] == "tool_failure_repeated_after_replan"
+    assert second["turn_status"] == "completed"
+    assert second["text"] == "new turn can continue"
+    assert second["blocked_reason"] == ""
+    assert second["failure_recovery"]["failure_count"] == 0
+
+
 def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -3846,8 +3899,8 @@ def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -
     backend = _FakeBackendWithTools(
         [
             _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "exec_command", "args": {"cmd": "python one.py"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "exec_command", "args": {"cmd": "python two.py"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "exec_command", "args": {"cmd": "python three.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "exec_command", "args": {"cmd": "python one.py"}}]),
+            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "exec_command", "args": {"cmd": "python one.py"}}]),
             _FakeMessage(content="should not claim completion"),
         ],
         tools,
@@ -3877,6 +3930,150 @@ def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -
     assert result["failure_recovery"]["repeated_failure_count"] == 2
     assert "task_completion" not in result
     assert "should not claim completion" not in result["text"]
+
+
+def test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_call(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    bad_root = "RunningTP_MT/Script/PLP_10.cpp"
+    bad_root_path = tmp_path / bad_root
+    bad_root_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_root_path.write_text("PLP", encoding="utf-8")
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error": f"Not a directory: {bad_root}"},
+            {"ok": False, "error": f"Not a directory: {bad_root}"},
+            {"ok": True, "command": f"rg -n PLP {bad_root}", "returncode": 0, "output": "PLP_10.cpp:1:match"},
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc1", "name": "search_codebase", "args": {"query": "PLP", "root": bad_root}}],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {"id": "tc2", "name": "search_codebase", "args": {"query": "PLP", "root": bad_root}},
+                    {"id": "tc3", "name": "search_codebase", "args": {"query": "PLP", "root": bad_root}},
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc4",
+                        "name": "exec_command",
+                        "args": {"cmd": f"select-string -Pattern PLP {bad_root}"},
+                    }
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc5", "name": "exec_command", "args": {"cmd": f"rg -n PLP {bad_root}"}}],
+            ),
+            _FakeMessage(content="recovered with rg"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="查找 PLP；同一搜索失败时重新规划，并改用允许的命令",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
+        context={
+            "session_id": "s-new-strategy-after-replan",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "recovered with rg"
+    assert [call[0] for call in tools.calls] == ["search_codebase", "search_codebase", "exec_command"]
+    assert [item["status"] for item in result["tool_events"]] == ["error", "error", "skipped", "rejected", "ok"]
+    assert classify_tool_event(result["tool_events"][2]) is None
+    recovery = result["failure_recovery"]
+    assert recovery["failure_count"] == 3
+    assert recovery["failure_outcomes"] == {"failed": 2, "rejected": 1}
+    assert [item["error_kind"] for item in recovery["records"]] == [
+        "not_a_directory",
+        "not_a_directory",
+        "command_not_allowed",
+    ]
+    assert recovery["records"][1]["repeated"] is True
+    assert recovery["records"][2]["outcome"] == "rejected"
+    assert recovery["records"][2]["failure_phase"] == "policy"
+    assert result["replan_history"][0]["trigger"] == "repeated_tool_failure"
+    assert result["blocked_reason"] == ""
+
+
+def test_runtime_stops_after_total_distinct_failure_budget(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ScriptedTools(
+        [
+            {"ok": False, "error_kind": "command_path_outside_allowed_roots", "returncode": 126}
+            for _ in range(5)
+        ]
+    )
+    backend = _FakeBackendWithTools(
+        [
+            *[
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        {"id": f"tc{index}", "name": "exec_command", "args": {"cmd": f"python target_{index}.py"}}
+                    ],
+                )
+                for index in range(1, 6)
+            ],
+            _FakeMessage(content="should not reach"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="尝试不同目标，但总失败次数必须有上限",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev", response_style="short"),
+        context={
+            "session_id": "s-total-failure-budget",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "tool_failure_budget_exceeded"
+    assert len(tools.calls) == 5
+    assert result["failure_recovery"]["failure_count"] == 5
+    assert len({item["target_fingerprint"] for item in result["failure_recovery"]["records"]}) == 5
+    assert result["replan_history"] == []
+    assert "should not reach" not in result["text"]
 
 
 def test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation(tmp_path: Path) -> None:

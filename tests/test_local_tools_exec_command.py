@@ -141,6 +141,20 @@ def test_exec_command_blocks_high_risk_commands(
     assert "Command not allowed" in error
 
 
+def test_exec_command_allowlist_rejection_has_structured_rejected_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+
+    result = manager.exec_command(cmd="select-string -Pattern PLP PLP_10.cpp", cwd=str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "command_not_allowed"
+    assert result["failure_outcome"] == "rejected"
+    assert result["returncode"] == 126
+
+
 def test_read_only_subagent_gets_safe_alternative_instead_of_inline_python_approval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

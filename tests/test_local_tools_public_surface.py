@@ -784,6 +784,19 @@ def test_search_codebase_returns_project_relative_paths(tmp_path: Path) -> None:
     assert str(tmp_path) not in result["matches"][0]["path"]
 
 
+def test_search_codebase_file_root_returns_structured_not_a_directory_error(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    target = tmp_path / "PLP_10.cpp"
+    target.write_text("PLP", encoding="utf-8")
+
+    result = executor.search_codebase(query="PLP", root="PLP_10.cpp")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "not_a_directory"
+    assert result["error"] == "Not a directory: PLP_10.cpp"
+
+
 def test_broad_glob_in_large_directory_returns_guidance(tmp_path: Path) -> None:
     config = _config(tmp_path)
     executor = LocalToolExecutor(config)

@@ -711,11 +711,21 @@ def _compact_tool_events(events: list[dict[str, Any]], *, workspace: Path) -> li
         argument_keys = sorted(str(key) for key in input_payload) if isinstance(input_payload, dict) else []
         status = str(event.get("status") or "")
         failure = classify_tool_event(event)
+        normalized_status = status.strip().lower()
+        summary = (
+            "tool_failed"
+            if failure
+            else (
+                "tool_skipped"
+                if normalized_status == "skipped"
+                else ("tool_cancelled" if normalized_status in {"cancelled", "canceled"} else "tool_succeeded")
+            )
+        )
         compact.append(
             {
                 "name": str(event.get("name") or ""),
                 "status": status,
-                "summary": "tool_failed" if failure else "tool_succeeded",
+                "summary": summary,
                 "arguments": json.dumps({"redacted": True, "keys": argument_keys}, ensure_ascii=False),
                 "argument_keys": argument_keys,
                 "failure_category": str((failure or {}).get("category") or ""),
@@ -768,8 +778,11 @@ def build_failure_observability(
             {
                 "index": index + 1,
                 "tool": str(failure.get("tool") or "tool"),
+                "outcome": str(failure.get("outcome") or "failed"),
+                "failure_phase": str(failure.get("failure_phase") or "execution"),
                 "category": category,
                 "error_kind": str(failure.get("error_kind") or "tool_error"),
+                "target_fingerprint": str(failure.get("target_fingerprint") or ""),
                 "retryability": str(failure.get("retryability") or "change_strategy"),
                 "returncode": failure.get("returncode"),
                 "is_verification": bool(failure.get("is_verification")),
@@ -802,7 +815,7 @@ def build_failure_observability(
         or category_counts.get("environment_blocked")
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "failed_tool_calls": len(sequence),
         "failure_categories": category_counts,
         "failures": sequence,

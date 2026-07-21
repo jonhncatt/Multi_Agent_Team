@@ -37,7 +37,9 @@ An unavailable compiler is reported as `blocked`, not as an Agent failure, when 
 
 The first company baseline exposed the concrete failure pattern for this change: one multi-file analysis attempt made 27 tool calls, encountered 4 tool errors, produced no target-file change, and correctly remained blocked instead of claiming completion. The existing exact-action and no-progress guards protected completion honesty, but they did not group the same error class when arguments changed.
 
-Tool failures are classified independently of the tool arguments. This prevents an Agent from evading the repeat guard by changing only a path or command while producing the same failure class. The structured feedback sent back to the model contains only the tool name, category, `error_kind`, retryability, required action, optional return code, and occurrence count.
+Tool outcomes are explicitly separated into `failed`, `rejected`, and `skipped`. `failed` means execution began and returned an error; `rejected` means validation or policy prevented execution; `skipped` means the call was never attempted because the current tool batch had already reached a stop or cancellation condition. Skipped calls remain visible in the Trace but never enter failure counts, repeat detection, or Eval failed-tool totals.
+
+Repeat detection uses a content-free stable fingerprint: tool name, outcome, failure phase, category, `error_kind`, and a hash of the normalized target or strategy. For `command_not_allowed`, the target is the command executable, so repeating `select-string` matches while changing to `rg` does not. Environment-wide failures intentionally omit the target because changing a path cannot make an unavailable tool or provider available. Raw commands, paths, queries, and other argument values remain absent from failure reports.
 
 The categories are:
 
@@ -47,7 +49,7 @@ The categories are:
 - `tool_execution_failure`: a tool implementation failed; retry once, then change strategy.
 - `environment_blocked`: a required provider, credential, compiler, shell, network, or tool capability is unavailable.
 
-Two consecutive failures with the same tool/category/`error_kind` trigger one explicit replan. The replan must choose different arguments, a different tool, or a different strategy. The same class failing again after that replan blocks the turn instead of consuming the remaining tool budget. A write-authorized task that runs a failing verification command before any successful mutation is replanned with an instruction to generate or modify the target first. These safeguards do not increase the maximum tool-call or round budgets, and a blocked or failed task remains incomplete.
+Two consecutive failures with the same stable fingerprint trigger one explicit replan. The Runtime records that exact pre-replan fingerprint. After replanning, only seeing that same fingerprint again triggers `tool_failure_repeated_after_replan`; a different command, target, tool, phase, or error is allowed to run as a new strategy. A separate five-failure total budget prevents an Agent from evading the repeat guard by generating endlessly different failures. Failure trackers and stop latches are local to one Runtime turn and are recreated for each new user turn. A write-authorized task that runs a failing verification command before any successful mutation is replanned with an instruction to generate or modify the target first.
 
 Deterministic recovery Evals use fake tools and make zero real model calls:
 

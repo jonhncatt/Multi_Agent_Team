@@ -1121,6 +1121,17 @@ class ActionValidator:
                     argv, split_error = split_command_safely(command)
                     if split_error:
                         return "invalid_arguments", split_error
+                    raw_executable = str(argv[0] if argv else "").strip()
+                    base_command = _command_base(raw_executable)
+                    direct_executable_path = bool(
+                        raw_executable.startswith(("./", "../", "/", ".\\", "..\\"))
+                        or re.match(r"^[a-zA-Z]:[\\/]", raw_executable)
+                    )
+                    if not base_command or (base_command not in self._allowed_commands and not direct_executable_path):
+                        return "command_not_allowed", (
+                            f"Command not allowed: {base_command or '(empty)'}. "
+                            f"Allowed: {', '.join(sorted(self._allowed_commands))}"
+                        )
                     supply_chain_block = blocked_supply_chain_command(argv)
                     missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, self._allowed_commands)
                     if missing_supply_chain_commands:

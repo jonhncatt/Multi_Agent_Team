@@ -110,6 +110,7 @@ _DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
 _DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN = 2
 _DEFAULT_REPEATED_FAILURES_AFTER_REPLAN = 1
+_DEFAULT_MAX_TOTAL_FAILURES = 5
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
 
@@ -126,6 +127,7 @@ def default_loop_safeguards() -> dict[str, Any]:
         "max_guard_rejections": int(_DEFAULT_MAX_GUARD_REJECTIONS),
         "repeated_failures_before_replan": int(_DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN),
         "repeated_failures_after_replan": int(_DEFAULT_REPEATED_FAILURES_AFTER_REPLAN),
+        "max_total_failures": int(_DEFAULT_MAX_TOTAL_FAILURES),
         "max_turn_seconds": int(_DEFAULT_MAX_TURN_SECONDS),
         "long_task_guard": True,
         "progress_signal_guard": True,
@@ -1592,7 +1594,20 @@ class VintageProgrammerRuntime:
         if raw_argument_payload is None:
             raw_argument_payload = arguments
         source_refs = self._collect_source_refs(result)
-        status = "ok" if bool(result.get("ok")) else "error"
+        validation_payload = dict(validation_result or {})
+        nested_error = dict(result.get("error") or {}) if isinstance(result.get("error"), dict) else {}
+        error_kind = str(nested_error.get("kind") or result.get("error_kind") or result.get("code") or "").strip()
+        validation_code = str(validation_payload.get("code") or "").strip()
+        if bool(result.get("ok")):
+            status = "ok"
+        elif error_kind in {"tool_cancelled", "tool_canceled"} or validation_code in {"tool_cancelled", "tool_canceled"}:
+            status = "cancelled"
+        elif error_kind == "tool_skipped" or validation_code == "tool_skipped":
+            status = "skipped"
+        elif validation_payload.get("allowed") is False or str(result.get("failure_outcome") or "").strip().lower() == "rejected":
+            status = "rejected"
+        else:
+            status = "error"
         error_value = result.get("error")
         summary = str(result.get("summary") or "").strip()
         if not summary and error_value:
@@ -1606,7 +1621,6 @@ class VintageProgrammerRuntime:
         descriptor = dict(self._tool_descriptors_by_name.get(name) or {})
         group = str(descriptor.get("group") or "")
         source = str(descriptor.get("source") or "")
-        validation_payload = dict(validation_result or {})
         return ToolEvent(
             name=name or "(unknown)",
             input=arguments,
@@ -2282,6 +2296,7 @@ class VintageProgrammerRuntime:
             payload=result,
             event_status=str(getattr(event, "status", "") or ""),
             validation_result=dict(getattr(event, "validation_result", {}) or {}),
+            normalized_arguments=dict(getattr(event, "normalized_arguments", {}) or {}),
             is_verification=is_verification,
         )
         if failure is None:
@@ -2332,8 +2347,12 @@ class VintageProgrammerRuntime:
             category = str(item.get("category") or "tool_execution_failure")
             categories[category] = categories.get(category, 0) + 1
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "failure_count": len(records),
+            "failure_outcomes": {
+                outcome: sum(1 for item in records if str(item.get("outcome") or "failed") == outcome)
+                for outcome in ("failed", "rejected")
+            },
             "failure_categories": categories,
             "repeated_failure_count": sum(1 for item in records if bool(item.get("repeated"))),
             "recoveries": recoveries[-12:],
@@ -2396,6 +2415,7 @@ class VintageProgrammerRuntime:
             tool_name=name,
             payload=payload,
             event_status=event_status,
+            normalized_arguments=arguments,
             is_verification=is_verification,
         )
         if failure:
@@ -2740,7 +2760,7 @@ class VintageProgrammerRuntime:
     def _recent_failed_action_summaries(tool_events: list[ToolEvent], *, limit: int = 6) -> list[str]:
         items: list[str] = []
         for event in list(tool_events or [])[-limit:]:
-            if getattr(event, "status", "") == "ok":
+            if getattr(event, "status", "") in {"ok", "skipped", "cancelled"}:
                 continue
             detail = str(getattr(event, "summary", "") or getattr(event, "output_preview", "")).strip()
             label = str(getattr(event, "name", "") or "tool").strip() or "tool"
@@ -2763,8 +2783,11 @@ class VintageProgrammerRuntime:
                     key: failure.get(key)
                     for key in (
                         "tool",
+                        "outcome",
+                        "failure_phase",
                         "category",
                         "error_kind",
+                        "target_fingerprint",
                         "retryability",
                         "required_action",
                         "occurrence",
@@ -2813,7 +2836,7 @@ class VintageProgrammerRuntime:
     ) -> list[str]:
         items: list[str] = []
         for event in list(tool_events or [])[-limit:]:
-            if failed_only and getattr(event, "status", "") == "ok":
+            if failed_only and getattr(event, "status", "") in {"ok", "skipped", "cancelled"}:
                 continue
             label = str(getattr(event, "name", "") or "tool").strip() or "tool"
             arguments_preview = str(getattr(event, "arguments_preview", "") or "").strip()
@@ -2829,6 +2852,11 @@ class VintageProgrammerRuntime:
         items: list[str] = []
         for event in list(tool_events or [])[-12:]:
             validation = getattr(event, "validation_result", {}) or {}
+            if getattr(event, "status", "") in {"skipped", "cancelled"} or str(validation.get("code") or "") in {
+                "tool_skipped",
+                "tool_cancelled",
+            }:
+                continue
             schema_validation = getattr(event, "schema_validation", {}) or {}
             validation_allowed = validation.get("allowed")
             schema_status = str(schema_validation.get("status") or "").strip().lower()
@@ -3060,9 +3088,16 @@ class VintageProgrammerRuntime:
         if str(blocked_reason or "").strip() in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
             return self._localized_text(
                 locale,
-                zh_cn="同类工具错误重复出现",
-                ja_jp="同種のツールエラーが繰り返されました",
-                en="The same tool failure class repeated",
+                zh_cn="同一工具失败指纹重复出现",
+                ja_jp="同じツール失敗フィンガープリントが繰り返されました",
+                en="The same tool failure fingerprint repeated",
+            )
+        if str(blocked_reason or "").strip() == "tool_failure_budget_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn="本轮工具失败总预算已耗尽",
+                ja_jp="この turn のツール失敗総予算に達しました",
+                en="The turn exhausted its total tool-failure budget",
             )
         if str(blocked_reason or "").strip() == "invalid_tool_call_repeated":
             return self._localized_text(
@@ -3121,6 +3156,14 @@ class VintageProgrammerRuntime:
                 zh_cn=f"同类工具错误在复盘后仍然重复，已停止机械重试。错误类别：{failure_label}。",
                 ja_jp=f"同種のツールエラーが復盤後も繰り返されたため、機械的な再試行を停止しました。分類: {failure_label}。",
                 en=f"The same tool failure persisted after replanning, so mechanical retries were stopped. Failure class: {failure_label}.",
+            )
+        if reason_code == "tool_failure_budget_exceeded":
+            counted_failures = len(self._recent_structured_failures(tool_events, limit=100))
+            return self._localized_text(
+                locale,
+                zh_cn=f"本轮已累计 {counted_failures} 次实际失败或策略拒绝；为防止通过不断制造不同错误无限尝试，Runtime 已停止本轮。",
+                ja_jp=f"この turn では実行失敗またはポリシー拒否が合計 {counted_failures} 回発生しました。異なるエラーを作り続ける無限試行を防ぐため停止しました。",
+                en=f"This turn accumulated {counted_failures} executed failures or policy rejections. The Runtime stopped it to prevent endless retries through continually different errors.",
             )
         if reason_code == "tool_validation_rejections_exceeded":
             base = self._localized_text(
@@ -3256,6 +3299,13 @@ class VintageProgrammerRuntime:
                 zh_cn="不要再次提交同类失败动作；请更换工具或参数，先完成目标修改，或者明确报告不可用的环境能力。",
                 ja_jp="同種の失敗操作を再送せず、ツールまたは引数を変更し、対象変更を先に完了するか、利用できない環境機能を明示してください。",
                 en="Do not submit the same failure class again; change the tool or arguments, complete the target mutation first, or report the unavailable environment capability.",
+            )
+        if reason_code == "tool_failure_budget_exceeded":
+            return self._localized_text(
+                locale,
+                zh_cn="请在新一轮中缩小目标，并从最近的失败记录中选择一个明确可执行的新策略，不要同时尝试多个未经验证的方向。",
+                ja_jp="新しい turn では対象を絞り、直近の失敗記録から実行可能な新戦略を一つ選び、未検証の方向を同時に増やさないでください。",
+                en="In a new turn, narrow the target and choose one concrete executable strategy from the recent failure evidence instead of trying several unverified directions at once.",
             )
         if reason_code == "turn_budget_wall_clock_exceeded":
             return self._localized_text(
@@ -4265,6 +4315,7 @@ class VintageProgrammerRuntime:
         max_guard_rejections = int(loop_safeguards.get("max_guard_rejections") or 0)
         repeated_failures_before_replan = int(loop_safeguards.get("repeated_failures_before_replan") or 0)
         repeated_failures_after_replan = int(loop_safeguards.get("repeated_failures_after_replan") or 0)
+        max_total_failures = int(loop_safeguards.get("max_total_failures") or 0)
         automatic_replan_enabled = bool(loop_safeguards.get("automatic_replan"))
         tool_failure_recovery_enabled = bool(loop_safeguards.get("tool_failure_recovery"))
         progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
@@ -5458,6 +5509,7 @@ class VintageProgrammerRuntime:
             progress_signals: list[dict[str, Any]] = []
             replan_history: list[dict[str, Any]] = []
             replan_attempt_count = 0
+            replan_failure_key = ""
             compacted_tool_events = 0
             base_message_count = len(messages)
             invalid_tool_call_recovery_count = 0
@@ -5913,10 +5965,10 @@ class VintageProgrammerRuntime:
                         self._emit_trace(
                             progress_cb,
                             run_id=run_id,
-                            type="tool.failed",
-                            title=trace_label(locale, "tool.failed", tool=name),
+                            type="tool.cancelled" if skip_kind == "cancelled" else "tool.skipped",
+                            title="Tool cancelled" if skip_kind == "cancelled" else "Tool skipped",
                             detail=summarize_tool_result(name, result, locale=locale),
-                            status="cancelled" if skip_kind == "cancelled" else "blocked",
+                            status="cancelled" if skip_kind == "cancelled" else "skipped",
                             payload={
                                 "tool_name": name,
                                 "raw_tool_call": raw_tool_call_payload,
@@ -6331,6 +6383,7 @@ class VintageProgrammerRuntime:
                     last_action_fingerprint = action_fingerprint
                     if failure and tool_failure_recovery_enabled and not halt_for_user_input:
                         consecutive_failures = int(failure.get("consecutive_occurrence") or 1)
+                        current_failure_key = failure_key(failure)
                         precondition_failed = bool(failure.get("precondition"))
                         repeated_before_replan = bool(
                             replan_attempt_count == 0
@@ -6339,8 +6392,14 @@ class VintageProgrammerRuntime:
                         )
                         repeated_after_replan = bool(
                             replan_attempt_count > 0
+                            and bool(replan_failure_key)
+                            and current_failure_key == replan_failure_key
                             and repeated_failures_after_replan > 0
                             and consecutive_failures >= repeated_failures_after_replan
+                        )
+                        total_failure_budget_exceeded = bool(
+                            max_total_failures > 0
+                            and len(list(failure_tracker.get("records") or [])) >= max_total_failures
                         )
                         if precondition_failed and replan_attempt_count == 0:
                             needs_replan = True
@@ -6363,6 +6422,11 @@ class VintageProgrammerRuntime:
                             turn_status = "blocked"
                             blocked_reason = blocked_reason or "tool_failure_repeated_after_replan"
                             notes.append("tool_failure_repeated_after_replan")
+                            stop_after_tools = True
+                        elif total_failure_budget_exceeded:
+                            turn_status = "blocked"
+                            blocked_reason = blocked_reason or "tool_failure_budget_exceeded"
+                            notes.append("tool_failure_budget_exceeded")
                             stop_after_tools = True
                     if name == "update_plan" and bool(result.get("ok")):
                         plan_state = list(result.get("plan") or [])
@@ -6726,6 +6790,8 @@ class VintageProgrammerRuntime:
                         trigger=replan_trigger or "no_progress",
                     )
                     replan_attempt_count += 1
+                    if replan_trigger == "repeated_tool_failure":
+                        replan_failure_key = str(replan_detail or "")
                     post_replan_no_progress_cycles = 0
                     replan_payload = {
                         "trigger": replan_trigger or "no_progress",

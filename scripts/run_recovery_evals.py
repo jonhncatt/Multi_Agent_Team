@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -52,6 +53,12 @@ def _load_cases(path: Path) -> dict[str, Any]:
         test_file = ROOT / node.split("::", 1)[0]
         if not test_file.is_file():
             raise RecoveryEvalConfigurationError(f"Recovery eval case {name!r} references a missing test file.")
+        test_name = node.split("::", 1)[1]
+        test_source = test_file.read_text(encoding="utf-8")
+        if not re.search(rf"^def\s+{re.escape(test_name)}\s*\(", test_source, flags=re.MULTILINE):
+            raise RecoveryEvalConfigurationError(
+                f"Recovery eval case {name!r} references a missing test function: {test_name}."
+            )
         names.add(name)
     return payload
 
@@ -64,6 +71,10 @@ def _safe_result(case: dict[str, Any], *, returncode: int, elapsed_ms: float) ->
         "expected_turn_status": str(case.get("expected_turn_status") or ""),
         "expected_replan_trigger": str(case.get("expected_replan_trigger") or ""),
         "max_tool_calls": int(case.get("max_tool_calls") or 0),
+        "expected_error_kinds": [str(item) for item in list(case.get("expected_error_kinds") or [])],
+        "expected_outcomes": [str(item) for item in list(case.get("expected_outcomes") or [])],
+        "expected_skipped_calls": int(case.get("expected_skipped_calls") or 0),
+        "expected_recovery_tool": str(case.get("expected_recovery_tool") or ""),
         "elapsed_ms": round(elapsed_ms, 2),
     }
 

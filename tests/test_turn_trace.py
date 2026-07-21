@@ -112,6 +112,60 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
     assert "sha256" not in json.dumps(trace)
 
 
+def test_turn_trace_preserves_skipped_as_non_failure_step_type() -> None:
+    items = [
+        {
+            "id": "a1",
+            "turn_id": "t1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1", "name": "search_codebase", "args": {"query": "PLP"}}],
+        },
+        {
+            "id": "tool-1",
+            "turn_id": "t1",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "search_codebase",
+            "content": '{"ok": false, "error": {"kind": "tool_skipped"}}',
+        },
+    ]
+
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "t1",
+            "status": "failed",
+            "activity": {
+                "tool_events": [
+                    {
+                        "name": "search_codebase",
+                        "status": "skipped",
+                        "raw_tool_call": {"id": "call-1", "name": "search_codebase"},
+                        "validation_result": {"call_id": "call-1", "allowed": False, "code": "tool_skipped"},
+                        "result_preview": {"ok": False, "error": {"kind": "tool_skipped"}},
+                    }
+                ]
+            },
+            "tool_events": [
+                {
+                    "name": "search_codebase",
+                    "status": "skipped",
+                    "raw_tool_call": {"id": "call-1", "name": "search_codebase"},
+                    "validation_result": {"call_id": "call-1", "allowed": False, "code": "tool_skipped"},
+                    "result_preview": {"ok": False, "error": {"kind": "tool_skipped"}},
+                }
+            ],
+        },
+        thread_items=items,
+        turn_id="t1",
+    )
+
+    tool_step = next(step for step in trace["steps"] if step.get("item_id") == "tool-1")
+    assert tool_step["type"] == "tool_skipped"
+    assert tool_step["status"] == "skipped"
+
+
 def test_turn_trace_matches_repeated_history_to_the_latest_item() -> None:
     items = [
         {"id": "old-user", "turn_id": "old", "role": "user", "content": "hi"},

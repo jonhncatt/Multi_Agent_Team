@@ -415,8 +415,15 @@ def build_turn_trace(
             event = tool_events_by_call.get(call_id, {})
             event_status = _text(event.get("status"))
             result_status = "completed" if event_status in {"", "ok", "success", "completed"} else _status(event_status)
+            step_type = {
+                "completed": "tool_completed",
+                "skipped": "tool_skipped",
+                "cancelled": "tool_cancelled",
+                "canceled": "tool_cancelled",
+                "rejected": "tool_rejected",
+            }.get(result_status, "tool_failed")
             step = {
-                "type": "tool_completed" if result_status == "completed" else "tool_failed",
+                "type": step_type,
                 "item_id": item_id,
                 "requested_by_item_id": requested_by.get(call_id, ""),
                 "tool_call_id": call_id,

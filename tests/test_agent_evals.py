@@ -212,6 +212,16 @@ def test_failure_observability_is_content_free_and_tracks_recovery() -> None:
         },
         {
             "name": "exec_command",
+            "status": "skipped",
+            "normalized_arguments": {"cmd": "python should_not_run.py"},
+            "result_preview": {
+                "ok": False,
+                "error": {"kind": "tool_skipped", "message": "turn already stopped"},
+            },
+            "validation_result": {"allowed": False, "code": "tool_skipped"},
+        },
+        {
+            "name": "exec_command",
             "status": "ok",
             "normalized_arguments": {"cmd": "python run_checks.py"},
             "result_preview": {"ok": True, "returncode": 0, "output": "private test output"},
