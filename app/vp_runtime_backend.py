@@ -23,6 +23,11 @@ from app.serialization import safe_model_dump
 
 class ExecCommandArgs(BaseModel):
     cmd: str = Field(description="Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`")
+    purpose: str = Field(
+        min_length=1,
+        max_length=240,
+        description="One concise, user-facing sentence explaining why this command is needed. This is display-only and never grants permission.",
+    )
     cwd: str = Field(default=".", description="Working directory under the active command roots.")
     yield_time_ms: int = Field(
         default=1000,
@@ -905,6 +910,7 @@ class VPRuntimeBackend:
     def _exec_command_tool(
         self,
         cmd: str,
+        purpose: str,
         cwd: str = ".",
         yield_time_ms: int = 1000,
         max_output_chars: int = 12000,
@@ -913,6 +919,7 @@ class VPRuntimeBackend:
         return json.dumps(
             self.tools.exec_command(
                 cmd=cmd,
+                purpose=purpose,
                 cwd=cwd,
                 yield_time_ms=yield_time_ms,
                 max_output_chars=max_output_chars,

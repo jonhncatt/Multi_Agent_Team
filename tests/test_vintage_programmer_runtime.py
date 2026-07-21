@@ -1734,7 +1734,11 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
                     {
                         "id": "tc-approval",
                         "name": "exec_command",
-                        "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                        "args": {
+                            "cmd": "python -c \"print('x')\"",
+                            "purpose": "Verify the active Python interpreter before continuing.",
+                            "cwd": str(tmp_path),
+                        },
                     }
                 ],
             )
@@ -1763,6 +1767,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
 
     assert result["turn_status"] == "needs_user_input"
     assert result["pending_approval"]["type"] == "command_execution"
+    assert result["pending_approval"]["purpose"] == "Verify the active Python interpreter before continuing."
     assert result["pending_approval"]["approval_token"] == "approval-token-1"
     assert result["pending_user_input"]["approval_request"]["type"] == "command_execution"
     assert result["pending_turn"]["tool_call_id"] == "tc-approval"

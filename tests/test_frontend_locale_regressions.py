@@ -715,9 +715,12 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert 't("approval_modal.remote_url")' in script
     assert 't("approval_modal.branch")' in script
     assert 't("approval_modal.head")' in script
+    assert 't("approval_modal.purpose")' in script
+    assert 'activePendingApproval.purpose' in script
     assert "if (Boolean(risk.force))" in script
     assert "if (Boolean(risk.delete))" in script
     assert '"approval_modal.title": "确认命令执行"' in locales
+    assert '"approval_modal.purpose": "执行目的"' in locales
     assert '"approval_modal.repository": "仓库"' in locales
     assert '"approval_modal.remote_url": "Remote 地址"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales

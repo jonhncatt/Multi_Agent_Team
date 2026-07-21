@@ -9820,6 +9820,16 @@ function App() {
 	              <div className="project-modal">
 	                <div className="panel-title">${t("approval_modal.title")}</div>
 	                <div className="path-hint">${t("approval_modal.hint")}</div>
+	                ${String(activePendingApproval.purpose || "").trim()
+	                  ? html`
+	                      <label className="form-field">
+	                        <span>${t("approval_modal.purpose")}</span>
+	                        <div className="timeline-row">
+	                          <div className="timeline-detail">${String(activePendingApproval.purpose || "").trim()}</div>
+	                        </div>
+	                      </label>
+	                    `
+	                  : null}
 	                <label className="form-field">
 	                  <span>${t("approval_modal.command")}</span>
 	                  <textarea className="drawer-textarea" readOnly rows="3" value=${String(activePendingApproval.command || "")}></textarea>

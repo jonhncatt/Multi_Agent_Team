@@ -1806,6 +1806,7 @@ class LocalToolExecutor:
         self,
         *,
         command: str,
+        purpose: str,
         cwd: str,
         risks: list[dict[str, Any]],
         tainted_files: list[dict[str, Any]],
@@ -1817,6 +1818,7 @@ class LocalToolExecutor:
             "type": "command_execution",
             "token": token,
             "command": str(command or "").strip(),
+            "purpose": str(purpose or "").strip()[:240],
             "cwd": str(cwd or "").strip(),
             "risks": risk_records,
             "files": file_records,
@@ -1835,6 +1837,7 @@ class LocalToolExecutor:
     def _create_tainted_execution_approval(self, *, command: str, tainted_files: list[dict[str, Any]]) -> str:
         return self._create_command_execution_approval(
             command=command,
+            purpose="",
             cwd=self._current_cwd_hint(),
             risks=[],
             tainted_files=tainted_files,
@@ -2378,6 +2381,7 @@ class LocalToolExecutor:
         self,
         *,
         command: str,
+        purpose: str = "",
         cwd: str,
         risks: list[dict[str, Any]],
         tainted_files: list[dict[str, Any]],
@@ -2386,6 +2390,7 @@ class LocalToolExecutor:
         all_risks = [*list(risks or []), *self._tainted_execution_risks(tainted_files)]
         approval_token = "" if token_error else self._create_command_execution_approval(
             command=command,
+            purpose=purpose,
             cwd=cwd,
             risks=all_risks,
             tainted_files=tainted_files,
@@ -2406,6 +2411,7 @@ class LocalToolExecutor:
             "type": "command_execution",
             "approval_token": approval_token,
             "command": str(command or "").strip(),
+            "purpose": str(purpose or "").strip()[:240],
             "cwd": str(cwd or "").strip(),
             "risks": [dict(item) for item in all_risks],
             "files": files,
@@ -2425,6 +2431,7 @@ class LocalToolExecutor:
             error_detail={
                 "approval_token": approval_token,
                 "command": str(command or "").strip(),
+                "purpose": str(purpose or "").strip()[:240],
                 "cwd": str(cwd or "").strip(),
                 "risks": [dict(item) for item in all_risks],
                 "files": files,
@@ -3099,6 +3106,12 @@ class LocalToolExecutor:
                     "type": "object",
                     "properties": {
                         "cmd": {"type": "string", "description": "Command string, e.g. `rg TODO .` or `pytest tests/test_app.py`"},
+                        "purpose": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240,
+                            "description": "One concise, user-facing sentence explaining why this command is needed. This is display-only and never grants permission.",
+                        },
                         "cwd": {"type": "string", "description": "Working directory relative to workspace", "default": "."},
                         "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
@@ -3118,7 +3131,7 @@ class LocalToolExecutor:
                             "description": "Deprecated alias for approval_token when running network-origin tainted files.",
                         },
                     },
-                    "required": ["cmd"],
+                    "required": ["cmd", "purpose"],
                     "additionalProperties": False,
                 },
             },
@@ -3870,6 +3883,7 @@ class LocalToolExecutor:
     def exec_command(
         self,
         cmd: str,
+        purpose: str = "",
         cwd: str = ".",
         yield_time_ms: int = 1000,
         max_output_chars: int = 12000,
@@ -4058,6 +4072,7 @@ class LocalToolExecutor:
             if not approved:
                 return self._command_execution_approval_failure_result(
                     command=cmd,
+                    purpose=purpose,
                     cwd=str(real_cwd),
                     risks=[*supply_chain_risks, *external_side_effect_risks],
                     tainted_files=tainted_matches,
@@ -4067,6 +4082,7 @@ class LocalToolExecutor:
                 "approved": True,
                 "approval_token": approval_token_value,
                 "command": str(cmd or "").strip(),
+                "purpose": str(purpose or "").strip()[:240],
                 "cwd": str(real_cwd),
                 "risks": [dict(item) for item in approval_risks],
                 "files": self._approval_files_public_payload(tainted_matches),

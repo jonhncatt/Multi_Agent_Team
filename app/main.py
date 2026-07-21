@@ -2106,6 +2106,7 @@ def _migrate_legacy_pending_command_turn(session: dict[str, Any]) -> dict[str, A
     )
     args = dict(candidate_call.get("args") or {}) if isinstance(candidate_call.get("args"), dict) else {}
     approval["tool_call_id"] = call_id
+    approval["purpose"] = str(approval.get("purpose") or args.get("purpose") or "").strip()[:240]
     pending_turn = {
         "schema_version": 1,
         "type": "command_execution",

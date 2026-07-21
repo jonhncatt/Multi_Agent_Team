@@ -423,13 +423,19 @@ def test_full_access_supply_chain_flows_request_single_command_approval(
         runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
     )
 
-    result = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    result = manager.exec_command(
+        cmd=command,
+        purpose="Install the test dependency required by the requested check.",
+        cwd=".",
+        yield_time_ms=100,
+    )
 
     assert result["ok"] is False
     assert result["error_kind"] == "command_execution_approval_required"
     assert result["approval_required"] is True
     assert result["approval_request"]["type"] == "command_execution"
     assert result["approval_request"]["command"] == command
+    assert result["approval_request"]["purpose"] == "Install the test dependency required by the requested check."
     assert result["approval_request"]["cwd"] == str(tmp_path.resolve())
     assert result["approval_request"]["single_use"] is True
     assert result["approval_request"]["default_action"] == "cancel"

@@ -133,6 +133,8 @@ def test_tool_contracts_expose_non_obvious_side_effects_and_limits(tmp_path: Pat
     _, specs, _ = _tool_surfaces(tmp_path)
 
     assert "does not allocate a PTY" in specs["exec_command"]["parameters"]["properties"]["tty"]["description"]
+    assert "purpose" in specs["exec_command"]["parameters"]["required"]
+    assert "display-only" in specs["exec_command"]["parameters"]["properties"]["purpose"]["description"]
     assert "untrusted" in specs["web_download"]["description"]
     assert "untrusted provenance" in specs["archive_extract"]["description"]
     assert "current project" in specs["sessions_list"]["description"]

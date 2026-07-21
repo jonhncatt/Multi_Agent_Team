@@ -6342,6 +6342,9 @@ class VintageProgrammerRuntime:
                     if name == "exec_command" and bool(result.get("approval_required")):
                         approval_request = dict(result.get("approval_request") or {})
                         approval_request["tool_call_id"] = call_id
+                        approval_request["purpose"] = str(
+                            approval_request.get("purpose") or arguments.get("purpose") or ""
+                        ).strip()[:240]
                         approval_token = str(approval_request.get("approval_token") or "")
                         command_text = str(approval_request.get("command") or arguments.get("cmd") or "").strip()
                         files = [dict(item) for item in list(approval_request.get("files") or []) if isinstance(item, dict)]
