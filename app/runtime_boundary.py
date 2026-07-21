@@ -66,21 +66,21 @@ class RuntimeBoundary(BaseModel):
         if profile == "default":
             return "current project"
         if profile == "full_access":
-            return "broader access"
+            return "full filesystem"
         return "current project + imported files"
 
     def _default_write_scope(self) -> str:
         if not self.workspace_write_allowed:
             return "none"
         if normalize_permission_profile(self.permission_profile) == "full_access":
-            return "broader access"
+            return "full filesystem"
         return "current project"
 
     def _default_command_scope(self) -> str:
         if not self.shell_allowed:
             return "none"
         if normalize_permission_profile(self.permission_profile) == "full_access":
-            return "broader access"
+            return "full filesystem"
         return "current project"
 
     def _model_read_scope(self) -> str:
@@ -88,21 +88,21 @@ class RuntimeBoundary(BaseModel):
         if profile == "default":
             return "current project"
         if profile == "full_access":
-            return "broader access"
+            return "full filesystem"
         return self._scope_label(self.allowed_roots, default=self._default_read_scope())
 
     def _model_write_scope(self) -> str:
         if not self.workspace_write_allowed:
             return "none"
         if normalize_permission_profile(self.permission_profile) == "full_access":
-            return "broader access"
+            return "full filesystem"
         return self._scope_label(self.writable_roots, default=self._default_write_scope())
 
     def _model_command_scope(self) -> str:
         if not self.shell_allowed:
             return "none"
         if normalize_permission_profile(self.permission_profile) == "full_access":
-            return "broader access"
+            return "full filesystem"
         return self._scope_label(self.command_allowed_roots, default=self._default_command_scope())
 
     @staticmethod
@@ -110,9 +110,7 @@ class RuntimeBoundary(BaseModel):
         if not roots:
             return "none" if default == "none" else default
         if len(roots) == 1:
-            return default if default == "broader access" else "current project"
-        if default == "broader access":
-            return "broader access"
+            return "current project"
         return "current project + imported files"
 
     def network_reason(self) -> str:
@@ -186,7 +184,11 @@ def build_turn_runtime_boundary(
         if bool(getattr(config, "allow_workspace_sibling_access", False)) and getattr(config, "workspace_sibling_root", None):
             extra_roots.append(Path(getattr(config, "workspace_sibling_root")).expanduser().resolve())
 
-    allow_any_path = bool(getattr(config, "allow_any_path", False)) and profile == "full_access"
+    # `full_access` is the explicit per-turn opt-in to an unrestricted host
+    # filesystem.  Requiring a second environment flag made the UI profile
+    # silently degrade to project-scoped access, which contradicted both its
+    # name and the model-facing boundary description.
+    allow_any_path = profile == "full_access"
     any_root = Path(root.anchor or Path.cwd().anchor or "/").resolve()
     allowed_roots = _dedup_paths([any_root] if allow_any_path else [root, *imported_roots, *extra_roots])
     workspace_write_allowed = bool(contract.workspace_write_allowed) and profile in {"auto", "full_access"}

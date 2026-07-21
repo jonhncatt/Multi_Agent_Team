@@ -209,6 +209,35 @@ def test_read_file_path_traversal_rejected(tmp_path: Path) -> None:
     assert result.code == "path_outside_allowed_roots"
 
 
+def test_full_access_allows_read_write_and_command_paths_outside_project(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "full-access-outside"
+    outside.mkdir(exist_ok=True)
+    validator = _validator(
+        tmp_path,
+        permission_profile="full_access",
+        workspace_write_allowed=True,
+        shell_allowed=True,
+        network_allowed=True,
+    )
+
+    read_result = validator.validate_tool_call(
+        {"name": "read_file", "args": {"path": str(outside / "input.txt")}}
+    )
+    write_result = validator.validate_tool_call(
+        {
+            "name": "web_download",
+            "args": {"url": "https://example.com/file.txt", "dst_path": str(outside / "output.txt")},
+        }
+    )
+    command_result = validator.validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": f"rg needle {outside}", "cwd": str(outside)}}
+    )
+
+    assert read_result.allowed
+    assert write_result.allowed
+    assert command_result.allowed
+
+
 def test_write_file_when_write_disabled_rejected(tmp_path: Path) -> None:
     result = _validator(tmp_path, workspace_write_allowed=False).validate_tool_call(
         {"name": "web_download", "args": {"url": "https://example.com/file.txt", "dst_path": "writable/out.txt"}}

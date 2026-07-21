@@ -687,7 +687,6 @@ def _isolated_config(base: AppConfig, workspace: Path) -> AppConfig:
         allow_workspace_sibling_access=False,
         default_extra_allowed_roots=[],
         extra_allowed_roots_source="eval_isolation",
-        allow_any_path=False,
         permission_profile="auto",
         execution_mode="host",
         web_allowed_domains=[],

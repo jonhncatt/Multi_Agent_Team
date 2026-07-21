@@ -506,11 +506,14 @@ def _validate_command_path_item(
     cwd: Path,
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
+    allow_any_path: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
     write_roots = [root.expanduser().resolve() for root in writable_roots if str(root or "").strip()]
     resolved = _resolve_command_arg_path(raw_arg, cwd=cwd)
     boundary_path = _parent_for_boundary(resolved)
+    if allow_any_path:
+        return True, {}
     if not any(_is_within(boundary_path, root) for root in command_roots):
         return False, {
             "kind": "command_path_outside_allowed_roots",
@@ -537,6 +540,7 @@ def validate_command_path_args(
     cwd: Path,
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
+    allow_any_path: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     for item in extract_command_path_args(argv):
         raw_arg = str(item.get("argument") or "").strip()
@@ -548,6 +552,7 @@ def validate_command_path_args(
             cwd=cwd,
             command_allowed_roots=command_allowed_roots,
             writable_roots=writable_roots,
+            allow_any_path=allow_any_path,
         )
         if not ok:
             return False, detail
@@ -561,6 +566,7 @@ def validate_single_command_for_compound_shell(
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
     redirects: list[dict[str, Any]] | None = None,
+    allow_any_path: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     if not argv:
         return False, {
@@ -572,6 +578,7 @@ def validate_single_command_for_compound_shell(
         cwd=cwd,
         command_allowed_roots=command_allowed_roots,
         writable_roots=writable_roots,
+        allow_any_path=allow_any_path,
     )
     if not ok:
         return False, detail
@@ -585,6 +592,7 @@ def validate_single_command_for_compound_shell(
             cwd=cwd,
             command_allowed_roots=command_allowed_roots,
             writable_roots=writable_roots,
+            allow_any_path=allow_any_path,
         )
         if not ok:
             return False, detail
@@ -622,6 +630,7 @@ def validate_compound_shell_command(
     writable_roots: list[Path],
     allowed_commands: list[str] | set[str] | tuple[str, ...] | None = None,
     allow_supply_chain_commands: bool = False,
+    allow_any_path: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     parsed = parse_compound_shell_command(command)
     if not parsed.get("ok"):
@@ -653,7 +662,7 @@ def validate_compound_shell_command(
             target = str(argv[1] or "").strip()
             resolved = _resolve_command_arg_path(target, cwd=effective_cwd)
             boundary_path = _parent_for_boundary(resolved)
-            if not any(_is_within(boundary_path, root) for root in command_roots):
+            if not allow_any_path and not any(_is_within(boundary_path, root) for root in command_roots):
                 return False, _compound_subcommand_rejection(
                     index=index,
                     subcommand=text,
@@ -713,6 +722,7 @@ def validate_compound_shell_command(
             command_allowed_roots=command_allowed_roots,
             writable_roots=writable_roots,
             redirects=list(subcommand.get("redirects") or []),
+            allow_any_path=allow_any_path,
         )
         if not ok:
             return False, _compound_subcommand_rejection(
@@ -759,6 +769,9 @@ class ActionValidator:
     def _supply_chain_approval_allowed(self) -> bool:
         profile = normalize_permission_profile(getattr(self._boundary, "permission_profile", "auto"))
         return profile == "full_access" and bool(getattr(self._boundary, "network_allowed", False))
+
+    def _unrestricted_path_access(self) -> bool:
+        return normalize_permission_profile(getattr(self._boundary, "permission_profile", "auto")) == "full_access"
 
     def validate_tool_call(self, raw_call: dict[str, Any]) -> ValidationResult:
         call = dict(raw_call or {})
@@ -1088,6 +1101,7 @@ class ActionValidator:
                         writable_roots=self._writable_roots(),
                         allowed_commands=self._allowed_commands,
                         allow_supply_chain_commands=self._supply_chain_approval_allowed(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                     if not ok:
                         error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
@@ -1119,6 +1133,7 @@ class ActionValidator:
                         cwd=cwd_path,
                         command_allowed_roots=command_roots,
                         writable_roots=self._writable_roots(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                 if not ok:
                     return "command_path_outside_allowed_roots", str(detail.get("message") or "Command path argument is outside command allowed roots.")
@@ -1183,6 +1198,8 @@ class ActionValidator:
         return candidate.resolve(strict=False)
 
     def _validate_path_value(self, raw_value: Any, *, roots: list[Path], code: str) -> tuple[str, str] | None:
+        if self._unrestricted_path_access():
+            return None
         raw = str(raw_value or ".").strip() or "."
         try:
             candidate = Path(raw).expanduser()

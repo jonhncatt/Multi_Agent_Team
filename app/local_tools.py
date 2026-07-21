@@ -230,14 +230,13 @@ def _resolve_workspace_path(
     *,
     workspace_root: Path | None = None,
     access_roots: list[Path] | None = None,
-    allow_any_path: bool | None = None,
+    allow_any_path: bool = False,
 ) -> Path:
     base_root = (workspace_root or config.workspace_root).resolve()
     roots = [root.resolve() for root in (access_roots or get_access_roots(config))]
     if base_root not in roots:
         roots = [base_root, *roots]
-    allow_absolute = config.allow_any_path if allow_any_path is None else bool(allow_any_path)
-    if allow_absolute:
+    if allow_any_path:
         path = Path((raw_path or ".").strip() or ".").expanduser()
         if not path.is_absolute():
             path = base_root / path
@@ -276,7 +275,7 @@ def _resolve_source_path(
     *,
     workspace_root: Path | None = None,
     access_roots: list[Path] | None = None,
-    allow_any_path: bool | None = None,
+    allow_any_path: bool = False,
 ) -> Path:
     """
     Resolve existing source file path with upload-name fallback.
@@ -1613,6 +1612,9 @@ class LocalToolExecutor:
             str(getattr(self._runtime_ctx, "permission_profile", "") or getattr(self.config, "permission_profile", "auto"))
         )
 
+    def _unrestricted_path_access(self) -> bool:
+        return self._current_permission_profile() == "full_access"
+
     def _current_network_allowed(self) -> bool:
         boundary = getattr(self._runtime_ctx, "runtime_boundary", None)
         if isinstance(boundary, dict) and "network_allowed" in boundary:
@@ -1628,6 +1630,7 @@ class LocalToolExecutor:
             raw_path,
             workspace_root=self._current_project_root(),
             access_roots=self._current_access_roots(),
+            allow_any_path=self._unrestricted_path_access(),
         )
 
     def _resolve_source_path(self, raw_path: str) -> Path:
@@ -1636,6 +1639,7 @@ class LocalToolExecutor:
             raw_path,
             workspace_root=self._current_project_root(),
             access_roots=self._current_access_roots(),
+            allow_any_path=self._unrestricted_path_access(),
         )
 
     def _docker_sandbox_for_context(self) -> DockerSandboxManager:
@@ -2046,6 +2050,8 @@ class LocalToolExecutor:
         return unique
 
     def _tainted_file_path_validation_error(self, tainted_files: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if self._unrestricted_path_access():
+            return None
         command_roots = [root.expanduser().resolve() for root in self._current_command_roots()]
         for item in tainted_files:
             raw_path = str(item.get("path") or "").strip()
@@ -2631,6 +2637,7 @@ class LocalToolExecutor:
         return parse_compound_shell_command(raw)
 
     def _validate_compound_shell_command(self, raw: str, cwd: Path) -> tuple[bool, dict[str, Any]]:
+        unrestricted_paths = self._unrestricted_path_access()
         ok, detail = validate_compound_shell_command_shared(
             raw,
             cwd=cwd.resolve(),
@@ -2638,6 +2645,7 @@ class LocalToolExecutor:
             writable_roots=[Path(item) for item in self._current_writable_roots()],
             allowed_commands=self.config.allowed_commands,
             allow_supply_chain_commands=self._supply_chain_approval_allowed(),
+            allow_any_path=unrestricted_paths,
         )
         if not ok:
             return False, dict(detail)
@@ -2674,7 +2682,7 @@ class LocalToolExecutor:
                 target = str(argv[1] or "").strip()
                 resolved = (effective_cwd / Path(target).expanduser()).resolve(strict=False) if not Path(target).expanduser().is_absolute() else Path(target).expanduser().resolve(strict=False)
                 boundary_path = resolved if resolved.exists() else resolved.parent
-                if not any(_is_within(boundary_path, root) for root in command_roots):
+                if not unrestricted_paths and not any(_is_within(boundary_path, root) for root in command_roots):
                     return reject(
                         index,
                         text,
@@ -2707,6 +2715,8 @@ class LocalToolExecutor:
         return [shell_bin, "-lc", str(raw or "").strip()]
 
     def _command_path_validation_error(self, argv: list[str], *, cwd: Path) -> dict[str, Any] | None:
+        if self._unrestricted_path_access():
+            return None
         ok, detail = validate_command_path_args(
             argv,
             cwd=cwd.resolve(),
@@ -2739,6 +2749,8 @@ class LocalToolExecutor:
     def _write_path_error(self, path: Path) -> str:
         if not self._current_workspace_write_allowed():
             return "Workspace write is not allowed for the active permission profile."
+        if self._unrestricted_path_access():
+            return ""
         try:
             resolved = path.resolve(strict=False)
         except Exception:
@@ -5212,6 +5224,7 @@ class LocalToolExecutor:
                         raw_path,
                         workspace_root=real_cwd,
                         access_roots=self._current_access_roots(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                     if target.exists():
                         return {
@@ -5237,6 +5250,7 @@ class LocalToolExecutor:
                         raw_path,
                         workspace_root=real_cwd,
                         access_roots=self._current_access_roots(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                     if not target.exists():
                         return {"ok": False, "error": f"File not found: {raw_path}", "files": files}
@@ -5249,6 +5263,7 @@ class LocalToolExecutor:
                         raw_path,
                         workspace_root=real_cwd,
                         access_roots=self._current_access_roots(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                     if not source.exists():
                         return {"ok": False, "error": f"File not found: {raw_path}", "files": files}
@@ -5260,6 +5275,7 @@ class LocalToolExecutor:
                         target_raw,
                         workspace_root=real_cwd,
                         access_roots=self._current_access_roots(),
+                        allow_any_path=self._unrestricted_path_access(),
                     )
                     pending_writes.append((target, updated_text))
                     files.append(str(target))

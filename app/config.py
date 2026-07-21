@@ -354,7 +354,6 @@ class AppConfig:
     default_extra_allowed_roots: list[Path]
     extra_allowed_roots_source: str
     platform_name: str
-    allow_any_path: bool
     permission_profile: str
     web_allowed_domains: list[str]
     web_allow_all_domains: bool
@@ -875,8 +874,6 @@ def load_config() -> AppConfig:
         ).strip()
     )
 
-    allow_any_raw = (_env("VP_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
-    allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
     sibling_access_raw = (
         _env(
             "VP_ALLOW_WORKSPACE_SIBLING_ACCESS",
@@ -1093,7 +1090,6 @@ def load_config() -> AppConfig:
         default_extra_allowed_roots=default_extra_root_paths,
         extra_allowed_roots_source=extra_allowed_roots_source,
         platform_name=platform_name,
-        allow_any_path=allow_any_path,
         permission_profile=permission_profile,
         web_allowed_domains=web_allowed_domains,
         web_allow_all_domains=web_allow_all_domains,

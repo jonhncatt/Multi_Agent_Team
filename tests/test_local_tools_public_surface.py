@@ -253,6 +253,54 @@ def test_read_file_allows_enabled_skill_and_rejects_disabled_skill(tmp_path: Pat
     assert "out of allowed roots" in str(disabled_result["error"]).lower()
 
 
+def test_full_access_reads_writes_and_runs_outside_project_without_environment_flag(tmp_path: Path) -> None:
+    project_root = tmp_path / "business-project"
+    outside_root = tmp_path / "shared-outside-project"
+    project_root.mkdir()
+    outside_root.mkdir()
+    outside_file = outside_root / "note.txt"
+    outside_file.write_text("before\n", encoding="utf-8")
+    config = _config(tmp_path)
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(
+        execution_mode="host",
+        project_root=str(project_root),
+        cwd=str(project_root),
+        permission_profile="full_access",
+        runtime_boundary={
+            "permission_profile": "full_access",
+            "workspace_read_allowed": True,
+            "workspace_write_allowed": True,
+            "shell_allowed": True,
+            "network_allowed": True,
+            "allowed_roots": [str(project_root)],
+            "writable_roots": [str(project_root)],
+            "command_allowed_roots": [str(project_root)],
+            "cwd": str(project_root),
+            "project_root": str(project_root),
+        },
+    )
+
+    read_result = executor.read_file(str(outside_file))
+    patch_result = executor.apply_patch(
+        patch=(
+            "*** Begin Patch\n"
+            f"*** Update File: {outside_file}\n"
+            "@@\n"
+            "-before\n"
+            "+after\n"
+            "*** End Patch\n"
+        )
+    )
+    command_result = executor.exec_command(cmd="pwd", cwd=str(outside_root), yield_time_ms=1000)
+
+    assert read_result["ok"] is True
+    assert patch_result["ok"] is True
+    assert outside_file.read_text(encoding="utf-8") == "after\n"
+    assert command_result["ok"] is True
+    assert Path(command_result["cwd"]) == outside_root.resolve()
+
+
 def test_list_dir_is_available_in_a_read_only_runtime_boundary(tmp_path: Path) -> None:
     project_root = tmp_path / "business-project"
     read_root = tmp_path / "shared-read-only"

@@ -1082,9 +1082,14 @@ def _effective_allowed_roots(projects: list[dict[str, Any]]) -> list[str]:
     return effective_roots
 
 
-def _permission_summary_for_roots(effective_roots: list[str], locale: str | None = None) -> str:
+def _permission_summary_for_roots(
+    effective_roots: list[str],
+    locale: str | None = None,
+    *,
+    permission_profile: str = "auto",
+) -> str:
     effective_locale = normalize_locale(locale, config.default_locale)
-    if config.allow_any_path:
+    if normalize_permission_profile(permission_profile) == "full_access":
         return translate(effective_locale, "health.permission_summary.full_filesystem")
     root_names = [(Path(path).name or str(path)) for path in effective_roots[:4]]
     return translate(
@@ -1258,7 +1263,10 @@ def _runtime_status_response_payload(
         "provider": active_provider_name,
         "permission_profile": permission_profile,
         "workspace_boundary": workspace_boundary,
-        "permission_summary": _permission_summary_for_roots(effective_roots),
+        "permission_summary": _permission_summary_for_roots(
+            effective_roots,
+            permission_profile=permission_profile,
+        ),
         "workspace_label": str(selected_project.get("title") or config.workspace_root.name or str(config.workspace_root)),
         "project_root": str(selected_project.get("root_path") or config.workspace_root),
         "default_project_id": str(_default_project().get("project_id") or ""),

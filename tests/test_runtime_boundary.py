@@ -106,9 +106,10 @@ def test_permission_profiles_shape_runtime_boundary(tmp_path: Path) -> None:
     assert full.workspace_write_allowed is True
     assert full.shell_allowed is True
     assert full.network_allowed is True
-    assert full.command_allowed_roots == [str(tmp_path.resolve()), str(extra_root.resolve())]
-    assert str(extra_root.resolve()) in full.allowed_roots
-    assert str(extra_root.resolve()) in full.writable_roots
+    filesystem_root = Path(tmp_path.anchor or "/").resolve()
+    assert full.allowed_roots == [str(filesystem_root)]
+    assert full.writable_roots == [str(filesystem_root)]
+    assert full.command_allowed_roots == [str(filesystem_root)]
 
 
 def test_runtime_contract_profiles_apply_capabilities(tmp_path: Path) -> None:
@@ -131,10 +132,9 @@ def test_runtime_contract_profiles_apply_capabilities(tmp_path: Path) -> None:
     assert full.network_allowed is True
 
 
-def test_full_access_allow_any_path_expands_runtime_boundary(tmp_path: Path) -> None:
+def test_full_access_expands_runtime_boundary_without_environment_flag(tmp_path: Path) -> None:
     config = load_config()
     config.workspace_root = tmp_path
-    config.allow_any_path = True
 
     boundary = build_turn_runtime_boundary(
         config=config,
@@ -152,7 +152,9 @@ def test_full_access_allow_any_path_expands_runtime_boundary(tmp_path: Path) -> 
     assert boundary.allowed_roots == [str(filesystem_root)]
     assert boundary.writable_roots == [str(filesystem_root)]
     assert boundary.command_allowed_roots == [str(filesystem_root)]
-    assert boundary.to_model_view()["file_write_scope"] == "broader access"
+    assert boundary.to_model_view()["file_read_scope"] == "full filesystem"
+    assert boundary.to_model_view()["file_write_scope"] == "full filesystem"
+    assert boundary.to_model_view()["command_scope"] == "full filesystem"
 
 
 def test_runtime_context_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
