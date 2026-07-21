@@ -22,6 +22,8 @@ app/data/turn_traces/*
 !app/data/turn_traces/.gitkeep
 app/data/session_meta/*
 !app/data/session_meta/.gitkeep
+app/data/tasks/*
+!app/data/tasks/.gitkeep
 app/data/uploads/*
 !app/data/uploads/.gitkeep
 app/data/browser_artifacts/*

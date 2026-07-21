@@ -91,6 +91,15 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "medium",
         "summary": "create or update repository-shared Team Skills",
     },
+    "save_task": {
+        "group": "control",
+        "source": "native",
+        "read_only": False,
+        "requires_evidence": False,
+        "requires": {**_FALLBACK_REQUIRES},
+        "risk": "low",
+        "summary": "create or update durable cross-Thread Task snapshots",
+    },
     "exec_command": {
         "group": "shell",
         "source": "adapter",

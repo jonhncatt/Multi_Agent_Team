@@ -69,6 +69,34 @@ def test_transcript_preserves_assistant_tool_call_and_tool_result() -> None:
     assert items[2]["tool_call_id"] == "call-1"
 
 
+def test_user_turn_preserves_hidden_task_context_without_changing_visible_text(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(
+        {"project_id": "p1", "title": "Project", "root_path": str(tmp_path), "git_branch": "main"}
+    )
+    task_context = {
+        "task_id": "task-1",
+        "title": "Resume auth refactor",
+        "goal": "Finish the auth refactor",
+        "next_steps": ["Update login form"],
+    }
+
+    store.append_turn(
+        session,
+        role="user",
+        text="加载当前任务",
+        task_context=task_context,
+    )
+    store.save(session)
+    reloaded = store.load(str(session["id"]))
+
+    assert reloaded is not None
+    [item] = reloaded["thread_transcript"]["items"]
+    assert item["content"] == "加载当前任务"
+    assert item["task_context"] == task_context
+    assert reloaded["turns"][0]["text"] == "加载当前任务"
+
+
 def test_compaction_summary_replaces_only_older_transcript_items() -> None:
     transcript = default_thread_transcript()
     append_transcript_item(transcript, role="user", content="old user", item_id="u1", turn_id="u1")

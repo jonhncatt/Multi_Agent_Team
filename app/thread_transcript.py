@@ -120,6 +120,9 @@ def normalize_transcript_item(raw: Any) -> dict[str, Any] | None:
     ]
     if attachments and role == "user":
         item["attachments"] = attachments
+    task_context = raw.get("task_context")
+    if role == "user" and isinstance(task_context, dict) and task_context:
+        item["task_context"] = dict(task_context)
     return item
 
 
@@ -216,6 +219,7 @@ def append_transcript_item(
     item_id: str | None = None,
     turn_id: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    task_context: dict[str, Any] | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
     tool_call_id: str = "",
     name: str = "",
@@ -228,6 +232,7 @@ def append_transcript_item(
             "role": role,
             "content": content,
             "attachments": attachments or [],
+            "task_context": task_context or {},
             "tool_calls": tool_calls or [],
             "tool_call_id": tool_call_id,
             "name": name,

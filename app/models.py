@@ -26,6 +26,7 @@ class ChatSettings(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str | None = None
     project_id: str | None = None
+    task_id: str | None = Field(default=None, max_length=160)
     message: str = Field(min_length=1)
     client_message_id: str | None = Field(default=None, max_length=160)
     client_submitted_at_ms: int | None = None
@@ -616,6 +617,50 @@ class WorkbenchSkillsResponse(BaseModel):
 
 class WorkbenchSpecsResponse(BaseModel):
     specs: list[SpecDescriptor] = Field(default_factory=list)
+
+
+class TaskDescriptor(BaseModel):
+    schema_version: int = 1
+    task_id: str
+    project_id: str
+    project_title: str = ""
+    project_root: str = ""
+    title: str
+    status: Literal["active", "blocked", "completed", "archived"] = "active"
+    goal: str
+    summary: str
+    progress: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+    source_thread_id: str = ""
+    last_loaded_thread_id: str = ""
+    last_loaded_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class TaskListResponse(BaseModel):
+    tasks: list[TaskDescriptor] = Field(default_factory=list)
+
+
+class TaskUpsertRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=120)
+    goal: str = Field(min_length=1, max_length=4000)
+    summary: str = Field(min_length=1, max_length=12000)
+    status: Literal["active", "blocked", "completed", "archived"] = "active"
+    progress: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+
+
+class TaskDeleteResponse(BaseModel):
+    ok: bool
+    task_id: str
 
 
 class SkillUpsertRequest(BaseModel):

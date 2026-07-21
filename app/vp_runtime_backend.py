@@ -313,6 +313,22 @@ class SaveSkillArgs(BaseModel):
     overwrite: bool = Field(default=False, description="Set true only to replace an existing Team SKILL.md of the same name.")
 
 
+class SaveTaskArgs(BaseModel):
+    task_id: str = Field(default="", description="Existing Task id to update; leave empty only when creating a new Task.")
+    title: str = Field(description="Short, recognizable title shown in the Tasks list.")
+    goal: str = Field(description="Concrete outcome that defines what the Task is trying to achieve.")
+    summary: str = Field(description="Self-contained continuation summary that does not require opening the source Thread.")
+    progress: list[str] = Field(default_factory=list, description="Important work already completed or verified.")
+    next_steps: list[str] = Field(default_factory=list, description="Ordered concrete actions that should happen next.")
+    decisions: list[str] = Field(default_factory=list, description="Key decisions and constraints future work must preserve.")
+    blockers: list[str] = Field(default_factory=list, description="Known blockers, missing inputs, or unresolved risks.")
+    artifacts: list[str] = Field(default_factory=list, description="Relevant files, branches, commits, pull requests, or other durable artifacts.")
+    status: Literal["active", "blocked", "completed", "archived"] = Field(
+        default="active",
+        description="Current lifecycle status of the Task.",
+    )
+
+
 class SessionsListArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=200, description="Maximum recent sessions from the current project.")
 
@@ -788,6 +804,12 @@ class VPRuntimeBackend:
                 func=self._save_skill_tool,
             ),
             self._StructuredTool.from_function(
+                name="save_task",
+                description="Create a durable Task snapshot for the current project, or replace the loaded Task when task_id is provided. Use it when the user asks to summarize/save current work as a Task and to checkpoint material progress on a loaded Task.",
+                args_schema=SaveTaskArgs,
+                func=self._save_task_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="browser_open",
                 description="Open a webpage in a headless browser session and capture the current page state.",
                 args_schema=BrowserOpenArgs,
@@ -1021,6 +1043,35 @@ class VPRuntimeBackend:
                 body=body,
                 enabled=enabled,
                 overwrite=overwrite,
+            ),
+            ensure_ascii=False,
+        )
+
+    def _save_task_tool(
+        self,
+        title: str,
+        goal: str,
+        summary: str,
+        task_id: str = "",
+        progress: list[str] | None = None,
+        next_steps: list[str] | None = None,
+        decisions: list[str] | None = None,
+        blockers: list[str] | None = None,
+        artifacts: list[str] | None = None,
+        status: str = "active",
+    ) -> str:
+        return json.dumps(
+            self.tools.save_task(
+                task_id=task_id,
+                title=title,
+                goal=goal,
+                summary=summary,
+                progress=progress,
+                next_steps=next_steps,
+                decisions=decisions,
+                blockers=blockers,
+                artifacts=artifacts,
+                status=status,
             ),
             ensure_ascii=False,
         )

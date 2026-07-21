@@ -67,6 +67,10 @@ from app.models import (
     SkillUpsertRequest,
     SpecDescriptor,
     SpecUpsertRequest,
+    TaskDeleteResponse,
+    TaskDescriptor,
+    TaskListResponse,
+    TaskUpsertRequest,
     UpdateSessionTitleRequest,
     UpdateSessionTitleResponse,
     SandboxDrillRequest,
@@ -96,6 +100,7 @@ from app.runtime_contract import build_full_auto_runtime_contract
 from app import session_context as session_context_impl
 from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
+from app.task_store import TaskStore, task_context_snapshot
 from app.thread_record import agent_state_compat, normalize_pending_interaction
 from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
@@ -113,6 +118,7 @@ session_store = SessionStore(
 )
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
+task_store = TaskStore(config.sessions_dir.parent / "tasks")
 provider_model_catalog = ProviderModelCatalog(
     Path(__file__).resolve().parent / "data" / "runtime" / "provider_models.json"
 )
@@ -736,6 +742,10 @@ def get_workbench_store() -> WorkbenchStore:
     return workbench_store
 
 
+def get_task_store() -> TaskStore:
+    return task_store
+
+
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 
 app.add_middleware(
@@ -895,6 +905,77 @@ def delete_project(project_id: str) -> ProjectDeleteResponse:
         project_id=project_id,
         deleted_session_count=deleted_session_count,
     )
+
+
+@app.get("/api/tasks", response_model=TaskListResponse)
+def list_tasks(project_id: str | None = None, include_archived: bool = False, limit: int = 100) -> TaskListResponse:
+    rows = get_task_store().list(
+        project_id=project_id,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    return TaskListResponse(tasks=[TaskDescriptor(**item) for item in rows])
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskDescriptor)
+def get_task(task_id: str) -> TaskDescriptor:
+    try:
+        task = get_task_store().get(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return TaskDescriptor(**task)
+
+
+def _save_task_from_request(req: TaskUpsertRequest, *, task_id: str = "") -> TaskDescriptor:
+    project = get_project_store().get(req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        task = get_task_store().save(
+            task_id=task_id,
+            project_id=str(project.get("project_id") or ""),
+            project_title=str(project.get("title") or ""),
+            project_root=str(project.get("root_path") or ""),
+            title=req.title,
+            goal=req.goal,
+            summary=req.summary,
+            progress=req.progress,
+            next_steps=req.next_steps,
+            decisions=req.decisions,
+            blockers=req.blockers,
+            artifacts=req.artifacts,
+            status=req.status,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TaskDescriptor(**task)
+
+
+@app.post("/api/tasks", response_model=TaskDescriptor)
+def create_task(req: TaskUpsertRequest) -> TaskDescriptor:
+    return _save_task_from_request(req)
+
+
+@app.put("/api/tasks/{task_id}", response_model=TaskDescriptor)
+def update_task(task_id: str, req: TaskUpsertRequest) -> TaskDescriptor:
+    return _save_task_from_request(req, task_id=task_id)
+
+
+@app.delete("/api/tasks/{task_id}", response_model=TaskDeleteResponse)
+def delete_task(task_id: str) -> TaskDeleteResponse:
+    try:
+        deleted = get_task_store().delete(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return TaskDeleteResponse(ok=True, task_id=task_id)
 
 
 @app.get("/api/workbench/skills", response_model=WorkbenchSkillsResponse)
@@ -2282,6 +2363,15 @@ def _process_chat_request(
         )
     with request_phase_timer.measure("provider_profile_resolve_ms"):
         requested_provider = _resolve_requested_provider(req)
+    requested_task: dict[str, Any] = {}
+    requested_task_id = str(req.task_id or "").strip()
+    if requested_task_id:
+        try:
+            requested_task = get_task_store().get(requested_task_id) or {}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not requested_task:
+            raise HTTPException(status_code=404, detail="Task not found")
     provider_config, provider_runtime = _provider_runtime(requested_provider)
     req.settings.provider = requested_provider
     req.settings.permission_profile = normalize_permission_profile(
@@ -2299,13 +2389,21 @@ def _process_chat_request(
             project=requested_project,
             default_project=requested_project,
         )
+        task_context: dict[str, Any] = {}
+        if requested_task:
+            if str(requested_task.get("project_id") or "") != str(seed_session.get("project_id") or ""):
+                raise HTTPException(status_code=409, detail="Task belongs to a different project")
+            task_context = task_context_snapshot(requested_task)
         fallback_text = translate(locale, "chat.auth_missing")
         user_turn = session_store.append_turn(
             seed_session,
             role="user",
             text=req.message,
             turn_id=req.client_message_id,
+            task_context=task_context,
         )
+        if requested_task:
+            get_task_store().mark_loaded(requested_task_id, thread_id=str(seed_session.get("id") or ""))
         session_store.append_turn(
             seed_session,
             role="assistant",
@@ -2399,6 +2497,7 @@ def _process_chat_request(
     is_turn_resume = False
     logical_turn_id = run_id
     runtime_request_message = str(req.message or "")
+    task_context: dict[str, Any] = {}
     cancel_event = _register_active_chat_run(run_id)
     _emit_progress(
         progress_cb,
@@ -2484,6 +2583,10 @@ def _process_chat_request(
             session["git_branch"] = str(session_project.get("git_branch") or "")
             if not str(session.get("cwd") or "").strip():
                 session["cwd"] = str(session_project.get("root_path") or "")
+            if requested_task:
+                if str(requested_task.get("project_id") or "") != str(session_project.get("project_id") or ""):
+                    raise HTTPException(status_code=409, detail="Task belongs to a different project")
+                task_context = task_context_snapshot(requested_task)
             _update_active_chat_run(
                 run_id,
                 session_id=session_id,
@@ -2827,10 +2930,13 @@ def _process_chat_request(
                 role="user",
                 text=user_text,
                 attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+                task_context=task_context,
                 turn_id=req.client_message_id,
                 logical_turn_id=logical_turn_id,
             )
             user_turn_id = str(user_turn.get("id") or "")
+            if requested_task:
+                get_task_store().mark_loaded(requested_task_id, thread_id=session_id)
         session_store.save(session)
         with request_phase_timer.measure("runtime_run_ms"):
             runtime_result = provider_runtime.run(
@@ -2858,6 +2964,7 @@ def _process_chat_request(
                         "is_worktree": bool(session_project.get("is_worktree")),
                     },
                     "thread_transcript": thread_transcript_for_runtime,
+                    "task_context": task_context,
                     "summary": summary_for_runtime,
                     "compaction_status": compaction_status_for_runtime,
                     "attachment_evidence_pack": attachment_evidence_pack,

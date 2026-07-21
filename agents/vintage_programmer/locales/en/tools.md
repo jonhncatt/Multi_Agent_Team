@@ -46,6 +46,11 @@
 - Use `save_skill` to create a Team Skill or replace its complete `SKILL.md`. Existing Team Skill files under `SKILL.md`, `scripts/`, and `references/` use ordinary `apply_patch` when the thread's requested task calls for an edit. Interpret that intent from the full conversation; the Harness does not classify wording or require a second confirmation. Never modify read-only Built-in Skills.
 - Run bundled Skill scripts directly with ordinary `exec_command` using the absolute script path under the Skill directory, while keeping the active business project as the working directory. Do not search the business project first for another Skill or script copy. The Runtime injects `VP_SKILL_ROOT`, `VP_SKILL_SCRIPT`, `VP_PROJECT_ROOT`, and `VP_PROJECT_CWD` for directly executed Skill scripts. Scripts that need credentials must read inherited environment variables; never search for, read, or parse `.env` through model tools. Enabled only controls discovery and turn-level Skill path access; no separate load or unlock state exists. Team Skills remain editable through `save_skill`, Skill management, or Git; only Built-in Skills are read-only.
 
+## Tasks
+
+- When the user asks to summarize the current task, save it as a Task, or equivalent, call `save_task` and create a self-contained snapshot that can be resumed without opening the source Thread. Preserve at least the goal, current summary, completed progress, next steps, key decisions, blockers, and relevant artifacts.
+- `[current_task_context]` means the user explicitly loaded a durable Task from the Tasks list. Continue it in the current Thread without switching to or opening the source Thread. After material progress, call `save_task` with the same `task_id` before the final handoff and replace the full snapshot; do not create a duplicate Task.
+
 ## State And User Input Tools
 
 - Use `spawn_subagent` for independent, read-heavy work that benefits from a separate context. Start independent assignments before collecting them so they can run in parallel; then call `wait_subagents` and use the returned summaries. A successful spawn only means the child started, not that its work is complete.

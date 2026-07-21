@@ -1285,6 +1285,29 @@ function shallowSkillList(skills) {
   return Array.isArray(skills) ? skills.map(normalizeSkillDescriptor) : [];
 }
 
+function normalizeTaskDescriptor(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const status = ["active", "blocked", "completed", "archived"].includes(String(item.status || ""))
+    ? String(item.status)
+    : "active";
+  const stringList = (value) => (Array.isArray(value) ? value.map((entry) => String(entry || "").trim()).filter(Boolean) : []);
+  return {
+    ...item,
+    task_id: String(item.task_id || item.id || "").trim(),
+    project_id: String(item.project_id || "").trim(),
+    title: String(item.title || "").trim(),
+    status,
+    goal: String(item.goal || "").trim(),
+    summary: String(item.summary || "").trim(),
+    progress: stringList(item.progress),
+    next_steps: stringList(item.next_steps),
+    decisions: stringList(item.decisions),
+    blockers: stringList(item.blockers),
+    artifacts: stringList(item.artifacts),
+    updated_at: String(item.updated_at || "").trim(),
+  };
+}
+
 function normalizeSkillDescriptor(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const rawScope = String(item.scope || item.source || "team").trim().toLowerCase() || "team";
@@ -3599,6 +3622,7 @@ function createInitialAppState() {
       stoppingRun: false,
     },
     panelCache: {
+      tasks: { status: "idle", data: [] },
       tools: { status: "idle", data: [] },
       skills: { status: "idle", data: [] },
       specs: { status: "idle", data: [] },
@@ -3875,6 +3899,9 @@ function App() {
   const pendingGuidance = Array.isArray(appState.activeTurn.pendingGuidance)
     ? appState.activeTurn.pendingGuidance
     : [];
+  const tasks = appState.panelCache.tasks.data;
+  const tasksPanelStatus = String(appState.panelCache.tasks.status || "idle");
+  const [loadingTaskId, setLoadingTaskId] = useState("");
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
   const skillsPanelStatus = String(appState.panelCache.skills.status || "idle");
@@ -3954,6 +3981,7 @@ function App() {
   const activeSessionIdRef = useRef("");
   const pendingThreadCreationPromiseRef = useRef(null);
   const pendingTempThreadIdRef = useRef("");
+  const tasksRequestSeqRef = useRef(0);
   const skillsRequestSeqRef = useRef(0);
   const runtimeStatusRequestSeqRef = useRef(0);
   const runtimeStatusAbortRef = useRef(null);
@@ -4013,6 +4041,7 @@ function App() {
   const setLastLiveProgressAt = (value) => dispatch({ type: "update", path: ["activeTurn", "lastLiveProgressAt"], value });
   const setLiveHeartbeat = (value) => dispatch({ type: "update", path: ["activeTurn", "liveHeartbeat"], value });
   const setStoppingRun = (value) => dispatch({ type: "update", path: ["activeTurn", "stoppingRun"], value });
+  const setTasks = (value) => dispatch({ type: "update", path: ["panelCache", "tasks", "data"], value });
 
   function markThreadRunIndicator(targetThreadId, status) {
     const key = String(targetThreadId || "").trim();
@@ -4472,10 +4501,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (drawerView === "tasks") refreshTasks();
     if (drawerView === "tools") refreshWorkbenchTools();
     if (drawerView === "skills") refreshSkills();
     if (drawerView === "agent") refreshSpecs();
-  }, [drawerView, uiLocale]);
+  }, [drawerView, uiLocale, projectId]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return undefined;
@@ -5615,6 +5645,7 @@ function App() {
     const targetProjectId = String(nextProjectId || "").trim();
     if (!targetProjectId) return false;
     setProjectId(targetProjectId);
+    setTasks([]);
     setSessionId("");
     resetItemDomain();
     setSessionRuntimeState({});
@@ -5639,6 +5670,31 @@ function App() {
       return true;
     }
     return true;
+  }
+
+  async function refreshTasks() {
+    const requestSeq = ++tasksRequestSeqRef.current;
+    setPanelStatus("tasks", "loading");
+    if (!projectId) {
+      setTasks([]);
+      setPanelStatus("tasks", "fresh");
+      return [];
+    }
+    try {
+      const data = await fetchJson(`/api/tasks?project_id=${encodeURIComponent(projectId)}`);
+      const list = Array.isArray(data.tasks) ? data.tasks.map(normalizeTaskDescriptor) : [];
+      if (requestSeq !== tasksRequestSeqRef.current) return list;
+      clearUiError();
+      setTasks(list);
+      setPanelStatus("tasks", "fresh");
+      return list;
+    } catch (err) {
+      if (requestSeq !== tasksRequestSeqRef.current) return [];
+      setPanelStatus("tasks", "error");
+      const nextError = applyUiError(err, t("errors.refresh_tasks_failed"));
+      pushLogWithLimit(setLogs, "error", t("log.refresh_tasks_failed", { summary: nextError.summary }));
+      return [];
+    }
   }
 
   async function refreshWorkbenchTools() {
@@ -6360,7 +6416,28 @@ function App() {
     }
   }
 
+  async function handleLoadTask(task) {
+    const normalized = normalizeTaskDescriptor(task);
+    if (!normalized.task_id || loadingTaskId || currentThreadBusy) return;
+    setLoadingTaskId(normalized.task_id);
+    setDrawerView("");
+    try {
+      await handleSend(t("tasks.load_prompt"), undefined, { taskId: normalized.task_id });
+    } catch (err) {
+      applyUiError(err, t("errors.load_task_failed"));
+    } finally {
+      setLoadingTaskId("");
+    }
+  }
+
+  async function handleSummarizeCurrentTask() {
+    if (currentThreadBusy) return;
+    setDrawerView("");
+    await handleSend(t("tasks.summarize_prompt"));
+  }
+
   async function handleSend(overrideText, userInputResponse) {
+    const options = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText) return;
     if (currentThreadBusy) {
@@ -6565,6 +6642,7 @@ function App() {
         body: JSON.stringify({
           session_id: sid,
           project_id: projectId,
+          task_id: String(options.taskId || "").trim() || null,
           message: messageText,
           client_message_id: String((userMessage && userMessage.id) || ""),
           client_submitted_at_ms: clientSubmittedAtMs,
@@ -9682,7 +9760,7 @@ function App() {
                     </button>
                   `
                 : null}
-              <button className="ghost-btn" type="button" onClick=${() => setDrawerView(drawerView ? "" : "run")}>Workbench</button>
+              <button className=${`ghost-btn tasks-entry-btn ${drawerView === "tasks" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tasks" ? "" : "tasks")}>${t("buttons.tasks")}</button>
             </div>
           </div>
 
@@ -10109,25 +10187,91 @@ function App() {
         : null}
 
       ${drawerView
-        ? html`<aside className="workbench-drawer open" id="workbenchDrawer">
+        ? html`<aside className=${`workbench-drawer open ${drawerView === "tasks" ? "tasks-drawer" : ""}`} id="workbenchDrawer">
         <div className="workbench-head">
-          <div className="workbench-title">Workbench</div>
-          <div className="workbench-tabs">
-            ${WORKBENCH_TABS.map(
-              (tab) => html`
-                <button
-                  key=${tab}
-                  className=${`tab-btn ${drawerView === tab ? "active" : ""}`}
-                  type="button"
-                  onClick=${() => setDrawerView(tab)}
-                >
-                  ${currentTabLabel(tab)}
-                </button>
-              `,
-            )}
-          </div>
+          <div className="workbench-title">${drawerView === "tasks" ? t("tasks.title") : "Workbench"}</div>
+          ${drawerView === "tasks"
+            ? html`<div className="workbench-subtitle">${t("tasks.subtitle")}</div>`
+            : html`
+                <div className="workbench-tabs">
+                  ${WORKBENCH_TABS.map(
+                    (tab) => html`
+                      <button
+                        key=${tab}
+                        className=${`tab-btn ${drawerView === tab ? "active" : ""}`}
+                        type="button"
+                        onClick=${() => setDrawerView(tab)}
+                      >
+                        ${currentTabLabel(tab)}
+                      </button>
+                    `,
+                  )}
+                </div>
+              `}
           <button className="drawer-close" type="button" onClick=${() => setDrawerView("")}>${t("buttons.close")}</button>
         </div>
+
+        ${drawerView === "tasks"
+          ? html`
+              <div className="workbench-scroll tasks-scroll">
+                <div className="tasks-toolbar">
+                  <button
+                    className="solid-btn"
+                    type="button"
+                    onClick=${handleSummarizeCurrentTask}
+                    disabled=${currentThreadBusy || !sessionId}
+                  >
+                    ${t("tasks.summarize")}
+                  </button>
+                  <button className="ghost-btn" type="button" onClick=${refreshTasks} disabled=${tasksPanelStatus === "loading"}>
+                    ${t("buttons.refresh")}
+                  </button>
+                </div>
+                <div className="task-list">
+                  ${tasks.length
+                    ? tasks.map((task) => html`
+                        <article key=${task.task_id} className=${`task-card status-${task.status}`}>
+                          <div className="task-card-head">
+                            <div>
+                              <div className="task-card-title">${task.title || task.goal}</div>
+                              <div className="task-card-time">${formatTime(task.updated_at, uiLocale)}</div>
+                            </div>
+                            <span className=${`task-status status-${task.status}`}>${t(`tasks.status.${task.status}`)}</span>
+                          </div>
+                          <div className="task-card-summary">${task.summary || task.goal}</div>
+                          ${task.next_steps.length
+                            ? html`
+                                <div className="task-card-section">
+                                  <div className="task-card-label">${t("tasks.next_steps")}</div>
+                                  <ul>${task.next_steps.slice(0, 3).map((item) => html`<li key=${item}>${item}</li>`)}</ul>
+                                </div>
+                              `
+                            : null}
+                          ${task.blockers.length
+                            ? html`
+                                <div className="task-card-section task-blockers">
+                                  <div className="task-card-label">${t("tasks.blockers")}</div>
+                                  <ul>${task.blockers.slice(0, 2).map((item) => html`<li key=${item}>${item}</li>`)}</ul>
+                                </div>
+                              `
+                            : null}
+                          <div className="task-card-actions">
+                            <button
+                              className="solid-btn"
+                              type="button"
+                              onClick=${() => handleLoadTask(task)}
+                              disabled=${Boolean(loadingTaskId) || currentThreadBusy}
+                            >
+                              ${loadingTaskId === task.task_id ? t("buttons.loading_task") : t("buttons.load_task")}
+                            </button>
+                          </div>
+                        </article>
+                      `)
+                    : html`<div className="empty-inline task-empty">${tasksPanelStatus === "loading" ? t("labels.processing") : t("tasks.none")}</div>`}
+                </div>
+              </div>
+            `
+          : null}
 
         ${drawerView === "run"
           ? html`

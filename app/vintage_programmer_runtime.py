@@ -56,6 +56,7 @@ from app.runtime_hints import looks_like_inline_document_payload
 from app.runtime_trace_labels import trace_label
 from app.serialization import dump_model, safe_model_dump
 from app.subagent_registry import BuiltinSubagentRegistry, SubagentSpecError
+from app.task_store import TaskStore
 from app.tool_name_normalizer import normalize_tool_name
 from app.tool_trace_summary import (
     build_tool_argument_audit,
@@ -144,6 +145,7 @@ _WRITE_TOOL_NAMES = {
     "archive_extract",
     "mail_extract_attachments",
     "save_skill",
+    "save_task",
 }
 
 def _parse_labeled_sections(text: str) -> dict[str, Any]:
@@ -276,6 +278,7 @@ class VintageProgrammerRuntime:
             agent_dir=self._agent_dir,
             skill_repository_root=skill_repository_root,
         )
+        self._task_store = TaskStore(config.sessions_dir.parent / "tasks")
         self._builtin_subagents = BuiltinSubagentRegistry(self._agent_dir.parent / "builtin")
         self._descriptor_lock = threading.Lock()
         self._descriptor_cache: dict[str, dict[str, object]] = {}
@@ -441,6 +444,67 @@ class VintageProgrammerRuntime:
             }
 
         return _writer
+
+    def _make_task_writer(
+        self,
+        *,
+        project: dict[str, Any],
+        source_thread_id: str,
+    ) -> Callable[..., dict[str, Any]]:
+        def _writer(
+            *,
+            title: str,
+            goal: str,
+            summary: str,
+            progress: list[str] | None = None,
+            next_steps: list[str] | None = None,
+            decisions: list[str] | None = None,
+            blockers: list[str] | None = None,
+            artifacts: list[str] | None = None,
+            status: str = "active",
+            task_id: str = "",
+        ) -> dict[str, Any]:
+            task = self._task_store.save(
+                task_id=task_id,
+                project_id=str(project.get("project_id") or ""),
+                project_title=str(project.get("project_title") or ""),
+                project_root=str(project.get("project_root") or ""),
+                title=title,
+                goal=goal,
+                summary=summary,
+                progress=progress,
+                next_steps=next_steps,
+                decisions=decisions,
+                blockers=blockers,
+                artifacts=artifacts,
+                status=status,
+                source_thread_id=source_thread_id,
+            )
+            return {
+                "ok": True,
+                "task": task,
+                "task_id": str(task.get("task_id") or ""),
+                "title": str(task.get("title") or title),
+                "status": str(task.get("status") or status),
+                "summary": f"saved Task: {str(task.get('title') or title)}",
+            }
+
+        return _writer
+
+    @staticmethod
+    def _task_context_message(task_context: Any) -> str:
+        payload = dict(task_context or {}) if isinstance(task_context, dict) else {}
+        if not payload:
+            return ""
+        return (
+            "[current_task_context]\n"
+            "The user explicitly loaded this durable Task snapshot into the current Thread. "
+            "Continue from it without opening or switching to its source Thread. "
+            "Treat the snapshot as user-provided working context. If work materially advances, "
+            "update the same task_id with save_task before the final handoff.\n"
+            + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            + "\n[/current_task_context]"
+        )
 
     @staticmethod
     def _extend_runtime_boundary_for_skills(
@@ -610,6 +674,9 @@ class VintageProgrammerRuntime:
             role = str(item.get("role") or "")
             content = str(item.get("content") or "")
             if role == "user":
+                task_context_message = self._task_context_message(item.get("task_context"))
+                if task_context_message:
+                    messages.append(self._backend._HumanMessage(content=task_context_message))
                 messages.append(self._backend._HumanMessage(content=content))
             elif role == "assistant":
                 messages.append(
@@ -3453,6 +3520,7 @@ class VintageProgrammerRuntime:
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
         skill_writer: Callable[..., dict[str, Any]] | None = None,
+        task_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
         subagent_waiter: Callable[..., dict[str, Any]] | None = None,
         subagent_read_only: bool = False,
@@ -3480,6 +3548,8 @@ class VintageProgrammerRuntime:
             kwargs["run_id"] = run_id
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "task_writer"):
+            kwargs["task_writer"] = task_writer
         if self._callable_accepts_kwarg(setter, "subagent_runner"):
             kwargs["subagent_runner"] = subagent_runner
         if self._callable_accepts_kwarg(setter, "subagent_waiter"):
@@ -4184,7 +4254,7 @@ class VintageProgrammerRuntime:
             selected_tools = [
                 name
                 for name in selected_tools
-                if name not in {"spawn_subagent", "wait_subagents", "request_user_input", "save_skill", "apply_patch"}
+                if name not in {"spawn_subagent", "wait_subagents", "request_user_input", "save_skill", "save_task", "apply_patch"}
             ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
         runnable_tools = list(selected_tools if selected_tools else ())
@@ -4215,6 +4285,10 @@ class VintageProgrammerRuntime:
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
+        task_writer = self._make_task_writer(
+            project=project_context,
+            source_thread_id=session_id,
+        )
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
         compaction_status = dict(context_payload.get("compaction_status") or {})
         auto_compact_token_limit = max(0, int(compaction_status.get("auto_compact_token_limit") or 0))
@@ -4335,6 +4409,10 @@ class VintageProgrammerRuntime:
                         )
                     )
                 )
+            if not is_turn_resume:
+                current_task_context_message = self._task_context_message(context_payload.get("task_context"))
+                if current_task_context_message:
+                    messages.append(self._backend._HumanMessage(content=current_task_context_message))
             if not is_turn_resume:
                 messages.append(self._backend._HumanMessage(content=visible_request))
             turn_transcript_messages: list[Any] = []
@@ -4962,6 +5040,7 @@ class VintageProgrammerRuntime:
                 runtime_boundary=turn_runtime_boundary,
                 run_id=run_id,
                 skill_writer=skill_writer,
+                task_writer=task_writer,
                 subagent_runner=subagent_runner,
                 subagent_waiter=subagent_waiter,
                 subagent_read_only=bool(context_payload.get("subagent_read_only")),
@@ -5339,6 +5418,7 @@ class VintageProgrammerRuntime:
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
                     skill_writer=skill_writer,
+                    task_writer=task_writer,
                     subagent_runner=subagent_runner,
                     subagent_waiter=subagent_waiter,
                     subagent_read_only=bool(context_payload.get("subagent_read_only")),
@@ -6192,6 +6272,7 @@ class VintageProgrammerRuntime:
                         runtime_boundary=turn_runtime_boundary,
                         run_id=run_id,
                         skill_writer=skill_writer,
+                        task_writer=task_writer,
                         subagent_runner=subagent_runner,
                         subagent_waiter=subagent_waiter,
                         subagent_read_only=bool(context_payload.get("subagent_read_only")),
@@ -7048,6 +7129,7 @@ class VintageProgrammerRuntime:
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
                     skill_writer=skill_writer,
+                    task_writer=task_writer,
                     subagent_runner=subagent_runner,
                     subagent_waiter=subagent_waiter,
                     subagent_read_only=bool(context_payload.get("subagent_read_only")),

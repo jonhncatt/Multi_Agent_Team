@@ -26,6 +26,12 @@ UI
 
 `task_state`、`work_cursor`、`thread_memory`、`artifact_memory`、`current_task_focus`、`task_checkpoint` 和 `route_state` 不再是持久状态，也不参与模型输入。Plan 由模型通过 `update_plan` 形成 transcript 中的真实工具事务；Harness 不再另建一份长期任务真相。
 
+## 独立的 Task 快照
+
+产品里的 `Task` 与这里移除的 Thread 内部 `task_state` 不是同一概念。Task 是用户显式创建的、项目级的可续接快照，单独保存在 `app/data/tasks/`；它不拥有聊天记录，也不绑定创建它的 Thread。快照包含目标、当前进展、关键决策、下一步、阻塞项和相关产物。
+
+用户在 Tasks 面板点击“加载”时，前端仍向当前 Thread 发送一条普通用户消息，并附带 `task_id`。服务端把当时的 Task 快照作为该用户 transcript item 的隐藏 `task_context` 保存并注入模型输入。Runtime 会明确要求模型在当前 Thread 继续，不打开或切换到来源 Thread；可见聊天内容仍只是用户发出的“加载当前任务”。这样，历史重放可复现当时加载的上下文，而 Task 本身之后仍可被 `save_task` 独立更新。
+
 ## 磁盘上的 Thread V4
 
 一个新 Thread 文件只允许保存以下结构：

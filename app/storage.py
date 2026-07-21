@@ -1067,6 +1067,7 @@ class SessionStore:
         role: str,
         text: str,
         attachments: list[dict[str, Any]] | None = None,
+        task_context: dict[str, Any] | None = None,
         answer_bundle: dict[str, Any] | None = None,
         activity: dict[str, Any] | None = None,
         record_transcript: bool = True,
@@ -1103,6 +1104,7 @@ class SessionStore:
                 item_id=str(turn["id"]),
                 turn_id=str(logical_turn_id or turn["id"]),
                 attachments=attachments or [],
+                task_context=task_context or {},
                 created_at=str(turn["created_at"]),
             )
         return turn

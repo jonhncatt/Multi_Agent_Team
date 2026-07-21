@@ -46,6 +46,11 @@
 - `save_skill` 用于创建 Team Skill 或整体替换其 `SKILL.md`。已有 Team Skill 的 `SKILL.md`、`scripts/` 和 `references/` 在当前 thread 的任务需要修改时使用普通 `apply_patch`；由模型理解完整对话中的意图，Harness 不按措辞分类，也不要求二次确认。不要修改只读 Built-in Skill。
 - Skill 自带脚本使用普通 `exec_command` 和 Skill 目录下的绝对脚本路径直接执行，工作目录保持为当前业务项目；不要先去业务项目搜索同名 Skill 或脚本。Runtime 会为直接执行的 Skill 脚本注入 `VP_SKILL_ROOT`、`VP_SKILL_SCRIPT`、`VP_PROJECT_ROOT` 和 `VP_PROJECT_CWD`。脚本需要密钥时只能读取继承的环境变量；不得让模型搜索、读取或解析任何 `.env`。启用状态只控制展示和本轮 Skill 路径授权，不需要额外加载或解锁。Team Skill 可以通过 `save_skill`、管理界面或 Git 修改，只有 Built-in Skill 只读。
 
+## Tasks
+
+- 用户要求“总结当前任务”“保存为 Task”或类似操作时，调用 `save_task`，生成无需打开原 thread 也能继续工作的自包含快照。至少保留目标、当前摘要、已完成进度、下一步、关键决策、阻塞项和相关产物。
+- `[current_task_context]` 表示用户从 Tasks 列表显式加载了持久 Task。直接在当前 thread 继续，不切换或打开来源 thread。发生实质进展后，在最终交付前用其中相同的 `task_id` 调用 `save_task` 更新完整快照；不要创建重复 Task。
+
 ## 状态和用户输入工具
 
 - 对适合独立上下文的只读重任务使用 `spawn_subagent`。互不依赖的任务应先全部启动，使其能够并行运行，再调用 `wait_subagents` 收集并使用精简结果。启动成功只表示子 Agent 已开始，并不表示任务已经完成。

@@ -1178,6 +1178,7 @@ class LocalToolExecutor:
         runtime_boundary: dict[str, Any] | None = None,
         run_id: str | None = None,
         skill_writer: Any | None = None,
+        task_writer: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
         builtin_skill_roots: list[str] | None = None,
         team_skill_roots: list[str] | None = None,
@@ -1202,6 +1203,7 @@ class LocalToolExecutor:
         )
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
         self._runtime_ctx.skill_writer = skill_writer
+        self._runtime_ctx.task_writer = task_writer
         self._runtime_ctx.reserved_skill_roots = [
             str(item) for item in list(reserved_skill_roots or []) if str(item or "").strip()
         ]
@@ -1216,7 +1218,7 @@ class LocalToolExecutor:
         self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -3647,6 +3649,71 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "save_task",
+                "description": "Create a durable Task snapshot for the current project, or replace the loaded Task snapshot when task_id is provided. Use it when the user asks to summarize/save the current work as a Task, and to checkpoint material progress on a loaded Task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Existing Task id to update. Leave empty only when creating a new Task.",
+                            "default": "",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Short, recognizable Task title for the Tasks list.",
+                        },
+                        "goal": {
+                            "type": "string",
+                            "description": "The concrete outcome that defines what this Task is trying to achieve.",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Self-contained continuation summary with enough context to resume without opening the source Thread.",
+                        },
+                        "progress": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Important work already completed or verified.",
+                            "default": [],
+                        },
+                        "next_steps": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ordered concrete actions that should happen next.",
+                            "default": [],
+                        },
+                        "decisions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key decisions and constraints that future work must preserve.",
+                            "default": [],
+                        },
+                        "blockers": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Known blockers, missing inputs, or unresolved risks.",
+                            "default": [],
+                        },
+                        "artifacts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Relevant files, branches, commits, pull requests, or other durable artifacts.",
+                            "default": [],
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["active", "blocked", "completed", "archived"],
+                            "description": "Current lifecycle status of the Task.",
+                            "default": "active",
+                        },
+                    },
+                    "required": ["title", "goal", "summary"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "browser_open",
                 "description": "Open a webpage in a headless browser session and capture the current page state.",
                 "parameters": {
@@ -3847,6 +3914,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "save_skill":
             result = self.save_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "save_task":
+            result = self.save_task(**arguments)
             return self._decorate_result(result)
         if name == "browser_open":
             result = self.browser_open(**arguments)
@@ -4452,6 +4522,76 @@ class LocalToolExecutor:
                     "message": "Skill writer returned an invalid payload.",
                 },
                 "summary": "invalid skill payload",
+            }
+        return payload if "ok" in payload else {"ok": True, **payload}
+
+    def save_task(
+        self,
+        title: str,
+        goal: str,
+        summary: str,
+        task_id: str = "",
+        progress: list[str] | None = None,
+        next_steps: list[str] | None = None,
+        decisions: list[str] | None = None,
+        blockers: list[str] | None = None,
+        artifacts: list[str] | None = None,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        writer = getattr(self._runtime_ctx, "task_writer", None)
+        if not callable(writer):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "task_writer_unavailable",
+                    "tool": "save_task",
+                    "message": "No Task writer is available for the current run.",
+                },
+                "summary": "Task writer unavailable",
+            }
+        try:
+            payload = writer(
+                task_id=str(task_id or ""),
+                title=str(title or ""),
+                goal=str(goal or ""),
+                summary=str(summary or ""),
+                progress=[str(item) for item in list(progress or [])],
+                next_steps=[str(item) for item in list(next_steps or [])],
+                decisions=[str(item) for item in list(decisions or [])],
+                blockers=[str(item) for item in list(blockers or [])],
+                artifacts=[str(item) for item in list(artifacts or [])],
+                status=str(status or "active"),
+            )
+        except FileNotFoundError as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {"kind": "task_not_found", "tool": "save_task", "message": message},
+                "summary": message,
+            }
+        except (PermissionError, ValueError) as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {"kind": "invalid_task", "tool": "save_task", "message": message},
+                "summary": message,
+            }
+        except Exception as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {"kind": "task_save_failed", "tool": "save_task", "message": message},
+                "summary": message,
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_task_payload",
+                    "tool": "save_task",
+                    "message": "Task writer returned an invalid payload.",
+                },
+                "summary": "invalid Task payload",
             }
         return payload if "ok" in payload else {"ok": True, **payload}
 

@@ -230,11 +230,33 @@ class _FakeTools:
                     "additionalProperties": False,
                 },
             },
+            {
+                "name": "save_task",
+                "description": "save durable task snapshot",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "title": {"type": "string"},
+                        "goal": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "progress": {"type": "array", "items": {"type": "string"}},
+                        "next_steps": {"type": "array", "items": {"type": "string"}},
+                        "decisions": {"type": "array", "items": {"type": "string"}},
+                        "blockers": {"type": "array", "items": {"type": "string"}},
+                        "artifacts": {"type": "array", "items": {"type": "string"}},
+                        "status": {"type": "string"},
+                    },
+                    "required": ["title", "goal", "summary"],
+                    "additionalProperties": False,
+                },
+            },
         ]
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.runtime_context: dict[str, Any] | None = None
         self.last_runtime_context: dict[str, Any] | None = None
         self.skill_writer: Any | None = None
+        self.task_writer: Any | None = None
         self.subagent_runner: Any | None = None
         self.subagent_waiter: Any | None = None
 
@@ -248,10 +270,12 @@ class _FakeTools:
         cwd: str | None = None,
         model: str | None = None,
         skill_writer: Any | None = None,
+        task_writer: Any | None = None,
         subagent_runner: Any | None = None,
         subagent_waiter: Any | None = None,
     ) -> None:
         self.skill_writer = skill_writer
+        self.task_writer = task_writer
         self.subagent_runner = subagent_runner
         self.subagent_waiter = subagent_waiter
         payload = {
@@ -267,6 +291,7 @@ class _FakeTools:
 
     def clear_runtime_context(self) -> None:
         self.runtime_context = None
+        self.task_writer = None
         self.subagent_runner = None
         self.subagent_waiter = None
 
@@ -274,6 +299,8 @@ class _FakeTools:
         self.calls.append((name, dict(arguments)))
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
+        if name == "save_task" and callable(self.task_writer):
+            return self.task_writer(**arguments)
         if name == "spawn_subagent" and callable(self.subagent_runner):
             return self.subagent_runner(**arguments)
         if name == "wait_subagents" and callable(self.subagent_waiter):
@@ -5112,6 +5139,121 @@ def test_runtime_save_skill_tool_creates_global_team_skill(tmp_path: Path) -> No
     assert content.startswith("---\nname: repo-triage\n")
     assert "description: Use when investigating repository structure." in content
     assert "Inspect entry points before editing." in content
+
+
+def test_runtime_save_task_tool_creates_project_task_snapshot(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-save-task",
+                        "name": "save_task",
+                        "args": {
+                            "title": "Auth refactor",
+                            "goal": "Finish the auth refactor",
+                            "summary": "Backend is migrated; frontend work remains.",
+                            "progress": ["Migrated backend"],
+                            "next_steps": ["Update login form"],
+                            "decisions": ["Keep refresh tokens server-side"],
+                            "blockers": [],
+                            "artifacts": ["app/auth.py"],
+                            "status": "active",
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="Task saved"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    project_root = tmp_path / "company-project"
+    project_root.mkdir()
+
+    result = runtime.run(
+        message="把当前工作总结为一个 Task",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "thread-source",
+            "project": {
+                "project_id": "project-1",
+                "project_title": "Company Project",
+                "project_root": str(project_root),
+            },
+            "thread_transcript": {"schema_version": 2, "items": []},
+            "attachments": [],
+        },
+    )
+
+    task_files = list((tmp_path / "tasks").glob("*.json"))
+    assert len(task_files) == 1
+    task = json.loads(task_files[0].read_text(encoding="utf-8"))
+    assert task["project_id"] == "project-1"
+    assert task["source_thread_id"] == "thread-source"
+    assert task["next_steps"] == ["Update login form"]
+    assert result["tool_events"][0]["name"] == "save_task"
+
+
+def test_loaded_task_context_precedes_visible_load_request_and_replays(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="Continuing the loaded Task")])
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    task_context = {
+        "task_id": "task-1",
+        "title": "Auth refactor",
+        "goal": "Finish the auth refactor",
+        "next_steps": ["Update login form"],
+    }
+
+    runtime.run(
+        message="加载当前任务",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "thread-current",
+            "project": {"project_id": "project-1", "project_root": str(tmp_path)},
+            "task_context": task_context,
+            "thread_transcript": {
+                "schema_version": 2,
+                "items": [
+                    {
+                        "id": "u-old",
+                        "role": "user",
+                        "content": "加载当前任务",
+                        "task_context": {**task_context, "task_id": "task-old"},
+                    }
+                ],
+            },
+            "attachments": [],
+        },
+    )
+
+    human_contents = [
+        str(message.content)
+        for message in backend.invocations[0]["messages"]
+        if isinstance(message, _FakeHumanMessage)
+    ]
+    assert "\"task_id\":\"task-old\"" in human_contents[0]
+    assert human_contents[1] == "加载当前任务"
+    assert "\"task_id\":\"task-1\"" in human_contents[-2]
+    assert human_contents[-1] == "加载当前任务"
 
 
 def test_runtime_treats_short_pasted_code_as_direct_context_even_with_fix_language(tmp_path: Path) -> None:

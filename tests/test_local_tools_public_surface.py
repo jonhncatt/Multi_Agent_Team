@@ -59,6 +59,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "spawn_subagent",
         "wait_subagents",
         "save_skill",
+        "save_task",
     }.issubset(tool_names)
     assert {"load_skill", "run_skill_script"}.isdisjoint(tool_names)
     assert {

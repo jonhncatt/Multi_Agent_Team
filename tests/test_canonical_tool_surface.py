@@ -17,6 +17,7 @@ CANONICAL_TOOL_NAMES = (
     "spawn_subagent",
     "wait_subagents",
     "save_skill",
+    "save_task",
     "exec_command",
     "write_stdin",
     "apply_patch",

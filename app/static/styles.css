@@ -2648,6 +2648,10 @@ button {
   transform: translateX(0);
 }
 
+.workbench-drawer.tasks-drawer {
+  width: 460px;
+}
+
 .workbench-head {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -2662,6 +2666,135 @@ button {
 .panel-title,
 .tool-name {
   font-weight: 700;
+}
+
+.workbench-subtitle {
+  min-width: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tasks-entry-btn.active {
+  border-color: var(--line-strong);
+  background: var(--accent-soft);
+}
+
+.tasks-scroll {
+  background: linear-gradient(180deg, rgba(242, 246, 251, 0.7), rgba(248, 249, 251, 0));
+}
+
+.tasks-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.task-list {
+  display: grid;
+  gap: 12px;
+}
+
+.task-card {
+  border: 1px solid rgba(188, 198, 212, 0.82);
+  border-left: 3px solid var(--accent);
+  border-radius: 18px;
+  background: var(--panel);
+  padding: 16px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+}
+
+.task-card.status-blocked {
+  border-left-color: #c97a32;
+}
+
+.task-card.status-completed {
+  border-left-color: #4d9567;
+}
+
+.task-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.task-card-title {
+  color: var(--ink);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.task-card-time {
+  margin-top: 4px;
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
+.task-status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: var(--accent-soft);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-status.status-blocked {
+  background: rgba(201, 122, 50, 0.13);
+  color: #8b4d18;
+}
+
+.task-status.status-completed {
+  background: rgba(77, 149, 103, 0.13);
+  color: #2f7148;
+}
+
+.task-card-summary {
+  margin-top: 12px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-card-section {
+  margin-top: 13px;
+  border-top: 1px solid rgba(188, 198, 212, 0.5);
+  padding-top: 10px;
+}
+
+.task-card-label {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.task-card-section ul {
+  margin: 7px 0 0;
+  padding-left: 18px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.task-blockers ul {
+  color: #8b4d18;
+}
+
+.task-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.task-empty {
+  padding: 30px 16px;
+  text-align: center;
 }
 
 .workbench-tabs {

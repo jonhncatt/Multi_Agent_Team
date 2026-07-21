@@ -39,6 +39,7 @@ CANONICAL_TOOL_NAMES = {
     "spawn_subagent",
     "wait_subagents",
     "save_skill",
+    "save_task",
 }
 
 FORBIDDEN_PUBLIC_METHODS = {

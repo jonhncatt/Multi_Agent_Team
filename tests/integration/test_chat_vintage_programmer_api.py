@@ -12,6 +12,7 @@ import app.storage as storage_mod
 from app.config import load_config
 from app.i18n import translate
 from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
+from app.task_store import TaskStore
 from app.workbench import WorkbenchStore, build_tool_descriptors
 
 
@@ -1189,6 +1190,7 @@ def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main_app, "session_store", SessionStore(tmp_path / "sessions"))
     monkeypatch.setattr(main_app, "upload_store", UploadStore(tmp_path / "uploads"))
     monkeypatch.setattr(main_app, "token_stats_store", TokenStatsStore(tmp_path / "token_stats.json"))
+    monkeypatch.setattr(main_app, "task_store", TaskStore(tmp_path / "tasks"))
     monkeypatch.setattr(main_app, "project_store", ProjectStore(tmp_path / "projects.json", default_root=tmp_path))
     main_app.project_store.ensure_default_project()
     monkeypatch.setattr(main_app, "vintage_programmer_runtime", _FakeVintageRuntime())
@@ -1252,6 +1254,80 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
     }
     assert isinstance(payload["uptime_sec"], int)
     assert payload["uptime_sec"] >= 0
+
+
+def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    class CapturingRuntime(_FakeVintageRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_message = ""
+            self.last_context: dict[str, object] = {}
+
+        def run(self, *, message, settings, context, progress_cb=None):
+            self.last_message = str(message)
+            self.last_context = dict(context)
+            return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+
+    runtime = CapturingRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    project = main_app.project_store.ensure_default_project()
+    project_id = str(project["project_id"])
+
+    create_task_response = client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "Auth refactor",
+            "goal": "Finish the auth refactor",
+            "summary": "Backend is migrated; frontend error handling remains.",
+            "progress": ["Migrated backend"],
+            "next_steps": ["Update login form"],
+            "decisions": ["Keep refresh tokens server-side"],
+            "blockers": [],
+            "artifacts": ["app/auth.py"],
+            "status": "active",
+        },
+    )
+    assert create_task_response.status_code == 200
+    task = create_task_response.json()
+
+    list_response = client.get(f"/api/tasks?project_id={project_id}")
+    assert list_response.status_code == 200
+    assert [item["task_id"] for item in list_response.json()["tasks"]] == [task["task_id"]]
+
+    thread_response = client.post("/api/thread/new", json={"project_id": project_id})
+    thread_id = thread_response.json()["thread_id"]
+    chat_response = client.post(
+        "/api/chat",
+        json={
+            "session_id": thread_id,
+            "project_id": project_id,
+            "task_id": task["task_id"],
+            "message": "加载当前任务",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert chat_response.status_code == 200
+    assert chat_response.json()["session_id"] == thread_id
+    assert runtime.last_message == "加载当前任务"
+    assert runtime.last_context["task_context"]["task_id"] == task["task_id"]
+    loaded = main_app.session_store.load(thread_id)
+    assert loaded is not None
+    user_item = next(item for item in loaded["thread_transcript"]["items"] if item["role"] == "user")
+    assert user_item["content"] == "加载当前任务"
+    assert user_item["task_context"]["summary"] == task["summary"]
+    loaded_task = main_app.task_store.get(task["task_id"])
+    assert loaded_task and loaded_task["last_loaded_thread_id"] == thread_id
 
 
 def test_runtime_status_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:

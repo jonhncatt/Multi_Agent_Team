@@ -46,6 +46,11 @@
 - `save_skill` は Team Skill の作成、または完全な `SKILL.md` の置換に使う。現在の thread のタスクで既存 Team Skill の変更が必要な場合、その `SKILL.md`、`scripts/`、`references/` は通常の `apply_patch` で編集する。意図はモデルが会話全体から判断し、Harness は表現を分類せず、再確認も要求しない。読み取り専用の Built-in Skill は変更しない。
 - Skill 同梱スクリプトは Skill ディレクトリ配下の絶対パスを指定して通常の `exec_command` で直接実行し、作業ディレクトリは現在の業務プロジェクトのままにする。業務プロジェクト内で同名の Skill やスクリプトを先に検索しない。Runtime は直接実行される Skill スクリプトに `VP_SKILL_ROOT`、`VP_SKILL_SCRIPT`、`VP_PROJECT_ROOT`、`VP_PROJECT_CWD` を注入する。資格情報は継承された環境変数からのみ読み、モデルのツールで `.env` を検索、読み取り、解析しない。有効状態は発見とその turn の Skill パス権限だけを制御し、別の load/unlock 状態は持たない。Team Skill は `save_skill`、管理画面、Git で編集でき、読み取り専用なのは Built-in Skill だけである。
 
+## Tasks
+
+- ユーザーが現在のタスクの要約、Task としての保存、または同等の操作を求めたら、`save_task` を呼び出し、元の Thread を開かなくても再開できる自己完結したスナップショットを作る。目標、現在の要約、完了した進捗、次の手順、重要な判断、ブロッカー、関連成果物を少なくとも保持する。
+- `[current_task_context]` は、ユーザーが Tasks 一覧から永続 Task を明示的に読み込んだことを示す。元の Thread を開いたり切り替えたりせず、現在の Thread でそのまま続行する。実質的な進捗があった場合は、最終引き渡し前に同じ `task_id` で `save_task` を呼び出して完全なスナップショットを更新し、重複 Task を作らない。
+
 ## 状態とユーザー入力ツール
 
 - 独立コンテキストが有効な read-heavy 作業には `spawn_subagent` を使う。互いに独立した割り当ては先にすべて開始して並列実行させ、その後 `wait_subagents` で要約結果を回収する。spawn 成功は開始を意味するだけで、完了ではない。

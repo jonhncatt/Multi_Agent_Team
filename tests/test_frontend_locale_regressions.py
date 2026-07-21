@@ -42,6 +42,12 @@ REQUIRED_CORE_KEYS = (
     "settings.response_style",
     "settings.debug_raw",
     "buttons.save",
+    "buttons.tasks",
+    "buttons.load_task",
+    "tasks.title",
+    "tasks.subtitle",
+    "tasks.summarize_prompt",
+    "tasks.load_prompt",
     "buttons.deleting",
     "buttons.select_all_threads",
     "buttons.clear_thread_selection",
@@ -1672,6 +1678,20 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert 't("thread_modal.rename_title")' in script
     assert '"buttons.rename_thread": "重命名线程"' in locales
     assert '"thread_modal.rename_title": "重命名线程"' in locales
+
+
+def test_tasks_entry_loads_snapshot_into_current_thread_send_path() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'drawerView === "tasks"' in script
+    assert 'fetchJson(`/api/tasks?project_id=${encodeURIComponent(projectId)}`)' in script
+    assert 'await handleSend(t("tasks.load_prompt"), undefined, { taskId: normalized.task_id })' in script
+    assert 'task_id: String(options.taskId || "").trim() || null' in script
+    assert 'handleSend(t("tasks.summarize_prompt"))' in script
+    assert '>Workbench</button>' not in script
+    for token in (".tasks-drawer", ".task-card", ".task-status", ".task-card-actions"):
+        assert token in styles, token
 
 
 def test_run_panel_derives_progress_from_live_plan_without_task_state() -> None:
