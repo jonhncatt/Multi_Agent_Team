@@ -13,7 +13,7 @@
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
-[English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
+[English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
 当前稳定版本：`3.1.5X`
 
@@ -68,7 +68,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 ## Permission Profiles
 
-默认权限模式是 `Auto`：可读写当前项目、可在当前项目内运行安全命令，但网络关闭。`Default` 是只读安全模式，仅允许读取/搜索工具，不写文件、不运行 shell、不开网络；`Full Access` 是最大信任模式，可按系统配置使用更大范围的读写和命令作用域并启用网络。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；所有模式仍受路径边界、命令 allowlist 和危险命令拦截约束。
+默认权限模式是 `Auto`：可读写当前项目、可在当前项目内运行安全命令，但网络关闭。`Default` 是只读安全模式，仅允许读取/搜索工具，不写文件、不运行 shell、不开网络；`Full Access` 是最大信任模式，可直接读写完整本机文件系统、在任意本机目录运行安全命令并启用网络，不需要额外路径环境变量。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；命令 allowlist、危险命令拦截、Builtin Skill 只读和外部写入审批仍然有效。
 
 ## Browser With Local Chrome Profile
 
@@ -367,6 +367,7 @@ python scripts/validate_skills.py
 - [English README](README.en.md)
 - [日本語 README](README.ja.md)
 - [Windows 指南](README.windows.md)
+- [文档索引](docs/README.md)
 - [发布流程](RELEASING.md)
 - [内部设计手册](docs/internal_design_manual.md)
 - [Runtime 可靠性说明](docs/runtime_reliability.md)

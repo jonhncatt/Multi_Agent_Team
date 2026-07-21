@@ -13,7 +13,7 @@ A local-first AI agent workbench with observable activity tracing, editable agen
 Instead of hiding the process, it exposes the loop:
 **user request -> model action -> harness validation -> tool execution -> observation -> final answer**
 
-[Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [Internal Design Manual](docs/internal_design_manual.md)
+[Chinese README](README.zh-CN.md) · [Japanese README](README.ja.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Documentation Index](docs/README.md) · [Release Flow](RELEASING.md)
 
 Current stable release: `3.1.5X`
 
@@ -40,7 +40,7 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 This is the per-call output cap, not the total task limit. The 16384 default fits long-material Q&A on large-context models such as GPT-5.4; long tasks should still complete through multiple model/tool-loop steps rather than one 128K-scale response.
 `VP_MAX_USER_REQUEST_CHARS` is a safety character cap for the current user message; the actual model input is still packed by the active model context window and output reserve.
 
-Context status now follows the Codex-style lightweight pattern: the chat hot path uses cached or quick estimates instead of blocking on full tokenizer accounting every turn. `/status` reads the current thread context state and opens details; `/compact` manually compacts old history and records a context compaction event. Auto compaction exact-checks after the estimate reaches 80% of the model window and treats 95% as the danger line. `VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` applies only to old chat/tool-output noise, not the current user request or attachment source text.
+Context status uses cached or quick estimates on the chat hot path instead of blocking on full tokenizer accounting every turn. `/status` opens the current Thread context details; `/compact` manually compacts old history. GPT-5.4 uses a 272K usable window, a 90% automatic compaction line, and a 95% danger line by default. Provider-reported `input_tokens` take precedence over local full-payload estimates.
 
 ## Python Commands
 
@@ -48,19 +48,19 @@ When running project Python commands, prefer `./.venv/bin/python` if the project
 
 ## Python Version
 
-For the stable v2.9.x runtime, Python `3.11` is recommended. Python `3.12` is also acceptable. Python `3.13` is not the primary tested environment yet, and packages with native wheels such as OCR, ONNXRuntime, or image/PDF tooling may have compatibility gaps depending on platform.
+Python `3.11` is recommended for the current stable runtime. Python `3.12` is also acceptable. Python `3.13` is not the primary tested environment yet, and packages with native wheels such as OCR, ONNXRuntime, or image/PDF tooling may have compatibility gaps depending on platform.
 
 ## Command Safety
 
 `exec_command` keeps a conservative allowlist. `VP_ALLOWED_COMMANDS` is a full override rather than an append-only list. Command execution is limited by the current permission and path boundaries, and path arguments such as `rg /etc`, `git -C /tmp`, or `python /tmp/a.py` are checked. Every concrete `git push` requires one-time approval in any shell-enabled permission profile; approval is bound to the exact command, repository, remote URL fingerprint, branch, and HEAD. Command text found in a Skill or file is not execution authorization. Dangerous deletion and download-to-shell patterns remain blocked.
 
-## ModelContext
+## Session = Thread
 
-In v2.9.15, the model prompt still renders only `ModelContext`, which has six explicit sections: `task`, `workspace`, `memory`, `plan`, `permissions`, and `conversation`. `RuntimeTrace`, raw tool output, model draft text, and legacy route/agent state are debug or migration inputs only, not normal model context.
+`Session` now means a durable Thread. Model input replays the typed `user`, `assistant`, and `tool` transcript instead of constructing the former six-section `ModelContext`. The Thread stores resumable history; Turn Trace stores technical diagnostics only. Existing Sessions migrate automatically while retaining their IDs and API compatibility.
 
 ## Permission Profiles
 
-The default permission profile is `Code`: read the current project and imported files, write inside the current project, run safe commands inside the current project, and keep network access off. `Chat` is read-only analysis with no file writes, shell commands, or network. `Full Dev` can read explicitly configured extra roots and can enable network according to global config. Downloaded or extracted network-origin code is marked tainted and requires one-time confirmation before execution; all modes remain bounded by path checks, the command allowlist, and dangerous-command blocking.
+The default permission profile is `Auto`: read and write the current project, run safe commands inside it, and keep network access off. `Default` is current-project read-only. `Full Access` can read and write the full host filesystem, run safe commands from any host directory, and access the network without an additional path environment flag. The command allowlist, dangerous-command blocking, Built-in Skill read-only rule, and external-write approvals remain active.
 
 ## What it is
 
@@ -278,6 +278,7 @@ This keeps one code mainline while localizing user-facing UI and documentation t
 - [Japanese README](README.ja.md)
 - [English README](README.en.md)
 - [Windows Guide](README.windows.md)
+- [Documentation Index](docs/README.md)
 - [Release Flow](RELEASING.md)
 - [Internal Design Manual](docs/internal_design_manual.md)
 

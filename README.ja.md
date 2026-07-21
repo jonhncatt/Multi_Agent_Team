@@ -13,7 +13,7 @@
 1 回の turn の中で Agent が何を提案し、runtime が何を検証し、どの tool が実行され、どのような観測結果が返ったのかを見えるようにすることを目的としています。
 **ユーザー要求 -> モデル行動 -> harness 検証 -> tool 実行 -> 観測結果 -> 最終回答**
 
-[中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [Release Flow](RELEASING.md) · [内部設計マニュアル](docs/internal_design_manual.md)
+[中文ホーム](README.md) · [中文 README](README.zh-CN.md) · [English README](README.en.md) · [Windows Guide](README.windows.md) · [ドキュメント索引](docs/README.md) · [Release Flow](RELEASING.md)
 
 現在の安定版: `3.1.5X`
 
@@ -40,7 +40,7 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 これは 1 回のモデル呼び出しごとの出力上限であり、タスク全体の上限ではありません。16384 のデフォルトは GPT-5.4 のような大きな context window を持つモデルでの長文資料 Q&A に向いていますが、長いタスクは 128K 級の巨大な単発応答ではなく、複数回の model/tool loop で進めます。
 `VP_MAX_USER_REQUEST_CHARS` は現在のユーザー入力に対する安全用の文字数上限です。実際にモデルへ入る内容は、現在のモデルの context window と出力予約分に基づく token budget でさらに調整されます。
 
-Context 状態は Codex 風の軽量表示です。チャットの通常経路では cached/quick 見積もりを使い、毎ターン full tokenizer 計算でブロックしません。`/status` は現在の thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。自動整理は window の 80% で exact 確認、95% を危険ラインとして扱います。
+Context 状態は cached/quick 見積もりを使い、チャットの通常経路を full tokenizer 計算でブロックしません。`/status` は現在の Thread の context 詳細を表示し、`/compact` は古い履歴を手動で整理します。GPT-5.4 は既定で 272K の利用可能 window、90% の自動整理ライン、95% の危険ラインを使用し、provider の実測 `input_tokens` をローカル推定より優先します。
 
 ## Python Commands
 
@@ -48,19 +48,19 @@ Context 状態は Codex 風の軽量表示です。チャットの通常経路�
 
 ## Python Version
 
-安定版 v2.9.x runtime では Python `3.11` を推奨します。Python `3.12` も利用可能です。Python `3.13` はまだ主要なテスト対象ではなく、OCR、ONNXRuntime、画像/PDF 処理など native wheel に依存するパッケージで環境差が出る可能性があります。
+現在の安定 runtime では Python `3.11` を推奨します。Python `3.12` も利用可能です。Python `3.13` はまだ主要なテスト対象ではなく、OCR、ONNXRuntime、画像/PDF 処理など native wheel に依存するパッケージで環境差が出る可能性があります。
 
 ## Command Safety
 
 `exec_command` は引き続き保守的な allowlist を使い、`VP_ALLOWED_COMMANDS` は追記ではなく完全上書きです。コマンド実行は現在の権限と path 境界に従い、`rg /etc`、`git -C /tmp`、`python /tmp/a.py` のような path 引数も検査されます。具体的な `git push` は shell を許可するすべての権限プロファイルで毎回一度限りの承認が必要で、承認は正確なコマンド、repository、remote URL fingerprint、branch、HEAD に結び付けられます。Skill やファイル内のコマンド文字列は実行権限ではなく、危険な削除や download-to-shell は引き続きブロックされます。
 
-## ModelContext
+## Session = Thread
 
-v2.9.15 でも、モデルに送る prompt は `ModelContext` だけを render します。構成は `task`、`workspace`、`memory`、`plan`、`permissions`、`conversation` の 6 セクションです。`RuntimeTrace`、raw tool output、model draft、旧 route/agent state は debug または migration 用であり、通常のモデル context には入りません。
+`Session` は現在、永続化された Thread を意味します。モデル入力は旧 6 セクションの `ModelContext` を構築せず、typed `user`、`assistant`、`tool` transcript を再生します。Thread は継続可能な履歴を保存し、Turn Trace は技術診断だけを保存します。既存 Session は ID と API 互換性を維持したまま自動移行されます。
 
 ## Permission Profiles
 
-既定の permission profile は `Code` です。現在のプロジェクトと imported files を読み取り、現在のプロジェクト内に書き込み、現在のプロジェクト内で安全なコマンドを実行できます。network は off です。`Chat` は読み取り専用で、ファイル書き込み、shell 実行、network は無効です。`Full Dev` は明示設定された extra roots を読み取り、global config に従って network を有効化できます。download または archive extract 由来のコードは tainted として記録され、実行には1回限りの確認が必要です。path boundary、command allowlist、危険コマンドブロックは維持されます。
+既定の permission profile は `Auto` です。現在の Project を読み書きし、その中で安全なコマンドを実行できます。network は off です。`Default` は現在の Project の読み取り専用です。`Full Access` は追加の path 環境変数なしでホストのファイルシステム全体を読み書きし、任意のホストディレクトリで安全なコマンドを実行し、network を利用できます。command allowlist、危険コマンドブロック、Builtin Skill の読み取り専用規則、外部書き込み承認は維持されます。
 
 ## これは何か
 
@@ -279,6 +279,7 @@ skills/team/<skill_name>/SKILL.md
 - [中文 README](README.zh-CN.md)
 - [English README](README.en.md)
 - [Windows Guide](README.windows.md)
+- [ドキュメント索引](docs/README.md)
 - [Release Flow](RELEASING.md)
 - [内部設計マニュアル](docs/internal_design_manual.md)
 

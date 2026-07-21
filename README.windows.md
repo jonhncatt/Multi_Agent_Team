@@ -22,7 +22,7 @@
 VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
-VP_CONTEXT_AUTO_COMPACT_RATIO=0.8
+VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
 VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
 VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
 VP_CONTEXT_EXACT_STALE_SEC=60
@@ -31,7 +31,7 @@ VP_CONTEXT_EXACT_STALE_SEC=60
 这是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
 `VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 读取当前 thread 的状态并打开详情；`/compact` 手动整理旧历史。自动整理默认在预计使用达到窗口 80% 后 exact 复核，95% 进入危险整理线；`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 只用于旧聊天/工具输出噪音。
+Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 读取当前 Thread 的状态并打开详情；`/compact` 手动整理旧历史。GPT-5.4 默认使用 272K 可用窗口、90% 自动整理线和 95% 危险线，真实 provider `input_tokens` 优先于本地估算。
 
 默认建议：不要激活 `Activate.ps1`，直接使用 `.venv\Scripts\python.exe`。
 
@@ -41,7 +41,7 @@ Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick �
 
 ## Permission Profiles
 
-默认权限 profile 是 `Code`：可读当前项目和导入文件、可写当前项目、可在当前项目内运行安全命令，网络关闭。`Chat` 是只读分析模式，不写文件、不运行 shell、不开网络；`Full Dev` 可读取显式配置的额外根，并按全局网络配置启用网络。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；所有模式仍受路径边界、命令 allowlist 和危险命令拦截约束。
+默认权限 profile 是 `Auto`：读写当前项目并在项目内运行安全命令，网络关闭。`Default` 是当前项目只读模式；`Full Access` 可直接读写所有本机磁盘、在任意本机目录运行安全命令并访问网络，不需要额外路径环境变量。命令 allowlist、危险命令拦截、Builtin Skill 只读和外部写入审批仍然有效。
 
 ## 运行
 

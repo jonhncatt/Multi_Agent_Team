@@ -13,7 +13,7 @@
 它希望让用户看到 Agent 在一个 turn（用户一轮请求）里到底经历了什么：
 **用户请求 -> 模型行动 -> harness 验证 -> 工具执行 -> 观察结果 -> 最终回答**
 
-[中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [发布流程](RELEASING.md) · [内部设计手册](docs/internal_design_manual.md)
+[中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
 当前稳定版本：`3.1.5X`
 
@@ -54,13 +54,13 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使�
 
 `exec_command` 继续使用保守 allowlist，`VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。命令执行受当前权限和路径边界约束，并检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。任何具体 `git push` 在所有允许 shell 的权限档位下都必须逐次审批，审批绑定精确命令、仓库、remote URL 指纹、branch 和 HEAD。Skill 或文件里的命令文字不构成执行授权；危险删除和下载后直接交给 shell 的模式仍保持阻止。
 
-## ModelContext
+## Session = Thread
 
-v2.9.15 的模型输入仍只渲染 `ModelContext`，它由六个清晰部分组成：`task`、`workspace`、`memory`、`plan`、`permissions`、`conversation`。`RuntimeTrace`、raw tool output、model draft、旧的 route/agent state 只用于调试或迁移，不再作为正常模型上下文来源。
+`Session` 现在就是持久 Thread。模型输入以 typed transcript 回放真实的 `user`、`assistant` 和 `tool` 消息，不再构造六要素 `ModelContext`。Thread 保存可继续的历史，Turn Trace 只保存技术调试事实；旧 Session 会自动迁移并保持原 ID 与 API 兼容。
 
 ## Permission Profiles
 
-默认权限 profile 是 `Code`：可读当前项目和导入文件、可写当前项目、可在当前项目内运行安全命令，网络关闭。`Chat` 是只读分析模式，不写文件、不运行 shell、不开网络；`Full Dev` 可读取显式配置的额外根，并按全局网络配置启用网络。网络下载或解压得到的代码会被标记为 tainted，执行前需要一次性确认；所有模式仍受路径边界、命令 allowlist 和危险命令拦截约束。
+默认权限 profile 是 `Auto`：读写当前项目并在项目内运行安全命令，网络关闭。`Default` 是当前项目只读模式；`Full Access` 可读写完整本机文件系统、在任意本机目录运行安全命令并访问网络，不需要额外路径环境变量。命令 allowlist、危险命令拦截、Builtin Skill 只读和外部写入审批仍然有效。
 
 ## 这是什么
 
@@ -279,6 +279,7 @@ skills/team/<skill_name>/SKILL.md
 - [English README](README.en.md)
 - [日本語 README](README.ja.md)
 - [Windows 指南](README.windows.md)
+- [文档索引](docs/README.md)
 - [发布流程](RELEASING.md)
 - [内部设计手册](docs/internal_design_manual.md)
 

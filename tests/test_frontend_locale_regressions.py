@@ -1137,41 +1137,20 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
     assert '"settings.theme_color": "Theme Color"' in locales
 
 
-def test_internal_design_manual_title_and_polish_notes_are_current() -> None:
+def test_internal_design_manual_describes_current_thread_runtime() -> None:
     manual = INTERNAL_MANUAL_PATH.read_text(encoding="utf-8")
 
-    assert manual.startswith("# 内部设计手册（v3.1.5W）")
-    assert "## 16. v2.9.2 Tool UX Polish Notes" in manual
-    assert "## 17. v2.9.3 Allowlist and Serialization Compatibility Notes" in manual
-    assert "## 18. v2.9.4 Runtime Status Performance Cleanup Notes" in manual
-    assert "## 19. v2.9.5 Safe Serialization Fix Notes" in manual
-    assert "## 20. v2.9.6 Model-led Action Runtime Notes" in manual
-    assert "## 20.1 v2.9.7 Model-led Runtime Cleanup Notes" in manual
-    assert "## 20.2 v2.9.8 ContextPack and Compaction Cleanup Notes" in manual
-    assert "## 20.3 v2.9.9 Minimal ContextPack and TurnMemory Notes" in manual
-    assert "## 20.4 v2.9.10 All-Tool Drain Fix Notes" in manual
-    assert "## 20.5 v2.9.11 Path Portability and Search Safety Notes" in manual
-    assert "## 20.6 v2.9.12 Live Timeline and LLM Diagnostics Notes" in manual
-    assert "## 20.7 v2.9.13 Workspace and Permission Profiles Notes" in manual
-    assert "## 20.8 v2.9.14 ModelContext-first Context System Notes" in manual
-    assert "## 20.9 v2.9.15 Main Card and Debug Cleanup Notes" in manual
-    assert "## 20.10 v2.9.16 UI Card Hotfix and Permission Profile Relocation Notes" in manual
-    assert "## 20.11 v2.9.17 Permission Selector UI Polish Notes" in manual
-    assert "## 20.12 v2.9.19 Hard Cleanup and Manual Update Notes" in manual
-    assert "## 20.13 v2.9.20 Permission Mode Notes" in manual
-    assert "## 20.14 v3.0.0 ModelContext Minimal Core Refactor Notes" in manual
-    assert "## 20.15 v3.1.5V Thread Runtime and Agent Spec Notes" in manual
-    assert "## 20.16 v3.1.5W VP Skills v1 Notes" in manual
-    assert "`tool_scope`" in manual
-    assert "`emergency_max_tool_calls_per_turn`: `1000`" not in manual
-    assert "Streaming is postponed for v2.9.0" not in manual
-    assert "90% 自动压缩预算" not in manual
-    assert "`ToolGuardResult`" not in manual
-    assert "## 25. Context Turns" in manual
-    assert "## 26. Python Command Handling" in manual
-    assert "## 27. Python Version Recommendation" in manual
-    assert "## 28. Shell Command Allowlist" in manual
-    assert "## 29. Workspace and Permission Profiles" in manual
+    assert manual.startswith("# Vintage Programmer 内部设计手册")
+    assert "`thread_transcript.items` 是可继续对话的唯一历史事实源" in manual
+    assert "System Message 只有一个" in manual
+    assert "Trace 不是第二份聊天历史" in manual
+    assert "选择 Full Access 就是本轮完整文件系统授权" in manual
+    assert "skills/builtin/<name>/SKILL.md" in manual
+    assert "skills/team/<name>/SKILL.md" in manual
+    assert "旧 Harness 六要素" in manual
+    assert "workspace/skills/<name>/SKILL.md" not in manual
+    assert "agents/vintage_programmer/skills/<skill>/SKILL.md" not in manual
+    assert "VP_ALLOW_ANY_PATH" in manual
 
 
 def test_failed_tool_summary_defaults_are_wired_into_frontend() -> None:

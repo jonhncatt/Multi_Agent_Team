@@ -1,4 +1,6 @@
-# Global Skill Registry and Progressive Disclosure
+# Skill Architecture：Global Registry and Progressive Disclosure
+
+本文描述当前已实现的 Skill 架构，不是待实施计划。
 
 ## Catalogs
 
