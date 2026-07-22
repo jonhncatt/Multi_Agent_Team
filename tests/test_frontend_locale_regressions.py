@@ -1923,6 +1923,10 @@ def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
     assert 'id="evalModal"' in script
     assert "evalButtonLabel" in script
     assert "completed_attempts" in script
+    assert "selectedEvalSuite.requires_live !== false" in script
+    assert "selectedEvalSuite.supports_repeat !== false" in script
+    assert "selectedEvalRequiresLive && !evalForm.live" in script
+    assert 't("eval.deterministic_hint")' in script
 
 
 def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:

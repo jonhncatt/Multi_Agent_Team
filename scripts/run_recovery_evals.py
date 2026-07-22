@@ -2,23 +2,24 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
 from pathlib import Path
-import re
-import subprocess
 import sys
-import time
 from typing import Any
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.recovery_evals import (  # noqa: E402
+    RecoveryEvalConfigurationError,
+    load_recovery_eval_suite,
+    run_recovery_eval_suite,
+)
+
+
 DEFAULT_CASES = ROOT / "evals" / "tool_failure_recovery_cases.json"
 DEFAULT_OUTPUT = ROOT / "artifacts" / "evals" / "runtime-recovery-summary.json"
-
-
-class RecoveryEvalConfigurationError(ValueError):
-    pass
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -31,52 +32,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _load_cases(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RecoveryEvalConfigurationError("Recovery eval manifest is unreadable or invalid JSON.") from exc
-    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != 1:
-        raise RecoveryEvalConfigurationError("Recovery eval manifest must use schema_version 1.")
-    cases = payload.get("cases")
-    if not isinstance(cases, list) or not cases:
-        raise RecoveryEvalConfigurationError("Recovery eval manifest must contain at least one case.")
-    names: set[str] = set()
-    for item in cases:
-        if not isinstance(item, dict):
-            raise RecoveryEvalConfigurationError("Every recovery eval case must be an object.")
-        name = str(item.get("name") or "").strip()
-        node = str(item.get("test_node") or "").strip()
-        if not name or name in names:
-            raise RecoveryEvalConfigurationError("Recovery eval case names must be present and unique.")
-        if not node.startswith("tests/") or "::test_" not in node or ".." in node:
-            raise RecoveryEvalConfigurationError(f"Recovery eval case {name!r} has an invalid test node.")
-        test_file = ROOT / node.split("::", 1)[0]
-        if not test_file.is_file():
-            raise RecoveryEvalConfigurationError(f"Recovery eval case {name!r} references a missing test file.")
-        test_name = node.split("::", 1)[1]
-        test_source = test_file.read_text(encoding="utf-8")
-        if not re.search(rf"^def\s+{re.escape(test_name)}\s*\(", test_source, flags=re.MULTILINE):
-            raise RecoveryEvalConfigurationError(
-                f"Recovery eval case {name!r} references a missing test function: {test_name}."
-            )
-        names.add(name)
-    return payload
-
-
-def _safe_result(case: dict[str, Any], *, returncode: int, elapsed_ms: float) -> dict[str, Any]:
-    return {
-        "name": str(case.get("name") or ""),
-        "status": "passed" if returncode == 0 else "failed",
-        "failure_category": str(case.get("failure_category") or ""),
-        "expected_turn_status": str(case.get("expected_turn_status") or ""),
-        "expected_replan_trigger": str(case.get("expected_replan_trigger") or ""),
-        "max_tool_calls": int(case.get("max_tool_calls") or 0),
-        "expected_error_kinds": [str(item) for item in list(case.get("expected_error_kinds") or [])],
-        "expected_outcomes": [str(item) for item in list(case.get("expected_outcomes") or [])],
-        "expected_skipped_calls": int(case.get("expected_skipped_calls") or 0),
-        "expected_recovery_tool": str(case.get("expected_recovery_tool") or ""),
-        "elapsed_ms": round(elapsed_ms, 2),
-    }
+    return load_recovery_eval_suite(path, repo_root=ROOT)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,38 +55,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Recovery eval suite valid: {manifest.get('suite')} ({len(selected)} case(s))")
         return 0
 
-    results: list[dict[str, Any]] = []
-    for case in selected:
-        print(f"[RUN] {case['name']}")
-        started = time.perf_counter()
-        completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", str(case["test_node"])],
-            cwd=str(ROOT),
-            check=False,
-        )
-        result = _safe_result(
-            case,
-            returncode=int(completed.returncode),
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-        )
-        results.append(result)
-        print(f"[{result['status'].upper()}] {result['name']}")
+    def progress(event: dict[str, Any]) -> None:
+        if event.get("event") == "attempt_started":
+            print(f"[RUN] {event.get('case')}")
+        elif event.get("event") == "attempt_finished":
+            print(f"[DONE] {event.get('case')}")
 
-    passed = sum(1 for item in results if item["status"] == "passed")
-    report = {
-        "schema_version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "suite": str(manifest.get("suite") or ""),
-        "summary": {
-            "total": len(results),
-            "passed": passed,
-            "failed": len(results) - passed,
-            "success_rate_percent": round(passed * 100.0 / len(results), 2),
-            "real_model_calls": 0,
-        },
-        "results": results,
-        "sensitive_content_omitted": True,
-    }
+    report = run_recovery_eval_suite(
+        manifest,
+        repo_root=ROOT,
+        name_filter=str(args.name or ""),
+        progress_cb=progress,
+    )
+    passed = int(report["summary"]["passed"])
+    results = list(report["results"])
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

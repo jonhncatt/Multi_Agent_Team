@@ -15,10 +15,17 @@ from app.agent_evals import (
     run_eval_suite,
     safe_report_path,
 )
+from app.recovery_evals import (
+    RecoveryEvalConfigurationError,
+    load_recovery_eval_suite,
+    run_recovery_eval_suite,
+)
 
 
 TERMINAL_JOB_STATUSES = {"passed", "failed", "blocked", "interrupted"}
 ACTIVE_JOB_STATUSES = {"queued", "running"}
+LIVE_RUN_MODE = "live_agent"
+RECOVERY_RUN_MODE = "deterministic_recovery"
 
 
 class EvalJobError(ValueError):
@@ -38,7 +45,7 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 class EvalJobManager:
-    """Single-lane, persisted background runner for live Agent evals."""
+    """Single-lane, persisted background runner for supported Eval suites."""
 
     def __init__(
         self,
@@ -46,6 +53,8 @@ class EvalJobManager:
         repo_root: Path,
         run_suite_fn: Callable[..., dict[str, Any]] = run_eval_suite,
         load_suite_fn: Callable[[str | Path], dict[str, Any]] = load_eval_suite,
+        run_recovery_suite_fn: Callable[..., dict[str, Any]] = run_recovery_eval_suite,
+        load_recovery_suite_fn: Callable[..., dict[str, Any]] = load_recovery_eval_suite,
     ) -> None:
         self.repo_root = repo_root.expanduser().resolve()
         self.evals_root = (self.repo_root / "evals").resolve()
@@ -54,6 +63,8 @@ class EvalJobManager:
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self._run_suite_fn = run_suite_fn
         self._load_suite_fn = load_suite_fn
+        self._run_recovery_suite_fn = run_recovery_suite_fn
+        self._load_recovery_suite_fn = load_recovery_suite_fn
         self._lock = threading.RLock()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._queue: queue.Queue[str] = queue.Queue()
@@ -103,7 +114,7 @@ class EvalJobManager:
         suites: list[dict[str, Any]] = []
         for path in sorted(self.evals_root.glob("*.json")):
             try:
-                suite = self._load_suite_fn(path)
+                suite, run_mode = self._load_supported_suite(path)
             except Exception:
                 continue
             cases = [
@@ -117,11 +128,29 @@ class EvalJobManager:
                     "suite": str(suite.get("suite") or path.stem),
                     "cases": cases,
                     "case_count": len(cases),
+                    "run_mode": run_mode,
+                    "requires_live": run_mode == LIVE_RUN_MODE,
+                    "supports_repeat": run_mode == LIVE_RUN_MODE,
+                    "supports_provider": run_mode == LIVE_RUN_MODE,
+                    "supports_model": run_mode == LIVE_RUN_MODE,
+                    "supports_workspaces": run_mode == LIVE_RUN_MODE,
                 }
             )
         return suites
 
-    def _resolve_suite(self, raw: str) -> tuple[Path, dict[str, Any]]:
+    def _load_supported_suite(self, path: Path) -> tuple[dict[str, Any], str]:
+        try:
+            return self._load_suite_fn(path), LIVE_RUN_MODE
+        except EvalConfigurationError as live_error:
+            try:
+                return (
+                    self._load_recovery_suite_fn(path, repo_root=self.repo_root),
+                    RECOVERY_RUN_MODE,
+                )
+            except RecoveryEvalConfigurationError:
+                raise live_error
+
+    def _resolve_suite(self, raw: str) -> tuple[Path, dict[str, Any], str]:
         candidate = Path(str(raw or "evals/agent_workflow_cases.json").strip())
         if not candidate.is_absolute():
             candidate = self.repo_root / candidate
@@ -129,10 +158,10 @@ class EvalJobManager:
         if not _is_within(resolved, self.evals_root) or resolved.suffix.lower() != ".json":
             raise EvalJobError("Eval suite must be a JSON file under evals/.")
         try:
-            suite = self._load_suite_fn(resolved)
-        except EvalConfigurationError as exc:
+            suite, run_mode = self._load_supported_suite(resolved)
+        except (EvalConfigurationError, RecoveryEvalConfigurationError) as exc:
             raise EvalJobError(self._safe_error(exc)) from exc
-        return resolved, suite
+        return resolved, suite, run_mode
 
     def _resolve_output(self, raw: str, *, job_id: str) -> Path:
         text = str(raw or "").strip()
@@ -156,16 +185,16 @@ class EvalJobManager:
         ]
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not bool(payload.get("live")):
+        suite_path, suite, run_mode = self._resolve_suite(str(payload.get("cases") or ""))
+        if run_mode == LIVE_RUN_MODE and not bool(payload.get("live")):
             raise EvalJobError("Live Eval must be explicitly enabled before starting provider calls.")
-        suite_path, suite = self._resolve_suite(str(payload.get("cases") or ""))
         name_filter = str(payload.get("name") or "").strip()
         selected_cases = self._selected_cases(suite, name_filter)
         if not selected_cases:
             raise EvalJobError("No Eval cases matched the selected case filter.")
-        repeat = max(1, min(10, int(payload.get("repeat") or 1)))
-        provider = str(payload.get("provider") or "").strip()
-        model = str(payload.get("model") or "").strip()
+        repeat = max(1, min(10, int(payload.get("repeat") or 1))) if run_mode == LIVE_RUN_MODE else 1
+        provider = str(payload.get("provider") or "").strip() if run_mode == LIVE_RUN_MODE else ""
+        model = str(payload.get("model") or "").strip() if run_mode == LIVE_RUN_MODE else ""
         if len(provider) > 120 or len(model) > 200:
             raise EvalJobError("Provider or model value is too long.")
         job_id = f"eval-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
@@ -176,14 +205,15 @@ class EvalJobManager:
             "id": job_id,
             "status": "queued",
             "suite": str(suite.get("suite") or suite_path.stem),
+            "run_mode": run_mode,
             "cases_path": self._relative(suite_path),
             "name_filter": name_filter,
             "selected_cases": selected_cases,
             "repeat": repeat,
             "provider": provider,
             "model": model,
-            "live": True,
-            "keep_workspaces": bool(payload.get("keep_workspaces")),
+            "live": run_mode == LIVE_RUN_MODE,
+            "keep_workspaces": bool(payload.get("keep_workspaces")) if run_mode == LIVE_RUN_MODE else False,
             "report_path": self._relative(output_path),
             "created_at": now,
             "started_at": "",
@@ -233,7 +263,8 @@ class EvalJobManager:
             return
         self._update(job_id, status="running", started_at=_utc_now())
         try:
-            suite_path, suite = self._resolve_suite(str(job.get("cases_path") or ""))
+            suite_path, suite, resolved_run_mode = self._resolve_suite(str(job.get("cases_path") or ""))
+            run_mode = str(job.get("run_mode") or resolved_run_mode)
 
             def progress(event: dict[str, Any]) -> None:
                 event_type = str(event.get("event") or "")
@@ -251,15 +282,23 @@ class EvalJobManager:
                         completed_attempts=int(event.get("completed_attempts") or 0),
                     )
 
-            report = self._run_suite_fn(
-                suite,
-                repeat=int(job.get("repeat") or 1),
-                provider=str(job.get("provider") or ""),
-                model=str(job.get("model") or ""),
-                name_filter=str(job.get("name_filter") or ""),
-                keep_workspaces=bool(job.get("keep_workspaces")),
-                progress_cb=progress,
-            )
+            if run_mode == RECOVERY_RUN_MODE:
+                report = self._run_recovery_suite_fn(
+                    suite,
+                    repo_root=self.repo_root,
+                    name_filter=str(job.get("name_filter") or ""),
+                    progress_cb=progress,
+                )
+            else:
+                report = self._run_suite_fn(
+                    suite,
+                    repeat=int(job.get("repeat") or 1),
+                    provider=str(job.get("provider") or ""),
+                    model=str(job.get("model") or ""),
+                    name_filter=str(job.get("name_filter") or ""),
+                    keep_workspaces=bool(job.get("keep_workspaces")),
+                    progress_cb=progress,
+                )
             output_path = self._resolve_output(str(job.get("report_path") or ""), job_id=job_id)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             report["report_path"] = safe_report_path(output_path, fallback_label="report")

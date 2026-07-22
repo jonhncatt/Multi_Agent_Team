@@ -4142,6 +4142,11 @@ function App() {
   const t = (key, replacements = null) => translateUi(uiLocale, key, replacements);
   const currentTabLabel = (tab) => translateUi(uiLocale, `tabs.${tab}`);
   const selectedEvalSuite = evalCatalog.find((item) => String(item.path || "") === String(evalForm.cases || "")) || evalCatalog[0] || null;
+  const selectedEvalRequiresLive = !selectedEvalSuite || selectedEvalSuite.requires_live !== false;
+  const selectedEvalSupportsRepeat = !selectedEvalSuite || selectedEvalSuite.supports_repeat !== false;
+  const selectedEvalSupportsProvider = !selectedEvalSuite || selectedEvalSuite.supports_provider !== false;
+  const selectedEvalSupportsModel = !selectedEvalSuite || selectedEvalSuite.supports_model !== false;
+  const selectedEvalSupportsWorkspaces = !selectedEvalSuite || selectedEvalSuite.supports_workspaces !== false;
   const activeEvalRun = evalRuns.find((item) => ["queued", "running"].includes(String(item.status || ""))) || null;
   const evalButtonLabel = activeEvalRun
     ? t("eval.button_progress", {
@@ -9999,7 +10004,19 @@ function App() {
 	                    <select
 	                      className="drawer-input"
 	                      value=${evalForm.cases}
-	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, cases: event.currentTarget.value, name: "" }))}
+	                      onChange=${(event) => {
+	                        const cases = event.currentTarget.value;
+	                        const nextSuite = evalCatalog.find((item) => String(item.path || "") === String(cases || "")) || null;
+	                        const requiresLive = !nextSuite || nextSuite.requires_live !== false;
+	                        setEvalForm((prev) => ({
+	                          ...prev,
+	                          cases,
+	                          name: "",
+	                          repeat: nextSuite && nextSuite.supports_repeat === false ? 1 : prev.repeat,
+	                          live: requiresLive ? prev.live : false,
+	                          keep_workspaces: nextSuite && nextSuite.supports_workspaces === false ? false : prev.keep_workspaces,
+	                        }));
+	                      }}
 	                    >
 	                      ${evalCatalog.length
 	                        ? evalCatalog.map((item) => html`<option key=${item.path} value=${item.path}>${item.suite} · ${item.case_count}</option>`)
@@ -10027,6 +10044,7 @@ function App() {
 	                      min="1"
 	                      max="10"
 	                      value=${evalForm.repeat}
+	                      disabled=${!selectedEvalSupportsRepeat}
 	                      onInput=${(event) => setEvalForm((prev) => ({ ...prev, repeat: event.currentTarget.value }))}
 	                    />
 	                  </label>
@@ -10035,6 +10053,7 @@ function App() {
 	                    <select
 	                      className="drawer-input"
 	                      value=${evalForm.provider}
+	                      disabled=${!selectedEvalSupportsProvider}
 	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, provider: event.currentTarget.value }))}
 	                    >
 	                      ${dedupeStrings([evalForm.provider, ...availableProviders]).map(
@@ -10048,6 +10067,7 @@ function App() {
 	                      className="drawer-input"
 	                      type="text"
 	                      value=${evalForm.model}
+	                      disabled=${!selectedEvalSupportsModel}
 	                      onInput=${(event) => setEvalForm((prev) => ({ ...prev, model: event.currentTarget.value }))}
 	                    />
 	                  </label>
@@ -10062,11 +10082,13 @@ function App() {
 	                    />
 	                  </label>
 	                </div>
+	                ${selectedEvalRequiresLive ? null : html`<div className="path-hint">${t("eval.deterministic_hint")}</div>`}
 	                <div className="eval-options">
 	                  <label>
 	                    <input
 	                      type="checkbox"
 	                      checked=${Boolean(evalForm.live)}
+	                      disabled=${!selectedEvalRequiresLive}
 	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, live: event.currentTarget.checked }))}
 	                    />
 	                    <span>${t("eval.live")}</span>
@@ -10075,6 +10097,7 @@ function App() {
 	                    <input
 	                      type="checkbox"
 	                      checked=${Boolean(evalForm.keep_workspaces)}
+	                      disabled=${!selectedEvalSupportsWorkspaces}
 	                      onChange=${(event) => setEvalForm((prev) => ({ ...prev, keep_workspaces: event.currentTarget.checked }))}
 	                    />
 	                    <span>${t("eval.keep_workspaces")}</span>
@@ -10083,7 +10106,7 @@ function App() {
 	                ${evalError ? html`<div className="status-error">${evalError}</div>` : null}
 	                <div className="modal-actions eval-actions">
 	                  <button className="ghost-btn" type="button" onClick=${() => refreshEvalRuns()} disabled=${evalSubmitting}>${t("buttons.refresh")}</button>
-	                  <button className="solid-btn" type="button" onClick=${startEvalRun} disabled=${evalSubmitting || !evalForm.live}>
+	                  <button className="solid-btn" type="button" onClick=${startEvalRun} disabled=${evalSubmitting || (selectedEvalRequiresLive && !evalForm.live)}>
 	                    ${evalSubmitting ? t("eval.starting") : t("eval.start")}
 	                  </button>
 	                </div>

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.agent_evals import EvalConfigurationError
 from app.eval_jobs import EvalJobError, EvalJobManager
 
 
@@ -129,3 +130,100 @@ def test_eval_job_marks_active_record_interrupted_after_restart(tmp_path: Path) 
     assert job is not None
     assert job["status"] == "interrupted"
     assert job["error_kind"] == "app_restarted"
+
+
+def test_recovery_eval_is_visible_and_runs_without_live_provider_calls(tmp_path: Path) -> None:
+    evals_root = tmp_path / "evals"
+    tests_root = tmp_path / "tests"
+    evals_root.mkdir(parents=True)
+    tests_root.mkdir(parents=True)
+    (tests_root / "test_runtime.py").write_text(
+        "def test_recovery_strategy():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (evals_root / "tool_failure_recovery_cases.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "suite": "tool_failure_recovery",
+                "cases": [
+                    {
+                        "name": "replan_allows_new_strategy",
+                        "test_node": "tests/test_runtime.py::test_recovery_strategy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def reject_live_suite(_path: str | Path) -> dict:
+        raise EvalConfigurationError("not a live suite")
+
+    def recovery_runner(suite, *, repo_root, name_filter, progress_cb):
+        assert repo_root == tmp_path.resolve()
+        assert name_filter == "replan"
+        progress_cb({"event": "attempt_started", "case": suite["cases"][0]["name"], "attempt": 1})
+        progress_cb(
+            {
+                "event": "attempt_finished",
+                "case": suite["cases"][0]["name"],
+                "attempt": 1,
+                "completed_attempts": 1,
+            }
+        )
+        return {
+            "summary": {
+                "total_attempts": 1,
+                "passed": 1,
+                "failed": 0,
+                "blocked": 0,
+                "real_model_calls": 0,
+            },
+            "results": [{"name": suite["cases"][0]["name"], "status": "passed"}],
+        }
+
+    manager = EvalJobManager(
+        repo_root=tmp_path,
+        load_suite_fn=reject_live_suite,
+        run_recovery_suite_fn=recovery_runner,
+    )
+
+    catalog = manager.catalog()
+    assert catalog == [
+        {
+            "path": "evals/tool_failure_recovery_cases.json",
+            "suite": "tool_failure_recovery",
+            "cases": ["replan_allows_new_strategy"],
+            "case_count": 1,
+            "run_mode": "deterministic_recovery",
+            "requires_live": False,
+            "supports_repeat": False,
+            "supports_provider": False,
+            "supports_model": False,
+            "supports_workspaces": False,
+        }
+    ]
+
+    job = manager.submit(
+        {
+            "cases": "evals/tool_failure_recovery_cases.json",
+            "name": "replan",
+            "repeat": 9,
+            "provider": "must-not-be-used",
+            "model": "must-not-be-used",
+            "live": False,
+            "keep_workspaces": True,
+        }
+    )
+    assert job["run_mode"] == "deterministic_recovery"
+    assert job["live"] is False
+    assert job["repeat"] == 1
+    assert job["provider"] == ""
+    assert job["model"] == ""
+    assert job["keep_workspaces"] is False
+    assert manager.wait_for_idle(timeout=3)
+    completed = manager.get(job["id"])
+    assert completed is not None
+    assert completed["status"] == "passed"
+    assert completed["summary"]["real_model_calls"] == 0

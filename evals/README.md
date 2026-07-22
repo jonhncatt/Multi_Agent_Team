@@ -75,6 +75,8 @@ The report's `scenario` section records required and forbidden tools, accepted g
 
 `evals/tool_failure_recovery_cases.json` runs focused Runtime state-machine cases with fake tools and zero provider calls. It covers repeated-failure replanning, environment blocks, verification-before-change, no-progress stops, distinct failure targets, and the regression where repeated `search_codebase/not_a_directory` failures are followed by a skipped batch call, a rejected non-allowlisted command, and a successful `rg` strategy.
 
+This suite is also available from the home-page `Eval` dialog. It is marked as deterministic there, so the Live/provider/model controls are disabled and no provider request is made.
+
 ```bash
 python scripts/run_recovery_evals.py --validate-only
 python scripts/run_recovery_evals.py
