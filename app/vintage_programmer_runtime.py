@@ -33,7 +33,15 @@ from app.context_pack import (
     render_compaction_prompt,
     render_compaction_summary,
 )
-from app.context_meter import count_tokens, quick_count_tokens, resolve_context_window
+from app.context_meter import (
+    DEFAULT_RETAINED_CONTEXT_TOKENS,
+    ContextWindowStatus,
+    build_context_window_status,
+    count_tokens,
+    quick_count_tokens,
+    resolve_context_window,
+    truncate_text_to_token_limit,
+)
 from app.i18n import normalize_locale, response_style_hint, translate
 from app.llm_exchange import (
     MAX_EXCHANGES_PER_TURN,
@@ -68,6 +76,7 @@ from app.tool_trace_summary import (
     validate_tool_arguments,
 )
 from app.thread_transcript import normalize_transcript_item, transcript_items_after_compaction
+from app.thread_titles import build_thread_title_messages, sanitize_generated_thread_title
 from app.tool_failures import classify_tool_failure, failure_key
 from app.trace_events import make_activity_event, make_trace_event
 from app.workbench import WorkbenchStore, build_tool_descriptors, split_frontmatter, tool_descriptor_by_name
@@ -100,6 +109,7 @@ _READ_ONLY_TOOL_NAMES = {
     "request_user_input",
     "spawn_subagent",
     "wait_subagents",
+    "read_tool_result",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -111,8 +121,6 @@ _DEFAULT_MAX_GUARD_REJECTIONS = 2
 _DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN = 2
 _DEFAULT_REPEATED_FAILURES_AFTER_REPLAN = 1
 _DEFAULT_MAX_TOTAL_FAILURES = 5
-_DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
-_DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
 _SUBAGENT_CANCEL_GRACE_SECONDS = 0.25
 
 
@@ -3905,25 +3913,75 @@ class VintageProgrammerRuntime:
         if not isinstance(compact, dict):
             return {"ok": False, "summary": str(compact or "")}
 
-        if normalized_tool == "glob_file_search":
-            matches = list(compact.get("matches") or [])
-            if len(matches) > 100:
-                compact["matches"] = matches[:100]
-                compact["truncated"] = True
-                compact["model_note"] = "Only the first 100 matches are shown. Use a narrower pattern."
-        elif normalized_tool == "list_dir":
-            entries = list(compact.get("entries") or [])
-            if len(entries) > 120:
-                compact["entries"] = entries[:120]
-                compact["truncated"] = True
-                compact["model_note"] = "Only the first 120 directory entries are shown. Use a narrower path or search."
         return compact
 
     def _tool_message_for_result(self, *, result: dict[str, Any], call_id: str, name: str) -> Any:
         model_result = self._compact_tool_result_for_model(result, tool_name=name)
         result_json = json.dumps(model_result, ensure_ascii=False)
+        token_limit = max(512, int(getattr(self._config, "tool_output_token_limit", 10_000) or 10_000))
+        model_name = str(getattr(self._config, "default_model", "") or "")
+        result_tokens = count_tokens(result_json, model_name)
+        if result_tokens > token_limit:
+            full_result_json = json.dumps(dump_model(result), ensure_ascii=False)
+            full_result_tokens = count_tokens(full_result_json, model_name)
+            result_ref = ""
+            tools = getattr(self._backend, "tools", None)
+            persist = getattr(tools, "_persist_tool_result", None)
+            if callable(persist) and str(name or "") != "read_tool_result":
+                try:
+                    result_ref = str(
+                        persist(
+                            call_id=str(call_id or ""),
+                            tool_name=str(name or "unknown_tool"),
+                            content=full_result_json,
+                            token_count=full_result_tokens,
+                        )
+                        or ""
+                    )
+                except Exception:
+                    result_ref = ""
+            envelope = {
+                "ok": bool(model_result.get("ok")),
+                "summary": str(model_result.get("summary") or "Tool result truncated for model context."),
+                "truncated": True,
+                "truncation": {
+                    "reason": "tool_output_token_limit",
+                    "limit_tokens": token_limit,
+                    "original_tokens": full_result_tokens,
+                    "result_ref": result_ref,
+                    "continuation_tool": "read_tool_result" if result_ref else "",
+                    "next_cursor": 0 if result_ref else None,
+                    "cursor_unit": "characters" if result_ref else "",
+                },
+                "head": "",
+                "tail": "",
+            }
+            overhead_tokens = count_tokens(json.dumps(envelope, ensure_ascii=False), model_name)
+            preview_budget = max(64, token_limit - overhead_tokens - 64)
+            head_budget = max(32, int(preview_budget * 0.75))
+            tail_budget = max(16, preview_budget - head_budget)
+            envelope["head"] = truncate_text_to_token_limit(
+                result_json,
+                model=model_name,
+                max_tokens=head_budget,
+            )
+            envelope["tail"] = truncate_text_to_token_limit(
+                result_json,
+                model=model_name,
+                max_tokens=tail_budget,
+                from_end=True,
+            )
+            result_json = json.dumps(envelope, ensure_ascii=False)
+            while count_tokens(result_json, model_name) > token_limit and (
+                envelope["head"] or envelope["tail"]
+            ):
+                next_head_length = max(0, int(len(envelope["head"]) * 0.85))
+                next_tail_length = max(0, int(len(envelope["tail"]) * 0.85))
+                envelope["head"] = envelope["head"][:next_head_length]
+                envelope["tail"] = envelope["tail"][-next_tail_length:] if next_tail_length else ""
+                result_json = json.dumps(envelope, ensure_ascii=False)
         return self._backend._ToolMessage(
-            content=self._backend._shorten(result_json, 60000),
+            content=result_json,
             tool_call_id=str(call_id or ""),
             name=name or "unknown_tool",
         )
@@ -3934,6 +3992,7 @@ class VintageProgrammerRuntime:
         *,
         model: str | None,
         tool_names: tuple[str, ...] | list[str] | None,
+        exact: bool = True,
     ) -> int:
         """Estimate the complete request sent to the chat provider.
 
@@ -3943,31 +4002,7 @@ class VintageProgrammerRuntime:
         a real response is available.
         """
 
-        serialized_messages: list[dict[str, Any]] = []
-        for message in list(messages or []):
-            class_name = message.__class__.__name__.lower()
-            tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
-            tool_calls = safe_model_dump(getattr(message, "tool_calls", []) or [])
-            if tool_call_id or "toolmessage" in class_name:
-                role = "tool"
-            elif "systemmessage" in class_name:
-                role = "system"
-            elif "aimessage" in class_name:
-                role = "assistant"
-            else:
-                role = "user"
-            item: dict[str, Any] = {
-                "role": role,
-                "content": safe_model_dump(getattr(message, "content", "")),
-            }
-            name = str(getattr(message, "name", "") or "").strip()
-            if name:
-                item["name"] = name
-            if tool_call_id:
-                item["tool_call_id"] = tool_call_id
-            if isinstance(tool_calls, list) and tool_calls:
-                item["tool_calls"] = tool_calls
-            serialized_messages.append(item)
+        serialized_messages = [self._serialize_model_message(message) for message in list(messages or [])]
 
         selected_names = {str(name or "").strip() for name in list(tool_names or []) if str(name or "").strip()}
         selected_tools = [
@@ -3983,13 +4018,96 @@ class VintageProgrammerRuntime:
             "messages": serialized_messages,
             **({"tools": selected_tools} if selected_tools else {}),
         }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+        if not exact:
+            return quick_count_tokens(serialized_payload)
         try:
-            return count_tokens(
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
-                model,
-            )
+            return count_tokens(serialized_payload, model)
         except Exception:
-            return quick_count_tokens(json.dumps(payload, ensure_ascii=False, default=str))
+            return quick_count_tokens(serialized_payload)
+
+    @staticmethod
+    def _serialize_model_message(message: Any) -> dict[str, Any]:
+        class_name = message.__class__.__name__.lower()
+        tool_call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+        tool_calls = safe_model_dump(getattr(message, "tool_calls", []) or [])
+        if tool_call_id or "toolmessage" in class_name:
+            role = "tool"
+        elif "systemmessage" in class_name:
+            role = "system"
+        elif "aimessage" in class_name:
+            role = "assistant"
+        else:
+            role = "user"
+        item: dict[str, Any] = {
+            "role": role,
+            "content": safe_model_dump(getattr(message, "content", "")),
+        }
+        name = str(getattr(message, "name", "") or "").strip()
+        if name:
+            item["name"] = name
+        if tool_call_id:
+            item["tool_call_id"] = tool_call_id
+        if isinstance(tool_calls, list) and tool_calls:
+            item["tool_calls"] = tool_calls
+        return item
+
+    def _live_message_transactions(self, messages: list[Any]) -> list[list[Any]]:
+        transactions: list[list[Any]] = []
+        pending_transaction: list[Any] = []
+        pending_ids: set[str] = set()
+        for message in list(messages or []):
+            call_ids = set(self._tool_call_ids_from_ai_message(message))
+            tool_call_id = self._tool_message_call_id(message)
+            if call_ids:
+                if pending_transaction:
+                    transactions.append(pending_transaction)
+                pending_transaction = [message]
+                pending_ids = set(call_ids)
+                continue
+            if tool_call_id and pending_transaction:
+                pending_transaction.append(message)
+                pending_ids.discard(tool_call_id)
+                if not pending_ids:
+                    transactions.append(pending_transaction)
+                    pending_transaction = []
+                continue
+            if pending_transaction:
+                transactions.append(pending_transaction)
+                pending_transaction = []
+                pending_ids = set()
+            transactions.append([message])
+        if pending_transaction:
+            transactions.append(pending_transaction)
+        return transactions
+
+    def _retained_live_tail(
+        self,
+        messages: list[Any],
+        *,
+        model: str | None,
+        token_budget: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
+    ) -> list[Any]:
+        transactions = self._live_message_transactions(messages)
+        if not transactions:
+            return []
+        budget = max(1, int(token_budget or DEFAULT_RETAINED_CONTEXT_TOKENS))
+        retained: list[list[Any]] = []
+        retained_tokens = 0
+        for transaction in reversed(transactions):
+            serialized = json.dumps(
+                [self._serialize_model_message(message) for message in transaction],
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            transaction_tokens = count_tokens(serialized, model)
+            if retained and retained_tokens + transaction_tokens > budget:
+                break
+            retained.append(transaction)
+            retained_tokens += transaction_tokens
+        retained.reverse()
+        return [message for transaction in retained for message in transaction]
 
     def _build_live_compaction_summary(
         self,
@@ -3997,25 +4115,29 @@ class VintageProgrammerRuntime:
         tool_events: list[ToolEvent],
         start_index: int,
         end_index: int,
+        old_messages: list[dict[str, Any]] | None = None,
         model: str | None,
         max_output_tokens: int,
         progress_cb: Callable[[dict[str, Any]], None] | None,
         run_id: str,
         locale: str,
         trace_events: list[dict[str, Any]],
+        allow_llm: bool = True,
     ) -> str:
-        if end_index <= start_index:
+        compacted_old_messages = list(old_messages or [])
+        if end_index <= start_index and not compacted_old_messages:
             return ""
         compacted_events = tool_events[start_index:end_index]
         compaction_input = build_compaction_input(
-            old_messages=[],
+            old_messages=compacted_old_messages,
             tool_evidence=[dump_model(item) for item in compacted_events],
             modified_files=extract_modified_files_from_events(compacted_events),
         )
         fallback_summary = build_structured_compaction_summary(compaction_input)
         prompt = render_compaction_prompt(compaction_input)
         can_run_isolated_compactor = (
-            hasattr(self._backend, "build_llm")
+            allow_llm
+            and hasattr(self._backend, "build_llm")
             and hasattr(self._backend, "_invoke_chat_with_runner")
             and hasattr(self._backend, "_SystemMessage")
             and hasattr(self._backend, "_HumanMessage")
@@ -4098,6 +4220,85 @@ class VintageProgrammerRuntime:
                 )
         return render_compaction_summary(fallback_summary)
 
+    def _compact_messages_after_model_downgrade(
+        self,
+        *,
+        messages: list[Any],
+        model: str | None,
+        tool_names: tuple[str, ...] | list[str] | None,
+        max_output_tokens: int,
+        context_window_status: ContextWindowStatus,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
+        retained_context_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
+    ) -> tuple[list[Any], bool, ContextWindowStatus]:
+        if not context_window_status.model_downgraded:
+            return messages, False, context_window_status
+        if context_window_status.compact_recommendation == "none":
+            return messages, False, context_window_status
+        system_prefix_count = 0
+        for message in list(messages or []):
+            if self._message_role(message) != "system":
+                break
+            system_prefix_count += 1
+        system_messages = list(messages[:system_prefix_count])
+        compactable_messages = list(messages[system_prefix_count:])
+        retained_messages = self._retained_live_tail(
+            compactable_messages,
+            model=model,
+            token_budget=retained_context_tokens,
+        )
+        omitted_count = len(compactable_messages) - len(retained_messages)
+        if omitted_count <= 0:
+            return messages, False, context_window_status
+        omitted_messages = compactable_messages[:omitted_count]
+        # Keep this local seam isolated so provider-native /responses/compact can
+        # replace it later without changing ContextWindowStatus or retention rules.
+        summary = self._build_live_compaction_summary(
+            tool_events=[],
+            start_index=0,
+            end_index=0,
+            old_messages=[self._serialize_model_message(message) for message in omitted_messages],
+            model=model,
+            max_output_tokens=max_output_tokens,
+            progress_cb=progress_cb,
+            run_id=run_id,
+            locale=locale,
+            trace_events=trace_events,
+            allow_llm=False,
+        )
+        if not summary:
+            return messages, False, context_window_status
+        compacted_messages = [
+            *system_messages,
+            self._backend._HumanMessage(content=summary),
+            *retained_messages,
+        ]
+        if not self._messages_at_tool_boundary(compacted_messages):
+            return messages, False, context_window_status
+        after_tokens = self._estimate_model_request_tokens(
+            compacted_messages,
+            model=model,
+            tool_names=tool_names,
+            exact=True,
+        )
+        after_status = build_context_window_status(
+            model=model,
+            current_tokens=after_tokens,
+            max_output_tokens=max_output_tokens,
+            auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+            danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+            context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+            max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+            auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+            estimate_source="runtime_model_downgrade_compaction",
+            previous_status=context_window_status,
+            reuse_profile=True,
+        )
+        return compacted_messages, True, after_status
+
     def compact_context(
         self,
         compaction_input: dict[str, Any],
@@ -4135,6 +4336,56 @@ class VintageProgrammerRuntime:
             "source": "llm",
         }
 
+    def generate_thread_title(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+        model: str | None = None,
+        locale: str = "",
+    ) -> dict[str, Any]:
+        """Generate one short title outside the agent transcript and without tools."""
+        can_run_isolated_call = all(
+            hasattr(self._backend, name)
+            for name in ("_invoke_chat_with_runner", "_SystemMessage", "_HumanMessage", "_content_to_text")
+        )
+        if not can_run_isolated_call:
+            raise RuntimeError("isolated_thread_title_generation_unavailable")
+
+        system_text, human_text = build_thread_title_messages(
+            user_text,
+            assistant_text,
+            locale=locale,
+        )
+        ai_msg, _, effective_model, _ = self._invoke_backend_method(
+            self._backend._invoke_chat_with_runner,
+            messages=[
+                self._backend._SystemMessage(content=system_text),
+                self._backend._HumanMessage(content=human_text),
+            ],
+            model=str(model or self._config.summary_model or self._config.default_model or ""),
+            max_output_tokens=128,
+            enable_tools=False,
+            tool_names=[],
+            event_cb=None,
+        )
+        raw_title = self._backend._content_to_text(getattr(ai_msg, "content", ai_msg)).strip()
+        title = sanitize_generated_thread_title(raw_title)
+        if not title:
+            raise ValueError("invalid_generated_thread_title")
+        usage = (
+            dict(self._backend._extract_usage_from_message(ai_msg) or {})
+            if hasattr(self._backend, "_extract_usage_from_message")
+            else {}
+        )
+        usage["llm_calls"] = max(1, int(usage.get("llm_calls") or 0))
+        return {
+            "title": title,
+            "raw_title": raw_title,
+            "effective_model": str(effective_model or model or ""),
+            "token_usage": usage,
+        }
+
     def _maybe_compact_live_messages(
         self,
         *,
@@ -4149,40 +4400,66 @@ class VintageProgrammerRuntime:
         run_id: str,
         locale: str,
         trace_events: list[dict[str, Any]],
-        auto_compact_token_limit: int,
-        context_window_known: bool,
-    ) -> tuple[list[Any], int, bool, int]:
-        _ = context_window_known
+        context_window_status: ContextWindowStatus,
+        retained_context_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
+    ) -> tuple[list[Any], int, bool, ContextWindowStatus]:
         if not self._messages_at_tool_boundary(messages):
-            return messages, compacted_until, False, 0
+            return messages, compacted_until, False, context_window_status
         estimated_tokens = self._estimate_model_request_tokens(
             messages,
             model=model,
             tool_names=tool_names,
+            exact=False,
         )
-        uncompacted_events = list(tool_events[compacted_until:])
-        try:
-            uncompacted_tool_tokens = count_tokens(
-                json.dumps([dump_model(item) for item in uncompacted_events], ensure_ascii=False, default=str),
-                model,
-            )
-        except Exception:
-            uncompacted_tool_tokens = quick_count_tokens(
-                json.dumps([dump_model(item) for item in uncompacted_events], ensure_ascii=False, default=str)
-            )
-        context_pressure = auto_compact_token_limit > 0 and estimated_tokens >= auto_compact_token_limit
-        tool_pressure = (
-            len(uncompacted_events) >= _DEFAULT_COMPACT_AFTER_TOOL_CALLS
-            or (len(uncompacted_events) >= 8 and uncompacted_tool_tokens >= 16_000)
+        live_status = build_context_window_status(
+            model=model,
+            current_tokens=estimated_tokens,
+            max_output_tokens=max_output_tokens,
+            auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+            danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+            context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+            max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+            auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+            estimate_source="runtime_quick_estimate",
+            previous_status=context_window_status,
+            reuse_profile=True,
         )
-        if not context_pressure and not tool_pressure:
-            return messages, compacted_until, False, estimated_tokens
-        if len(messages) <= base_message_count + _DEFAULT_COMPACT_KEEP_LAST_MESSAGES:
-            return messages, compacted_until, False, estimated_tokens
+        exact_review_floor = max(1, int(live_status.auto_compact_token_limit * 0.85))
+        if live_status.auto_compact_token_limit > 0 and estimated_tokens >= exact_review_floor:
+            estimated_tokens = self._estimate_model_request_tokens(
+                messages,
+                model=model,
+                tool_names=tool_names,
+                exact=True,
+            )
+            live_status = build_context_window_status(
+                model=model,
+                current_tokens=estimated_tokens,
+                max_output_tokens=max_output_tokens,
+                auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                estimate_source="runtime_exact_estimate",
+                previous_status=live_status,
+                reuse_profile=True,
+            )
+        if live_status.compact_recommendation == "none":
+            return messages, compacted_until, False, live_status
 
-        end_index = max(compacted_until, len(tool_events) - 4)
+        dynamic_messages = list(messages[base_message_count:])
+        tail_messages = self._retained_live_tail(
+            dynamic_messages,
+            model=model,
+            token_budget=retained_context_tokens,
+        )
+        if len(tail_messages) >= len(dynamic_messages):
+            return messages, compacted_until, False, live_status
+        retained_tool_results = sum(1 for message in tail_messages if self._message_role(message) == "tool")
+        end_index = max(compacted_until, len(tool_events) - retained_tool_results)
         if end_index <= compacted_until:
-            return messages, compacted_until, False, estimated_tokens
+            return messages, compacted_until, False, live_status
 
         summary = self._build_live_compaction_summary(
             tool_events=tool_events,
@@ -4196,18 +4473,17 @@ class VintageProgrammerRuntime:
             trace_events=trace_events,
         )
         if not summary:
-            return messages, compacted_until, False, estimated_tokens
+            return messages, compacted_until, False, live_status
 
         base_messages = list(messages[:base_message_count])
-        tail_messages = list(messages[-_DEFAULT_COMPACT_KEEP_LAST_MESSAGES:])
         compacted_messages = [
             *base_messages,
             self._backend._HumanMessage(content=summary),
             *tail_messages,
         ]
         if not self._messages_at_tool_boundary(compacted_messages):
-            return messages, compacted_until, False, estimated_tokens
-        return compacted_messages, end_index, True, estimated_tokens
+            return messages, compacted_until, False, live_status
+        return compacted_messages, end_index, True, live_status
 
     @staticmethod
     def _invoke_backend_method(
@@ -4346,9 +4622,27 @@ class VintageProgrammerRuntime:
         )
         effective_cwd = str(project_context.get("cwd") or project_root or "").strip()
         compaction_status = dict(context_payload.get("compaction_status") or {})
-        auto_compact_token_limit = max(0, int(compaction_status.get("auto_compact_token_limit") or 0))
-        context_window_known = bool(compaction_status.get("context_window_known"))
-        live_compaction_status = dict(compaction_status)
+        context_window_status = ContextWindowStatus.from_payload(
+            compaction_status,
+            model=requested_model,
+        )
+        if context_window_status.operational_context_window <= 0:
+            context_window_status = build_context_window_status(
+                model=requested_model,
+                current_tokens=int(compaction_status.get("estimated_context_tokens") or 0),
+                max_output_tokens=int(settings.max_output_tokens),
+                auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                estimate_source="pre_turn_context_status",
+            )
+        live_compaction_status = {
+            **compaction_status,
+            **context_window_status.to_dict(),
+            "context_window_status": context_window_status.to_dict(),
+        }
         run_workspace_state = self._initial_run_workspace_state(
             project_root=project_root,
             cwd=effective_cwd,
@@ -5424,6 +5718,7 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
 
+        base_message_count = len(messages)
         ai_msg: Any = None
         try:
             self._assert_tool_message_invariants(
@@ -5580,6 +5875,73 @@ class VintageProgrammerRuntime:
                     ),
                 )
                 self._append_llm_exchange(llm_exchanges, initial_exchange)
+                context_window_status = build_context_window_status(
+                    model=effective_model or requested_model,
+                    current_tokens=latest_request_estimated_tokens,
+                    max_output_tokens=int(settings.max_output_tokens),
+                    auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                    danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                    context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                    max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                    auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                    estimate_source="runtime_initial_effective_model",
+                    previous_status=context_window_status,
+                    reuse_profile=True,
+                )
+                downgrade_before_tokens = int(context_window_status.estimated_context_tokens or 0)
+                messages, downgrade_compacted, context_window_status = self._compact_messages_after_model_downgrade(
+                    messages=messages,
+                    model=effective_model or requested_model,
+                    tool_names=runnable_tools,
+                    max_output_tokens=int(settings.max_output_tokens),
+                    context_window_status=context_window_status,
+                    progress_cb=progress_cb,
+                    run_id=run_id,
+                    locale=locale,
+                    trace_events=trace_events,
+                )
+                live_compaction_status.update(context_window_status.to_dict())
+                live_compaction_status["context_window_status"] = context_window_status.to_dict()
+                if context_window_status.model_downgraded:
+                    downgrade_note = (
+                        f"context_model_downgraded:"
+                        f"{context_window_status.previous_model or requested_model}->"
+                        f"{context_window_status.model}"
+                    )
+                    if downgrade_note not in notes:
+                        notes.append(downgrade_note)
+                if downgrade_compacted:
+                    base_message_count = len(messages)
+                    live_compaction_status["generation"] = int(live_compaction_status.get("generation") or 0) + 1
+                    live_compaction_status["last_compaction_phase"] = "model_downgrade"
+                    live_compaction_status["phase"] = "model_downgrade"
+                    live_compaction_status["reason"] = "model_downgrade"
+                    live_compaction_status["before_tokens"] = downgrade_before_tokens
+                    live_compaction_status["after_tokens"] = int(context_window_status.estimated_context_tokens or 0)
+                    live_compaction_status["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    live_compaction_status["last_compaction_reason"] = (
+                        f"model_downgrade:{context_window_status.previous_model}/{context_window_status.model}"
+                    )
+                    notes.append("context_compacted_for_model_downgrade")
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="context.compacted",
+                        title="Context compacted after model downgrade",
+                        detail=(
+                            f"{context_window_status.previous_model or requested_model} -> "
+                            f"{context_window_status.model}"
+                        ),
+                        status="success",
+                        payload={
+                            "phase": "model_downgrade",
+                            "reason": "model_downgrade",
+                            "before_tokens": downgrade_before_tokens,
+                            "after_tokens": int(context_window_status.estimated_context_tokens or 0),
+                            "operational_context_window": int(context_window_status.operational_context_window),
+                        },
+                        trace_events=trace_events,
+                    )
 
             halt_for_user_input = False
             turn_started_at = time.monotonic()
@@ -5599,7 +5961,6 @@ class VintageProgrammerRuntime:
             replan_attempt_count = 0
             replan_failure_key = ""
             compacted_tool_events = 0
-            base_message_count = len(messages)
             invalid_tool_call_recovery_count = 0
             empty_after_failure_recovery_count = 0
             latest_tool_round_had_failure = False
@@ -6956,9 +7317,9 @@ class VintageProgrammerRuntime:
                 if not self._messages_at_tool_boundary(messages):
                     notes.append("compaction_skipped_not_at_tool_boundary")
                     compacted = False
-                    live_estimated_tokens = 0
+                    live_window_status = context_window_status
                 else:
-                    messages, compacted_tool_events, compacted, live_estimated_tokens = self._maybe_compact_live_messages(
+                    messages, compacted_tool_events, compacted, live_window_status = self._maybe_compact_live_messages(
                         messages=messages,
                         base_message_count=base_message_count,
                         tool_events=tool_events,
@@ -6970,14 +7331,22 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         locale=locale,
                         trace_events=trace_events,
-                        auto_compact_token_limit=auto_compact_token_limit,
-                        context_window_known=context_window_known,
+                        context_window_status=context_window_status,
                     )
-                if live_estimated_tokens and auto_compact_token_limit > 0:
-                    live_compaction_status["estimated_context_tokens"] = int(live_estimated_tokens)
+                context_window_status = live_window_status
+                live_compaction_status.update(live_window_status.to_dict())
+                live_compaction_status["context_window_status"] = live_window_status.to_dict()
+                if live_window_status.model_downgraded:
+                    downgrade_note = (
+                        f"context_model_downgraded:"
+                        f"{live_window_status.previous_model or requested_model}->"
+                        f"{live_window_status.model}"
+                    )
+                    if downgrade_note not in notes:
+                        notes.append(downgrade_note)
                 if compacted:
                     notes.append("turn_context_compacted")
-                    before_tokens = int(live_estimated_tokens or 0)
+                    before_tokens = int(live_window_status.estimated_context_tokens or 0)
                     after_tokens = 0
                     compaction_summary_text = ""
                     try:
@@ -6992,12 +7361,27 @@ class VintageProgrammerRuntime:
                         )
                     except Exception:
                         after_tokens = 0
+                    context_window_status = build_context_window_status(
+                        model=effective_model,
+                        current_tokens=after_tokens,
+                        max_output_tokens=int(settings.max_output_tokens),
+                        auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                        danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                        context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                        max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                        auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                        estimate_source="runtime_post_compaction_estimate",
+                        previous_status=live_window_status,
+                        reuse_profile=True,
+                    )
+                    live_compaction_status.update(context_window_status.to_dict())
+                    live_compaction_status["context_window_status"] = context_window_status.to_dict()
                     live_compaction_status["generation"] = int(live_compaction_status.get("generation") or 0) + 1
                     live_compaction_status["last_compaction_phase"] = "mid_turn"
                     live_compaction_status["phase"] = "mid_turn"
                     live_compaction_status["last_compacted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     live_compaction_status["last_compaction_reason"] = (
-                        f"context_limit:{before_tokens}/{int(auto_compact_token_limit or 0)}"
+                        f"context_limit:{before_tokens}/{int(live_window_status.auto_compact_token_limit or 0)}"
                     )
                     live_compaction_status["reason"] = "context_limit"
                     live_compaction_status["before_tokens"] = before_tokens

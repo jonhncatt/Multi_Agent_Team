@@ -36,6 +36,7 @@ from app.action_validator import (
 )
 from app.browser_runtime import BrowserToolManager
 from app.config import AppConfig, get_access_roots, normalize_permission_profile
+from app.context_meter import count_tokens, truncate_text_to_token_limit
 from app.i18n import normalize_locale
 from app.document_text import (
     extract_heading_entries_from_pages,
@@ -49,6 +50,7 @@ from app.document_text import (
 from app.sandbox import DockerSandboxManager
 from app.storage import ProjectStore
 from app.tool_trace_summary import safe_error_message
+from app.tool_result_store import ToolResultStore
 
 try:
     from pillow_heif import register_heif_opener
@@ -1137,6 +1139,7 @@ class LocalToolExecutor:
         self._web_cache_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_data_dir = (config.workspace_root / "app" / "data" / "runtime").resolve()
         self._runtime_data_dir.mkdir(parents=True, exist_ok=True)
+        self._tool_result_store = ToolResultStore(config.sessions_dir.parent / "tool_results")
         self._taint_registry_path = (self._runtime_data_dir / "taint_registry.json").resolve()
         self._project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
         self._browser_manager = BrowserToolManager(
@@ -1234,6 +1237,72 @@ class LocalToolExecutor:
 
     def _current_session_id(self) -> str:
         return str(getattr(self._runtime_ctx, "session_id", "") or "__anon__")
+
+    def _current_run_id(self) -> str:
+        return str(getattr(self._runtime_ctx, "run_id", "") or "")
+
+    def _persist_tool_result(
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        content: str,
+        token_count: int,
+    ) -> str:
+        return self._tool_result_store.save(
+            thread_id=self._current_session_id(),
+            run_id=self._current_run_id(),
+            call_id=call_id,
+            tool_name=tool_name,
+            content=content,
+            token_count=token_count,
+        )
+
+    def read_tool_result(
+        self,
+        result_ref: str,
+        cursor: int = 0,
+        max_tokens: int = 4000,
+    ) -> dict[str, Any]:
+        payload = self._tool_result_store.load(
+            thread_id=self._current_session_id(),
+            result_ref=str(result_ref or ""),
+        )
+        if payload is None:
+            return {
+                "ok": False,
+                "error": {"kind": "tool_result_not_found", "result_ref": str(result_ref or "")},
+                "summary": "The tool result reference is unavailable in this Thread.",
+            }
+        content = str(payload.get("content") or "")
+        start = max(0, min(len(content), int(cursor or 0)))
+        model_visible_cap = max(512, int(getattr(self.config, "tool_output_token_limit", 10_000) or 10_000))
+        token_limit = max(
+            128,
+            min(8000, int(max_tokens or 4000), max(128, model_visible_cap - 256)),
+        )
+        chunk = truncate_text_to_token_limit(
+            content[start:],
+            model=str(getattr(self._runtime_ctx, "model", "") or self.config.default_model),
+            max_tokens=token_limit,
+        )
+        if start < len(content) and not chunk:
+            chunk = content[start : start + 1]
+        next_cursor = start + len(chunk)
+        complete = next_cursor >= len(content)
+        return {
+            "ok": True,
+            "result_ref": str(result_ref or ""),
+            "tool_name": str(payload.get("tool_name") or "unknown_tool"),
+            "cursor": start,
+            "next_cursor": None if complete else next_cursor,
+            "cursor_unit": "characters",
+            "complete": complete,
+            "total_chars": len(content),
+            "total_tokens": max(0, int(payload.get("token_count") or count_tokens(content, self.config.default_model))),
+            "content": chunk,
+            "summary": "Tool result continuation returned.",
+        }
 
     def _current_project_id(self) -> str:
         return str(getattr(self._runtime_ctx, "project_id", "") or "")
@@ -3218,6 +3287,21 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "read_tool_result",
+                "description": "Continue reading a tool result that was truncated for model context. This reads the original execution result and never reruns the tool.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "result_ref": {"type": "string", "description": "Opaque result_ref from a truncated tool response."},
+                        "cursor": {"type": "integer", "minimum": 0, "default": 0, "description": "Character cursor returned by the previous chunk."},
+                        "max_tokens": {"type": "integer", "minimum": 512, "maximum": 8000, "default": 4000},
+                    },
+                    "required": ["result_ref"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "apply_patch",
                 "description": APPLY_PATCH_TOOL_DESCRIPTION,
                 "parameters": {
@@ -3896,6 +3980,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "write_stdin":
             result = self.write_stdin(**arguments)
+            return self._decorate_result(result)
+        if name == "read_tool_result":
+            result = self.read_tool_result(**arguments)
             return self._decorate_result(result)
         if name == "read_file":
             result = self.read_file(**arguments)

@@ -16,6 +16,7 @@ CANONICAL_TOOL_NAMES = (
     "request_user_input",
     "spawn_subagent",
     "wait_subagents",
+    "read_tool_result",
     "save_skill",
     "save_task",
     "exec_command",

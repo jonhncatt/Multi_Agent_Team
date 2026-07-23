@@ -59,6 +59,53 @@ def _model_ids_from_payload(payload: Any) -> list[str]:
     return _dedupe_models(values)
 
 
+def _positive_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _model_profiles_from_payload(payload: Any) -> dict[str, dict[str, int]]:
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = next(
+            (payload.get(key) for key in ("data", "models", "items") if isinstance(payload.get(key), list)),
+            [],
+        )
+    else:
+        rows = []
+    profiles: dict[str, dict[str, int]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("id") or row.get("model") or row.get("name") or "").strip()
+        if not model_id:
+            continue
+        truncation = row.get("truncation_policy") if isinstance(row.get("truncation_policy"), dict) else {}
+        profile = {
+            "operational_context_window": _positive_int(
+                row.get("operational_context_window")
+                or row.get("context_window")
+                or row.get("context_window_tokens")
+            ),
+            "model_max_context_window": _positive_int(
+                row.get("max_context_window")
+                or row.get("model_max_context_window")
+                or row.get("max_context_window_tokens")
+            ),
+            "auto_compact_token_limit": _positive_int(row.get("auto_compact_token_limit")),
+            "tool_output_token_limit": _positive_int(
+                row.get("tool_output_token_limit") or truncation.get("limit")
+            ),
+        }
+        cleaned = {key: value for key, value in profile.items() if value > 0}
+        if cleaned:
+            profiles[model_id] = cleaned
+    return profiles
+
+
 def _models_endpoint(config: AppConfig) -> str:
     base_url = str(config.openai_base_url or "").strip()
     if not base_url:
@@ -75,7 +122,7 @@ def _models_endpoint(config: AppConfig) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, ""))
 
 
-def fetch_provider_models(config: AppConfig, *, timeout_sec: float = 20.0) -> list[str]:
+def fetch_provider_models(config: AppConfig, *, timeout_sec: float = 20.0) -> Any:
     auth = OpenAIAuthManager(config).require()
     endpoint = _models_endpoint(config)
     headers = {
@@ -105,7 +152,9 @@ def fetch_provider_models(config: AppConfig, *, timeout_sec: float = 20.0) -> li
     models = _model_ids_from_payload(payload)
     if not models:
         raise ProviderModelRefreshError("Provider model endpoint returned no model identifiers.")
-    return models
+    # Preserve optional capability metadata when an OpenAI-compatible gateway
+    # exposes it. Standard /models responses still keep the legacy list shape.
+    return payload if _model_profiles_from_payload(payload) else models
 
 
 class ProviderModelCatalog:
@@ -113,7 +162,7 @@ class ProviderModelCatalog:
         self,
         path: Path,
         *,
-        fetcher: Callable[[AppConfig], list[str]] | None = None,
+        fetcher: Callable[[AppConfig], Any] | None = None,
     ) -> None:
         self.path = path.expanduser().resolve()
         self._fetcher = fetcher or fetch_provider_models
@@ -127,7 +176,7 @@ class ProviderModelCatalog:
             payload = {}
         providers = payload.get("providers") if isinstance(payload, dict) else {}
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "providers": dict(providers) if isinstance(providers, dict) else {},
         }
 
@@ -148,11 +197,30 @@ class ProviderModelCatalog:
                 return []
             return _dedupe_models(list(row.get("models") or []))
 
+    def profile_for(self, provider: str, model: str) -> dict[str, int]:
+        key = str(provider or "").strip().lower()
+        model_id = str(model or "").strip()
+        with self._lock:
+            row = (self._payload.get("providers") or {}).get(key)
+            profiles = row.get("profiles") if isinstance(row, dict) else {}
+            profile = profiles.get(model_id) if isinstance(profiles, dict) else {}
+            return {
+                str(name): int(value)
+                for name, value in dict(profile or {}).items()
+                if _positive_int(value) > 0
+            }
+
     def refresh(self, provider: str, config: AppConfig) -> dict[str, Any]:
         key = str(provider or "").strip().lower()
         if not key:
             raise ProviderModelRefreshError("Provider is required.")
-        models = _dedupe_models(self._fetcher(config))
+        fetched = self._fetcher(config)
+        if isinstance(fetched, dict):
+            models = _model_ids_from_payload(fetched)
+            profiles = _model_profiles_from_payload(fetched)
+        else:
+            models = _dedupe_models(list(fetched or []))
+            profiles = {}
         if not models:
             raise ProviderModelRefreshError("Provider model endpoint returned no model identifiers.")
         updated_at = _utc_now()
@@ -160,12 +228,14 @@ class ProviderModelCatalog:
             providers = self._payload.setdefault("providers", {})
             providers[key] = {
                 "models": models,
+                "profiles": {model: profiles[model] for model in models if model in profiles},
                 "updated_at": updated_at,
             }
             self._save_locked()
         return {
             "provider": key,
             "models": models,
+            "profiles": {model: profiles[model] for model in models if model in profiles},
             "updated_at": updated_at,
         }
 
@@ -174,4 +244,5 @@ __all__ = [
     "ProviderModelCatalog",
     "ProviderModelRefreshError",
     "fetch_provider_models",
+    "_model_profiles_from_payload",
 ]

@@ -4,12 +4,15 @@ import pytest
 
 import app.context_meter as context_meter_module
 from app.context_meter import (
+    ContextWindowStatus,
     build_compaction_status,
+    build_context_window_status,
     build_context_meter,
     build_context_meter_from_status,
     build_runtime_context_payload,
     maybe_auto_compact_session,
     record_context_usage_observation,
+    resolve_context_profile,
     resolve_context_window,
 )
 
@@ -46,8 +49,12 @@ def test_resolve_context_window_matches_openai_large_context_models() -> None:
 def test_resolve_context_window_matches_openai_gpt_5_6_family(model: str) -> None:
     window, source = resolve_context_window(model, max_output_tokens=128_000)
 
-    assert window == 1_050_000
+    assert window == 272_000
     assert source == "model_registry"
+    profile = resolve_context_profile(model, max_output_tokens=128_000)
+    assert profile["model_max_context_window"] == 1_050_000
+    assert profile["operational_context_window"] == 272_000
+    assert profile["tool_output_token_limit"] == 10_000
 
 
 def test_resolve_context_window_caches_model_capability_lookup() -> None:
@@ -57,7 +64,7 @@ def test_resolve_context_window_caches_model_capability_lookup() -> None:
     second = resolve_context_window("gpt-5.6-sol", max_output_tokens=128_000)
     cache_info = resolve_context_window.cache_info()
 
-    assert first == second == (1_050_000, "model_registry")
+    assert first == second == (272_000, "model_registry")
     assert cache_info.misses == 1
     assert cache_info.hits == 1
 
@@ -78,7 +85,9 @@ def test_context_window_and_auto_limit_can_be_overridden_for_company_deployment(
         estimate_mode="quick",
     )
 
-    assert status["effective_context_window"] == 1_000_000
+    assert status["operational_context_window"] == 1_000_000
+    assert status["effective_context_window"] == 950_000
+    assert status["model_max_context_window"] == 1_000_000
     assert status["threshold_source"] == "config_override"
     assert status["auto_compact_token_limit"] == 700_000
     assert status["auto_compact_limit_source"] == "config_override"
@@ -181,7 +190,7 @@ def test_build_context_meter_from_status_reuses_existing_compaction_status() -> 
     assert meter["estimated_tokens"] == status["estimated_context_tokens"]
     assert meter["estimated_payload_tokens"] == status["estimated_payload_tokens"]
     assert meter["auto_compact_token_limit"] == status["auto_compact_token_limit"]
-    assert meter["context_window"] == status["effective_context_window"]
+    assert meter["context_window"] == status["operational_context_window"]
 
 
 def test_quick_context_meter_marks_estimate_mode_without_forcing_stale() -> None:
@@ -277,7 +286,7 @@ def test_manual_compact_can_pack_short_history_with_smaller_retention() -> None:
         phase="manual",
         force=True,
         trigger="manual",
-        retained_raw_turns=2,
+        retained_history_tokens=1,
     )
 
     assert result["compacted"] is True
@@ -303,7 +312,7 @@ def test_current_long_user_input_does_not_trigger_history_noise_compaction() -> 
     assert status["compact_recommendation"] == "none"
 
 
-def test_old_history_noise_can_suggest_compaction_without_context_pressure() -> None:
+def test_old_history_noise_is_informational_without_context_pressure() -> None:
     session = {
         "summary": "",
         "turns": [
@@ -327,8 +336,8 @@ def test_old_history_noise_can_suggest_compaction_without_context_pressure() -> 
 
     assert status["estimated_context_tokens"] < status["auto_compact_token_limit"]
     assert status["history_noise_tokens"] >= status["history_soft_limit_tokens"]
-    assert status["compact_recommendation"] == "suggested"
-    assert status["compact_reason"] == "history_soft_limit"
+    assert status["compact_recommendation"] == "none"
+    assert status["compact_reason"] == ""
 
 
 def test_maybe_auto_compact_session_writes_replacement_history_state() -> None:
@@ -376,7 +385,73 @@ def test_maybe_auto_compact_session_writes_replacement_history_state() -> None:
     assert session["compaction_state"]["last_compaction_phase"] == "pre_turn"
     runtime_view = build_runtime_context_payload(session=session)
     assert runtime_view["summary"] == session["compaction_state"]["compacted_history"]
-    assert len(runtime_view["history_turns"]) <= 12
+    assert len(runtime_view["history_turns"]) > 12
+    assert len(runtime_view["history_turns"]) < len(session["turns"])
+
+
+def test_context_window_status_is_shared_across_pre_turn_and_runtime_estimates() -> None:
+    pre_turn = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=120_000,
+        estimate_source="pre_turn_exact",
+    )
+    restored = ContextWindowStatus.from_payload(
+        {"context_window_status": pre_turn.to_dict()},
+        model="gpt-5.6-sol",
+    )
+    mid_turn = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=130_000,
+        estimate_source="runtime_exact_estimate",
+        previous_status=restored,
+        reuse_profile=True,
+    )
+
+    assert mid_turn.operational_context_window == pre_turn.operational_context_window == 272_000
+    assert mid_turn.auto_compact_token_limit == pre_turn.auto_compact_token_limit == 244_800
+    assert mid_turn.estimate_source == "runtime_exact_estimate"
+    assert mid_turn.model_changed is False
+
+
+def test_model_downgrade_caps_global_overrides_to_the_smaller_known_model() -> None:
+    primary = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=100_000,
+        context_window_tokens=1_050_000,
+        max_context_window_tokens=1_050_000,
+    )
+    fallback = build_context_window_status(
+        model="mixtral-8x7b-32768",
+        current_tokens=30_000,
+        context_window_tokens=1_050_000,
+        max_context_window_tokens=1_050_000,
+        previous_status=primary,
+    )
+
+    assert fallback.operational_context_window == 32 * 1024
+    assert fallback.model_max_context_window == 32 * 1024
+    assert fallback.model_downgraded is True
+    assert fallback.compact_recommendation == "suggested"
+
+
+def test_history_retention_uses_token_budget_without_a_turn_count_cap() -> None:
+    session = {
+        "turns": [
+            {
+                "id": f"turn-{index}",
+                "role": "user" if index % 2 == 0 else "assistant",
+                "text": f"tiny-{index}",
+            }
+            for index in range(40)
+        ]
+    }
+
+    runtime_view = build_runtime_context_payload(
+        session=session,
+        retained_history_tokens=20_000,
+    )
+
+    assert len(runtime_view["history_turns"]) == 40
 
 
 def test_maybe_auto_compact_session_uses_llm_compactor_when_available() -> None:

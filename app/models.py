@@ -144,6 +144,7 @@ class MessageActivity(BaseModel):
     model_draft: str = ""
     final_answer: str = ""
     runtime_error: dict[str, Any] = Field(default_factory=dict)
+    runtime_outcome: dict[str, Any] = Field(default_factory=dict)
     runtime_inspector: dict[str, Any] = Field(default_factory=dict)
     task_completion: dict[str, Any] = Field(default_factory=dict)
     tool_boundary_clean: bool | None = None
@@ -251,6 +252,8 @@ class ContextMeter(BaseModel):
     estimated_payload_tokens: int = 0
     overhead_tokens: int = 0
     context_window: int = 0
+    model_max_context_window: int = 0
+    effective_context_window: int = 0
     auto_compact_token_limit: int = 0
     danger_compact_token_limit: int = 0
     history_soft_limit_tokens: int = 0
@@ -288,6 +291,12 @@ class CompactionStatus(BaseModel):
     retained_turn_count: int = 0
     estimated_context_tokens: int = 0
     estimated_payload_tokens: int = 0
+    model: str = ""
+    current_tokens: int = 0
+    projected_tokens: int = 0
+    remaining_tokens: int = 0
+    model_max_context_window: int = 0
+    operational_context_window: int = 0
     effective_context_window: int = 0
     auto_compact_token_limit: int = 0
     danger_compact_token_limit: int = 0
@@ -300,6 +309,11 @@ class CompactionStatus(BaseModel):
     observed_projected_tokens: int = 0
     estimated_static_tokens: int = 0
     context_window_known: bool = False
+    previous_model: str = ""
+    previous_operational_context_window: int = 0
+    model_changed: bool = False
+    model_downgraded: bool = False
+    context_window_status: dict[str, Any] = Field(default_factory=dict)
     last_compacted_at: str = ""
     last_compaction_reason: str = ""
     last_compaction_phase: str = ""

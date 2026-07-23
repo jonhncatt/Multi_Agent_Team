@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from app.config import load_config
-from app.provider_model_catalog import ProviderModelCatalog, _model_ids_from_payload
+from app.provider_model_catalog import (
+    ProviderModelCatalog,
+    _model_ids_from_payload,
+    _model_profiles_from_payload,
+)
 
 
 def _config(monkeypatch, tmp_path: Path):
@@ -20,6 +24,27 @@ def test_model_payload_parser_accepts_common_openai_compatible_shapes() -> None:
     assert _model_ids_from_payload({"data": [{"id": "gpt-a"}, {"id": "gpt-b"}]}) == ["gpt-a", "gpt-b"]
     assert _model_ids_from_payload({"models": [{"name": "model-a"}, "model-b"]}) == ["model-a", "model-b"]
     assert _model_ids_from_payload([{"model": "one"}, {"model": "one"}, {"model": "two"}]) == ["one", "two"]
+
+
+def test_model_payload_parser_preserves_optional_cached_context_profile() -> None:
+    payload = {
+        "data": [
+            {
+                "id": "company-gpt",
+                "context_window": 272_000,
+                "max_context_window": 1_050_000,
+                "auto_compact_token_limit": 244_800,
+                "truncation_policy": {"limit": 10_000},
+            }
+        ]
+    }
+
+    assert _model_profiles_from_payload(payload)["company-gpt"] == {
+        "operational_context_window": 272_000,
+        "model_max_context_window": 1_050_000,
+        "auto_compact_token_limit": 244_800,
+        "tool_output_token_limit": 10_000,
+    }
 
 
 def test_manual_refresh_replaces_and_persists_models_without_provider_secrets(monkeypatch, tmp_path: Path) -> None:
@@ -44,3 +69,33 @@ def test_manual_refresh_replaces_and_persists_models_without_provider_secrets(mo
     assert "not-persisted-key" not in stored
     assert "gateway.example.test" not in stored
     assert json.loads(stored)["providers"]["openai_compatible"]["models"] == refreshed["models"]
+
+
+def test_manual_refresh_caches_capabilities_without_network_lookup_per_turn(monkeypatch, tmp_path: Path) -> None:
+    config = _config(monkeypatch, tmp_path)
+    cache_path = tmp_path / "provider_models.json"
+    calls = {"count": 0}
+
+    def fetcher(_received_config):
+        calls["count"] += 1
+        return {
+            "data": [
+                {
+                    "id": "company-gpt",
+                    "context_window": 300_000,
+                    "max_context_window": 900_000,
+                }
+            ]
+        }
+
+    catalog = ProviderModelCatalog(cache_path, fetcher=fetcher)
+    catalog.refresh("openai_compatible", config)
+
+    assert catalog.profile_for("openai_compatible", "company-gpt") == {
+        "operational_context_window": 300_000,
+        "model_max_context_window": 900_000,
+    }
+    assert catalog.profile_for("openai_compatible", "company-gpt") == catalog.profile_for(
+        "openai_compatible", "company-gpt"
+    )
+    assert calls["count"] == 1

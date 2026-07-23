@@ -52,7 +52,7 @@ def test_context_status_and_manual_compact_routes_exist() -> None:
         "def get_session_context_status(",
         "def compact_session_endpoint(",
         "session_store.load(session_id, default_project=_default_project())",
-        "retained_raw_turns=2",
+        "retained_history_tokens=1",
         "force=True",
         "trigger=trigger",
     ):

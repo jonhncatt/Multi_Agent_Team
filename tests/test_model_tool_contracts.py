@@ -65,7 +65,7 @@ def test_every_runtime_tool_has_one_model_visible_contract(tmp_path: Path) -> No
     backend, model_specs, runtime_specs = _tool_surfaces(tmp_path)
 
     assert set(model_specs) == set(runtime_specs)
-    assert len(model_specs) == 34
+    assert len(model_specs) == 35
     for name, model_spec in model_specs.items():
         assert str(model_spec.get("description") or "").strip(), name
         assert _missing_property_descriptions(model_spec["parameters"]) == [], name

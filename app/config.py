@@ -392,11 +392,13 @@ class AppConfig:
     max_user_request_chars: int
     max_attachment_chars: int
     context_window_tokens: int
+    model_max_context_window_tokens: int
     context_auto_compact_token_limit: int
     context_auto_compact_ratio: float
     context_danger_compact_ratio: float
     context_history_soft_limit_tokens: int
     context_exact_stale_sec: int
+    tool_output_token_limit: int
     max_upload_mb: int
     default_locale: str
     tool_result_soft_trim_chars: int
@@ -1181,6 +1183,13 @@ def load_config() -> AppConfig:
                 int(_env("VP_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
             ),
         ),
+        model_max_context_window_tokens=max(
+            0,
+            min(
+                2_000_000,
+                int(_env("VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS", default="0") or "0"),
+            ),
+        ),
         context_auto_compact_token_limit=max(
             0,
             min(
@@ -1214,6 +1223,13 @@ def load_config() -> AppConfig:
             min(
                 3600,
                 int(_env("VP_CONTEXT_EXACT_STALE_SEC", default="60") or "60"),
+            ),
+        ),
+        tool_output_token_limit=max(
+            512,
+            min(
+                100_000,
+                int(_env("VP_TOOL_OUTPUT_TOKEN_LIMIT", default="10000") or "10000"),
             ),
         ),
         max_upload_mb=max(

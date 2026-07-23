@@ -164,6 +164,8 @@ def test_vp_context_compaction_env_is_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_CONTEXT_DANGER_COMPACT_RATIO", "0.96")
     monkeypatch.setenv("VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS", "234567")
     monkeypatch.setenv("VP_CONTEXT_EXACT_STALE_SEC", "90")
+    monkeypatch.setenv("VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS", "1050000")
+    monkeypatch.setenv("VP_TOOL_OUTPUT_TOKEN_LIMIT", "9000")
 
     config = load_config()
 
@@ -171,6 +173,8 @@ def test_vp_context_compaction_env_is_loaded(monkeypatch, tmp_path) -> None:
     assert config.context_danger_compact_ratio == 0.96
     assert config.context_history_soft_limit_tokens == 234567
     assert config.context_exact_stale_sec == 90
+    assert config.model_max_context_window_tokens == 1_050_000
+    assert config.tool_output_token_limit == 9000
 
 
 def test_web_fetch_budget_matches_main_branch_defaults(monkeypatch, tmp_path) -> None:

@@ -54,6 +54,30 @@
       "expected_turn_status": "blocked",
       "expected_replan_trigger": "no_progress",
       "max_tool_calls": 4
+    },
+    {
+      "name": "tool_output_truncation_is_resumable_without_rerun",
+      "test_node": "tests/test_tool_result_continuation.py::test_large_tool_result_is_token_bounded_and_resumable_without_rerun",
+      "failure_category": "context_management",
+      "expected_turn_status": "completed",
+      "expected_recovery_tool": "read_tool_result",
+      "max_tool_calls": 2
+    },
+    {
+      "name": "mid_turn_compaction_uses_token_threshold_only",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed",
+      "failure_category": "context_management",
+      "expected_turn_status": "completed",
+      "expected_replan_trigger": "",
+      "max_tool_calls": 20
+    },
+    {
+      "name": "model_downgrade_recalculates_context_before_followup",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_model_downgrade_compacts_large_base_before_the_next_request",
+      "failure_category": "context_management",
+      "expected_turn_status": "completed",
+      "expected_replan_trigger": "",
+      "max_tool_calls": 3
     }
   ]
 }

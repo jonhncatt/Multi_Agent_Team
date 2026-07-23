@@ -8,6 +8,7 @@ from app.local_tools import LocalToolExecutor
 CANONICAL_TOOL_NAMES = {
     "exec_command",
     "write_stdin",
+    "read_tool_result",
     "apply_patch",
     "read_file",
     "list_dir",

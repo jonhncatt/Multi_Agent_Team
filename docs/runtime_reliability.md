@@ -6,10 +6,14 @@ This document records the reliability behavior that must remain stable after the
 
 - The durable conversation source is `thread_transcript`; legacy `turns` remain readable only for Session migration.
 - A compaction summary is unverified continuation memory derived from transcript items and source-marked tool evidence. It does not copy Harness task state, work cursor, permissions, or the former six-element context structure.
-- GPT-5.4 uses a 272,000-token default usable window and a 90% automatic compaction threshold. A verified company deployment may override the usable window with `VP_CONTEXT_WINDOW_TOKENS` or the threshold with `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`.
+- GPT-5.4 and GPT-5.6 use a 272,000-token default operational window, a 90% automatic compaction threshold, and a 95% effective hard limit. GPT-5.6's 1,050,000-token model maximum is tracked separately. A verified company deployment may override the operational window with `VP_CONTEXT_WINDOW_TOKENS` or the threshold with `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`.
 - The latest provider-reported `input_tokens` is preferred. When it is unavailable, the Runtime estimates the complete request, including the system prompt, project instructions, compacted summary, transcript, attachments, current request, tool transactions, and selected tool schemas.
-- Retained history is selected as complete user-started transactions and is also token-bounded, so a single large tool result cannot silently defeat compaction.
+- Pre-turn and mid-turn decisions use the same persisted `ContextWindowStatus`; the model, operational window, thresholds, estimate source, and recommendation therefore cannot drift between the two phases.
+- Retained history uses a token budget rather than a turn/message count. Historical user-started transactions and live assistant-tool-result transactions are kept atomically, so compaction never leaves an orphaned ToolMessage.
+- If the provider falls back to a model with a smaller operational window, the Runtime re-evaluates the effective model before the next request and locally compacts old replay when required. This fallback compaction is deterministic and does not add another model call.
+- Tool-call count and the 120K history-noise diagnostic do not trigger full compaction. A tool result larger than the model-visible token cap is stored once under an opaque Thread-scoped `result_ref`; `read_tool_result` returns continuation chunks without rerunning the original tool.
 - Compaction is an internal Thread operation, not a chat Turn. Its minimal persisted record is `Thread.compaction = {generation, summary, compacted_until_item_id, compacted_at}`. `compaction_summary_chars` remains diagnostic metadata only. A Turn paused on an unresolved tool call cannot be compacted.
+- Provider-native `/responses/compact` is intentionally not called by the current Chat Completions Runtime. The local compaction seam is isolated so a later Responses API migration can replace it without changing window evaluation or retention semantics.
 
 ## Paused Turn lifecycle
 

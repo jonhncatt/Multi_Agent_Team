@@ -32,17 +32,19 @@ VP_MAX_OUTPUT_TOKENS=16384
 VP_MAX_USER_REQUEST_CHARS=4000000
 VP_MAX_ATTACHMENT_CHARS=1000000
 VP_CONTEXT_WINDOW_TOKENS=0
+VP_MODEL_MAX_CONTEXT_WINDOW_TOKENS=0
 VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT=0
 VP_CONTEXT_AUTO_COMPACT_RATIO=0.9
 VP_CONTEXT_DANGER_COMPACT_RATIO=0.95
 VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS=120000
 VP_CONTEXT_EXACT_STALE_SEC=60
+VP_TOOL_OUTPUT_TOKEN_LIMIT=10000
 ```
 
 这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
 `VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
-Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径只使用缓存或 quick 估算，不再每轮阻塞式精算 tokenizer。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 默认按 272K 可用窗口、90% 自动整理线和 95% 危险线处理；真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VP_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置模型默认值。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 只用于旧聊天/工具输出噪音，不适用于当前用户输入或附件原文。
+Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使用缓存或 quick 估算，只在接近阈值时做精确 tokenizer 复核。轮前与轮中共用同一个 `ContextWindowStatus`；历史和实时工具事务都按 token 预算保留，不再按固定 turn/message 数裁剪。provider 若降级到更小窗口模型，会在下一次请求前重算并用本地确定性摘要压缩旧 replay，不额外调用模型。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 和 GPT-5.6 默认按 272K 运行窗口、90% 自动整理线和 95% 硬保护线处理；GPT-5.6 的模型最大窗口会单独显示，不会自动成为运行窗口。真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VP_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置默认值。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 仅保留为历史噪音诊断，不再单独触发全文压缩。单个工具结果进入模型前受 `VP_TOOL_OUTPUT_TOKEN_LIMIT` 限制；被省略的完整结果只在实际截断时写入 Thread 侧存储，并可通过 `read_tool_result` 续读，不会重跑原工具。当前 Chat Completions Runtime 不调用 `/responses/compact`，该能力留到以后迁移 Responses API 时接入。
 
 ## Python Commands
 

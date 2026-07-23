@@ -574,12 +574,11 @@ def build_compaction_input(
     # history and must not be smuggled back into a Session=Thread summary.
     _ = task_state, work_cursor, current_status
     messages = []
-    for item in list(old_messages or []):
+    raw_old_messages = list(old_messages or [])
+    for item in raw_old_messages[-24:]:
         turn = _compact_turn_for_compaction(item)
         if turn:
             messages.append(turn)
-        if len(messages) >= 24:
-            break
     evidence = _normalize_compaction_tool_evidence(tool_evidence)
     files = _unique_strings(
         list(modified_files or []),

@@ -1697,6 +1697,103 @@ def test_thread_rename_reuses_session_title_and_exposes_display_title(monkeypatc
     assert reset_payload["has_custom_title"] is False
 
 
+def test_first_successful_turn_generates_one_model_title_without_overwriting_manual_title(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    class _TitleRuntime(_FakeVintageRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.title_calls = 0
+
+        def generate_thread_title(self, *, user_text, assistant_text, model=None, locale=""):
+            self.title_calls += 1
+            assert "重复工具失败" in str(user_text)
+            assert str(assistant_text) == "single-agent response"
+            assert str(model or "")
+            assert locale == main_app.config.default_locale
+            return {
+                "title": '标题："修复重复工具失败判定。"',
+                "effective_model": "gpt-title-test",
+                "token_usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "total_tokens": 5,
+                    "llm_calls": 1,
+                },
+            }
+
+    runtime = _TitleRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "请修复重复工具失败判定，并补充验证",
+            "settings": {
+                "model": "gpt-test",
+                "locale": main_app.config.default_locale,
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["token_usage"] == {
+        "input_tokens": 14,
+        "output_tokens": 9,
+        "total_tokens": 23,
+        "llm_calls": 2,
+        "estimated_cost_usd": 0.0,
+        "pricing_known": False,
+    }
+    session_id = first_payload["session_id"]
+    loaded = main_app.session_store.load(session_id)
+    assert loaded
+    assert loaded["title"] == ""
+    assert loaded["auto_title"] == "修复重复工具失败判定"
+    assert loaded["title_generation"]["status"] == "generated"
+    assert loaded["title_generation"]["model"] == "gpt-title-test"
+    assert runtime.title_calls == 1
+
+    listed = client.get("/api/threads").json()["threads"][0]
+    assert listed["title"] == "修复重复工具失败判定"
+    assert listed["has_custom_title"] is False
+
+    renamed = client.patch(f"/api/session/{session_id}/title", json={"title": "我的手动标题"})
+    assert renamed.status_code == 200
+    assert renamed.json()["display_title"] == "我的手动标题"
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "继续补充测试",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert second.status_code == 200
+    assert runtime.title_calls == 1
+    assert client.get(f"/api/thread/{session_id}").json()["display_title"] == "我的手动标题"
+
+    reset = client.patch(f"/api/session/{session_id}/title", json={"title": ""})
+    assert reset.status_code == 200
+    assert reset.json()["display_title"] == "修复重复工具失败判定"
+
+
 def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)
@@ -1837,7 +1934,7 @@ def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp
     assert [item["text"] for item in detail_response.json()["turns"]] == ["hello", "hi"]
     assert full_turn_response.json()["text"] == "hi"
     migrated = json.loads(session_path.read_text(encoding="utf-8"))
-    assert migrated["thread_record_schema_version"] == 4
+    assert migrated["thread_record_schema_version"] == 5
     assert "turns" not in migrated
     assert (tmp_path / "session_backups" / f"{session_id}.v2.json").exists()
 
@@ -2705,6 +2802,13 @@ def test_chat_endpoint_persists_failed_runtime_result_without_promoting_diagnost
     assert "runtime_error" not in last_turn["activity"]
     assert "model_draft" not in last_turn["activity"]
     assert "llm_exchanges" not in last_turn["activity"]
+    activity_response = client.get(f"/api/thread/{session_id}/turn/{last_turn['id']}?view=activity")
+    assert activity_response.status_code == 200
+    assert activity_response.json()["activity"]["runtime_outcome"] == {
+        "status": "failed",
+        "error_kind": "llm_empty_response",
+        "error_message": payload["runtime_error"]["message"],
+    }
     full_response = client.get(f"/api/thread/{session_id}/turn/{last_turn['id']}?view=full")
     assert full_response.status_code == 200
     full_turn = full_response.json()

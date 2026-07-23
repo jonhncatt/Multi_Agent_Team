@@ -64,6 +64,12 @@ class WriteStdinArgs(BaseModel):
     )
 
 
+class ReadToolResultArgs(BaseModel):
+    result_ref: str = Field(description="Opaque result_ref from a truncated tool response.")
+    cursor: int = Field(default=0, ge=0, description="Character cursor returned by the previous chunk.")
+    max_tokens: int = Field(default=4000, ge=512, le=8000, description="Maximum tokens to return in this chunk.")
+
+
 class ReadFileArgs(BaseModel):
     path: str = Field(description="Existing local file path under an allowed read root.")
     start_char: int = Field(default=0, ge=0, description="Zero-based character offset in character mode.")
@@ -660,6 +666,12 @@ class VPRuntimeBackend:
                 func=self._write_stdin_tool,
             ),
             self._StructuredTool.from_function(
+                name="read_tool_result",
+                description="Continue reading an omitted tool result without rerunning the original execution.",
+                args_schema=ReadToolResultArgs,
+                func=self._read_tool_result_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="apply_patch",
                 description=APPLY_PATCH_TOOL_DESCRIPTION,
                 args_schema=ApplyPatchArgs,
@@ -963,6 +975,21 @@ class VPRuntimeBackend:
                 chars=chars,
                 yield_time_ms=yield_time_ms,
                 max_output_chars=max_output_chars,
+            ),
+            ensure_ascii=False,
+        )
+
+    def _read_tool_result_tool(
+        self,
+        result_ref: str,
+        cursor: int = 0,
+        max_tokens: int = 4000,
+    ) -> str:
+        return json.dumps(
+            self.tools.read_tool_result(
+                result_ref=result_ref,
+                cursor=cursor,
+                max_tokens=max_tokens,
             ),
             ensure_ascii=False,
         )

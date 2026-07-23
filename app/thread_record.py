@@ -8,7 +8,7 @@ from app.thread_transcript import (
 )
 
 
-THREAD_RECORD_SCHEMA_VERSION = 4
+THREAD_RECORD_SCHEMA_VERSION = 5
 
 
 def _text(value: Any) -> str:
@@ -264,6 +264,8 @@ def hydrate_thread_record(raw: dict[str, Any]) -> dict[str, Any]:
     payload["compaction"] = compaction
     payload["compaction_state"] = compaction_state_compat(compaction)
     payload["summary"] = _text(compaction.get("summary"))
+    payload["auto_title"] = _text(payload.get("auto_title"))
+    payload["title_generation"] = _dict(payload.get("title_generation"))
     payload["active_attachment_ids"] = _legacy_active_attachment_ids(payload)
     payload["pending_interaction"] = pending_interaction_from_session(payload)
     payload.pop("agent_state", None)
@@ -290,6 +292,8 @@ def encode_thread_record(session: dict[str, Any]) -> dict[str, Any]:
         "activity_revision": max(0, int(payload.get("activity_revision") or 0)),
         "activity_kind": _text(payload.get("activity_kind")),
         "title": str(payload.get("title") or ""),
+        "auto_title": _text(payload.get("auto_title")),
+        "title_generation": _dict(payload.get("title_generation")),
         "project_id": _text(payload.get("project_id")),
         "project_title": str(payload.get("project_title") or ""),
         "project_root": str(payload.get("project_root") or ""),

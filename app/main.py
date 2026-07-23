@@ -102,6 +102,7 @@ from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
 from app.task_store import TaskStore, task_context_snapshot
 from app.thread_record import agent_state_compat, normalize_pending_interaction
+from app.thread_titles import sanitize_generated_thread_title
 from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
@@ -605,6 +606,18 @@ def _session_last_compacted_at(session: dict[str, Any] | None) -> str:
     return str(agent_state.get("last_compacted_at") or "").strip()
 
 
+def _context_profile_overrides(provider: str | None, model: str | None) -> dict[str, int]:
+    cached_profile = provider_model_catalog.profile_for(provider or config.llm_provider, str(model or ""))
+    return {
+        "context_window_tokens": int(config.context_window_tokens or 0)
+        or int(cached_profile.get("operational_context_window") or 0),
+        "max_context_window_tokens": int(config.model_max_context_window_tokens or 0)
+        or int(cached_profile.get("model_max_context_window") or 0),
+        "auto_compact_token_limit": int(config.context_auto_compact_token_limit or 0)
+        or int(cached_profile.get("auto_compact_token_limit") or 0),
+    }
+
+
 def _build_compaction_status_for_session(
     *,
     session: dict[str, Any] | None = None,
@@ -613,7 +626,9 @@ def _build_compaction_status_for_session(
     pending_message: str = "",
     last_compacted_at: str | None = None,
     estimate_mode: str = "exact",
+    provider: str | None = None,
 ) -> dict[str, Any]:
+    overrides = _context_profile_overrides(provider, model)
     return build_compaction_status(
         session=session,
         model=model,
@@ -624,8 +639,7 @@ def _build_compaction_status_for_session(
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
-        context_window_tokens=config.context_window_tokens,
-        auto_compact_token_limit=config.context_auto_compact_token_limit,
+        **overrides,
     )
 
 
@@ -637,7 +651,9 @@ def _build_context_meter_for_session(
     pending_message: str = "",
     last_compacted_at: str | None = None,
     estimate_mode: str = "exact",
+    provider: str | None = None,
 ) -> dict[str, Any]:
+    overrides = _context_profile_overrides(provider, model)
     return build_context_meter(
         session=session,
         model=model,
@@ -648,8 +664,7 @@ def _build_context_meter_for_session(
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
-        context_window_tokens=config.context_window_tokens,
-        auto_compact_token_limit=config.context_auto_compact_token_limit,
+        **overrides,
     )
 
 
@@ -661,6 +676,7 @@ def _context_bundle_for_session(
     pending_message: str = "",
     last_compacted_at: str | None = None,
     estimate_mode: str = "exact",
+    provider: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     compaction_status = _build_compaction_status_for_session(
         session=session,
@@ -669,6 +685,7 @@ def _context_bundle_for_session(
         pending_message=pending_message,
         last_compacted_at=last_compacted_at,
         estimate_mode=estimate_mode,
+        provider=provider,
     )
     return build_context_meter_from_status(compaction_status), compaction_status
 
@@ -1457,6 +1474,79 @@ def _thread_display_title(session: dict[str, Any]) -> str:
     return session_store.session_meta_store.display_title_for_session(session)
 
 
+def _merge_llm_usage(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key in ("input_tokens", "output_tokens", "total_tokens", "llm_calls"):
+        merged[key] = int(merged.get(key) or 0) + int((extra or {}).get(key) or 0)
+    return merged
+
+
+def _first_user_turn_text(session: dict[str, Any]) -> str:
+    for turn in list((session or {}).get("turns") or []):
+        if not isinstance(turn, dict) or str(turn.get("role") or "") != "user":
+            continue
+        text = str(turn.get("text") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _maybe_generate_auto_thread_title(
+    session: dict[str, Any],
+    *,
+    provider_runtime: Any,
+    model: str,
+    locale: str,
+    assistant_text: str,
+    turn_status: str,
+) -> dict[str, Any]:
+    if str(session.get("title") or "").strip() or str(session.get("auto_title") or "").strip():
+        return {}
+    if dict(session.get("title_generation") or {}):
+        return {}
+    if str(turn_status or "").strip().lower() not in {"completed", "success", "succeeded"}:
+        return {}
+    user_text = _first_user_turn_text(session)
+    assistant_excerpt = str(assistant_text or "").strip()
+    generate = getattr(provider_runtime, "generate_thread_title", None)
+    if not (user_text and assistant_excerpt and callable(generate)):
+        return {}
+
+    attempted_at = datetime.now(timezone.utc).isoformat()
+    try:
+        result = generate(
+            user_text=user_text,
+            assistant_text=assistant_excerpt,
+            model=str(model or ""),
+            locale=str(locale or ""),
+        )
+        payload = dict(result or {}) if isinstance(result, dict) else {"title": str(result or "")}
+        title = sanitize_generated_thread_title(payload.get("title"))
+        if not title:
+            raise ValueError("invalid_generated_thread_title")
+        effective_model = str(payload.get("effective_model") or model or "").strip()
+        session["auto_title"] = title
+        session["title_generation"] = {
+            "status": "generated",
+            "attempted_at": attempted_at,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "model": effective_model,
+        }
+        return {
+            "status": "generated",
+            "title": title,
+            "effective_model": effective_model,
+            "token_usage": dict(payload.get("token_usage") or {}),
+        }
+    except Exception as exc:
+        session["title_generation"] = {
+            "status": "failed",
+            "attempted_at": attempted_at,
+            "error_kind": exc.__class__.__name__,
+        }
+        return {"status": "failed", "error_kind": exc.__class__.__name__}
+
+
 def _thread_detail_response_payload(
     session_id: str,
     max_turns: int = 40,
@@ -1777,15 +1867,14 @@ def compact_session_endpoint(session_id: str, req: CompactRequest | None = None)
         max_output_tokens=int(config.max_output_tokens),
         pending_message="",
         phase="manual",
-        retained_raw_turns=2,
+        retained_history_tokens=1,
         llm_compactor=llm_compactor,
         force=True,
         trigger=trigger,
         auto_compact_ratio=config.context_auto_compact_ratio,
         danger_compact_ratio=config.context_danger_compact_ratio,
         history_soft_limit_tokens=config.context_history_soft_limit_tokens,
-        context_window_tokens=config.context_window_tokens,
-        auto_compact_token_limit=config.context_auto_compact_token_limit,
+        **_context_profile_overrides(config.llm_provider, model),
     )
     context_meter, compaction_status = _context_bundle_for_session(
         session=loaded,
@@ -2429,6 +2518,7 @@ def _process_chat_request(
             model=requested_model,
             max_output_tokens=req.settings.max_output_tokens,
             pending_message=req.message,
+            provider=requested_provider,
         )
         session_store.mark_activity(seed_session, kind="turn_blocked")
         session_store.save(seed_session)
@@ -2599,6 +2689,7 @@ def _process_chat_request(
                     max_output_tokens=req.settings.max_output_tokens,
                     pending_message="" if is_turn_resume else req.message,
                     estimate_mode="quick",
+                    provider=requested_provider,
                 )
             request_phase_timer.record_duration_ms(
                 "context_quick_estimate_ms",
@@ -2644,6 +2735,7 @@ def _process_chat_request(
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message="" if is_turn_resume else req.message,
                 estimate_mode="quick",
+                provider=requested_provider,
             )
             pre_compaction_estimated = int(pre_compaction_probe.get("estimated_context_tokens") or 0)
             pre_compaction_recommendation = str(pre_compaction_probe.get("compact_recommendation") or "none")
@@ -2694,8 +2786,7 @@ def _process_chat_request(
                     auto_compact_ratio=config.context_auto_compact_ratio,
                     danger_compact_ratio=config.context_danger_compact_ratio,
                     history_soft_limit_tokens=config.context_history_soft_limit_tokens,
-                    context_window_tokens=config.context_window_tokens,
-                    auto_compact_token_limit=config.context_auto_compact_token_limit,
+                    **_context_profile_overrides(requested_provider, requested_model),
                 )
             )
             request_phase_timer.record_duration_ms(
@@ -2719,6 +2810,7 @@ def _process_chat_request(
                 max_output_tokens=req.settings.max_output_tokens,
                 pending_message=req.message,
                 estimate_mode="exact",
+                provider=requested_provider,
             )
             request_phase_timer.record_duration_ms(
                 "context_exact_tokenize_ms",
@@ -3016,6 +3108,20 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_turn"), dict)
             else {}
         )
+        with request_phase_timer.measure("thread_title_generation_ms"):
+            title_generation_result = _maybe_generate_auto_thread_title(
+                session,
+                provider_runtime=provider_runtime,
+                model=str(provider_config.summary_model or selected_model or ""),
+                locale=locale,
+                assistant_text=str(final_answer or text or ""),
+                turn_status=turn_status,
+            )
+        if str(title_generation_result.get("status") or "") == "generated":
+            token_usage = _merge_llm_usage(
+                token_usage,
+                dict(title_generation_result.get("token_usage") or {}),
+            )
         pending_input_notice = bool(
             turn_status == "needs_user_input"
             and pending_user_input
@@ -3068,6 +3174,8 @@ def _process_chat_request(
             ),
         )
         inspector_notes = list(inspector.get("notes") or [])
+        if str(title_generation_result.get("status") or "") == "generated":
+            inspector_notes.append("thread_title_generated")
         if attachment_evidence_pack:
             inspector_notes.append(f"attachment_evidence_pack:{len(attachment_evidence_pack)}")
         if missing_attachment_ids:
@@ -3215,6 +3323,7 @@ def _process_chat_request(
             max_output_tokens=req.settings.max_output_tokens,
             last_compacted_at=last_compacted_at,
             estimate_mode="quick",
+            provider=requested_provider,
         )
         runtime_compaction_status = (
             dict(inspector_run_state.get("compaction_status") or {})

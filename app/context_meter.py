@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Callable
@@ -21,13 +22,13 @@ from app.thread_transcript import normalize_thread_transcript, transcript_items_
 
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # Keep the default usable window separate from the maximum window a
-    # deployment may allow. Company-compatible endpoints can override this
-    # with VP_CONTEXT_WINDOW_TOKENS after their deployment is verified.
-    "gpt-5.6": 1_050_000,
-    "gpt-5.6-sol": 1_050_000,
-    "gpt-5.6-terra": 1_050_000,
-    "gpt-5.6-luna": 1_050_000,
+    # Operational windows intentionally follow Codex defaults. The API model
+    # maximum is tracked separately and can be enabled explicitly by a
+    # deployment with VP_CONTEXT_WINDOW_TOKENS.
+    "gpt-5.6": 272_000,
+    "gpt-5.6-sol": 272_000,
+    "gpt-5.6-terra": 272_000,
+    "gpt-5.6-luna": 272_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.4-mini": 272_000,
@@ -36,18 +37,105 @@ _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "moonshot-v1-128k": 128 * 1024,
     "mixtral-8x7b-32768": 32 * 1024,
 }
+_MODEL_MAX_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-5.6": 1_050_000,
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
+    "gpt-5.5": 272_000,
+    "gpt-5.4": 272_000,
+    "gpt-5.4-mini": 272_000,
+}
 _DEFAULT_FALLBACK_CONTEXT_WINDOW = 256_000
+_DEFAULT_TOOL_OUTPUT_TOKEN_LIMIT = 10_000
 _AUTO_COMPACT_RATIO = 0.9
 _DANGER_COMPACT_RATIO = 0.95
 _HISTORY_SOFT_LIMIT_TOKENS = 120_000
 _STATIC_OVERHEAD_TOKENS = 1200
-_DEFAULT_RETAINED_RAW_TURNS = 12
-_DEFAULT_RETAINED_HISTORY_TOKENS = 48_000
+DEFAULT_RETAINED_CONTEXT_TOKENS = 20_000
 _MAX_RETAINED_ITEM_IDS = 96
 _COMPACTED_HISTORY_DIGEST_LIMIT = 12
 _COMPACTED_HISTORY_CHAR_LIMIT = 6000
 _K_WINDOW_PATTERN = re.compile(r"(?<!\d)(\d{1,4})k(?![a-z0-9])", re.IGNORECASE)
 _RAW_WINDOW_PATTERN = re.compile(r"(?<!\d)(32768|65536|131072|262144|1048576)(?!\d)")
+
+
+@dataclass(frozen=True, slots=True)
+class ContextWindowStatus:
+    model: str
+    model_max_context_window: int
+    operational_context_window: int
+    effective_context_window: int
+    auto_compact_token_limit: int
+    current_tokens: int
+    projected_tokens: int
+    estimated_context_tokens: int
+    remaining_tokens: int
+    context_window_known: bool
+    threshold_source: str
+    auto_compact_limit_source: str
+    estimate_source: str
+    compact_recommendation: str
+    compact_reason: str
+    previous_model: str = ""
+    previous_operational_context_window: int = 0
+    model_changed: bool = False
+    model_downgraded: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def profile_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "model_max_context_window": self.model_max_context_window,
+            "operational_context_window": self.operational_context_window,
+            "effective_context_window": self.effective_context_window,
+            "auto_compact_token_limit": self.auto_compact_token_limit,
+            "threshold_source": self.threshold_source,
+            "auto_compact_limit_source": self.auto_compact_limit_source,
+        }
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, Any] | None,
+        *,
+        model: str = "",
+    ) -> "ContextWindowStatus":
+        raw = dict(payload or {})
+        nested = raw.get("context_window_status")
+        if isinstance(nested, dict):
+            raw = {**raw, **nested}
+        operational = max(
+            0,
+            int(raw.get("operational_context_window") or raw.get("effective_context_window") or 0),
+        )
+        effective = max(0, int(raw.get("effective_context_window") or operational))
+        current = max(0, int(raw.get("current_tokens") or raw.get("estimated_context_tokens") or 0))
+        projected = max(0, int(raw.get("projected_tokens") or raw.get("observed_projected_tokens") or 0))
+        estimated = max(current, projected)
+        return cls(
+            model=str(raw.get("model") or model or ""),
+            model_max_context_window=max(operational, int(raw.get("model_max_context_window") or operational)),
+            operational_context_window=operational,
+            effective_context_window=effective,
+            auto_compact_token_limit=max(0, int(raw.get("auto_compact_token_limit") or 0)),
+            current_tokens=current,
+            projected_tokens=projected,
+            estimated_context_tokens=estimated,
+            remaining_tokens=max(0, operational - estimated),
+            context_window_known=bool(raw.get("context_window_known")),
+            threshold_source=str(raw.get("threshold_source") or ""),
+            auto_compact_limit_source=str(raw.get("auto_compact_limit_source") or ""),
+            estimate_source=str(raw.get("estimate_source") or ""),
+            compact_recommendation=str(raw.get("compact_recommendation") or "none"),
+            compact_reason=str(raw.get("compact_reason") or ""),
+            previous_model=str(raw.get("previous_model") or ""),
+            previous_operational_context_window=max(0, int(raw.get("previous_operational_context_window") or 0)),
+            model_changed=bool(raw.get("model_changed")),
+            model_downgraded=bool(raw.get("model_downgraded")),
+        )
 
 
 def _normalize_model_candidates(model: str | None) -> list[str]:
@@ -97,6 +185,154 @@ def resolve_context_window(
     return fallback, "fallback_budget"
 
 
+@lru_cache(maxsize=128)
+def resolve_context_profile(
+    model: str | None,
+    *,
+    max_output_tokens: int | None = None,
+    context_window_tokens: int | None = None,
+    max_context_window_tokens: int | None = None,
+    tool_output_token_limit: int | None = None,
+) -> dict[str, Any]:
+    operational_window, source = resolve_context_window(
+        model,
+        max_output_tokens=max_output_tokens,
+        context_window_tokens=context_window_tokens,
+    )
+    explicit_maximum = max(0, int(max_context_window_tokens or 0))
+    candidates = _normalize_model_candidates(model)
+    registry_maximum = next(
+        (_MODEL_MAX_CONTEXT_WINDOWS[item] for item in candidates if item in _MODEL_MAX_CONTEXT_WINDOWS),
+        operational_window,
+    )
+    maximum_window = max(operational_window, explicit_maximum or registry_maximum)
+    return {
+        "model_max_context_window": int(maximum_window),
+        "operational_context_window": int(operational_window),
+        "tool_output_token_limit": max(
+            512,
+            int(tool_output_token_limit or _DEFAULT_TOOL_OUTPUT_TOKEN_LIMIT),
+        ),
+        "source": source,
+        "max_context_source": "config_override" if explicit_maximum else "model_registry",
+    }
+
+
+def build_context_window_status(
+    *,
+    model: str | None,
+    current_tokens: int,
+    projected_tokens: int = 0,
+    max_output_tokens: int | None = None,
+    auto_compact_ratio: float = _AUTO_COMPACT_RATIO,
+    danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
+    context_window_tokens: int | None = None,
+    max_context_window_tokens: int | None = None,
+    auto_compact_token_limit: int | None = None,
+    estimate_source: str = "full_payload_estimate",
+    previous_status: ContextWindowStatus | None = None,
+    reuse_profile: bool = False,
+) -> ContextWindowStatus:
+    normalized_model = str(model or "").strip()
+    immediate_previous_model = str(previous_status.model if previous_status else "").strip()
+    continuing_model_change = bool(
+        previous_status
+        and previous_status.model_changed
+        and immediate_previous_model == normalized_model
+    )
+    previous_model = (
+        str(previous_status.previous_model or "").strip()
+        if continuing_model_change and previous_status is not None
+        else immediate_previous_model
+    )
+    model_changed = bool(
+        continuing_model_change
+        or (immediate_previous_model and normalized_model and immediate_previous_model != normalized_model)
+    )
+    if reuse_profile and previous_status is not None and not model_changed:
+        operational_window = int(previous_status.operational_context_window)
+        model_maximum = int(previous_status.model_max_context_window)
+        threshold_source = str(previous_status.threshold_source or "model_registry")
+        configured_auto_limit = int(previous_status.auto_compact_token_limit)
+        auto_limit_source = str(previous_status.auto_compact_limit_source or "context_ratio")
+    else:
+        resolved_context_override = max(0, int(context_window_tokens or 0))
+        resolved_maximum_override = max(0, int(max_context_window_tokens or 0))
+        if model_changed and (resolved_context_override or resolved_maximum_override):
+            registry_profile = resolve_context_profile(
+                normalized_model,
+                max_output_tokens=max_output_tokens,
+                context_window_tokens=0,
+                max_context_window_tokens=0,
+            )
+            if str(registry_profile.get("source") or "") != "fallback_budget":
+                registry_operational = int(registry_profile["operational_context_window"])
+                registry_maximum = int(registry_profile["model_max_context_window"])
+                if resolved_context_override:
+                    resolved_context_override = min(resolved_context_override, registry_operational)
+                if resolved_maximum_override:
+                    resolved_maximum_override = min(resolved_maximum_override, registry_maximum)
+        profile = resolve_context_profile(
+            normalized_model,
+            max_output_tokens=max_output_tokens,
+            context_window_tokens=resolved_context_override,
+            max_context_window_tokens=resolved_maximum_override,
+        )
+        operational_window = int(profile["operational_context_window"])
+        model_maximum = int(profile["model_max_context_window"])
+        threshold_source = str(profile["source"])
+        configured_auto_limit = max(0, int(auto_compact_token_limit or 0))
+        auto_limit_source = "config_override" if configured_auto_limit else "context_ratio"
+    normalized_auto_ratio = max(0.1, min(0.95, float(auto_compact_ratio or _AUTO_COMPACT_RATIO)))
+    normalized_danger_ratio = max(
+        normalized_auto_ratio,
+        min(0.99, float(danger_compact_ratio or _DANGER_COMPACT_RATIO)),
+    )
+    resolved_auto_limit = configured_auto_limit or max(1, int(operational_window * normalized_auto_ratio))
+    resolved_auto_limit = min(resolved_auto_limit, max(1, int(operational_window * 0.9)))
+    effective_limit = max(resolved_auto_limit, int(operational_window * normalized_danger_ratio))
+    normalized_current = max(0, int(current_tokens or 0))
+    normalized_projected = max(0, int(projected_tokens or 0))
+    estimated = max(normalized_current, normalized_projected)
+    recommendation = "none"
+    reason = ""
+    if estimated >= effective_limit:
+        recommendation = "required"
+        reason = "context_danger_limit"
+    elif estimated >= resolved_auto_limit:
+        recommendation = "suggested"
+        reason = "context_auto_limit"
+    previous_window = (
+        int(previous_status.previous_operational_context_window)
+        if continuing_model_change and previous_status is not None
+        else (int(previous_status.operational_context_window) if previous_status else 0)
+    )
+    return ContextWindowStatus(
+        model=normalized_model,
+        model_max_context_window=model_maximum,
+        operational_context_window=operational_window,
+        effective_context_window=effective_limit,
+        auto_compact_token_limit=resolved_auto_limit,
+        current_tokens=normalized_current,
+        projected_tokens=normalized_projected,
+        estimated_context_tokens=estimated,
+        remaining_tokens=max(0, operational_window - estimated),
+        context_window_known=threshold_source != "fallback_budget",
+        threshold_source=threshold_source,
+        auto_compact_limit_source=auto_limit_source,
+        estimate_source=str(estimate_source or "full_payload_estimate"),
+        compact_recommendation=recommendation,
+        compact_reason=reason,
+        previous_model=previous_model,
+        previous_operational_context_window=previous_window,
+        model_changed=model_changed,
+        model_downgraded=bool(
+            (previous_status.model_downgraded if continuing_model_change and previous_status is not None else False)
+            or (model_changed and previous_window > 0 and operational_window < previous_window)
+        ),
+    )
+
+
 @lru_cache(maxsize=64)
 def _encoding_for_model(model: str | None) -> Any:
     candidates = _normalize_model_candidates(model)
@@ -138,6 +374,31 @@ def quick_count_tokens(text: str) -> int:
     return max(1, int((ascii_chars / 4.0) + (non_ascii_chars / 1.5)))
 
 
+def truncate_text_to_token_limit(
+    text: str,
+    *,
+    model: str | None,
+    max_tokens: int,
+    from_end: bool = False,
+) -> str:
+    raw = str(text or "")
+    limit = max(0, int(max_tokens or 0))
+    if not raw or limit <= 0:
+        return ""
+    if count_tokens(raw, model) <= limit:
+        return raw
+    low = 0
+    high = len(raw)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = raw[-middle:] if from_end else raw[:middle]
+        if count_tokens(candidate, model) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return raw[-low:] if from_end and low else raw[:low]
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -163,6 +424,9 @@ def _default_compaction_state() -> dict[str, Any]:
         "before_tokens": 0,
         "after_tokens": 0,
         "estimated_context_tokens": 0,
+        "context_window_status": {},
+        "model_max_context_window": 0,
+        "operational_context_window": 0,
         "effective_context_window": 0,
         "auto_compact_token_limit": 0,
         "danger_compact_token_limit": 0,
@@ -224,6 +488,13 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
         "before_tokens": max(0, int(payload.get("before_tokens") or 0)),
         "after_tokens": max(0, int(payload.get("after_tokens") or 0)),
         "estimated_context_tokens": max(0, int(payload.get("estimated_context_tokens") or 0)),
+        "context_window_status": (
+            dict(payload.get("context_window_status") or {})
+            if isinstance(payload.get("context_window_status"), dict)
+            else {}
+        ),
+        "model_max_context_window": max(0, int(payload.get("model_max_context_window") or 0)),
+        "operational_context_window": max(0, int(payload.get("operational_context_window") or 0)),
         "effective_context_window": max(0, int(payload.get("effective_context_window") or 0)),
         "auto_compact_token_limit": max(0, int(payload.get("auto_compact_token_limit") or 0)),
         "danger_compact_token_limit": max(0, int(payload.get("danger_compact_token_limit") or 0)),
@@ -329,19 +600,17 @@ def _transcript_transactions(items: list[dict[str, Any]]) -> list[list[dict[str,
 def _retained_transcript_items(
     items: list[dict[str, Any]],
     *,
-    retained_raw_turns: int,
-    retained_history_tokens: int = _DEFAULT_RETAINED_HISTORY_TOKENS,
+    retained_history_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
 ) -> list[dict[str, Any]]:
     transactions = _transcript_transactions(items)
     if not transactions:
         return []
-    max_transactions = max(1, (max(1, int(retained_raw_turns)) + 1) // 2)
-    token_budget = max(1000, int(retained_history_tokens or _DEFAULT_RETAINED_HISTORY_TOKENS))
+    token_budget = max(1, int(retained_history_tokens or DEFAULT_RETAINED_CONTEXT_TOKENS))
     retained_groups: list[list[dict[str, Any]]] = []
     retained_tokens = 0
     for group in reversed(transactions):
         group_tokens = quick_count_tokens(json.dumps(group, ensure_ascii=False, separators=(",", ":")))
-        if retained_groups and (len(retained_groups) >= max_transactions or retained_tokens + group_tokens > token_budget):
+        if retained_groups and retained_tokens + group_tokens > token_budget:
             break
         retained_groups.append(group)
         retained_tokens += group_tokens
@@ -352,7 +621,7 @@ def _retained_transcript_items(
 def _build_runtime_context_view(
     *,
     session: dict[str, Any] | None,
-    retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
+    retained_history_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
 ) -> dict[str, Any]:
     payload = dict(session or {})
     compaction_state = ensure_compaction_state(payload)
@@ -364,7 +633,7 @@ def _build_runtime_context_view(
     uncovered_turns = [_serializable_transcript_item(item) for item in active_items]
     retained_turns = _retained_transcript_items(
         uncovered_turns,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
     )
     retained_turn_ids = [
         str(item.get("id") or "").strip()
@@ -390,7 +659,6 @@ def _build_serialized_context(
     *,
     session: dict[str, Any] | None,
     pending_message: str = "",
-    retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
 ) -> str:
     payload = dict(session or {})
     transcript = normalize_thread_transcript(
@@ -416,37 +684,26 @@ def build_compaction_status(
     max_output_tokens: int | None = None,
     pending_message: str = "",
     last_compacted_at: str | None = None,
-    retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
+    retained_history_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
     estimate_mode: str = "exact",
     auto_compact_ratio: float = _AUTO_COMPACT_RATIO,
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
     context_window_tokens: int | None = None,
+    max_context_window_tokens: int | None = None,
     auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     payload = dict(session or {})
     runtime_view = _build_runtime_context_view(
         session=payload,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
     )
     compaction_state = ensure_compaction_state(payload)
-    context_window, threshold_source = resolve_context_window(
-        model,
-        max_output_tokens=max_output_tokens,
-        context_window_tokens=context_window_tokens,
-    )
-    normalized_auto_ratio = max(0.1, min(0.95, float(auto_compact_ratio or _AUTO_COMPACT_RATIO)))
-    normalized_danger_ratio = max(normalized_auto_ratio, min(0.99, float(danger_compact_ratio or _DANGER_COMPACT_RATIO)))
     normalized_history_soft_limit = max(1000, int(history_soft_limit_tokens or _HISTORY_SOFT_LIMIT_TOKENS))
-    configured_auto_limit = max(0, int(auto_compact_token_limit or 0))
-    resolved_auto_compact_token_limit = configured_auto_limit or max(1, int(context_window * normalized_auto_ratio))
-    resolved_auto_compact_token_limit = min(resolved_auto_compact_token_limit, max(1, int(context_window * 0.9)))
-    danger_compact_token_limit = max(resolved_auto_compact_token_limit, int(context_window * normalized_danger_ratio))
     serialized = _build_serialized_context(
         session=payload,
         pending_message=pending_message,
-        retained_raw_turns=retained_raw_turns,
     )
     normalized_estimate_mode = str(estimate_mode or "exact").strip().lower()
     if normalized_estimate_mode not in {"cached", "quick", "exact"}:
@@ -473,8 +730,19 @@ def build_compaction_status(
             + int(compaction_state.get("observed_output_tokens") or 0)
             + pending_tokens
         )
-    estimated_tokens = max(local_estimated_tokens, observed_projected_tokens)
     estimate_source = "provider_usage" if observed_projected_tokens >= local_estimated_tokens and observed_input_tokens > 0 else "full_payload_estimate"
+    window_status = build_context_window_status(
+        model=model,
+        current_tokens=local_estimated_tokens,
+        projected_tokens=observed_projected_tokens,
+        max_output_tokens=max_output_tokens,
+        auto_compact_ratio=auto_compact_ratio,
+        danger_compact_ratio=danger_compact_ratio,
+        context_window_tokens=context_window_tokens,
+        max_context_window_tokens=max_context_window_tokens,
+        auto_compact_token_limit=auto_compact_token_limit,
+        estimate_source=estimate_source,
+    )
     retained_ids = {
         str(item.get("id") or "").strip()
         for item in list(runtime_view.get("history_turns") or [])
@@ -489,20 +757,8 @@ def build_compaction_status(
     history_noise_tokens = quick_count_tokens(
         json.dumps(compactable_turns, ensure_ascii=False, separators=(",", ":"))
     )
-    compact_recommendation = "none"
-    compact_reason = ""
-    if estimated_tokens >= danger_compact_token_limit:
-        compact_recommendation = "required"
-        compact_reason = "context_danger_limit"
-    elif estimated_tokens >= resolved_auto_compact_token_limit:
-        compact_recommendation = "suggested"
-        compact_reason = "context_auto_limit"
-    elif compactable_turns and history_noise_tokens >= normalized_history_soft_limit:
-        compact_recommendation = "suggested"
-        compact_reason = "history_soft_limit"
-    context_window_known = threshold_source != "fallback_budget"
     warning = ""
-    if not context_window_known:
+    if not window_status.context_window_known:
         warning = "当前模型未提供稳定 context window，以下为基于保守预算的估算。"
     retained_turn_ids = list(runtime_view.get("retained_turn_ids") or [])
     phase = str(compaction_state.get("phase") or compaction_state.get("last_compaction_phase") or "")
@@ -526,20 +782,16 @@ def build_compaction_status(
         "compacted_until_turn_id": str(compaction_state.get("compacted_until_turn_id") or ""),
         "retained_turn_ids": retained_turn_ids,
         "retained_turn_count": len(retained_turn_ids),
-        "estimated_context_tokens": int(estimated_tokens),
+        "estimated_context_tokens": int(window_status.estimated_context_tokens),
         "estimated_payload_tokens": int(estimated_payload_tokens),
-        "effective_context_window": int(context_window),
-        "auto_compact_token_limit": int(resolved_auto_compact_token_limit),
-        "danger_compact_token_limit": int(danger_compact_token_limit),
+        **window_status.to_dict(),
+        "context_window_status": window_status.to_dict(),
+        "danger_compact_token_limit": int(window_status.effective_context_window),
         "history_soft_limit_tokens": int(normalized_history_soft_limit),
         "history_noise_tokens": int(history_noise_tokens),
-        "threshold_source": threshold_source,
-        "auto_compact_limit_source": "config_override" if configured_auto_limit else "context_ratio",
-        "estimate_source": estimate_source,
         "observed_input_tokens": observed_input_tokens,
         "observed_projected_tokens": int(observed_projected_tokens),
         "estimated_static_tokens": int(estimated_static_tokens),
-        "context_window_known": bool(context_window_known),
         "last_compacted_at": str(last_compacted_at or compaction_state.get("last_compacted_at") or ""),
         "last_compaction_reason": str(compaction_state.get("last_compaction_reason") or ""),
         "last_compaction_phase": str(compaction_state.get("last_compaction_phase") or ""),
@@ -547,8 +799,6 @@ def build_compaction_status(
         "context_estimate_updated_at": updated_at,
         "context_exact_updated_at": exact_updated_at,
         "calculation_ms": int(calculation_ms),
-        "compact_recommendation": compact_recommendation,
-        "compact_reason": compact_reason,
         "phase": phase,
         "reason": reason,
         "before_tokens": int(compaction_state.get("before_tokens") or 0),
@@ -569,6 +819,9 @@ def _persist_compaction_estimates(
     payload = dict(session or {})
     state = ensure_compaction_state(payload)
     state["estimated_context_tokens"] = int(status.get("estimated_context_tokens") or 0)
+    state["context_window_status"] = dict(status.get("context_window_status") or {})
+    state["model_max_context_window"] = int(status.get("model_max_context_window") or 0)
+    state["operational_context_window"] = int(status.get("operational_context_window") or 0)
     state["effective_context_window"] = int(status.get("effective_context_window") or 0)
     state["auto_compact_token_limit"] = int(status.get("auto_compact_token_limit") or 0)
     state["danger_compact_token_limit"] = int(status.get("danger_compact_token_limit") or 0)
@@ -600,6 +853,7 @@ def build_context_meter(
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
     context_window_tokens: int | None = None,
+    max_context_window_tokens: int | None = None,
     auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     status = build_compaction_status(
@@ -613,6 +867,7 @@ def build_context_meter(
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
         context_window_tokens=context_window_tokens,
+        max_context_window_tokens=max_context_window_tokens,
         auto_compact_token_limit=auto_compact_token_limit,
     )
     return build_context_meter_from_status(status)
@@ -623,7 +878,11 @@ def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, 
     estimated_tokens = int(status_payload.get("estimated_context_tokens") or 0)
     estimated_payload_tokens = int(status_payload.get("estimated_payload_tokens") or 0)
     auto_compact_token_limit = int(status_payload.get("auto_compact_token_limit") or 0)
-    context_window = int(status_payload.get("effective_context_window") or 0)
+    context_window = int(
+        status_payload.get("operational_context_window")
+        or status_payload.get("effective_context_window")
+        or 0
+    )
     used_ratio = 0.0
     if context_window > 0:
         used_ratio = min(1.0, float(estimated_tokens) / float(context_window))
@@ -638,6 +897,8 @@ def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, 
         "estimated_payload_tokens": estimated_payload_tokens,
         "overhead_tokens": max(0, estimated_tokens - estimated_payload_tokens),
         "context_window": int(context_window),
+        "model_max_context_window": int(status_payload.get("model_max_context_window") or context_window),
+        "effective_context_window": int(status_payload.get("effective_context_window") or context_window),
         "auto_compact_token_limit": auto_compact_token_limit,
         "danger_compact_token_limit": int(status_payload.get("danger_compact_token_limit") or 0),
         "history_soft_limit_tokens": int(status_payload.get("history_soft_limit_tokens") or 0),
@@ -667,11 +928,11 @@ def build_context_meter_from_status(status: dict[str, Any] | None) -> dict[str, 
 def build_runtime_context_payload(
     *,
     session: dict[str, Any] | None = None,
-    retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
+    retained_history_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
 ) -> dict[str, Any]:
     runtime_view = _build_runtime_context_view(
         session=session,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
     )
     return {
         "summary": str(runtime_view.get("summary") or ""),
@@ -777,7 +1038,7 @@ def maybe_auto_compact_session(
     max_output_tokens: int | None = None,
     pending_message: str = "",
     phase: str = "pre_turn",
-    retained_raw_turns: int = _DEFAULT_RETAINED_RAW_TURNS,
+    retained_history_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
     llm_compactor: Callable[[dict[str, Any]], Any] | None = None,
     force: bool = False,
     trigger: str = "auto",
@@ -785,6 +1046,7 @@ def maybe_auto_compact_session(
     danger_compact_ratio: float = _DANGER_COMPACT_RATIO,
     history_soft_limit_tokens: int = _HISTORY_SOFT_LIMIT_TOKENS,
     context_window_tokens: int | None = None,
+    max_context_window_tokens: int | None = None,
     auto_compact_token_limit: int | None = None,
 ) -> dict[str, Any]:
     payload = dict(session or {})
@@ -793,12 +1055,13 @@ def maybe_auto_compact_session(
         model=model,
         max_output_tokens=max_output_tokens,
         pending_message=pending_message,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
         estimate_mode="exact" if force else "quick",
         auto_compact_ratio=auto_compact_ratio,
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
         context_window_tokens=context_window_tokens,
+        max_context_window_tokens=max_context_window_tokens,
         auto_compact_token_limit=auto_compact_token_limit,
     )
     _persist_compaction_estimates(session, status=status_before)
@@ -815,12 +1078,13 @@ def maybe_auto_compact_session(
             model=model,
             max_output_tokens=max_output_tokens,
             pending_message=pending_message,
-            retained_raw_turns=retained_raw_turns,
+            retained_history_tokens=retained_history_tokens,
             estimate_mode="exact",
             auto_compact_ratio=auto_compact_ratio,
             danger_compact_ratio=danger_compact_ratio,
             history_soft_limit_tokens=history_soft_limit_tokens,
             context_window_tokens=context_window_tokens,
+            max_context_window_tokens=max_context_window_tokens,
             auto_compact_token_limit=auto_compact_token_limit,
         )
         _persist_compaction_estimates(session, status=exact_status)
@@ -835,7 +1099,7 @@ def maybe_auto_compact_session(
 
     runtime_view = _build_runtime_context_view(
         session=payload,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
     )
     turns = list(runtime_view.get("uncovered_turns") or [])
     retained_turns = list(runtime_view.get("history_turns") or [])
@@ -954,12 +1218,13 @@ def maybe_auto_compact_session(
         model=model,
         max_output_tokens=max_output_tokens,
         pending_message=pending_message,
-        retained_raw_turns=retained_raw_turns,
+        retained_history_tokens=retained_history_tokens,
         estimate_mode="exact",
         auto_compact_ratio=auto_compact_ratio,
         danger_compact_ratio=danger_compact_ratio,
         history_soft_limit_tokens=history_soft_limit_tokens,
         context_window_tokens=context_window_tokens,
+        max_context_window_tokens=max_context_window_tokens,
         auto_compact_token_limit=auto_compact_token_limit,
     )
     _persist_compaction_estimates(session, status=status_after)

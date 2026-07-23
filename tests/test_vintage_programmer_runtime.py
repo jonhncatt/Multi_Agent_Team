@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from app.config import load_config
+from app.context_meter import build_context_window_status
 from app.i18n import translate
 from app.models import ChatSettings, ToolEvent
 from app.runtime_boundary import RuntimeBoundary
@@ -507,6 +508,21 @@ class _FakeBackendWithoutModelKwarg(_FakeBackend):
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         super().__init__(scripted_messages)
         self.tools = _FakeToolsWithoutModel()
+
+
+class _InitialModelDowngradeBackend(_FakeBackend):
+    def _invoke_chat_with_runner(
+        self,
+        *,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (max_output_tokens, enable_tools, tool_names)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
+        return self._next(), object(), "mixtral-8x7b-32768", ["model_fallback"]
 
 
 class _StreamingBackend(_FakeBackend):
@@ -4489,6 +4505,336 @@ def test_blocked_stop_message_separates_rejections_progress_plan_updates_and_rep
     assert "命令结果发生了变化：python hello.py" in text
     assert "检查清单新增完成项：1 项" in text
     assert "触发点：validation_rejection_limit" in text
+
+
+@pytest.mark.parametrize("tool_count", [8, 12, 20])
+def test_mid_turn_compaction_does_not_trigger_from_tool_count_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tool_count: int,
+) -> None:
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([]),
+    )
+    messages = [_FakeSystemMessage(content="system"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
+    tool_events = [
+        ToolEvent(name="read_file", output_preview="ok", status="ok", summary=f"event-{idx}")
+        for idx in range(tool_count)
+    ]
+    monkeypatch.setattr(runtime, "_estimate_model_request_tokens", lambda *args, **kwargs: 100)
+    context_status = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=0,
+        auto_compact_token_limit=1000,
+    )
+
+    compacted_messages, compacted_until, compacted, status = runtime._maybe_compact_live_messages(
+        messages=messages,
+        base_message_count=1,
+        tool_events=tool_events,
+        compacted_until=0,
+        model="gpt-5.6-sol",
+        tool_names=["read_file"],
+        max_output_tokens=1000,
+        progress_cb=None,
+        run_id="run-one",
+        locale="en",
+        trace_events=[],
+        context_window_status=context_status,
+    )
+
+    assert compacted_messages is messages
+    assert compacted_until == 0
+    assert compacted is False
+    assert status.estimated_context_tokens == 100
+
+
+def test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([]),
+    )
+    messages = [_FakeSystemMessage(content="system"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
+    tool_events = [
+        ToolEvent(name="read_file", output_preview="ok", status="ok", summary=f"event-{idx}")
+        for idx in range(20)
+    ]
+    calls = {"count": 0}
+
+    monkeypatch.setattr(runtime, "_estimate_model_request_tokens", lambda *args, **kwargs: 1000)
+    context_status = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=0,
+        auto_compact_token_limit=1000,
+    )
+
+    def compact_summary(**_kwargs: Any) -> str:
+        calls["count"] += 1
+        return "structured continuation memory"
+
+    monkeypatch.setattr(runtime, "_build_live_compaction_summary", compact_summary)
+    compacted_messages, compacted_until, compacted, status = runtime._maybe_compact_live_messages(
+        messages=messages,
+        base_message_count=1,
+        tool_events=tool_events,
+        compacted_until=0,
+        model="gpt-5.6-sol",
+        tool_names=["read_file"],
+        max_output_tokens=1000,
+        progress_cb=None,
+        run_id="run-one",
+        locale="en",
+        trace_events=[],
+        context_window_status=context_status,
+        retained_context_tokens=1,
+    )
+
+    assert compacted is True
+    assert compacted_until == 20
+    assert status.estimated_context_tokens == 1000
+    assert calls["count"] == 1
+    assert len(compacted_messages) < len(messages)
+
+    repeated_messages, repeated_until, repeated, _ = runtime._maybe_compact_live_messages(
+        messages=compacted_messages,
+        base_message_count=1,
+        tool_events=tool_events,
+        compacted_until=compacted_until,
+        model="gpt-5.6-sol",
+        tool_names=["read_file"],
+        max_output_tokens=1000,
+        progress_cb=None,
+        run_id="run-one",
+        locale="en",
+        trace_events=[],
+        context_window_status=status,
+        retained_context_tokens=1,
+    )
+    assert repeated_messages is compacted_messages
+    assert repeated_until == compacted_until
+    assert repeated is False
+    assert calls["count"] == 1
+
+
+def test_live_tail_retention_keeps_tool_transactions_atomic(tmp_path: Path) -> None:
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([]),
+    )
+    old_call = _FakeAIMessage(content="", tool_calls=[{"id": "old", "name": "read_file", "args": {}}])
+    old_result = _FakeToolMessage(content="old", tool_call_id="old", name="read_file")
+    newest_call = _FakeAIMessage(
+        content="",
+        tool_calls=[
+            {"id": "new-a", "name": "read_file", "args": {}},
+            {"id": "new-b", "name": "read_file", "args": {}},
+        ],
+    )
+    newest_result_a = _FakeToolMessage(content="a", tool_call_id="new-a", name="read_file")
+    newest_result_b = _FakeToolMessage(content="b", tool_call_id="new-b", name="read_file")
+
+    retained = runtime._retained_live_tail(
+        [old_call, old_result, newest_call, newest_result_a, newest_result_b],
+        model="gpt-5.6-sol",
+        token_budget=1,
+    )
+
+    assert retained == [newest_call, newest_result_a, newest_result_b]
+    assert runtime._messages_at_tool_boundary(retained) is True
+
+
+def test_mid_turn_compaction_recalculates_after_model_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config()
+    config.context_window_tokens = 0
+    config.model_max_context_window_tokens = 0
+    config.context_auto_compact_token_limit = 0
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([]),
+    )
+    messages: list[Any] = [_FakeSystemMessage(content="system")]
+    tool_events: list[ToolEvent] = []
+    for index in range(3):
+        call_id = f"call-{index}"
+        messages.extend(
+            [
+                _FakeAIMessage(content="", tool_calls=[{"id": call_id, "name": "read_file", "args": {}}]),
+                _FakeToolMessage(content=f"result-{index}", tool_call_id=call_id, name="read_file"),
+            ]
+        )
+        tool_events.append(ToolEvent(name="read_file", output_preview="ok", status="ok", summary=call_id))
+    previous_status = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=20_000,
+    )
+    monkeypatch.setattr(runtime, "_estimate_model_request_tokens", lambda *args, **kwargs: 30_000)
+    monkeypatch.setattr(runtime, "_build_live_compaction_summary", lambda **kwargs: "continuation memory")
+
+    compacted_messages, compacted_until, compacted, status = runtime._maybe_compact_live_messages(
+        messages=messages,
+        base_message_count=1,
+        tool_events=tool_events,
+        compacted_until=0,
+        model="mixtral-8x7b-32768",
+        tool_names=["read_file"],
+        max_output_tokens=1000,
+        progress_cb=None,
+        run_id="run-downgrade",
+        locale="en",
+        trace_events=[],
+        context_window_status=previous_status,
+        retained_context_tokens=1,
+    )
+
+    assert compacted is True
+    assert compacted_until == 2
+    assert status.model == "mixtral-8x7b-32768"
+    assert status.operational_context_window == 32 * 1024
+    assert status.auto_compact_token_limit == int(32 * 1024 * 0.9)
+    assert status.model_downgraded is True
+    assert status.previous_model == "gpt-5.6-sol"
+    assert runtime._messages_at_tool_boundary(compacted_messages) is True
+    assert len(compacted_messages) < len(messages)
+
+
+def test_model_downgrade_compacts_large_base_before_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = load_config()
+    config.context_window_tokens = 0
+    config.model_max_context_window_tokens = 0
+    config.context_auto_compact_token_limit = 0
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=tmp_path / "agents" / "vintage_programmer",
+        backend=_FakeBackend([]),
+    )
+    messages = [
+        _FakeSystemMessage(content="system contract"),
+        _FakeHumanMessage(content="old replay one"),
+        _FakeAIMessage(content="old replay answer"),
+        _FakeHumanMessage(content="current request"),
+    ]
+    large_model_status = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=30_000,
+    )
+    downgraded_status = build_context_window_status(
+        model="mixtral-8x7b-32768",
+        current_tokens=30_000,
+        previous_status=large_model_status,
+    )
+    captured: dict[str, Any] = {}
+
+    def summary(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "compressed replay memory"
+
+    monkeypatch.setattr(runtime, "_build_live_compaction_summary", summary)
+    monkeypatch.setattr(runtime, "_estimate_model_request_tokens", lambda *args, **kwargs: 1000)
+
+    compacted_messages, compacted, after_status = runtime._compact_messages_after_model_downgrade(
+        messages=messages,
+        model="mixtral-8x7b-32768",
+        tool_names=["read_file"],
+        max_output_tokens=1000,
+        context_window_status=downgraded_status,
+        progress_cb=None,
+        run_id="run-base-downgrade",
+        locale="en",
+        trace_events=[],
+        retained_context_tokens=1,
+    )
+
+    assert compacted is True
+    assert compacted_messages[0] is messages[0]
+    assert compacted_messages[-1] is messages[-1]
+    assert len(compacted_messages) == 3
+    assert captured["allow_llm"] is False
+    assert len(captured["old_messages"]) == 2
+    assert after_status.estimated_context_tokens == 1000
+    assert after_status.model_downgraded is True
+    assert after_status.previous_model == "gpt-5.6-sol"
+
+
+def test_runtime_compacts_initial_replay_after_effective_model_downgrade(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    config = _isolated_config(tmp_path)
+    config.context_window_tokens = 0
+    config.model_max_context_window_tokens = 0
+    config.context_auto_compact_token_limit = 0
+    backend = _InitialModelDowngradeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "read-one", "name": "read_file", "args": {"path": "README.md"}}],
+            ),
+            _FakeMessage(content="finished after downgrade"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    pre_turn_status = build_context_window_status(
+        model="gpt-5.6-sol",
+        current_tokens=40_000,
+    )
+    transcript_items = [
+        {
+            "id": f"history-{index}",
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"history-{index}:" + ("A" * 10_000),
+        }
+        for index in range(36)
+    ]
+
+    result = runtime.run(
+        message="read the file and finish",
+        settings=ChatSettings(
+            model="gpt-5.6-sol",
+            enable_tools=True,
+            permission_profile="full_dev",
+            response_style="short",
+        ),
+        context={
+            "session_id": "s-model-downgrade",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {"items": transcript_items},
+            "attachments": [],
+            "compaction_status": {
+                **pre_turn_status.to_dict(),
+                "context_window_status": pre_turn_status.to_dict(),
+            },
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert "context_compacted_for_model_downgrade" in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["compaction_status"]["model_downgraded"] is True
+    assert len(backend.invocations) == 2
+    assert backend.invocations[1]["model"] == "mixtral-8x7b-32768"
+    assert len(backend.invocations[1]["messages"]) < len(backend.invocations[0]["messages"])
 
 
 def test_runtime_cancels_turn_when_cancel_event_is_set(tmp_path: Path) -> None:

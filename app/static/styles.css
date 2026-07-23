@@ -3082,6 +3082,110 @@ button {
   line-height: 1.5;
 }
 
+.runtime-outcome-card.status-failed,
+.runtime-outcome-card.status-blocked,
+.runtime-outcome-card.status-cancelled {
+  border-color: rgba(180, 35, 24, 0.28);
+}
+
+.runtime-outcome-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.runtime-outcome-stats > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 11px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.62);
+}
+
+.runtime-outcome-stats span {
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+
+.runtime-outcome-stats strong {
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.runtime-outcome-note,
+.runtime-outcome-error {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.runtime-outcome-note {
+  color: var(--ink-soft);
+}
+
+.runtime-outcome-error {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border-radius: 11px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  overflow-wrap: anywhere;
+}
+
+.runtime-failure-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.runtime-failure-row {
+  min-width: 0;
+  padding: 10px 11px;
+  border-radius: 11px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(180, 35, 24, 0.24);
+}
+
+.runtime-failure-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.runtime-failure-title code {
+  color: var(--danger);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.runtime-failure-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 5px;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+
+.runtime-failure-summary {
+  margin: 7px 0 0;
+  padding: 0;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .runtime-attention-card {
   border-color: rgba(180, 35, 24, 0.3);
   box-shadow: 0 8px 24px rgba(180, 35, 24, 0.08);
@@ -3356,6 +3460,10 @@ button {
   }
 
   .runtime-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-outcome-stats {
     grid-template-columns: 1fr;
   }
 

@@ -31,6 +31,8 @@ from app.thread_record import (
     hydrate_thread_record,
     project_turns_from_thread,
 )
+from app.thread_titles import fallback_thread_title
+from app.tool_result_store import ToolResultStore
 from app.turn_trace import build_turn_trace, normalize_turn_trace
 
 
@@ -253,16 +255,8 @@ class SessionMetaStore:
         if not turns and isinstance(payload.get("thread_transcript"), dict):
             turns = project_turns_from_thread(payload)
         custom_title = str(payload.get("title") or "").strip()
-        title = custom_title
-        if not title:
-            title = "新会话"
-            for turn in turns:
-                if str(turn.get("role") or "") != "user":
-                    continue
-                text = str(turn.get("text") or "").replace("\n", " ").strip()
-                if text:
-                    title = text[:48]
-                    break
+        auto_title = str(payload.get("auto_title") or "").strip()
+        title = custom_title or auto_title or fallback_thread_title(turns)
         preview = ""
         if turns:
             preview = str(turns[-1].get("text") or "").replace("\n", " ").strip()[:80]
@@ -364,6 +358,7 @@ class SessionStore:
         self.run_artifact_store = run_artifact_store or RunArtifactStore(runs_dir or data_root / "runs")
         self.turn_trace_store = turn_trace_store or TurnTraceStore(turn_traces_dir or data_root / "turn_traces")
         self.session_meta_store = session_meta_store or SessionMetaStore(session_meta_dir or data_root / "session_meta")
+        self.tool_result_store = ToolResultStore(data_root / "tool_results")
         self.migration_backup_dir = data_root / "session_backups"
         self._lock = threading.Lock()
 
@@ -761,6 +756,11 @@ class SessionStore:
                         "trace_events": [],
                         "tool_items": projected_tool_items,
                         "live_items": [],
+                        "runtime_outcome": {
+                            key: value
+                            for key, value in dict(artifact.get("terminal") or {}).items()
+                            if key in {"status", "error_kind", "error_message"} and value not in (None, "")
+                        },
                     }
                     if requested_view in {"debug", "full"}:
                         activity_view["turn_trace"] = dict(artifact)
@@ -808,10 +808,29 @@ class SessionStore:
                             "imageView",
                         }
                     ],
+                    "runtime_outcome": {},
                     **operational_details,
                 }
+                debug_payload = dict(record.get("debug") or {})
+                runtime_error = dict(debug_payload.get("runtime_error") or {})
+                runtime_inspector = dict(debug_payload.get("inspector") or {})
+                runtime_run_state = (
+                    dict(runtime_inspector.get("run_state") or {})
+                    if isinstance(runtime_inspector.get("run_state"), dict)
+                    else {}
+                )
+                activity_view["runtime_outcome"] = {
+                    key: value
+                    for key, value in {
+                        "status": str(record.get("status") or ""),
+                        "error_kind": str(runtime_error.get("kind") or ""),
+                        "error_message": str(runtime_error.get("message") or ""),
+                        "stop_reason": str(runtime_run_state.get("blocked_reason") or ""),
+                    }.items()
+                    if value
+                }
                 if requested_view in {"debug", "full"}:
-                    debug = dict(record.get("debug") or {})
+                    debug = debug_payload
                     if requested_view == "full":
                         activity_view.update(details)
                     activity_view.update(
@@ -968,6 +987,8 @@ class SessionStore:
             "activity_revision": 0,
             "activity_kind": "created",
             "title": "",
+            "auto_title": "",
+            "title_generation": {},
             "project_id": project_id,
             "project_title": project_title,
             "project_root": project_root,
@@ -1141,6 +1162,7 @@ class SessionStore:
             self.session_meta_store.delete(session_id)
             self.run_artifact_store.delete_session(session_id)
             self.turn_trace_store.delete_thread(session_id)
+            self.tool_result_store.delete_thread(session_id)
             return True
         except Exception:
             return False
@@ -1165,6 +1187,7 @@ class SessionStore:
                 self.session_meta_store.delete(sid)
                 self.run_artifact_store.delete_session(sid)
                 self.turn_trace_store.delete_thread(sid)
+                self.tool_result_store.delete_thread(sid)
                 deleted += 1
             except Exception:
                 continue

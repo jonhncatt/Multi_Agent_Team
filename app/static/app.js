@@ -440,6 +440,8 @@ function normalizeContextMeter(raw) {
     history_noise_tokens: Math.max(0, Number(meter.history_noise_tokens || 0) || 0),
     remaining_tokens: Math.max(0, Number(meter.remaining_tokens || 0) || 0),
     context_window: contextWindow,
+    model_max_context_window: Math.max(0, Number(meter.model_max_context_window || contextWindow) || 0),
+    effective_context_window: Math.max(0, Number(meter.effective_context_window || contextWindow) || 0),
     used_ratio: usedRatio,
     remaining_ratio: remainingRatio,
     used_percent: usedPercent,
@@ -473,6 +475,8 @@ function normalizeCompactionStatus(raw) {
     retained_turn_count: Math.max(0, Number(status.retained_turn_count || 0) || 0),
     estimated_context_tokens: Math.max(0, Number(status.estimated_context_tokens || 0) || 0),
     estimated_payload_tokens: Math.max(0, Number(status.estimated_payload_tokens || 0) || 0),
+    model_max_context_window: Math.max(0, Number(status.model_max_context_window || 0) || 0),
+    operational_context_window: Math.max(0, Number(status.operational_context_window || 0) || 0),
     effective_context_window: Math.max(0, Number(status.effective_context_window || 0) || 0),
     auto_compact_token_limit: Math.max(0, Number(status.auto_compact_token_limit || 0) || 0),
     danger_compact_token_limit: Math.max(0, Number(status.danger_compact_token_limit || 0) || 0),
@@ -1211,6 +1215,9 @@ function normalizeMessageActivity(raw) {
     model_draft: String(item.model_draft || item.modelDraft || ""),
     final_answer: String(item.final_answer || item.finalAnswer || ""),
     runtime_error: normalizeRuntimeErrorPayload(item.runtime_error),
+    runtime_outcome: item.runtime_outcome && typeof item.runtime_outcome === "object"
+      ? item.runtime_outcome
+      : {},
     runtime_inspector: item.runtime_inspector && typeof item.runtime_inspector === "object"
       ? item.runtime_inspector
       : {},
@@ -2874,6 +2881,15 @@ function buildRuntimeStatsSummary({
       ...(safeContextMeter.context_window
         ? [{ key: "context_window", label: translateUi(locale, "context_meter.field.context_window"), value: formatTokenCount(safeContextMeter.context_window) }]
         : []),
+      ...(safeContextMeter.model_max_context_window > safeContextMeter.context_window
+        ? [{ key: "model_max_context_window", label: translateUi(locale, "context_meter.field.model_max_context_window"), value: formatTokenCount(safeContextMeter.model_max_context_window) }]
+        : []),
+      ...(safeContextMeter.auto_compact_token_limit
+        ? [{ key: "auto_compact_limit", label: translateUi(locale, "context_meter.field.auto_compact_limit"), value: formatTokenCount(safeContextMeter.auto_compact_token_limit) }]
+        : []),
+      ...(safeContextMeter.danger_compact_token_limit
+        ? [{ key: "effective_context_limit", label: translateUi(locale, "context_meter.field.effective_context_limit"), value: formatTokenCount(safeContextMeter.danger_compact_token_limit) }]
+        : []),
     ],
     safeguards: [
       { key: "long_task", label: translateUi(locale, "context_meter.field.guard_long_task"), value: formatRuntimeToggle(locale, Boolean(safeguards.long_task_guard)) },
@@ -2904,7 +2920,7 @@ function buildRuntimeStatsSummary({
 
 function nextRuntimeStatusPollIntervalMs({ sending, activeRunId, drawerView, contextMeterOpen }) {
   if (sending || String(activeRunId || "").trim()) return RUNTIME_STATUS_ACTIVE_INTERVAL_MS;
-  if (drawerView === "run" || contextMeterOpen) return RUNTIME_STATUS_IDLE_INTERVAL_MS;
+  if (contextMeterOpen) return RUNTIME_STATUS_IDLE_INTERVAL_MS;
   return 0;
 }
 
@@ -3014,6 +3030,61 @@ function toolFailureSummary(item, locale) {
   if (cwdText) lines.push(`${translateUi(locale, "tool.failure.cwd")}: ${cwdText}`);
   if (commandText) lines.push(`${translateUi(locale, "tool.failure.command")}: ${commandText}`);
   return lines.slice(0, 5).join("\n");
+}
+
+function isRuntimeFailureToolItem(item) {
+  const source = item && typeof item === "object" ? item : {};
+  const status = String(source.status || "").trim().toLowerCase();
+  const type = String(source.type || "").trim().toLowerCase();
+  const validation = source.validation_result && typeof source.validation_result === "object"
+    ? source.validation_result
+    : {};
+  if (["failed", "error", "rejected"].includes(status)) return true;
+  if (["tool_failed", "tool_rejected"].includes(type)) return true;
+  return validation.allowed === false && String(validation.code || "").trim().toLowerCase() !== "tool_skipped";
+}
+
+function buildRuntimeOutcomeSummary(activity, locale) {
+  const item = normalizeMessageActivity(activity || {});
+  const terminal = item.runtime_outcome && typeof item.runtime_outcome === "object"
+    ? item.runtime_outcome
+    : {};
+  const runtimeError = item.runtime_error && typeof item.runtime_error === "object"
+    ? item.runtime_error
+    : {};
+  const failures = normalizeActivityToolItems(item.tool_items)
+    .filter(isRuntimeFailureToolItem)
+    .slice(-4)
+    .reverse()
+    .map((toolItem) => ({
+      id: String(toolItem.id || toolItem.tool_call_id || toolItem.name || "tool-failure"),
+      tool: String(toolItem.tool || toolItem.name || "tool").trim() || "tool",
+      errorKind: String(
+        toolItem.error_kind
+        || ((toolItem.diagnostics || {}).error_kind)
+        || ((toolItem.validation_result || {}).code)
+        || "",
+      ).trim(),
+      retryCount: Math.max(0, Number(toolItem.retry_count || 0) || 0),
+      recoveryResult: String(toolItem.recovery_result || "").trim(),
+      summary: toolFailureSummary(toolItem, locale)
+        || compactFailureText(toolItem.summary || toolItem.preview_error || ""),
+    }));
+  const durationMs = Math.max(
+    0,
+    Number(item.final_elapsed_ms || 0) || 0,
+    Number(item.run_duration_ms || 0) || 0,
+  );
+  return {
+    loaded: Boolean(item.activity_loaded),
+    status: normalizeProgressStatus(terminal.status || item.status || "completed"),
+    duration: durationMs ? formatElapsedSeconds(Math.max(0, Math.round(durationMs / 1000)), locale) : "",
+    toolCount: Math.max(0, Number(item.tool_count || 0) || 0),
+    failures,
+    errorKind: String(terminal.error_kind || runtimeError.kind || "").trim(),
+    errorMessage: String(terminal.error_message || runtimeError.message || "").trim(),
+    stopReason: String(terminal.stop_reason || "").trim(),
+  };
 }
 
 function latestAssistantMessage(messages, options = {}) {
@@ -8433,6 +8504,37 @@ function App() {
   const activeRunLogs = hasLiveRuntimeState ? liveRunLogs : logs;
   const runtimeActivityMessage = latestAssistantMessage(messages, { preferPending: true });
   const runtimeActivity = normalizeMessageActivity((runtimeActivityMessage && runtimeActivityMessage.activity) || {});
+  const runtimeOutcome = buildRuntimeOutcomeSummary(runtimeActivity, uiLocale);
+  const runtimeActivityHasOutcomeDetails = runtimeActivity.tool_count > 0
+    ? Boolean(runtimeActivity.tool_items.length)
+    : Boolean(
+        Object.keys(runtimeActivity.runtime_outcome || {}).length
+        || runtimeActivity.runtime_error.kind
+        || runtimeActivity.runtime_error.message
+      );
+  const runtimeOutcomeNeedsLoad = Boolean(
+    runtimeActivityMessage
+    && !runtimeActivityMessage.pending
+    && !runtimeActivity.activity_loaded
+    && !runtimeActivityHasOutcomeDetails
+    && (runtimeActivity.trace_ref || runtimeActivity.run_id)
+    && (
+      runtimeActivity.tool_count > 0
+      || ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(runtimeActivity.status))
+    )
+  );
+  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount);
+  useEffect(() => {
+    if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;
+    const messageId = String((runtimeActivityMessage && runtimeActivityMessage.id) || "").trim();
+    if (messageId) ensureRunActivity(messageId);
+  }, [
+    drawerView,
+    hasLiveRuntimeState,
+    runtimeOutcomeNeedsLoad,
+    sessionId,
+    String((runtimeActivityMessage && runtimeActivityMessage.id) || ""),
+  ]);
   const activeRuntimeUnits = buildLiveAgentTimelineItems(runtimeActivity, uiLocale)
     .filter((item) => !isActivityTerminalStatus(item.status))
     .slice(-8)
@@ -10437,34 +10539,42 @@ function App() {
                       <div className="runtime-panel-subtitle">${t("runtime_panel.subtitle")}</div>
                     </div>
                     <span className=${`run-progress-state status-${runExecutionProgress.status || "idle"}`}>
-                      ${runExecutionProgress.statusLabel || formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}
+                      ${runtimeOperational
+                        ? (runExecutionProgress.statusLabel || formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle"))
+                        : formatRunEnum(uiLocale, "turn_status", "idle", "idle")}
                     </span>
                   </div>
                   <div className="runtime-current-action">
-                    ${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("runtime_panel.idle")}
+                    ${runtimeOperational
+                      ? (runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("runtime_panel.idle"))
+                      : t("runtime_panel.idle")}
                   </div>
-                  ${runExecutionProgress.command
+                  ${runtimeOperational && runExecutionProgress.command
                     ? html`<code className="run-progress-command runtime-current-command">${runExecutionProgress.command}</code>`
                     : null}
-                  <div className="runtime-status-grid">
-                    <div>
-                      <span>${formatRunFieldLabel(uiLocale, "current_tool")}</span>
-                      <strong>${runExecutionProgress.currentTool || "-"}</strong>
-                    </div>
-                    <div>
-                      <span>${formatRunFieldLabel(uiLocale, "elapsed")}</span>
-                      <strong>${runExecutionProgress.elapsed || "-"}</strong>
-                    </div>
-                    <div>
-                      <span>${formatRunFieldLabel(uiLocale, "last_progress")}</span>
-                      <strong>${runExecutionProgress.lastProgressAgo || "-"}</strong>
-                    </div>
-                    <div>
-                      <span>${formatRunFieldLabel(uiLocale, "connection")}</span>
-                      <strong>${runExecutionProgress.connectionLabel || "-"}</strong>
-                    </div>
-                  </div>
-                  ${activeTaskCheckpoint.blocked_reason
+                  ${runtimeOperational
+                    ? html`
+                        <div className="runtime-status-grid">
+                          <div>
+                            <span>${formatRunFieldLabel(uiLocale, "current_tool")}</span>
+                            <strong>${runExecutionProgress.currentTool || "-"}</strong>
+                          </div>
+                          <div>
+                            <span>${formatRunFieldLabel(uiLocale, "elapsed")}</span>
+                            <strong>${runExecutionProgress.elapsed || "-"}</strong>
+                          </div>
+                          <div>
+                            <span>${formatRunFieldLabel(uiLocale, "last_progress")}</span>
+                            <strong>${runExecutionProgress.lastProgressAgo || "-"}</strong>
+                          </div>
+                          <div>
+                            <span>${formatRunFieldLabel(uiLocale, "connection")}</span>
+                            <strong>${runExecutionProgress.connectionLabel || "-"}</strong>
+                          </div>
+                        </div>
+                      `
+                    : null}
+                  ${runtimeOperational && activeTaskCheckpoint.blocked_reason
                     ? html`<div className="runtime-blocked-reason">${activeTaskCheckpoint.blocked_reason}</div>`
                     : null}
                 </section>
@@ -10552,7 +10662,87 @@ function App() {
                     `
                   : null}
 
-                <section className="panel-card runtime-active-work-card">
+                ${!runtimeOperational && runtimeActivityMessage
+                  ? html`
+                      <section className=${`panel-card runtime-outcome-card status-${runtimeOutcome.status || "completed"}`}>
+                        <div className="runtime-panel-heading">
+                          <div className="panel-title">${t("runtime_panel.last_run")}</div>
+                          <span className=${`run-progress-state status-${runtimeOutcome.status || "completed"}`}>
+                            ${formatRunProgressStatus(uiLocale, runtimeOutcome.status || "completed")}
+                          </span>
+                        </div>
+                        <div className="runtime-outcome-stats">
+                          <div>
+                            <span>${formatRunFieldLabel(uiLocale, "elapsed")}</span>
+                            <strong>${runtimeOutcome.duration || "-"}</strong>
+                          </div>
+                          <div>
+                            <span>${t("context_meter.field.tool_total")}</span>
+                            <strong>${runtimeOutcome.toolCount}</strong>
+                          </div>
+                          <div>
+                            <span>${t("runtime_panel.failed_tools")}</span>
+                            <strong>${runtimeOutcome.failures.length}</strong>
+                          </div>
+                        </div>
+                        ${runtimeOutcomeNeedsLoad || Boolean(runtimeActivityMessage.runActivityLoading)
+                          ? html`<div className="runtime-outcome-note">${t("runtime_panel.last_run_loading")}</div>`
+                          : null}
+                        ${runtimeActivityMessage.runActivityError
+                          ? html`<div className="runtime-outcome-error">${String(runtimeActivityMessage.runActivityError)}</div>`
+                          : null}
+                        ${runtimeOutcome.errorKind || runtimeOutcome.errorMessage || runtimeOutcome.stopReason
+                          ? html`
+                              <div className="runtime-outcome-error">
+                                ${runtimeOutcome.errorKind
+                                  ? html`<strong>${t("runtime.error.kind")}: ${runtimeOutcome.errorKind}</strong>`
+                                  : null}
+                                ${runtimeOutcome.errorMessage ? html`<div>${runtimeOutcome.errorMessage}</div>` : null}
+                                ${runtimeOutcome.stopReason
+                                  ? html`<div>${t("activity.debug.blocked_reason")}: ${runtimeOutcome.stopReason}</div>`
+                                  : null}
+                              </div>
+                            `
+                          : null}
+                        ${runtimeOutcome.failures.length
+                          ? html`
+                              <div className="runtime-failure-list">
+                                ${runtimeOutcome.failures.map((failure) => html`
+                                  <div className="runtime-failure-row" key=${failure.id}>
+                                    <div className="runtime-failure-title">
+                                      <strong>${failure.tool}</strong>
+                                      ${failure.errorKind ? html`<code>${failure.errorKind}</code>` : null}
+                                    </div>
+                                    ${failure.retryCount || failure.recoveryResult
+                                      ? html`
+                                          <div className="runtime-failure-meta">
+                                            ${failure.retryCount
+                                              ? html`<span>${t("activity.debug.trace_retry")}: ${failure.retryCount}</span>`
+                                              : null}
+                                            ${failure.recoveryResult
+                                              ? html`<span>${t("activity.debug.trace_recovery")}: ${failure.recoveryResult}</span>`
+                                              : null}
+                                          </div>
+                                        `
+                                      : null}
+                                    ${failure.summary
+                                      ? html`<pre className="runtime-failure-summary">${failure.summary}</pre>`
+                                      : null}
+                                  </div>
+                                `)}
+                              </div>
+                            `
+                          : (!runtimeOutcomeNeedsLoad && !runtimeActivityMessage.runActivityLoading
+                            ? html`<div className="runtime-outcome-note">${t("runtime_panel.no_tool_failures")}</div>`
+                            : null)}
+                      </section>
+                    `
+                  : (!runtimeOperational
+                    ? html`<section className="panel-card"><div className="empty-inline">${t("runtime_panel.no_last_run")}</div></section>`
+                    : null)}
+
+                ${runtimeOperational
+                  ? html`<section className="panel-card runtime-active-work-card">
                   <div className="panel-title">${t("runtime_panel.active_work")}</div>
                   <div className="runtime-unit-list">
                     ${activeRuntimeUnits.length
@@ -10568,9 +10758,11 @@ function App() {
                         `)
                       : html`<div className="empty-inline">${t("runtime_panel.no_active_work")}</div>`}
                   </div>
-                </section>
+                </section>`
+                  : null}
 
-                <section className="panel-card runtime-events-card">
+                ${runtimeOperational
+                  ? html`<section className="panel-card runtime-events-card">
                   <div className="panel-title">${t("runtime_panel.recent_events")}</div>
                   <div className="runtime-event-list">
                     ${runtimeDecisionEvents.length
@@ -10582,7 +10774,8 @@ function App() {
                         `)
                       : html`<div className="empty-inline">${t("runtime_panel.no_recent_events")}</div>`}
                   </div>
-                </section>
+                </section>`
+                  : null}
 
                 <section className="panel-card runtime-controls-card">
                   <div className="panel-title">${t("runtime_panel.controls")}</div>

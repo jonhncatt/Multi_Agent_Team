@@ -158,6 +158,11 @@ REQUIRED_CORE_KEYS = (
     "runtime_panel.no_recent_events",
     "runtime_panel.controls",
     "runtime_panel.open_developer_debug",
+    "runtime_panel.last_run",
+    "runtime_panel.failed_tools",
+    "runtime_panel.last_run_loading",
+    "runtime_panel.no_tool_failures",
+    "runtime_panel.no_last_run",
     "activity.tool_title.read_file",
     "activity.tool_title.list_dir",
     "activity.tool_title.glob_file_search",
@@ -280,6 +285,9 @@ REQUIRED_CORE_KEYS = (
     "context_meter.field.compact_recommendation",
     "context_meter.field.output_limit",
     "context_meter.field.context_window",
+    "context_meter.field.model_max_context_window",
+    "context_meter.field.auto_compact_limit",
+    "context_meter.field.effective_context_limit",
     "context_meter.field.token_usage",
     "context_meter.field.guard_long_task",
     "context_meter.field.guard_progress_signal",
@@ -990,6 +998,9 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "hasConnectionHeartbeat]);" in script
     assert 'translateUi(locale, "duration.minutes_seconds"' in script
     assert 'translateUi(locale, "duration.hours_minutes_seconds"' in script
+    polling_body = script.split("function nextRuntimeStatusPollIntervalMs", 1)[1].split("function mergeRunSnapshot", 1)[0]
+    assert 'drawerView === "run"' not in polling_body
+    assert "if (contextMeterOpen) return RUNTIME_STATUS_IDLE_INTERVAL_MS;" in polling_body
     assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
     assert "startedAt: clientSubmittedAtMs," in script
     assert "const liveAssistantMessageId = hasLiveRuntimeState" in script
@@ -1021,6 +1032,13 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         "handleStopRun",
         'formatRunFieldLabel(uiLocale, "current_tool")',
         "runExecutionProgress.statusLabel",
+        "function buildRuntimeOutcomeSummary(activity, locale)",
+        "const runtimeOutcomeNeedsLoad = Boolean(",
+        'if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;',
+        "if (messageId) ensureRunActivity(messageId);",
+        't("runtime_panel.last_run")',
+        't("runtime_panel.failed_tools")',
+        "runtimeOutcome.failures",
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -1042,6 +1060,9 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         ".runtime-unit-row",
         ".runtime-event-row",
         ".runtime-control-actions",
+        ".runtime-outcome-stats",
+        ".runtime-failure-row",
+        ".runtime-failure-summary",
     )
     for token in required_style_tokens:
         assert token in styles, token
@@ -1055,6 +1076,8 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         '"runtime_panel.active_work": "当前执行单元"',
         '"runtime_panel.recent_events": "最近 Runtime 事件"',
         '"runtime_panel.open_developer_debug": "打开开发者调试"',
+        '"runtime_panel.last_run": "最近运行结果"',
+        '"runtime_panel.failed_tools": "失败工具"',
         '"run.field.current_tool": "当前工具"',
         '"run.progress.status.waiting_model": "等待模型下一步"',
         '"run.progress.status.waiting_tool": "等待工具结果"',

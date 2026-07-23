@@ -75,6 +75,15 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "low",
         "summary": "wait for parallel Subagent tasks and collect their results",
     },
+    "read_tool_result": {
+        "group": "control",
+        "source": "native",
+        "read_only": True,
+        "requires_evidence": False,
+        "requires": {**_FALLBACK_REQUIRES},
+        "risk": "low",
+        "summary": "continue reading a truncated tool result without rerunning it",
+    },
     "save_skill": {
         "group": "control",
         "source": "native",
