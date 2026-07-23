@@ -113,6 +113,7 @@ _DEFAULT_REPEATED_FAILURES_AFTER_REPLAN = 1
 _DEFAULT_MAX_TOTAL_FAILURES = 5
 _DEFAULT_COMPACT_AFTER_TOOL_CALLS = 8
 _DEFAULT_COMPACT_KEEP_LAST_MESSAGES = 10
+_SUBAGENT_CANCEL_GRACE_SECONDS = 0.25
 
 
 def _has_image_attachments(attachment_metas: list[dict[str, Any]]) -> bool:
@@ -3569,6 +3570,7 @@ class VintageProgrammerRuntime:
         permission_profile: str = "auto",
         runtime_boundary: RuntimeBoundary | None = None,
         run_id: str = "",
+        cancel_event: Any | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
         task_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
@@ -3596,6 +3598,8 @@ class VintageProgrammerRuntime:
             kwargs["runtime_boundary"] = dump_model(runtime_boundary)
         if self._callable_accepts_kwarg(setter, "run_id"):
             kwargs["run_id"] = run_id
+        if self._callable_accepts_kwarg(setter, "cancel_event"):
+            kwargs["cancel_event"] = cancel_event
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
         if self._callable_accepts_kwarg(setter, "task_writer"):
@@ -4682,6 +4686,7 @@ class VintageProgrammerRuntime:
             task_text: str,
             role_spec: dict[str, Any],
             started_item: dict[str, Any],
+            child_cancel_event: threading.Event,
         ) -> dict[str, Any]:
             child_progress_count = 0
 
@@ -4689,60 +4694,81 @@ class VintageProgrammerRuntime:
                 nonlocal child_progress_count
                 child_progress_count += 1
 
-            try:
-                child_runtime = VintageProgrammerRuntime(
-                    config=self._config,
-                    kernel_runtime=None,
-                    agent_dir=self._agent_dir,
-                    backend=create_vp_runtime_backend(self._config),
-                )
-                settings_payload = settings.model_dump() if hasattr(settings, "model_dump") else settings.dict()
-                child_settings = ChatSettings(**dict(settings_payload or {}))
-                child_settings.enable_tools = True
-                child_settings.response_style = "short"
-                child_result = child_runtime.run(
-                    message=task_text,
-                    settings=child_settings,
-                    context={
-                        "session_id": f"{session_id}:subagent:{subagent_id}",
-                        "run_id": subagent_id,
-                        "subagent_read_only": True,
-                        "subagent_spec": dict(role_spec),
-                        "project": dict(project_context),
-                        "attachments": [dict(item) for item in attachment_metas],
-                        "attachment_evidence_pack": [dict(item) for item in attachment_evidence_pack],
-                        "thread_transcript": {"schema_version": 1, "items": []},
-                    },
-                    progress_cb=record_child_progress,
-                )
-                child_status = str(child_result.get("turn_status") or "completed")
-                ok = child_status == "completed"
-                summary = str(child_result.get("final_answer") or child_result.get("text") or "").strip()
-                result = {
-                    "ok": ok,
-                    "subagent_id": subagent_id,
-                    "role": str(role_spec.get("name") or "explorer"),
-                    "label": str(started_item.get("label") or ""),
-                    "status": child_status,
-                    "summary": summary[:12000],
-                    "tool_count": len(list(child_result.get("tool_events") or [])),
-                    "progress_event_count": child_progress_count,
-                    "token_usage": dict(child_result.get("token_usage") or {}),
-                }
-            except Exception as exc:
-                error_text = safe_error_message(exc)
+            if child_cancel_event.is_set():
                 result = {
                     "ok": False,
                     "subagent_id": subagent_id,
                     "role": str(role_spec.get("name") or "explorer"),
                     "label": str(started_item.get("label") or ""),
-                    "status": "failed",
-                    "error_kind": "subagent_failed",
-                    "error": error_text,
-                    "summary": error_text,
-                    "progress_event_count": child_progress_count,
+                    "status": "cancelled",
+                    "error_kind": "subagent_cancelled",
+                    "error": "Subagent was cancelled with its parent run.",
+                    "summary": "Subagent was cancelled with its parent run.",
+                    "progress_event_count": 0,
                     "token_usage": {},
                 }
+            else:
+                try:
+                    child_runtime = VintageProgrammerRuntime(
+                        config=self._config,
+                        kernel_runtime=None,
+                        agent_dir=self._agent_dir,
+                        backend=create_vp_runtime_backend(self._config),
+                    )
+                    child_tools = getattr(child_runtime._backend, "tools", None)
+                    cancel_commands = getattr(child_tools, "_cancel_command_sessions", None)
+                    with subagent_lock:
+                        record = subagent_records.get(subagent_id)
+                        if isinstance(record, dict) and callable(cancel_commands):
+                            record["cancel_commands"] = cancel_commands
+                    settings_payload = settings.model_dump() if hasattr(settings, "model_dump") else settings.dict()
+                    child_settings = ChatSettings(**dict(settings_payload or {}))
+                    child_settings.enable_tools = True
+                    child_settings.response_style = "short"
+                    child_result = child_runtime.run(
+                        message=task_text,
+                        settings=child_settings,
+                        context={
+                            "session_id": f"{session_id}:subagent:{subagent_id}",
+                            "run_id": subagent_id,
+                            "cancel_event": child_cancel_event,
+                            "subagent_read_only": True,
+                            "subagent_spec": dict(role_spec),
+                            "project": dict(project_context),
+                            "attachments": [dict(item) for item in attachment_metas],
+                            "attachment_evidence_pack": [dict(item) for item in attachment_evidence_pack],
+                            "thread_transcript": {"schema_version": 1, "items": []},
+                        },
+                        progress_cb=record_child_progress,
+                    )
+                    child_status = str(child_result.get("turn_status") or "completed")
+                    ok = child_status == "completed"
+                    summary = str(child_result.get("final_answer") or child_result.get("text") or "").strip()
+                    result = {
+                        "ok": ok,
+                        "subagent_id": subagent_id,
+                        "role": str(role_spec.get("name") or "explorer"),
+                        "label": str(started_item.get("label") or ""),
+                        "status": child_status,
+                        "summary": summary[:12000],
+                        "tool_count": len(list(child_result.get("tool_events") or [])),
+                        "progress_event_count": child_progress_count,
+                        "token_usage": dict(child_result.get("token_usage") or {}),
+                    }
+                except Exception as exc:
+                    error_text = safe_error_message(exc)
+                    result = {
+                        "ok": False,
+                        "subagent_id": subagent_id,
+                        "role": str(role_spec.get("name") or "explorer"),
+                        "label": str(started_item.get("label") or ""),
+                        "status": "failed",
+                        "error_kind": "subagent_failed",
+                        "error": error_text,
+                        "summary": error_text,
+                        "progress_event_count": child_progress_count,
+                        "token_usage": {},
+                    }
             completed_item = {
                 **started_item,
                 "status": "completed" if bool(result.get("ok")) else str(result.get("status") or "failed"),
@@ -4752,10 +4778,12 @@ class VintageProgrammerRuntime:
             }
             with subagent_lock:
                 record = subagent_records.get(subagent_id)
-                if isinstance(record, dict):
+                should_emit = isinstance(record, dict) and not bool(record.get("detached"))
+                if should_emit:
                     record["result"] = dict(result)
                     record["item"] = dict(completed_item)
-            emit_subagent_item("item/completed", completed_item)
+            if should_emit:
+                emit_subagent_item("item/completed", completed_item)
             return result
 
         def subagent_runner(*, task: str, role: str = "explorer", label: str = "") -> dict[str, Any]:
@@ -4783,6 +4811,7 @@ class VintageProgrammerRuntime:
                 "summary": "",
                 "started_at": time.time(),
             }
+            child_cancel_event = threading.Event()
             with subagent_lock:
                 if subagent_executor is None:
                     subagent_executor = ThreadPoolExecutor(
@@ -4795,6 +4824,9 @@ class VintageProgrammerRuntime:
                     "item": dict(started_item),
                     "result": None,
                     "future": None,
+                    "cancel_event": child_cancel_event,
+                    "cancel_commands": None,
+                    "detached": False,
                     "usage_reported": False,
                 }
                 executor = subagent_executor
@@ -4806,6 +4838,7 @@ class VintageProgrammerRuntime:
                     task_text=task_text,
                     role_spec=role_spec,
                     started_item=started_item,
+                    child_cancel_event=child_cancel_event,
                 )
             except Exception as exc:
                 error_text = safe_error_message(exc)
@@ -4906,12 +4939,65 @@ class VintageProgrammerRuntime:
                 ),
             }
 
-        def shutdown_subagents() -> None:
+        def shutdown_subagents(*, cancel_running: bool = False) -> None:
             nonlocal subagent_executor, usage_total
             executor = subagent_executor
             subagent_executor = None
             if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=False)
+                if cancel_running:
+                    with subagent_lock:
+                        records = list(subagent_records.values())
+                        futures = [
+                            record.get("future")
+                            for record in records
+                            if isinstance(record.get("future"), Future)
+                        ]
+                    for record in records:
+                        cancel_event = record.get("cancel_event")
+                        if cancel_event and hasattr(cancel_event, "set"):
+                            cancel_event.set()
+                        cancel_commands = record.get("cancel_commands")
+                        if callable(cancel_commands):
+                            try:
+                                cancel_commands(run_id=str(record.get("id") or ""))
+                            except Exception:
+                                pass
+                    for future in futures:
+                        future.cancel()
+                    if futures:
+                        wait(futures, timeout=_SUBAGENT_CANCEL_GRACE_SECONDS)
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    cancelled_items: list[dict[str, Any]] = []
+                    with subagent_lock:
+                        for record in records:
+                            if isinstance(record.get("result"), dict):
+                                continue
+                            record["detached"] = True
+                            item = dict(record.get("item") or {})
+                            cancelled_result = {
+                                "ok": False,
+                                "subagent_id": str(record.get("id") or ""),
+                                "role": str(record.get("role") or ""),
+                                "label": str(item.get("label") or ""),
+                                "status": "cancelled",
+                                "error_kind": "subagent_cancelled",
+                                "error": "Subagent was cancelled because its parent run ended.",
+                                "summary": "Subagent was cancelled because its parent run ended.",
+                                "token_usage": {},
+                            }
+                            completed_item = {
+                                **item,
+                                "status": "cancelled",
+                                "summary": cancelled_result["summary"],
+                                "completed_at": time.time(),
+                            }
+                            record["result"] = cancelled_result
+                            record["item"] = completed_item
+                            cancelled_items.append(completed_item)
+                    for item in cancelled_items:
+                        emit_subagent_item("item/completed", item)
+                else:
+                    executor.shutdown(wait=True, cancel_futures=False)
             unreported_usage: dict[str, Any] = {}
             with subagent_lock:
                 for record in subagent_records.values():
@@ -5090,6 +5176,7 @@ class VintageProgrammerRuntime:
                 permission_profile=turn_runtime_boundary.permission_profile,
                 runtime_boundary=turn_runtime_boundary,
                 run_id=run_id,
+                cancel_event=context_payload.get("cancel_event"),
                 skill_writer=skill_writer,
                 task_writer=task_writer,
                 subagent_runner=subagent_runner,
@@ -5468,6 +5555,7 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
+                    cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
@@ -6323,6 +6411,7 @@ class VintageProgrammerRuntime:
                         permission_profile=turn_runtime_boundary.permission_profile,
                         runtime_boundary=turn_runtime_boundary,
                         run_id=run_id,
+                        cancel_event=context_payload.get("cancel_event"),
                         skill_writer=skill_writer,
                         task_writer=task_writer,
                         subagent_runner=subagent_runner,
@@ -7194,6 +7283,7 @@ class VintageProgrammerRuntime:
                     permission_profile=turn_runtime_boundary.permission_profile,
                     runtime_boundary=turn_runtime_boundary,
                     run_id=run_id,
+                    cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
@@ -7220,7 +7310,14 @@ class VintageProgrammerRuntime:
                 self._append_llm_exchange(llm_exchanges, completed_exchange)
                 last_successful_round = round_idx
         finally:
-            shutdown_subagents()
+            if turn_status in {"failed", "cancelled"}:
+                cancel_commands = getattr(self._backend.tools, "_cancel_command_sessions", None)
+                if callable(cancel_commands):
+                    try:
+                        cancel_commands(run_id=run_id)
+                    except Exception:
+                        pass
+            shutdown_subagents(cancel_running=turn_status in {"failed", "cancelled"})
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
 

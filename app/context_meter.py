@@ -24,6 +24,10 @@ _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     # Keep the default usable window separate from the maximum window a
     # deployment may allow. Company-compatible endpoints can override this
     # with VP_CONTEXT_WINDOW_TOKENS after their deployment is verified.
+    "gpt-5.6": 1_050_000,
+    "gpt-5.6-sol": 1_050_000,
+    "gpt-5.6-terra": 1_050_000,
+    "gpt-5.6-luna": 1_050_000,
     "gpt-5.5": 272_000,
     "gpt-5.4": 272_000,
     "gpt-5.4-mini": 272_000,
@@ -65,6 +69,7 @@ def _normalize_model_candidates(model: str | None) -> list[str]:
     return out
 
 
+@lru_cache(maxsize=128)
 def resolve_context_window(
     model: str | None,
     *,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shlex
+import threading
 import zipfile
 
 import pytest
@@ -153,6 +154,41 @@ def test_exec_command_allowlist_rejection_has_structured_rejected_outcome(
     assert result["error_kind"] == "command_not_allowed"
     assert result["failure_outcome"] == "rejected"
     assert result["returncode"] == 126
+
+
+def test_cancelled_agent_run_terminates_its_running_command_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    cancel_event = threading.Event()
+    sleeper = tmp_path / "slow_check.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    manager.set_runtime_context(
+        execution_mode="host",
+        session_id="subagent-session",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        run_id="subagent-run",
+        cancel_event=cancel_event,
+    )
+
+    started = manager.exec_command(
+        cmd=f"python {shlex.quote(str(sleeper))}",
+        cwd=str(tmp_path),
+        yield_time_ms=20,
+    )
+    assert started["ok"] is True
+    assert started["running"] is True
+
+    cancel_event.set()
+    cancelled = manager.write_stdin(session_id=started["session_id"], yield_time_ms=10)
+
+    assert cancelled["ok"] is False
+    assert cancelled["error_kind"] == "tool_cancelled"
+    proc = manager._command_sessions[started["session_id"]]["proc"]
+    proc.wait(timeout=1)
+    assert proc.poll() is not None
 
 
 def test_read_only_subagent_gets_safe_alternative_instead_of_inline_python_approval(

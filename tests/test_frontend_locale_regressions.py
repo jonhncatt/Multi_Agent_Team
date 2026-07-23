@@ -52,6 +52,7 @@ REQUIRED_CORE_KEYS = (
     "buttons.select_all_threads",
     "buttons.clear_thread_selection",
     "buttons.delete_selected_threads",
+    "tabs.run",
     "tabs.settings",
     "tabs.eval",
     "eval.title",
@@ -83,6 +84,12 @@ REQUIRED_CORE_KEYS = (
     "activity.debug.tools",
     "activity.debug.harness",
     "activity.debug.legacy_details",
+    "activity.debug.runtime_controls",
+    "activity.debug.runtime_phase",
+    "activity.debug.blocked_reason",
+    "activity.debug.pending_approval",
+    "activity.debug.pending_user_input",
+    "activity.debug.control_events",
     "activity.live.model_thinking",
     "activity.live.model_finished",
     "activity.live.model_failed",
@@ -134,6 +141,23 @@ REQUIRED_CORE_KEYS = (
     "runtime.raw_model_io.error",
     "runtime.raw_model_io.harness_interpretation",
     "runtime.raw_model_io.truncated",
+    "runtime_panel.title",
+    "runtime_panel.subtitle",
+    "runtime_panel.attention_count",
+    "runtime_panel.idle",
+    "runtime_panel.action_required",
+    "runtime_panel.approval_required",
+    "runtime_panel.approval_details",
+    "runtime_panel.user_input_required",
+    "runtime_panel.question",
+    "runtime_panel.reply_in_composer",
+    "runtime_panel.active_work",
+    "runtime_panel.work_item",
+    "runtime_panel.no_active_work",
+    "runtime_panel.recent_events",
+    "runtime_panel.no_recent_events",
+    "runtime_panel.controls",
+    "runtime_panel.open_developer_debug",
     "activity.tool_title.read_file",
     "activity.tool_title.list_dir",
     "activity.tool_title.glob_file_search",
@@ -693,13 +717,15 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert "font-weight: 700" not in body
 
 
-def test_command_execution_approval_modal_and_payload_are_wired() -> None:
+def test_command_execution_approval_runtime_control_and_payload_are_wired() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
     assert 'String(candidate.type || "") !== "command_execution"' in script
-    assert 'id="commandApprovalModal"' in script
+    assert 'id="commandApprovalModal"' not in script
+    assert 'className="panel-card runtime-attention-card"' in script
+    assert 'if (runtimeInteractionKey) setDrawerView("run");' in script
     assert 'handleCommandApproval("approve_once")' in script
     assert 'handleCommandApproval("cancel")' in script
     assert 'user_input_response: structuredUserInputResponse' in script
@@ -717,23 +743,55 @@ def test_command_execution_approval_modal_and_payload_are_wired() -> None:
     assert '["user", "assistant", "runtime", "system"].includes(storedRole)' in script
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
-    assert "clearVisibleCommandApprovalState();" in script
-    assert 't("approval_modal.repository")' in script
-    assert 't("approval_modal.remote_url")' in script
-    assert 't("approval_modal.branch")' in script
-    assert 't("approval_modal.head")' in script
-    assert 't("approval_modal.purpose")' in script
+    assert "const [approvalSubmitting, setApprovalSubmitting] = useState(false);" in script
+    assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
+    assert "if (currentThreadBusy && !isTurnResume)" in script
+    assert "if (ownerBusy && !isTurnResume) return;" in script
+    assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
+    assert "while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline)" in script
+    assert 'disabled=${approvalSubmitting}' in script
+    assert 'disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}' in script
+    approval_handler = script.split("const handleCommandApproval = async", 1)[1].split("const activeToolTimeline", 1)[0]
+    assert "currentThreadBusy" not in approval_handler
+    assert "pendingResumeState" in approval_handler
     assert 'activePendingApproval.purpose' in script
-    assert "if (Boolean(risk.force))" in script
-    assert "if (Boolean(risk.delete))" in script
+    assert 't("runtime_panel.approval_details"' in script
+    assert 'className="runtime-control-actions"' in script
+    assert "const safeApprovalDebug = Object.keys(debugPendingApproval).length" in script
+    assert "runtimeRunState.pending_approval" in script
+    assert 't("activity.debug.runtime_controls")' in script
+    assert 't("activity.debug.control_events")' in script
+    safe_debug = script.split("const safeApprovalDebug =", 1)[1].split("const safePendingInputDebug", 1)[0]
+    assert "approval_token" not in safe_debug
     assert '"approval_modal.title": "确认命令执行"' in locales
     assert '"approval_modal.purpose": "执行目的"' in locales
     assert '"approval_modal.repository": "仓库"' in locales
     assert '"approval_modal.remote_url": "Remote 地址"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；批准只对这一个精确命令生效一次。"' in locales
+    assert '"runtime_panel.approval_required": "等待命令审批"' in locales
+    assert '"tabs.run": "Runtime"' in locales
     assert '"role.runtime": "运行时"' in locales
     assert ".role-runtime .message-card" in styles
+    assert ".runtime-attention-card" in styles
+
+
+def test_llm_and_tool_failure_traces_remain_nonterminal_until_run_failure() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    status_mapper = script.split("function activityStatusFromTraceType", 1)[1].split("function mergeActivityState", 1)[0]
+    heartbeat_mapper = script.split("const syncHeartbeatFromTrace", 1)[1].split("const syncHeartbeatFromStreamItem", 1)[0]
+
+    assert 'if (normalized === "tool.failed") return "tooling";' in status_mapper
+    assert 'if (normalized === "llm.failed") return "background_running";' in status_mapper
+    assert 'const finishedStatus = normalizeProgressStatus(eventStatus);' in status_mapper
+    assert '["completed", "failed", "blocked", "cancelled"].includes(finishedStatus)' in status_mapper
+    assert 'if (normalized === "run.failed") return "failed";' in status_mapper
+    assert 'if (traceType === "tool.failed")' in heartbeat_mapper
+    assert 'status: "tooling"' in heartbeat_mapper
+    assert 'if (traceType === "llm.failed")' in heartbeat_mapper
+    assert 'status: "background_running"' in heartbeat_mapper
+    assert 'if (traceType === "run.failed")' in heartbeat_mapper
+    assert 'status: "failed"' in heartbeat_mapper
 
 
 def test_runtime_stats_panel_and_polling_cleanup_are_wired() -> None:
@@ -939,7 +997,7 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
 
 
-def test_run_execution_progress_panel_is_split_from_plan_checklist() -> None:
+def test_runtime_control_center_prioritizes_live_state_and_interactions() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
@@ -950,15 +1008,19 @@ def test_run_execution_progress_panel_is_split_from_plan_checklist() -> None:
         "function currentChecklistStepLabel(plan, checkpoint = {})",
         "function executionProgressCommandFromSource(source)",
         "function formatRunProgressStatus(locale, status)",
-        "const hasPlanMode = Boolean(activePlan.length);",
-        'className="panel-card run-progress-card"',
+        "const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasPendingRuntimeInput);",
+        'className="workbench-scroll runtime-control-center"',
+        "runtime-overview-card",
+        'className="panel-card runtime-attention-card"',
+        't("runtime_panel.active_work")',
+        't("runtime_panel.recent_events")',
+        't("runtime_panel.controls")',
+        "activeRuntimeUnits",
+        "runtimeDecisionEvents",
+        "openLatestRuntimeDebug",
+        "handleStopRun",
         'formatRunFieldLabel(uiLocale, "current_tool")',
-        'formatRunFieldLabel(uiLocale, "current_action")',
-        'formatRunFieldLabel(uiLocale, "current_state")',
-        'formatRunFieldLabel(uiLocale, "recent_event")',
-        'formatRunFieldLabel(uiLocale, "command")',
         "runExecutionProgress.statusLabel",
-        "${hasPlanMode",
     )
     for token in required_script_tokens:
         assert token in script, token
@@ -972,23 +1034,47 @@ def test_run_execution_progress_panel_is_split_from_plan_checklist() -> None:
         ".run-progress-state",
         ".run-progress-state.status-validating",
         ".run-progress-state.status-waiting_model",
+        ".runtime-nav-btn",
+        ".runtime-attention-badge",
+        ".runtime-control-center",
+        ".runtime-status-grid",
+        ".runtime-attention-card",
+        ".runtime-unit-row",
+        ".runtime-event-row",
+        ".runtime-control-actions",
     )
     for token in required_style_tokens:
         assert token in styles, token
 
     required_locale_tokens = (
-        '"run.execution_progress": "执行进展"',
+        '"tabs.run": "Runtime"',
+        '"runtime_panel.title": "Runtime"',
+        '"runtime_panel.action_required": "需要处理"',
+        '"runtime_panel.approval_required": "等待命令审批"',
+        '"runtime_panel.user_input_required": "等待你的输入"',
+        '"runtime_panel.active_work": "当前执行单元"',
+        '"runtime_panel.recent_events": "最近 Runtime 事件"',
+        '"runtime_panel.open_developer_debug": "打开开发者调试"',
         '"run.field.current_tool": "当前工具"',
-        '"run.field.current_action": "当前动作"',
-        '"run.field.current_state": "当前状态"',
-        '"run.field.command": "命令"',
-        '"run.field.recent_event": "最近事件"',
         '"run.progress.status.waiting_model": "等待模型下一步"',
         '"run.progress.status.waiting_tool": "等待工具结果"',
         '"run.progress.status.background_running": "后台仍在运行"',
     )
     for token in required_locale_tokens:
         assert token in locales, token
+
+    runtime_drawer = script.split('${drawerView === "run"', 1)[1].split('${drawerView === "tools"', 1)[0]
+    for removed_concern in (
+        'formatRunFieldLabel(uiLocale, "goal")',
+        'formatRunFieldLabel(uiLocale, "evidence")',
+        'formatRunFieldLabel(uiLocale, "ocr")',
+        'formatRunFieldLabel(uiLocale, "compaction")',
+        'formatRunFieldLabel(uiLocale, "context")',
+        't("run.checklist")',
+        't("run.recent_tools")',
+        't("run.logs")',
+    ):
+        assert removed_concern not in runtime_drawer, removed_concern
 
 
 def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
@@ -1694,18 +1780,18 @@ def test_tasks_entry_loads_snapshot_into_current_thread_send_path() -> None:
         assert token in styles, token
 
 
-def test_run_panel_derives_progress_from_live_plan_without_task_state() -> None:
+def test_runtime_control_center_uses_live_progress_without_task_state_details() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
-    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
-    assert "renderRunStateDetail" in script
+    assert "renderRunStateDetail" not in script
     assert "const currentPlanStep = activePlan.find" in script
-    assert "completed_steps: activePlan.filter" in script
-    assert "completed_steps_count" in script
+    assert "checkpoint: activeTaskCheckpoint" in script
     assert "runState.task_state" not in script
     assert "sessionRuntimeState.task_state" not in script
-    assert '"run.field.progress_basis": "进展依据"' in locales
-    assert '"run.field.evidence_refs": "证据引用"' in locales
+    runtime_drawer = script.split('${drawerView === "run"', 1)[1].split('${drawerView === "tools"', 1)[0]
+    assert "completed_steps_count" not in runtime_drawer
+    assert "progress_basis" not in runtime_drawer
+    assert "evidence_refs" not in runtime_drawer
 
 
 def test_debug_panel_does_not_render_removed_task_state_layers() -> None:
@@ -1932,7 +2018,7 @@ def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
 def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    busy_branch = script.split("if (currentThreadBusy) {", 1)[1].split("const slashCommand", 1)[0]
+    busy_branch = script.split("if (currentThreadBusy && !isTurnResume) {", 1)[1].split("const slashCommand", 1)[0]
     assert "const queuedGuidance = {" in busy_branch
     assert "updateThreadPendingGuidance(steerOwnerThreadId, (prev) => [...prev, queuedGuidance]);" in busy_branch
     assert "setMessages(" not in busy_branch
@@ -2009,11 +2095,11 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
     assert "const anyThreadBusy = (() => {" in script
     assert "if (!messageText) return;" in body
-    assert "if (currentThreadBusy) {" in body
+    assert "if (currentThreadBusy && !isTurnResume) {" in body
     assert 'fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`' in body
-    assert "if (ownerBusy) return;" in body
+    assert "if (ownerBusy && !isTurnResume) return;" in body
     assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;" in body
-    lock_check = body.split("if (ownerBusy) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
+    lock_check = body.split("if (ownerBusy && !isTurnResume) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
     assert "activeSendThreadIdsRef.current.delete" not in lock_check
     assert "appendMessagesOnceById(" in body
     assert body.index("let uiFinalized = false;") < body.index("try {\n      if (isTempThreadId(sid)")
@@ -2191,6 +2277,16 @@ def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt()
     assert 't("activity.debug.thread_history")' in script
     assert 't("activity.debug.view_trace")' in script
     assert 't("activity.debug.view_system_prompt")' in script
+    assert "const systemPromptGroupsByText = new Map();" in script
+    assert "systemPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);" in script
+    assert 't("activity.debug.base_system_prompt")' in script
+    assert 't("activity.debug.context_variants")' in script
+    assert "context.supporting_messages.length" in script
+    assert "context.tool_names.length" in script
+    assert 'renderDetailBlock(t("activity.debug.supporting_messages"), context.supporting_messages)' in script
+    assert 'renderDetailBlock(t("activity.debug.available_tools"), context.tool_names)' in script
+    assert 'className="system-prompt-variants"' in script
+    assert ".system-prompt-variants" in STYLES_CSS_PATH.read_text(encoding="utf-8")
     assert "${threadHistory}" in script
     assert "${systemPrompt}" in script
     debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]

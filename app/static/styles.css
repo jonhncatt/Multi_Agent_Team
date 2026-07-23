@@ -1523,7 +1523,8 @@ button {
 .thread-history-item-head code,
 .thread-tool-call-meta code,
 .thread-tool-link code,
-.system-prompt-context > code {
+.system-prompt-context-head code,
+.system-prompt-variant code {
   color: var(--ink-faint);
   font-size: 11px;
   overflow-wrap: anywhere;
@@ -1592,6 +1593,42 @@ button {
 
 .system-prompt-context {
   margin-top: 8px;
+}
+
+.system-prompt-context-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.system-prompt-variants {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(152, 164, 181, 0.28);
+}
+
+.system-prompt-variants-title {
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.system-prompt-variant > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+}
+
+.system-prompt-variant > .activity-payload {
+  margin: 6px 0 0 12px;
 }
 
 @media (max-width: 640px) {
@@ -2498,6 +2535,30 @@ button {
   color: #1d4ed8;
 }
 
+.runtime-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.runtime-nav-btn.needs-attention {
+  border-color: rgba(180, 35, 24, 0.32);
+}
+
+.runtime-attention-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .project-modal.eval-modal {
   width: min(760px, 100%);
   max-height: min(860px, calc(100vh - 40px));
@@ -2952,6 +3013,187 @@ button {
   gap: 10px;
 }
 
+.runtime-control-center {
+  display: block;
+}
+
+.runtime-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-panel-subtitle {
+  margin-top: 5px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.runtime-current-action {
+  margin-top: 16px;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.runtime-current-command {
+  display: block;
+  margin-top: 10px;
+}
+
+.runtime-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.runtime-status-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.62);
+}
+
+.runtime-status-grid span {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.runtime-status-grid strong {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.runtime-blocked-reason {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.runtime-attention-card {
+  border-color: rgba(180, 35, 24, 0.3);
+  box-shadow: 0 8px 24px rgba(180, 35, 24, 0.08);
+}
+
+.runtime-interaction-block {
+  margin-top: 12px;
+  padding: 13px;
+  border-radius: 14px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.72);
+}
+
+.runtime-interaction-title {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.runtime-interaction-block .run-progress-command {
+  display: block;
+  margin-top: 10px;
+}
+
+.runtime-approval-details {
+  margin-top: 10px;
+}
+
+.runtime-approval-details summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.runtime-approval-details .timeline-list {
+  margin-top: 10px;
+}
+
+.runtime-question-list {
+  margin-top: 10px;
+}
+
+.runtime-control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.runtime-unit-list,
+.runtime-event-list,
+.runtime-debug-event-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.runtime-unit-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 13px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.72);
+}
+
+.runtime-unit-row > .live-run-dot {
+  margin-top: 5px;
+}
+
+.runtime-unit-row strong {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.runtime-unit-row .timeline-detail {
+  margin-top: 3px;
+}
+
+.runtime-event-row,
+.runtime-debug-event-row {
+  display: grid;
+  grid-template-columns: minmax(70px, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(188, 198, 212, 0.62);
+}
+
+.runtime-event-row span,
+.runtime-debug-event-row code {
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+
+.runtime-event-row strong,
+.runtime-debug-event-row span {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.thread-runtime-debug {
+  display: grid;
+  gap: 10px;
+}
+
 .run-progress-row {
   display: grid;
   gap: 5px;
@@ -3111,6 +3353,18 @@ button {
 
   .head-actions {
     flex-wrap: wrap;
+  }
+
+  .runtime-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-unit-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .runtime-unit-row .run-progress-state {
+    grid-column: 2;
   }
 
   .conversation-plane {

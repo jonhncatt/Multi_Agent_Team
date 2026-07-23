@@ -33,6 +33,35 @@ def test_resolve_context_window_matches_openai_large_context_models() -> None:
     assert mini_source == "model_registry"
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-sol",
+    ],
+)
+def test_resolve_context_window_matches_openai_gpt_5_6_family(model: str) -> None:
+    window, source = resolve_context_window(model, max_output_tokens=128_000)
+
+    assert window == 1_050_000
+    assert source == "model_registry"
+
+
+def test_resolve_context_window_caches_model_capability_lookup() -> None:
+    resolve_context_window.cache_clear()
+
+    first = resolve_context_window("gpt-5.6-sol", max_output_tokens=128_000)
+    second = resolve_context_window("gpt-5.6-sol", max_output_tokens=128_000)
+    cache_info = resolve_context_window.cache_info()
+
+    assert first == second == (1_050_000, "model_registry")
+    assert cache_info.misses == 1
+    assert cache_info.hits == 1
+
+
 def test_resolve_context_window_uses_model_name_hint() -> None:
     window, source = resolve_context_window("mixtral-8x7b-32768", max_output_tokens=4096)
 

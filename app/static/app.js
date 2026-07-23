@@ -3294,7 +3294,7 @@ function buildRunExecutionProgress({
   };
 }
 
-function activityStatusFromTraceType(type, fallback = "thinking") {
+function activityStatusFromTraceType(type, fallback = "thinking", eventStatus = "") {
   const normalized = String(type || "").trim();
   if (!normalized) return fallback;
   if (normalized.startsWith("activity.")) return "thinking";
@@ -3310,9 +3310,14 @@ function activityStatusFromTraceType(type, fallback = "thinking") {
   ) return "tooling";
   if (normalized === "answer.started" || normalized === "answer.finished" || normalized === "answer.done" || normalized === "answer.delta") return "answering";
   if (normalized === "approval.required" || normalized === "blocked" || normalized === "action.blocked" || normalized === "loop.safeguard") return "blocked";
-  if (normalized === "run.finished") return "completed";
-  if (normalized === "tool.failed") return "failed";
-  if (normalized === "llm.failed") return "failed";
+  if (normalized === "run.finished") {
+    const finishedStatus = normalizeProgressStatus(eventStatus);
+    return ["completed", "failed", "blocked", "cancelled"].includes(finishedStatus)
+      ? finishedStatus
+      : "completed";
+  }
+  if (normalized === "tool.failed") return "tooling";
+  if (normalized === "llm.failed") return "background_running";
   if (normalized === "run.failed") return "failed";
   if (normalized === "cancelled") return "cancelled";
   return fallback;
@@ -3471,7 +3476,7 @@ function appendActivityTrace(activity, trace, options = {}) {
   const nextStatus = String(
     options.status
     || current.status
-    || activityStatusFromTraceType(normalizedTrace.type, "thinking"),
+    || activityStatusFromTraceType(normalizedTrace.type, "thinking", normalizedTrace.status),
   );
   const finishedAt = isActivityTerminalStatus(nextStatus)
     ? (normalizedTrace.timestamp || current.finished_at || Date.now())
@@ -3927,6 +3932,7 @@ function App() {
   const [evalError, setEvalError] = useState("");
   const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -3978,6 +3984,7 @@ function App() {
   const threadDetailCacheRef = useRef(new Map());
   const activeSendThreadIdsRef = useRef(new Set());
   const runDetailRequestRef = useRef(new Set());
+  const composerInputRef = useRef(null);
   const activeSessionIdRef = useRef("");
   const pendingThreadCreationPromiseRef = useRef(null);
   const pendingTempThreadIdRef = useRef("");
@@ -6445,7 +6452,41 @@ function App() {
     const options = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText) return;
-    if (currentThreadBusy) {
+    const explicitUserInputResponse = userInputResponse && typeof userInputResponse === "object"
+      ? userInputResponse
+      : {};
+    const storedPendingInput = sessionRuntimeState.pending_user_input
+      && typeof sessionRuntimeState.pending_user_input === "object"
+      ? sessionRuntimeState.pending_user_input
+      : {};
+    const structuredUserInputResponse = Object.keys(explicitUserInputResponse).length
+      ? explicitUserInputResponse
+      : (String(storedPendingInput.type || "") === "request_user_input"
+        ? {
+            type: "request_user_input",
+            tool_call_id: String(storedPendingInput.tool_call_id || ""),
+            response: messageText,
+          }
+        : {});
+    const isTurnResume = ["command_execution", "request_user_input"]
+      .includes(String(structuredUserInputResponse.type || ""));
+    const pendingResumeStateOption = options.pendingResumeState && typeof options.pendingResumeState === "object"
+      ? options.pendingResumeState
+      : {};
+    const resumePendingState = isTurnResume
+      ? {
+          turn_status: String(pendingResumeStateOption.turn_status || sessionRuntimeState.turn_status || "needs_user_input"),
+          pending_user_input: {
+            ...((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {}),
+            ...((pendingResumeStateOption.pending_user_input && typeof pendingResumeStateOption.pending_user_input === "object") ? pendingResumeStateOption.pending_user_input : {}),
+          },
+          pending_approval: {
+            ...((sessionRuntimeState.pending_approval && typeof sessionRuntimeState.pending_approval === "object") ? sessionRuntimeState.pending_approval : {}),
+            ...((pendingResumeStateOption.pending_approval && typeof pendingResumeStateOption.pending_approval === "object") ? pendingResumeStateOption.pending_approval : {}),
+          },
+        }
+      : null;
+    if (currentThreadBusy && !isTurnResume) {
       if (!canQueueGuidance) return;
       if (pendingUploads.some((item) => item && (item.uploading || (!item.uploadFailed && item.id)))) {
         const summary = t("errors.steer_attachments_not_supported");
@@ -6497,24 +6538,6 @@ function App() {
       }
       return;
     }
-    const explicitUserInputResponse = userInputResponse && typeof userInputResponse === "object"
-      ? userInputResponse
-      : {};
-    const storedPendingInput = sessionRuntimeState.pending_user_input
-      && typeof sessionRuntimeState.pending_user_input === "object"
-      ? sessionRuntimeState.pending_user_input
-      : {};
-    const structuredUserInputResponse = Object.keys(explicitUserInputResponse).length
-      ? explicitUserInputResponse
-      : (String(storedPendingInput.type || "") === "request_user_input"
-        ? {
-            type: "request_user_input",
-            tool_call_id: String(storedPendingInput.tool_call_id || ""),
-            response: messageText,
-          }
-        : {});
-    const isTurnResume = ["command_execution", "request_user_input"]
-      .includes(String(structuredUserInputResponse.type || ""));
     const clientSubmittedAtMs = Date.now();
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
@@ -6560,7 +6583,13 @@ function App() {
       const ownerBusy = ownerThreadVisible()
         ? isThreadSnapshotBusy(runOwnerThreadId, { activeTurn: visibleThreadActiveTurnSnapshot(), messages })
         : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
-      if (ownerBusy) return;
+      if (ownerBusy && !isTurnResume) return;
+      if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
+        const unlockDeadline = Date.now() + 3000;
+        while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 25));
+        }
+      }
       if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;
       activeSendThreadIdsRef.current.add(runOwnerThreadId);
       lockedRunOwnerThreadId = runOwnerThreadId;
@@ -6888,14 +6917,26 @@ function App() {
           });
           return;
         }
-        if (traceType === "tool.failed" || traceType === "llm.failed") {
+        if (traceType === "tool.failed") {
           updateOwnerLiveHeartbeat({
-            status: "failed",
+            status: "tooling",
             tool,
             command,
             action: detail || t("activity.failed"),
             recentEvent: detail || t("activity.failed"),
-            source: traceType === "llm.failed" ? "model" : "tool",
+            source: "tool",
+            updatedAt: item.timestamp || Date.now(),
+          });
+          return;
+        }
+        if (traceType === "llm.failed") {
+          updateOwnerLiveHeartbeat({
+            status: "background_running",
+            tool,
+            command,
+            action: detail || t("activity.failed"),
+            recentEvent: detail || t("activity.failed"),
+            source: "model",
             updatedAt: item.timestamp || Date.now(),
           });
           return;
@@ -7540,7 +7581,7 @@ function App() {
                   modelRequestStarted = true;
                   replacePendingText(t("activity.status.waiting_model"), { onlyWhileWaiting: true });
                 }
-                const nextStatus = activityStatusFromTraceType(trace.type, latestActivity.status || "thinking");
+                const nextStatus = activityStatusFromTraceType(trace.type, latestActivity.status || "thinking", trace.status);
                 patchPendingActivity((activity) => appendActivityTrace(activity, trace, { status: nextStatus }));
                 syncHeartbeatFromTrace(trace);
               }
@@ -8000,6 +8041,15 @@ function App() {
       } else {
         setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
       }
+      if (resumePendingState && runOwnerThreadId) {
+        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+          ...existing,
+          sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, resumePendingState),
+        }));
+        if (String(activeSessionIdRef.current || "").trim() === runOwnerThreadId) {
+          setSessionRuntimeState((prev) => mergeSessionRuntimeStateSnapshot(prev || {}, resumePendingState));
+        }
+      }
     } finally {
       cancelAssistantDeltaFlush();
       if (!uiFinalized) {
@@ -8240,7 +8290,6 @@ function App() {
         : []));
   const lastInspector = (lastResponse && lastResponse.inspector) || {};
   const completedRuntimeState = lastInspector.run_state || {};
-  const completedEvidence = lastInspector.evidence || {};
   const isActiveRunVisible = Boolean(sessionId && activeRunThreadId && sessionId === activeRunThreadId);
   const hasLiveRuntimeState = isCurrentThreadLiveRun({
     sessionId,
@@ -8259,7 +8308,6 @@ function App() {
     liveAssistantMessageId,
   );
   const runState = hasLiveRuntimeState ? liveTurnState : completedRuntimeState;
-  const evidence = hasLiveRuntimeState ? liveEvidence : completedEvidence;
   const activePlan = Array.isArray(runState.plan) && runState.plan.length
     ? runState.plan
     : (Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : []);
@@ -8282,7 +8330,6 @@ function App() {
     evidence_refs: [],
     validation_warnings: [],
   };
-  const ocrStatus = (health && health.ocr_status && typeof health.ocr_status === "object") ? health.ocr_status : {};
   const selectedThemeColor = themeColorOptionById(themeColor).id;
   const selectedPermissionProfile = normalizePermissionProfile(chatSettings.permission_profile || "auto");
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
@@ -8299,14 +8346,6 @@ function App() {
     ? runState.runtime_boundary_model_view
     : {};
   const activeTurnStatus = String(runState.turn_status || sessionRuntimeState.turn_status || "idle");
-  const hasPlanMode = Boolean(activePlan.length);
-  const showExecutionProgress = Boolean(
-    hasPlanMode
-    || hasLiveRuntimeState
-    || currentThreadBusy
-    || activeRunId
-    || activeRunThreadId
-  );
   const activePendingInput =
     (runState.pending_user_input && typeof runState.pending_user_input === "object")
       ? runState.pending_user_input
@@ -8331,33 +8370,31 @@ function App() {
     && String(activePendingApproval.type || "") === "command_execution"
     && String(activePendingApproval.command || "").trim(),
   );
+  const pendingRuntimeQuestions = Array.isArray(activePendingInput.questions)
+    ? activePendingInput.questions.filter((item) => item && typeof item === "object")
+    : [];
+  const hasPendingRuntimeInput = Boolean(
+    !hasCommandApproval
+    && String(activePendingInput.type || "") === "request_user_input"
+    && pendingRuntimeQuestions.length
+  );
+  const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasPendingRuntimeInput);
+  const runtimeInteractionKey = hasCommandApproval
+    ? `approval:${String(activePendingApproval.tool_call_id || activePendingApproval.command || "")}`
+    : (hasPendingRuntimeInput
+      ? `input:${String(activePendingInput.tool_call_id || pendingRuntimeQuestions[0].id || "")}`
+      : "");
+  useEffect(() => {
+    if (runtimeInteractionKey) setDrawerView("run");
+  }, [runtimeInteractionKey]);
   const commandApprovalRisks = hasCommandApproval && Array.isArray(activePendingApproval.risks)
     ? activePendingApproval.risks
     : [];
   const commandApprovalFiles = hasCommandApproval && Array.isArray(activePendingApproval.files)
     ? activePendingApproval.files
     : [];
-  const clearVisibleCommandApprovalState = () => {
-    setLiveTurnState((prev) => clearCommandExecutionApprovalState(prev));
-    setSessionRuntimeState((prev) => clearCommandExecutionApprovalState(prev));
-    setLastResponse((prev) => clearCommandExecutionApprovalResponse(prev));
-    const currentThreadId = String(sessionId || "").trim();
-    if (!currentThreadId) return;
-    updateThreadSnapshot(currentThreadId, (existing) => {
-      const activeTurn = normalizeThreadActiveTurn(existing.activeTurn || {});
-      return {
-        ...existing,
-        sessionRuntimeState: clearCommandExecutionApprovalState(existing.sessionRuntimeState || {}),
-        activeTurn: normalizeThreadActiveTurn({
-          ...activeTurn,
-          liveTurnState: clearCommandExecutionApprovalState(activeTurn.liveTurnState || {}),
-          lastResponse: clearCommandExecutionApprovalResponse(activeTurn.lastResponse),
-        }),
-      };
-    });
-  };
-  const handleCommandApproval = (action) => {
-    if (!hasCommandApproval || currentThreadBusy) return;
+  const handleCommandApproval = async (action) => {
+    if (!hasCommandApproval || approvalSubmitting) return;
     const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
@@ -8368,15 +8405,25 @@ function App() {
     const message = normalizedAction === "approve_once"
       ? t("approval_modal.approve_message", { command })
       : t("approval_modal.cancel_message", { command });
-    clearVisibleCommandApprovalState();
-    handleSend(message, {
-      type: "command_execution",
-      action: normalizedAction,
-      approval_token: approvalToken,
-      tool_call_id: toolCallId,
-      command,
-      cwd,
-    });
+    setApprovalSubmitting(true);
+    try {
+      await handleSend(message, {
+        type: "command_execution",
+        action: normalizedAction,
+        approval_token: approvalToken,
+        tool_call_id: toolCallId,
+        command,
+        cwd,
+      }, {
+        pendingResumeState: {
+          turn_status: "needs_user_input",
+          pending_user_input: activePendingInput,
+          pending_approval: activePendingApproval,
+        },
+      });
+    } finally {
+      setApprovalSubmitting(false);
+    }
   };
   const activeToolTimeline = hasLiveRuntimeState
     ? liveToolTimeline
@@ -8384,6 +8431,30 @@ function App() {
       ? lastInspector.tool_timeline
       : toolTimeline);
   const activeRunLogs = hasLiveRuntimeState ? liveRunLogs : logs;
+  const runtimeActivityMessage = latestAssistantMessage(messages, { preferPending: true });
+  const runtimeActivity = normalizeMessageActivity((runtimeActivityMessage && runtimeActivityMessage.activity) || {});
+  const activeRuntimeUnits = buildLiveAgentTimelineItems(runtimeActivity, uiLocale)
+    .filter((item) => !isActivityTerminalStatus(item.status))
+    .slice(-8)
+    .reverse();
+  const runtimeControlTraceEvents = runtimeActivity.trace_events
+    .filter((item) => /^(approval\.|run\.|loop\.|replan\.|subagent\.|llm\.failed|tool\.failed)/.test(String((item && item.type) || "")))
+    .slice(-8)
+    .reverse();
+  const runtimeDecisionEvents = runtimeControlTraceEvents.length
+    ? runtimeControlTraceEvents.map((item, index) => ({
+        id: String(item.id || `${item.type || "runtime"}-${index}`),
+        type: String(item.type || "runtime"),
+        text: String(item.title || item.detail || item.type || "runtime"),
+        createdAt: item.timestamp ? new Date(item.timestamp).toISOString() : "",
+      }))
+    : activeRunLogs
+        .filter((item) => ["stage", "system", "error"].includes(String((item && item.type) || "")))
+        .slice(0, 8);
+  const latestRuntimeDebugMessage = (Array.isArray(messages) ? messages : [])
+    .slice()
+    .reverse()
+    .find((item) => item && item.role === "assistant" && !item.pending) || null;
   const runExecutionProgress = buildRunExecutionProgress({
     messages,
     plan: activePlan,
@@ -8643,6 +8714,22 @@ function App() {
     if (isOpen) ensureRunDebug(messageId);
   };
 
+  const focusRuntimeInput = () => {
+    setDrawerView("");
+    window.requestAnimationFrame(() => {
+      if (composerInputRef.current) composerInputRef.current.focus();
+    });
+  };
+
+  const openLatestRuntimeDebug = () => {
+    const messageId = String((latestRuntimeDebugMessage && latestRuntimeDebugMessage.id) || "").trim();
+    if (!messageId) return;
+    setActivityOpenByMessageId((prev) => ({ ...prev, [messageId]: true }));
+    setDebugOpenByMessageId((prev) => ({ ...prev, [messageId]: true }));
+    setDrawerView("");
+    ensureRunDebug(messageId);
+  };
+
   const renderDetailBlock = (label, value, options = {}) => {
     if (!hasDisplayValue(value)) return null;
     const text = displayValueText(value);
@@ -8653,11 +8740,6 @@ function App() {
         <pre>${text}</pre>
       </details>
     `;
-  };
-
-  const renderRunStateDetail = (label, value, options = {}) => {
-    if (!hasDisplayValue(value)) return null;
-    return renderDetailBlock(label, value, options);
   };
 
   const renderToolAuditDetails = (source) => {
@@ -9051,6 +9133,22 @@ function App() {
     const traceSteps = Array.isArray(turnTrace.steps) ? turnTrace.steps : [];
     const contexts = Array.isArray(turnTrace.contexts) ? turnTrace.contexts : [];
     const legacyExchanges = Array.isArray(activity.llm_exchanges) ? activity.llm_exchanges : [];
+    const runtimeInspector = activity.runtime_inspector && typeof activity.runtime_inspector === "object"
+      ? activity.runtime_inspector
+      : {};
+    const runtimeRunState = runtimeInspector.run_state && typeof runtimeInspector.run_state === "object"
+      ? runtimeInspector.run_state
+      : {};
+    const debugPendingApproval = runtimeRunState.pending_approval && typeof runtimeRunState.pending_approval === "object"
+      ? runtimeRunState.pending_approval
+      : {};
+    const debugPendingInput = runtimeRunState.pending_user_input && typeof runtimeRunState.pending_user_input === "object"
+      ? runtimeRunState.pending_user_input
+      : {};
+    const runtimeControlEvents = activity.trace_events.filter((item) => (
+      /^(approval\.|run\.|loop\.|replan\.|subagent\.|llm\.failed|tool\.failed)/
+        .test(String((item && item.type) || ""))
+    ));
     const traceStepByItemId = new Map(
       traceSteps
         .filter((step) => step && step.item_id)
@@ -9118,6 +9216,73 @@ function App() {
         `
       : null;
 
+    const safeApprovalDebug = Object.keys(debugPendingApproval).length
+      ? {
+          type: String(debugPendingApproval.type || ""),
+          tool_call_id: String(debugPendingApproval.tool_call_id || ""),
+          purpose: String(debugPendingApproval.purpose || ""),
+          command: String(debugPendingApproval.command || ""),
+          cwd: String(debugPendingApproval.cwd || ""),
+          risk_count: Array.isArray(debugPendingApproval.risks) ? debugPendingApproval.risks.length : 0,
+          file_count: Array.isArray(debugPendingApproval.files) ? debugPendingApproval.files.length : 0,
+        }
+      : {};
+    const safePendingInputDebug = Object.keys(debugPendingInput).length && !Object.keys(debugPendingApproval).length
+      ? {
+          type: String(debugPendingInput.type || ""),
+          tool_call_id: String(debugPendingInput.tool_call_id || ""),
+          summary: String(debugPendingInput.summary || ""),
+          questions: (Array.isArray(debugPendingInput.questions) ? debugPendingInput.questions : []).map((item) => ({
+            id: String((item && item.id) || ""),
+            header: String((item && item.header) || ""),
+            question: String((item && item.question) || ""),
+            options: (Array.isArray(item && item.options) ? item.options : []).map((option) => String((option && option.label) || "")).filter(Boolean),
+          })),
+        }
+      : {};
+    const runtimeControls = Object.keys(runtimeRunState).length || runtimeControlEvents.length
+      ? html`
+          <section className="thread-runtime-debug">
+            <div className="thread-history-title">${t("activity.debug.runtime_controls")}</div>
+            <div className="thread-trace-grid">
+              <div className="thread-trace-row">
+                <span>${t("activity.debug.runtime_phase")}</span>
+                <code>${String(runtimeRunState.phase || "-")}</code>
+              </div>
+              <div className="thread-trace-row">
+                <span>${t("activity.debug.trace_status")}</span>
+                <code>${String(runtimeRunState.turn_status || activity.status || "-")}</code>
+              </div>
+              ${runtimeRunState.blocked_reason
+                ? html`
+                    <div className="thread-trace-row">
+                      <span>${t("activity.debug.blocked_reason")}</span>
+                      <code>${String(runtimeRunState.blocked_reason)}</code>
+                    </div>
+                  `
+                : null}
+            </div>
+            ${renderDetailBlock(t("activity.debug.pending_approval"), safeApprovalDebug, { open: true })}
+            ${renderDetailBlock(t("activity.debug.pending_user_input"), safePendingInputDebug, { open: true })}
+            ${runtimeControlEvents.length
+              ? html`
+                  <details className="activity-payload" open>
+                    <summary>${t("activity.debug.control_events")} · ${runtimeControlEvents.length}</summary>
+                    <div className="runtime-debug-event-list">
+                      ${runtimeControlEvents.map((item, index) => html`
+                        <div key=${item.id || `${item.type || "runtime"}-${index}`} className="runtime-debug-event-row">
+                          <code>${String(item.type || "runtime")}</code>
+                          <span>${String(item.title || item.detail || item.status || "")}</span>
+                        </div>
+                      `)}
+                    </div>
+                  </details>
+                `
+              : null}
+          </section>
+        `
+      : null;
+
     const legacySystemMessages = legacyExchanges
       .flatMap((exchange) => Array.isArray(exchange && exchange.sent_messages_exact) ? exchange.sent_messages_exact : [])
       .filter((item) => String((item && item.role) || "") === "system")
@@ -9126,14 +9291,59 @@ function App() {
     const systemPromptContexts = contexts.length
       ? contexts
       : (legacySystemMessages.length ? [{ context_id: "legacy-context", system_message: legacySystemMessages[0] }] : []);
-    const systemPrompt = systemPromptContexts.length
+    const systemPromptGroupsByText = new Map();
+    systemPromptContexts.forEach((context, index) => {
+      const systemMessage = String((context && context.system_message) || "");
+      const groupKey = systemMessage || `empty-system-prompt-${index}`;
+      const normalizedContext = {
+        ...context,
+        context_id: String((context && context.context_id) || `context-${index + 1}`),
+        supporting_messages: Array.isArray(context && context.supporting_messages) ? context.supporting_messages : [],
+        tool_names: Array.isArray(context && context.tool_names) ? context.tool_names : [],
+      };
+      if (systemPromptGroupsByText.has(groupKey)) {
+        systemPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);
+      } else {
+        systemPromptGroupsByText.set(groupKey, {
+          system_message: systemMessage,
+          contexts: [normalizedContext],
+        });
+      }
+    });
+    const systemPromptGroups = Array.from(systemPromptGroupsByText.values());
+    const systemPrompt = systemPromptGroups.length
       ? html`
           <details className="system-prompt-debug">
             <summary>${t("activity.debug.view_system_prompt")}</summary>
-            ${systemPromptContexts.map((context, index) => html`
-              <div className="system-prompt-context" key=${String(context.context_id || index)}>
-                ${systemPromptContexts.length > 1 ? html`<code>${String(context.context_id || `context-${index + 1}`)}</code>` : null}
-                <pre>${String(context.system_message || "")}</pre>
+            ${systemPromptGroups.map((group, groupIndex) => html`
+              <div className="system-prompt-context" key=${`system-prompt-${groupIndex}`}>
+                <div className="system-prompt-context-head">
+                  <strong>${t("activity.debug.base_system_prompt")}</strong>
+                  ${group.contexts.length > 1
+                    ? html`<code>${group.contexts.map((context) => context.context_id).join(" · ")}</code>`
+                    : null}
+                </div>
+                <pre>${group.system_message}</pre>
+                ${group.contexts.length > 1
+                  ? html`
+                      <div className="system-prompt-variants">
+                        <div className="system-prompt-variants-title">${t("activity.debug.context_variants")}</div>
+                        ${group.contexts.map((context) => html`
+                          <details className="system-prompt-variant" key=${context.context_id}>
+                            <summary>
+                              <code>${context.context_id}</code>
+                              <span>${t("activity.debug.context_summary", {
+                                messages: context.supporting_messages.length,
+                                tools: context.tool_names.length,
+                              })}</span>
+                            </summary>
+                            ${renderDetailBlock(t("activity.debug.supporting_messages"), context.supporting_messages)}
+                            ${renderDetailBlock(t("activity.debug.available_tools"), context.tool_names)}
+                          </details>
+                        `)}
+                      </div>
+                    `
+                  : null}
               </div>
             `)}
           </details>
@@ -9142,7 +9352,7 @@ function App() {
     const loadError = String((message && message.runDebugError) || "").trim();
     const loading = Boolean(message && message.runDebugLoading);
     const canLoad = Boolean(activity.trace_ref || activity.run_id);
-    if (!canLoad && !threadHistory && !systemPrompt && !loadError && !loading) return null;
+    if (!canLoad && !threadHistory && !runtimeControls && !systemPrompt && !loadError && !loading) return null;
     return html`
       <details
         className="activity-debug-drawer"
@@ -9154,6 +9364,7 @@ function App() {
           ${loading ? html`<div className="activity-flow-note">${t("activity.debug_loading")}</div>` : null}
           ${loadError ? html`<div className="status-error">${loadError}</div>` : null}
           ${threadHistory}
+          ${runtimeControls}
           ${systemPrompt}
         </div>
       </details>
@@ -9512,7 +9723,16 @@ function App() {
             </div>
           </div>
           <div className="head-actions">
-            <button className=${`mini-btn ${drawerView === "run" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}>${currentTabLabel("run")}</button>
+            <button
+              className=${`mini-btn runtime-nav-btn ${drawerView === "run" ? "active" : ""} ${runtimeAttentionCount ? "needs-attention" : ""}`}
+              type="button"
+              onClick=${() => setDrawerView(drawerView === "run" ? "" : "run")}
+            >
+              <span>${currentTabLabel("run")}</span>
+              ${runtimeAttentionCount
+                ? html`<span className="runtime-attention-badge" aria-label=${t("runtime_panel.attention_count", { count: runtimeAttentionCount })}>${runtimeAttentionCount}</span>`
+                : null}
+            </button>
             <button className=${`mini-btn ${drawerView === "tools" ? "active" : ""}`} type="button" onClick=${() => setDrawerView(drawerView === "tools" ? "" : "tools")}>${currentTabLabel("tools")}</button>
             <button className=${`mini-btn ${drawerView === "skills" ? "active" : ""}`} type="button" onClick=${() => {
               setDrawerView(drawerView === "skills" ? "" : "skills");
@@ -9795,6 +10015,7 @@ function App() {
               `
               : null}
             <textarea
+              ref=${composerInputRef}
               value=${draft}
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
@@ -9897,97 +10118,7 @@ function App() {
         </section>
 	      </main>
 
-	      ${hasCommandApproval
-	        ? html`
-	            <div className="project-modal-backdrop" id="commandApprovalModal">
-	              <div className="project-modal">
-	                <div className="panel-title">${t("approval_modal.title")}</div>
-	                <div className="path-hint">${t("approval_modal.hint")}</div>
-	                ${String(activePendingApproval.purpose || "").trim()
-	                  ? html`
-	                      <label className="form-field">
-	                        <span>${t("approval_modal.purpose")}</span>
-	                        <div className="timeline-row">
-	                          <div className="timeline-detail">${String(activePendingApproval.purpose || "").trim()}</div>
-	                        </div>
-	                      </label>
-	                    `
-	                  : null}
-	                <label className="form-field">
-	                  <span>${t("approval_modal.command")}</span>
-	                  <textarea className="drawer-textarea" readOnly rows="3" value=${String(activePendingApproval.command || "")}></textarea>
-	                </label>
-	                <label className="form-field">
-	                  <span>${t("approval_modal.cwd")}</span>
-	                  <input className="drawer-input" type="text" readOnly value=${String(activePendingApproval.cwd || "")} />
-	                </label>
-	                <div className="timeline-list">
-	                  ${commandApprovalRisks.length
-	                    ? commandApprovalRisks.map(
-	                        (risk, index) => {
-	                          const externalDetails = [
-	                            [t("approval_modal.repository"), risk.repository_root],
-	                            [t("approval_modal.remote"), risk.remote],
-	                            [t("approval_modal.remote_url"), risk.remote_url],
-	                            [t("approval_modal.branch"), risk.branch],
-	                            [t("approval_modal.head"), risk.head],
-	                            [t("approval_modal.refspecs"), risk.refspecs],
-	                          ].filter(([, value]) => String(value || "").trim());
-	                          const flags = [];
-	                          if (Boolean(risk.force)) flags.push(t("approval_modal.force"));
-	                          if (Boolean(risk.delete)) flags.push(t("approval_modal.delete"));
-	                          return html`
-	                            <div key=${`approval-risk-${index}`} className="timeline-row">
-	                              <div className="timeline-head">
-	                                <span>${String(risk.category || risk.kind || t("approval_modal.risk"))}</span>
-	                                <span>${String(risk.operation || risk.base_command || "")}</span>
-	                              </div>
-	                              <div className="timeline-detail">${String(risk.message || "")}</div>
-	                              ${externalDetails.map(([label, value]) => html`
-	                                <div key=${`${index}-${label}`} className="timeline-detail approval-context-line">
-	                                  <strong>${label}:</strong> ${String(value || "")}
-	                                </div>
-	                              `)}
-	                              ${flags.length
-	                                ? html`<div className="timeline-detail tone-error">${flags.join(" · ")}</div>`
-	                                : null}
-	                            </div>
-	                          `;
-	                        },
-	                      )
-	                    : html`
-	                        <div className="timeline-row">
-	                          <div className="timeline-detail">${t("approval_modal.no_risks")}</div>
-	                        </div>
-	                      `}
-	                  ${commandApprovalFiles.length
-	                    ? commandApprovalFiles.map(
-	                        (file, index) => html`
-	                          <div key=${`approval-file-${index}`} className="timeline-row">
-	                            <div className="timeline-head">
-	                              <span>${String(file.path || "")}</span>
-	                              <span>${String(file.source_domain || "network")}</span>
-	                            </div>
-	                            <div className="timeline-detail">${String(file.source_url || "")}</div>
-	                            <div className="timeline-detail">${t("approval_modal.sha256")}: ${String(file.sha256 || "")}</div>
-	                          </div>
-	                        `,
-	                      )
-	                    : null}
-	                </div>
-	                <div className="path-hint">${t("approval_modal.default_cancel")}</div>
-	                <div className="modal-actions">
-	                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${currentThreadBusy}>${t("approval_modal.cancel")}</button>
-	                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${currentThreadBusy || !String(activePendingApproval.approval_token || "").trim()}>
-	                    ${t("approval_modal.approve_once")}
-	                  </button>
-	                </div>
-	              </div>
-	            </div>
-	          `
-	        : null}
-
-	      ${evalDialogOpen
+		      ${evalDialogOpen
 	        ? html`
 	            <div className="project-modal-backdrop" id="evalModal">
 	              <div className="project-modal eval-modal">
@@ -10298,235 +10429,174 @@ function App() {
 
         ${drawerView === "run"
           ? html`
-              <div className="workbench-scroll">
-                <section className="panel-card">
-                  <div className="panel-title">${t("run.title")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${runState.goal || sessionRuntimeState.goal || sessionRuntimeState.current_goal || "-"}</div>
-                  <div className="meta-line">${t("settings.permission_profile")}: ${t(`settings.permission_profile.${activePermissionProfile}`)}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "turn_status")}: ${formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "evidence")}: ${formatRunEnum(uiLocale, "evidence", evidence.status || sessionRuntimeState.evidence_status || "not_needed", "not_needed")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "inline_document")}: ${formatRunBoolean(uiLocale, runState.inline_document)}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "ocr")}: ${formatRunEnum(uiLocale, "ocr_engine", ocrStatus.default_engine || "unavailable", "unavailable")}</div>
-                  <div className="meta-line">
-                    ${formatRunFieldLabel(uiLocale, "compaction")}: ${formatRunEnum(uiLocale, "compaction_mode", activeCompactionStatus.mode || "token_budget", "token_budget")}
-                    ${activeCompactionStatus.last_compaction_phase ? ` · ${formatRunEnum(uiLocale, "compaction_phase", activeCompactionStatus.last_compaction_phase, activeCompactionStatus.last_compaction_phase)}` : ""}
+              <div className="workbench-scroll runtime-control-center">
+                <section className=${`panel-card runtime-overview-card status-${runExecutionProgress.status || "idle"}`}>
+                  <div className="runtime-panel-heading">
+                    <div>
+                      <div className="panel-title">${t("runtime_panel.title")}</div>
+                      <div className="runtime-panel-subtitle">${t("runtime_panel.subtitle")}</div>
+                    </div>
+                    <span className=${`run-progress-state status-${runExecutionProgress.status || "idle"}`}>
+                      ${runExecutionProgress.statusLabel || formatRunEnum(uiLocale, "turn_status", activeTurnStatus, "idle")}
+                    </span>
                   </div>
-                  <div className="meta-line">
-                    ${formatRunFieldLabel(uiLocale, "context")}: ${formatTokenCount(activeCompactionStatus.estimated_context_tokens || activeContextMeter.estimated_tokens)}
-                    /
-                    ${formatTokenCount(activeCompactionStatus.auto_compact_token_limit || activeContextMeter.auto_compact_token_limit)}
+                  <div className="runtime-current-action">
+                    ${runExecutionProgress.currentAction || runExecutionProgress.recentEvent || t("runtime_panel.idle")}
                   </div>
-                  <div className="meta-line">
-                    ${formatRunFieldLabel(uiLocale, "generation")}: ${activeCompactionStatus.generation || 0}
-                    · ${formatRunFieldLabel(uiLocale, "retained_turns")}: ${activeCompactionStatus.retained_turn_count || 0}
-                  </div>
-                  ${ocrStatus.warning ? html`<div className="timeline-detail">${ocrStatus.warning}</div>` : null}
-                  ${compactionReasonText
-                    ? html`<div className="timeline-detail">${compactionReasonText}</div>`
+                  ${runExecutionProgress.command
+                    ? html`<code className="run-progress-command runtime-current-command">${runExecutionProgress.command}</code>`
                     : null}
-                  ${compactionWarningText
-                    ? html`<div className="timeline-detail">${compactionWarningText}</div>`
-                    : null}
-                </section>
-
-                <section className="panel-card">
-                  <div className="panel-title">${t("run.current_focus")}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "task_id")}: ${activeTaskCheckpoint.task_id || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "goal")}: ${activeTaskCheckpoint.goal || runState.goal || sessionRuntimeState.goal || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "status")}: ${activeTaskCheckpoint.status || activeTurnStatus || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "current_step")}: ${activeTaskCheckpoint.current_step_id || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "cwd")}: ${activeTaskCheckpoint.cwd || sessionRuntimeState.cwd || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "next_action")}: ${activeTaskCheckpoint.next_action || "-"}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "completed_steps")}: ${activeTaskCheckpoint.completed_steps_count}</div>
-                  <div className="meta-line">${formatRunFieldLabel(uiLocale, "failed_attempts")}: ${activeTaskCheckpoint.failed_attempts_count}</div>
+                  <div className="runtime-status-grid">
+                    <div>
+                      <span>${formatRunFieldLabel(uiLocale, "current_tool")}</span>
+                      <strong>${runExecutionProgress.currentTool || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>${formatRunFieldLabel(uiLocale, "elapsed")}</span>
+                      <strong>${runExecutionProgress.elapsed || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>${formatRunFieldLabel(uiLocale, "last_progress")}</span>
+                      <strong>${runExecutionProgress.lastProgressAgo || "-"}</strong>
+                    </div>
+                    <div>
+                      <span>${formatRunFieldLabel(uiLocale, "connection")}</span>
+                      <strong>${runExecutionProgress.connectionLabel || "-"}</strong>
+                    </div>
+                  </div>
                   ${activeTaskCheckpoint.blocked_reason
-                    ? html`<div className="meta-line">${formatRunFieldLabel(uiLocale, "blocked_reason")}: ${activeTaskCheckpoint.blocked_reason}</div>`
-                    : null}
-                  ${activeTaskCheckpoint.validation_warnings.length
-                    ? html`
-                        <div className="timeline-detail">
-                          ${formatRunFieldLabel(uiLocale, "validation_warnings")}: ${activeTaskCheckpoint.validation_warnings
-                            .slice(0, 4)
-                            .map((item) => ((item && typeof item === "object") ? (item.message || item.code || "") : String(item || "")))
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </div>
-                      `
-                    : null}
-                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "completed_steps"), activeTaskCheckpoint.completed_steps)}
-                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "failed_attempts"), activeTaskCheckpoint.failed_attempts)}
-                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "validation_warnings"), activeTaskCheckpoint.validation_warnings)}
-                  ${activeTaskCheckpoint.progress_basis.length
-                    ? html`
-                        <div className="timeline-detail">
-                          ${formatRunFieldLabel(uiLocale, "progress_basis")}: ${activeTaskCheckpoint.progress_basis.slice(0, 4).join(" · ")}
-                        </div>
-                      `
-                    : null}
-                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "progress_basis"), activeTaskCheckpoint.progress_basis)}
-                  ${activeTaskCheckpoint.evidence_refs.length
-                    ? html`
-                        <div className="timeline-detail">
-                          ${formatRunFieldLabel(uiLocale, "evidence_refs")}: ${activeTaskCheckpoint.evidence_refs
-                            .slice(0, 4)
-                            .map((item) => ((item && typeof item === "object") ? (item.ref || item.path || item.summary || item.tool || JSON.stringify(item)) : String(item || "")))
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </div>
-                      `
-                    : null}
-                  ${renderRunStateDetail(formatRunFieldLabel(uiLocale, "evidence_refs"), activeTaskCheckpoint.evidence_refs)}
-                  ${Array.isArray(activeTaskCheckpoint.active_files) && activeTaskCheckpoint.active_files.length
-                    ? html`
-                        <div className="timeline-detail">
-                          ${formatRunFieldLabel(uiLocale, "files")}: ${activeTaskCheckpoint.active_files.slice(0, 6).map((item) => compactPath(item)).join(" · ")}
-                        </div>
-                      `
-                    : null}
-                  ${Array.isArray(activeTaskCheckpoint.active_attachments) && activeTaskCheckpoint.active_attachments.length
-                    ? html`
-                        <div className="timeline-detail">
-                          ${formatRunFieldLabel(uiLocale, "attachments")}: ${activeTaskCheckpoint.active_attachments
-                            .slice(0, 6)
-                            .map((item) => item.name || compactPath(item.path || item.id || "attachment"))
-                            .join(" · ")}
-                        </div>
-                      `
+                    ? html`<div className="runtime-blocked-reason">${activeTaskCheckpoint.blocked_reason}</div>`
                     : null}
                 </section>
 
-                ${showExecutionProgress
+                ${runtimeAttentionCount
                   ? html`
-                      <section className="panel-card run-progress-card">
-                        <div className="panel-title">${t("run.execution_progress")}</div>
-                        <div className="run-progress-grid">
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_step")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.currentStep || activeTaskCheckpoint.next_action || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_tool")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.currentTool || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_state")}</span>
-                            <span className=${`run-progress-state status-${runExecutionProgress.status || "pending"}`}>${runExecutionProgress.statusLabel || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "current_action")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.currentAction || "-"}</span>
-                          </div>
-                          ${runExecutionProgress.command
-                            ? html`
-                                <div className="run-progress-row">
-                                  <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "command")}</span>
-                                  <code className="run-progress-command">${runExecutionProgress.command}</code>
-                                </div>
-                              `
-                            : null}
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "recent_event")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.recentEvent || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "elapsed")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.elapsed || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "last_progress")}</span>
-                            <span className="run-progress-value">${runExecutionProgress.lastProgressAgo || "-"}</span>
-                          </div>
-                          <div className="run-progress-row">
-                            <span className="run-progress-label">${formatRunFieldLabel(uiLocale, "connection")}</span>
-                            <span className=${`run-progress-state connection-${runExecutionProgress.connectionState || "idle"}`}>${runExecutionProgress.connectionLabel || "-"}</span>
-                          </div>
-                        </div>
-                      </section>
-                    `
-                  : null}
-
-                ${activePlan.length
-                  ? html`
-                      <section className="panel-card">
-                        <div className="panel-title">${t("run.checklist")}</div>
-                        <div className="timeline-list">
-                          ${activePlan.map(
-                            (item) => html`
-                              <div key=${`${item.step || "step"}-${item.status || ""}`} className="timeline-row">
-                                <div className="timeline-head">
-                                  <span>${item.step || "step"}</span>
-                                  <span>${formatRunEnum(uiLocale, "plan_status", item.status || "pending", item.status || "pending")}</span>
+                      <section className="panel-card runtime-attention-card">
+                        <div className="panel-title">${t("runtime_panel.action_required")}</div>
+                        ${hasCommandApproval
+                          ? html`
+                              <div className="runtime-interaction-block">
+                                <div className="runtime-interaction-title">${t("runtime_panel.approval_required")}</div>
+                                ${String(activePendingApproval.purpose || "").trim()
+                                  ? html`<div className="timeline-detail">${String(activePendingApproval.purpose || "").trim()}</div>`
+                                  : null}
+                                <code className="run-progress-command">${String(activePendingApproval.command || "")}</code>
+                                ${String(activePendingApproval.cwd || "").trim()
+                                  ? html`<div className="timeline-detail">${t("approval_modal.cwd")}: ${String(activePendingApproval.cwd || "").trim()}</div>`
+                                  : null}
+                                ${(commandApprovalRisks.length || commandApprovalFiles.length)
+                                  ? html`
+                                      <details className="runtime-approval-details">
+                                        <summary>${t("runtime_panel.approval_details", { risks: commandApprovalRisks.length, files: commandApprovalFiles.length })}</summary>
+                                        <div className="timeline-list">
+                                          ${commandApprovalRisks.map((risk, index) => html`
+                                            <div key=${`runtime-risk-${index}`} className="timeline-row">
+                                              <div className="timeline-head">
+                                                <span>${String(risk.category || risk.kind || t("approval_modal.risk"))}</span>
+                                                <span>${String(risk.operation || risk.base_command || "")}</span>
+                                              </div>
+                                              <div className="timeline-detail">${String(risk.message || "")}</div>
+                                            </div>
+                                          `)}
+                                          ${commandApprovalFiles.map((file, index) => html`
+                                            <div key=${`runtime-file-${index}`} className="timeline-row">
+                                              <div className="timeline-head">
+                                                <span>${String(file.path || "")}</span>
+                                                <span>${String(file.source_domain || "network")}</span>
+                                              </div>
+                                              <div className="timeline-detail">${String(file.source_url || "")}</div>
+                                            </div>
+                                          `)}
+                                        </div>
+                                      </details>
+                                    `
+                                  : null}
+                                <div className="runtime-control-actions">
+                                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${approvalSubmitting}>
+                                    ${t("approval_modal.cancel")}
+                                  </button>
+                                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                    ${t("approval_modal.approve_once")}
+                                  </button>
                                 </div>
                               </div>
-                            `,
-                          )}
-                        </div>
-                      </section>
-                    `
-                  : null}
-
-                ${Array.isArray(activePendingInput.questions) && activePendingInput.questions.length
-                  ? html`
-                      <section className="panel-card">
-                        <div className="panel-title">${t("run.pending_input")}</div>
-                        <div className="timeline-list">
-                          ${activePendingInput.questions.map(
-                            (item) => html`
-                              <div key=${item.id || item.header || item.question} className="timeline-row">
-                                <div className="timeline-head">
-                                  <span>${item.header || item.id || "question"}</span>
-                                  <span>${(item.options || []).length} ${formatRunFieldLabel(uiLocale, "options")}</span>
-                                </div>
-                                <div className="timeline-detail">${item.question || ""}</div>
-                                <div className="timeline-detail">
-                                  ${(Array.isArray(item.options) ? item.options : []).map((option) => option.label).join(" / ")}
-                                </div>
-                              </div>
-                            `,
-                          )}
-                        </div>
-                      </section>
-                    `
-                  : null}
-
-                ${hasPlanMode
-                  ? null
-                  : html`
-                      <section className="panel-card">
-                        <div className="panel-title">${t("run.recent_tools")}</div>
-                        <div className="timeline-list">
-                          ${activeToolTimeline.length
-                            ? activeToolTimeline.map(
-                                (item, index) => html`
-                                  <div key=${`${item.name || "tool"}-${index}`} className="timeline-row">
-                                    <div className="timeline-head">
-                                      <span>${item.name || "tool"}</span>
-                                      <span>${formatToolGroupLabel(uiLocale, item.group || "tool")}</span>
+                            `
+                          : null}
+                        ${hasPendingRuntimeInput
+                          ? html`
+                              <div className="runtime-interaction-block">
+                                <div className="runtime-interaction-title">${t("runtime_panel.user_input_required")}</div>
+                                ${activePendingInput.summary
+                                  ? html`<div className="timeline-detail">${activePendingInput.summary}</div>`
+                                  : null}
+                                <div className="timeline-list runtime-question-list">
+                                  ${pendingRuntimeQuestions.map((item) => html`
+                                    <div key=${item.id || item.header || item.question} className="timeline-row">
+                                      <div className="timeline-head">
+                                        <span>${item.header || item.id || t("runtime_panel.question")}</span>
+                                      </div>
+                                      <div className="timeline-detail">${item.question || ""}</div>
+                                      ${Array.isArray(item.options) && item.options.length
+                                        ? html`<div className="timeline-detail">${item.options.map((option) => option.label).filter(Boolean).join(" / ")}</div>`
+                                        : null}
                                     </div>
-                                    <div className="timeline-detail">${toolTimelineSummary(item, uiLocale)}</div>
-                                    ${renderToolAuditDetails(item)}
-                                    ${item.diagnostics && typeof item.diagnostics === "object" && Object.keys(item.diagnostics).length
-                                      ? html`
-                                          <details className="timeline-details">
-                                            <summary>${t("run.diagnostics")}</summary>
-                                            <pre>${stringifyCompactJson(item.diagnostics)}</pre>
-                                          </details>
-                                        `
-                                      : null}
-                                  </div>
-                                `,
-                              )
-                            : html`<div className="empty-inline">${t("run.no_tools")}</div>`}
-                        </div>
+                                  `)}
+                                </div>
+                                <div className="runtime-control-actions">
+                                  <button className="solid-btn" type="button" onClick=${focusRuntimeInput}>${t("runtime_panel.reply_in_composer")}</button>
+                                </div>
+                              </div>
+                            `
+                          : null}
                       </section>
-                    `}
+                    `
+                  : null}
 
-                <section className="panel-card">
-                  <div className="panel-title">${t("run.logs")}</div>
-                  <div className="timeline-list">
-                    ${activeRunLogs.length
-                      ? activeRunLogs.map((item) => html`<div key=${item.id} className=${`log-row tone-${item.type}`}>${item.text}</div>`)
-                      : html`<div className="empty-inline">${t("run.no_logs")}</div>`}
+                <section className="panel-card runtime-active-work-card">
+                  <div className="panel-title">${t("runtime_panel.active_work")}</div>
+                  <div className="runtime-unit-list">
+                    ${activeRuntimeUnits.length
+                      ? activeRuntimeUnits.map((item) => html`
+                          <div key=${item.id} className="runtime-unit-row">
+                            <span className=${`live-run-dot status-${item.status || "running"}`} aria-hidden="true"></span>
+                            <div>
+                              <strong>${item.label || item.tool || item.type || t("runtime_panel.work_item")}</strong>
+                              ${item.detail ? html`<div className="timeline-detail">${item.detail}</div>` : null}
+                            </div>
+                            <span className=${`run-progress-state status-${item.status || "running"}`}>${formatRunProgressStatus(uiLocale, item.status || "running")}</span>
+                          </div>
+                        `)
+                      : html`<div className="empty-inline">${t("runtime_panel.no_active_work")}</div>`}
+                  </div>
+                </section>
+
+                <section className="panel-card runtime-events-card">
+                  <div className="panel-title">${t("runtime_panel.recent_events")}</div>
+                  <div className="runtime-event-list">
+                    ${runtimeDecisionEvents.length
+                      ? runtimeDecisionEvents.map((item) => html`
+                          <div key=${item.id} className=${`runtime-event-row tone-${item.type || "runtime"}`}>
+                            <span>${formatTime(item.createdAt, uiLocale)}</span>
+                            <strong>${item.text}</strong>
+                          </div>
+                        `)
+                      : html`<div className="empty-inline">${t("runtime_panel.no_recent_events")}</div>`}
+                  </div>
+                </section>
+
+                <section className="panel-card runtime-controls-card">
+                  <div className="panel-title">${t("runtime_panel.controls")}</div>
+                  <div className="runtime-control-actions">
+                    ${currentThreadBusy && activeRunId && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()
+                      ? html`
+                          <button className="ghost-btn danger-btn" type="button" onClick=${handleStopRun} disabled=${stoppingRun}>
+                            ${stoppingRun ? t("buttons.stopping") : t("buttons.stop")}
+                          </button>
+                        `
+                      : null}
+                    <button className="ghost-btn" type="button" onClick=${openLatestRuntimeDebug} disabled=${!latestRuntimeDebugMessage}>
+                      ${t("runtime_panel.open_developer_debug")}
+                    </button>
                   </div>
                 </section>
               </div>

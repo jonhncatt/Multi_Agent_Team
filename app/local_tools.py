@@ -1177,6 +1177,7 @@ class LocalToolExecutor:
         permission_profile: str | None = None,
         runtime_boundary: dict[str, Any] | None = None,
         run_id: str | None = None,
+        cancel_event: Any | None = None,
         skill_writer: Any | None = None,
         task_writer: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
@@ -1202,6 +1203,7 @@ class LocalToolExecutor:
             permission_profile or getattr(self.config, "permission_profile", "auto")
         )
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
+        self._runtime_ctx.cancel_event = cancel_event
         self._runtime_ctx.skill_writer = skill_writer
         self._runtime_ctx.task_writer = task_writer
         self._runtime_ctx.reserved_skill_roots = [
@@ -1218,7 +1220,7 @@ class LocalToolExecutor:
         self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "skill_writer", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "cancel_event", "skill_writer", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1254,6 +1256,10 @@ class LocalToolExecutor:
 
     def _current_run_id(self) -> str:
         return str(getattr(self._runtime_ctx, "run_id", "") or "").strip()
+
+    def _current_cancel_requested(self) -> bool:
+        event = getattr(self._runtime_ctx, "cancel_event", None)
+        return bool(event and hasattr(event, "is_set") and event.is_set())
 
     def _current_subagent_read_only(self) -> bool:
         return bool(getattr(self._runtime_ctx, "subagent_read_only", False))
@@ -3057,6 +3063,44 @@ class LocalToolExecutor:
             payload["summary"] = f"command exited with {returncode}"
         return payload
 
+    def _cancel_command_sessions(self, *, run_id: str = "") -> int:
+        target_run_id = str(run_id or "").strip()
+        with self._command_sessions_lock:
+            sessions = [
+                (session_id, session, session.get("proc"))
+                for session_id, session in self._command_sessions.items()
+                if (
+                    (not target_run_id or str(session.get("run_id") or "").strip() == target_run_id)
+                    and isinstance(session.get("proc"), subprocess.Popen)
+                    and session["proc"].poll() is None
+                )
+            ]
+            for _session_id, session, _proc in sessions:
+                session["cancelled"] = True
+        for _session_id, _session, proc in sessions:
+            try:
+                stdin = getattr(proc, "stdin", None)
+                if stdin is not None:
+                    stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        deadline = time.monotonic() + 0.5
+        remaining = [proc for _session_id, _session, proc in sessions]
+        while remaining and time.monotonic() < deadline:
+            remaining = [proc for proc in remaining if proc.poll() is None]
+            if remaining:
+                time.sleep(0.01)
+        for proc in remaining:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return len(sessions)
+
     def _apply_update_hunks(self, path: Path, current_text: str, hunks: list[list[str]]) -> str:
         lines = current_text.splitlines()
         cursor = 0
@@ -3980,6 +4024,15 @@ class LocalToolExecutor:
         approval_token: str = "",
         tainted_approval_token: str = "",
     ) -> dict[str, Any]:
+        if self._current_cancel_requested():
+            return self._command_failure_result(
+                command=cmd,
+                cwd=cwd,
+                error="Command execution was cancelled before it started.",
+                returncode=130,
+                error_kind="tool_cancelled",
+                error_detail={"message": "The owning Agent run was cancelled."},
+            )
         if not self._current_shell_allowed():
             return self._command_failure_result(command=cmd, cwd=cwd, error="Shell execution is not allowed for the active permission profile.")
         if str(cmd or "").strip() and is_dangerous_command(str(cmd)):
@@ -4220,6 +4273,7 @@ class LocalToolExecutor:
                 "cursor": 0,
                 "cwd": str(real_cwd),
                 "command": str(cmd or "").strip() if compound_shell else " ".join(shlex.quote(token) for token in argv),
+                "run_id": self._current_run_id(),
                 "execution_mode": execution_mode,
                 "tty": bool(tty),
             }
@@ -4231,6 +4285,16 @@ class LocalToolExecutor:
                 self._command_sessions[session_id]["compound_shell"] = True
                 self._command_sessions[session_id]["compound_validation"] = dict(compound_validation)
         self._spawn_command_reader(session_id, proc)
+        if self._current_cancel_requested():
+            self._cancel_command_sessions(run_id=self._current_run_id())
+            return self._command_failure_result(
+                command=cmd,
+                cwd=str(real_cwd),
+                error="Command execution was cancelled after it started.",
+                returncode=130,
+                error_kind="tool_cancelled",
+                error_detail={"message": "The owning Agent run was cancelled."},
+            )
         time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
         payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)
         if command_execution_approval_payload:
@@ -4251,6 +4315,16 @@ class LocalToolExecutor:
             normalized_session_id = int(session_id)
         except Exception:
             return {"ok": False, "error": "session_id must be an integer"}
+        if self._current_cancel_requested():
+            self._cancel_command_sessions(run_id=self._current_run_id())
+            return self._command_failure_result(
+                command="write_stdin",
+                cwd=self._current_cwd_hint(),
+                error="Command session was cancelled with its owning Agent run.",
+                returncode=130,
+                error_kind="tool_cancelled",
+                error_detail={"session_id": normalized_session_id},
+            )
         with self._command_sessions_lock:
             session = self._command_sessions.get(normalized_session_id)
             if session is None:

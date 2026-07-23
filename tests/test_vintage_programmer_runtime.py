@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -1647,6 +1648,7 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     assert child_tools.runtime_boundaries[-1]["workspace_write_allowed"] is False
     assert child_tools.runtime_boundaries[-1]["writable_roots"] == []
     assert child_tools.runtime_contexts[-1]["subagent_read_only"] is True
+    assert isinstance(child_tools.runtime_contexts[-1]["cancel_event"], threading.Event)
     stream_events = [
         item for item in progress_events
         if item.get("event") in {"item/started", "item/completed"}
@@ -1749,6 +1751,110 @@ def test_runtime_runs_independent_subagents_in_parallel_and_waits_for_both(
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 2
     assert all(item.get("status") == "completed" for item in subagent_items)
+
+
+def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    child_started = threading.Event()
+    release_child = threading.Event()
+    child_command_cancelled = threading.Event()
+
+    class _CancellableChildTools(_FakeTools):
+        def _cancel_command_sessions(self, *, run_id: str = "") -> int:
+            assert ":subagent:" in run_id
+            child_command_cancelled.set()
+            return 1
+
+    class _BlockingChildBackend(_FakeBackend):
+        def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
+            super().__init__(scripted_messages)
+            self.tools = _CancellableChildTools()
+
+        def _invoke_chat_with_runner(self, **kwargs: Any):
+            child_started.set()
+            release_child.wait(timeout=5)
+            return super()._invoke_chat_with_runner(**kwargs)
+
+    class _EmptyFailingParentBackend(_FlakyNoneTypeFollowupBackend):
+        def _invoke_with_runner_recovery(self, **kwargs: Any):
+            assert child_started.wait(timeout=2), "subagent did not start before the parent follow-up"
+            return super()._invoke_with_runner_recovery(**kwargs)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_vp_runtime_backend",
+        lambda _config: _BlockingChildBackend([_FakeMessage(content="late child result")]),
+    )
+    parent_backend = _EmptyFailingParentBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-subagent-before-empty",
+                        "name": "spawn_subagent",
+                        "args": {
+                            "task": "Run the slow verification.",
+                            "role": "explorer",
+                            "label": "Slow verification",
+                        },
+                    }
+                ],
+            ),
+        ],
+        fail_times=2,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=parent_backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    started_at = time.monotonic()
+    try:
+        result = runtime.run(
+            message="Delegate the verification and report back.",
+            settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+            context={
+                "session_id": "s-empty-with-active-subagent",
+                "run_id": "run-empty-with-active-subagent",
+                "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+                "history_turns": [],
+                "attachments": [],
+            },
+            progress_cb=progress_events.append,
+        )
+    finally:
+        release_child.set()
+    elapsed = time.monotonic() - started_at
+
+    assert result["turn_status"] == "failed"
+    assert result["runtime_error"]["kind"] == "llm_empty_response"
+    assert elapsed < 1.5
+    assert child_command_cancelled.is_set()
+    subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
+    assert len(subagent_items) == 1
+    assert subagent_items[0]["status"] == "cancelled"
+    completed_items = [
+        item.get("item") or {}
+        for item in progress_events
+        if item.get("event") == "item/completed" and str((item.get("item") or {}).get("type") or "") == "subagent"
+    ]
+    assert completed_items[-1]["status"] == "cancelled"
+    trace_types = [
+        str((item.get("trace") or {}).get("type") or "")
+        for item in progress_events
+        if item.get("event") == "trace_event"
+    ]
+    assert "llm.failed" in trace_types
+    assert "run.failed" in trace_types
 
 
 def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> None:
