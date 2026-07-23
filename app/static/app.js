@@ -8422,6 +8422,9 @@ function App() {
       ? runState.pending_user_input
       : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
   const activePendingApproval = (() => {
+    // Hide the consumed approval while its resume request is in flight. The
+    // persisted snapshot stays intact so a failed submission can show it again.
+    if (approvalSubmitting) return {};
     const candidates = [
       runState.pending_approval,
       sessionRuntimeState.pending_approval,
@@ -8445,7 +8448,8 @@ function App() {
     ? activePendingInput.questions.filter((item) => item && typeof item === "object")
     : [];
   const hasPendingRuntimeInput = Boolean(
-    !hasCommandApproval
+    !approvalSubmitting
+    && !hasCommandApproval
     && String(activePendingInput.type || "") === "request_user_input"
     && pendingRuntimeQuestions.length
   );
@@ -8523,7 +8527,7 @@ function App() {
       || ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(runtimeActivity.status))
     )
   );
-  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount);
+  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount || approvalSubmitting);
   useEffect(() => {
     if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;
     const messageId = String((runtimeActivityMessage && runtimeActivityMessage.id) || "").trim();
@@ -8557,7 +8561,7 @@ function App() {
     .slice()
     .reverse()
     .find((item) => item && item.role === "assistant" && !item.pending) || null;
-  const runExecutionProgress = buildRunExecutionProgress({
+  const baseRunExecutionProgress = buildRunExecutionProgress({
     messages,
     plan: activePlan,
     checkpoint: activeTaskCheckpoint,
@@ -8575,6 +8579,22 @@ function App() {
     liveTurnState,
     nowMs: activityClockMs || Date.now(),
   });
+  const runExecutionProgress = approvalSubmitting
+    ? {
+        ...baseRunExecutionProgress,
+        status: "approval_submitting",
+        statusLabel: t("runtime_panel.approval_submitting"),
+        currentAction: t("runtime_panel.approval_submitting"),
+      }
+    : (hasCommandApproval
+      ? {
+          ...baseRunExecutionProgress,
+          status: "waiting_approval",
+          statusLabel: t("runtime_panel.approval_required"),
+          currentAction: String(activePendingApproval.purpose || t("runtime_panel.approval_required")),
+          command: String(activePendingApproval.command || baseRunExecutionProgress.command || ""),
+        }
+      : baseRunExecutionProgress);
   const activeProviderAuthValue =
     activeProviderProfile && Object.prototype.hasOwnProperty.call(activeProviderProfile, "auth_ready")
       ? activeProviderProfile.auth_ready

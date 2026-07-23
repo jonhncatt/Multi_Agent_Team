@@ -147,6 +147,7 @@ REQUIRED_CORE_KEYS = (
     "runtime_panel.idle",
     "runtime_panel.action_required",
     "runtime_panel.approval_required",
+    "runtime_panel.approval_submitting",
     "runtime_panel.approval_details",
     "runtime_panel.user_input_required",
     "runtime_panel.question",
@@ -753,6 +754,7 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "const [approvalSubmitting, setApprovalSubmitting] = useState(false);" in script
     assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
+    assert "if (approvalSubmitting) return {};" in script
     assert "if (currentThreadBusy && !isTurnResume)" in script
     assert "if (ownerBusy && !isTurnResume) return;" in script
     assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
@@ -777,7 +779,8 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert '"approval_modal.remote_url": "Remote 地址"' in locales
     assert '"approval_modal.approve_once": "批准一次"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；批准只对这一个精确命令生效一次。"' in locales
-    assert '"runtime_panel.approval_required": "等待命令审批"' in locales
+    assert '"runtime_panel.approval_required": "等待用户审批"' in locales
+    assert '"runtime_panel.approval_submitting": "正在提交审批"' in locales
     assert '"tabs.run": "Runtime"' in locales
     assert '"role.runtime": "运行时"' in locales
     assert ".role-runtime .message-card" in styles
@@ -1032,6 +1035,11 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         "handleStopRun",
         'formatRunFieldLabel(uiLocale, "current_tool")',
         "runExecutionProgress.statusLabel",
+        "const baseRunExecutionProgress = buildRunExecutionProgress({",
+        'status: "waiting_approval"',
+        'status: "approval_submitting"',
+        'statusLabel: t("runtime_panel.approval_required")',
+        'statusLabel: t("runtime_panel.approval_submitting")',
         "function buildRuntimeOutcomeSummary(activity, locale)",
         "const runtimeOutcomeNeedsLoad = Boolean(",
         'if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;',
@@ -1052,6 +1060,8 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         ".run-progress-state",
         ".run-progress-state.status-validating",
         ".run-progress-state.status-waiting_model",
+        ".run-progress-state.status-waiting_approval",
+        ".run-progress-state.status-approval_submitting",
         ".runtime-nav-btn",
         ".runtime-attention-badge",
         ".runtime-control-center",
@@ -1071,7 +1081,8 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         '"tabs.run": "Runtime"',
         '"runtime_panel.title": "Runtime"',
         '"runtime_panel.action_required": "需要处理"',
-        '"runtime_panel.approval_required": "等待命令审批"',
+        '"runtime_panel.approval_required": "等待用户审批"',
+        '"runtime_panel.approval_submitting": "正在提交审批"',
         '"runtime_panel.user_input_required": "等待你的输入"',
         '"runtime_panel.active_work": "当前执行单元"',
         '"runtime_panel.recent_events": "最近 Runtime 事件"',

@@ -3348,9 +3348,15 @@ button {
 }
 
 .run-progress-state.status-validating,
-.run-progress-state.status-waiting_model {
+.run-progress-state.status-waiting_model,
+.run-progress-state.status-approval_submitting {
   background: rgba(27, 99, 214, 0.12);
   color: #174ea6;
+}
+
+.run-progress-state.status-waiting_approval {
+  background: rgba(191, 135, 0, 0.14);
+  color: #8a6100;
 }
 
 .run-progress-state.status-completed {
