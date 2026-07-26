@@ -544,10 +544,29 @@ class ProjectDescriptor(BaseModel):
     git_root: str = ""
     git_branch: str = ""
     is_worktree: bool = False
+    profile_key: str = ""
+    profile_display_name: str = ""
+    profile_available: bool = False
 
 
 class ProjectListResponse(BaseModel):
     projects: list[ProjectDescriptor] = Field(default_factory=list)
+
+
+class ProjectProfileDescriptor(BaseModel):
+    profile_key: str
+    profile_id: str
+    scope: Literal["builtin", "team"]
+    display_name: str
+    description: str = ""
+
+
+class ProjectProfileListResponse(BaseModel):
+    profiles: list[ProjectProfileDescriptor] = Field(default_factory=list)
+
+
+class ProjectProfileBindingRequest(BaseModel):
+    profile_key: str = Field(default="", max_length=160)
 
 
 class ProjectCreateRequest(BaseModel):

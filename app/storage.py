@@ -1382,6 +1382,7 @@ class ProjectStore:
             "git_root": str(git_meta.get("git_root") or payload.get("git_root") or ""),
             "git_branch": str(git_meta.get("git_branch") or payload.get("git_branch") or ""),
             "is_worktree": bool(git_meta.get("is_worktree")) if git_meta.get("git_root") else bool(payload.get("is_worktree")),
+            "profile_key": str(payload.get("profile_key") or "").strip().lower(),
         }
 
     def _normalize_projects_map(self, projects: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], bool]:
@@ -1530,6 +1531,26 @@ class ProjectStore:
                 payload["title"] = cleaned_title[:120]
         if pinned is not None:
             payload["pinned"] = bool(pinned)
+        payload["updated_at"] = now_iso()
+        projects[project_id] = payload
+        self._write(data)
+        return payload
+
+    def bind_profile(self, project_id: str, profile_key: str) -> dict[str, Any]:
+        data = self._read()
+        projects = data.setdefault("projects", {})
+        current = projects.get(project_id)
+        if not isinstance(current, dict):
+            default_project = self.ensure_default_project()
+            if default_project["project_id"] != project_id:
+                raise FileNotFoundError(f"Project not found: {project_id}")
+            data = self._read()
+            projects = data.setdefault("projects", {})
+            current = projects.get(project_id)
+        if not isinstance(current, dict):
+            raise FileNotFoundError(f"Project not found: {project_id}")
+        payload = self._normalize_record(current)
+        payload["profile_key"] = str(profile_key or "").strip().lower()
         payload["updated_at"] = now_iso()
         projects[project_id] = payload
         self._write(data)

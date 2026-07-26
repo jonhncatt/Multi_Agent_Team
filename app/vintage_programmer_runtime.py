@@ -826,25 +826,8 @@ class VintageProgrammerRuntime:
         return visible_request
 
     @staticmethod
-    def _load_project_contract_text(project_root: str) -> str:
-        candidates: list[Path] = []
-        raw_root = str(project_root or "").strip()
-        if raw_root:
-            candidates.append(Path(raw_root) / "AGENTS.md")
-        candidates.append(Path.cwd() / "AGENTS.md")
-        candidates.append(Path(__file__).resolve().parents[1] / "AGENTS.md")
-        seen: set[str] = set()
-        for candidate in candidates:
-            key = str(candidate)
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                if candidate.is_file():
-                    return candidate.read_text(encoding="utf-8")[:24000]
-            except Exception:
-                continue
-        return ""
+    def _load_project_contract_text(project: dict[str, Any]) -> str:
+        return str((project or {}).get("project_instructions") or "").strip()[:32768]
 
     def _dedup_notes(self, notes: list[str]) -> list[str]:
         out: list[str] = []
@@ -4675,7 +4658,7 @@ class VintageProgrammerRuntime:
         }
         blocked_reason = ""
         with phase_timer.measure("runtime_project_contract_ms"):
-            project_contract_text = self._load_project_contract_text(project_root)
+            project_contract_text = self._load_project_contract_text(project_context)
         with phase_timer.measure("runtime_thread_replay_ms"):
             thread_summary, replay_messages = self._thread_messages(context_payload)
         with phase_timer.measure("runtime_render_messages_ms"):
@@ -4710,7 +4693,7 @@ class VintageProgrammerRuntime:
                     self._backend._HumanMessage(
                         content=(
                             "[project_instructions]\n"
-                            "Repository-scoped instructions loaded from AGENTS.md.\n"
+                            "Explicitly bound project instructions loaded from a shared Project Profile.\n"
                             + project_contract_text
                         )
                     )

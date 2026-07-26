@@ -3996,6 +3996,12 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [projectProfiles, setProjectProfiles] = useState([]);
+  const [projectProfileDialog, setProjectProfileDialog] = useState(null);
+  const [projectProfileDraft, setProjectProfileDraft] = useState("");
+  const [projectProfileError, setProjectProfileError] = useState("");
+  const [loadingProjectProfiles, setLoadingProjectProfiles] = useState(false);
+  const [savingProjectProfile, setSavingProjectProfile] = useState(false);
   const [evalDialogOpen, setEvalDialogOpen] = useState(false);
   const [evalCatalog, setEvalCatalog] = useState([]);
   const [evalRuns, setEvalRuns] = useState([]);
@@ -5546,11 +5552,13 @@ function App() {
   }
 
   function openProjectMenuAt(position, item) {
-    if (!item || currentThreadBusy || item.is_default) return;
+    if (!item || currentThreadBusy) return;
     closeThreadMenu();
     setProjectMenu({
       projectId: String(item.project_id || ""),
       title: String(item.title || item.project_id || ""),
+      isDefault: Boolean(item.is_default),
+      profileKey: String(item.profile_key || ""),
       x: Math.max(12, Number((position && position.x) || 0) || 0),
       y: Math.max(12, Number((position && position.y) || 0) || 0),
     });
@@ -5562,7 +5570,7 @@ function App() {
   }
 
   function handleProjectTouchStart(event, item) {
-    if (currentThreadBusy || (item && item.is_default)) return;
+    if (currentThreadBusy) return;
     cancelProjectLongPress();
     const touch = (event.touches && event.touches[0]) || null;
     projectLongPressRef.current = {
@@ -5691,6 +5699,42 @@ function App() {
     })();
     projectsInFlightRef.current = requestPromise;
     return requestPromise;
+  }
+
+  async function refreshProjectProfiles() {
+    setLoadingProjectProfiles(true);
+    try {
+      const data = await fetchJson("/api/project-profiles");
+      const list = Array.isArray(data.profiles) ? data.profiles : [];
+      setProjectProfiles(list);
+      return list;
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("errors.refresh_project_profiles_failed"));
+      setProjectProfileError(nextError.summary);
+      return [];
+    } finally {
+      setLoadingProjectProfiles(false);
+    }
+  }
+
+  async function openProjectProfileDialog(item, options = {}) {
+    if (!item || currentThreadBusy) return;
+    closeProjectMenu();
+    setProjectProfileError("");
+    setProjectProfileDraft(String(item.profile_key || ""));
+    setProjectProfileDialog({
+      projectId: String(item.project_id || ""),
+      title: String(item.title || item.project_id || ""),
+      afterCreate: Boolean(options.afterCreate),
+    });
+    await refreshProjectProfiles();
+  }
+
+  function closeProjectProfileDialog() {
+    if (savingProjectProfile) return;
+    setProjectProfileDialog(null);
+    setProjectProfileDraft("");
+    setProjectProfileError("");
   }
 
   async function refreshProjectsIfStale(options = {}) {
@@ -5861,6 +5905,7 @@ function App() {
       closeProjectMenu();
       await selectProject(String(payload.project_id || ""));
       pushLogWithLimit(setLogs, "system", t("log.project_added", { title: payload.title || payload.project_id }));
+      await openProjectProfileDialog(payload, { afterCreate: true });
     } catch (err) {
       const nextError = applyUiError(err, t("errors.add_project_failed"));
       setProjectFormError(nextError.summary);
@@ -6335,6 +6380,42 @@ function App() {
     } catch (err) {
       const nextError = applyUiError(err, t("errors.delete_project_failed"));
       pushLogWithLimit(setLogs, "error", t("log.delete_project_failed", { summary: nextError.summary }));
+    }
+  }
+
+  async function saveProjectProfileBinding() {
+    const target = projectProfileDialog;
+    const pid = String((target && target.projectId) || "").trim();
+    if (!pid || savingProjectProfile) return;
+    setSavingProjectProfile(true);
+    setProjectProfileError("");
+    try {
+      const payload = await fetchJson(`/api/projects/${encodeURIComponent(pid)}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile_key: String(projectProfileDraft || "") }),
+      });
+      setProjects((prev) => (Array.isArray(prev)
+        ? prev.map((item) => (String(item.project_id || "") === pid ? payload : item))
+        : prev));
+      if (pid === String(projectId || "")) {
+        refreshRuntimeStatus(pid, { background: true });
+      }
+      const profileName = String(payload.profile_display_name || "").trim();
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        profileName
+          ? t("log.project_profile_bound", { title: payload.title || pid, profile: profileName })
+          : t("log.project_profile_unbound", { title: payload.title || pid }),
+      );
+      setProjectProfileDialog(null);
+      setProjectProfileDraft("");
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("errors.bind_project_profile_failed"));
+      setProjectProfileError(nextError.summary);
+    } finally {
+      setSavingProjectProfile(false);
     }
   }
 
@@ -9734,6 +9815,9 @@ function App() {
                         ${compactPath(item.root_path)}
                         ${item.git_branch ? ` · ${item.git_branch}` : ""}
                         ${item.is_worktree ? " · worktree" : ""}
+                        ${item.profile_key
+                          ? ` · ${item.profile_available ? (item.profile_display_name || item.profile_key) : t("project_profile.missing")}`
+                          : ` · ${t("project_profile.none")}`}
                       </div>
                     </button>
                   `,
@@ -9748,9 +9832,26 @@ function App() {
                 ref=${projectMenuRef}
                 style=${{ left: `${projectMenu.x}px`, top: `${projectMenu.y}px` }}
               >
-                <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteProject(projectMenu.projectId)}>
-                  ${t("buttons.delete_project")}
+                <button
+                  className="thread-context-item"
+                  type="button"
+                  onClick=${() => openProjectProfileDialog(
+                    projects.find((item) => String(item.project_id || "") === String(projectMenu.projectId || "")) || {
+                      project_id: projectMenu.projectId,
+                      title: projectMenu.title,
+                      profile_key: projectMenu.profileKey,
+                    },
+                  )}
+                >
+                  ${projectMenu.profileKey ? t("buttons.change_project_profile") : t("buttons.bind_project_profile")}
                 </button>
+                ${!projectMenu.isDefault
+                  ? html`
+                      <button className="thread-context-item danger" type="button" onClick=${() => handleDeleteProject(projectMenu.projectId)}>
+                        ${t("buttons.delete_project")}
+                      </button>
+                    `
+                  : null}
               </div>
             `
           : null}
@@ -10394,7 +10495,7 @@ function App() {
 	          `
 	        : null}
 
-	      ${projectDialogOpen
+      ${projectDialogOpen
 	        ? html`
 	            <div className="project-modal-backdrop" id="projectModal">
               <div className="project-modal">
@@ -10426,6 +10527,56 @@ function App() {
                 <div className="modal-actions">
                   <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>${t("buttons.cancel")}</button>
                   <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
+
+      ${projectProfileDialog
+        ? html`
+            <div className="project-modal-backdrop" id="projectProfileModal">
+              <div className="project-modal">
+                <div className="panel-title">
+                  ${projectProfileDialog.afterCreate
+                    ? t("project_profile.after_add_title")
+                    : t("project_profile.title")}
+                </div>
+                <div className="path-hint">
+                  ${t("project_profile.hint", { title: projectProfileDialog.title || projectProfileDialog.projectId })}
+                </div>
+                <label className="form-field">
+                  <span>${t("project_profile.select_label")}</span>
+                  <select
+                    className="drawer-input"
+                    value=${projectProfileDraft}
+                    onChange=${(event) => setProjectProfileDraft(event.currentTarget.value)}
+                    disabled=${loadingProjectProfiles || savingProjectProfile}
+                  >
+                    <option value="">${t("project_profile.none")}</option>
+                    ${projectProfiles.map((profile) => html`
+                      <option key=${profile.profile_key} value=${profile.profile_key}>
+                        ${profile.display_name} · ${profile.scope}
+                      </option>
+                    `)}
+                  </select>
+                </label>
+                ${projectProfileDraft
+                  ? html`
+                      <div className="path-hint">
+                        ${String(((projectProfiles.find((profile) => profile.profile_key === projectProfileDraft) || {}).description) || "")}
+                      </div>
+                    `
+                  : html`<div className="path-hint">${t("project_profile.none_hint")}</div>`}
+                ${loadingProjectProfiles ? html`<div className="path-hint">${t("project_profile.loading")}</div>` : null}
+                ${projectProfileError ? html`<div className="status-error">${projectProfileError}</div>` : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${closeProjectProfileDialog} disabled=${savingProjectProfile}>
+                    ${projectProfileDialog.afterCreate ? t("buttons.not_now") : t("buttons.cancel")}
+                  </button>
+                  <button className="solid-btn" type="button" onClick=${saveProjectProfileBinding} disabled=${loadingProjectProfiles || savingProjectProfile}>
+                    ${savingProjectProfile ? t("buttons.saving") : t("buttons.save")}
+                  </button>
                 </div>
               </div>
             </div>

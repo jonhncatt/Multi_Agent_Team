@@ -117,7 +117,7 @@ Runtime 用切点跳过较早 transcript，发送 summary 和切点后的完整�
 ```text
 messages = [
   SystemMessage(agent spec + runtime boundary),
-  HumanMessage([project_instructions] ...),       # 仅在有 AGENTS.md 时
+  HumanMessage([project_instructions] ...),       # 仅在当前项目显式绑定 Project Profile 时
   HumanMessage([compaction_summary] ...),         # 仅在发生过压缩时
   ...未被压缩的 typed transcript messages,
   HumanMessage([attachments] ...),                # 仅在当前上下文有附件时

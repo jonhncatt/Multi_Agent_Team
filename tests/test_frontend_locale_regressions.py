@@ -44,6 +44,17 @@ REQUIRED_CORE_KEYS = (
     "buttons.save",
     "buttons.tasks",
     "buttons.load_task",
+    "buttons.bind_project_profile",
+    "buttons.change_project_profile",
+    "buttons.not_now",
+    "project_profile.title",
+    "project_profile.after_add_title",
+    "project_profile.hint",
+    "project_profile.select_label",
+    "project_profile.none",
+    "project_profile.none_hint",
+    "project_profile.missing",
+    "project_profile.loading",
     "tasks.title",
     "tasks.subtitle",
     "tasks.summarize_prompt",
@@ -2358,6 +2369,18 @@ def test_handle_send_includes_client_submission_timestamp() -> None:
 
     assert "const clientSubmittedAtMs = Date.now();" in script
     assert "client_submitted_at_ms: clientSubmittedAtMs," in script
+
+
+def test_project_profile_binding_is_explicit_after_add_and_from_context_menu() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'fetchJson("/api/project-profiles")' in script
+    assert "await openProjectProfileDialog(payload, { afterCreate: true });" in script
+    assert 'method: "PUT"' in script
+    assert 'body: JSON.stringify({ profile_key: String(projectProfileDraft || "") })' in script
+    assert 't("buttons.bind_project_profile")' in script
+    assert 't("buttons.change_project_profile")' in script
+    assert '<option value="">${t("project_profile.none")}</option>' in script
 
 
 def test_llm_started_promotes_pending_message_to_model_waiting() -> None:

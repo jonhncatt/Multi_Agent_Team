@@ -3248,10 +3248,10 @@ def test_runtime_guard_rejects_schema_mismatch_then_model_retries_with_valid_too
     assert result["tool_events"][1]["validation_result"]["allowed"] is True
 
 
-def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
+def test_runtime_loads_only_explicitly_bound_project_profile_instructions(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    (tmp_path / "AGENTS.md").write_text("Project contract: model-led turn planning only.", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("Repository AGENTS.md must not load implicitly.", encoding="utf-8")
     backend = _FakeBackend([_FakeMessage(content="done")])
     runtime = VintageProgrammerRuntime(
         config=load_config(),
@@ -3265,7 +3265,12 @@ def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
         settings=ChatSettings(model="gpt-test", enable_tools=True),
         context={
             "session_id": "s-agents",
-            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "project": {
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+                "profile_key": "team:pcbasher",
+                "project_instructions": "Project contract: model-led turn planning only.",
+            },
             "history_turns": [],
             "attachments": [],
         },
@@ -3278,16 +3283,47 @@ def test_runtime_loads_project_contract_from_agents_md(tmp_path: Path) -> None:
     assert any(
         "[project_instructions]" in str(item.content or "")
         and "Project contract: model-led turn planning only." in str(item.content or "")
+        and "Repository AGENTS.md must not load implicitly." not in str(item.content or "")
         for item in messages
         if isinstance(item, _FakeHumanMessage)
     )
     assert messages[-1].content == "直接回答"
 
 
+def test_runtime_does_not_load_project_instructions_without_profile_binding(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    (tmp_path / "AGENTS.md").write_text("Repository AGENTS.md must not load implicitly.", encoding="utf-8")
+    backend = _FakeBackend([_FakeMessage(content="done")])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    runtime.run(
+        message="直接回答",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-no-project-profile",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path), "profile_key": ""},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    messages = backend.invocations[0]["messages"]
+    assert not any(
+        "[project_instructions]" in str(item.content or "")
+        or "Repository AGENTS.md must not load implicitly." in str(item.content or "")
+        for item in messages
+    )
+
+
 def test_runtime_message_layers_keep_context_below_single_system_message(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
-    (tmp_path / "AGENTS.md").write_text("Repository rule", encoding="utf-8")
     attachment_path = tmp_path / "spec.md"
     attachment_path.write_text("spec", encoding="utf-8")
     backend = _FakeBackend([_FakeMessage(content="done")])
@@ -3303,7 +3339,12 @@ def test_runtime_message_layers_keep_context_below_single_system_message(tmp_pat
         settings=ChatSettings(model="gpt-test", enable_tools=True),
         context={
             "session_id": "s-message-layers",
-            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "project": {
+                "project_root": str(tmp_path),
+                "cwd": str(tmp_path),
+                "profile_key": "builtin:vintage-programmer",
+                "project_instructions": "Repository rule",
+            },
             "thread_transcript": {
                 "schema_version": 1,
                 "items": [

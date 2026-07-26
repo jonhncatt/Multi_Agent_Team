@@ -136,3 +136,20 @@ def test_project_store_caches_git_metadata_during_repeated_project_loads(tmp_pat
     assert [item["git_branch"] for item in second] == ["feature/cached-git", "feature/cached-git"]
     assert calls.count(app_root.resolve()) == 1
     assert calls.count(repo_root.resolve()) == 1
+
+
+def test_project_store_binds_and_unbinds_profile_without_changing_project_root(tmp_path: Path) -> None:
+    app_root = tmp_path / "app-root"
+    repo_root = tmp_path / "repo-root"
+    app_root.mkdir()
+    repo_root.mkdir()
+    store = ProjectStore(tmp_path / "projects.json", default_root=app_root)
+    project = store.create(root_path=str(repo_root), title="Repo")
+
+    bound = store.bind_profile(project["project_id"], "team:pcbasher")
+    unbound = store.bind_profile(project["project_id"], "")
+
+    assert bound["profile_key"] == "team:pcbasher"
+    assert bound["root_path"] == str(repo_root.resolve())
+    assert unbound["profile_key"] == ""
+    assert store.get(project["project_id"])["profile_key"] == ""

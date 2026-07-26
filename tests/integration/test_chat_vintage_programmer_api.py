@@ -3365,6 +3365,37 @@ def test_project_endpoints_and_project_scoped_sessions(monkeypatch, tmp_path: Pa
     assert create_b.status_code == 200
     project_a = create_a.json()["project_id"]
     project_b = create_b.json()["project_id"]
+    assert create_a.json()["profile_key"] == ""
+    assert create_a.json()["profile_available"] is False
+
+    profiles = client.get("/api/project-profiles")
+    assert profiles.status_code == 200
+    assert "builtin:vintage-programmer" in {
+        item["profile_key"] for item in profiles.json()["profiles"]
+    }
+
+    invalid_profile = client.put(
+        f"/api/projects/{project_b}/profile",
+        json={"profile_key": "team:missing"},
+    )
+    assert invalid_profile.status_code == 400
+
+    bind_profile = client.put(
+        f"/api/projects/{project_b}/profile",
+        json={"profile_key": "builtin:vintage-programmer"},
+    )
+    assert bind_profile.status_code == 200
+    assert bind_profile.json()["profile_key"] == "builtin:vintage-programmer"
+    assert bind_profile.json()["profile_display_name"] == "Vintage Programmer"
+    assert bind_profile.json()["profile_available"] is True
+
+    unbind_profile = client.put(
+        f"/api/projects/{project_b}/profile",
+        json={"profile_key": ""},
+    )
+    assert unbind_profile.status_code == 200
+    assert unbind_profile.json()["profile_key"] == ""
+    assert unbind_profile.json()["profile_available"] is False
 
     session_a = client.post("/api/session/new", json={"project_id": project_a})
     session_b = client.post("/api/session/new", json={"project_id": project_b})

@@ -21,6 +21,7 @@
 | [Session = Thread 架构](thread_transcript_architecture.md) | Thread V4、typed transcript、压缩、暂停恢复和 Turn Trace | Runtime / 数据维护者 |
 | [Runtime 可靠性](runtime_reliability.md) | 压缩、工具失败恢复、审批边界、Eval 和前端可靠性基线 | Runtime / 测试维护者 |
 | [Agent 工作流](agent_workflow_runtime.md) | 运行中追加指令、单层并行 Subagent 和后台 Eval | Agent / 前端维护者 |
+| [Project Profiles](project_profiles.md) | 共享项目说明、显式绑定、目录和 Runtime 加载规则 | Runtime / 项目维护者 |
 
 ## Skills 与工具
 

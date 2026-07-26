@@ -55,6 +55,9 @@ from app.models import (
     ProjectDescriptor,
     ProjectDeleteResponse,
     ProjectListResponse,
+    ProjectProfileBindingRequest,
+    ProjectProfileDescriptor,
+    ProjectProfileListResponse,
     ProjectUpdateRequest,
     ProviderModelsRefreshResponse,
     RuntimeStatusResponse,
@@ -94,6 +97,7 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.pricing import estimate_usage_cost
 from app.provider_model_catalog import ProviderModelCatalog, ProviderModelRefreshError
+from app.project_profiles import ProjectProfileError, ProjectProfileRegistry
 from app.serialization import dump_model
 from app.runtime_boundary import build_turn_runtime_boundary
 from app.runtime_contract import build_full_auto_runtime_contract
@@ -110,8 +114,10 @@ from app.workbench import WorkbenchStore
 APP_TITLE = "Vintage Programmer"
 config = load_config()
 DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = int(config.max_output_tokens)
-AGENT_DIR = Path(__file__).resolve().parent.parent / "agents" / "vintage_programmer"
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+AGENT_DIR = REPOSITORY_ROOT / "agents" / "vintage_programmer"
 project_store = ProjectStore(config.projects_registry_path, default_root=config.workspace_root)
+project_profile_registry = ProjectProfileRegistry(REPOSITORY_ROOT)
 session_store = SessionStore(
     config.sessions_dir,
     runs_dir=config.runs_dir,
@@ -876,7 +882,69 @@ def workbench_tools() -> WorkbenchToolsResponse:
 @app.get("/api/projects", response_model=ProjectListResponse)
 def list_projects() -> ProjectListResponse:
     rows = get_project_store().list_projects()
-    return ProjectListResponse(projects=[ProjectDescriptor(**item) for item in rows if isinstance(item, dict)])
+    return ProjectListResponse(
+        projects=[ProjectDescriptor(**_project_descriptor_payload(item)) for item in rows if isinstance(item, dict)]
+    )
+
+
+def _project_descriptor_payload(project: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(project or {})
+    profile_key = str(payload.get("profile_key") or "").strip().lower()
+    payload["profile_key"] = profile_key
+    payload["profile_display_name"] = ""
+    payload["profile_available"] = False
+    if not profile_key:
+        return payload
+    try:
+        profile = project_profile_registry.get(profile_key)
+    except (ProjectProfileError, OSError):
+        return payload
+    payload["profile_display_name"] = str(profile.get("display_name") or "")
+    payload["profile_available"] = True
+    return payload
+
+
+def _project_instruction_context(project: dict[str, Any]) -> dict[str, Any]:
+    profile_key = str((project or {}).get("profile_key") or "").strip().lower()
+    if not profile_key:
+        return {
+            "profile_key": "",
+            "profile_display_name": "",
+            "project_instructions": "",
+            "project_instructions_source": "",
+        }
+    try:
+        profile, instructions = project_profile_registry.read_instructions(profile_key)
+    except (ProjectProfileError, OSError):
+        return {
+            "profile_key": profile_key,
+            "profile_display_name": "",
+            "project_instructions": "",
+            "project_instructions_source": "",
+        }
+    return {
+        "profile_key": profile_key,
+        "profile_display_name": str(profile.get("display_name") or ""),
+        "project_instructions": instructions,
+        "project_instructions_source": str(profile.get("instructions_path") or ""),
+    }
+
+
+@app.get("/api/project-profiles", response_model=ProjectProfileListResponse)
+def list_project_profiles() -> ProjectProfileListResponse:
+    rows = project_profile_registry.list_profiles()
+    return ProjectProfileListResponse(
+        profiles=[
+            ProjectProfileDescriptor(
+                profile_key=str(item.get("profile_key") or ""),
+                profile_id=str(item.get("profile_id") or ""),
+                scope=str(item.get("scope") or "team"),
+                display_name=str(item.get("display_name") or ""),
+                description=str(item.get("description") or ""),
+            )
+            for item in rows
+        ]
+    )
 
 
 @app.post("/api/projects", response_model=ProjectDescriptor)
@@ -889,7 +957,7 @@ def create_project(req: ProjectCreateRequest) -> ProjectDescriptor:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ProjectDescriptor(**project)
+    return ProjectDescriptor(**_project_descriptor_payload(project))
 
 
 @app.patch("/api/projects/{project_id}", response_model=ProjectDescriptor)
@@ -900,7 +968,25 @@ def update_project(project_id: str, req: ProjectUpdateRequest) -> ProjectDescrip
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ProjectDescriptor(**project)
+    return ProjectDescriptor(**_project_descriptor_payload(project))
+
+
+@app.put("/api/projects/{project_id}/profile", response_model=ProjectDescriptor)
+def bind_project_profile(project_id: str, req: ProjectProfileBindingRequest) -> ProjectDescriptor:
+    profile_key = str(req.profile_key or "").strip().lower()
+    if profile_key:
+        try:
+            profile_key = project_profile_registry.normalize_key(profile_key)
+            project_profile_registry.get(profile_key)
+        except ProjectProfileError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"Project profile is unavailable: {profile_key}") from exc
+    try:
+        project = get_project_store().bind_profile(project_id, profile_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ProjectDescriptor(**_project_descriptor_payload(project))
 
 
 @app.delete("/api/projects/{project_id}", response_model=ProjectDeleteResponse)
@@ -3054,6 +3140,7 @@ def _process_chat_request(
                         "git_branch": str(session_project.get("git_branch") or ""),
                         "cwd": str(session.get("cwd") or session_project.get("root_path") or ""),
                         "is_worktree": bool(session_project.get("is_worktree")),
+                        **_project_instruction_context(session_project),
                     },
                     "thread_transcript": thread_transcript_for_runtime,
                     "task_context": task_context,
