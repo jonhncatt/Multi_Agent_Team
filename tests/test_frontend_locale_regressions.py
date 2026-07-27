@@ -520,6 +520,7 @@ def test_activity_flow_summary_is_wired_into_frontend() -> None:
     )
     for token in required_script_tokens:
         assert token in script, token
+    assert "const MAIN_LIVE_CARD_LIMIT = 3;" in script
 
     required_style_tokens = (
         ".activity-progress",
