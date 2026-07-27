@@ -2566,8 +2566,6 @@ def _process_chat_request(
         )
         task_context: dict[str, Any] = {}
         if requested_task:
-            if str(requested_task.get("project_id") or "") != str(seed_session.get("project_id") or ""):
-                raise HTTPException(status_code=409, detail="Task belongs to a different project")
             task_context = task_context_snapshot(requested_task)
         fallback_text = translate(locale, "chat.auth_missing")
         user_turn = session_store.append_turn(
@@ -2741,7 +2739,7 @@ def _process_chat_request(
             is_turn_resume = bool(
                 stored_pending_turn
                 and str(stored_pending_turn.get("type") or "").strip() == response_type
-                and response_type in {"command_execution", "request_user_input"}
+                and response_type in {"command_execution", "task_update", "request_user_input"}
             )
             if is_turn_resume:
                 pending_turn_for_resume = stored_pending_turn
@@ -2760,8 +2758,6 @@ def _process_chat_request(
             if not str(session.get("cwd") or "").strip():
                 session["cwd"] = str(session_project.get("root_path") or "")
             if requested_task:
-                if str(requested_task.get("project_id") or "") != str(session_project.get("project_id") or ""):
-                    raise HTTPException(status_code=409, detail="Task belongs to a different project")
                 task_context = task_context_snapshot(requested_task)
             _update_active_chat_run(
                 run_id,

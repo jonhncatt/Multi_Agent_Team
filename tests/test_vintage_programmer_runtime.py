@@ -252,6 +252,7 @@ class _FakeTools:
                         "blockers": {"type": "array", "items": {"type": "string"}},
                         "artifacts": {"type": "array", "items": {"type": "string"}},
                         "status": {"type": "string"},
+                        "approval_token": {"type": "string"},
                     },
                     "required": ["title", "goal", "summary"],
                     "additionalProperties": False,
@@ -441,6 +442,51 @@ class _ApprovedCommandTools(_FakeTools):
                 "files": [],
             },
             "summary": "command exited with 0",
+        }
+
+
+class _TaskApprovalRequiredTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        current_task = {
+            "task_id": str(arguments.get("task_id") or ""),
+            "title": "Current Task",
+            "goal": "Verify the issue",
+            "summary": "Current summary",
+            "progress": ["Collected logs"],
+            "next_steps": ["Inspect runtime"],
+            "decisions": [],
+            "blockers": [],
+            "artifacts": [],
+            "status": "active",
+        }
+        proposed_task = {**current_task, **dict(arguments)}
+        return {
+            "ok": False,
+            "error_kind": "task_update_approval_required",
+            "approval_required": True,
+            "approval_request": {
+                "type": "task_update",
+                "approval_token": "task-approval-token-1",
+                "task_id": str(arguments.get("task_id") or ""),
+                "current_task": current_task,
+                "proposed_task": proposed_task,
+                "changed_fields": ["summary", "progress", "next_steps"],
+                "single_use": True,
+                "default_action": "cancel",
+            },
+            "summary": "Task update requires explicit approval.",
+        }
+
+
+class _ApprovedTaskTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": True,
+            "task_id": str(arguments.get("task_id") or ""),
+            "task_update_approved": True,
+            "summary": "Task updated after approval.",
         }
 
 
@@ -1929,6 +1975,162 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     request_event = next(item for item in progress_events if str(item.get("event") or "") == "request_user_input")
     assert request_event["pending_approval"]["type"] == "command_execution"
     assert request_event["run_snapshot"]["pending_approval"]["approval_token"] == "approval-token-1"
+
+
+def test_runtime_surfaces_complete_task_update_pending_approval(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _TaskApprovalRequiredTools()
+    proposed = {
+        "task_id": "task-approval-1",
+        "title": "Current Task",
+        "goal": "Verify the issue",
+        "summary": "Runtime inspection is complete.",
+        "progress": ["Collected logs", "Inspected runtime"],
+        "next_steps": ["Verify the fix"],
+        "decisions": [],
+        "blockers": [],
+        "artifacts": ["runtime-report.md"],
+        "status": "active",
+    }
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-task-approval",
+                        "name": "save_task",
+                        "args": proposed,
+                    }
+                ],
+            )
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="更新当前 Task",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-task-update-approval",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["turn_status"] == "needs_user_input"
+    assert result["pending_approval"]["type"] == "task_update"
+    assert result["pending_approval"]["current_task"]["summary"] == "Current summary"
+    assert result["pending_approval"]["proposed_task"]["summary"] == proposed["summary"]
+    assert result["pending_turn"]["type"] == "task_update"
+    assert result["pending_turn"]["tool_call_id"] == "tc-task-approval"
+    assert [item["role"] for item in result["transcript_delta"]] == ["assistant"]
+    request_event = next(item for item in progress_events if item.get("event") == "request_user_input")
+    assert request_event["pending_approval"]["approval_token"] == "task-approval-token-1"
+
+
+def test_runtime_approved_task_update_resumes_exact_save_task_call(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ApprovedTaskTools()
+    backend = _FakeBackendWithTools([_FakeMessage(content="Task update completed.")], tools)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    proposed = {
+        "task_id": "task-approval-1",
+        "title": "Current Task",
+        "goal": "Verify the issue",
+        "summary": "Runtime inspection is complete.",
+        "progress": ["Collected logs", "Inspected runtime"],
+        "next_steps": ["Verify the fix"],
+        "decisions": [],
+        "blockers": [],
+        "artifacts": ["runtime-report.md"],
+        "status": "active",
+    }
+
+    result = runtime.run(
+        message="更新当前 Task",
+        settings=ChatSettings(model="gpt-test", enable_tools=True),
+        context={
+            "session_id": "s-task-update-approval",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "更新当前 Task"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "tc-task-approval",
+                                "name": "save_task",
+                                "args": proposed,
+                            }
+                        ],
+                    },
+                ],
+            },
+            "pending_turn": {
+                "schema_version": 1,
+                "type": "task_update",
+                "turn_id": "turn-task-update",
+                "request_message": "更新当前 Task",
+                "tool_call_id": "tc-task-approval",
+                "tool_call": {
+                    "id": "tc-task-approval",
+                    "name": "save_task",
+                    "args": proposed,
+                },
+                "task_id": "task-approval-1",
+            },
+            "user_input_response": {
+                "type": "task_update",
+                "action": "approve_once",
+                "approval_token": "task-approval-token-1",
+                "tool_call_id": "tc-task-approval",
+                "task_id": "task-approval-1",
+            },
+            "attachments": [],
+        },
+    )
+
+    assert tools.calls[0] == (
+        "save_task",
+        {**proposed, "approval_token": "task-approval-token-1"},
+    )
+    assert result["text"].startswith("Task update completed.")
+    assert result["tool_events"][0]["name"] == "save_task"
+    assert result["tool_events"][0]["status"] == "ok"
+    assert result["pending_approval"] == {}
+    sent_messages = backend.invocations[0]["messages"]
+    approval_results = [item for item in sent_messages if isinstance(item, _FakeToolMessage)]
+    assert approval_results[-1].tool_call_id == "tc-task-approval"
 
 
 def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Path) -> None:
@@ -5893,6 +6095,93 @@ def test_runtime_save_task_tool_creates_project_task_snapshot(tmp_path: Path) ->
     assert task["source_thread_id"] == "thread-source"
     assert task["next_steps"] == ["Update login form"]
     assert result["tool_events"][0]["name"] == "save_task"
+
+
+def test_loaded_task_can_update_from_another_active_project_without_moving_source(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
+    backend = _FakeBackend([])
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    source_root = tmp_path / "source-project"
+    selected_root = tmp_path / "selected-project"
+    source_root.mkdir()
+    selected_root.mkdir()
+    original = runtime._task_store.save(
+        project_id="project-source",
+        project_title="Source project",
+        project_root=str(source_root),
+        title="Portable task",
+        goal="Continue from a different active project",
+        summary="Original snapshot.",
+        status="active",
+        source_thread_id="thread-source",
+    )
+    task_id = str(original["task_id"])
+    backend._scripted_messages.extend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-update-loaded-task",
+                        "name": "save_task",
+                        "args": {
+                            "task_id": task_id,
+                            "title": "Portable task",
+                            "goal": "Continue from a different active project",
+                            "summary": "The selected-project investigation is now complete.",
+                            "progress": ["Verified selected-project behavior"],
+                            "next_steps": [],
+                            "decisions": ["Keep the Task source project as metadata"],
+                            "blockers": [],
+                            "artifacts": ["selected/result.txt"],
+                            "status": "completed",
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="Task updated"),
+        ]
+    )
+
+    result = runtime.run(
+        message="更新现在这个 Task",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "thread-selected",
+            "project": {
+                "project_id": "project-selected",
+                "project_title": "Selected project",
+                "project_root": str(selected_root),
+            },
+            "task_context": original,
+            "thread_transcript": {"schema_version": 2, "items": []},
+            "attachments": [],
+        },
+    )
+
+    updated = runtime._task_store.get(task_id)
+    assert updated is not None
+    assert updated["project_id"] == "project-source"
+    assert updated["project_title"] == "Source project"
+    assert updated["project_root"] == str(source_root)
+    assert updated["summary"] == "The selected-project investigation is now complete."
+    assert updated["status"] == "completed"
+    assert result["tool_events"][0]["name"] == "save_task"
+    human_prompts = [
+        str(item.content)
+        for item in backend.invocations[0]["messages"]
+        if item.__class__.__name__ == "_FakeHumanMessage"
+    ]
+    assert any("active Runtime project and boundary remain authoritative" in prompt for prompt in human_prompts)
 
 
 def test_loaded_task_context_precedes_visible_load_request_and_replays(tmp_path: Path) -> None:

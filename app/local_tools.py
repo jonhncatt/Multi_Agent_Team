@@ -1182,6 +1182,7 @@ class LocalToolExecutor:
         run_id: str | None = None,
         cancel_event: Any | None = None,
         skill_writer: Any | None = None,
+        task_reader: Any | None = None,
         task_writer: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
         builtin_skill_roots: list[str] | None = None,
@@ -1208,6 +1209,7 @@ class LocalToolExecutor:
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
         self._runtime_ctx.cancel_event = cancel_event
         self._runtime_ctx.skill_writer = skill_writer
+        self._runtime_ctx.task_reader = task_reader
         self._runtime_ctx.task_writer = task_writer
         self._runtime_ctx.reserved_skill_roots = [
             str(item) for item in list(reserved_skill_roots or []) if str(item or "").strip()
@@ -1223,7 +1225,7 @@ class LocalToolExecutor:
         self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "cancel_event", "skill_writer", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "cancel_event", "skill_writer", "task_reader", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -1923,6 +1925,101 @@ class LocalToolExecutor:
             risks=[],
             tainted_files=tainted_files,
         )
+
+    @staticmethod
+    def _task_approval_snapshot(task: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "task_id": str(task.get("task_id") or "").strip(),
+            "project_id": str(task.get("project_id") or "").strip(),
+            "project_title": str(task.get("project_title") or "").strip(),
+            "title": str(task.get("title") or "").strip(),
+            "goal": str(task.get("goal") or "").strip(),
+            "summary": str(task.get("summary") or "").strip(),
+            "progress": [str(item) for item in list(task.get("progress") or [])],
+            "next_steps": [str(item) for item in list(task.get("next_steps") or [])],
+            "decisions": [str(item) for item in list(task.get("decisions") or [])],
+            "blockers": [str(item) for item in list(task.get("blockers") or [])],
+            "artifacts": [str(item) for item in list(task.get("artifacts") or [])],
+            "status": str(task.get("status") or "active").strip() or "active",
+            "updated_at": str(task.get("updated_at") or "").strip(),
+        }
+
+    @staticmethod
+    def _task_approval_signature(task: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            LocalToolExecutor._task_approval_snapshot(task),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _create_task_update_approval(
+        self,
+        *,
+        current_task: dict[str, Any],
+        proposed_task: dict[str, Any],
+    ) -> str:
+        token = secrets.token_urlsafe(24)
+        approval = {
+            "type": "task_update",
+            "token": token,
+            "task_id": str(current_task.get("task_id") or "").strip(),
+            "current_task_sha256": self._task_approval_signature(current_task),
+            "proposed_task_sha256": self._task_approval_signature(proposed_task),
+            "session_id": self._current_session_id(),
+            "project_id": self._current_project_id(),
+            "run_id": self._current_run_id(),
+            "created_at": self._utc_timestamp(),
+            "used": False,
+        }
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            registry.setdefault("approvals", {})[token] = approval
+            self._save_taint_registry_unlocked(registry)
+        return token
+
+    def _consume_task_update_approval(
+        self,
+        *,
+        token: str,
+        current_task: dict[str, Any],
+        proposed_task: dict[str, Any],
+    ) -> tuple[bool, str]:
+        normalized_token = str(token or "").strip()
+        if not normalized_token:
+            return False, "A Task update approval token is required."
+        task_id = str(current_task.get("task_id") or "").strip()
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            approvals = registry.setdefault("approvals", {})
+            approval = dict(approvals.get(normalized_token) or {})
+            if not approval:
+                return False, "Task update approval token was not found."
+            if bool(approval.get("used")):
+                return False, "Task update approval token was already used."
+            if str(approval.get("type") or "") != "task_update":
+                return False, "Task update approval token type is not supported."
+            if str(approval.get("task_id") or "").strip() != task_id:
+                return False, "Task update approval token does not match this Task."
+            approval_session_id = str(approval.get("session_id") or "").strip()
+            current_session_id = self._current_session_id()
+            if approval_session_id and current_session_id and approval_session_id != current_session_id:
+                return False, "Task update approval token does not match this session."
+            approval_project_id = str(approval.get("project_id") or "").strip()
+            current_project_id = self._current_project_id()
+            if approval_project_id and current_project_id and approval_project_id != current_project_id:
+                return False, "Task update approval token does not match this project."
+            if str(approval.get("current_task_sha256") or "") != self._task_approval_signature(current_task):
+                return False, "The Task changed after the approval preview was created."
+            if str(approval.get("proposed_task_sha256") or "") != self._task_approval_signature(proposed_task):
+                return False, "Task update approval token does not match the reviewed content."
+            approval["used"] = True
+            approval["used_at"] = self._utc_timestamp()
+            approval["used_run_id"] = self._current_run_id()
+            approvals[normalized_token] = approval
+            self._save_taint_registry_unlocked(registry)
+        return True, ""
 
     @staticmethod
     def _sorted_approval_file_signature(files: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -3785,7 +3882,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "save_task",
-                "description": "Create a durable Task snapshot for the current project, or replace the loaded Task snapshot when task_id is provided. Use it when the user asks to summarize/save the current work as a Task, and to checkpoint material progress on a loaded Task.",
+                "description": "Create a durable Task snapshot for the current project, or propose replacing the loaded Task snapshot when task_id is provided. Existing Task updates require the user to review and approve the complete proposal before it is written.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -3841,6 +3938,11 @@ class LocalToolExecutor:
                             "enum": ["active", "blocked", "completed", "archived"],
                             "description": "Current lifecycle status of the Task.",
                             "default": "active",
+                        },
+                        "approval_token": {
+                            "type": "string",
+                            "description": "Runtime-supplied one-time token proving the user approved this exact Task update. Do not invent or request this value.",
+                            "default": "",
                         },
                     },
                     "required": ["title", "goal", "summary"],
@@ -4716,6 +4818,7 @@ class LocalToolExecutor:
         blockers: list[str] | None = None,
         artifacts: list[str] | None = None,
         status: str = "active",
+        approval_token: str = "",
     ) -> dict[str, Any]:
         writer = getattr(self._runtime_ctx, "task_writer", None)
         if not callable(writer):
@@ -4728,18 +4831,106 @@ class LocalToolExecutor:
                 },
                 "summary": "Task writer unavailable",
             }
+        normalized_task_id = str(task_id or "").strip()
+        candidate = {
+            "task_id": normalized_task_id,
+            "title": str(title or "").strip(),
+            "goal": str(goal or "").strip(),
+            "summary": str(summary or "").strip(),
+            "progress": [str(item) for item in list(progress or [])],
+            "next_steps": [str(item) for item in list(next_steps or [])],
+            "decisions": [str(item) for item in list(decisions or [])],
+            "blockers": [str(item) for item in list(blockers or [])],
+            "artifacts": [str(item) for item in list(artifacts or [])],
+            "status": str(status or "active").strip() or "active",
+        }
+        if normalized_task_id:
+            reader = getattr(self._runtime_ctx, "task_reader", None)
+            if not callable(reader):
+                return {
+                    "ok": False,
+                    "error": {
+                        "kind": "task_reader_unavailable",
+                        "tool": "save_task",
+                        "message": "No Task reader is available to prepare an update approval.",
+                    },
+                    "summary": "Task reader unavailable",
+                }
+            current_raw = reader(normalized_task_id)
+            if not isinstance(current_raw, dict):
+                message = f"Task not found: {normalized_task_id}"
+                return {
+                    "ok": False,
+                    "error": {"kind": "task_not_found", "tool": "save_task", "message": message},
+                    "summary": message,
+                }
+            current_task = self._task_approval_snapshot(current_raw)
+            proposed_task = {
+                **candidate,
+                "project_id": str(current_task.get("project_id") or ""),
+                "project_title": str(current_task.get("project_title") or ""),
+                "updated_at": str(current_task.get("updated_at") or ""),
+            }
+            reviewed_fields = (
+                "title",
+                "goal",
+                "summary",
+                "progress",
+                "next_steps",
+                "decisions",
+                "blockers",
+                "artifacts",
+                "status",
+            )
+            changed_fields = [
+                field for field in reviewed_fields if current_task.get(field) != proposed_task.get(field)
+            ]
+            if not str(approval_token or "").strip():
+                token = self._create_task_update_approval(
+                    current_task=current_task,
+                    proposed_task=proposed_task,
+                )
+                message = "Review the complete proposed Task snapshot before approving this update."
+                return {
+                    "ok": False,
+                    "error_kind": "task_update_approval_required",
+                    "error": {
+                        "kind": "task_update_approval_required",
+                        "tool": "save_task",
+                        "message": message,
+                    },
+                    "approval_required": True,
+                    "approval_request": {
+                        "type": "task_update",
+                        "approval_token": token,
+                        "task_id": normalized_task_id,
+                        "current_task": current_task,
+                        "proposed_task": proposed_task,
+                        "changed_fields": changed_fields,
+                        "single_use": True,
+                        "default_action": "cancel",
+                    },
+                    "summary": "Task update requires explicit approval.",
+                }
+            approved, token_error = self._consume_task_update_approval(
+                token=approval_token,
+                current_task=current_task,
+                proposed_task=proposed_task,
+            )
+            if not approved:
+                return {
+                    "ok": False,
+                    "error_kind": "task_update_approval_invalid",
+                    "error": {
+                        "kind": "task_update_approval_invalid",
+                        "tool": "save_task",
+                        "message": token_error,
+                    },
+                    "summary": token_error,
+                }
         try:
             payload = writer(
-                task_id=str(task_id or ""),
-                title=str(title or ""),
-                goal=str(goal or ""),
-                summary=str(summary or ""),
-                progress=[str(item) for item in list(progress or [])],
-                next_steps=[str(item) for item in list(next_steps or [])],
-                decisions=[str(item) for item in list(decisions or [])],
-                blockers=[str(item) for item in list(blockers or [])],
-                artifacts=[str(item) for item in list(artifacts or [])],
-                status=str(status or "active"),
+                **candidate,
             )
         except FileNotFoundError as exc:
             message = safe_error_message(exc)
@@ -4772,7 +4963,10 @@ class LocalToolExecutor:
                 },
                 "summary": "invalid Task payload",
             }
-        return payload if "ok" in payload else {"ok": True, **payload}
+        result = payload if "ok" in payload else {"ok": True, **payload}
+        if normalized_task_id:
+            result = {**result, "task_update_approved": True}
+        return result
 
     def web_search(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
         result = self._web_search_impl(query=query, max_results=max_results, timeout_sec=timeout_sec)

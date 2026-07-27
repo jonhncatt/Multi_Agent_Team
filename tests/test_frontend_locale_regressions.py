@@ -190,6 +190,13 @@ REQUIRED_CORE_KEYS = (
     "runtime_panel.last_run_loading",
     "runtime_panel.no_tool_failures",
     "runtime_panel.no_last_run",
+    "task_approval.title",
+    "task_approval.help",
+    "task_approval.current",
+    "task_approval.proposed",
+    "task_approval.warning",
+    "task_approval.cancel",
+    "task_approval.approve",
     "activity.tool_title.read_file",
     "activity.tool_title.list_dir",
     "activity.tool_title.glob_file_search",
@@ -758,7 +765,7 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
-    assert 'String(candidate.type || "") !== "command_execution"' in script
+    assert "if (!isRuntimeApproval(candidate)) continue;" in script
     assert 'id="commandApprovalModal"' not in script
     assert 'className="panel-card runtime-attention-card"' in script
     assert 'if (runtimeInteractionKey) setDrawerView("run");' in script
@@ -769,7 +776,7 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert 'action: normalizedAction' in script
     assert 'approval_token: approvalToken' in script
     assert 'tool_call_id: toolCallId' in script
-    assert 'const isTurnResume = ["command_execution", "request_user_input"]' in script
+    assert 'const isTurnResume = ["command_execution", "task_update", "request_user_input"]' in script
     assert 'const userMessage = isTurnResume ? null : createMessage("user", messageText);' in script
     assert 'event === "request_user_input"' in script
     assert 'pending_approval: nextApproval' in script
@@ -812,6 +819,32 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert '"role.runtime": "运行时"' in locales
     assert ".role-runtime .message-card" in styles
     assert ".runtime-attention-card" in styles
+
+
+def test_task_update_approval_shows_complete_snapshot_and_resumes_runtime() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function isTaskUpdateApproval(value)" in script
+    assert 'String(value.type || "") === "task_update"' in script
+    assert "const hasTaskUpdateApproval = isTaskUpdateApproval(activePendingApproval);" in script
+    assert "const handleTaskUpdateApproval = async" in script
+    assert 'type: "task_update"' in script
+    assert 'handleTaskUpdateApproval("approve_once")' in script
+    assert 'handleTaskUpdateApproval("cancel")' in script
+    assert "renderTaskApprovalSnapshot" in script
+    assert "taskApprovalCurrent" in script
+    assert "taskApprovalProposed" in script
+    assert "taskApprovalChangedFields" in script
+    assert 't("task_approval.current")' in script
+    assert 't("task_approval.proposed")' in script
+    assert 't("task_approval.warning")' in script
+    assert ".task-approval-snapshots" in styles
+    assert ".task-approval-snapshot" in styles
+    assert '"task_approval.title": "等待确认 Task 更新"' in locales
+    assert '"task_approval.approve": "确认更新"' in locales
+    assert '"task_approval.cancel": "取消更新"' in locales
 
 
 def test_llm_and_tool_failure_traces_remain_nonterminal_until_run_failure() -> None:
@@ -1049,7 +1082,7 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         "function currentChecklistStepLabel(plan, checkpoint = {})",
         "function executionProgressCommandFromSource(source)",
         "function formatRunProgressStatus(locale, status)",
-        "const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasPendingRuntimeInput);",
+        "const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasTaskUpdateApproval) + Number(hasPendingRuntimeInput);",
         'className="workbench-scroll runtime-control-center"',
         "runtime-overview-card",
         'className="panel-card runtime-attention-card"',
@@ -1827,15 +1860,17 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
-def test_tasks_entry_loads_snapshot_into_current_thread_send_path() -> None:
+def test_tasks_entry_loads_snapshot_into_new_thread_in_current_project() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert 'drawerView === "tasks"' in script
     assert 'const data = await fetchJson("/api/tasks")' in script
-    assert 'await selectProject(taskProjectId, { silentNotFound: true })' in script
-    assert "projectIdOverride: taskProjectId || projectId" in script
+    assert 'const activeProjectId = String(projectId || "").trim();' in script
+    assert 'const targetSessionId = await createSession(activeProjectId, { restoreOnFailure: false });' in script
+    assert "projectIdOverride: activeProjectId" in script
     assert "sessionIdOverride: targetSessionId" in script
+    assert 'selectProject(taskProjectId' not in script
     assert "const targetProjectId = String(options.projectIdOverride || projectId || \"\").trim();" in script
     assert "const targetSessionId = String(options.sessionIdOverride || sessionId || \"\").trim();" in script
     assert 'task_id: String(options.taskId || "").trim() || null' in script

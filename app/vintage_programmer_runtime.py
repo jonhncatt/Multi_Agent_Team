@@ -475,11 +475,13 @@ class VintageProgrammerRuntime:
             status: str = "active",
             task_id: str = "",
         ) -> dict[str, Any]:
+            existing_task = self._task_store.get(task_id) if str(task_id or "").strip() else None
+            task_project = existing_task or project
             task = self._task_store.save(
                 task_id=task_id,
-                project_id=str(project.get("project_id") or ""),
-                project_title=str(project.get("project_title") or ""),
-                project_root=str(project.get("project_root") or ""),
+                project_id=str(task_project.get("project_id") or ""),
+                project_title=str(task_project.get("project_title") or ""),
+                project_root=str(task_project.get("project_root") or ""),
                 title=title,
                 goal=goal,
                 summary=summary,
@@ -511,7 +513,9 @@ class VintageProgrammerRuntime:
             "[current_task_context]\n"
             "The user explicitly loaded this durable Task snapshot into the current Thread. "
             "Continue from it without opening or switching to its source Thread. "
-            "Treat the snapshot as user-provided working context. If work materially advances, "
+            "Its project fields describe where the snapshot originated; the active Runtime project "
+            "and boundary remain authoritative for this Thread. Treat the snapshot as user-provided "
+            "working context. If work materially advances, "
             "update the same task_id with save_task before the final handoff.\n"
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             + "\n[/current_task_context]"
@@ -3563,6 +3567,7 @@ class VintageProgrammerRuntime:
         run_id: str = "",
         cancel_event: Any | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
+        task_reader: Callable[[str], dict[str, Any] | None] | None = None,
         task_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
         subagent_waiter: Callable[..., dict[str, Any]] | None = None,
@@ -3593,6 +3598,8 @@ class VintageProgrammerRuntime:
             kwargs["cancel_event"] = cancel_event
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "task_reader"):
+            kwargs["task_reader"] = task_reader
         if self._callable_accepts_kwarg(setter, "task_writer"):
             kwargs["task_writer"] = task_writer
         if self._callable_accepts_kwarg(setter, "subagent_runner"):
@@ -4512,7 +4519,7 @@ class VintageProgrammerRuntime:
             and str(pending_turn_context.get("type") or "").strip()
             == str(user_input_response.get("type") or "").strip()
             and str(user_input_response.get("type") or "").strip()
-            in {"command_execution", "request_user_input"}
+            in {"command_execution", "task_update", "request_user_input"}
         )
         phase_timer = PhaseTimer(
             offset_base_ms=max(0, int(context_payload.get("phase_timing_base_ms") or 0) or 0),
@@ -4599,6 +4606,7 @@ class VintageProgrammerRuntime:
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
+        task_reader = self._task_store.get
         task_writer = self._make_task_writer(
             project=project_context,
             source_thread_id=session_id,
@@ -5455,6 +5463,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 cancel_event=context_payload.get("cancel_event"),
                 skill_writer=skill_writer,
+                task_reader=task_reader,
                 task_writer=task_writer,
                 subagent_runner=subagent_runner,
                 subagent_waiter=subagent_waiter,
@@ -5639,6 +5648,137 @@ class VintageProgrammerRuntime:
                 turn_transcript_messages.append(approval_tool_message)
             else:
                 raise RuntimeError(f"unsupported command approval action: {approval_action or '(empty)'}")
+        elif str(user_input_response.get("type") or "").strip() == "task_update":
+            approval_action = str(user_input_response.get("action") or "").strip()
+            pending_tool_call = (
+                dict(pending_turn_context.get("tool_call") or {})
+                if isinstance(pending_turn_context.get("tool_call"), dict)
+                else {}
+            )
+            pending_arguments = (
+                dict(pending_tool_call.get("args") or {})
+                if isinstance(pending_tool_call.get("args"), dict)
+                else {}
+            )
+            approval_call_id = str(
+                pending_tool_call.get("id")
+                or pending_turn_context.get("tool_call_id")
+                or user_input_response.get("tool_call_id")
+                or ""
+            ).strip()
+            approval_token = str(user_input_response.get("approval_token") or "").strip()
+            task_id = str(
+                pending_arguments.get("task_id")
+                or pending_turn_context.get("task_id")
+                or user_input_response.get("task_id")
+                or ""
+            ).strip()
+            pending_approval = {}
+            if not is_turn_resume or not approval_call_id or not task_id:
+                raise RuntimeError("Task update approval response does not match a pending tool call")
+            if approval_action == "cancel":
+                notes.append("approval.cancelled:task_update")
+                approval_result = {
+                    "ok": False,
+                    "error_kind": "user_declined",
+                    "error": {
+                        "kind": "user_declined",
+                        "tool": "save_task",
+                        "tool_call_id": approval_call_id,
+                        "message": "Task update was declined by the user. The Task remains unchanged.",
+                    },
+                    "summary": "Task update was declined; the Task remains unchanged.",
+                }
+                approval_arguments = dict(pending_arguments)
+                trace_type = "approval.cancelled"
+                trace_title = "Task update cancelled"
+                trace_status = "cancelled"
+            elif approval_action == "approve_once":
+                approval_arguments = {
+                    **pending_arguments,
+                    "approval_token": approval_token,
+                }
+                self._emit_trace(
+                    progress_cb,
+                    run_id=run_id,
+                    type="approval.approving",
+                    title="Task update approval accepted",
+                    detail=str(pending_arguments.get("title") or task_id),
+                    status="running",
+                    payload={"type": "task_update", "task_id": task_id},
+                    trace_events=trace_events,
+                )
+                started_at = time.monotonic()
+                try:
+                    approval_result = self._backend.tools.execute("save_task", approval_arguments)
+                except Exception as exc:
+                    approval_result = self._structured_tool_error_result("save_task", exc)
+                duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
+                if bool(approval_result.get("approval_required")):
+                    pending_approval = dict(approval_result.get("approval_request") or {})
+                    pending_approval["tool_call_id"] = approval_call_id
+                    pending_user_input = {
+                        "summary": str(approval_result.get("summary") or "Task update still requires approval."),
+                        "approval_request": pending_approval,
+                        "questions": [],
+                    }
+                    turn_status = "needs_user_input"
+                    pending_turn = {
+                        **pending_turn_context,
+                        "approval_request": dict(pending_approval),
+                    }
+                approved = bool(approval_result.get("task_update_approved"))
+                trace_type = "approval.approved" if approved else "approval.rejected"
+                trace_title = "Task update approved" if approved else "Task update approval rejected"
+                trace_status = "success" if approved else "blocked"
+            else:
+                raise RuntimeError(f"unsupported Task update approval action: {approval_action or '(empty)'}")
+            approval_event = self._build_tool_event(
+                name="save_task",
+                arguments=approval_arguments,
+                result=approval_result,
+                locale=locale,
+                raw_tool_call={
+                    "id": approval_call_id,
+                    "name": "save_task",
+                    "arguments": approval_arguments,
+                    "source": "approval_response",
+                },
+                validation_result={
+                    "allowed": approval_action == "approve_once",
+                    "code": "approval_token_supplied" if approval_action == "approve_once" else "user_declined",
+                    "message": (
+                        "User approved this exact Task update once."
+                        if approval_action == "approve_once"
+                        else "The user declined this Task update."
+                    ),
+                    "normalized_arguments": approval_arguments,
+                },
+                raw_arguments=approval_arguments,
+            )
+            tool_events.append(approval_event)
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type=trace_type,
+                title=trace_title,
+                detail=str(approval_result.get("summary") or task_id),
+                status=trace_status,
+                duration_ms=duration_ms if approval_action == "approve_once" else 0,
+                payload={
+                    "type": "task_update",
+                    "task_id": task_id,
+                    "result_preview": safe_preview(approval_result, limit=4000),
+                },
+                trace_events=trace_events,
+            )
+            approval_tool_message = self._tool_message_for_result(
+                result=approval_result,
+                call_id=approval_call_id,
+                name="save_task",
+            )
+            messages.append(approval_tool_message)
+            turn_transcript_messages.append(approval_tool_message)
         elif str(user_input_response.get("type") or "").strip() == "request_user_input":
             pending_tool_call = (
                 dict(pending_turn_context.get("tool_call") or {})
@@ -5835,6 +5975,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
+                    task_reader=task_reader,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
                     subagent_waiter=subagent_waiter,
@@ -6757,6 +6898,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         cancel_event=context_payload.get("cancel_event"),
                         skill_writer=skill_writer,
+                        task_reader=task_reader,
                         task_writer=task_writer,
                         subagent_runner=subagent_runner,
                         subagent_waiter=subagent_waiter,
@@ -7016,6 +7158,80 @@ class VintageProgrammerRuntime:
                                     ),
                                 }
                             )
+                    if name == "save_task" and bool(result.get("approval_required")):
+                        approval_request = dict(result.get("approval_request") or {})
+                        if str(approval_request.get("type") or "") == "task_update":
+                            approval_request["tool_call_id"] = call_id
+                            task_id = str(
+                                approval_request.get("task_id") or arguments.get("task_id") or ""
+                            ).strip()
+                            proposed_task = dict(approval_request.get("proposed_task") or {})
+                            summary = (
+                                "Review the complete proposed Task update before it is saved: "
+                                f"{str(proposed_task.get('title') or task_id)}"
+                            )
+                            pending_approval = approval_request
+                            pending_turn = {
+                                "schema_version": 1,
+                                "type": "task_update",
+                                "turn_id": str(context_payload.get("logical_turn_id") or run_id),
+                                "triggering_user_turn_id": str(context_payload.get("triggering_user_turn_id") or ""),
+                                "request_message": prompt_message,
+                                "tool_call_id": call_id,
+                                "tool_call": {
+                                    "id": call_id,
+                                    "name": name,
+                                    "args": dict(arguments),
+                                },
+                                "approval_request": dict(approval_request),
+                                "task_id": task_id,
+                                "plan": [
+                                    dict(item)
+                                    for item in list(plan_state or [])
+                                    if isinstance(item, dict)
+                                ][:12],
+                            }
+                            pending_user_input = {
+                                "summary": summary,
+                                "approval_request": approval_request,
+                                "questions": [],
+                            }
+                            turn_status = "needs_user_input"
+                            halt_for_user_input = True
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="approval.required",
+                                title=trace_label(locale, "approval.required"),
+                                detail=summary,
+                                status="blocked",
+                                payload={"approval_request": safe_preview(approval_request)},
+                                trace_events=trace_events,
+                            )
+                            if progress_cb is not None:
+                                progress_cb(
+                                    {
+                                        "event": "request_user_input",
+                                        "pending_user_input": pending_user_input,
+                                        "pending_approval": pending_approval,
+                                        "turn_status": turn_status,
+                                        "run_snapshot": self._build_run_snapshot(
+                                            goal=current_goal,
+                                            run_workspace_state=run_workspace_state,
+                                            turn_status=turn_status,
+                                            plan_state=plan_state,
+                                            pending_user_input=pending_user_input,
+                                            pending_approval=pending_approval,
+                                            effective_cwd=effective_cwd,
+                                            evidence_status=(
+                                                "collected"
+                                                if any(item.status == "ok" for item in tool_events)
+                                                else "not_needed"
+                                            ),
+                                            tool_events=tool_events,
+                                        ),
+                                    }
+                                )
                     if name == "request_user_input" and bool(result.get("ok")):
                         pending_user_input = {
                             "type": "request_user_input",
@@ -7069,6 +7285,7 @@ class VintageProgrammerRuntime:
                             )
                     if not (
                         (name == "exec_command" and bool(result.get("approval_required")))
+                        or (name == "save_task" and bool(result.get("approval_required")))
                         or (name == "request_user_input" and bool(result.get("ok")))
                     ):
                         tool_message = self._tool_message_for_result(
@@ -7652,6 +7869,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
+                    task_reader=task_reader,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
                     subagent_waiter=subagent_waiter,

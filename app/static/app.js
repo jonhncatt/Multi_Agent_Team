@@ -2982,16 +2982,31 @@ function isCommandExecutionApproval(value) {
   );
 }
 
+function isTaskUpdateApproval(value) {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && String(value.type || "") === "task_update"
+    && String(value.task_id || "").trim()
+    && value.proposed_task
+    && typeof value.proposed_task === "object",
+  );
+}
+
+function isRuntimeApproval(value) {
+  return isCommandExecutionApproval(value) || isTaskUpdateApproval(value);
+}
+
 function clearCommandExecutionApprovalState(value) {
   const state = value && typeof value === "object" ? value : {};
   const next = { ...state };
-  if (isCommandExecutionApproval(next.pending_approval)) {
+  if (isRuntimeApproval(next.pending_approval)) {
     next.pending_approval = {};
   }
   const pendingInput = next.pending_user_input && typeof next.pending_user_input === "object"
     ? next.pending_user_input
     : {};
-  if (isCommandExecutionApproval(pendingInput.approval_request)) {
+  if (isRuntimeApproval(pendingInput.approval_request)) {
     next.pending_user_input = {};
   }
   return next;
@@ -6617,18 +6632,11 @@ function App() {
     setLoadingTaskId(normalized.task_id);
     setDrawerView("");
     try {
-      const taskProjectId = String(normalized.project_id || "").trim();
-      let targetSessionId = String(sessionId || "").trim();
-      if (taskProjectId && taskProjectId !== String(projectId || "").trim()) {
-        await selectProject(taskProjectId, { silentNotFound: true });
-        targetSessionId = String(activeSessionIdRef.current || "").trim();
-        if (!targetSessionId) {
-          targetSessionId = await createSession(taskProjectId, { restoreOnFailure: false });
-        }
-      }
+      const activeProjectId = String(projectId || "").trim();
+      const targetSessionId = await createSession(activeProjectId, { restoreOnFailure: false });
       await handleSend(t("tasks.load_prompt"), undefined, {
         taskId: normalized.task_id,
-        projectIdOverride: taskProjectId || projectId,
+        projectIdOverride: activeProjectId,
         sessionIdOverride: targetSessionId,
       });
     } catch (err) {
@@ -6764,7 +6772,7 @@ function App() {
             response: messageText,
           }
         : {});
-    const isTurnResume = ["command_execution", "request_user_input"]
+    const isTurnResume = ["command_execution", "task_update", "request_user_input"]
       .includes(String(structuredUserInputResponse.type || ""));
     const pendingResumeStateOption = options.pendingResumeState && typeof options.pendingResumeState === "object"
       ? options.pendingResumeState
@@ -8094,7 +8102,7 @@ function App() {
                   pending_user_input: nextPending,
                   pending_approval: nextApproval,
                 }));
-                if (isCommandExecutionApproval(nextApproval)) {
+                if (isRuntimeApproval(nextApproval)) {
                   markPendingAsRuntimeNotice(String(nextPending.summary || t("labels.pending_input")));
                 } else {
                   replacePendingText(String(nextPending.summary || t("labels.pending_input")));
@@ -8130,7 +8138,7 @@ function App() {
                 pending_user_input: nextPending,
                 pending_approval: nextApproval,
               }));
-              if (isCommandExecutionApproval(nextApproval)) {
+              if (isRuntimeApproval(nextApproval)) {
                 markPendingAsRuntimeNotice(String(nextPending.summary || t("labels.pending_input")));
               } else {
                 replacePendingText(String(nextPending.summary || t("labels.pending_input")));
@@ -8227,7 +8235,7 @@ function App() {
       const finalPendingApproval = finalPayload.pending_approval
         || (((finalPayload.inspector || {}).run_state || {}).pending_approval)
         || {};
-      const finalMessageRole = isCommandExecutionApproval(finalPendingApproval) || pendingMessage.role === "runtime"
+      const finalMessageRole = isRuntimeApproval(finalPendingApproval) || pendingMessage.role === "runtime"
         ? "runtime"
         : "assistant";
       updateOwnerMessages((prev) =>
@@ -8657,8 +8665,7 @@ function App() {
     ];
     for (const candidate of candidates) {
       if (!candidate || typeof candidate !== "object") continue;
-      if (String(candidate.type || "") !== "command_execution") continue;
-      if (!String(candidate.command || "").trim()) continue;
+      if (!isRuntimeApproval(candidate)) continue;
       return candidate;
     }
     return {};
@@ -8669,21 +8676,25 @@ function App() {
     && String(activePendingApproval.type || "") === "command_execution"
     && String(activePendingApproval.command || "").trim(),
   );
+  const hasTaskUpdateApproval = isTaskUpdateApproval(activePendingApproval);
   const pendingRuntimeQuestions = Array.isArray(activePendingInput.questions)
     ? activePendingInput.questions.filter((item) => item && typeof item === "object")
     : [];
   const hasPendingRuntimeInput = Boolean(
     !approvalSubmitting
     && !hasCommandApproval
+    && !hasTaskUpdateApproval
     && String(activePendingInput.type || "") === "request_user_input"
     && pendingRuntimeQuestions.length
   );
-  const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasPendingRuntimeInput);
+  const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasTaskUpdateApproval) + Number(hasPendingRuntimeInput);
   const runtimeInteractionKey = hasCommandApproval
     ? `approval:${String(activePendingApproval.tool_call_id || activePendingApproval.command || "")}`
-    : (hasPendingRuntimeInput
-      ? `input:${String(activePendingInput.tool_call_id || pendingRuntimeQuestions[0].id || "")}`
-      : "");
+    : (hasTaskUpdateApproval
+      ? `task-update:${String(activePendingApproval.tool_call_id || activePendingApproval.task_id || "")}`
+      : (hasPendingRuntimeInput
+        ? `input:${String(activePendingInput.tool_call_id || pendingRuntimeQuestions[0].id || "")}`
+        : ""));
   useEffect(() => {
     if (runtimeInteractionKey) setDrawerView("run");
   }, [runtimeInteractionKey]);
@@ -8692,6 +8703,17 @@ function App() {
     : [];
   const commandApprovalFiles = hasCommandApproval && Array.isArray(activePendingApproval.files)
     ? activePendingApproval.files
+    : [];
+  const taskApprovalCurrent = hasTaskUpdateApproval && activePendingApproval.current_task
+    && typeof activePendingApproval.current_task === "object"
+    ? activePendingApproval.current_task
+    : {};
+  const taskApprovalProposed = hasTaskUpdateApproval && activePendingApproval.proposed_task
+    && typeof activePendingApproval.proposed_task === "object"
+    ? activePendingApproval.proposed_task
+    : {};
+  const taskApprovalChangedFields = hasTaskUpdateApproval && Array.isArray(activePendingApproval.changed_fields)
+    ? activePendingApproval.changed_fields.map((item) => String(item || "")).filter(Boolean)
     : [];
   const handleCommandApproval = async (action) => {
     if (!hasCommandApproval || approvalSubmitting) return;
@@ -8724,6 +8746,85 @@ function App() {
     } finally {
       setApprovalSubmitting(false);
     }
+  };
+  const handleTaskUpdateApproval = async (action) => {
+    if (!hasTaskUpdateApproval || approvalSubmitting) return;
+    const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
+    const taskId = String(activePendingApproval.task_id || "").trim();
+    const approvalToken = String(activePendingApproval.approval_token || "").trim();
+    const toolCallId = String(activePendingApproval.tool_call_id || "").trim();
+    if (!taskId) return;
+    if (normalizedAction === "approve_once" && !approvalToken) return;
+    const title = String(taskApprovalProposed.title || taskId).trim();
+    const message = normalizedAction === "approve_once"
+      ? t("task_approval.approve_message", { title })
+      : t("task_approval.cancel_message", { title });
+    setApprovalSubmitting(true);
+    try {
+      await handleSend(message, {
+        type: "task_update",
+        action: normalizedAction,
+        approval_token: approvalToken,
+        tool_call_id: toolCallId,
+        task_id: taskId,
+      }, {
+        pendingResumeState: {
+          turn_status: "needs_user_input",
+          pending_user_input: activePendingInput,
+          pending_approval: activePendingApproval,
+        },
+      });
+    } finally {
+      setApprovalSubmitting(false);
+    }
+  };
+  const renderTaskApprovalSnapshot = (label, task) => {
+    const snapshot = task && typeof task === "object" ? task : {};
+    const listFields = [
+      ["progress", t("tasks.field.progress")],
+      ["next_steps", t("tasks.next_steps")],
+      ["decisions", t("tasks.field.decisions")],
+      ["blockers", t("tasks.blockers")],
+      ["artifacts", t("tasks.field.artifacts")],
+    ];
+    return html`
+      <section className="task-approval-snapshot">
+        <div className="task-approval-snapshot-title">${label}</div>
+        <dl className="task-approval-fields">
+          <div>
+            <dt>${t("tasks.field.title")}</dt>
+            <dd>${String(snapshot.title || "-")}</dd>
+          </div>
+          <div>
+            <dt>${t("tasks.field.status")}</dt>
+            <dd>${t(`tasks.status.${String(snapshot.status || "active")}`)}</dd>
+          </div>
+          <div>
+            <dt>${t("tasks.field.goal")}</dt>
+            <dd>${String(snapshot.goal || "-")}</dd>
+          </div>
+          <div>
+            <dt>${t("tasks.field.summary")}</dt>
+            <dd>${String(snapshot.summary || "-")}</dd>
+          </div>
+          ${listFields.map(([field, fieldLabel]) => {
+            const values = Array.isArray(snapshot[field])
+              ? snapshot[field].map((item) => String(item || "")).filter(Boolean)
+              : [];
+            return html`
+              <div key=${field}>
+                <dt>${fieldLabel}</dt>
+                <dd>
+                  ${values.length
+                    ? html`<ul>${values.map((item, index) => html`<li key=${`${field}-${index}`}>${item}</li>`)}</ul>`
+                    : "-"}
+                </dd>
+              </div>
+            `;
+          })}
+        </dl>
+      </section>
+    `;
   };
   const activeToolTimeline = hasLiveRuntimeState
     ? liveToolTimeline
@@ -8811,13 +8912,19 @@ function App() {
         statusLabel: t("runtime_panel.approval_submitting"),
         currentAction: t("runtime_panel.approval_submitting"),
       }
-    : (hasCommandApproval
+    : (hasCommandApproval || hasTaskUpdateApproval
       ? {
           ...baseRunExecutionProgress,
           status: "waiting_approval",
           statusLabel: t("runtime_panel.approval_required"),
-          currentAction: String(activePendingApproval.purpose || t("runtime_panel.approval_required")),
-          command: String(activePendingApproval.command || baseRunExecutionProgress.command || ""),
+          currentAction: String(
+            activePendingApproval.purpose
+            || (hasTaskUpdateApproval ? t("task_approval.title") : "")
+            || t("runtime_panel.approval_required"),
+          ),
+          command: hasCommandApproval
+            ? String(activePendingApproval.command || baseRunExecutionProgress.command || "")
+            : "",
         }
       : baseRunExecutionProgress);
   const activeProviderAuthValue =
@@ -11051,6 +11158,49 @@ function App() {
                                   </button>
                                   <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("approval_modal.approve_once")}
+                                  </button>
+                                </div>
+                              </div>
+                            `
+                          : null}
+                        ${hasTaskUpdateApproval
+                          ? html`
+                              <div className="runtime-interaction-block task-update-approval">
+                                <div className="runtime-interaction-title">${t("task_approval.title")}</div>
+                                <div className="timeline-detail">${t("task_approval.help")}</div>
+                                ${taskApprovalChangedFields.length
+                                  ? html`
+                                      <div className="task-approval-changed">
+                                        ${t("task_approval.changed_fields")}: ${taskApprovalChangedFields
+                                          .map((field) => {
+                                            const fieldKeys = {
+                                              title: "tasks.field.title",
+                                              goal: "tasks.field.goal",
+                                              summary: "tasks.field.summary",
+                                              progress: "tasks.field.progress",
+                                              next_steps: "tasks.next_steps",
+                                              decisions: "tasks.field.decisions",
+                                              blockers: "tasks.blockers",
+                                              artifacts: "tasks.field.artifacts",
+                                              status: "tasks.field.status",
+                                            };
+                                            return fieldKeys[field] ? t(fieldKeys[field]) : field;
+                                          })
+                                          .join("、")}
+                                      </div>
+                                    `
+                                  : html`<div className="task-approval-changed">${t("task_approval.no_changes")}</div>`}
+                                <div className="task-approval-snapshots">
+                                  ${renderTaskApprovalSnapshot(t("task_approval.current"), taskApprovalCurrent)}
+                                  ${renderTaskApprovalSnapshot(t("task_approval.proposed"), taskApprovalProposed)}
+                                </div>
+                                <div className="task-approval-warning">${t("task_approval.warning")}</div>
+                                <div className="runtime-control-actions">
+                                  <button className="ghost-btn" type="button" onClick=${() => handleTaskUpdateApproval("cancel")} disabled=${approvalSubmitting}>
+                                    ${t("task_approval.cancel")}
+                                  </button>
+                                  <button className="solid-btn" type="button" onClick=${() => handleTaskUpdateApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                    ${t("task_approval.approve")}
                                   </button>
                                 </div>
                               </div>

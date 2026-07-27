@@ -1404,6 +1404,72 @@ def test_tasks_api_updates_and_deletes_snapshot(monkeypatch, tmp_path: Path) -> 
     assert client.get(f"/api/tasks/{task_id}").status_code == 404
 
 
+def test_task_from_another_project_loads_into_selected_project_thread(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+
+    class CapturingRuntime(_FakeVintageRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_context: dict[str, object] = {}
+
+        def run(self, *, message, settings, context, progress_cb=None):
+            self.last_context = dict(context)
+            return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
+
+    runtime = CapturingRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    source_project = main_app.project_store.ensure_default_project()
+    source_project_id = str(source_project["project_id"])
+    task_response = client.post(
+        "/api/tasks",
+        json={
+            "project_id": source_project_id,
+            "title": "Portable task",
+            "goal": "Continue in the selected project",
+            "summary": "The Task originated in another project.",
+            "status": "active",
+        },
+    )
+    assert task_response.status_code == 200
+    task = task_response.json()
+
+    selected_root = tmp_path / "selected-project"
+    selected_root.mkdir()
+    selected_project = main_app.project_store.create(root_path=str(selected_root), title="Selected project")
+    selected_project_id = str(selected_project["project_id"])
+    thread_response = client.post("/api/thread/new", json={"project_id": selected_project_id})
+    assert thread_response.status_code == 200
+    thread_id = thread_response.json()["thread_id"]
+
+    chat_response = client.post(
+        "/api/chat",
+        json={
+            "session_id": thread_id,
+            "project_id": selected_project_id,
+            "task_id": task["task_id"],
+            "message": "加载当前任务",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert chat_response.status_code == 200
+    assert chat_response.json()["session_id"] == thread_id
+    loaded_session = main_app.session_store.load(thread_id)
+    assert loaded_session is not None
+    assert loaded_session["project_id"] == selected_project_id
+    assert runtime.last_context["project"]["project_id"] == selected_project_id
+    assert runtime.last_context["task_context"]["project_id"] == source_project_id
+    loaded_task = main_app.task_store.get(task["task_id"])
+    assert loaded_task and loaded_task["last_loaded_thread_id"] == thread_id
+
+
 def test_runtime_status_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)

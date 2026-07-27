@@ -55,6 +55,7 @@ _ENVIRONMENT_KINDS = {
     "network_not_allowed",
     "provider_unavailable",
     "shell_not_allowed",
+    "task_update_approval_required",
     "tool_unavailable",
     "workspace_read_not_allowed",
     "workspace_write_not_allowed",

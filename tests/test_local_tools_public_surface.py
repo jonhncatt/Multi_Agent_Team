@@ -77,6 +77,9 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "search_file",
         "search_file_multi",
     }.isdisjoint(tool_names)
+    save_task = next(item for item in executor.tool_specs if item.get("name") == "save_task")
+    assert "approval_token" in save_task["parameters"]["properties"]
+    assert "review and approve" in str(save_task.get("description") or "")
 
 
 def test_spawn_subagent_delegates_to_runtime_injected_runner(tmp_path: Path) -> None:
@@ -125,6 +128,130 @@ def test_wait_subagents_delegates_to_runtime_injected_waiter(tmp_path: Path) -> 
     assert result["ok"] is True
     assert result["completed"] is True
     assert calls == [{"subagent_ids": ["child-1"], "timeout_seconds": 12.0}]
+
+
+def test_save_task_update_requires_exact_single_use_human_approval(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    current_task = {
+        "task_id": "task-1",
+        "project_id": "source-project",
+        "project_title": "Source Project",
+        "title": "Investigate firmware",
+        "goal": "Identify the failing layer",
+        "summary": "Initial investigation.",
+        "progress": ["Collected logs"],
+        "next_steps": ["Inspect driver"],
+        "decisions": [],
+        "blockers": [],
+        "artifacts": ["failure.log"],
+        "status": "active",
+        "updated_at": "2026-07-27T01:00:00Z",
+    }
+    writes: list[dict[str, object]] = []
+
+    def reader(task_id: str):
+        return dict(current_task) if task_id == "task-1" else None
+
+    def writer(**kwargs):
+        writes.append(dict(kwargs))
+        return {"ok": True, "task_id": kwargs["task_id"], "summary": "saved"}
+
+    executor.set_runtime_context(
+        session_id="thread-1",
+        project_id="selected-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        task_reader=reader,
+        task_writer=writer,
+    )
+    proposed = {
+        "task_id": "task-1",
+        "title": "Investigate firmware",
+        "goal": "Identify the failing layer",
+        "summary": "Driver behavior is verified; firmware review remains.",
+        "progress": ["Collected logs", "Verified driver behavior"],
+        "next_steps": ["Compare the product specification"],
+        "decisions": ["Keep the original source project metadata"],
+        "blockers": [],
+        "artifacts": ["failure.log", "driver-review.md"],
+        "status": "active",
+    }
+
+    preview = executor.execute("save_task", proposed)
+
+    assert preview["ok"] is False
+    assert preview["error_kind"] == "task_update_approval_required"
+    assert preview["approval_required"] is True
+    assert writes == []
+    request = preview["approval_request"]
+    assert request["type"] == "task_update"
+    assert request["current_task"]["summary"] == "Initial investigation."
+    assert request["proposed_task"]["summary"] == proposed["summary"]
+    assert request["proposed_task"]["next_steps"] == proposed["next_steps"]
+    assert "summary" in request["changed_fields"]
+    assert request["default_action"] == "cancel"
+
+    approved = executor.execute(
+        "save_task",
+        {**proposed, "approval_token": request["approval_token"]},
+    )
+
+    assert approved["ok"] is True
+    assert approved["task_update_approved"] is True
+    assert writes == [proposed]
+
+    reused = executor.execute(
+        "save_task",
+        {**proposed, "approval_token": request["approval_token"]},
+    )
+    assert reused["ok"] is False
+    assert reused["error_kind"] == "task_update_approval_invalid"
+    assert "already used" in reused["summary"]
+    assert writes == [proposed]
+
+
+def test_save_task_approval_cannot_authorize_changed_content(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    current_task = {
+        "task_id": "task-2",
+        "project_id": "project-2",
+        "project_title": "Project 2",
+        "title": "Original",
+        "goal": "Original goal",
+        "summary": "Original summary",
+        "status": "active",
+        "updated_at": "2026-07-27T01:00:00Z",
+    }
+    writes: list[dict[str, object]] = []
+    executor.set_runtime_context(
+        session_id="thread-2",
+        project_id="project-2",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        task_reader=lambda task_id: dict(current_task) if task_id == "task-2" else None,
+        task_writer=lambda **kwargs: writes.append(dict(kwargs)) or {"ok": True},
+    )
+    proposal = {
+        "task_id": "task-2",
+        "title": "Reviewed title",
+        "goal": "Original goal",
+        "summary": "Reviewed summary",
+    }
+    preview = executor.execute("save_task", proposal)
+
+    tampered = executor.execute(
+        "save_task",
+        {
+            **proposal,
+            "title": "Unreviewed title",
+            "approval_token": preview["approval_request"]["approval_token"],
+        },
+    )
+
+    assert tampered["ok"] is False
+    assert tampered["error_kind"] == "task_update_approval_invalid"
+    assert "reviewed content" in tampered["summary"]
+    assert writes == []
 
 
 def test_exec_command_runs_enabled_skill_python_directly_from_business_project(tmp_path: Path) -> None:
