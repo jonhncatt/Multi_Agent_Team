@@ -3184,6 +3184,28 @@ class LocalToolExecutor:
 
         threading.Thread(target=reader, daemon=True).start()
 
+    def _reusable_approved_command_session_id(self, *, command: str, cwd: Path) -> int | None:
+        requested_command = str(command or "").strip()
+        owner_session_id = self._current_session_id()
+        owner_project_id = self._current_project_id()
+        resolved_cwd = str(cwd.resolve())
+        with self._command_sessions_lock:
+            for command_session_id, session in reversed(list(self._command_sessions.items())):
+                if not bool(session.get("repeat_poll_allowed")):
+                    continue
+                if not isinstance(session.get("command_execution_approved"), dict):
+                    continue
+                if str(session.get("owner_session_id") or "") != owner_session_id:
+                    continue
+                if str(session.get("owner_project_id") or "") != owner_project_id:
+                    continue
+                if str(session.get("requested_command") or "").strip() != requested_command:
+                    continue
+                if str(session.get("cwd") or "") != resolved_cwd:
+                    continue
+                return int(command_session_id)
+        return None
+
     def _command_session_snapshot(self, session_id: int, *, max_output_chars: int) -> dict[str, Any]:
         with self._command_sessions_lock:
             session = self._command_sessions.get(session_id)
@@ -3205,6 +3227,11 @@ class LocalToolExecutor:
             command_execution_approved = dict(session.get("command_execution_approved") or {})
             tainted_execution_approved = dict(session.get("tainted_execution_approved") or {})
         returncode = proc.poll() if isinstance(proc, subprocess.Popen) else 0
+        if returncode is not None:
+            with self._command_sessions_lock:
+                current_session = self._command_sessions.get(session_id)
+                if current_session is session:
+                    current_session["repeat_poll_allowed"] = False
         status = "running" if returncode is None else "completed"
         payload: dict[str, Any] = {
             "ok": True,
@@ -3332,7 +3359,12 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "exec_command",
-                "description": "Run a workspace command and keep a resumable command session for follow-up polling or stdin.",
+                "description": (
+                    "Run a workspace command and keep a resumable command session for follow-up polling or stdin. "
+                    "When a result has running=true, continue with write_stdin and its session_id instead of starting "
+                    "the command again. Repeating an identical approved command while its result is pending reuses "
+                    "the existing command session."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4260,6 +4292,33 @@ class LocalToolExecutor:
                     ),
                 },
             )
+        reusable_session_id = self._reusable_approved_command_session_id(
+            command=str(cmd or "").strip(),
+            cwd=real_cwd,
+        )
+        if reusable_session_id is not None:
+            time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+            payload = self._command_session_snapshot(
+                reusable_session_id,
+                max_output_chars=max_output_chars,
+            )
+            payload["reused_approved_command_session"] = {
+                "session_id": reusable_session_id,
+                "reason": "identical_approved_command_result_pending",
+            }
+            if bool(payload.get("running")):
+                payload["summary"] = (
+                    "Identical approved command is already running; polled the existing command session."
+                )
+                payload["next_action"] = (
+                    f"Continue with write_stdin session_id={reusable_session_id}; do not start this command again."
+                )
+            else:
+                payload["summary"] = (
+                    f"Identical approved command completed with return code {payload.get('returncode')} "
+                    "in the existing command session."
+                )
+            return payload
         compound_shell = self._is_compound_shell_command(cmd)
         compound_validation: dict[str, Any] = {}
         tainted_matches: list[dict[str, Any]] = []
@@ -4462,9 +4521,13 @@ class LocalToolExecutor:
                 "cursor": 0,
                 "cwd": str(real_cwd),
                 "command": str(cmd or "").strip() if compound_shell else " ".join(shlex.quote(token) for token in argv),
+                "requested_command": str(cmd or "").strip(),
+                "owner_session_id": self._current_session_id(),
+                "owner_project_id": self._current_project_id(),
                 "run_id": self._current_run_id(),
                 "execution_mode": execution_mode,
                 "tty": bool(tty),
+                "repeat_poll_allowed": bool(command_execution_approval_payload),
             }
             if command_execution_approval_payload:
                 self._command_sessions[session_id]["command_execution_approved"] = dict(command_execution_approval_payload)

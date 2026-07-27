@@ -611,6 +611,129 @@ def test_full_access_supply_chain_approval_runs_once_and_blocks_reuse(
     assert "already used" in reused["error"]
 
 
+def test_repeated_approved_command_polls_running_session_without_new_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        session_id="pcbasher-thread",
+        project_id="pcbasher-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True),
+    )
+    command = "python -c \"import time; time.sleep(0.2); print('fetch complete')\""
+    blocked = manager.exec_command(cmd=command, purpose="simulate a slow fetch", cwd=".", yield_time_ms=10)
+    approved = manager.exec_command(
+        cmd=command,
+        purpose="simulate a slow fetch",
+        cwd=".",
+        yield_time_ms=10,
+        approval_token=blocked["approval_request"]["approval_token"],
+    )
+
+    assert approved["ok"] is True
+    assert approved["running"] is True
+    original_session_id = approved["session_id"]
+
+    duplicate_approval_submission = manager.exec_command(
+        cmd=command,
+        purpose="simulate a duplicated approval click",
+        cwd=".",
+        yield_time_ms=10,
+        approval_token=blocked["approval_request"]["approval_token"],
+    )
+    assert duplicate_approval_submission["ok"] is True
+    assert duplicate_approval_submission["session_id"] == original_session_id
+    assert duplicate_approval_submission.get("approval_required") is not True
+
+    repeated = manager.exec_command(
+        cmd=command,
+        purpose="simulate a slow fetch",
+        cwd=".",
+        yield_time_ms=1000,
+    )
+
+    assert repeated["ok"] is True
+    assert repeated["session_id"] == original_session_id
+    assert repeated["running"] is False
+    assert repeated["returncode"] == 0
+    assert "fetch complete" in repeated["output"]
+    assert repeated["reused_approved_command_session"]["session_id"] == original_session_id
+    assert repeated.get("approval_required") is not True
+
+    deliberate_rerun = manager.exec_command(
+        cmd=command,
+        purpose="run it again after the prior result was delivered",
+        cwd=".",
+        yield_time_ms=10,
+    )
+    assert deliberate_rerun["approval_required"] is True
+    assert deliberate_rerun["approval_request"]["approval_token"]
+
+
+def test_running_approved_command_reuse_is_isolated_by_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    boundary = _runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True)
+    command = "python -c \"import time; time.sleep(0.3); print('thread scoped')\""
+
+    manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="pcbasher-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    blocked = manager.exec_command(cmd=command, purpose="thread scoped command", cwd=".", yield_time_ms=10)
+    approved = manager.exec_command(
+        cmd=command,
+        purpose="thread scoped command",
+        cwd=".",
+        yield_time_ms=10,
+        approval_token=blocked["approval_request"]["approval_token"],
+    )
+    assert approved["running"] is True
+
+    manager.set_runtime_context(
+        session_id="thread-b",
+        project_id="pcbasher-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    other_thread = manager.exec_command(
+        cmd=command,
+        purpose="same command in another Thread",
+        cwd=".",
+        yield_time_ms=10,
+    )
+    assert other_thread["approval_required"] is True
+
+    manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="pcbasher-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    resumed_original = manager.exec_command(
+        cmd=command,
+        purpose="resume after switching back",
+        cwd=".",
+        yield_time_ms=1000,
+    )
+    assert resumed_original["ok"] is True
+    assert resumed_original["session_id"] == approved["session_id"]
+    assert resumed_original["reused_approved_command_session"]["reason"] == (
+        "identical_approved_command_result_pending"
+    )
+    assert resumed_original.get("approval_required") is not True
+
+
 def test_full_access_supply_chain_approval_rejects_command_or_cwd_change(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -6889,12 +6889,14 @@ function App() {
         : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
       if (ownerBusy && !isTurnResume) return;
       if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
-        const unlockDeadline = Date.now() + 3000;
+        const unlockDeadline = Date.now() + 30000;
         while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline) {
-          await new Promise((resolve) => window.setTimeout(resolve, 25));
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
         }
       }
-      if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;
+      if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
+        throw new Error(t("errors.pending_turn_resume_timeout"));
+      }
       activeSendThreadIdsRef.current.add(runOwnerThreadId);
       lockedRunOwnerThreadId = runOwnerThreadId;
       markThreadRunIndicator(runOwnerThreadId, "running");

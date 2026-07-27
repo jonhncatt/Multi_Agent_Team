@@ -49,6 +49,7 @@ REQUIRED_CORE_KEYS = (
     "errors.update_task_failed",
     "errors.delete_task_failed",
     "errors.task_required_fields",
+    "errors.pending_turn_resume_timeout",
     "buttons.bind_project_profile",
     "buttons.change_project_profile",
     "buttons.not_now",
@@ -792,7 +793,9 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "if (currentThreadBusy && !isTurnResume)" in script
     assert "if (ownerBusy && !isTurnResume) return;" in script
     assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
+    assert "const unlockDeadline = Date.now() + 30000;" in script
     assert "while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline)" in script
+    assert 'throw new Error(t("errors.pending_turn_resume_timeout"));' in script
     assert 'disabled=${approvalSubmitting}' in script
     assert 'disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}' in script
     approval_handler = script.split("const handleCommandApproval = async", 1)[1].split("const activeToolTimeline", 1)[0]
@@ -2214,7 +2217,8 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "if (currentThreadBusy && !isTurnResume) {" in body
     assert 'fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`' in body
     assert "if (ownerBusy && !isTurnResume) return;" in body
-    assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) return;" in body
+    assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {" in body
+    assert 'throw new Error(t("errors.pending_turn_resume_timeout"));' in body
     lock_check = body.split("if (ownerBusy && !isTurnResume) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
     assert "activeSendThreadIdsRef.current.delete" not in lock_check
     assert "appendMessagesOnceById(" in body
