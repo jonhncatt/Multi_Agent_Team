@@ -1315,6 +1315,38 @@ function normalizeTaskDescriptor(raw) {
   };
 }
 
+function taskEditorListText(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseTaskEditorList(value) {
+  return dedupeStrings(
+    String(value || "")
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  );
+}
+
+function taskEditorDraftFromTask(raw) {
+  const task = normalizeTaskDescriptor(raw);
+  return {
+    project_id: task.project_id,
+    title: task.title,
+    status: task.status,
+    goal: task.goal,
+    summary: task.summary,
+    progress: taskEditorListText(task.progress),
+    next_steps: taskEditorListText(task.next_steps),
+    decisions: taskEditorListText(task.decisions),
+    blockers: taskEditorListText(task.blockers),
+    artifacts: taskEditorListText(task.artifacts),
+  };
+}
+
 function normalizeSkillDescriptor(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   const rawScope = String(item.scope || item.source || "team").trim().toLowerCase() || "team";
@@ -3978,6 +4010,11 @@ function App() {
   const tasks = appState.panelCache.tasks.data;
   const tasksPanelStatus = String(appState.panelCache.tasks.status || "idle");
   const [loadingTaskId, setLoadingTaskId] = useState("");
+  const [taskEditor, setTaskEditor] = useState(null);
+  const [taskEditorDraft, setTaskEditorDraft] = useState({});
+  const [taskEditorError, setTaskEditorError] = useState("");
+  const [savingTask, setSavingTask] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState("");
   const workbenchTools = appState.panelCache.tools.data;
   const skills = appState.panelCache.skills.data;
   const skillsPanelStatus = String(appState.panelCache.skills.status || "idle");
@@ -4594,7 +4631,7 @@ function App() {
     if (drawerView === "tools") refreshWorkbenchTools();
     if (drawerView === "skills") refreshSkills();
     if (drawerView === "agent") refreshSpecs();
-  }, [drawerView, uiLocale, projectId]);
+  }, [drawerView, uiLocale]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return undefined;
@@ -5460,7 +5497,7 @@ function App() {
     if (!normalized) return;
     const threadKey = String(normalized.thread_id || normalized.session_id || "").trim();
     if (!threadKey) return;
-    const activeProjectId = String(projectId || "").trim();
+    const activeProjectId = String(options.projectIdOverride || projectId || "").trim();
     if (activeProjectId && normalized.project_id && String(normalized.project_id || "").trim() !== activeProjectId) {
       return;
     }
@@ -5772,7 +5809,6 @@ function App() {
     const targetProjectId = String(nextProjectId || "").trim();
     if (!targetProjectId) return false;
     setProjectId(targetProjectId);
-    setTasks([]);
     setSessionId("");
     resetItemDomain();
     setSessionRuntimeState({});
@@ -5802,13 +5838,8 @@ function App() {
   async function refreshTasks() {
     const requestSeq = ++tasksRequestSeqRef.current;
     setPanelStatus("tasks", "loading");
-    if (!projectId) {
-      setTasks([]);
-      setPanelStatus("tasks", "fresh");
-      return [];
-    }
     try {
-      const data = await fetchJson(`/api/tasks?project_id=${encodeURIComponent(projectId)}`);
+      const data = await fetchJson("/api/tasks");
       const list = Array.isArray(data.tasks) ? data.tasks.map(normalizeTaskDescriptor) : [];
       if (requestSeq !== tasksRequestSeqRef.current) return list;
       clearUiError();
@@ -5964,7 +5995,7 @@ function App() {
         activity_kind: "created",
         status: "idle",
       },
-      { promote: true },
+      { promote: true, projectIdOverride: resolvedTargetProjectId },
     );
 
     const creationPromise = (async () => {
@@ -6586,11 +6617,122 @@ function App() {
     setLoadingTaskId(normalized.task_id);
     setDrawerView("");
     try {
-      await handleSend(t("tasks.load_prompt"), undefined, { taskId: normalized.task_id });
+      const taskProjectId = String(normalized.project_id || "").trim();
+      let targetSessionId = String(sessionId || "").trim();
+      if (taskProjectId && taskProjectId !== String(projectId || "").trim()) {
+        await selectProject(taskProjectId, { silentNotFound: true });
+        targetSessionId = String(activeSessionIdRef.current || "").trim();
+        if (!targetSessionId) {
+          targetSessionId = await createSession(taskProjectId, { restoreOnFailure: false });
+        }
+      }
+      await handleSend(t("tasks.load_prompt"), undefined, {
+        taskId: normalized.task_id,
+        projectIdOverride: taskProjectId || projectId,
+        sessionIdOverride: targetSessionId,
+      });
     } catch (err) {
       applyUiError(err, t("errors.load_task_failed"));
     } finally {
       setLoadingTaskId("");
+    }
+  }
+
+  function openTaskEditor(task) {
+    const normalized = normalizeTaskDescriptor(task);
+    if (!normalized.task_id || savingTask || deletingTaskId || currentThreadBusy) return;
+    const project = projects.find((item) => String(item.project_id || "") === normalized.project_id) || {};
+    setTaskEditor({
+      taskId: normalized.task_id,
+      projectTitle: String(project.title || normalized.project_title || normalized.project_id || ""),
+    });
+    setTaskEditorDraft(taskEditorDraftFromTask(normalized));
+    setTaskEditorError("");
+  }
+
+  function closeTaskEditor() {
+    if (savingTask) return;
+    setTaskEditor(null);
+    setTaskEditorDraft({});
+    setTaskEditorError("");
+  }
+
+  function updateTaskEditorField(field, value) {
+    setTaskEditorDraft((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function saveTaskEditor() {
+    const taskId = String((taskEditor && taskEditor.taskId) || "").trim();
+    if (!taskId || savingTask) return;
+    const title = String(taskEditorDraft.title || "").trim();
+    const goal = String(taskEditorDraft.goal || "").trim();
+    const summary = String(taskEditorDraft.summary || "").trim();
+    if (!title || !goal || !summary) {
+      setTaskEditorError(t("errors.task_required_fields"));
+      return;
+    }
+    setSavingTask(true);
+    setTaskEditorError("");
+    try {
+      const payload = normalizeTaskDescriptor(await fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: String(taskEditorDraft.project_id || "").trim(),
+          title,
+          status: String(taskEditorDraft.status || "active"),
+          goal,
+          summary,
+          progress: parseTaskEditorList(taskEditorDraft.progress),
+          next_steps: parseTaskEditorList(taskEditorDraft.next_steps),
+          decisions: parseTaskEditorList(taskEditorDraft.decisions),
+          blockers: parseTaskEditorList(taskEditorDraft.blockers),
+          artifacts: parseTaskEditorList(taskEditorDraft.artifacts),
+        }),
+      }));
+      setTasks((prev) => (
+        payload.status === "archived"
+          ? (Array.isArray(prev) ? prev : []).filter((item) => String(item.task_id || "") !== taskId)
+          : [
+              payload,
+              ...(Array.isArray(prev) ? prev : []).filter((item) => String(item.task_id || "") !== taskId),
+            ]
+      ));
+      setTaskEditor(null);
+      setTaskEditorDraft({});
+      setTaskEditorError("");
+      pushLogWithLimit(setLogs, "system", t("log.task_updated", { title: payload.title || taskId }));
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("errors.update_task_failed"));
+      setTaskEditorError(nextError.summary);
+    } finally {
+      setSavingTask(false);
+    }
+  }
+
+  async function handleDeleteTask(task) {
+    const normalized = normalizeTaskDescriptor(task);
+    if (!normalized.task_id || deletingTaskId || savingTask || currentThreadBusy) return;
+    const title = normalized.title || normalized.goal || normalized.task_id;
+    if (!window.confirm(t("confirm.delete_task", { title }))) return;
+    setDeletingTaskId(normalized.task_id);
+    try {
+      await fetchJson(`/api/tasks/${encodeURIComponent(normalized.task_id)}`, { method: "DELETE" });
+      setTasks((prev) => (Array.isArray(prev) ? prev : []).filter(
+        (item) => String(item.task_id || "") !== normalized.task_id,
+      ));
+      if (String((taskEditor && taskEditor.taskId) || "") === normalized.task_id) {
+        setTaskEditor(null);
+        setTaskEditorDraft({});
+        setTaskEditorError("");
+      }
+      clearUiError();
+      pushLogWithLimit(setLogs, "system", t("log.task_deleted", { title }));
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.delete_task_failed"));
+      pushLogWithLimit(setLogs, "error", nextError.summary || t("errors.delete_task_failed"));
+    } finally {
+      setDeletingTaskId("");
     }
   }
 
@@ -6602,6 +6744,8 @@ function App() {
 
   async function handleSend(overrideText, userInputResponse) {
     const options = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
+    const targetProjectId = String(options.projectIdOverride || projectId || "").trim();
+    const targetSessionId = String(options.sessionIdOverride || sessionId || "").trim();
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText) return;
     const explicitUserInputResponse = userInputResponse && typeof userInputResponse === "object"
@@ -6714,7 +6858,7 @@ function App() {
     setLiveRunLogs([]);
     setStageTimeline([]);
 
-    let sid = sessionId;
+    let sid = targetSessionId;
     let pendingMessage = null;
     let runOwnerThreadId = "";
     let ownerThreadVisible = () => false;
@@ -6728,7 +6872,7 @@ function App() {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
       }
-      if (!sid) sid = await createSession(projectId);
+      if (!sid) sid = await createSession(targetProjectId);
       runOwnerThreadId = String(sid || "").trim();
       ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
       const ownerSnapshot = threadDetailCacheRef.current.get(runOwnerThreadId);
@@ -6827,7 +6971,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sid,
-          project_id: projectId,
+          project_id: targetProjectId,
           task_id: String(options.taskId || "").trim() || null,
           message: messageText,
           client_message_id: String((userMessage && userMessage.id) || ""),
@@ -10583,6 +10727,92 @@ function App() {
           `
         : null}
 
+      ${taskEditor
+        ? html`
+            <div className="project-modal-backdrop" id="taskEditorModal">
+              <div className="project-modal task-editor-modal">
+                <div className="panel-title">${t("tasks.edit_title")}</div>
+                <div className="path-hint">
+                  ${t("tasks.project")}: ${String(taskEditor.projectTitle || taskEditorDraft.project_id || "")}
+                </div>
+                <div className="task-editor-grid">
+                  <label className="form-field">
+                    <span>${t("tasks.field.title")}</span>
+                    <input
+                      className="drawer-input"
+                      type="text"
+                      maxLength="120"
+                      value=${String(taskEditorDraft.title || "")}
+                      onInput=${(event) => updateTaskEditorField("title", event.currentTarget.value)}
+                      disabled=${savingTask}
+                    />
+                  </label>
+                  <label className="form-field">
+                    <span>${t("tasks.field.status")}</span>
+                    <select
+                      className="drawer-input"
+                      value=${String(taskEditorDraft.status || "active")}
+                      onChange=${(event) => updateTaskEditorField("status", event.currentTarget.value)}
+                      disabled=${savingTask}
+                    >
+                      ${["active", "blocked", "completed"].map((status) => html`
+                        <option key=${status} value=${status}>${t(`tasks.status.${status}`)}</option>
+                      `)}
+                    </select>
+                  </label>
+                  <label className="form-field task-editor-wide">
+                    <span>${t("tasks.field.goal")}</span>
+                    <textarea
+                      className="drawer-input task-editor-textarea"
+                      maxLength="4000"
+                      value=${String(taskEditorDraft.goal || "")}
+                      onInput=${(event) => updateTaskEditorField("goal", event.currentTarget.value)}
+                      disabled=${savingTask}
+                    ></textarea>
+                  </label>
+                  <label className="form-field task-editor-wide">
+                    <span>${t("tasks.field.summary")}</span>
+                    <textarea
+                      className="drawer-input task-editor-textarea task-editor-summary"
+                      maxLength="12000"
+                      value=${String(taskEditorDraft.summary || "")}
+                      onInput=${(event) => updateTaskEditorField("summary", event.currentTarget.value)}
+                      disabled=${savingTask}
+                    ></textarea>
+                  </label>
+                  ${[
+                    ["progress", "tasks.field.progress"],
+                    ["next_steps", "tasks.next_steps"],
+                    ["decisions", "tasks.field.decisions"],
+                    ["blockers", "tasks.blockers"],
+                    ["artifacts", "tasks.field.artifacts"],
+                  ].map(([field, labelKey]) => html`
+                    <label key=${field} className="form-field">
+                      <span>${t(labelKey)}</span>
+                      <textarea
+                        className="drawer-input task-editor-textarea task-editor-list"
+                        value=${String(taskEditorDraft[field] || "")}
+                        placeholder=${t("tasks.list_hint")}
+                        onInput=${(event) => updateTaskEditorField(field, event.currentTarget.value)}
+                        disabled=${savingTask}
+                      ></textarea>
+                    </label>
+                  `)}
+                </div>
+                ${taskEditorError ? html`<div className="status-error">${taskEditorError}</div>` : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${closeTaskEditor} disabled=${savingTask}>
+                    ${t("buttons.cancel")}
+                  </button>
+                  <button className="solid-btn" type="button" onClick=${saveTaskEditor} disabled=${savingTask}>
+                    ${savingTask ? t("buttons.saving") : t("buttons.save")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
+
       ${renameDialog
         ? html`
             <div className="project-modal-backdrop" id="renameThreadModal">
@@ -10662,6 +10892,13 @@ function App() {
                             <div>
                               <div className="task-card-title">${task.title || task.goal}</div>
                               <div className="task-card-time">${formatTime(task.updated_at, uiLocale)}</div>
+                              <div className="task-card-project">
+                                ${t("tasks.project")}: ${String(
+                                  ((projects.find((item) => String(item.project_id || "") === task.project_id) || {}).title)
+                                  || task.project_title
+                                  || task.project_id,
+                                )}
+                              </div>
                             </div>
                             <span className=${`task-status status-${task.status}`}>${t(`tasks.status.${task.status}`)}</span>
                           </div>
@@ -10687,9 +10924,25 @@ function App() {
                               className="solid-btn"
                               type="button"
                               onClick=${() => handleLoadTask(task)}
-                              disabled=${Boolean(loadingTaskId) || currentThreadBusy}
+                              disabled=${Boolean(loadingTaskId) || savingTask || Boolean(deletingTaskId) || currentThreadBusy}
                             >
                               ${loadingTaskId === task.task_id ? t("buttons.loading_task") : t("buttons.load_task")}
+                            </button>
+                            <button
+                              className="ghost-btn"
+                              type="button"
+                              onClick=${() => openTaskEditor(task)}
+                              disabled=${Boolean(loadingTaskId) || savingTask || Boolean(deletingTaskId) || currentThreadBusy}
+                            >
+                              ${t("buttons.edit_task")}
+                            </button>
+                            <button
+                              className="ghost-btn danger-btn"
+                              type="button"
+                              onClick=${() => handleDeleteTask(task)}
+                              disabled=${Boolean(loadingTaskId) || savingTask || Boolean(deletingTaskId) || currentThreadBusy}
+                            >
+                              ${deletingTaskId === task.task_id ? t("buttons.deleting") : t("buttons.delete")}
                             </button>
                           </div>
                         </article>

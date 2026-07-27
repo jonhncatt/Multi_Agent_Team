@@ -2793,6 +2793,12 @@ button {
   font-size: 11px;
 }
 
+.task-card-project {
+  margin-top: 3px;
+  color: var(--ink-muted);
+  font-size: 11px;
+}
+
 .task-status {
   flex: 0 0 auto;
   border-radius: 999px;
@@ -2850,12 +2856,54 @@ button {
 .task-card-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 14px;
+}
+
+.project-modal.task-editor-modal {
+  width: min(760px, 100%);
+  max-height: min(900px, calc(100vh - 40px));
+  overflow: auto;
+}
+
+.task-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 14px;
+  margin-top: 16px;
+}
+
+.task-editor-wide {
+  grid-column: 1 / -1;
+}
+
+.task-editor-textarea {
+  min-height: 80px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.task-editor-summary {
+  min-height: 120px;
+}
+
+.task-editor-list {
+  min-height: 92px;
 }
 
 .task-empty {
   padding: 30px 16px;
   text-align: center;
+}
+
+@media (max-width: 640px) {
+  .task-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-editor-wide {
+    grid-column: auto;
+  }
 }
 
 .workbench-tabs {

@@ -44,6 +44,11 @@ REQUIRED_CORE_KEYS = (
     "buttons.save",
     "buttons.tasks",
     "buttons.load_task",
+    "buttons.edit_task",
+    "confirm.delete_task",
+    "errors.update_task_failed",
+    "errors.delete_task_failed",
+    "errors.task_required_fields",
     "buttons.bind_project_profile",
     "buttons.change_project_profile",
     "buttons.not_now",
@@ -57,6 +62,16 @@ REQUIRED_CORE_KEYS = (
     "project_profile.loading",
     "tasks.title",
     "tasks.subtitle",
+    "tasks.project",
+    "tasks.edit_title",
+    "tasks.field.title",
+    "tasks.field.status",
+    "tasks.field.goal",
+    "tasks.field.summary",
+    "tasks.field.progress",
+    "tasks.field.decisions",
+    "tasks.field.artifacts",
+    "tasks.list_hint",
     "tasks.summarize_prompt",
     "tasks.load_prompt",
     "buttons.deleting",
@@ -1817,12 +1832,32 @@ def test_tasks_entry_loads_snapshot_into_current_thread_send_path() -> None:
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert 'drawerView === "tasks"' in script
-    assert 'fetchJson(`/api/tasks?project_id=${encodeURIComponent(projectId)}`)' in script
-    assert 'await handleSend(t("tasks.load_prompt"), undefined, { taskId: normalized.task_id })' in script
+    assert 'const data = await fetchJson("/api/tasks")' in script
+    assert 'await selectProject(taskProjectId, { silentNotFound: true })' in script
+    assert "projectIdOverride: taskProjectId || projectId" in script
+    assert "sessionIdOverride: targetSessionId" in script
+    assert "const targetProjectId = String(options.projectIdOverride || projectId || \"\").trim();" in script
+    assert "const targetSessionId = String(options.sessionIdOverride || sessionId || \"\").trim();" in script
     assert 'task_id: String(options.taskId || "").trim() || null' in script
+    assert 'project_id: targetProjectId' in script
     assert 'handleSend(t("tasks.summarize_prompt"))' in script
+    assert 't("tasks.project")' in script
+    assert 'id="taskEditorModal"' in script
+    assert 'fetchJson(`/api/tasks/${encodeURIComponent(taskId)}`' in script
+    assert 'method: "PUT"' in script
+    assert 'fetchJson(`/api/tasks/${encodeURIComponent(normalized.task_id)}`, { method: "DELETE" })' in script
+    assert 'window.confirm(t("confirm.delete_task", { title }))' in script
+    assert 't("buttons.edit_task")' in script
     assert '>Workbench</button>' not in script
-    for token in (".tasks-drawer", ".task-card", ".task-status", ".task-card-actions"):
+    for token in (
+        ".tasks-drawer",
+        ".task-card",
+        ".task-card-project",
+        ".task-status",
+        ".task-card-actions",
+        ".task-editor-modal",
+        ".task-editor-grid",
+    ):
         assert token in styles, token
 
 

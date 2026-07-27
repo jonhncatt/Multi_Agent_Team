@@ -1298,6 +1298,32 @@ def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypa
     assert list_response.status_code == 200
     assert [item["task_id"] for item in list_response.json()["tasks"]] == [task["task_id"]]
 
+    other_root = tmp_path / "other-project"
+    other_root.mkdir()
+    other_project = main_app.project_store.create(root_path=str(other_root), title="Other project")
+    other_task_response = client.post(
+        "/api/tasks",
+        json={
+            "project_id": other_project["project_id"],
+            "title": "Other task",
+            "goal": "Keep a task visible across project switches",
+            "summary": "This task belongs to another project.",
+            "status": "active",
+        },
+    )
+    assert other_task_response.status_code == 200
+    other_task = other_task_response.json()
+
+    global_list_response = client.get("/api/tasks")
+    assert global_list_response.status_code == 200
+    assert {item["task_id"] for item in global_list_response.json()["tasks"]} == {
+        task["task_id"],
+        other_task["task_id"],
+    }
+    assert [item["task_id"] for item in client.get(f"/api/tasks?project_id={project_id}").json()["tasks"]] == [
+        task["task_id"]
+    ]
+
     thread_response = client.post("/api/thread/new", json={"project_id": project_id})
     thread_id = thread_response.json()["thread_id"]
     chat_response = client.post(
@@ -1328,6 +1354,54 @@ def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypa
     assert user_item["task_context"]["summary"] == task["summary"]
     loaded_task = main_app.task_store.get(task["task_id"])
     assert loaded_task and loaded_task["last_loaded_thread_id"] == thread_id
+
+
+def test_tasks_api_updates_and_deletes_snapshot(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    project = main_app.project_store.ensure_default_project()
+    project_id = str(project["project_id"])
+
+    created_response = client.post(
+        "/api/tasks",
+        json={
+            "project_id": project_id,
+            "title": "Original title",
+            "goal": "Original goal",
+            "summary": "Original summary",
+            "status": "active",
+        },
+    )
+    assert created_response.status_code == 200
+    task_id = created_response.json()["task_id"]
+
+    updated_response = client.put(
+        f"/api/tasks/{task_id}",
+        json={
+            "project_id": project_id,
+            "title": "Updated title",
+            "goal": "Updated goal",
+            "summary": "Updated summary",
+            "progress": ["Implemented editor"],
+            "next_steps": ["Verify deletion"],
+            "decisions": ["Edit without an LLM call"],
+            "blockers": [],
+            "artifacts": ["app/static/app.js"],
+            "status": "blocked",
+        },
+    )
+    assert updated_response.status_code == 200
+    updated = updated_response.json()
+    assert updated["task_id"] == task_id
+    assert updated["title"] == "Updated title"
+    assert updated["status"] == "blocked"
+    assert updated["progress"] == ["Implemented editor"]
+    assert updated["decisions"] == ["Edit without an LLM call"]
+
+    delete_response = client.delete(f"/api/tasks/{task_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"ok": True, "task_id": task_id}
+    assert client.get(f"/api/tasks/{task_id}").status_code == 404
 
 
 def test_runtime_status_uses_live_project_branch_instead_of_startup_constant(monkeypatch, tmp_path: Path) -> None:
