@@ -293,6 +293,8 @@ REQUIRED_CORE_KEYS = (
     "context_meter.status.tight",
     "context_meter.status.updating",
     "context_meter.compact.none",
+    "context_meter.compact.completed",
+    "context_meter.compact.completed_count",
     "context_meter.compact.suggested",
     "context_meter.compact.required",
     "context_meter.field.project",
@@ -1546,6 +1548,78 @@ def test_activity_merge_can_clear_model_draft_after_final_answer() -> None:
     assert "model_draft: nextModelDraft," in body
     assert 'Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")' in body
     assert "final_answer: nextFinalAnswer," in body
+
+
+def test_resumed_live_activity_clears_terminal_timer_anchor() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    merge_match = re.search(
+        r"function mergeActivityState\(previous, patch = \{\}\) \{(?P<body>.*?)\n}\n\nfunction buildLiveDisplayActivity",
+        script,
+        re.S,
+    )
+    assert merge_match, "mergeActivityState function not found"
+    merge_body = merge_match.group("body")
+    assert "const nextStatusIsTerminal = isActivityTerminalStatus(nextStatus);" in merge_body
+    assert re.search(
+        r"const nextFinishedAt = nextStatusIsTerminal\s*\?.*?\n\s*: 0;",
+        merge_body,
+        re.S,
+    )
+    assert "finished_at: nextFinishedAt," in merge_body
+    assert "final_elapsed_ms: nextFinalElapsedMs," in merge_body
+
+    display_match = re.search(
+        r"function buildLiveDisplayActivity\(activity, options = \{\}\) \{(?P<body>.*?)\n}\n\nfunction appendActivityTrace",
+        script,
+        re.S,
+    )
+    assert display_match, "buildLiveDisplayActivity function not found"
+    display_body = display_match.group("body")
+    assert "const displayStatusIsTerminal = isActivityTerminalStatus(displayStatus);" in display_body
+    assert "options.activeRunStartedAt || item.turn_started_at || item.started_at || 0" in display_body
+    assert "turn_started_at: liveTurnStartedAt," in display_body
+    assert "finished_at: displayStatusIsTerminal ? item.finished_at : 0," in display_body
+    assert "final_elapsed_ms: displayStatusIsTerminal ? item.final_elapsed_ms : 0," in display_body
+
+    trace_match = re.search(
+        r"function appendActivityTrace\(activity, trace, options = \{\}\) \{(?P<body>.*?)\n}\n\nfunction formatActivityDuration",
+        script,
+        re.S,
+    )
+    assert trace_match, "appendActivityTrace function not found"
+    trace_body = trace_match.group("body")
+    assert "const nextStatusIsTerminal = isActivityTerminalStatus(nextStatus);" in trace_body
+    assert re.search(
+        r"const finishedAt = nextStatusIsTerminal\s*\?.*?\n\s*: 0;",
+        trace_body,
+        re.S,
+    )
+
+
+def test_context_summary_distinguishes_compaction_history_from_recommendation() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function summarizeContextStatus\(meterLike, compactionLike\) \{(?P<body>.*?)\n  }\n\n  function appendLocalAssistantMessage",
+        script,
+        re.S,
+    )
+    assert match, "summarizeContextStatus function not found"
+    body = match.group("body")
+
+    assert "const generation = Math.max(0, Number(compaction.generation || 0) || 0);" in body
+    assert "const hasCompactedHistory = Boolean(" in body
+    assert "compaction.compacted_history_present" in body
+    assert "compaction.last_compacted_at" in body
+    assert "meter.last_compacted_at" in body
+    assert 't("context_meter.compact.completed_count", { count: generation })' in body
+    assert 't("context_meter.compact.completed")' in body
+    assert '"context_meter.compact.none": "无需整理"' in locales
+    assert '"context_meter.compact.completed_count": "已整理 {count} 次"' in locales
+    assert '"context_meter.compact.suggested": "下轮自动整理"' in locales
+    assert '"context_meter.compact.required": "等待自动整理"' in locales
 
 
 def test_agent_message_completion_waits_for_turn_or_steer_boundary() -> None:

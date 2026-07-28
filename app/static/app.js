@@ -3471,19 +3471,22 @@ function mergeActivityState(previous, patch = {}) {
     ? (Array.isArray(nextPatch.llm_exchanges) ? nextPatch.llm_exchanges : [])
     : prev.llm_exchanges;
   const nextStatus = String(nextPatch.status || prev.status || "");
-  const terminalFinishedAt = isActivityTerminalStatus(nextStatus) ? Date.now() : 0;
+  const nextStatusIsTerminal = isActivityTerminalStatus(nextStatus);
+  const terminalFinishedAt = nextStatusIsTerminal ? Date.now() : 0;
   const nextStartedAtCandidate = normalizeActivityTimestamp(
     nextPatch.started_at || (nextTraceEvents[0] && nextTraceEvents[0].timestamp) || 0,
   );
   const nextStartedAt = prev.started_at || nextStartedAtCandidate || 0;
   const nextTurnStartedAtCandidate = normalizeActivityTimestamp(nextPatch.turn_started_at || nextPatch.turnStartedAt || 0);
   const nextTurnStartedAt = prev.turn_started_at || nextTurnStartedAtCandidate || nextStartedAt || 0;
-  const nextFinishedAt = normalizeActivityTimestamp(
-    nextPatch.finished_at
-    || prev.finished_at
-    || terminalFinishedAt
-    || 0,
-  );
+  const nextFinishedAt = nextStatusIsTerminal
+    ? normalizeActivityTimestamp(
+        nextPatch.finished_at
+        || prev.finished_at
+        || terminalFinishedAt
+        || 0,
+      )
+    : 0;
   const nextRunDurationMs = Math.max(0, Number(
     nextPatch.run_duration_ms != null ? nextPatch.run_duration_ms : prev.run_duration_ms,
   ) || 0);
@@ -3493,7 +3496,7 @@ function mergeActivityState(previous, patch = {}) {
   const nextFinalAnswer = Object.prototype.hasOwnProperty.call(nextPatch, "final_answer")
     ? String(nextPatch.final_answer || "")
     : String(prev.final_answer || "");
-  const nextFinalElapsedMs = isActivityTerminalStatus(nextStatus)
+  const nextFinalElapsedMs = nextStatusIsTerminal
     ? Math.max(
       0,
       Number(prev.final_elapsed_ms || 0) || 0,
@@ -3510,7 +3513,7 @@ function mergeActivityState(previous, patch = {}) {
     started_at: nextStartedAt,
     turn_started_at: nextTurnStartedAt,
     finished_at: nextFinishedAt,
-    run_duration_ms: isActivityTerminalStatus(nextStatus) ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
+    run_duration_ms: nextStatusIsTerminal ? Math.max(nextRunDurationMs, nextFinalElapsedMs) : nextRunDurationMs,
     final_elapsed_ms: nextFinalElapsedMs,
     summary: String(nextPatch.summary || prev.summary || ""),
     activity_loaded: Boolean(nextPatch.activity_loaded || nextPatch.activityLoaded || prev.activity_loaded || nextPatch.full_loaded || nextPatch.fullLoaded),
@@ -3557,23 +3560,28 @@ function buildLiveDisplayActivity(activity, options = {}) {
   const heartbeatCanOwnLiveStatus = ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus);
   const hasVisibleFinalAnswer = Boolean(String(item.final_answer || "").trim());
   const shouldSuppressTerminalDisplay = normalizeProgressStatus(item.status) === "completed" && !hasVisibleFinalAnswer;
+  const displayStatus = shouldSuppressTerminalDisplay || heartbeatCanOwnLiveStatus
+    ? (
+      ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus)
+        ? heartbeatStatus
+        : "running"
+    )
+    : item.status;
+  const displayStatusIsTerminal = isActivityTerminalStatus(displayStatus);
+  const liveTurnStartedAt = normalizeActivityTimestamp(
+    options.activeRunStartedAt || item.turn_started_at || item.started_at || 0,
+  );
   const filteredTraceEvents = item.trace_events.filter((trace) => {
     const traceType = String((trace && trace.type) || "").trim();
     return !["run.finished", "answer.done", "answer.finished"].includes(traceType);
   });
   return normalizeMessageActivity({
     ...item,
-    status: shouldSuppressTerminalDisplay || heartbeatCanOwnLiveStatus
-      ? (
-        ["validating", "running", "waiting_tool", "waiting_model", "background_running", "blocked", "failed"].includes(heartbeatStatus)
-          ? heartbeatStatus
-          : "running"
-      )
-      : item.status,
+    status: displayStatus,
     started_at: item.started_at || options.activeRunStartedAt || 0,
-    turn_started_at: item.turn_started_at || options.activeRunStartedAt || item.started_at || 0,
-    finished_at: shouldSuppressTerminalDisplay ? 0 : item.finished_at,
-    final_elapsed_ms: shouldSuppressTerminalDisplay ? 0 : item.final_elapsed_ms,
+    turn_started_at: liveTurnStartedAt,
+    finished_at: displayStatusIsTerminal ? item.finished_at : 0,
+    final_elapsed_ms: displayStatusIsTerminal ? item.final_elapsed_ms : 0,
     live_model_started: Boolean(item.live_model_started || (heartbeatStatus === "waiting_model" && heartbeatSource === "model")),
     live_model: String(item.live_model || heartbeat.model || "").trim(),
     trace_events: filteredTraceEvents,
@@ -3596,12 +3604,13 @@ function appendActivityTrace(activity, trace, options = {}) {
     || current.status
     || activityStatusFromTraceType(normalizedTrace.type, "thinking", normalizedTrace.status),
   );
-  const finishedAt = isActivityTerminalStatus(nextStatus)
+  const nextStatusIsTerminal = isActivityTerminalStatus(nextStatus);
+  const finishedAt = nextStatusIsTerminal
     ? (normalizedTrace.timestamp || current.finished_at || Date.now())
-    : current.finished_at;
+    : 0;
   const startedAt = current.started_at || normalizedTrace.timestamp || Date.now();
   const turnStartedAt = current.turn_started_at || current.started_at || normalizedTrace.timestamp || Date.now();
-  const finalElapsedMs = isActivityTerminalStatus(nextStatus)
+  const finalElapsedMs = nextStatusIsTerminal
     ? Math.max(
       0,
       Number(current.final_elapsed_ms || 0) || 0,
@@ -3621,7 +3630,7 @@ function appendActivityTrace(activity, trace, options = {}) {
     started_at: startedAt,
     turn_started_at: turnStartedAt,
     finished_at: finishedAt,
-    run_duration_ms: isActivityTerminalStatus(nextStatus)
+    run_duration_ms: nextStatusIsTerminal
       ? Math.max(
         Number(current.run_duration_ms || 0) || 0,
         finishedAt && turnStartedAt ? Math.max(0, finishedAt - turnStartedAt) : 0,
@@ -4740,6 +4749,13 @@ function App() {
     const meter = meterLike && typeof meterLike === "object" ? meterLike : {};
     const compaction = compactionLike && typeof compactionLike === "object" ? compactionLike : {};
     const recommendation = String(meter.compact_recommendation || compaction.compact_recommendation || "none");
+    const generation = Math.max(0, Number(compaction.generation || 0) || 0);
+    const hasCompactedHistory = Boolean(
+      generation
+      || compaction.compacted_history_present
+      || compaction.last_compacted_at
+      || meter.last_compacted_at
+    );
     const stale = Boolean(meter.stale);
     const usedPercent = Math.max(0, Number(meter.used_percent || 0) || 0);
     const used = formatTokenCount(meter.estimated_tokens || compaction.estimated_context_tokens || 0);
@@ -4754,7 +4770,13 @@ function App() {
       ? t("context_meter.compact.required")
       : recommendation === "suggested"
         ? t("context_meter.compact.suggested")
-        : t("context_meter.compact.none");
+        : hasCompactedHistory
+          ? (
+            generation
+              ? t("context_meter.compact.completed_count", { count: generation })
+              : t("context_meter.compact.completed")
+          )
+          : t("context_meter.compact.none");
     return `${status} · ${compact} · ${used} / ${total} · ${mode}`;
   }
 
