@@ -40,6 +40,7 @@ CANONICAL_TOOL_NAMES = {
     "spawn_subagent",
     "wait_subagents",
     "save_skill",
+    "list_tasks",
     "save_task",
 }
 

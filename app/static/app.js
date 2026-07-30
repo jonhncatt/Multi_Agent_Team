@@ -58,6 +58,7 @@ const THEME_COLOR_OPTIONS = [
   { id: "emerald", accent: "#047857", accentInk: "#ffffff", accentSoft: "#d1fae5", accentStrong: "#059669", accentDark: "#065f46" },
   { id: "violet", accent: "#7c3aed", accentInk: "#ffffff", accentSoft: "#ede9fe", accentStrong: "#6d28d9", accentDark: "#5b21b6" },
   { id: "rose", accent: "#be123c", accentInk: "#ffffff", accentSoft: "#ffe4e6", accentStrong: "#e11d48", accentDark: "#9f1239" },
+  { id: "amber", accent: "#f37021", accentInk: "#ffffff", accentSoft: "#ffede2", accentStrong: "#df5f10", accentDark: "#b94708" },
 ];
 const messageHtmlCache = new Map();
 const DEFAULT_SETTINGS = {
@@ -1239,6 +1240,44 @@ function normalizeMessageActivity(raw) {
     enumerable: false,
   });
   return normalizedActivity;
+}
+
+function resumableTurnStartedAt(messages, runtimeState = {}) {
+  const state = runtimeState && typeof runtimeState === "object" ? runtimeState : {};
+  const pendingTurn = state.pending_turn && typeof state.pending_turn === "object"
+    ? state.pending_turn
+    : {};
+  const directStartedAt = normalizeActivityTimestamp(
+    pendingTurn.turn_started_at
+    || state.turn_started_at
+    || state.logical_turn_started_at
+    || 0,
+  );
+  if (directStartedAt) return directStartedAt;
+  const pendingTurnId = String(pendingTurn.turn_id || "").trim();
+  const candidates = Array.isArray(messages) ? messages : [];
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const message = candidates[index];
+    if (!message || !["runtime", "assistant"].includes(String(message.role || ""))) continue;
+    const activity = normalizeMessageActivity(message.activity || {});
+    const matchesPendingTurn = Boolean(
+      pendingTurnId
+      && (
+        String(message.id || "").trim() === pendingTurnId
+        || String(activity.run_id || "").trim() === pendingTurnId
+      )
+    );
+    if (
+      !matchesPendingTurn
+      && String(message.role || "") !== "runtime"
+      && normalizeProgressStatus(activity.status) !== "blocked"
+    ) {
+      continue;
+    }
+    const startedAt = normalizeActivityTimestamp(activity.turn_started_at || activity.started_at || 0);
+    if (startedAt) return startedAt;
+  }
+  return 0;
 }
 
 function defaultSkillTemplate(locale) {
@@ -4033,6 +4072,7 @@ function App() {
     : [];
   const tasks = appState.panelCache.tasks.data;
   const tasksPanelStatus = String(appState.panelCache.tasks.status || "idle");
+  const [showArchivedTasks, setShowArchivedTasks] = useState(false);
   const [loadingTaskId, setLoadingTaskId] = useState("");
   const [taskEditor, setTaskEditor] = useState(null);
   const [taskEditorDraft, setTaskEditorDraft] = useState({});
@@ -4655,7 +4695,7 @@ function App() {
     if (drawerView === "tools") refreshWorkbenchTools();
     if (drawerView === "skills") refreshSkills();
     if (drawerView === "agent") refreshSpecs();
-  }, [drawerView, uiLocale]);
+  }, [drawerView, uiLocale, showArchivedTasks]);
 
   useEffect(() => {
     if (!bootReadyRef.current) return undefined;
@@ -5876,7 +5916,8 @@ function App() {
     const requestSeq = ++tasksRequestSeqRef.current;
     setPanelStatus("tasks", "loading");
     try {
-      const data = await fetchJson("/api/tasks");
+      const tasksUrl = showArchivedTasks ? "/api/tasks?include_archived=true" : "/api/tasks";
+      const data = await fetchJson(tasksUrl);
       const list = Array.isArray(data.tasks) ? data.tasks.map(normalizeTaskDescriptor) : [];
       if (requestSeq !== tasksRequestSeqRef.current) return list;
       clearUiError();
@@ -6655,11 +6696,10 @@ function App() {
     setDrawerView("");
     try {
       const activeProjectId = String(projectId || "").trim();
-      const targetSessionId = await createSession(activeProjectId, { restoreOnFailure: false });
       await handleSend(t("tasks.load_prompt"), undefined, {
         taskId: normalized.task_id,
         projectIdOverride: activeProjectId,
-        sessionIdOverride: targetSessionId,
+        sessionIdOverride: String(sessionId || "").trim(),
       });
     } catch (err) {
       applyUiError(err, t("errors.load_task_failed"));
@@ -6721,7 +6761,7 @@ function App() {
         }),
       }));
       setTasks((prev) => (
-        payload.status === "archived"
+        payload.status === "archived" && !showArchivedTasks
           ? (Array.isArray(prev) ? prev : []).filter((item) => String(item.task_id || "") !== taskId)
           : [
               payload,
@@ -6865,6 +6905,9 @@ function App() {
       return;
     }
     const clientSubmittedAtMs = Date.now();
+    const logicalTurnStartedAtMs = isTurnResume
+      ? (resumableTurnStartedAt(messages, sessionRuntimeState) || clientSubmittedAtMs)
+      : clientSubmittedAtMs;
     const uploadsInFlight = pendingUploads.some((item) => item && item.uploading);
     if (uploadsInFlight) {
       const summary = t("errors.upload_in_progress");
@@ -6879,7 +6922,7 @@ function App() {
     setContextMeterOpen(false);
     setStoppingRun(false);
     setActiveRunId("");
-    setActiveRunStartedAt(clientSubmittedAtMs);
+    setActiveRunStartedAt(logicalTurnStartedAtMs);
     clearUiError();
     setToolTimeline([]);
     setLiveToolTimeline([]);
@@ -6939,7 +6982,7 @@ function App() {
         activity: {
           status: "background_running",
           started_at: clientSubmittedAtMs,
-          turn_started_at: clientSubmittedAtMs,
+          turn_started_at: logicalTurnStartedAtMs,
           live_model: runModelName,
           trace_events: [],
         },
@@ -6966,7 +7009,7 @@ function App() {
           ...createEmptyThreadActiveTurn(),
           sending: true,
           activeRunThreadId: runOwnerThreadId,
-          startedAt: clientSubmittedAtMs,
+          startedAt: logicalTurnStartedAtMs,
           lastLiveProgressAt: clientSubmittedAtMs,
           liveHeartbeat: initialLiveHeartbeat,
           lastResponse: existingTurn.lastResponse || lastResponse || null,
@@ -7711,8 +7754,12 @@ function App() {
       const applySnapshot = (snapshot) => {
         if (!snapshot || typeof snapshot !== "object") return;
         latestRunSnapshot = mergeRunSnapshot(latestRunSnapshot, snapshot);
+        const snapshotTurnStartedAt = normalizeActivityTimestamp(
+          snapshot.turn_started_at || snapshot.turnStartedAt || 0,
+        );
         updateOwnerActiveTurn((prev) => ({
           ...prev,
+          startedAt: snapshotTurnStartedAt || prev.startedAt || logicalTurnStartedAtMs,
           lastLiveProgressAt: Date.now(),
           liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, snapshot),
         }));
@@ -8247,7 +8294,10 @@ function App() {
       const finalActivityStatus = isActivityTerminalStatus(finalActivitySourceStatus)
         ? finalActivitySourceStatus
         : "completed";
-      const finalActivity = mergeActivityState(finalPayload.activity || latestActivity, {
+      const finalActivity = mergeActivityState({
+        ...(finalPayload.activity || latestActivity),
+        turn_started_at: logicalTurnStartedAtMs,
+      }, {
         status: finalActivityStatus,
         finished_at: Date.now(),
         plan: Array.isArray(finalPayload.plan) ? finalPayload.plan : (Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : []),
@@ -10886,7 +10936,7 @@ function App() {
                       onChange=${(event) => updateTaskEditorField("status", event.currentTarget.value)}
                       disabled=${savingTask}
                     >
-                      ${["active", "blocked", "completed"].map((status) => html`
+                      ${["active", "blocked", "completed", "archived"].map((status) => html`
                         <option key=${status} value=${status}>${t(`tasks.status.${status}`)}</option>
                       `)}
                     </select>
@@ -11011,9 +11061,20 @@ function App() {
                   >
                     ${t("tasks.summarize")}
                   </button>
-                  <button className="ghost-btn" type="button" onClick=${refreshTasks} disabled=${tasksPanelStatus === "loading"}>
-                    ${t("buttons.refresh")}
-                  </button>
+                  <div className="tasks-toolbar-actions">
+                    <label className="tasks-archive-toggle">
+                      <input
+                        type="checkbox"
+                        checked=${showArchivedTasks}
+                        onChange=${(event) => setShowArchivedTasks(Boolean(event.currentTarget.checked))}
+                        disabled=${tasksPanelStatus === "loading"}
+                      />
+                      <span>${t("tasks.show_archived")}</span>
+                    </label>
+                    <button className="ghost-btn" type="button" onClick=${refreshTasks} disabled=${tasksPanelStatus === "loading"}>
+                      ${t("buttons.refresh")}
+                    </button>
+                  </div>
                 </div>
                 <div className="task-list">
                   ${tasks.length

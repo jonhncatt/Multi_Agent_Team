@@ -59,6 +59,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "spawn_subagent",
         "wait_subagents",
         "save_skill",
+        "list_tasks",
         "save_task",
     }.issubset(tool_names)
     assert {"load_skill", "run_skill_script"}.isdisjoint(tool_names)
@@ -78,6 +79,9 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
         "search_file_multi",
     }.isdisjoint(tool_names)
     save_task = next(item for item in executor.tool_specs if item.get("name") == "save_task")
+    list_tasks = next(item for item in executor.tool_specs if item.get("name") == "list_tasks")
+    assert list_tasks["parameters"]["properties"]["project_scope"]["default"] == "current_project"
+    assert list_tasks["parameters"]["properties"]["detail_level"]["enum"] == ["summary", "full"]
     assert "approval_token" in save_task["parameters"]["properties"]
     assert "review and approve" in str(save_task.get("description") or "")
 
@@ -128,6 +132,100 @@ def test_wait_subagents_delegates_to_runtime_injected_waiter(tmp_path: Path) -> 
     assert result["ok"] is True
     assert result["completed"] is True
     assert calls == [{"subagent_ids": ["child-1"], "timeout_seconds": 12.0}]
+
+
+def test_list_tasks_resolves_ids_and_can_return_full_cross_project_baseline(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    tasks = [
+        {
+            "task_id": "task-redmine-123",
+            "project_id": "current-project",
+            "project_title": "PCBasher",
+            "title": "Redmine 123 trim investigation",
+            "goal": "Determine whether the driver or firmware is responsible.",
+            "summary": "Driver analysis remains active.",
+            "progress": ["Collected the failing log"],
+            "next_steps": ["Compare the product specification"],
+            "decisions": ["Keep the original trace"],
+            "blockers": [],
+            "artifacts": ["logs/redmine-123.txt"],
+            "status": "active",
+            "updated_at": "2026-07-29T01:00:00Z",
+        },
+        {
+            "task_id": "task-archived-other",
+            "project_id": "other-project",
+            "project_title": "Firmware",
+            "title": "Old Redmine 123 follow-up",
+            "goal": "Preserve the old result.",
+            "summary": "Archived baseline.",
+            "progress": ["Closed the old ticket"],
+            "next_steps": [],
+            "decisions": ["Do not reopen without new evidence"],
+            "blockers": [],
+            "artifacts": ["archive/result.md"],
+            "status": "archived",
+            "updated_at": "2026-07-20T01:00:00Z",
+        },
+    ]
+    calls: list[dict[str, object]] = []
+
+    def lister(*, project_id=None, include_archived=False, limit=100):
+        calls.append(
+            {
+                "project_id": project_id,
+                "include_archived": include_archived,
+                "limit": limit,
+            }
+        )
+        return [
+            dict(task)
+            for task in tasks
+            if (not project_id or task["project_id"] == project_id)
+            and (include_archived or task["status"] != "archived")
+        ][:limit]
+
+    executor.set_runtime_context(
+        project_id="current-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        task_lister=lister,
+    )
+
+    current = executor.execute("list_tasks", {"query": "Redmine 123"})
+
+    assert current["ok"] is True
+    assert current["matched_count"] == 1
+    assert current["tasks"][0]["task_id"] == "task-redmine-123"
+    assert current["tasks"][0]["summary"] == "Driver analysis remains active."
+    assert calls[-1] == {
+        "project_id": "current-project",
+        "include_archived": False,
+        "limit": 500,
+    }
+
+    archived = executor.execute(
+        "list_tasks",
+        {
+            "query": "task-archived-other",
+            "status": "archived",
+            "project_scope": "all_projects",
+            "detail_level": "full",
+            "limit": 1,
+        },
+    )
+
+    assert archived["ok"] is True
+    assert archived["detail_level"] == "full"
+    assert archived["matched_count"] == 1
+    assert archived["tasks"][0]["task_id"] == "task-archived-other"
+    assert archived["tasks"][0]["decisions"] == ["Do not reopen without new evidence"]
+    assert archived["tasks"][0]["artifacts"] == ["archive/result.md"]
+    assert calls[-1] == {
+        "project_id": None,
+        "include_archived": True,
+        "limit": 500,
+    }
 
 
 def test_save_task_update_requires_exact_single_use_human_approval(tmp_path: Path) -> None:

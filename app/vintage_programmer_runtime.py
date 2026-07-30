@@ -110,6 +110,7 @@ _READ_ONLY_TOOL_NAMES = {
     "spawn_subagent",
     "wait_subagents",
     "read_tool_result",
+    "list_tasks",
 }
 
 _DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
@@ -3567,6 +3568,7 @@ class VintageProgrammerRuntime:
         run_id: str = "",
         cancel_event: Any | None = None,
         skill_writer: Callable[..., dict[str, Any]] | None = None,
+        task_lister: Callable[..., list[dict[str, Any]]] | None = None,
         task_reader: Callable[[str], dict[str, Any] | None] | None = None,
         task_writer: Callable[..., dict[str, Any]] | None = None,
         subagent_runner: Callable[..., dict[str, Any]] | None = None,
@@ -3598,6 +3600,8 @@ class VintageProgrammerRuntime:
             kwargs["cancel_event"] = cancel_event
         if self._callable_accepts_kwarg(setter, "skill_writer"):
             kwargs["skill_writer"] = skill_writer
+        if self._callable_accepts_kwarg(setter, "task_lister"):
+            kwargs["task_lister"] = task_lister
         if self._callable_accepts_kwarg(setter, "task_reader"):
             kwargs["task_reader"] = task_reader
         if self._callable_accepts_kwarg(setter, "task_writer"):
@@ -4534,6 +4538,14 @@ class VintageProgrammerRuntime:
         locale = normalize_locale(getattr(settings, "locale", ""), self._config.default_locale)
         run_id = str(context_payload.get("run_id") or "")
         logical_turn_id = str(context_payload.get("logical_turn_id") or run_id).strip() or run_id
+        try:
+            logical_turn_started_at = float(context_payload.get("logical_turn_started_at") or 0.0)
+        except Exception:
+            logical_turn_started_at = 0.0
+        if logical_turn_started_at >= 1_000_000_000_000:
+            logical_turn_started_at /= 1000.0
+        if logical_turn_started_at <= 0:
+            logical_turn_started_at = time.time()
         session_id = str(context_payload.get("session_id") or "")
         attachment_metas = [
             item for item in list(context_payload.get("attachments") or [])
@@ -4606,6 +4618,7 @@ class VintageProgrammerRuntime:
         project_context = dict(context_payload.get("project") or {})
         project_root = str(project_context.get("project_root") or "").strip()
         project_id = str(project_context.get("project_id") or "").strip()
+        task_lister = self._task_store.list
         task_reader = self._task_store.get
         task_writer = self._make_task_writer(
             project=project_context,
@@ -5463,6 +5476,7 @@ class VintageProgrammerRuntime:
                 run_id=run_id,
                 cancel_event=context_payload.get("cancel_event"),
                 skill_writer=skill_writer,
+                task_lister=task_lister,
                 task_reader=task_reader,
                 task_writer=task_writer,
                 subagent_runner=subagent_runner,
@@ -5975,6 +5989,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
+                    task_lister=task_lister,
                     task_reader=task_reader,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
@@ -6898,6 +6913,7 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         cancel_event=context_payload.get("cancel_event"),
                         skill_writer=skill_writer,
+                        task_lister=task_lister,
                         task_reader=task_reader,
                         task_writer=task_writer,
                         subagent_runner=subagent_runner,
@@ -7869,6 +7885,7 @@ class VintageProgrammerRuntime:
                     run_id=run_id,
                     cancel_event=context_payload.get("cancel_event"),
                     skill_writer=skill_writer,
+                    task_lister=task_lister,
                     task_reader=task_reader,
                     task_writer=task_writer,
                     subagent_runner=subagent_runner,
@@ -8010,6 +8027,8 @@ class VintageProgrammerRuntime:
                 trace_events=trace_events,
             )
         run_duration_ms = max(0, int((time.monotonic() - run_started_at) * 1000))
+        if pending_turn:
+            pending_turn["turn_started_at"] = logical_turn_started_at
         phase_timings = phase_timer.snapshot(total_key="runtime_total_ms")
         run_trace_status = "success"
         if turn_status == "blocked":
@@ -8192,6 +8211,7 @@ class VintageProgrammerRuntime:
                 "run_id": run_id,
                 "status": turn_status,
                 "started_at": trace_events[0]["timestamp"] if trace_events else 0.0,
+                "turn_started_at": logical_turn_started_at,
                 "finished_at": trace_events[-1]["timestamp"] if trace_events else 0.0,
                 "run_duration_ms": run_duration_ms,
                 "activity_summary": activity_summary,

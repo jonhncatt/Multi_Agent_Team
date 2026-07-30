@@ -2748,8 +2748,36 @@ button {
 .tasks-toolbar {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.tasks-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.tasks-archive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tasks-archive-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tasks-archive-toggle:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .task-list {
@@ -2772,6 +2800,11 @@ button {
 
 .task-card.status-completed {
   border-left-color: #4d9567;
+}
+
+.task-card.status-archived {
+  border-left-color: #8994a5;
+  background: color-mix(in srgb, var(--panel) 88%, var(--panel-soft));
 }
 
 .task-card-head {
@@ -2817,6 +2850,11 @@ button {
 .task-status.status-completed {
   background: rgba(77, 149, 103, 0.13);
   color: #2f7148;
+}
+
+.task-status.status-archived {
+  background: rgba(117, 128, 145, 0.14);
+  color: var(--ink-muted);
 }
 
 .task-card-summary {

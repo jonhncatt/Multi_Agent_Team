@@ -237,6 +237,22 @@ class _FakeTools:
                 },
             },
             {
+                "name": "list_tasks",
+                "description": "search durable task snapshots",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "status": {"type": "string"},
+                        "project_scope": {"type": "string"},
+                        "include_archived": {"type": "boolean"},
+                        "detail_level": {"type": "string"},
+                        "limit": {"type": "integer"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "save_task",
                 "description": "save durable task snapshot",
                 "parameters": {
@@ -263,6 +279,7 @@ class _FakeTools:
         self.runtime_context: dict[str, Any] | None = None
         self.last_runtime_context: dict[str, Any] | None = None
         self.skill_writer: Any | None = None
+        self.task_lister: Any | None = None
         self.task_writer: Any | None = None
         self.subagent_runner: Any | None = None
         self.subagent_waiter: Any | None = None
@@ -277,11 +294,13 @@ class _FakeTools:
         cwd: str | None = None,
         model: str | None = None,
         skill_writer: Any | None = None,
+        task_lister: Any | None = None,
         task_writer: Any | None = None,
         subagent_runner: Any | None = None,
         subagent_waiter: Any | None = None,
     ) -> None:
         self.skill_writer = skill_writer
+        self.task_lister = task_lister
         self.task_writer = task_writer
         self.subagent_runner = subagent_runner
         self.subagent_waiter = subagent_waiter
@@ -298,6 +317,7 @@ class _FakeTools:
 
     def clear_runtime_context(self) -> None:
         self.runtime_context = None
+        self.task_lister = None
         self.task_writer = None
         self.subagent_runner = None
         self.subagent_waiter = None
@@ -306,6 +326,18 @@ class _FakeTools:
         self.calls.append((name, dict(arguments)))
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
+        if name == "list_tasks" and callable(self.task_lister):
+            project_scope = str(arguments.get("project_scope") or "current_project")
+            rows = self.task_lister(
+                project_id=(
+                    None
+                    if project_scope == "all_projects"
+                    else str((self.runtime_context or {}).get("project_id") or "")
+                ),
+                include_archived=bool(arguments.get("include_archived")),
+                limit=int(arguments.get("limit") or 20),
+            )
+            return {"ok": True, "tasks": list(rows or [])}
         if name == "save_task" and callable(self.task_writer):
             return self.task_writer(**arguments)
         if name == "spawn_subagent" and callable(self.subagent_runner):
@@ -1957,6 +1989,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
         settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
         context={
             "session_id": "s-command-approval",
+            "logical_turn_started_at": 1_700_000_000.25,
             "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
             "history_turns": [],
             "attachments": [],
@@ -1970,6 +2003,8 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     assert result["pending_approval"]["approval_token"] == "approval-token-1"
     assert result["pending_user_input"]["approval_request"]["type"] == "command_execution"
     assert result["pending_turn"]["tool_call_id"] == "tc-approval"
+    assert result["pending_turn"]["turn_started_at"] == 1_700_000_000.25
+    assert result["activity"]["turn_started_at"] == 1_700_000_000.25
     assert [item["role"] for item in result["transcript_delta"]] == ["assistant"]
     assert result["inspector"]["run_state"]["pending_approval"]["command"] == "python -c \"print('x')\""
     request_event = next(item for item in progress_events if str(item.get("event") or "") == "request_user_input")
@@ -6095,6 +6130,85 @@ def test_runtime_save_task_tool_creates_project_task_snapshot(tmp_path: Path) ->
     assert task["source_thread_id"] == "thread-source"
     assert task["next_steps"] == ["Update login form"]
     assert result["tool_events"][0]["name"] == "save_task"
+
+
+def test_runtime_injects_current_project_task_lister_for_agent_lookup(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-list-tasks",
+                        "name": "list_tasks",
+                        "args": {
+                            "query": "Redmine 123",
+                            "project_scope": "current_project",
+                            "limit": 20,
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="Found the matching Task."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    list_calls: list[dict[str, Any]] = []
+
+    def task_lister(*, project_id=None, include_archived=False, limit=100):
+        list_calls.append(
+            {
+                "project_id": project_id,
+                "include_archived": include_archived,
+                "limit": limit,
+            }
+        )
+        return [
+            {
+                "task_id": "task-redmine-123",
+                "project_id": "project-1",
+                "title": "Redmine 123",
+                "goal": "Resolve the failure",
+                "summary": "Investigation in progress.",
+                "status": "active",
+            }
+        ]
+
+    runtime._task_store.list = task_lister  # type: ignore[method-assign]
+    project_root = tmp_path / "company-project"
+    project_root.mkdir()
+
+    result = runtime.run(
+        message="刚才的 Redmine 已经处理完了，更新对应 Task",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "thread-task-lookup",
+            "project": {
+                "project_id": "project-1",
+                "project_title": "Company Project",
+                "project_root": str(project_root),
+            },
+            "thread_transcript": {"schema_version": 2, "items": []},
+            "attachments": [],
+        },
+    )
+
+    assert result["tool_events"][0]["name"] == "list_tasks"
+    assert list_calls == [
+        {
+            "project_id": "project-1",
+            "include_archived": False,
+            "limit": 20,
+        }
+    ]
 
 
 def test_loaded_task_can_update_from_another_active_project_without_moving_source(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ CANONICAL_TOOL_NAMES = (
     "wait_subagents",
     "read_tool_result",
     "save_skill",
+    "list_tasks",
     "save_task",
     "exec_command",
     "write_stdin",

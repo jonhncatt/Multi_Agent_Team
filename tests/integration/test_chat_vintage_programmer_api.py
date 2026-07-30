@@ -434,6 +434,8 @@ class _ResumableCommandApprovalRuntime(_PendingCommandApprovalRuntime):
         pending_turn = dict(context.get("pending_turn") or {})
         assert pending_turn.get("tool_call_id") == "approval-tool-call"
         assert str(context.get("logical_turn_id") or "") == str(pending_turn.get("turn_id") or "")
+        assert float(pending_turn.get("turn_started_at") or 0.0) > 0
+        assert float(context.get("logical_turn_started_at") or 0.0) == float(pending_turn["turn_started_at"])
         result = _FakeVintageRuntime.run(
             self,
             message=message,
@@ -1398,6 +1400,31 @@ def test_tasks_api_updates_and_deletes_snapshot(monkeypatch, tmp_path: Path) -> 
     assert updated["progress"] == ["Implemented editor"]
     assert updated["decisions"] == ["Edit without an LLM call"]
 
+    archived_response = client.put(
+        f"/api/tasks/{task_id}",
+        json={
+            "project_id": project_id,
+            "title": "Updated title",
+            "goal": "Updated goal",
+            "summary": "Updated summary",
+            "progress": ["Implemented editor"],
+            "next_steps": ["Verify deletion"],
+            "decisions": ["Edit without an LLM call"],
+            "blockers": [],
+            "artifacts": ["app/static/app.js"],
+            "status": "archived",
+        },
+    )
+    assert archived_response.status_code == 200
+    assert archived_response.json()["status"] == "archived"
+    assert task_id not in {
+        item["task_id"] for item in client.get("/api/tasks").json()["tasks"]
+    }
+    assert task_id in {
+        item["task_id"]
+        for item in client.get("/api/tasks?include_archived=true").json()["tasks"]
+    }
+
     delete_response = client.delete(f"/api/tasks/{task_id}")
     assert delete_response.status_code == 200
     assert delete_response.json() == {"ok": True, "task_id": task_id}
@@ -2312,6 +2339,14 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     session_id = first_payload["session_id"]
     original_turn_id = str(first_payload["pending_approval"].get("tool_call_id") or "")
     assert original_turn_id == "approval-tool-call"
+    original_started_at = float(first_payload["activity"]["turn_started_at"])
+    assert original_started_at > 0
+    pending_session = main_app.session_store.load(session_id)
+    assert pending_session is not None
+    assert float(pending_session["pending_interaction"]["turn"]["turn_started_at"]) == original_started_at
+    assert float(
+        first_payload["inspector"]["run_state"]["pending_turn"]["turn_started_at"]
+    ) == original_started_at
 
     second = client.post(
         "/api/chat",
@@ -2334,7 +2369,9 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     )
 
     assert second.status_code == 200
-    assert second.json()["turn_status"] == "completed"
+    second_payload = second.json()
+    assert second_payload["turn_status"] == "completed"
+    assert float(second_payload["activity"]["turn_started_at"]) == original_started_at
     session = main_app.session_store.load(session_id)
     assert session is not None
     assert [item["role"] for item in session["turns"]] == ["user", "assistant"]

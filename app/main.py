@@ -197,6 +197,47 @@ def _nonnegative_int(value: Any) -> int:
         return 0
 
 
+def _positive_epoch_seconds(value: Any) -> float:
+    try:
+        timestamp = float(value or 0.0)
+    except Exception:
+        return 0.0
+    if timestamp <= 0:
+        return 0.0
+    if timestamp >= 1_000_000_000_000:
+        timestamp /= 1000.0
+    return timestamp
+
+
+def _resume_turn_started_at(
+    session: dict[str, Any],
+    pending_turn: dict[str, Any],
+    *,
+    fallback: float,
+) -> float:
+    persisted = _positive_epoch_seconds(pending_turn.get("turn_started_at"))
+    if persisted:
+        return persisted
+    logical_turn_id = str(pending_turn.get("turn_id") or "").strip()
+    for raw_turn in reversed(list(session.get("turns") or [])):
+        if not isinstance(raw_turn, dict):
+            continue
+        if str(raw_turn.get("role") or "") not in {"runtime", "assistant"}:
+            continue
+        activity = raw_turn.get("activity")
+        if not isinstance(activity, dict):
+            continue
+        activity_run_id = str(activity.get("run_id") or "").strip()
+        if logical_turn_id and activity_run_id and activity_run_id != logical_turn_id:
+            continue
+        started_at = _positive_epoch_seconds(
+            activity.get("turn_started_at") or activity.get("started_at")
+        )
+        if started_at:
+            return started_at
+    return _positive_epoch_seconds(fallback) or time.time()
+
+
 def _activity_with_end_to_end_duration(
     activity: dict[str, Any] | None,
     phase_timings: dict[str, Any] | None,
@@ -2269,6 +2310,7 @@ def _build_run_snapshot(
     *,
     goal: str,
     turn_id: str = "",
+    turn_started_at: float = 0.0,
     turn_status: str,
     cwd: str,
     plan: list[dict[str, Any]] | None = None,
@@ -2297,6 +2339,8 @@ def _build_run_snapshot(
     }
     if str(turn_id or "").strip():
         payload["turn_id"] = str(turn_id or "").strip()
+    if float(turn_started_at or 0.0) > 0:
+        payload["turn_started_at"] = float(turn_started_at)
     if str(model_draft or "").strip():
         payload["model_draft"] = str(model_draft or "")
     if str(final_answer or "").strip():
@@ -2670,6 +2714,7 @@ def _process_chat_request(
     pending_turn_for_resume: dict[str, Any] = {}
     is_turn_resume = False
     logical_turn_id = run_id
+    logical_turn_started_at = time.time()
     runtime_request_message = str(req.message or "")
     task_context: dict[str, Any] = {}
     cancel_event = _register_active_chat_run(run_id)
@@ -2744,6 +2789,11 @@ def _process_chat_request(
             if is_turn_resume:
                 pending_turn_for_resume = stored_pending_turn
                 logical_turn_id = str(stored_pending_turn.get("turn_id") or run_id).strip() or run_id
+                logical_turn_started_at = _resume_turn_started_at(
+                    session,
+                    stored_pending_turn,
+                    fallback=logical_turn_started_at,
+                )
                 runtime_request_message = str(stored_pending_turn.get("request_message") or req.message or "")
             with request_phase_timer.measure("session_project_resolve_ms"):
                 session_project = _cached_project_or_none(str(session.get("project_id") or "")) or requested_project
@@ -2784,6 +2834,7 @@ def _process_chat_request(
             with request_phase_timer.measure("session_ready_snapshot_ms"):
                 session_ready_snapshot = _build_run_snapshot(
                     goal=runtime_request_message,
+                    turn_started_at=logical_turn_started_at,
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                     context_meter=session_ready_context_meter,
@@ -2910,6 +2961,7 @@ def _process_chat_request(
                 run_id=run_id,
                 run_snapshot=_build_run_snapshot(
                     goal=runtime_request_message,
+                    turn_started_at=logical_turn_started_at,
                     turn_status="running",
                     cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                     context_meter=compacted_context_meter,
@@ -2994,6 +3046,7 @@ def _process_chat_request(
         with request_phase_timer.measure("attachments_ready_snapshot_ms"):
             attachments_ready_snapshot = _build_run_snapshot(
                 goal=runtime_request_message,
+                turn_started_at=logical_turn_started_at,
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=attachments_context_meter,
@@ -3057,6 +3110,7 @@ def _process_chat_request(
             thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=runtime_request_message,
+                turn_started_at=logical_turn_started_at,
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -3070,6 +3124,7 @@ def _process_chat_request(
             turn_id=logical_turn_id,
             run_snapshot=_build_run_snapshot(
                 goal=runtime_request_message,
+                turn_started_at=logical_turn_started_at,
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -3085,6 +3140,7 @@ def _process_chat_request(
             turn_status="running",
             run_snapshot=_build_run_snapshot(
                 goal=runtime_request_message,
+                turn_started_at=logical_turn_started_at,
                 turn_status="running",
                 cwd=str(session.get("cwd") or session_project.get("root_path") or ""),
                 context_meter=context_meter_for_runtime,
@@ -3120,6 +3176,7 @@ def _process_chat_request(
                     "session_id": session_id,
                     "run_id": run_id,
                     "logical_turn_id": logical_turn_id,
+                    "logical_turn_started_at": logical_turn_started_at,
                     "triggering_user_turn_id": user_turn_id,
                     "cancel_event": cancel_event,
                     "drain_pending_steers": lambda final=False: _drain_active_chat_run_steers(
@@ -3191,6 +3248,8 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_turn"), dict)
             else {}
         )
+        if pending_turn:
+            pending_turn["turn_started_at"] = logical_turn_started_at
         with request_phase_timer.measure("thread_title_generation_ms"):
             title_generation_result = _maybe_generate_auto_thread_title(
                 session,
@@ -3229,6 +3288,14 @@ def _process_chat_request(
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
+        activity["turn_started_at"] = logical_turn_started_at
+        logical_turn_finished_at = _positive_epoch_seconds(
+            activity.get("finished_at")
+        ) or time.time()
+        activity["final_elapsed_ms"] = max(
+            _nonnegative_int(activity.get("final_elapsed_ms")),
+            max(0, int((logical_turn_finished_at - logical_turn_started_at) * 1000)),
+        )
         agent_run_done_context_meter, agent_run_done_compaction_status = attachments_context_meter, attachments_compaction_status
 
         _emit_progress(
@@ -3242,6 +3309,7 @@ def _process_chat_request(
             run_id=run_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(((inspector.get("run_state") or {}) if isinstance(inspector.get("run_state"), dict) else {}).get("goal") or runtime_request_message),
+                turn_started_at=logical_turn_started_at,
                 turn_status=turn_status,
                 cwd=str((((inspector.get("session") or {}) if isinstance(inspector.get("session"), dict) else {}).get("cwd")) or session.get("cwd") or ""),
                 plan=plan,
@@ -3418,6 +3486,7 @@ def _process_chat_request(
                 continue
             compaction_status[key] = value
         inspector_run_state["pending_approval"] = dict(inspector_run_state.get("pending_approval") or pending_approval)
+        inspector_run_state["pending_turn"] = dict(pending_turn)
         for legacy_key in (
             "thread_memory", "recent_tasks", "artifact_memory_preview", "current_turn",
             "active_task_focus", "recent_user_messages", "current_task_focus",
@@ -3480,6 +3549,7 @@ def _process_chat_request(
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or runtime_request_message),
                 turn_id=response_turn_id,
+                turn_started_at=logical_turn_started_at,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -3603,6 +3673,7 @@ def _process_chat_request(
             thread_id=session_id,
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or runtime_request_message),
+                turn_started_at=logical_turn_started_at,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -3629,6 +3700,7 @@ def _process_chat_request(
             },
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or runtime_request_message),
+                turn_started_at=logical_turn_started_at,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,
@@ -3653,6 +3725,7 @@ def _process_chat_request(
             duration_ms=int(activity.get("run_duration_ms") or 0),
             run_snapshot=_build_run_snapshot(
                 goal=str(inspector_run_state.get("goal") or runtime_request_message),
+                turn_started_at=logical_turn_started_at,
                 turn_status=turn_status,
                 cwd=str(session.get("cwd") or ""),
                 plan=plan,

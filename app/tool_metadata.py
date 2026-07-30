@@ -100,6 +100,15 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
         "risk": "medium",
         "summary": "create or update repository-shared Team Skills",
     },
+    "list_tasks": {
+        "group": "control",
+        "source": "native",
+        "read_only": True,
+        "requires_evidence": False,
+        "requires": {**_FALLBACK_REQUIRES},
+        "risk": "low",
+        "summary": "search durable Tasks and resolve their task ids",
+    },
     "save_task": {
         "group": "control",
         "source": "native",

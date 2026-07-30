@@ -1182,6 +1182,7 @@ class LocalToolExecutor:
         run_id: str | None = None,
         cancel_event: Any | None = None,
         skill_writer: Any | None = None,
+        task_lister: Any | None = None,
         task_reader: Any | None = None,
         task_writer: Any | None = None,
         reserved_skill_roots: list[str] | None = None,
@@ -1209,6 +1210,7 @@ class LocalToolExecutor:
         self._runtime_ctx.runtime_boundary = dict(runtime_boundary or {})
         self._runtime_ctx.cancel_event = cancel_event
         self._runtime_ctx.skill_writer = skill_writer
+        self._runtime_ctx.task_lister = task_lister
         self._runtime_ctx.task_reader = task_reader
         self._runtime_ctx.task_writer = task_writer
         self._runtime_ctx.reserved_skill_roots = [
@@ -1225,7 +1227,7 @@ class LocalToolExecutor:
         self._runtime_ctx.subagent_read_only = bool(subagent_read_only)
 
     def clear_runtime_context(self) -> None:
-        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "cancel_event", "skill_writer", "task_reader", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
+        for key in ("execution_mode", "session_id", "project_id", "project_root", "cwd", "model", "run_id", "locale", "permission_profile", "runtime_boundary", "cancel_event", "skill_writer", "task_lister", "task_reader", "task_writer", "reserved_skill_roots", "builtin_skill_roots", "team_skill_roots", "subagent_runner", "subagent_waiter", "subagent_read_only"):
             try:
                 delattr(self._runtime_ctx, key)
             except Exception:
@@ -3913,6 +3915,56 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "list_tasks",
+                "description": (
+                    "Search durable Tasks and return their real task_id values before updating an existing Task. "
+                    "Search the current project first; use all_projects only when the user refers to a Task outside "
+                    "the current project or no current-project match is found."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Optional topic text matched against Task titles, goals, summaries, lists, and project names.",
+                            "default": "",
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["", "active", "blocked", "completed", "archived"],
+                            "description": "Optional exact lifecycle status filter.",
+                            "default": "",
+                        },
+                        "project_scope": {
+                            "type": "string",
+                            "enum": ["current_project", "all_projects"],
+                            "description": "Search only the active project by default, or all locally registered Task snapshots.",
+                            "default": "current_project",
+                        },
+                        "include_archived": {
+                            "type": "boolean",
+                            "description": "Include archived Tasks. Automatically enabled when status is archived.",
+                            "default": False,
+                        },
+                        "detail_level": {
+                            "type": "string",
+                            "enum": ["summary", "full"],
+                            "description": "Use summary to identify candidates. After narrowing, use full to retrieve the complete replacement baseline; full returns at most 5 Tasks.",
+                            "default": "summary",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "description": "Maximum matching Tasks to return.",
+                            "default": 20,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "save_task",
                 "description": "Create a durable Task snapshot for the current project, or propose replacing the loaded Task snapshot when task_id is provided. Existing Task updates require the user to review and approve the complete proposal before it is written.",
                 "parameters": {
@@ -4186,6 +4238,9 @@ class LocalToolExecutor:
             return self._decorate_result(result)
         if name == "save_skill":
             result = self.save_skill(**arguments)
+            return self._decorate_result(result)
+        if name == "list_tasks":
+            result = self.list_tasks(**arguments)
             return self._decorate_result(result)
         if name == "save_task":
             result = self.save_task(**arguments)
@@ -4868,6 +4923,175 @@ class LocalToolExecutor:
                 "summary": "invalid skill payload",
             }
         return payload if "ok" in payload else {"ok": True, **payload}
+
+    def list_tasks(
+        self,
+        query: str = "",
+        status: str = "",
+        project_scope: str = "current_project",
+        include_archived: bool = False,
+        detail_level: str = "summary",
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        lister = getattr(self._runtime_ctx, "task_lister", None)
+        if not callable(lister):
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "task_lister_unavailable",
+                    "tool": "list_tasks",
+                    "message": "No Task list reader is available for the current run.",
+                },
+                "summary": "Task list reader unavailable",
+            }
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in {"", "active", "blocked", "completed", "archived"}:
+            message = f"Unsupported Task status: {normalized_status}"
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_task_filter",
+                    "tool": "list_tasks",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        normalized_scope = str(project_scope or "current_project").strip().lower()
+        if normalized_scope not in {"current_project", "all_projects"}:
+            message = f"Unsupported Task project_scope: {normalized_scope}"
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_task_filter",
+                    "tool": "list_tasks",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        normalized_detail_level = str(detail_level or "summary").strip().lower()
+        if normalized_detail_level not in {"summary", "full"}:
+            message = f"Unsupported Task detail_level: {normalized_detail_level}"
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_task_filter",
+                    "tool": "list_tasks",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        current_project_id = self._current_project_id()
+        if normalized_scope == "current_project" and not current_project_id:
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "task_project_unavailable",
+                    "tool": "list_tasks",
+                    "message": "No active project is available for a current-project Task search.",
+                },
+                "summary": "Active project unavailable",
+            }
+        try:
+            normalized_limit = max(1, min(50, int(limit)))
+        except (TypeError, ValueError):
+            normalized_limit = 20
+        try:
+            raw_payload = lister(
+                project_id=current_project_id if normalized_scope == "current_project" else None,
+                include_archived=bool(include_archived) or normalized_status == "archived",
+                limit=500,
+            )
+        except Exception as exc:
+            message = safe_error_message(exc)
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "task_list_failed",
+                    "tool": "list_tasks",
+                    "message": message,
+                },
+                "summary": message,
+            }
+        if isinstance(raw_payload, dict):
+            raw_tasks = list(raw_payload.get("tasks") or [])
+        else:
+            raw_tasks = list(raw_payload or [])
+        query_text = str(query or "").strip()
+        query_folded = query_text.casefold()
+        matches: list[dict[str, Any]] = []
+        for raw_task in raw_tasks:
+            if not isinstance(raw_task, dict):
+                continue
+            task_status = str(raw_task.get("status") or "active").strip().lower() or "active"
+            if normalized_status and task_status != normalized_status:
+                continue
+            if query_folded:
+                searchable = json.dumps(
+                    {
+                        "task_id": raw_task.get("task_id"),
+                        "project_title": raw_task.get("project_title"),
+                        "title": raw_task.get("title"),
+                        "goal": raw_task.get("goal"),
+                        "summary": raw_task.get("summary"),
+                        "progress": raw_task.get("progress"),
+                        "next_steps": raw_task.get("next_steps"),
+                        "decisions": raw_task.get("decisions"),
+                        "blockers": raw_task.get("blockers"),
+                        "artifacts": raw_task.get("artifacts"),
+                    },
+                    ensure_ascii=False,
+                ).casefold()
+                if query_folded not in searchable:
+                    continue
+            matches.append(raw_task)
+
+        def _short_text(value: Any, max_chars: int) -> str:
+            return str(value or "").strip()[:max_chars]
+
+        def _short_list(value: Any, *, max_items: int = 5, max_chars: int = 500) -> list[str]:
+            return [
+                _short_text(item, max_chars)
+                for item in list(value or [])[:max_items]
+                if _short_text(item, max_chars)
+            ]
+
+        effective_limit = min(normalized_limit, 5) if normalized_detail_level == "full" else normalized_limit
+        summary_tasks = [
+            {
+                "task_id": _short_text(task.get("task_id"), 160),
+                "project_id": _short_text(task.get("project_id"), 160),
+                "project_title": _short_text(task.get("project_title"), 240),
+                "title": _short_text(task.get("title"), 120),
+                "status": _short_text(task.get("status") or "active", 32),
+                "goal": _short_text(task.get("goal"), 600),
+                "summary": _short_text(task.get("summary"), 1200),
+                "progress": _short_list(task.get("progress")),
+                "next_steps": _short_list(task.get("next_steps")),
+                "blockers": _short_list(task.get("blockers"), max_items=3),
+                "artifacts": _short_list(task.get("artifacts"), max_chars=800),
+                "updated_at": _short_text(task.get("updated_at"), 80),
+            }
+            for task in matches[:effective_limit]
+        ]
+        visible_tasks = (
+            [self._task_approval_snapshot(task) for task in matches[:effective_limit]]
+            if normalized_detail_level == "full"
+            else summary_tasks
+        )
+        return {
+            "ok": True,
+            "query": query_text,
+            "status": normalized_status,
+            "project_scope": normalized_scope,
+            "current_project_id": current_project_id,
+            "include_archived": bool(include_archived) or normalized_status == "archived",
+            "detail_level": normalized_detail_level,
+            "matched_count": len(matches),
+            "returned_count": len(visible_tasks),
+            "truncated": len(matches) > len(visible_tasks),
+            "tasks": visible_tasks,
+            "summary": f"Found {len(matches)} matching Task(s).",
+        }
 
     def save_task(
         self,

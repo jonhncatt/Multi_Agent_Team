@@ -319,6 +319,30 @@ class SaveSkillArgs(BaseModel):
     overwrite: bool = Field(default=False, description="Set true only to replace an existing Team SKILL.md of the same name.")
 
 
+class ListTasksArgs(BaseModel):
+    query: str = Field(
+        default="",
+        description="Optional topic text matched against Task titles, goals, summaries, lists, and project names.",
+    )
+    status: Literal["", "active", "blocked", "completed", "archived"] = Field(
+        default="",
+        description="Optional exact lifecycle status filter.",
+    )
+    project_scope: Literal["current_project", "all_projects"] = Field(
+        default="current_project",
+        description="Search the active project by default, or all locally registered Task snapshots.",
+    )
+    include_archived: bool = Field(
+        default=False,
+        description="Include archived Tasks; automatically enabled when status is archived.",
+    )
+    detail_level: Literal["summary", "full"] = Field(
+        default="summary",
+        description="Use summary to identify candidates; use full after narrowing to retrieve a complete replacement baseline.",
+    )
+    limit: int = Field(default=20, ge=1, le=50, description="Maximum matching Tasks to return.")
+
+
 class SaveTaskArgs(BaseModel):
     task_id: str = Field(default="", description="Existing Task id to update; leave empty only when creating a new Task.")
     title: str = Field(description="Short, recognizable title shown in the Tasks list.")
@@ -816,6 +840,12 @@ class VPRuntimeBackend:
                 func=self._save_skill_tool,
             ),
             self._StructuredTool.from_function(
+                name="list_tasks",
+                description="Search durable Tasks and return real task_id values before updating an existing Task. Search the current project first and broaden to all projects only when needed.",
+                args_schema=ListTasksArgs,
+                func=self._list_tasks_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="save_task",
                 description="Create a durable Task snapshot for the current project, or replace the loaded Task when task_id is provided. Use it when the user asks to summarize/save current work as a Task and to checkpoint material progress on a loaded Task.",
                 args_schema=SaveTaskArgs,
@@ -1070,6 +1100,27 @@ class VPRuntimeBackend:
                 body=body,
                 enabled=enabled,
                 overwrite=overwrite,
+            ),
+            ensure_ascii=False,
+        )
+
+    def _list_tasks_tool(
+        self,
+        query: str = "",
+        status: str = "",
+        project_scope: str = "current_project",
+        include_archived: bool = False,
+        detail_level: str = "summary",
+        limit: int = 20,
+    ) -> str:
+        return json.dumps(
+            self.tools.list_tasks(
+                query=query,
+                status=status,
+                project_scope=project_scope,
+                include_archived=include_archived,
+                detail_level=detail_level,
+                limit=limit,
             ),
             ensure_ascii=False,
         )

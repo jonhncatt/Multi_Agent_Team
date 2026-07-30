@@ -22,6 +22,7 @@ REQUIRED_CORE_KEYS = (
     "settings.theme_color.emerald",
     "settings.theme_color.violet",
     "settings.theme_color.rose",
+    "settings.theme_color.amber",
     "settings.context_turns.help",
     "tool.failure.error",
     "tool.failure.stderr",
@@ -1069,8 +1070,8 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     polling_body = script.split("function nextRuntimeStatusPollIntervalMs", 1)[1].split("function mergeRunSnapshot", 1)[0]
     assert 'drawerView === "run"' not in polling_body
     assert "if (contextMeterOpen) return RUNTIME_STATUS_IDLE_INTERVAL_MS;" in polling_body
-    assert "setActiveRunStartedAt(clientSubmittedAtMs);" in script
-    assert "startedAt: clientSubmittedAtMs," in script
+    assert "setActiveRunStartedAt(logicalTurnStartedAtMs);" in script
+    assert "startedAt: logicalTurnStartedAtMs," in script
     assert "const liveAssistantMessageId = hasLiveRuntimeState" in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
@@ -1181,7 +1182,8 @@ def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
 
     required_tokens = (
         "activeRunThreadId: runOwnerThreadId,",
-        "startedAt: clientSubmittedAtMs,",
+        "startedAt: logicalTurnStartedAtMs,",
+        "startedAt: snapshotTurnStartedAt || prev.startedAt || logicalTurnStartedAtMs,",
         "startedAt: activeRunStartedAt,",
         "setActiveRunThreadId(next.activeRunThreadId);",
         "setActiveRunStartedAt(next.startedAt);",
@@ -1298,6 +1300,7 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
     required_script_tokens = (
         'const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";',
         "const THEME_COLOR_OPTIONS = [",
+        '{ id: "amber", accent: "#f37021", accentInk: "#ffffff", accentSoft: "#ffede2", accentStrong: "#df5f10", accentDark: "#b94708" }',
         "function readStoredThemeColor() {",
         "function applyThemeColor(value) {",
         'root.style.setProperty("--accent", option.accent);',
@@ -1326,6 +1329,9 @@ def test_settings_theme_color_selector_drives_accent_variables() -> None:
     assert '"settings.theme_color": "主题色"' in locales
     assert '"settings.theme_color": "テーマ色"' in locales
     assert '"settings.theme_color": "Theme Color"' in locales
+    assert '"settings.theme_color.amber": "橘黄色"' in locales
+    assert '"settings.theme_color.amber": "オレンジ"' in locales
+    assert '"settings.theme_color.amber": "Orange"' in locales
 
 
 def test_internal_design_manual_describes_current_thread_runtime() -> None:
@@ -1371,7 +1377,13 @@ def test_turn_timer_anchor_is_preserved_across_activity_updates() -> None:
     assert "prev.started_at || nextStartedAtCandidate || 0" in script
     assert "prev.turn_started_at || nextTurnStartedAtCandidate || nextStartedAt || 0" in script
     assert "Number(prev.final_elapsed_ms || 0) || 0" in script
-    assert "turn_started_at: clientSubmittedAtMs," in script
+    assert "function resumableTurnStartedAt(messages, runtimeState = {})" in script
+    assert "pendingTurn.turn_started_at" in script
+    assert "const logicalTurnStartedAtMs = isTurnResume" in script
+    assert "resumableTurnStartedAt(messages, sessionRuntimeState) || clientSubmittedAtMs" in script
+    assert "turn_started_at: logicalTurnStartedAtMs," in script
+    assert "setActiveRunStartedAt(logicalTurnStartedAtMs);" in script
+    assert "snapshot.turn_started_at || snapshot.turnStartedAt || 0" in script
 
     run_started_match = re.search(
         r'if \(event === "run_started"\) \{(?P<body>.*?)\n            \} else if \(event === "run_finished"\)',
@@ -1937,16 +1949,23 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
-def test_tasks_entry_loads_snapshot_into_new_thread_in_current_project() -> None:
+def test_tasks_entry_loads_snapshot_into_current_thread_and_exposes_archived_tasks() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    load_handler = script.split("async function handleLoadTask(task)", 1)[1].split(
+        "function openTaskEditor(task)",
+        1,
+    )[0]
 
     assert 'drawerView === "tasks"' in script
-    assert 'const data = await fetchJson("/api/tasks")' in script
+    assert 'showArchivedTasks ? "/api/tasks?include_archived=true" : "/api/tasks"' in script
+    assert 't("tasks.show_archived")' in script
+    assert '${["active", "blocked", "completed", "archived"].map' in script
     assert 'const activeProjectId = String(projectId || "").trim();' in script
-    assert 'const targetSessionId = await createSession(activeProjectId, { restoreOnFailure: false });' in script
+    assert "createSession(" not in load_handler
     assert "projectIdOverride: activeProjectId" in script
-    assert "sessionIdOverride: targetSessionId" in script
+    assert 'sessionIdOverride: String(sessionId || "").trim()' in load_handler
     assert 'selectProject(taskProjectId' not in script
     assert "const targetProjectId = String(options.projectIdOverride || projectId || \"\").trim();" in script
     assert "const targetSessionId = String(options.sessionIdOverride || sessionId || \"\").trim();" in script
@@ -1967,10 +1986,14 @@ def test_tasks_entry_loads_snapshot_into_new_thread_in_current_project() -> None
         ".task-card-project",
         ".task-status",
         ".task-card-actions",
+        ".tasks-archive-toggle",
         ".task-editor-modal",
         ".task-editor-grid",
     ):
         assert token in styles, token
+    assert '"tasks.show_archived": "显示已归档"' in locales
+    assert '"tasks.show_archived": "アーカイブ済みを表示"' in locales
+    assert '"tasks.show_archived": "Show archived"' in locales
 
 
 def test_runtime_control_center_uses_live_progress_without_task_state_details() -> None:

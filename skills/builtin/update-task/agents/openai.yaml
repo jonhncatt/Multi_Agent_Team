@@ -1,4 +1,4 @@
 interface:
   display_name: "Update Task"
   short_description: "Draft complete Task updates for human approval"
-  default_prompt: "Use $update-task to draft an update for the currently loaded Task and request approval before saving."
+  default_prompt: "Use $update-task to resolve the intended existing Task, draft a complete update, and request approval before saving."

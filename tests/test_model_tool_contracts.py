@@ -65,7 +65,7 @@ def test_every_runtime_tool_has_one_model_visible_contract(tmp_path: Path) -> No
     backend, model_specs, runtime_specs = _tool_surfaces(tmp_path)
 
     assert set(model_specs) == set(runtime_specs)
-    assert len(model_specs) == 35
+    assert len(model_specs) == 36
     for name, model_spec in model_specs.items():
         assert str(model_spec.get("description") or "").strip(), name
         assert _missing_property_descriptions(model_spec["parameters"]) == [], name
@@ -126,6 +126,14 @@ def test_structured_choices_are_visible_to_the_model(tmp_path: Path) -> None:
         "up",
         "left",
         "right",
+    ]
+    assert specs["list_tasks"]["parameters"]["properties"]["project_scope"]["enum"] == [
+        "current_project",
+        "all_projects",
+    ]
+    assert specs["list_tasks"]["parameters"]["properties"]["detail_level"]["enum"] == [
+        "summary",
+        "full",
     ]
 
 
