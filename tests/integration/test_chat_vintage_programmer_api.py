@@ -2450,6 +2450,26 @@ def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(mon
             )
             payload["text"] = "第二段最终回复"
             payload["final_answer"] = "第二段最终回复"
+            payload["activity"] = {
+                **dict(payload.get("activity") or {}),
+                "llm_exchanges": [
+                    {
+                        "round": 1,
+                        "model": "gpt-test",
+                        "status": "completed",
+                        "sent_messages_exact": [
+                            {"role": "system", "content": "[system]\nShared rules"},
+                            {"role": "user", "content": "先处理原任务"},
+                        ],
+                        "request_composition": {"bound_tool_names": []},
+                        "model_returned_exact": {
+                            "role": "assistant",
+                            "content": "第一段回复",
+                            "finish_reason": "stop",
+                        },
+                    }
+                ],
+            }
             payload["intermediate_turns"] = [
                 {
                     "role": "assistant",
@@ -2460,6 +2480,20 @@ def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(mon
                     "role": "user",
                     "text": "追加：再检查测试",
                     "activity": {"status": "steer_accepted", "steer_id": "steer-1"},
+                },
+            ]
+            payload["transcript_delta"] = [
+                {
+                    "id": "segment-first",
+                    "turn_id": str(context.get("logical_turn_id") or context.get("run_id") or ""),
+                    "role": "assistant",
+                    "content": "第一段回复",
+                },
+                {
+                    "id": "steer-1",
+                    "turn_id": str(context.get("logical_turn_id") or context.get("run_id") or ""),
+                    "role": "user",
+                    "content": "追加：再检查测试",
                 },
             ]
             payload["steered_user_messages"] = [
@@ -2493,6 +2527,17 @@ def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(mon
         ("user", "追加：再检查测试"),
         ("assistant", "第二段最终回复"),
     ]
+    first_assistant = session["turns"][1]
+    final_assistant = session["turns"][3]
+    assert first_assistant["activity"]["trace_ref"]
+    assert first_assistant["activity"]["trace_ref"] == final_assistant["activity"]["trace_ref"]
+
+    first_debug = client.get(
+        f"/api/thread/{session['id']}/turn/{first_assistant['id']}?view=debug"
+    )
+    assert first_debug.status_code == 200
+    first_contexts = first_debug.json()["activity"]["turn_trace"]["contexts"]
+    assert first_contexts[0]["system_message"] == "[system]\nShared rules"
 
 
 def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_path: Path) -> None:

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from app.action_validator import ActionValidator, ValidationResult, validation_observation
+from app.action_validator import (
+    ActionValidator,
+    ValidationResult,
+    shell_command_uses_compound_syntax,
+    validation_observation,
+)
 from app.runtime_boundary import RuntimeBoundary
 from app.serialization import dump_model
 
@@ -316,6 +321,38 @@ def test_exec_command_supply_chain_flows_allowed_for_full_access_approval(tmp_pa
     )
 
     assert result.allowed
+
+
+def test_inline_python_separators_inside_quotes_reach_approval_boundary(tmp_path: Path) -> None:
+    command = (
+        "python -c \"from pathlib import Path; "
+        "roots=['FunctionT', 'RunningTP']; "
+        "print([Path(root).name for root in roots])\""
+    )
+
+    result = _validator(
+        tmp_path,
+        permission_profile="full_access",
+        network_allowed=True,
+    ).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert result.allowed
+    assert result.code == "allowed"
+    assert shell_command_uses_compound_syntax(command) is False
+
+
+def test_shell_separator_outside_quotes_still_uses_compound_validation(tmp_path: Path) -> None:
+    command = "printf 'a;b' && pwd"
+
+    result = _validator(tmp_path).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert shell_command_uses_compound_syntax(command) is True
+    assert result.allowed
+    assert result.code == "allowed"
 
 
 @pytest.mark.parametrize(

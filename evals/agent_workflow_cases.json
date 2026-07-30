@@ -12,6 +12,7 @@
       "steer_messages": [
         "补充要求：在当前交付说明里加入一个 Compatibility check 小节，再次运行 run_checks.py 后才能完成。"
       ],
+      "steer_injection": "after_first_tool_result",
       "settings": {
         "locale": "zh-CN",
         "max_output_tokens": 8192,

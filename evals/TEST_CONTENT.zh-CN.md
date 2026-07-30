@@ -70,9 +70,9 @@ Agent 根据规则、参考资料和变更记录，只修改 `GUIDE.md`，生成
 
 ### `runtime_steer_updates_active_turn`
 
-Agent 开始依据 `BASE.md` 编写 `PLAN.md` 后，runner 在安全的模型调用边界追加一条用户要求：增加 `Compatibility check` 小节并重新验证。
+Agent 开始依据 `BASE.md` 工作后，runner 先等待第一条真实 `tool.finished`，再追加一条用户要求：增加 `Compatibility check` 小节并重新验证。
 
-重点检查追加指令是否进入当前 Turn、是否被 Agent 接收并落实，而不是启动并行请求或丢失原任务。
+重点检查追加指令是否在工具结果之后才注入、是否在下一次模型请求之前进入当前 Turn，并被 Agent 接收和落实，而不是预先塞进上下文、启动并行请求或丢失原任务。
 
 ### `subagent_protocol_analysis_and_parent_summary`
 

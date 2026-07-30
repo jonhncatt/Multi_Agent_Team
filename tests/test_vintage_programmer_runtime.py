@@ -1662,7 +1662,7 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
     assert str(accepted_event["next_segment_id"]).startswith("run-steer:agent_message:")
 
 
-def test_runtime_finishes_current_response_before_accepting_queued_request(
+def test_runtime_accepts_steer_after_tool_batch_before_next_model_request(
     tmp_path: Path,
 ) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
@@ -1679,7 +1679,6 @@ def test_runtime_finishes_current_response_before_accepting_queued_request(
                     }
                 ],
             ),
-            _FakeMessage(content="第一个 Redmine 的读取结果。"),
             _FakeMessage(
                 content="",
                 tool_calls=[
@@ -1717,6 +1716,7 @@ def test_runtime_finishes_current_response_before_accepting_queued_request(
         pending.clear()
         return drained
 
+    progress_events: list[dict[str, Any]] = []
     result = runtime.run(
         message="读取 https://redmine.example/issues/101",
         settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
@@ -1728,21 +1728,36 @@ def test_runtime_finishes_current_response_before_accepting_queued_request(
             "history_turns": [],
             "attachments": [],
         },
+        progress_cb=progress_events.append,
     )
 
     assert result["text"] == "第二个 Redmine 的读取结果。"
     assert [(item["role"], item["text"]) for item in result["intermediate_turns"]] == [
-        ("assistant", "第一个 Redmine 的读取结果。"),
         ("user", "再读取 https://redmine.example/issues/202"),
     ]
     assert [call[0] for call in backend.tools.calls] == ["read_file", "read_file"]
-    assert len(backend.invocations) == 4
+    assert len(backend.invocations) == 3
     assert drain_calls[0] is False
-    assert str(backend.invocations[1]["messages"][-1].content).startswith(
+    assert str(backend.invocations[1]["messages"][-2].content).startswith(
         '{"ok": true'
     )
-    assert backend.invocations[2]["messages"][-2].content == "第一个 Redmine 的读取结果。"
-    assert backend.invocations[2]["messages"][-1].content == "再读取 https://redmine.example/issues/202"
+    assert backend.invocations[1]["messages"][-1].content == "再读取 https://redmine.example/issues/202"
+    accepted_event = next(
+        item
+        for item in progress_events
+        if item.get("event") == "turn/steer/accepted"
+    )
+    assert accepted_event["boundary"] == "after_tool"
+    assert accepted_event["starts_next_response"] is False
+    assert not any(item.get("event") == "turn/segment/completed" for item in progress_events)
+    accepted_index = progress_events.index(accepted_event)
+    next_model_index = next(
+        index
+        for index, item in enumerate(progress_events[accepted_index + 1 :], start=accepted_index + 1)
+        if item.get("event") == "trace_event"
+        and str((item.get("trace") or {}).get("type") or "") == "llm.started"
+    )
+    assert accepted_index < next_model_index
 
 
 def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
@@ -2039,6 +2054,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
     agent_spec.write_text(agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"), encoding="utf-8")
+    command = "python -c \"from pathlib import Path; print(Path('.').resolve())\""
     tools = _ApprovalRequiredTools()
     backend = _FakeBackendWithTools(
         [
@@ -2049,7 +2065,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
                         "id": "tc-approval",
                         "name": "exec_command",
                         "args": {
-                            "cmd": "python -c \"print('x')\"",
+                            "cmd": command,
                             "purpose": "Verify the active Python interpreter before continuing.",
                             "cwd": str(tmp_path),
                         },
@@ -2089,7 +2105,7 @@ def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> 
     assert result["pending_turn"]["turn_started_at"] == 1_700_000_000.25
     assert result["activity"]["turn_started_at"] == 1_700_000_000.25
     assert [item["role"] for item in result["transcript_delta"]] == ["assistant"]
-    assert result["inspector"]["run_state"]["pending_approval"]["command"] == "python -c \"print('x')\""
+    assert result["inspector"]["run_state"]["pending_approval"]["command"] == command
     request_event = next(item for item in progress_events if str(item.get("event") or "") == "request_user_input")
     assert request_event["pending_approval"]["type"] == "command_execution"
     assert request_event["run_snapshot"]["pending_approval"]["approval_token"] == "approval-token-1"

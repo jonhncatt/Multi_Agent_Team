@@ -3399,24 +3399,37 @@ def _process_chat_request(
                 for steer in list(runtime_result.get("steered_user_messages") or [])
                 if isinstance(steer, dict) and str(steer.get("message") or "").strip()
             ]
+        intermediate_assistant_turn_ids: list[str] = []
         for item in intermediate_turns:
             intermediate_role = str(item.get("role") or "user")
             intermediate_text = str(item.get("text") or "").strip()
-            already_recorded = any(
-                isinstance(transcript_item, dict)
-                and str(transcript_item.get("turn_id") or "") == logical_turn_id
-                and str(transcript_item.get("role") or "") == intermediate_role
-                and str(transcript_item.get("content") or "").strip() == intermediate_text
-                for transcript_item in list((session.get("thread_transcript") or {}).get("items") or [])
+            recorded_transcript_item = next(
+                (
+                    transcript_item
+                    for transcript_item in list((session.get("thread_transcript") or {}).get("items") or [])
+                    if isinstance(transcript_item, dict)
+                    and str(transcript_item.get("turn_id") or "") == logical_turn_id
+                    and str(transcript_item.get("role") or "") == intermediate_role
+                    and str(transcript_item.get("content") or "").strip() == intermediate_text
+                ),
+                None,
             )
-            session_store.append_turn(
+            intermediate_turn = session_store.append_turn(
                 session,
                 role=intermediate_role,
                 text=intermediate_text,
                 activity=dict(item.get("activity") or {}),
-                record_transcript=not already_recorded,
+                record_transcript=recorded_transcript_item is None,
                 logical_turn_id=logical_turn_id,
             )
+            if intermediate_role == "assistant":
+                intermediate_assistant_turn_id = str(
+                    (recorded_transcript_item or {}).get("id")
+                    or intermediate_turn.get("id")
+                    or ""
+                ).strip()
+                if intermediate_assistant_turn_id:
+                    intermediate_assistant_turn_ids.append(intermediate_assistant_turn_id)
         response_turn = session_store.append_turn(
             session,
             role="runtime" if pending_input_notice else "assistant",
@@ -3527,6 +3540,7 @@ def _process_chat_request(
                 turn_id=response_turn_id,
                 run_id=run_id,
                 logical_turn_id=logical_turn_id,
+                linked_turn_ids=intermediate_assistant_turn_ids,
                 activity=activity,
                 answer_bundle=answer_bundle,
                 tool_events=tool_events,

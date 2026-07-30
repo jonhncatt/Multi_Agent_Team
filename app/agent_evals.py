@@ -955,7 +955,7 @@ def run_eval_attempt(
     settings_payload.setdefault("locale", "zh-CN")
     settings = ChatSettings(**settings_payload)
     run_id = f"eval-{_slug(str(case.get('name') or 'case'))}-{attempt}-{uuid4().hex[:8]}"
-    steer_queue = [
+    configured_steers = [
         {
             "id": f"{run_id}:steer:{index}",
             "message": message,
@@ -963,7 +963,49 @@ def run_eval_attempt(
         }
         for index, message in enumerate(_string_list(case.get("steer_messages")), start=1)
     ]
+    steer_injection = str(case.get("steer_injection") or "").strip()
+    steer_queue = [] if steer_injection else list(configured_steers)
     accepted_steers: list[dict[str, Any]] = []
+    eval_event_sequence = 0
+    steer_injected_at_sequence = 0
+    steer_accepted_event_sequences: list[int] = []
+    first_model_start_after_steer_sequence = 0
+
+    def runtime_progress(event: dict[str, Any]) -> None:
+        nonlocal eval_event_sequence
+        nonlocal steer_injected_at_sequence
+        nonlocal first_model_start_after_steer_sequence
+        eval_event_sequence += 1
+        payload = dict(event or {})
+        event_name = str(payload.get("event") or "").strip()
+        trace = payload.get("trace")
+        trace_payload = dict(trace) if isinstance(trace, dict) else {}
+        trace_type = str(trace_payload.get("type") or "").strip()
+
+        if event_name == "turn/steer/accepted":
+            steer_accepted_event_sequences.append(eval_event_sequence)
+        elif (
+            trace_type == "llm.started"
+            and steer_accepted_event_sequences
+            and not first_model_start_after_steer_sequence
+        ):
+            first_model_start_after_steer_sequence = eval_event_sequence
+
+        should_inject = bool(
+            steer_injection == "after_first_tool_result"
+            and not steer_injected_at_sequence
+            and trace_type == "tool.finished"
+        )
+        if should_inject:
+            injected_at = time.time()
+            steer_queue.extend(
+                {
+                    **item,
+                    "queued_at": injected_at,
+                }
+                for item in configured_steers
+            )
+            steer_injected_at_sequence = eval_event_sequence
 
     def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
         _ = final
@@ -1008,6 +1050,7 @@ def run_eval_attempt(
                     "thread_transcript": dict(thread_seed.get("thread_transcript") or {}),
                     "compaction_status": dict(thread_seed.get("compaction_status") or {}),
                 },
+                progress_cb=runtime_progress,
             )
         )
     except Exception as exc:
@@ -1058,6 +1101,25 @@ def run_eval_attempt(
     )
     expected_steer_count = len(_string_list(case.get("steer_messages")))
     accepted_steer_count = len(accepted_steers)
+    steer_injection_observed = bool(
+        not steer_injection or steer_injected_at_sequence > 0
+    )
+    steer_accepted_after_injection = bool(
+        not steer_injection
+        or (
+            steer_injected_at_sequence > 0
+            and steer_accepted_event_sequences
+            and min(steer_accepted_event_sequences) > steer_injected_at_sequence
+        )
+    )
+    steer_applied_before_next_model = bool(
+        not steer_injection
+        or (
+            steer_accepted_event_sequences
+            and first_model_start_after_steer_sequence
+            > max(steer_accepted_event_sequences)
+        )
+    )
     verification = _mapping(case.get("verification"))
     agent_verification_required = bool(verification.get("agent_must_run", True))
     verification_markers = _string_list(
@@ -1082,6 +1144,9 @@ def run_eval_attempt(
         and not observed_forbidden_tools
         and not observed_forbidden_commands
         and accepted_steer_count == expected_steer_count
+        and steer_injection_observed
+        and steer_accepted_after_injection
+        and steer_applied_before_next_model
         and (not recovery_expected or recovery_observed)
     )
     tool_evidence = analyze_tool_evidence(
@@ -1208,6 +1273,21 @@ def run_eval_attempt(
                 "Queued run-time guidance was not fully accepted by the active turn.",
                 "steer_not_accepted",
             )
+        if not steer_injection_observed:
+            fail(
+                "Run-time guidance was not injected after the configured tool-result boundary.",
+                "steer_injection_missing",
+            )
+        if not steer_accepted_after_injection:
+            fail(
+                "Run-time guidance was accepted before its configured mid-turn injection point.",
+                "steer_boundary_incorrect",
+            )
+        if not steer_applied_before_next_model:
+            fail(
+                "Run-time guidance was not accepted before the next model request.",
+                "steer_boundary_incorrect",
+            )
         if recovery_expected and not recovery_observed:
             fail(
                 "The expected failed-test then successful-recovery sequence was not observed.",
@@ -1299,6 +1379,13 @@ def run_eval_attempt(
             "forbidden_commands_observed": observed_forbidden_commands,
             "steer_messages_expected": expected_steer_count,
             "steer_messages_accepted": accepted_steer_count,
+            "steer_injection": steer_injection,
+            "steer_injected_at_sequence": steer_injected_at_sequence,
+            "steer_accepted_event_sequences": steer_accepted_event_sequences,
+            "first_model_start_after_steer_sequence": first_model_start_after_steer_sequence,
+            "steer_injection_observed": steer_injection_observed,
+            "steer_accepted_after_injection": steer_accepted_after_injection,
+            "steer_applied_before_next_model": steer_applied_before_next_model,
             "thread_seeded_item_count": int(thread_seed.get("seeded_item_count") or 0),
             "thread_compacted_item_count": int(thread_seed.get("compacted_item_count") or 0),
             "compaction_summary_supplied": bool(

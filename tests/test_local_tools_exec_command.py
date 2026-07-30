@@ -219,6 +219,36 @@ def test_read_only_subagent_gets_safe_alternative_instead_of_inline_python_appro
     assert result["error_detail"]["retryability"] == "change_tool_or_arguments"
 
 
+def test_read_only_subagent_inline_python_with_quoted_separators_does_not_request_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        execution_mode="host",
+        session_id="subagent-session",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        permission_profile="full_access",
+        runtime_boundary=_runtime_boundary(
+            tmp_path,
+            permission_profile="full_access",
+            network_allowed=True,
+            write_allowed=False,
+        ),
+        subagent_read_only=True,
+    )
+
+    result = manager.exec_command(
+        cmd="python -c \"from pathlib import Path; print(Path('.').resolve())\"",
+        cwd=str(tmp_path),
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "subagent_safe_alternative_required"
+    assert result.get("approval_required") is not True
+
+
 @pytest.mark.parametrize(
     ("command", "force", "delete"),
     [
@@ -456,6 +486,7 @@ def test_exec_command_blocks_supply_chain_flows(
     "command",
     [
         "python -c \"print('x')\"",
+        "python -c \"from pathlib import Path; print(Path('.').resolve())\"",
         "node -e \"console.log('x')\"",
         "npm install left-pad",
         "git pull",

@@ -497,6 +497,7 @@ class SessionStore:
         turn_id: str,
         run_id: str | None = None,
         logical_turn_id: str | None = None,
+        linked_turn_ids: list[str] | None = None,
         activity: dict[str, Any] | None = None,
         answer_bundle: dict[str, Any] | None = None,
         tool_events: list[dict[str, Any]] | None = None,
@@ -552,18 +553,59 @@ class SessionStore:
         )
         turn["answer_bundle"] = {}
         turn["run_artifact"] = {}
+        linked_summaries: dict[str, dict[str, Any]] = {
+            wanted_turn_id: dict(turn["activity"]),
+        }
+        shared_tool_count = self._activity_tool_count(artifact_activity, artifact)
+        wanted_linked_turn_ids = {
+            str(item or "").strip()
+            for item in list(linked_turn_ids or [])
+            if str(item or "").strip() and str(item or "").strip() != wanted_turn_id
+        }
+        for linked_turn in turns:
+            linked_turn_id = str(linked_turn.get("id") or "").strip()
+            if linked_turn_id not in wanted_linked_turn_ids:
+                continue
+            linked_activity = (
+                dict(linked_turn.get("activity") or {})
+                if isinstance(linked_turn.get("activity"), dict)
+                else {}
+            )
+            linked_summary = self._activity_summary(
+                linked_activity,
+                run_id=rid,
+                trace_ref=trace_ref,
+                tool_count=shared_tool_count,
+            )
+            linked_turn["activity"] = linked_summary
+            linked_turn["answer_bundle"] = {}
+            linked_turn["run_artifact"] = {}
+            linked_summaries[linked_turn_id] = linked_summary
+        for linked_turn_id in wanted_linked_turn_ids:
+            linked_summaries.setdefault(
+                linked_turn_id,
+                self._activity_summary(
+                    {"status": "completed"},
+                    run_id=rid,
+                    trace_ref=trace_ref,
+                    tool_count=shared_tool_count,
+                ),
+            )
         for item in list(transcript.get("items") or []):
-            if not isinstance(item, dict) or str(item.get("id") or "") != wanted_turn_id:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            linked_summary = linked_summaries.get(item_id)
+            if not linked_summary:
                 continue
             item["trace"] = {
                 "trace_ref": trace_ref,
-                "status": str(turn["activity"].get("status") or "completed"),
-                "summary": str(turn["activity"].get("summary") or ""),
-                "activity_summary": str(turn["activity"].get("activity_summary") or ""),
-                "duration_ms": max(0, int(turn["activity"].get("run_duration_ms") or 0)),
-                "tool_count": max(0, int(turn["activity"].get("tool_count") or 0)),
+                "status": str(linked_summary.get("status") or "completed"),
+                "summary": str(linked_summary.get("summary") or ""),
+                "activity_summary": str(linked_summary.get("activity_summary") or ""),
+                "duration_ms": max(0, int(linked_summary.get("run_duration_ms") or 0)),
+                "tool_count": max(0, int(linked_summary.get("tool_count") or 0)),
             }
-            break
         session["thread_transcript"] = normalize_thread_transcript(transcript)
         return turn_trace
 

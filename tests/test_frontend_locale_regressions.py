@@ -791,10 +791,15 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "const [approvalSubmitting, setApprovalSubmitting] = useState(false);" in script
+    assert "const [approvalSubmittingKey, setApprovalSubmittingKey] = useState(\"\");" in script
+    assert "function runtimeApprovalIdentity(value)" in script
     assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
-    assert "if (approvalSubmitting) return {};" in script
-    assert "if (currentThreadBusy && !isTurnResume)" in script
-    assert "if (ownerBusy && !isTurnResume) return;" in script
+    assert "if (approvalSubmitting) return {};" not in script
+    assert "runtimeApprovalIdentity(candidate) === approvalSubmittingKey" in script
+    assert "setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));" in script
+    assert 'const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount' in script
+    assert "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn)" in script
+    assert "if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;" in script
     assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
     assert "const unlockDeadline = Date.now() + 30000;" in script
     assert "while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline)" in script
@@ -1097,6 +1102,7 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         't("runtime_panel.controls")',
         "activeRuntimeUnits",
         "runtimeDecisionEvents",
+        "action\\.blocked",
         "openLatestRuntimeDebug",
         "handleStopRun",
         'formatRunFieldLabel(uiLocale, "current_tool")',
@@ -1175,6 +1181,34 @@ def test_runtime_control_center_prioritizes_live_state_and_interactions() -> Non
         't("run.logs")',
     ):
         assert removed_concern not in runtime_drawer, removed_concern
+
+
+def test_guard_rejection_does_not_masquerade_as_missing_user_input() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    blocked_trace = script.split('if (traceType === "action.blocked") {', 1)[1].split(
+        'if (traceType === "tool.failed") {',
+        1,
+    )[0]
+    assert 'status: "validating"' in blocked_trace
+    assert 'status: "blocked"' not in blocked_trace
+    assert 't("activity.status.tool_guard_rejected")' in blocked_trace
+
+    subagent_stream = script.split('if (itemType === "subagent") {', 1)[1].split(
+        'if (!["toolCall"',
+        1,
+    )[0]
+    assert 'status: isCompleted ? "background_running" : "running"' in subagent_stream
+    assert 'source: "subagent"' in subagent_stream
+
+    runtime_event_filter = script.split("const runtimeControlTraceEvents =", 1)[1].split(
+        "const runtimeDecisionEvents",
+        1,
+    )[0]
+    assert "action\\.blocked" in runtime_event_filter
+    assert '"activity.blocked": "执行已停止"' in locales
+    assert '"activity.blocked": "Stopped"' in locales
 
 
 def test_live_run_snapshot_persists_owner_thread_and_started_at() -> None:
@@ -2200,7 +2234,22 @@ def test_composer_textarea_remains_editable_while_run_is_active() -> None:
     assert 'value=${draft}' in textarea_body
     assert "disabled=${sending}" not in textarea_body
     assert "disabled=${(currentThreadBusy && !canQueueGuidance) || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}" in body
-    assert '${canQueueGuidance ? t("buttons.steer")' in body
+    assert '${canQueueGuidance ? t("buttons.queue_next")' in body
+
+
+def test_running_composer_queues_enter_and_steers_shift_enter() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    keydown = script.split("function handleComposerKeyDown(event) {", 1)[1].split(
+        "\n  const runtimeStatus",
+        1,
+    )[0]
+
+    assert 'if (currentThreadBusy && event.key === "Enter") {' in keydown
+    assert 'delivery: event.shiftKey ? "steer" : "queue"' in keydown
+    assert keydown.index('if (currentThreadBusy && event.key === "Enter") {') < keydown.index(
+        "if (slashCommandSuggestions.length) {"
+    )
+    assert 't("composer.followup_hint")' in script
 
 
 def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None:
@@ -2234,7 +2283,12 @@ def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
 def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    busy_branch = script.split("if (currentThreadBusy && !isTurnResume) {", 1)[1].split("const slashCommand", 1)[0]
+    busy_branch = script.split(
+        "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn) {",
+        1,
+    )[1].split("const slashCommand", 1)[0]
+    assert 'if (followupDelivery === "queue") {' in busy_branch
+    assert "enqueueNextTurn(targetSessionId, targetProjectId, messageText);" in busy_branch
     assert "const queuedGuidance = {" in busy_branch
     assert "updateThreadPendingGuidance(steerOwnerThreadId, (prev) => [...prev, queuedGuidance]);" in busy_branch
     assert "setMessages(" not in busy_branch
@@ -2244,7 +2298,8 @@ def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     assert "completeCurrentAssistantSegment(segment)" in script
     assert 'event === "turn/steer/accepted"' in script
     assert 'const acceptedMessage = createMessage("user", String(steer.message || ""), {' in script
-    assert "if (existingIndex < 0) return [...previous, acceptedMessage];" in script
+    assert 'if (steerBoundary === "after_tool") {' in script
+    assert "return [...previous, acceptedMessage];" in script
     assert "pendingGuidance: (Array.isArray(prev.pendingGuidance) ? prev.pendingGuidance : [])" in script
     assert "setPendingGuidance(nextTurn.pendingGuidance);" in script
     assert 'beginNextAssistantSegment(String(payload.next_segment_id || ""))' in script
@@ -2254,6 +2309,26 @@ def test_frontend_steer_stays_near_composer_until_runtime_accepts_it() -> None:
     assert "const carriedActivity = normalizeMessageActivity(latestActivity || {})" in script
     assert "runArtifact: {}" in script
     assert 'status: "waiting_model"' in script
+
+
+def test_frontend_next_turn_queue_runs_in_order_after_active_turn_completes() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    handle_send = script.split(
+        "async function handleSend(overrideText, userInputResponse) {",
+        1,
+    )[1].split("\n  async function loadSpecDetail", 1)[0]
+
+    assert "const queuedNextTurnsRef = useRef(new Map());" in script
+    assert "function enqueueNextTurn(threadId, targetProjectId, message)" in script
+    assert "function takeNextQueuedTurn(threadId)" in script
+    assert 'delivery: "next_turn"' in script
+    assert "shouldStartNextQueuedTurn = Boolean(" in handle_send
+    assert "const queuedTurn = takeNextQueuedTurn(runOwnerThreadId);" in handle_send
+    assert "fromQueuedTurn: true" in handle_send
+    assert "window.setTimeout(() => {" in handle_send
+    assert 'filter((item) => String(item.delivery || "") === "next_turn")' in handle_send
+    assert 't("queue.pending_waiting")' in script
+    assert "removeQueuedTurn(sessionId, item.id)" in script
 
 
 def test_live_execution_card_renders_after_queued_guidance_before_acceptance() -> None:
@@ -2315,12 +2390,12 @@ def test_thread_runs_use_thread_scoped_busy_state() -> None:
     assert "const currentThreadBusy = isThreadSnapshotBusy(sessionId" in script
     assert "const anyThreadBusy = (() => {" in script
     assert "if (!messageText) return;" in body
-    assert "if (currentThreadBusy && !isTurnResume) {" in body
+    assert "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn) {" in body
     assert 'fetchJson(`/api/chat/runs/${encodeURIComponent(String(activeRunId || ""))}/steer`' in body
-    assert "if (ownerBusy && !isTurnResume) return;" in body
+    assert "if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;" in body
     assert "if (activeSendThreadIdsRef.current.has(runOwnerThreadId)) {" in body
     assert 'throw new Error(t("errors.pending_turn_resume_timeout"));' in body
-    lock_check = body.split("if (ownerBusy && !isTurnResume) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
+    lock_check = body.split("if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;", 1)[1].split("activeSendThreadIdsRef.current.add(runOwnerThreadId);", 1)[0]
     assert "activeSendThreadIdsRef.current.delete" not in lock_check
     assert "appendMessagesOnceById(" in body
     assert body.index("let uiFinalized = false;") < body.index("try {\n      if (isTempThreadId(sid)")

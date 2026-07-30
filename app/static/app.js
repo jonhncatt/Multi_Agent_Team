@@ -291,6 +291,8 @@ function normalizeThreadActiveTurn(raw) {
             id: String(entry.id || ""),
             message: String(entry.message || "").trim(),
             status: String(entry.status || "queued"),
+            delivery: String(entry.delivery || "steer"),
+            projectId: String(entry.projectId || entry.project_id || ""),
             queuedAt: normalizeActivityTimestamp(entry.queuedAt || entry.queued_at || 0),
           }))
       : [],
@@ -3045,6 +3047,18 @@ function isRuntimeApproval(value) {
   return isCommandExecutionApproval(value) || isTaskUpdateApproval(value);
 }
 
+function runtimeApprovalIdentity(value) {
+  if (!isRuntimeApproval(value)) return "";
+  const item = value && typeof value === "object" ? value : {};
+  return [
+    String(item.type || ""),
+    String(item.tool_call_id || ""),
+    String(item.approval_token || ""),
+    String(item.command || item.task_id || ""),
+    String(item.cwd || ""),
+  ].join(":");
+}
+
 function clearCommandExecutionApprovalState(value) {
   const state = value && typeof value === "object" ? value : {};
   const next = { ...state };
@@ -4120,6 +4134,7 @@ function App() {
   const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
   const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+  const [approvalSubmittingKey, setApprovalSubmittingKey] = useState("");
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -4170,6 +4185,7 @@ function App() {
   const activeThreadAbortRef = useRef(null);
   const threadDetailCacheRef = useRef(new Map());
   const activeSendThreadIdsRef = useRef(new Set());
+  const queuedNextTurnsRef = useRef(new Map());
   const runDetailRequestRef = useRef(new Set());
   const composerInputRef = useRef(null);
   const activeSessionIdRef = useRef("");
@@ -5404,6 +5420,58 @@ function App() {
         }),
       };
     });
+  }
+
+  function enqueueNextTurn(threadId, targetProjectId, message) {
+    const ownerThreadId = String(threadId || "").trim();
+    const text = String(message || "").trim();
+    if (!ownerThreadId || !text) return null;
+    const queuedTurn = {
+      id: `queued-turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      message: text,
+      status: "queued",
+      delivery: "next_turn",
+      projectId: String(targetProjectId || "").trim(),
+      queuedAt: Date.now(),
+    };
+    const current = Array.isArray(queuedNextTurnsRef.current.get(ownerThreadId))
+      ? queuedNextTurnsRef.current.get(ownerThreadId)
+      : [];
+    queuedNextTurnsRef.current.set(ownerThreadId, [...current, queuedTurn]);
+    updateThreadPendingGuidance(ownerThreadId, (prev) => [...prev, queuedTurn]);
+    return queuedTurn;
+  }
+
+  function takeNextQueuedTurn(threadId) {
+    const ownerThreadId = String(threadId || "").trim();
+    if (!ownerThreadId) return null;
+    const current = Array.isArray(queuedNextTurnsRef.current.get(ownerThreadId))
+      ? queuedNextTurnsRef.current.get(ownerThreadId)
+      : [];
+    const queuedTurn = current[0] || null;
+    if (!queuedTurn) return null;
+    const remaining = current.slice(1);
+    if (remaining.length) queuedNextTurnsRef.current.set(ownerThreadId, remaining);
+    else queuedNextTurnsRef.current.delete(ownerThreadId);
+    updateThreadPendingGuidance(ownerThreadId, (prev) => (
+      prev.filter((item) => String(item.id || "") !== String(queuedTurn.id || ""))
+    ));
+    return queuedTurn;
+  }
+
+  function removeQueuedTurn(threadId, queuedTurnId) {
+    const ownerThreadId = String(threadId || "").trim();
+    const targetId = String(queuedTurnId || "").trim();
+    if (!ownerThreadId || !targetId) return;
+    const current = Array.isArray(queuedNextTurnsRef.current.get(ownerThreadId))
+      ? queuedNextTurnsRef.current.get(ownerThreadId)
+      : [];
+    const remaining = current.filter((item) => String(item.id || "") !== targetId);
+    if (remaining.length) queuedNextTurnsRef.current.set(ownerThreadId, remaining);
+    else queuedNextTurnsRef.current.delete(ownerThreadId);
+    updateThreadPendingGuidance(ownerThreadId, (prev) => (
+      prev.filter((item) => String(item.id || "") !== targetId)
+    ));
   }
 
   function rememberVisibleThreadSnapshot(targetThreadId = sessionId) {
@@ -6825,12 +6893,17 @@ function App() {
     const options = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
     const targetProjectId = String(options.projectIdOverride || projectId || "").trim();
     const targetSessionId = String(options.sessionIdOverride || sessionId || "").trim();
+    const followupDelivery = String(options.delivery || "queue").trim() === "steer"
+      ? "steer"
+      : "queue";
+    const fromQueuedTurn = Boolean(options.fromQueuedTurn);
     const messageText = String(overrideText != null ? overrideText : draft).trim();
     if (!messageText) return;
     const explicitUserInputResponse = userInputResponse && typeof userInputResponse === "object"
       ? userInputResponse
       : {};
-    const storedPendingInput = sessionRuntimeState.pending_user_input
+    const storedPendingInput = !fromQueuedTurn
+      && sessionRuntimeState.pending_user_input
       && typeof sessionRuntimeState.pending_user_input === "object"
       ? sessionRuntimeState.pending_user_input
       : {};
@@ -6861,11 +6934,17 @@ function App() {
           },
         }
       : null;
-    if (currentThreadBusy && !isTurnResume) {
+    if (currentThreadBusy && !isTurnResume && !fromQueuedTurn) {
       if (!canQueueGuidance) return;
       if (pendingUploads.some((item) => item && (item.uploading || (!item.uploadFailed && item.id)))) {
         const summary = t("errors.steer_attachments_not_supported");
         setUiError(normalizeUiError(uiLocale, { detail: summary }, summary));
+        return;
+      }
+      if (followupDelivery === "queue") {
+        enqueueNextTurn(targetSessionId, targetProjectId, messageText);
+        if (overrideText == null) setDraft("");
+        clearUiError();
         return;
       }
       const steerId = `steer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -6950,6 +7029,7 @@ function App() {
     let lockedRunOwnerThreadId = "";
     let cancelAssistantDeltaFlush = () => {};
     let uiFinalized = false;
+    let shouldStartNextQueuedTurn = false;
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -6961,7 +7041,7 @@ function App() {
       const ownerBusy = ownerThreadVisible()
         ? isThreadSnapshotBusy(runOwnerThreadId, { activeTurn: visibleThreadActiveTurnSnapshot(), messages })
         : isThreadSnapshotBusy(runOwnerThreadId, ownerSnapshot || {});
-      if (ownerBusy && !isTurnResume) return;
+      if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;
       if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId)) {
         const unlockDeadline = Date.now() + 30000;
         while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline) {
@@ -7024,6 +7104,9 @@ function App() {
           lastResponse: existingTurn.lastResponse || lastResponse || null,
           liveTurnState: nextInitialRuntimeState,
           liveEvidence: { status: "not_needed" },
+          pendingGuidance: existingTurn.pendingGuidance.filter(
+            (item) => String(item.delivery || "") === "next_turn",
+          ),
         });
       };
       updateThreadSnapshot(runOwnerThreadId, (existing) => ({
@@ -7287,11 +7370,13 @@ function App() {
         }
         if (traceType === "action.blocked") {
           updateOwnerLiveHeartbeat({
-            status: "blocked",
+            // A rejected action is an observation for the running Agent, not a
+            // user-input request. Keep the run active while the model replans.
+            status: "validating",
             tool,
             command,
-            action: detail || t("activity.blocked"),
-            recentEvent: detail || t("activity.blocked"),
+            action: detail || t("activity.status.tool_guard_rejected"),
+            recentEvent: detail || t("activity.status.tool_guard_rejected"),
             source: "validator",
             updatedAt: item.timestamp || Date.now(),
           });
@@ -7416,6 +7501,15 @@ function App() {
             action: detail || t("labels.pending_input"),
             recentEvent: detail || t("labels.pending_input"),
             source: "runtime",
+          });
+          return;
+        }
+        if (itemType === "subagent") {
+          updateOwnerLiveHeartbeat({
+            status: isCompleted ? "background_running" : "running",
+            action: detail || t(isCompleted ? "subagent.completed" : "subagent.running"),
+            recentEvent: detail || t(isCompleted ? "subagent.completed" : "subagent.running"),
+            source: "subagent",
           });
           return;
         }
@@ -7719,7 +7813,8 @@ function App() {
             lastLiveProgressAt: 0,
             liveHeartbeat: createEmptyLiveHeartbeat(),
             stoppingRun: false,
-            pendingGuidance: [],
+            pendingGuidance: (Array.isArray(prev.pendingGuidance) ? prev.pendingGuidance : [])
+              .filter((item) => String(item.delivery || "") === "next_turn"),
           }));
         } else {
           setActiveRunId("");
@@ -7727,7 +7822,10 @@ function App() {
           setActiveRunStartedAt(0);
           setLastLiveProgressAt(0);
           setLiveHeartbeat(createEmptyLiveHeartbeat());
-          setPendingGuidance([]);
+          setPendingGuidance((prev) => (
+            (Array.isArray(prev) ? prev : [])
+              .filter((item) => String(item.delivery || "") === "next_turn")
+          ));
           setSending(false);
           setStoppingRun(false);
         }
@@ -8037,6 +8135,7 @@ function App() {
             } else if (event === "turn/steer/accepted") {
               const steer = payload.steer && typeof payload.steer === "object" ? payload.steer : {};
               const steerId = String(steer.id || "");
+              const steerBoundary = String(payload.boundary || "").trim();
               if (steerId) {
                 const acceptedAt = normalizeActivityTimestamp(steer.accepted_at || 0) || Date.now();
                 const acceptedMessage = createMessage("user", String(steer.message || ""), {
@@ -8054,7 +8153,21 @@ function App() {
                   const existingIndex = previous.findIndex((item) => (
                     String(((item.activity || {}).steer_id) || "") === steerId
                   ));
-                  if (existingIndex < 0) return [...previous, acceptedMessage];
+                  if (existingIndex < 0) {
+                    if (steerBoundary === "after_tool") {
+                      const pendingAssistantIndex = previous.findIndex(
+                        (item) => item && item.role === "assistant" && item.pending,
+                      );
+                      if (pendingAssistantIndex >= 0) {
+                        return [
+                          ...previous.slice(0, pendingAssistantIndex),
+                          acceptedMessage,
+                          ...previous.slice(pendingAssistantIndex),
+                        ];
+                      }
+                    }
+                    return [...previous, acceptedMessage];
+                  }
                   return previous.map((item, index) => (
                     index === existingIndex
                       ? { ...item, activity: { ...(item.activity || {}), ...acceptedMessage.activity } }
@@ -8318,6 +8431,21 @@ function App() {
       const finalPendingApproval = finalPayload.pending_approval
         || (((finalPayload.inspector || {}).run_state || {}).pending_approval)
         || {};
+      const finalPendingUserInput = finalPayload.pending_user_input
+        || (((finalPayload.inspector || {}).run_state || {}).pending_user_input)
+        || {};
+      const completedRuntimeStatus = String(
+        finalPayload.turn_status
+        || (((finalPayload.inspector || {}).run_state || {}).turn_status)
+        || finalActivityStatus
+        || "",
+      ).trim();
+      shouldStartNextQueuedTurn = Boolean(
+        !Object.keys(finalPendingApproval).length
+        && !Object.keys(finalPendingUserInput).length
+        && completedRuntimeStatus !== "needs_user_input"
+        && completedRuntimeStatus !== "running"
+      );
       const finalMessageRole = isRuntimeApproval(finalPendingApproval) || pendingMessage.role === "runtime"
         ? "runtime"
         : "assistant";
@@ -8467,6 +8595,18 @@ function App() {
       if (lockedRunOwnerThreadId) {
         activeSendThreadIdsRef.current.delete(lockedRunOwnerThreadId);
       }
+      if (shouldStartNextQueuedTurn && runOwnerThreadId) {
+        const queuedTurn = takeNextQueuedTurn(runOwnerThreadId);
+        if (queuedTurn) {
+          window.setTimeout(() => {
+            handleSend(queuedTurn.message, null, {
+              projectIdOverride: queuedTurn.projectId || targetProjectId,
+              sessionIdOverride: runOwnerThreadId,
+              fromQueuedTurn: true,
+            });
+          }, 0);
+        }
+      }
     }
   }
 
@@ -8613,6 +8753,13 @@ function App() {
       return;
     }
     if (currentThreadBusy && !canQueueGuidance) return;
+    if (currentThreadBusy && event.key === "Enter") {
+      event.preventDefault();
+      handleSend(undefined, undefined, {
+        delivery: event.shiftKey ? "steer" : "queue",
+      });
+      return;
+    }
     if (slashCommandSuggestions.length) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -8738,9 +8885,9 @@ function App() {
       ? runState.pending_user_input
       : ((sessionRuntimeState.pending_user_input && typeof sessionRuntimeState.pending_user_input === "object") ? sessionRuntimeState.pending_user_input : {});
   const activePendingApproval = (() => {
-    // Hide the consumed approval while its resume request is in flight. The
-    // persisted snapshot stays intact so a failed submission can show it again.
-    if (approvalSubmitting) return {};
+    // Hide only the approval currently being consumed. A later approval can
+    // arrive before the resumed request finishes (for example while Subagents
+    // are settling), and must remain visible in Runtime.
     const candidates = [
       runState.pending_approval,
       sessionRuntimeState.pending_approval,
@@ -8749,6 +8896,11 @@ function App() {
     for (const candidate of candidates) {
       if (!candidate || typeof candidate !== "object") continue;
       if (!isRuntimeApproval(candidate)) continue;
+      if (
+        approvalSubmitting
+        && approvalSubmittingKey
+        && runtimeApprovalIdentity(candidate) === approvalSubmittingKey
+      ) continue;
       return candidate;
     }
     return {};
@@ -8764,8 +8916,7 @@ function App() {
     ? activePendingInput.questions.filter((item) => item && typeof item === "object")
     : [];
   const hasPendingRuntimeInput = Boolean(
-    !approvalSubmitting
-    && !hasCommandApproval
+    !hasCommandApproval
     && !hasTaskUpdateApproval
     && String(activePendingInput.type || "") === "request_user_input"
     && pendingRuntimeQuestions.length
@@ -8810,6 +8961,7 @@ function App() {
     const message = normalizedAction === "approve_once"
       ? t("approval_modal.approve_message", { command })
       : t("approval_modal.cancel_message", { command });
+    setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));
     setApprovalSubmitting(true);
     try {
       await handleSend(message, {
@@ -8828,6 +8980,7 @@ function App() {
       });
     } finally {
       setApprovalSubmitting(false);
+      setApprovalSubmittingKey("");
     }
   };
   const handleTaskUpdateApproval = async (action) => {
@@ -8842,6 +8995,7 @@ function App() {
     const message = normalizedAction === "approve_once"
       ? t("task_approval.approve_message", { title })
       : t("task_approval.cancel_message", { title });
+    setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));
     setApprovalSubmitting(true);
     try {
       await handleSend(message, {
@@ -8859,6 +9013,7 @@ function App() {
       });
     } finally {
       setApprovalSubmitting(false);
+      setApprovalSubmittingKey("");
     }
   };
   const renderTaskApprovalSnapshot = (label, task) => {
@@ -8953,14 +9108,17 @@ function App() {
     .slice(-8)
     .reverse();
   const runtimeControlTraceEvents = runtimeActivity.trace_events
-    .filter((item) => /^(approval\.|run\.|loop\.|replan\.|subagent\.|llm\.failed|tool\.failed)/.test(String((item && item.type) || "")))
+    .filter((item) => /^(approval\.|run\.|loop\.|replan\.|subagent\.|action\.blocked|llm\.failed|tool\.failed)/.test(String((item && item.type) || "")))
     .slice(-8)
     .reverse();
   const runtimeDecisionEvents = runtimeControlTraceEvents.length
     ? runtimeControlTraceEvents.map((item, index) => ({
         id: String(item.id || `${item.type || "runtime"}-${index}`),
         type: String(item.type || "runtime"),
-        text: String(item.title || item.detail || item.type || "runtime"),
+        text: [String(item.title || item.type || "runtime"), String(item.detail || "")]
+          .filter(Boolean)
+          .filter((value, valueIndex, values) => values.indexOf(value) === valueIndex)
+          .join(": "),
         createdAt: item.timestamp ? new Date(item.timestamp).toISOString() : "",
       }))
     : activeRunLogs
@@ -8988,7 +9146,7 @@ function App() {
     liveTurnState,
     nowMs: activityClockMs || Date.now(),
   });
-  const runExecutionProgress = approvalSubmitting
+  const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount
     ? {
         ...baseRunExecutionProgress,
         status: "approval_submitting",
@@ -10432,14 +10590,31 @@ function App() {
             ? html`
                 <div className="pending-guidance-strip" role="status" aria-live="polite">
                   <div className="pending-guidance-head">
-                    <span>${t("steer.pending_title")}</span>
+                    <span>${t("followup.pending_title")}</span>
                     <small>${pendingGuidance.length}</small>
                   </div>
                   <div className="pending-guidance-list">
                     ${pendingGuidance.map((item) => html`
                       <div key=${item.id} className="pending-guidance-item">
                         <span>${item.message}</span>
-                        <small>${t("steer.pending_waiting")}</small>
+                        <div className="pending-guidance-actions">
+                          <small>
+                            ${String(item.delivery || "") === "next_turn"
+                              ? t("queue.pending_waiting")
+                              : t("steer.pending_waiting")}
+                          </small>
+                          ${String(item.delivery || "") === "next_turn"
+                            ? html`
+                                <button
+                                  className="pending-guidance-remove"
+                                  type="button"
+                                  title=${t("queue.remove")}
+                                  aria-label=${t("queue.remove")}
+                                  onClick=${() => removeQueuedTurn(sessionId, item.id)}
+                                >×</button>
+                              `
+                            : null}
+                        </div>
                       </div>
                     `)}
                   </div>
@@ -10577,15 +10752,16 @@ function App() {
               onInput=${(event) => setDraft(event.currentTarget.value)}
               onKeyDown=${handleComposerKeyDown}
               onPaste=${handleComposerPaste}
-              placeholder=${t("composer.placeholder")}
+              placeholder=${t(currentThreadBusy ? "composer.running_placeholder" : "composer.placeholder")}
             ></textarea>
 	            <button
                 className="send-btn"
                 type="button"
                 onClick=${() => handleSend()}
                 disabled=${(currentThreadBusy && !canQueueGuidance) || !draft.trim() || pendingUploads.some((item) => item && item.uploading)}
+                title=${currentThreadBusy ? t("composer.followup_hint") : ""}
               >
-	              ${canQueueGuidance ? t("buttons.steer") : (currentThreadBusy ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send")))}
+	              ${canQueueGuidance ? t("buttons.queue_next") : (currentThreadBusy ? t("buttons.running") : (pendingUploads.some((item) => item && item.uploading) ? t("labels.uploading") : t("buttons.send")))}
 	            </button>
           </div>
           <div className="status-bar status-inline" id="statusBar">

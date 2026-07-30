@@ -176,7 +176,35 @@ def shell_command_uses_compound_syntax(command: str) -> bool:
     raw = str(command or "").strip()
     if not raw:
         return False
-    return any(token in raw for token in ("&&", "||", "|", ";", ">", "<", "$(", "`"))
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            if not quote:
+                quote = char
+            elif quote == char:
+                quote = ""
+            index += 1
+            continue
+        if char == "`" or (char == "$" and index + 1 < len(raw) and raw[index + 1] == "("):
+            # Command substitution is active outside single quotes, including
+            # inside double quotes, and therefore requires shell validation.
+            if quote != "'":
+                return True
+        if not quote and char in {"|", "&", ";", ">", "<"}:
+            return True
+        index += 1
+    return False
 
 
 def _looks_like_url(value: str) -> bool:

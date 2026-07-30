@@ -42,7 +42,8 @@ The home-page `Eval` button exposes the same runner as a persisted background jo
 
 `evals/agent_workflow_cases.json` extends the same isolated runner with scenario hooks that remain deterministic under fake Runtime tests:
 
-- queued guidance accepted at a safe model boundary;
+- guidance injected only after the first real tool result, then accepted before
+  the next model request in the same active turn;
 - model-selected parallel `spawn_subagent` delegation, `wait_subagents` collection, and parent summary;
 - a long seeded Thread replayed through a compaction summary plus retained turns;
 - modification of an existing Team Skill in the isolated VP Skill Registry;

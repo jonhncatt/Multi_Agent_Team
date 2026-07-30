@@ -1932,6 +1932,30 @@ button {
   color: #2563eb;
 }
 
+.pending-guidance-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+}
+
+.pending-guidance-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  cursor: pointer;
+  font: inherit;
+  line-height: 20px;
+}
+
+.pending-guidance-remove:hover {
+  background: rgba(37, 99, 235, 0.18);
+}
+
 .composer-error {
   display: flex;
   justify-content: space-between;

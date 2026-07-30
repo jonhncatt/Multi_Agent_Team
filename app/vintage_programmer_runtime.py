@@ -4877,6 +4877,7 @@ class VintageProgrammerRuntime:
             boundary: str,
             response_text: str = "",
             next_segment_id: str = "",
+            complete_response_segment: bool = True,
         ) -> None:
             if not steers:
                 return
@@ -4896,7 +4897,7 @@ class VintageProgrammerRuntime:
                         },
                     }
                 )
-            if progress_cb is not None:
+            if progress_cb is not None and complete_response_segment:
                 progress_cb(
                     {
                         "event": "turn/segment/completed",
@@ -4937,10 +4938,14 @@ class VintageProgrammerRuntime:
                             "boundary": str(boundary or "model"),
                             "batch_index": index,
                             "batch_size": len(steers),
-                            "starts_next_response": index == len(steers) - 1,
+                            "starts_next_response": bool(
+                                complete_response_segment
+                                and index == len(steers) - 1
+                            ),
                             "next_segment_id": (
                                 str(next_segment_id or "")
-                                if index == len(steers) - 1
+                                if complete_response_segment
+                                and index == len(steers) - 1
                                 else ""
                             ),
                         }
@@ -7492,6 +7497,27 @@ class VintageProgrammerRuntime:
                     forced_text = translate(locale, "runtime.cancelled.text")
                     notes.append("run_cancelled_by_user")
                     break
+
+                pending_steers = drain_pending_steers(final=False)
+                if pending_steers:
+                    accept_steers_at_boundary(
+                        pending_steers,
+                        boundary="after_tool",
+                        complete_response_segment=False,
+                    )
+                    append_steers_to_model(pending_steers)
+                    notes.append(f"user_steer_accepted_after_tool:{len(pending_steers)}")
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "model_action",
+                        "User guidance accepted after the tool batch; applying it to the next model action.",
+                        payload={
+                            "steer_count": len(pending_steers),
+                            "steer_boundary": "after_tool",
+                            "model_action": dict(model_action),
+                            **turn_activity_context,
+                        },
+                    )
 
                 emit_runtime_activity(
                     "activity.delta",

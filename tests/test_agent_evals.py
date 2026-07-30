@@ -69,6 +69,10 @@ def test_agent_workflow_suite_reserves_modalities_and_scenario_hooks() -> None:
     )
     by_name = {case["name"]: case for case in suite["cases"]}
     assert by_name["runtime_steer_updates_active_turn"]["steer_messages"]
+    assert (
+        by_name["runtime_steer_updates_active_turn"]["steer_injection"]
+        == "after_first_tool_result"
+    )
     assert by_name["subagent_protocol_analysis_and_parent_summary"]["required_tools"] == [
         "spawn_subagent",
         "wait_subagents",
@@ -577,6 +581,40 @@ class _SteeringFakeRuntime(_PassingFakeRuntime):
         return result
 
 
+class _BoundarySteeringFakeRuntime(_PassingFakeRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        assert progress_cb is not None
+        progress_cb(
+            {
+                "event": "trace_event",
+                "trace": {"type": "tool.finished"},
+            }
+        )
+        accepted = context["drain_pending_steers"](final=False)
+        for steer in accepted:
+            progress_cb(
+                {
+                    "event": "turn/steer/accepted",
+                    "steer": steer,
+                    "boundary": "after_tool",
+                }
+            )
+        progress_cb(
+            {
+                "event": "trace_event",
+                "trace": {"type": "llm.started"},
+            }
+        )
+        result["steered_user_messages"] = accepted
+        return result
+
+
 class _TeamSkillUpdateFakeRuntime:
     def __init__(self, config) -> None:
         self.config = config
@@ -911,6 +949,32 @@ def test_eval_attempt_records_run_time_guidance_acceptance_without_live_model(tm
     assert result["scenario"]["steer_messages_expected"] == 1
     assert result["scenario"]["steer_messages_accepted"] == 1
     assert result["scenario"]["requirements_met"] is True
+
+
+def test_eval_attempt_injects_steer_after_tool_result_before_next_model(tmp_path: Path) -> None:
+    wrapper = tmp_path / "verify.py"
+    _write_exit_script(wrapper, 0)
+    case = _case()
+    case["steer_messages"] = ["Run the verification once more."]
+    case["steer_injection"] = "after_first_tool_result"
+
+    result = run_eval_attempt(
+        case,
+        attempt=1,
+        workspace=tmp_path / "attempt-boundary-steer",
+        base_config=load_config(),
+        model="gpt-test",
+        runtime_factory=_BoundarySteeringFakeRuntime,
+        verifier_script=str(wrapper),
+    )
+
+    scenario = result["scenario"]
+    assert result["status"] == "passed"
+    assert scenario["steer_injection_observed"] is True
+    assert scenario["steer_accepted_after_injection"] is True
+    assert scenario["steer_applied_before_next_model"] is True
+    assert scenario["steer_injected_at_sequence"] < scenario["steer_accepted_event_sequences"][0]
+    assert scenario["steer_accepted_event_sequences"][0] < scenario["first_model_start_after_steer_sequence"]
 
 
 def test_eval_attempt_snapshots_real_isolated_team_skill_update(tmp_path: Path) -> None:
