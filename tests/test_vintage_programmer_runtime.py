@@ -1662,6 +1662,89 @@ def test_runtime_accepts_queued_guidance_before_finalizing_turn(tmp_path: Path) 
     assert str(accepted_event["next_segment_id"]).startswith("run-steer:agent_message:")
 
 
+def test_runtime_finishes_current_response_before_accepting_queued_request(
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-first-redmine",
+                        "name": "read_file",
+                        "args": {"path": str(tmp_path / "redmine-101.md")},
+                    }
+                ],
+            ),
+            _FakeMessage(content="第一个 Redmine 的读取结果。"),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-second-redmine",
+                        "name": "read_file",
+                        "args": {"path": str(tmp_path / "redmine-202.md")},
+                    }
+                ],
+            ),
+            _FakeMessage(content="第二个 Redmine 的读取结果。"),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    pending = [
+        {
+            "id": "steer-redmine-2",
+            "message": "再读取 https://redmine.example/issues/202",
+            "queued_at": 12.0,
+            "accepted_at": 13.0,
+        }
+    ]
+    drain_calls: list[bool] = []
+
+    def drain_pending_steers(*, final: bool = False) -> list[dict[str, Any]]:
+        drain_calls.append(bool(final))
+        if not pending:
+            return []
+        drained = list(pending)
+        pending.clear()
+        return drained
+
+    result = runtime.run(
+        message="读取 https://redmine.example/issues/101",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-redmine-steer",
+            "run_id": "run-redmine-steer",
+            "drain_pending_steers": drain_pending_steers,
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "第二个 Redmine 的读取结果。"
+    assert [(item["role"], item["text"]) for item in result["intermediate_turns"]] == [
+        ("assistant", "第一个 Redmine 的读取结果。"),
+        ("user", "再读取 https://redmine.example/issues/202"),
+    ]
+    assert [call[0] for call in backend.tools.calls] == ["read_file", "read_file"]
+    assert len(backend.invocations) == 4
+    assert drain_calls[0] is False
+    assert str(backend.invocations[1]["messages"][-1].content).startswith(
+        '{"ok": true'
+    )
+    assert backend.invocations[2]["messages"][-2].content == "第一个 Redmine 的读取结果。"
+    assert backend.invocations[2]["messages"][-1].content == "再读取 https://redmine.example/issues/202"
+
+
 def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     monkeypatch,
     tmp_path: Path,
@@ -5783,6 +5866,47 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
     assert "VP_PROJECT_ROOT" in available_section
     assert "never search for, read, or parse .env" in available_section
     assert "load_skill" not in available_section
+
+
+def test_runtime_initial_prompt_never_omits_later_enabled_skills(tmp_path: Path) -> None:
+    config = _isolated_config(tmp_path)
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="done")])
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    available_skills = [
+        {
+            "key": f"builtin:long-skill-{index:02d}",
+            "scope": "builtin",
+            "name": f"long-skill-{index:02d}",
+            "description": f"Use for workflow {index}. " + ("detail " * 180),
+            "path": str(tmp_path / "skills" / "builtin" / f"long-skill-{index:02d}" / "SKILL.md"),
+        }
+        for index in range(12)
+    ]
+    available_skills.append(
+        {
+            "key": "team:work-summary",
+            "scope": "team",
+            "name": "work-summary",
+            "description": "根据 Redmine 最新进展，把工作总结成一句话。",
+            "path": str(tmp_path / "skills" / "team" / "work-summary" / "SKILL.md"),
+        }
+    )
+
+    prompt = runtime._render_available_skills_prompt(available_skills)
+
+    assert len(prompt) > 8000
+    assert "team:work-summary" in prompt
+    assert "根据 Redmine 最新进展，把工作总结成一句话。" in prompt
+    assert str(tmp_path / "skills" / "team" / "work-summary" / "SKILL.md") in prompt
+    assert "because the available skill list exceeded the prompt budget" not in prompt
+    assert all(item["key"] in prompt for item in available_skills)
 
 
 def test_runtime_reads_skill_with_standard_read_file_tool(tmp_path: Path) -> None:

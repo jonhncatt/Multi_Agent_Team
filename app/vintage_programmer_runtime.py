@@ -415,20 +415,17 @@ class VintageProgrammerRuntime:
             return "[available_skills]\nNo enabled skills are currently available."
         lines = [
             "[available_skills]",
-            "Enabled Skills are listed as lightweight metadata with their absolute SKILL.md paths. When a Skill is relevant, read that exact SKILL.md with read_file before following it; do not search the active business project for another copy. Resolve bundled references and scripts from the directory containing SKILL.md. Run bundled scripts by their absolute paths with exec_command while keeping the active business project as cwd. The Runtime injects VP_SKILL_ROOT, VP_SKILL_SCRIPT, VP_PROJECT_ROOT, and VP_PROJECT_CWD for direct Skill scripts. Scripts must read credentials from inherited environment variables; never search for, read, or parse .env files through model tools. Skills do not require a separate load or unlock step.",
+            "Every enabled Skill is listed as lightweight metadata with its absolute SKILL.md path; descriptions may be shortened, but no enabled Skill is omitted. When a Skill is relevant, read that exact SKILL.md with read_file before following it; do not search the active business project for another copy. Resolve bundled references and scripts from the directory containing SKILL.md. Run bundled scripts by their absolute paths with exec_command while keeping the active business project as cwd. The Runtime injects VP_SKILL_ROOT, VP_SKILL_SCRIPT, VP_PROJECT_ROOT, and VP_PROJECT_CWD for direct Skill scripts. Scripts must read credentials from inherited environment variables; never search for, read, or parse .env files through model tools. Skills do not require a separate load or unlock step.",
         ]
-        char_budget = 8000
-        used = sum(len(line) + 1 for line in lines)
-        omitted = 0
         for item in valid:
-            line = json.dumps(item, ensure_ascii=False, sort_keys=True)
-            if used + len(line) + 1 > char_budget:
-                omitted += 1
-                continue
-            lines.append(line)
-            used += len(line) + 1
-        if omitted:
-            lines.append(f"... omitted {omitted} skill(s) because the available skill list exceeded the prompt budget.")
+            compact_item = {
+                **item,
+                "description": _truncate_goal(
+                    str(item.get("description") or ""),
+                    limit=600,
+                ),
+            }
+            lines.append(json.dumps(compact_item, ensure_ascii=False, sort_keys=True))
         return "\n".join(lines)
 
     def _make_skill_writer(self) -> Callable[..., dict[str, Any]]:
@@ -6364,7 +6361,9 @@ class VintageProgrammerRuntime:
                             continue
                         break
                 if not tool_calls:
-                    pending_steers = drain_pending_steers(final=True)
+                    pending_steers = drain_pending_steers(final=False)
+                    if not pending_steers:
+                        pending_steers = drain_pending_steers(final=True)
                     if pending_steers:
                         next_segment_id = reset_answer_stream_for_next_segment()
                         accept_steers_at_boundary(
@@ -7493,27 +7492,6 @@ class VintageProgrammerRuntime:
                     forced_text = translate(locale, "runtime.cancelled.text")
                     notes.append("run_cancelled_by_user")
                     break
-
-                pending_steers = drain_pending_steers(final=False)
-                if pending_steers:
-                    next_segment_id = reset_answer_stream_for_next_segment()
-                    accept_steers_at_boundary(
-                        pending_steers,
-                        boundary="tool",
-                        next_segment_id=next_segment_id,
-                    )
-                    append_steers_to_model(pending_steers)
-                    notes.append(f"user_steer_accepted:{len(pending_steers)}")
-                    emit_runtime_activity(
-                        "activity.delta",
-                        "model_action",
-                        "Queued user guidance accepted at the tool boundary.",
-                        payload={
-                            "steer_count": len(pending_steers),
-                            "model_action": dict(model_action),
-                            **turn_activity_context,
-                        },
-                    )
 
                 emit_runtime_activity(
                     "activity.delta",
