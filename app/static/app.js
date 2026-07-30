@@ -781,6 +781,9 @@ function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages
     ? currentMessages.filter((item) => item && typeof item === "object")
     : [];
   if (!authoritative.length) return rawCurrent;
+  const optimisticBoundaryIndex = rawCurrent.findIndex((item) => (
+    optimisticMessageIds.has(String(item.id || "").trim())
+  ));
   const current = rawCurrent.filter(
     (item) => !optimisticMessageIds.has(String(item.id || "").trim()),
   );
@@ -813,6 +816,12 @@ function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages
       runDebugError: String(previous.runDebugError || ""),
     };
   });
+  if (optimisticBoundaryIndex >= 0) {
+    const preservedPrefix = rawCurrent
+      .slice(0, optimisticBoundaryIndex)
+      .filter((item) => !authoritativeIds.has(String(item.id || "").trim()));
+    return [...preservedPrefix, ...mergedTail];
+  }
   const firstAuthoritativeIndex = current.findIndex((item) => (
     authoritativeIds.has(String(item.id || "").trim())
   ));

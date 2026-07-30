@@ -2280,7 +2280,11 @@ def test_completed_steered_turn_reconciles_authoritative_thread_order_before_cle
 
     assert "function mergeAuthoritativeThreadMessages(authoritativeMessages, currentMessages, options = {})" in script
     assert "const optimisticMessageIds = new Set(" in script
+    assert "const optimisticBoundaryIndex = rawCurrent.findIndex" in script
     assert "!optimisticMessageIds.has(String(item.id || \"\").trim())" in script
+    assert "if (optimisticBoundaryIndex >= 0) {" in script
+    assert ".slice(0, optimisticBoundaryIndex)" in script
+    assert "return [...preservedPrefix, ...mergedTail];" in script
     assert "const reconcileCompletedThreadMessages = async (threadId) => {" in body
     assert "mergeAuthoritativeThreadMessages(authoritativeMessages, prev, {" in body
     assert "optimisticMessageIds: userMessage ? [String(userMessage.id || \"\")] : []" in body
