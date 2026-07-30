@@ -310,6 +310,23 @@ def test_session_list_reads_metadata_without_parsing_session_file(tmp_path: Path
     assert rows[0]["title"] == "hello"
 
 
+def test_empty_thread_metadata_keeps_default_title_unlocalized(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(_project(tmp_path))
+
+    rows = store.list_recent_sessions(limit=10, project_id="project-test")
+    assert rows[0]["title"] == ""
+    assert rows[0]["has_custom_title"] is False
+
+    meta_path = store.session_meta_store._path(session["id"])  # noqa: SLF001 - legacy metadata regression
+    legacy_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    legacy_meta["title"] = "新会话"
+    meta_path.write_text(json.dumps(legacy_meta, ensure_ascii=False), encoding="utf-8")
+
+    migrated_rows = store.list_recent_sessions(limit=10, project_id="project-test")
+    assert migrated_rows[0]["title"] == ""
+
+
 def test_thread_activity_clock_controls_listing_without_following_unrelated_saves(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     first = store.create(_project(tmp_path))

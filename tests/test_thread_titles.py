@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from app.thread_titles import (
     build_thread_title_messages,
     fallback_thread_title,
+    is_generic_thread_title,
     sanitize_generated_thread_title,
 )
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
@@ -22,6 +23,13 @@ def test_fallback_thread_title_uses_first_user_turn() -> None:
     ]
 
     assert fallback_thread_title(turns) == "inspect this thread"
+
+
+def test_empty_thread_can_keep_an_unlocalized_default_title() -> None:
+    assert fallback_thread_title([], default="") == ""
+    assert is_generic_thread_title("新会话") is True
+    assert is_generic_thread_title("新しいスレッド") is True
+    assert is_generic_thread_title("New Thread") is True
 
 
 def test_thread_title_prompt_treats_conversation_as_untrusted_data() -> None:

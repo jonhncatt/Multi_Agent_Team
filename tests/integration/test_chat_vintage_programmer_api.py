@@ -1817,6 +1817,28 @@ def test_thread_detail_uses_lightweight_pagination_and_stable_turn_ids(monkeypat
     assert [item["text"] for item in previous_page.json()["turns"]] == ["turn-2", "turn-3"]
 
 
+def test_empty_thread_title_stays_unlocalized_across_api_reload(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    project = main_app.project_store.ensure_default_project()
+
+    created = client.post("/api/thread/new", json={"project_id": project["project_id"]})
+    assert created.status_code == 200
+    thread_id = created.json()["thread_id"]
+
+    listed = client.get(f"/api/threads?project_id={project['project_id']}")
+    detail = client.get(f"/api/thread/{thread_id}")
+
+    assert listed.status_code == 200
+    assert detail.status_code == 200
+    listed_thread = next(item for item in listed.json()["threads"] if item["thread_id"] == thread_id)
+    assert listed_thread["title"] == ""
+    assert listed_thread["has_custom_title"] is False
+    assert detail.json()["title"] == ""
+    assert detail.json()["display_title"] == ""
+    assert detail.json()["has_custom_title"] is False
+
+
 def test_thread_rename_reuses_session_title_and_exposes_display_title(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)

@@ -31,7 +31,7 @@ from app.thread_record import (
     hydrate_thread_record,
     project_turns_from_thread,
 )
-from app.thread_titles import fallback_thread_title
+from app.thread_titles import fallback_thread_title, is_generic_thread_title
 from app.tool_result_store import ToolResultStore
 from app.turn_trace import build_turn_trace, normalize_turn_trace
 
@@ -256,7 +256,7 @@ class SessionMetaStore:
             turns = project_turns_from_thread(payload)
         custom_title = str(payload.get("title") or "").strip()
         auto_title = str(payload.get("auto_title") or "").strip()
-        title = custom_title or auto_title or fallback_thread_title(turns)
+        title = custom_title or auto_title or fallback_thread_title(turns, default="")
         preview = ""
         if turns:
             preview = str(turns[-1].get("text") or "").replace("\n", " ").strip()[:80]
@@ -321,7 +321,17 @@ class SessionMetaStore:
                 continue
             if wanted_project_id and str(payload.get("project_id") or "").strip() != wanted_project_id:
                 continue
-            rows.append(dict(payload))
+            row = dict(payload)
+            if (
+                not bool(row.get("has_custom_title"))
+                and int(row.get("turn_count") or 0) == 0
+                and is_generic_thread_title(row.get("title"))
+            ):
+                # Older metadata persisted the Simplified-Chinese UI placeholder
+                # as if it were a real title. Keep an empty Thread title semantic
+                # so the current client locale can render its own placeholder.
+                row["title"] = ""
+            rows.append(row)
         return sorted(
             rows,
             key=lambda item: (

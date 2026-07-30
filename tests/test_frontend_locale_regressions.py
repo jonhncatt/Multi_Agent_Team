@@ -933,6 +933,15 @@ def test_context_meter_uses_compact_summary_with_collapsed_details() -> None:
     assert "<details className=\"context-meter-details\" open>" not in script
 
 
+def test_empty_thread_title_uses_current_locale_after_refresh() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'hit.title || hit.display_title || translateUi(locale, "labels.new_thread")' in script
+    assert '${item.title || t("labels.new_thread")}' in script
+    assert '"labels.new_thread": "新しいスレッド"' in locales
+
+
 def test_context_meter_hover_close_uses_delayed_timer() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

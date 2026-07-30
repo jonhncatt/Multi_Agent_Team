@@ -18,9 +18,11 @@ _GENERIC_TITLES = {
     "conversation",
     "new chat",
     "new conversation",
+    "new thread",
     "untitled",
     "新会话",
     "新对话",
+    "新しいスレッド",
     "无标题",
     "会话标题",
 }
@@ -33,7 +35,11 @@ def fallback_thread_title(turns: Any, *, default: str = "新会话", limit: int 
         text = _SPACE_RE.sub(" ", str(turn.get("text") or "")).strip()
         if text:
             return text[: max(1, int(limit))]
-    return str(default or "新会话")
+    return str(default)
+
+
+def is_generic_thread_title(raw: Any) -> bool:
+    return _SPACE_RE.sub(" ", str(raw or "")).strip().casefold() in _GENERIC_TITLES
 
 
 def sanitize_generated_thread_title(raw: Any, *, limit: int = MAX_AUTO_TITLE_CHARS) -> str:
@@ -56,7 +62,7 @@ def sanitize_generated_thread_title(raw: Any, *, limit: int = MAX_AUTO_TITLE_CHA
     title = _SPACE_RE.sub(" ", title).strip()
     title = title.rstrip("。.!！?？;；,:：-–— ")
     title = title[: max(1, int(limit))].rstrip("。.!！?？;；,:：-–— ")
-    if not title or title.casefold() in _GENERIC_TITLES:
+    if not title or is_generic_thread_title(title):
         return ""
     return title
 
