@@ -1770,17 +1770,19 @@ class LocalToolExecutor:
 
     def _load_taint_registry_unlocked(self) -> dict[str, Any]:
         if not self._taint_registry_path.exists():
-            return {"version": 1, "files": {}, "approvals": {}}
+            return {"version": 1, "files": {}, "approvals": {}, "command_approval_rules": {}}
         try:
             payload = json.loads(self._taint_registry_path.read_text(encoding="utf-8"))
         except Exception:
-            return {"version": 1, "files": {}, "approvals": {}}
+            return {"version": 1, "files": {}, "approvals": {}, "command_approval_rules": {}}
         if not isinstance(payload, dict):
-            return {"version": 1, "files": {}, "approvals": {}}
+            return {"version": 1, "files": {}, "approvals": {}, "command_approval_rules": {}}
         if not isinstance(payload.get("files"), dict):
             payload["files"] = {}
         if not isinstance(payload.get("approvals"), dict):
             payload["approvals"] = {}
+        if not isinstance(payload.get("command_approval_rules"), dict):
+            payload["command_approval_rules"] = {}
         payload["version"] = 1
         return payload
 
@@ -2037,6 +2039,174 @@ class LocalToolExecutor:
     def _sorted_approval_risk_signature(risks: list[dict[str, Any]]) -> list[str]:
         records = LocalToolExecutor._approval_risk_records(risks)
         return sorted(json.dumps(item, ensure_ascii=False, sort_keys=True) for item in records)
+
+    def _thread_command_approval_eligibility(
+        self,
+        *,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+        compound_shell: bool,
+    ) -> tuple[bool, str, str]:
+        if self._current_session_id() == "__anon__":
+            return False, "A concrete Thread is required for persistent command approval.", ""
+        if tainted_files:
+            return False, "Network-origin code always requires a new explicit approval.", ""
+        if compound_shell:
+            return False, "Compound shell commands cannot be authorized for the whole Thread.", ""
+        records = self._approval_risk_records(risks)
+        if len(records) != 1:
+            return False, "Only one narrowly scoped risk can be authorized for the whole Thread.", ""
+        risk = records[0]
+        if str(risk.get("category") or "") != "supply_chain":
+            return False, "External writes and other high-impact actions always require a new explicit approval.", ""
+        if str(risk.get("subcommand") or "").strip():
+            return False, "Nested shell commands cannot be authorized for the whole Thread.", ""
+        base_command = str(risk.get("base_command") or "").lower()
+        blocked_argument = str(risk.get("blocked_argument") or "").lower()
+        if base_command in {"python", "python3", "py", "python.exe"} and blocked_argument in {"-c", "--command"}:
+            return True, "", "python_inline"
+        if base_command in {"git", "git.exe"} and blocked_argument in {"fetch", "pull"}:
+            return True, "", f"git_{blocked_argument}"
+        return False, "This risk category remains one-time approval only.", ""
+
+    def _command_approval_rule_material(
+        self,
+        *,
+        argv: list[str],
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        material = {
+            "schema_version": 1,
+            "scope": "thread",
+            "session_id": self._current_session_id(),
+            "project_id": self._current_project_id(),
+            "cwd": str(resolved_cwd),
+            "argv": [str(item) for item in list(argv or [])],
+            "risks": self._sorted_approval_risk_signature(risks),
+            "files": [
+                [path, digest]
+                for path, digest in self._sorted_approval_file_signature(tainted_files)
+            ],
+        }
+        risk_records = self._approval_risk_records(risks)
+        if any(
+            str(item.get("base_command") or "").lower() in {"git", "git.exe"}
+            and str(item.get("blocked_argument") or "").lower() in {"fetch", "pull"}
+            for item in risk_records
+        ):
+            repository_root = self._git_probe(resolved_cwd, "rev-parse", "--show-toplevel")
+            repository_path = Path(repository_root).expanduser().resolve() if repository_root else resolved_cwd
+            remote_config = self._git_probe(
+                repository_path,
+                "config",
+                "--get-regexp",
+                r"^(remote\..*\.url|branch\..*\.(remote|merge))$",
+            )
+            material["git_remote_context"] = {
+                "repository_root": str(repository_path),
+                "remote_config_sha256": (
+                    hashlib.sha256(remote_config.encode("utf-8")).hexdigest()
+                    if remote_config
+                    else ""
+                ),
+            }
+        return material
+
+    @staticmethod
+    def _command_approval_rule_id(material: dict[str, Any]) -> str:
+        encoded = json.dumps(
+            material,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _public_command_approval_rule(rule: dict[str, Any], *, applied: bool = False) -> dict[str, Any]:
+        return {
+            "rule_id": str(rule.get("rule_id") or ""),
+            "scope": "thread",
+            "kind": str(rule.get("kind") or ""),
+            "command": str(rule.get("command") or ""),
+            "cwd": str(rule.get("cwd") or ""),
+            "created_at": str(rule.get("created_at") or ""),
+            "created": bool(rule.get("created")),
+            "applied": bool(applied),
+        }
+
+    def _matching_thread_command_approval_rule(
+        self,
+        *,
+        command: str,
+        argv: list[str],
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        material = self._command_approval_rule_material(
+            argv=argv,
+            cwd=cwd,
+            risks=risks,
+            tainted_files=tainted_files,
+        )
+        rule_id = self._command_approval_rule_id(material)
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            rule = dict(registry.setdefault("command_approval_rules", {}).get(rule_id) or {})
+        if not rule or not bool(rule.get("enabled", True)):
+            return {}
+        if dict(rule.get("material") or {}) != material:
+            return {}
+        return self._public_command_approval_rule(rule, applied=True)
+
+    def _create_thread_command_approval_rule(
+        self,
+        *,
+        command: str,
+        argv: list[str],
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+        compound_shell: bool,
+    ) -> tuple[dict[str, Any], str]:
+        eligible, reason, kind = self._thread_command_approval_eligibility(
+            risks=risks,
+            tainted_files=tainted_files,
+            compound_shell=compound_shell,
+        )
+        if not eligible:
+            return {}, reason
+        material = self._command_approval_rule_material(
+            argv=argv,
+            cwd=cwd,
+            risks=risks,
+            tainted_files=tainted_files,
+        )
+        rule_id = self._command_approval_rule_id(material)
+        rule = {
+            "type": "command_execution",
+            "scope": "thread",
+            "rule_id": rule_id,
+            "kind": kind,
+            "command": str(command or "").strip(),
+            "cwd": str(Path(cwd).expanduser().resolve()),
+            "session_id": self._current_session_id(),
+            "project_id": self._current_project_id(),
+            "material": material,
+            "created_at": self._utc_timestamp(),
+            "created_run_id": self._current_run_id(),
+            "created": True,
+            "enabled": True,
+        }
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            registry.setdefault("command_approval_rules", {})[rule_id] = rule
+            self._save_taint_registry_unlocked(registry)
+        return self._public_command_approval_rule(rule), ""
 
     def _consume_command_execution_approval(
         self,
@@ -2567,9 +2737,15 @@ class LocalToolExecutor:
         cwd: str,
         risks: list[dict[str, Any]],
         tainted_files: list[dict[str, Any]],
+        compound_shell: bool = False,
         token_error: str = "",
     ) -> dict[str, Any]:
         all_risks = [*list(risks or []), *self._tainted_execution_risks(tainted_files)]
+        thread_rule_eligible, thread_rule_reason, thread_rule_kind = self._thread_command_approval_eligibility(
+            risks=all_risks,
+            tainted_files=tainted_files,
+            compound_shell=compound_shell,
+        )
         approval_token = "" if token_error else self._create_command_execution_approval(
             command=command,
             purpose=purpose,
@@ -2599,6 +2775,9 @@ class LocalToolExecutor:
             "files": files,
             "single_use": True,
             "default_action": "cancel",
+            "thread_rule_eligible": thread_rule_eligible,
+            "thread_rule_kind": thread_rule_kind,
+            "thread_rule_reason": thread_rule_reason,
         }
         payload = self._command_failure_result(
             command=command,
@@ -4299,6 +4478,7 @@ class LocalToolExecutor:
         tty: bool = False,
         approval_token: str = "",
         tainted_approval_token: str = "",
+        approval_scope: str = "once",
     ) -> dict[str, Any]:
         if self._current_cancel_requested():
             return self._command_failure_result(
@@ -4495,6 +4675,16 @@ class LocalToolExecutor:
             *self._tainted_execution_risks(tainted_matches),
         ]
         approval_token_value = str(approval_token or tainted_approval_token or "").strip()
+        normalized_approval_scope = str(approval_scope or "once").strip().lower()
+        if normalized_approval_scope not in {"once", "thread"}:
+            return self._command_failure_result(
+                command=cmd,
+                cwd=str(real_cwd),
+                error=f"Unsupported command approval scope: {normalized_approval_scope}",
+                stderr=f"Unsupported command approval scope: {normalized_approval_scope}",
+                error_kind="approval_scope_not_allowed",
+                error_detail={"approval_scope": normalized_approval_scope},
+            )
         command_execution_approval_payload: dict[str, Any] = {}
         tainted_approval_payload: dict[str, Any] = {}
         if approval_risks:
@@ -4518,31 +4708,101 @@ class LocalToolExecutor:
                         ),
                     },
                 )
-            approved, approval_error = self._consume_command_execution_approval(
-                token=approval_token_value,
-                command=str(cmd or "").strip(),
-                cwd=str(real_cwd),
-                risks=approval_risks,
-                tainted_files=tainted_matches,
-            )
-            if not approved:
-                return self._command_execution_approval_failure_result(
-                    command=cmd,
-                    purpose=purpose,
+            thread_rule = {}
+            if not approval_token_value:
+                thread_rule = self._matching_thread_command_approval_rule(
+                    command=str(cmd or "").strip(),
+                    argv=argv,
                     cwd=str(real_cwd),
-                    risks=[*supply_chain_risks, *external_side_effect_risks],
+                    risks=approval_risks,
                     tainted_files=tainted_matches,
-                    token_error="" if not approval_token_value else approval_error,
                 )
-            command_execution_approval_payload = {
-                "approved": True,
-                "approval_token": approval_token_value,
-                "command": str(cmd or "").strip(),
-                "purpose": str(purpose or "").strip()[:240],
-                "cwd": str(real_cwd),
-                "risks": [dict(item) for item in approval_risks],
-                "files": self._approval_files_public_payload(tainted_matches),
-            }
+            if thread_rule:
+                command_execution_approval_payload = {
+                    "approved": True,
+                    "approval_source": "thread_rule",
+                    "approval_scope": "thread",
+                    "approval_token": "",
+                    "command": str(cmd or "").strip(),
+                    "purpose": str(purpose or "").strip()[:240],
+                    "cwd": str(real_cwd),
+                    "risks": [dict(item) for item in approval_risks],
+                    "files": self._approval_files_public_payload(tainted_matches),
+                    "thread_rule": thread_rule,
+                }
+            else:
+                if normalized_approval_scope == "thread":
+                    thread_rule_eligible, thread_rule_reason, _thread_rule_kind = (
+                        self._thread_command_approval_eligibility(
+                            risks=approval_risks,
+                            tainted_files=tainted_matches,
+                            compound_shell=compound_shell,
+                        )
+                    )
+                    if not thread_rule_eligible:
+                        return self._command_failure_result(
+                            command=cmd,
+                            cwd=str(real_cwd),
+                            error=thread_rule_reason or "This command cannot be approved for the whole Thread.",
+                            stderr=thread_rule_reason or "This command cannot be approved for the whole Thread.",
+                            error_kind="approval_scope_not_allowed",
+                            error_detail={
+                                "approval_scope": "thread",
+                                "message": thread_rule_reason,
+                            },
+                        )
+                approved, approval_error = self._consume_command_execution_approval(
+                    token=approval_token_value,
+                    command=str(cmd or "").strip(),
+                    cwd=str(real_cwd),
+                    risks=approval_risks,
+                    tainted_files=tainted_matches,
+                )
+                if not approved:
+                    return self._command_execution_approval_failure_result(
+                        command=cmd,
+                        purpose=purpose,
+                        cwd=str(real_cwd),
+                        risks=[*supply_chain_risks, *external_side_effect_risks],
+                        tainted_files=tainted_matches,
+                        compound_shell=compound_shell,
+                        token_error="" if not approval_token_value else approval_error,
+                    )
+                created_thread_rule: dict[str, Any] = {}
+                if normalized_approval_scope == "thread":
+                    created_thread_rule, thread_rule_error = self._create_thread_command_approval_rule(
+                        command=str(cmd or "").strip(),
+                        argv=argv,
+                        cwd=str(real_cwd),
+                        risks=approval_risks,
+                        tainted_files=tainted_matches,
+                        compound_shell=compound_shell,
+                    )
+                    if not created_thread_rule:
+                        return self._command_failure_result(
+                            command=cmd,
+                            cwd=str(real_cwd),
+                            error=thread_rule_error or "The Thread approval rule could not be created.",
+                            stderr=thread_rule_error or "The Thread approval rule could not be created.",
+                            error_kind="approval_scope_not_allowed",
+                            error_detail={
+                                "approval_scope": "thread",
+                                "message": thread_rule_error,
+                            },
+                        )
+                command_execution_approval_payload = {
+                    "approved": True,
+                    "approval_source": "user",
+                    "approval_scope": normalized_approval_scope,
+                    "approval_token": approval_token_value,
+                    "command": str(cmd or "").strip(),
+                    "purpose": str(purpose or "").strip()[:240],
+                    "cwd": str(real_cwd),
+                    "risks": [dict(item) for item in approval_risks],
+                    "files": self._approval_files_public_payload(tainted_matches),
+                }
+                if created_thread_rule:
+                    command_execution_approval_payload["thread_rule"] = created_thread_rule
         if tainted_matches and command_execution_approval_payload:
             tainted_approval_payload = {
                 "approved": True,

@@ -8938,6 +8938,9 @@ function App() {
   const commandApprovalFiles = hasCommandApproval && Array.isArray(activePendingApproval.files)
     ? activePendingApproval.files
     : [];
+  const commandThreadApprovalEligible = Boolean(
+    hasCommandApproval && activePendingApproval.thread_rule_eligible,
+  );
   const taskApprovalCurrent = hasTaskUpdateApproval && activePendingApproval.current_task
     && typeof activePendingApproval.current_task === "object"
     ? activePendingApproval.current_task
@@ -8951,16 +8954,19 @@ function App() {
     : [];
   const handleCommandApproval = async (action) => {
     if (!hasCommandApproval || approvalSubmitting) return;
-    const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
+    const normalizedAction = ["approve_once", "approve_thread"].includes(action) ? action : "cancel";
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
     const approvalToken = String(activePendingApproval.approval_token || "").trim();
     const toolCallId = String(activePendingApproval.tool_call_id || "").trim();
     if (!command) return;
-    if (normalizedAction === "approve_once" && !approvalToken) return;
-    const message = normalizedAction === "approve_once"
-      ? t("approval_modal.approve_message", { command })
-      : t("approval_modal.cancel_message", { command });
+    if (normalizedAction !== "cancel" && !approvalToken) return;
+    if (normalizedAction === "approve_thread" && !commandThreadApprovalEligible) return;
+    const message = normalizedAction === "approve_thread"
+      ? t("approval_modal.approve_thread_message", { command })
+      : (normalizedAction === "approve_once"
+        ? t("approval_modal.approve_message", { command })
+        : t("approval_modal.cancel_message", { command }));
     setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));
     setApprovalSubmitting(true);
     try {
@@ -11422,6 +11428,13 @@ function App() {
                                       </details>
                                     `
                                   : null}
+                                ${commandThreadApprovalEligible
+                                  ? html`
+                                      <div className="runtime-thread-approval-note">
+                                        ${t("approval_modal.thread_scope_help")}
+                                      </div>
+                                    `
+                                  : null}
                                 <div className="runtime-control-actions">
                                   <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${approvalSubmitting}>
                                     ${t("approval_modal.cancel")}
@@ -11429,6 +11442,13 @@ function App() {
                                   <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("approval_modal.approve_once")}
                                   </button>
+                                  ${commandThreadApprovalEligible
+                                    ? html`
+                                        <button className="solid-btn approval-thread-btn" type="button" onClick=${() => handleCommandApproval("approve_thread")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                          ${t("approval_modal.approve_thread")}
+                                        </button>
+                                      `
+                                    : null}
                                 </div>
                               </div>
                             `

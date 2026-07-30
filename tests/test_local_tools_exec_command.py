@@ -292,6 +292,7 @@ def test_git_push_always_requires_external_write_approval_with_repository_contex
     assert result["error_kind"] == "external_side_effect_approval_required"
     assert result["approval_required"] is True
     assert result["approval_request"]["default_action"] == "cancel"
+    assert result["approval_request"]["thread_rule_eligible"] is False
     risk = result["approval_request"]["risks"][0]
     assert risk["operation"] == "git_push"
     assert risk["repository_root"] == str(tmp_path)
@@ -587,6 +588,7 @@ def test_full_access_supply_chain_flows_request_approval_when_explicitly_allowli
     assert result["error_kind"] == "command_execution_approval_required"
     assert result["approval_required"] is True
     assert result["approval_request"]["command"] == command
+    assert result["approval_request"]["thread_rule_eligible"] is False
 
 
 @pytest.mark.parametrize(
@@ -640,6 +642,197 @@ def test_full_access_supply_chain_approval_runs_once_and_blocks_reuse(
     assert reused["ok"] is False
     assert reused["error_kind"] == "command_execution_approval_required"
     assert "already used" in reused["error"]
+
+
+def test_thread_command_approval_rule_reuses_normalized_python_command_only_in_same_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    manager = _make_manager(monkeypatch, tmp_path)
+    boundary = _runtime_boundary(
+        tmp_path,
+        permission_profile="full_access",
+        network_allowed=True,
+    )
+    manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    command = "python -c \"print('thread rule')\""
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+
+    assert blocked["approval_request"]["thread_rule_eligible"] is True
+    assert blocked["approval_request"]["thread_rule_kind"] == "python_inline"
+
+    approved = manager.exec_command(
+        cmd=command,
+        cwd=".",
+        yield_time_ms=2000,
+        approval_token=blocked["approval_request"]["approval_token"],
+        approval_scope="thread",
+    )
+
+    assert approved["ok"] is True
+    approval = approved["command_execution_approved"]
+    assert approval["approval_scope"] == "thread"
+    assert approval["approval_source"] == "user"
+    assert approval["thread_rule"]["created"] is True
+    assert approval["thread_rule"]["scope"] == "thread"
+
+    reloaded_manager = LocalToolExecutor(manager.config)
+    reloaded_manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    normalized_repeat = reloaded_manager.exec_command(
+        cmd="python    -c \"print('thread rule')\"",
+        cwd=".",
+        yield_time_ms=2000,
+    )
+
+    assert normalized_repeat["ok"] is True
+    repeated_approval = normalized_repeat["command_execution_approved"]
+    assert repeated_approval["approval_source"] == "thread_rule"
+    assert repeated_approval["thread_rule"]["applied"] is True
+    assert repeated_approval["thread_rule"]["rule_id"] == approval["thread_rule"]["rule_id"]
+
+    changed_command = reloaded_manager.exec_command(
+        cmd="python -c \"print('changed')\"",
+        cwd=".",
+        yield_time_ms=100,
+    )
+    assert changed_command["approval_required"] is True
+
+    reloaded_manager.set_runtime_context(
+        session_id="thread-b",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    changed_thread = reloaded_manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    assert changed_thread["approval_required"] is True
+
+    reloaded_manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="project-b",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    changed_project = reloaded_manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    assert changed_project["approval_required"] is True
+
+    reloaded_manager.set_runtime_context(
+        session_id="thread-a",
+        project_id="project-a",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=boundary,
+    )
+    changed_cwd = reloaded_manager.exec_command(cmd=command, cwd=str(other), yield_time_ms=100)
+    assert changed_cwd["approval_required"] is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_kind"),
+    [
+        ("python -c \"print('x')\"", "python_inline"),
+        ("git fetch origin main", "git_fetch"),
+        ("git pull --ff-only", "git_pull"),
+    ],
+)
+def test_only_narrow_python_and_git_read_updates_offer_thread_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+    expected_kind: str,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        session_id="eligible-thread",
+        project_id="eligible-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(
+            tmp_path,
+            permission_profile="full_access",
+            network_allowed=True,
+        ),
+    )
+
+    blocked = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+
+    assert blocked["approval_required"] is True
+    assert blocked["approval_request"]["thread_rule_eligible"] is True
+    assert blocked["approval_request"]["thread_rule_kind"] == expected_kind
+
+
+def test_git_thread_approval_rule_is_invalidated_when_remote_configuration_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(
+        session_id="git-thread",
+        project_id="git-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(
+            tmp_path,
+            permission_profile="full_access",
+            network_allowed=True,
+        ),
+    )
+    state = {"remote_config": "remote.origin.url https://example.com/team/a.git"}
+
+    def fake_git_probe(_cwd: Path, *args: str) -> str:
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        if args == ("config", "--get-regexp", r"^(remote\..*\.url|branch\..*\.(remote|merge))$"):
+            return state["remote_config"]
+        return ""
+
+    monkeypatch.setattr(manager, "_git_probe", fake_git_probe)
+    command = "git fetch origin main"
+    argv = ["git", "fetch", "origin", "main"]
+    risks = manager._supply_chain_risks(argv=argv, cwd=tmp_path)
+    created, error = manager._create_thread_command_approval_rule(
+        command=command,
+        argv=argv,
+        cwd=str(tmp_path),
+        risks=risks,
+        tainted_files=[],
+        compound_shell=False,
+    )
+
+    assert error == ""
+    assert created["kind"] == "git_fetch"
+    assert manager._matching_thread_command_approval_rule(
+        command=command,
+        argv=argv,
+        cwd=str(tmp_path),
+        risks=risks,
+        tainted_files=[],
+    )
+
+    state["remote_config"] = "remote.origin.url https://example.com/team/b.git"
+
+    assert not manager._matching_thread_command_approval_rule(
+        command=command,
+        argv=argv,
+        cwd=str(tmp_path),
+        risks=risks,
+        tainted_files=[],
+    )
 
 
 def test_repeated_approved_command_polls_running_session_without_new_approval(
@@ -852,8 +1045,20 @@ def test_exec_command_blocks_tainted_python_file_until_single_use_approval(
     assert blocked["error_kind"] == "tainted_code_approval_required"
     assert blocked["approval_required"] is True
     assert blocked["approval_request"]["type"] == "command_execution"
+    assert blocked["approval_request"]["thread_rule_eligible"] is False
     token = blocked["approval_request"]["approval_token"]
     assert token
+
+    thread_scope_rejected = manager.exec_command(
+        cmd="python downloaded.py",
+        cwd=".",
+        yield_time_ms=300,
+        tainted_approval_token=token,
+        approval_scope="thread",
+    )
+
+    assert thread_scope_rejected["ok"] is False
+    assert thread_scope_rejected["error_kind"] == "approval_scope_not_allowed"
 
     approved = manager.exec_command(
         cmd="python downloaded.py",

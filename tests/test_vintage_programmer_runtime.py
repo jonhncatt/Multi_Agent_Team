@@ -467,11 +467,25 @@ class _ApprovedCommandTools(_FakeTools):
             "cwd": str(arguments.get("cwd") or ""),
             "command_execution_approved": {
                 "approved": True,
+                "approval_source": "user",
+                "approval_scope": str(arguments.get("approval_scope") or "once"),
                 "approval_token": str(arguments.get("approval_token") or ""),
                 "command": str(arguments.get("cmd") or ""),
                 "cwd": str(arguments.get("cwd") or ""),
                 "risks": [],
                 "files": [],
+                **(
+                    {
+                        "thread_rule": {
+                            "rule_id": "thread-rule-1",
+                            "scope": "thread",
+                            "kind": "python_inline",
+                            "created": True,
+                        }
+                    }
+                    if str(arguments.get("approval_scope") or "") == "thread"
+                    else {}
+                ),
             },
             "summary": "command exited with 0",
         }
@@ -2355,6 +2369,90 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
     approval_results = [item for item in sent_messages if isinstance(item, _FakeToolMessage)]
     assert approval_results[-1].tool_call_id == "tc-approval"
     assert result["plan"] == [{"step": "Run the requested check", "status": "in_progress"}]
+
+
+def test_runtime_approve_thread_creates_narrow_command_rule(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ApprovedCommandTools()
+    backend = _FakeBackendWithTools([_FakeMessage(content="thread approval saved")], tools)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    command = "python -c \"print('x')\""
+
+    result = runtime.run(
+        message="Always allow this command in the Thread",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-command-thread-approval",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "run risky command"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "tc-thread-approval",
+                                "name": "exec_command",
+                                "args": {"cmd": command, "cwd": str(tmp_path)},
+                            }
+                        ],
+                    },
+                ],
+            },
+            "pending_turn": {
+                "schema_version": 1,
+                "type": "command_execution",
+                "turn_id": "turn-thread-rule",
+                "request_message": "run risky command",
+                "tool_call_id": "tc-thread-approval",
+                "tool_call": {
+                    "id": "tc-thread-approval",
+                    "name": "exec_command",
+                    "args": {"cmd": command, "cwd": str(tmp_path)},
+                },
+            },
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "approve_thread",
+                "approval_token": "approval-token-thread",
+                "command": command,
+                "cwd": str(tmp_path),
+            },
+        },
+    )
+
+    assert tools.calls[0] == (
+        "exec_command",
+        {
+            "cmd": command,
+            "cwd": str(tmp_path),
+            "approval_token": "approval-token-thread",
+            "tainted_approval_token": "approval-token-thread",
+            "approval_scope": "thread",
+        },
+    )
+    assert result["text"].startswith("thread approval saved")
+    approved_trace = next(
+        item for item in result["inspector"]["trace_events"] if item["type"] == "approval.approved"
+    )
+    assert approved_trace["payload"]["approval_scope"] == "thread"
+    assert approved_trace["payload"]["thread_rule"]["rule_id"] == "thread-rule-1"
+    assert result["pending_approval"] == {}
 
 
 def test_runtime_declined_command_resumes_with_one_tool_result_and_no_human_message(tmp_path: Path) -> None:

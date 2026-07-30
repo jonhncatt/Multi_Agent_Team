@@ -5576,7 +5576,7 @@ class VintageProgrammerRuntime:
                 )
                 messages.append(approval_tool_message)
                 turn_transcript_messages.append(approval_tool_message)
-            elif approval_action == "approve_once":
+            elif approval_action in {"approve_once", "approve_thread"}:
                 approval_arguments = {
                     **pending_arguments,
                     "cmd": approval_command,
@@ -5584,11 +5584,17 @@ class VintageProgrammerRuntime:
                     "approval_token": approval_token,
                     "tainted_approval_token": approval_token,
                 }
+                if approval_action == "approve_thread":
+                    approval_arguments["approval_scope"] = "thread"
                 self._emit_trace(
                     progress_cb,
                     run_id=run_id,
                     type="approval.approving",
-                    title="Command approval accepted",
+                    title=(
+                        "Thread command approval accepted"
+                        if approval_action == "approve_thread"
+                        else "Command approval accepted"
+                    ),
                     detail=approval_command,
                     status="running",
                     payload={
@@ -5596,6 +5602,9 @@ class VintageProgrammerRuntime:
                         "command": approval_command,
                         "cwd": approval_cwd,
                         "approval_token": approval_token,
+                        "approval_scope": (
+                            "thread" if approval_action == "approve_thread" else "once"
+                        ),
                     },
                     trace_events=trace_events,
                 )
@@ -5619,7 +5628,11 @@ class VintageProgrammerRuntime:
                     validation_result={
                         "allowed": True,
                         "code": "approval_token_supplied",
-                        "message": "User approved this exact command once.",
+                        "message": (
+                            "User approved this normalized command for the current Thread."
+                            if approval_action == "approve_thread"
+                            else "User approved this exact command once."
+                        ),
                         "normalized_arguments": approval_arguments,
                     },
                     raw_arguments=approval_arguments,
@@ -5642,6 +5655,17 @@ class VintageProgrammerRuntime:
                     "tool_name": "exec_command",
                     "command": approval_command,
                     "cwd": approval_cwd,
+                    "approval_scope": (
+                        "thread" if approval_action == "approve_thread" else "once"
+                    ),
+                    "thread_rule": safe_preview(
+                        dict(
+                            dict(approval_result.get("command_execution_approved") or {}).get(
+                                "thread_rule"
+                            )
+                            or {}
+                        )
+                    ),
                     "result_preview": safe_preview(approval_result, limit=4000),
                 }
                 self._emit_trace(
@@ -7079,6 +7103,30 @@ class VintageProgrammerRuntime:
                             payload={"tainted_execution_approved": safe_preview(approved_payload)},
                             trace_events=trace_events,
                         )
+                    if name == "exec_command" and isinstance(result.get("command_execution_approved"), dict):
+                        command_approval = dict(result.get("command_execution_approved") or {})
+                        thread_rule = dict(command_approval.get("thread_rule") or {})
+                        if (
+                            str(command_approval.get("approval_source") or "") == "thread_rule"
+                            and thread_rule
+                        ):
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="approval.rule_applied",
+                                title="Thread approval rule applied",
+                                detail=str(
+                                    command_approval.get("command")
+                                    or arguments.get("cmd")
+                                    or ""
+                                ),
+                                status="success",
+                                payload={
+                                    "approval_scope": "thread",
+                                    "thread_rule": safe_preview(thread_rule),
+                                },
+                                trace_events=trace_events,
+                            )
                     if name == "exec_command" and bool(result.get("approval_required")):
                         approval_request = dict(result.get("approval_request") or {})
                         approval_request["tool_call_id"] = call_id
