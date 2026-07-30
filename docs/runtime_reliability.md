@@ -21,7 +21,7 @@ This document records the reliability behavior that must remain stable after the
 - The Assistant tool call remains in `thread_transcript` without a placeholder result while the UI waits.
 - Approve, decline, and answer actions produce exactly one ToolMessage with the original `tool_call_id`; they never produce synthetic HumanMessages.
 - The active Plan is retained only while the Turn is paused. Once the Turn ends, the Plan remains available through transcript history but is not restored as the next Turn's active Plan.
-- Loop safeguards remain Harness-owned, but `[checkpoint_replan]` is telemetry only and is never inserted into model-visible history.
+- Turn continuation is model-led. Approval and structured-input pauses remain Runtime-owned, and user cancellation still ends the Turn.
 
 ## Technical Turn status
 
@@ -37,13 +37,24 @@ python scripts/run_evals.py --cases evals/agent_quality_cases.json --validate-on
 
 An unavailable compiler is reported as `blocked`, not as an Agent failure, when no independent hard failure occurred. The report retains the all-attempt success rate and also emits an evaluable success rate that excludes environment-blocked attempts. Path-isolation checks use canonical execution evidence rather than display-redacted tool previews.
 
-### Tool-failure recovery
+### Model-led tool continuation
 
-The first company baseline exposed the concrete failure pattern for this change: one multi-file analysis attempt made 27 tool calls, encountered 4 tool errors, produced no target-file change, and correctly remained blocked instead of claiming completion. The existing exact-action and no-progress guards protected completion honesty, but they did not group the same error class when arguments changed.
+Tool outcomes are explicitly separated into `failed`, `rejected`, and `skipped`. `failed` means execution began and returned an error; `rejected` means validation or policy prevented execution; `skipped` means the call was never attempted because approval, structured input, cancellation, or a technical interruption prevented it. Skipped calls remain visible in the Trace but never enter Eval failed-tool totals.
 
-Tool outcomes are explicitly separated into `failed`, `rejected`, and `skipped`. `failed` means execution began and returned an error; `rejected` means validation or policy prevented execution; `skipped` means the call was never attempted because the current tool batch had already reached a stop or cancellation condition. Skipped calls remain visible in the Trace but never enter failure counts, repeat detection, or Eval failed-tool totals.
+`where` and `rg` use exit code `1` for a normal query with no matches. The command result is marked `query_miss`, returned to the model as an ordinary observation, and excluded from failure classification. Exit code `2` and other real execution errors remain failures.
 
-Repeat detection uses a content-free stable fingerprint: tool name, outcome, failure phase, category, `error_kind`, and a hash of the normalized target or strategy. For `command_not_allowed`, the target is the command executable, so repeating `select-string` matches while changing to `rg` does not. Environment-wide failures intentionally omit the target because changing a path cannot make an unavailable tool or provider available. Raw commands, paths, queries, and other argument values remain absent from failure reports.
+The Runtime returns executed failures and policy rejections to the model and asks the model for the next action. It does not stop or force a replan based on:
+
+- a total failure count;
+- a repeated failure fingerprint;
+- repeated tool names or arguments;
+- an inferred lack of progress;
+- elapsed Turn time;
+- total tool-call count.
+
+Approval decisions and user cancellation remain hard Runtime boundaries. Context-window compaction, bounded model-visible tool output, provider limits, operating-system termination, and malformed protocol handling remain technical necessities rather than judgments about whether the task is making progress.
+
+Failure records may still include a content-free stable fingerprint, occurrence count, and progress signal for diagnostics and Eval compatibility. These fields never control Turn continuation. Raw commands, paths, queries, and other argument values remain absent from safe failure reports.
 
 The categories are:
 
@@ -53,20 +64,18 @@ The categories are:
 - `tool_execution_failure`: a tool implementation failed; retry once, then change strategy.
 - `environment_blocked`: a required provider, credential, compiler, shell, network, or tool capability is unavailable.
 
-Two consecutive failures with the same stable fingerprint trigger one explicit replan. The Runtime records that exact pre-replan fingerprint. After replanning, only seeing that same fingerprint again triggers `tool_failure_repeated_after_replan`; a different command, target, tool, phase, or error is allowed to run as a new strategy. A separate five-failure total budget prevents an Agent from evading the repeat guard by generating endlessly different failures. Failure trackers and stop latches are local to one Runtime turn and are recreated for each new user turn. A write-authorized task that runs a failing verification command before any successful mutation is replanned with an instruction to generate or modify the target first.
-
-Deterministic recovery Evals use fake tools and make zero real model calls:
+Deterministic continuation Evals use fake tools and make zero real provider calls:
 
 ```bash
 python scripts/run_recovery_evals.py --validate-only
 python scripts/run_recovery_evals.py
 ```
 
-They cover a recoverable changed-strategy path, an unavailable environment, repeated failure after replanning, verification before mutation, and no progress after replanning. The existing C-style `.cpp`, multi-file analysis, and Markdown live cases remain unchanged.
+They cover `where`/`rg` query misses, repeated actions, repeated and distinct failures, environment failures, policy rejections, malformed tool-call protocol repair, model-selected verification recovery, output continuation, and context compaction. The existing C-style `.cpp`, multi-file analysis, and Markdown live cases remain unchanged.
 
 ### Safe Eval failure reports
 
-Each live attempt now contains a `failure_observability` section that identifies the failing tool step, failure category, `error_kind`, occurrence and repeat count, replan trigger, and whether recovery succeeded. Aggregate output includes total and average tool calls, failed tool calls, repeated failures, replan count, and recovery success rate.
+Each live attempt contains a `failure_observability` section that identifies the failing tool step, failure category, `error_kind`, occurrence count, and whether a later tool succeeded. Legacy repeat and replan counters remain report-only compatibility fields; they do not drive Runtime control flow. Aggregate output includes total and average tool calls, failed tool calls, and recovery observations.
 
 Reports deliberately omit tool argument values, tool output, final answer text, verifier output, Runtime error details, file contents, absolute company paths, URLs, and credentials. Existing report fields remain present where compatibility requires them, but sensitive values are empty or replaced by content-free status envelopes.
 

@@ -72,9 +72,9 @@ Run the company baseline from PowerShell:
 
 The report's `scenario` section records required and forbidden tools, accepted guidance count, seeded/compacted Thread items, Team Skill isolation, failed-test recovery, and redaction-safe forbidden-command labels without storing message text, company paths, credentials, URLs, commands, or complete tool parameters. A case may set `verification.agent_must_run` to `false` when executing any command would itself violate the task; the runner still performs its private authoritative verifier after the Agent stops. For those cases only, a Runtime `verification_missing` state does not override a normal model final answer and the passing private verifier; unfinished plans and missing final answers still fail completion accuracy.
 
-## Deterministic tool-failure recovery suite
+## Deterministic model-led continuation suite
 
-`evals/tool_failure_recovery_cases.json` runs focused Runtime state-machine cases with fake tools and zero provider calls. It covers repeated-failure replanning, environment blocks, verification-before-change, no-progress stops, distinct failure targets, and the regression where repeated `search_codebase/not_a_directory` failures are followed by a skipped batch call, a rejected non-allowlisted command, and a successful `rg` strategy.
+`evals/tool_failure_recovery_cases.json` runs focused Runtime continuation cases with fake tools and zero provider calls. It verifies that `where`/`rg` no-match results are not failures; repeated actions, failures, environment errors, and policy rejections are returned to the model without Runtime-imposed failure budgets, progress guesses, or forced replans; malformed native tool calls receive protocol repair; and output continuation and compaction remain bounded. It retains the original company regression in which `search_codebase` receives a file as its root, `select-string` is rejected, and the model then succeeds with `rg`.
 
 This suite is also available from the home-page `Eval` dialog. It is marked as deterministic there, so the Live/provider/model controls are disabled and no provider request is made.
 
@@ -83,7 +83,7 @@ python scripts/run_recovery_evals.py --validate-only
 python scripts/run_recovery_evals.py
 ```
 
-Use `--name replan_allows_rejected_then_new_command_strategy` to run only the FAILED/REJECTED/SKIPPED regression case.
+Use `--name where_and_rg_query_miss_is_not_failure` to run only the query-miss regression case, or `--name no_total_failure_budget` to verify model-led continuation across five distinct failures.
 
 ## Company compiler adapter
 

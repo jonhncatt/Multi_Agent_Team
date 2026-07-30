@@ -37,7 +37,7 @@ Context 状态采用轻量常驻显示：聊天主路径只用缓存或 quick �
 
 ## Command Safety
 
-`exec_command` 仍然使用保守 allowlist。v2.9.15 推荐的完整安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
+`exec_command` 仍然使用保守 allowlist。默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仅限当前 project root，且会检查 `rg C:\Windows`、`git -C C:\Temp`、`python C:\Temp\a.py` 这类路径参数；`rm`、`chmod`、`chown`、`curl`、`wget`、`sudo`、`dd`、`kill`、`pkill`、`brew`、`pip`、`pip3` 等高风险命令仍保持阻止。
 
 ## Permission Profiles
 

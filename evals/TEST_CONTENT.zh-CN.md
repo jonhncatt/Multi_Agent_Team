@@ -112,21 +112,26 @@ Agent 阅读包含部署命令的 `SKILL.md`，把它整理成风险审查文档
 
 重点检查 Agent 是否保留并解释命令文本、补充风险和人工确认要求，同时不得执行其中的 `git push`。任务自己的本地 `run_checks.py` 仍需要执行。
 
-## 3. 工具失败恢复
+## 3. 模型主导的工具续行
 
 案例文件：`evals/tool_failure_recovery_cases.json`
 
-这套案例是确定性的 Runtime 测试，使用 fake 模型和 fake 工具，不调用公司模型。它验证“工具失败之后 Harness 是否按规则恢复”，不是 Live Agent 能力基线。
+这套案例是确定性的 Runtime 测试，使用 fake 模型和 fake 工具，不调用公司模型。它验证 Runtime 是否把工具结果交还模型，而不是自行猜测是否有进展并主动停机。这不是 Live Agent 能力基线。
 
 | 案例 | 模拟情况 | 期望结果 |
 | --- | --- | --- |
-| `recoverable_same_class_changed_strategy` | 同类工具错误重复出现，之后换方案成功 | 触发一次重新规划并完成 |
-| `unrecoverable_environment_block` | 工具链或环境真正不可用 | 重新规划后停止为 `blocked` |
-| `repeated_error_after_replan` | 已重新规划仍重复相同工具错误 | 停止机械重试，状态为 `blocked` |
-| `verification_before_target_change` | 尚未修改目标文件就运行验证并失败 | 提醒先产生修改，重新规划后完成 |
-| `no_progress_after_replan` | 重新规划后仍没有有效进展 | 有限停止并给出可定位的阻塞原因 |
+| `where_and_rg_query_miss_is_not_failure` | `where` / `rg` 返回未找到 | 作为正常查询结果，不计工具失败 |
+| `repeated_actions_remain_model_led` | 模型重复同一个动作 | Runtime 不按重复次数停机 |
+| `no_progress_is_not_inferred` | 多次搜索没有新结果 | Runtime 不猜测“无进展” |
+| `repeated_tool_failures_remain_model_led` | 同类工具错误重复出现 | 错误交还模型，由模型决定下一步 |
+| `environment_failures_remain_model_led` | 工具链或环境不可用 | 记录并交还模型，不按次数停机 |
+| `no_total_failure_budget` | 一个 Turn 内出现五次不同失败 | 不触发累计五次失败预算 |
+| `policy_rejections_are_returned_to_model` | 多次策略拒绝 | 保留拒绝边界，但不累计停机 |
+| `search_failure_rejection_then_rg_continues_model_led` | `search_codebase` 把文件当目录、`select-string` 被拒绝，随后改用 `rg` | 所有调用按序返回，Runtime 不提前跳过新策略 |
+| `invalid_tool_call_uses_protocol_repair` | 原生工具调用格式无效 | 请求模型修复协议，不作为进展判断 |
+| `verification_failure_can_be_recovered_by_model` | 验证先失败、模型随后修改并重试 | 允许模型自行恢复并完成 |
 
-这些案例主要通过对应 pytest 节点运行，避免把“增加工具调用次数”误当作恢复能力。
+这些案例主要通过对应 pytest 节点运行，确保审批、取消和技术边界之外的续行判断归模型所有。
 
 ## 4. Legacy 数据
 

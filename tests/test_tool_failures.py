@@ -56,6 +56,20 @@ def test_successful_event_has_no_failure_classification() -> None:
     ) is None
 
 
+def test_query_miss_is_not_a_tool_failure() -> None:
+    assert classify_tool_failure(
+        tool_name="exec_command",
+        payload={
+            "ok": True,
+            "command": "where missing-tool",
+            "returncode": 1,
+            "query_miss": True,
+            "summary": "query completed with no matches",
+        },
+        event_status="ok",
+    ) is None
+
+
 def test_apply_patch_existing_file_requires_changed_arguments() -> None:
     failure = classify_tool_failure(
         tool_name="apply_patch",

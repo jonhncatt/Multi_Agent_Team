@@ -66,6 +66,21 @@ def test_exec_command_allows_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert argv[0] == "dir"
 
 
+def test_exec_command_allows_where(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+
+    argv, error = manager._safe_split_command("where g++")
+
+    assert error is None
+    assert argv == ["where", "g++"]
+
+
+@pytest.mark.parametrize("command", ["where missing-tool", "where.exe missing-tool", "rg missing .", "rg.exe missing ."])
+def test_query_miss_commands_recognize_exit_code_one(command: str) -> None:
+    assert LocalToolExecutor._is_expected_query_miss(command, 1) is True
+    assert LocalToolExecutor._is_expected_query_miss(command, 2) is False
+
+
 def test_enabled_skill_script_gets_skill_project_roots_and_inherited_secret(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

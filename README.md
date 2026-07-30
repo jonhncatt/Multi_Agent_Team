@@ -56,7 +56,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Command Safety
 
-`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf` 和 `dir`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。`git push` 在任何允许 shell 的权限模式下都必须逐次审批，审批绑定当前仓库、remote、remote URL 指纹、branch、HEAD 和精确命令；其中任一项变化都会使 token 失效。Skill、源码或文档中出现命令文字不构成执行授权。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
+`exec_command` 继续使用保守 allowlist，默认安全列表包含 `printf`、`dir` 和 Windows 程序定位命令 `where`，并且 `VP_ALLOWED_COMMANDS` 是完整覆盖，不是增量追加。默认命令执行仍受当前权限模式和路径边界约束，且会检查 `rg /etc`、`git -C /tmp`、`python /tmp/a.py` 这类路径参数。`curl`、`wget`、`pip install`、`npm install`、`git pull/fetch` 等供应链相关命令默认不在安全列表；如果管理员显式加入 allowlist，Full Access 下也会先进入单次审批。`git push` 在任何允许 shell 的权限模式下都必须逐次审批，审批绑定当前仓库、remote、remote URL 指纹、branch、HEAD 和精确命令；其中任一项变化都会使 token 失效。Skill、源码或文档中出现命令文字不构成执行授权。危险删除、`sudo rm`、下载脚本 pipe shell 等模式仍会被硬拒绝。
 
 ## Session = Thread
 

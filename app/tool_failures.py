@@ -240,6 +240,8 @@ def classify_tool_failure(
     normalized_primary_kind = _safe_code(primary_kind, fallback="")
     if status in _NON_FAILURE_STATUSES or normalized_primary_kind in _NON_FAILURE_KINDS:
         return None
+    if result.get("query_miss") is True:
+        return None
     explicitly_failed = bool(
         result.get("ok") is False
         or status in _FAILED_STATUSES

@@ -1,65 +1,98 @@
 {
   "schema_version": 1,
-  "suite": "vintage_programmer_tool_failure_recovery",
-  "description": "Deterministic Runtime recovery evals. These cases use fake tools and never call a real model.",
+  "suite": "vintage_programmer_model_led_tool_continuation",
+  "description": "Deterministic Runtime continuation evals. These cases use fake tools and never call a real model.",
   "cases": [
     {
-      "name": "distinct_failure_targets_are_not_repeated",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_distinguishes_same_failure_class_with_different_targets",
-      "failure_category": "tool_call_failure",
+      "name": "where_and_rg_query_miss_is_not_failure",
+      "test_node": "tests/test_tool_failures.py::test_query_miss_is_not_a_tool_failure",
+      "failure_category": "query_miss",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "",
+      "expected_failure_counted": false,
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 1
+    },
+    {
+      "name": "repeated_actions_remain_model_led",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_leaves_repeated_actions_to_the_model",
+      "failure_category": "repeated_action",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 6
+    },
+    {
+      "name": "no_progress_is_not_inferred",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_does_not_guess_whether_repeated_searches_make_progress",
+      "failure_category": "progress_observability",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
       "max_tool_calls": 3
     },
     {
-      "name": "replan_allows_rejected_then_new_command_strategy",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_call",
+      "name": "repeated_tool_failures_remain_model_led",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_leaves_repeated_tool_failures_to_the_model",
+      "failure_category": "tool_call_failure",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "environment_failures_remain_model_led",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_returns_environment_failures_to_the_model_without_stopping",
+      "failure_category": "environment_blocked",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "no_total_failure_budget",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_has_no_total_distinct_failure_budget",
+      "failure_category": "tool_call_failure",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 5
+    },
+    {
+      "name": "policy_rejections_are_returned_to_model",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_returns_repeated_guard_rejections_to_the_model",
+      "failure_category": "policy_rejection",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 2
+    },
+    {
+      "name": "search_failure_rejection_then_rg_continues_model_led",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_executes_all_calls_and_allows_new_strategy_after_failures",
       "failure_category": "mixed_failed_rejected",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "repeated_tool_failure",
+      "expected_continuation_policy": "model_led",
       "expected_error_kinds": ["not_a_directory", "command_not_allowed"],
       "expected_outcomes": ["failed", "rejected"],
-      "expected_skipped_calls": 1,
       "expected_recovery_tool": "exec_command",
       "max_tool_calls": 5
     },
     {
-      "name": "unrecoverable_environment_block",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_stops_unrecoverable_environment_failure_after_one_replan",
-      "failure_category": "environment_blocked",
-      "expected_turn_status": "blocked",
-      "expected_replan_trigger": "repeated_tool_failure",
-      "max_tool_calls": 3
+      "name": "invalid_tool_call_uses_protocol_repair",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_keeps_requesting_protocol_repair_for_invalid_tool_calls",
+      "failure_category": "protocol_repair",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 0
     },
     {
-      "name": "repeated_error_after_replan",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_stops_repeated_tool_call_failure_after_replan",
-      "failure_category": "tool_call_failure",
-      "expected_turn_status": "blocked",
-      "expected_replan_trigger": "repeated_tool_failure",
-      "max_tool_calls": 3
-    },
-    {
-      "name": "verification_before_target_change",
+      "name": "verification_failure_can_be_recovered_by_model",
       "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation",
       "failure_category": "verification_failure",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "verification_before_change",
+      "expected_continuation_policy": "model_led",
       "max_tool_calls": 3
-    },
-    {
-      "name": "no_progress_after_replan",
-      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_blocked_message_details_after_replan_no_progress",
-      "failure_category": "no_progress",
-      "expected_turn_status": "blocked",
-      "expected_replan_trigger": "no_progress",
-      "max_tool_calls": 4
     },
     {
       "name": "tool_output_truncation_is_resumable_without_rerun",
       "test_node": "tests/test_tool_result_continuation.py::test_large_tool_result_is_token_bounded_and_resumable_without_rerun",
       "failure_category": "context_management",
       "expected_turn_status": "completed",
+      "expected_continuation_policy": "model_led",
       "expected_recovery_tool": "read_tool_result",
       "max_tool_calls": 2
     },
@@ -68,7 +101,7 @@
       "test_node": "tests/test_vintage_programmer_runtime.py::test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed",
       "failure_category": "context_management",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "",
+      "expected_continuation_policy": "model_led",
       "max_tool_calls": 20
     },
     {
@@ -76,7 +109,7 @@
       "test_node": "tests/test_vintage_programmer_runtime.py::test_model_downgrade_compacts_large_base_before_the_next_request",
       "failure_category": "context_management",
       "expected_turn_status": "completed",
-      "expected_replan_trigger": "",
+      "expected_continuation_policy": "model_led",
       "max_tool_calls": 3
     }
   ]

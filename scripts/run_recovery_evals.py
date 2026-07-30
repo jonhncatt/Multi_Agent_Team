@@ -23,8 +23,8 @@ DEFAULT_OUTPUT = ROOT / "artifacts" / "evals" / "runtime-recovery-summary.json"
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run deterministic Runtime tool-failure recovery evals.")
-    parser.add_argument("--cases", default=str(DEFAULT_CASES), help="Recovery eval case manifest.")
+    parser = argparse.ArgumentParser(description="Run deterministic Runtime model-led continuation evals.")
+    parser.add_argument("--cases", default=str(DEFAULT_CASES), help="Continuation eval case manifest.")
     parser.add_argument("--name", default="", help="Run only cases whose name contains this text.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Safe JSON summary path.")
     parser.add_argument("--validate-only", action="store_true", help="Validate the manifest without running pytest.")

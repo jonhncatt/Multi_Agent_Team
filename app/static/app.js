@@ -2672,13 +2672,6 @@ function formatRuntimeTokenUsage(locale, value) {
   });
 }
 
-function formatWallClockLimit(seconds) {
-  const normalized = Math.max(0, Number(seconds || 0) || 0);
-  if (!normalized) return "-";
-  if (normalized % 60 === 0) return `${Math.round(normalized / 60)}m`;
-  return `${normalized}s`;
-}
-
 function isCurrentThreadLiveRun({
   sessionId = "",
   activeRunThreadId = "",
@@ -2974,12 +2967,16 @@ function buildRuntimeStatsSummary({
         : []),
     ],
     safeguards: [
-      { key: "long_task", label: translateUi(locale, "context_meter.field.guard_long_task"), value: formatRuntimeToggle(locale, Boolean(safeguards.long_task_guard)) },
-      { key: "progress_signal", label: translateUi(locale, "context_meter.field.guard_progress_signal"), value: formatRuntimeToggle(locale, Boolean(safeguards.progress_signal_guard)) },
-      { key: "same_action", label: translateUi(locale, "context_meter.field.guard_same_action"), value: formatRuntimeToggle(locale, Boolean(safeguards.same_action_repeat_guard)) },
-      { key: "replan", label: translateUi(locale, "context_meter.field.guard_replan"), value: formatRuntimeToggle(locale, Boolean(safeguards.automatic_replan)) },
+      {
+        key: "continuation_policy",
+        label: translateUi(locale, "context_meter.field.continuation_policy"),
+        value: translateUiOrFallback(
+          locale,
+          `context_meter.continuation.${safeguards.continuation_policy || "model_led"}`,
+          String(safeguards.continuation_policy || "model_led"),
+        ),
+      },
       { key: "tool_output", label: translateUi(locale, "context_meter.field.guard_tool_output"), value: formatRuntimeToggle(locale, Boolean(safeguards.tool_output_truncation)) },
-      { key: "wall_clock", label: translateUi(locale, "context_meter.field.guard_wall_clock"), value: formatWallClockLimit(safeguards.max_turn_seconds) },
       { key: "user_stop", label: translateUi(locale, "context_meter.field.guard_user_stop"), value: formatRuntimeToggle(locale, Boolean(safeguards.supports_user_cancel)) },
       { key: "compaction", label: translateUi(locale, "context_meter.field.guard_compaction"), value: formatRuntimeToggle(locale, Boolean(safeguards.context_compaction)) },
     ],

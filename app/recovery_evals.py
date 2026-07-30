@@ -68,11 +68,11 @@ def _safe_result(case: dict[str, Any], *, returncode: int, elapsed_ms: float) ->
         "status": "passed" if returncode == 0 else "failed",
         "failure_category": str(case.get("failure_category") or ""),
         "expected_turn_status": str(case.get("expected_turn_status") or ""),
-        "expected_replan_trigger": str(case.get("expected_replan_trigger") or ""),
+        "expected_continuation_policy": str(case.get("expected_continuation_policy") or ""),
+        "expected_failure_counted": case.get("expected_failure_counted"),
         "max_tool_calls": int(case.get("max_tool_calls") or 0),
         "expected_error_kinds": [str(item) for item in list(case.get("expected_error_kinds") or [])],
         "expected_outcomes": [str(item) for item in list(case.get("expected_outcomes") or [])],
-        "expected_skipped_calls": int(case.get("expected_skipped_calls") or 0),
         "expected_recovery_tool": str(case.get("expected_recovery_tool") or ""),
         "elapsed_ms": round(elapsed_ms, 2),
     }

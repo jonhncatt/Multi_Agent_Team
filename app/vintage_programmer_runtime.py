@@ -113,15 +113,6 @@ _READ_ONLY_TOOL_NAMES = {
     "list_tasks",
 }
 
-_DEFAULT_EMERGENCY_MAX_TOOL_CALLS_PER_TURN = 1000
-_DEFAULT_MAX_TURN_SECONDS = 1800
-_DEFAULT_MAX_SAME_ACTION_REPEATS = 4
-_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN = 3
-_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN = 2
-_DEFAULT_MAX_GUARD_REJECTIONS = 2
-_DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN = 2
-_DEFAULT_REPEATED_FAILURES_AFTER_REPLAN = 1
-_DEFAULT_MAX_TOTAL_FAILURES = 5
 _SUBAGENT_CANCEL_GRACE_SECONDS = 0.25
 
 
@@ -131,19 +122,7 @@ def _has_image_attachments(attachment_metas: list[dict[str, Any]]) -> bool:
 
 def default_loop_safeguards() -> dict[str, Any]:
     return {
-        "max_same_action_repeats": int(_DEFAULT_MAX_SAME_ACTION_REPEATS),
-        "no_progress_threshold_before_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_BEFORE_REPLAN),
-        "no_progress_threshold_after_replan": int(_DEFAULT_NO_PROGRESS_THRESHOLD_AFTER_REPLAN),
-        "max_guard_rejections": int(_DEFAULT_MAX_GUARD_REJECTIONS),
-        "repeated_failures_before_replan": int(_DEFAULT_REPEATED_FAILURES_BEFORE_REPLAN),
-        "repeated_failures_after_replan": int(_DEFAULT_REPEATED_FAILURES_AFTER_REPLAN),
-        "max_total_failures": int(_DEFAULT_MAX_TOTAL_FAILURES),
-        "max_turn_seconds": int(_DEFAULT_MAX_TURN_SECONDS),
-        "long_task_guard": True,
-        "progress_signal_guard": True,
-        "same_action_repeat_guard": True,
-        "automatic_replan": True,
-        "tool_failure_recovery": True,
+        "continuation_policy": "model_led",
         "tool_output_truncation": True,
         "supports_user_cancel": True,
         "context_compaction": True,
@@ -2940,80 +2919,6 @@ class VintageProgrammerRuntime:
                 return candidate
         return ""
 
-    def _guard_recovery_hints(
-        self,
-        *,
-        locale: str,
-        trigger: str,
-        recent_failures: list[str],
-    ) -> list[str]:
-        hints: list[str] = []
-        joined = "\n".join(str(item or "") for item in recent_failures).lower()
-        if trigger == "validation_rejection_limit" and (
-            "command substitution" in joined
-            or "unsupported shell structure" in joined
-            or "compound command" in joined
-        ):
-            hints.extend(
-                [
-                    self._localized_text(
-                        locale,
-                        zh_cn="不要再次使用 command substitution、内联 if/循环或复合 shell 验证链。",
-                        ja_jp="command substitution、インライン if/loop、複合 shell の検証チェーンを繰り返さないでください。",
-                        en="Do not repeat command substitution, inline if/loops, or compound shell verification chains.",
-                    ),
-                    self._localized_text(
-                        locale,
-                        zh_cn="必须把 shell 动作拆成简单命令，一次只执行一个清晰步骤，再根据 stdout 决定下一步。",
-                        ja_jp="shell 操作は単純なコマンドに分解し、一度に 1 つの明確なステップだけ実行し、その stdout を見て次を決めてください。",
-                        en="You must split shell work into simple commands, execute one clear step at a time, and decide the next move from stdout.",
-                    ),
-                    self._localized_text(
-                        locale,
-                        zh_cn="例如：先执行 `python hello.py`，再根据输出判断；不要用 `output=$(...) && if ...`。",
-                        ja_jp="例: まず `python hello.py` を実行し、その出力を見て判断してください。`output=$(...) && if ...` は使わないでください。",
-                        en="Example: run `python hello.py` first, then decide from its output; do not use `output=$(...) && if ...`.",
-                    ),
-                ]
-            )
-        if "$.max_chars must be >=" in joined or "max_chars must be >=" in joined:
-            hints.append(
-                self._localized_text(
-                    locale,
-                    zh_cn="任何 read/context/evidence 工具的 `max_chars` 都必须 >= 128；如果更小，请直接改成 128 或更大。",
-                    ja_jp="read/context/evidence 系のツールでは `max_chars` を必ず 128 以上にしてください。小さすぎる値は 128 以上へ直してください。",
-                    en="For read/context/evidence tools, `max_chars` must be at least 128; raise any smaller value to 128 or higher.",
-                )
-            )
-        if "outside allowed roots" in joined or "cwd/workdir" in joined:
-            hints.append(
-                self._localized_text(
-                    locale,
-                    zh_cn="如果路径上下文不清楚，请显式设置 `cwd`/`workdir`，并确保它位于允许的项目根目录内。",
-                    ja_jp="パス文脈が曖昧なら、`cwd`/`workdir` を明示し、許可された project root 内に収めてください。",
-                    en="If the path context is ambiguous, set `cwd`/`workdir` explicitly and keep it inside the allowed project roots.",
-                )
-            )
-        if trigger == "repeated_tool_failure":
-            hints.append(
-                self._localized_text(
-                    locale,
-                    zh_cn="不得再次机械重复同一工具/错误类型；必须修改参数、改用其他工具，或选择不同的执行策略。",
-                    ja_jp="同じツール/エラー種別を機械的に繰り返さず、引数、ツール、または実行戦略を変更してください。",
-                    en="Do not mechanically repeat the same tool/error class; change the arguments, tool, or execution strategy.",
-                )
-            )
-        if trigger == "verification_before_change":
-            hints.append(
-                self._localized_text(
-                    locale,
-                    zh_cn="当前写入任务尚无成功修改证据。先生成或修改目标文件，再重新运行验证。",
-                    ja_jp="書き込みタスクにはまだ成功した変更の証拠がありません。対象ファイルを作成または変更してから検証を再実行してください。",
-                    en="No successful mutation has been observed for this write task. Create or modify the target before running verification again.",
-                )
-            )
-        return hints
-
     def _attempt_guard_safe_downgrade(
         self,
         *,
@@ -3079,150 +2984,23 @@ class VintageProgrammerRuntime:
         return candidate_call, candidate_validation, reason
 
     def _blocked_reason_label(self, locale: str, blocked_reason: str) -> str:
-        if str(blocked_reason or "").strip() in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
-            return self._localized_text(
-                locale,
-                zh_cn="同一工具失败指纹重复出现",
-                ja_jp="同じツール失敗フィンガープリントが繰り返されました",
-                en="The same tool failure fingerprint repeated",
-            )
-        if str(blocked_reason or "").strip() == "tool_failure_budget_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn="本轮工具失败总预算已耗尽",
-                ja_jp="この turn のツール失敗総予算に達しました",
-                en="The turn exhausted its total tool-failure budget",
-            )
-        if str(blocked_reason or "").strip() == "invalid_tool_call_repeated":
-            return self._localized_text(
-                locale,
-                zh_cn="模型重复返回了无效工具调用",
-                ja_jp="モデルが無効なツール呼び出しを繰り返しました",
-                en="The model repeated an invalid tool call",
-            )
-        if str(blocked_reason or "").strip() == "model_action_empty_after_tool_failure":
-            return self._localized_text(
-                locale,
-                zh_cn="工具失败后的自动恢复没有产生下一步",
-                ja_jp="ツール失敗後の自動回復で次の手が得られませんでした",
-                en="Automatic recovery after the tool failure produced no next step",
-            )
-        mapping = {
-            "turn_budget_no_progress_after_replan_exceeded": "runtime.budget.detail.no_progress_after_replan",
-            "turn_budget_same_action_repeats_exceeded": "runtime.budget.detail.same_action_repeat",
-            "turn_budget_same_tool_repeats_exceeded": "runtime.budget.detail.same_tool_repeat",
-            "tool_validation_rejections_exceeded": "runtime.budget.detail.guard_rejection",
-            "turn_budget_wall_clock_exceeded": "runtime.budget.detail.wall_clock",
-            "turn_budget_emergency_tool_calls_exceeded": "runtime.budget.detail.emergency_tool_calls",
-            "model_action_empty": "runtime.budget.detail.model_action_empty",
-        }
-        return translate(locale, mapping.get(str(blocked_reason or "").strip(), "runtime.budget.detail.unknown"))
+        if str(blocked_reason or "").strip() == "model_action_empty":
+            return translate(locale, "runtime.budget.detail.model_action_empty")
+        return translate(locale, "runtime.budget.detail.unknown")
 
     def _blocked_reason_detail(
         self,
         *,
         locale: str,
         blocked_reason: str,
-        tool_events: list[ToolEvent],
-        guard_rejection_count: int,
-        no_progress_cycles: int,
-        post_replan_no_progress_cycles: int,
-        same_action_repeat_count: int,
-        elapsed_seconds: int,
     ) -> str:
-        last_failed = next((item for item in reversed(tool_events or []) if getattr(item, "status", "") != "ok"), None)
-        last_failed_reason = str(getattr(last_failed, "summary", "") or "").strip()
         reason_code = str(blocked_reason or "").strip()
-        if reason_code in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
-            structured = self._recent_structured_failures(tool_events, limit=1)
-            latest = structured[-1] if structured else {}
-            failure_label = ":".join(
-                item
-                for item in (
-                    str(latest.get("tool") or "tool"),
-                    str(latest.get("category") or "tool_execution_failure"),
-                    str(latest.get("error_kind") or "tool_error"),
-                )
-                if item
-            )
-            return self._localized_text(
-                locale,
-                zh_cn=f"同类工具错误在复盘后仍然重复，已停止机械重试。错误类别：{failure_label}。",
-                ja_jp=f"同種のツールエラーが復盤後も繰り返されたため、機械的な再試行を停止しました。分類: {failure_label}。",
-                en=f"The same tool failure persisted after replanning, so mechanical retries were stopped. Failure class: {failure_label}.",
-            )
-        if reason_code == "tool_failure_budget_exceeded":
-            counted_failures = len(self._recent_structured_failures(tool_events, limit=100))
-            return self._localized_text(
-                locale,
-                zh_cn=f"本轮已累计 {counted_failures} 次实际失败或策略拒绝；为防止通过不断制造不同错误无限尝试，Runtime 已停止本轮。",
-                ja_jp=f"この turn では実行失敗またはポリシー拒否が合計 {counted_failures} 回発生しました。異なるエラーを作り続ける無限試行を防ぐため停止しました。",
-                en=f"This turn accumulated {counted_failures} executed failures or policy rejections. The Runtime stopped it to prevent endless retries through continually different errors.",
-            )
-        if reason_code == "tool_validation_rejections_exceeded":
-            base = self._localized_text(
-                locale,
-                zh_cn=f"连续 {max(guard_rejection_count, 1)} 次工具调用被 Guard 拒绝。",
-                ja_jp=f"Guard による拒否が {max(guard_rejection_count, 1)} 回連続しました。",
-                en=f"{max(guard_rejection_count, 1)} consecutive tool calls were rejected by the guard.",
-            )
-            if last_failed_reason:
-                suffix = self._localized_text(
-                    locale,
-                    zh_cn=f" 最近一次原因：{last_failed_reason[:160]}",
-                    ja_jp=f" 直近の理由: {last_failed_reason[:160]}",
-                    en=f" Latest reason: {last_failed_reason[:160]}",
-                )
-                return base + suffix
-            return base
-        if reason_code == "turn_budget_no_progress_after_replan_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn=f"复盘后连续 {max(post_replan_no_progress_cycles, 1)} 轮工具调用没有产生新的有效信息，总计连续 {max(no_progress_cycles, 1)} 轮没有新进展。",
-                ja_jp=f"復盤後も {max(post_replan_no_progress_cycles, 1)} 回連続で新しい有効情報が出ず、合計 {max(no_progress_cycles, 1)} 回進展がありませんでした。",
-                en=f"No new useful information appeared for {max(post_replan_no_progress_cycles, 1)} post-replan tool cycles, and {max(no_progress_cycles, 1)} consecutive cycles produced no progress overall.",
-            )
-        if reason_code == "turn_budget_same_action_repeats_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn=f"连续 {max(same_action_repeat_count, 1)} 次提出相同动作，且没有新的有效进展。",
-                ja_jp=f"同じアクションが {max(same_action_repeat_count, 1)} 回連続し、新しい有効な進展がありませんでした。",
-                en=f"The same action repeated {max(same_action_repeat_count, 1)} times in a row without any new useful progress.",
-            )
-        if reason_code == "turn_budget_wall_clock_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn=f"当前轮次已连续执行约 {max(elapsed_seconds, 1)} 秒，达到运行预算。",
-                ja_jp=f"この turn は約 {max(elapsed_seconds, 1)} 秒連続実行され、実行予算に達しました。",
-                en=f"This turn ran for about {max(elapsed_seconds, 1)} seconds and reached the execution budget.",
-            )
-        if reason_code == "turn_budget_emergency_tool_calls_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn="当前轮次触发了紧急工具调用兜底上限。",
-                ja_jp="この turn は緊急ツール呼び出しのフェイルセーフ上限に達しました。",
-                en="This turn reached the emergency tool-call fail-safe cap.",
-            )
         if reason_code == "model_action_empty":
             return self._localized_text(
                 locale,
                 zh_cn="模型没有给出可执行的下一步，因此当前轮次无法继续推进。",
                 ja_jp="モデルが実行可能な次の一手を返さなかったため、この turn を続けられませんでした。",
                 en="The model did not produce an executable next step, so the turn could not continue.",
-            )
-        if reason_code == "invalid_tool_call_repeated":
-            return self._localized_text(
-                locale,
-                zh_cn="Harness 已检测到格式无效的工具调用并要求模型纠正一次，但模型仍未返回符合工具 schema 的可执行调用。",
-                ja_jp="Harness は不正な形式のツール呼び出しを検出して一度修正を求めましたが、モデルはツール schema に適合する実行可能な呼び出しを返しませんでした。",
-                en="The Harness detected a malformed tool call and requested one correction, but the model still did not return an executable call matching the tool schema.",
-            )
-        if reason_code == "model_action_empty_after_tool_failure":
-            return self._localized_text(
-                locale,
-                zh_cn="最近一次工具调用已经失败。Harness 已自动要求模型复盘并改用其他工具或参数，但恢复回复仍没有可执行动作。",
-                ja_jp="直近のツール呼び出しは失敗しました。Harness は別のツールまたは引数で再計画するよう自動的に求めましたが、回復応答にも実行可能な操作がありませんでした。",
-                en="The latest tool call failed. The Harness automatically requested a replan with different tooling or arguments, but the recovery response still contained no executable action.",
             )
         return self._localized_text(
             locale,
@@ -3231,103 +3009,14 @@ class VintageProgrammerRuntime:
             en="This turn could not make further progress.",
         )
 
-    def _blocked_replan_detail(
-        self,
-        *,
-        locale: str,
-        replan_history: list[dict[str, Any]],
-        post_replan_no_progress_cycles: int,
-    ) -> str:
-        last = next((item for item in reversed(replan_history or []) if isinstance(item, dict)), None)
-        if not last:
-            return self._localized_text(
-                locale,
-                zh_cn="本轮没有进入自动复盘。",
-                ja_jp="この turn では自動復盤は発生しませんでした。",
-                en="No automatic replan checkpoint was triggered in this turn.",
-            )
-        trigger = str(last.get("trigger") or "unknown").strip() or "unknown"
-        detail = str(last.get("detail") or "").strip()
-        suffix = ""
-        if detail:
-            suffix = self._localized_text(
-                locale,
-                zh_cn=f" 触发上下文：{detail[:140]}。",
-                ja_jp=f" きっかけ: {detail[:140]}。",
-                en=f" Trigger context: {detail[:140]}.",
-            )
-        post_note = ""
-        if post_replan_no_progress_cycles:
-            post_note = self._localized_text(
-                locale,
-                zh_cn=" 复盘后模型仍未提出能带来新信息的动作。",
-                ja_jp=" 復盤後もモデルは新情報につながる次の動きを出せませんでした。",
-                en=" After replanning, the model still did not propose a move that produced new information.",
-            )
-        return self._localized_text(
-            locale,
-            zh_cn=f"已触发自动复盘，触发点：{trigger}。{suffix}{post_note}",
-            ja_jp=f"自動復盤は実行済みです。トリガー: {trigger}。{suffix}{post_note}",
-            en=f"Automatic replan was triggered at: {trigger}.{suffix}{post_note}",
-        ).strip()
-
     def _next_step_suggestion_for_blocked_reason(self, *, locale: str, blocked_reason: str) -> str:
         reason_code = str(blocked_reason or "").strip()
-        if reason_code == "tool_validation_rejections_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn="请检查最近一次被拒绝的命令、路径或权限边界；如果是复合 shell，请查看具体被拒绝的子命令，或改用更明确的 cwd/workdir。",
-                ja_jp="直近で拒否されたコマンド、パス、権限境界を確認してください。複合 shell の場合は、拒否されたサブコマンドを確認するか、より明示的な cwd/workdir を使ってください。",
-                en="Inspect the last rejected command, path, or permission boundary. If this was a compound shell call, check the rejected subcommand or switch to a clearer cwd/workdir.",
-            )
-        if reason_code in {"turn_budget_no_progress_after_replan_exceeded", "turn_budget_same_action_repeats_exceeded"}:
-            return self._localized_text(
-                locale,
-                zh_cn="请换一个检查方向，指定更具体的目标文件，或先查看最近一次工具输出再决定下一步。",
-                ja_jp="調査方向を変えるか、対象ファイルをもっと具体化するか、直近のツール出力を確認してから次の一手を決めてください。",
-                en="Change the inspection angle, name a more specific target file, or review the latest tool output before choosing the next move.",
-            )
-        if reason_code in {"tool_failure_repeated", "tool_failure_repeated_after_replan"}:
-            return self._localized_text(
-                locale,
-                zh_cn="不要再次提交同类失败动作；请更换工具或参数，先完成目标修改，或者明确报告不可用的环境能力。",
-                ja_jp="同種の失敗操作を再送せず、ツールまたは引数を変更し、対象変更を先に完了するか、利用できない環境機能を明示してください。",
-                en="Do not submit the same failure class again; change the tool or arguments, complete the target mutation first, or report the unavailable environment capability.",
-            )
-        if reason_code == "tool_failure_budget_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn="请在新一轮中缩小目标，并从最近的失败记录中选择一个明确可执行的新策略，不要同时尝试多个未经验证的方向。",
-                ja_jp="新しい turn では対象を絞り、直近の失敗記録から実行可能な新戦略を一つ選び、未検証の方向を同時に増やさないでください。",
-                en="In a new turn, narrow the target and choose one concrete executable strategy from the recent failure evidence instead of trying several unverified directions at once.",
-            )
-        if reason_code == "turn_budget_wall_clock_exceeded":
-            return self._localized_text(
-                locale,
-                zh_cn="请缩小本轮目标范围，或把任务拆成更小的检查步骤后再继续。",
-                ja_jp="この turn の対象を絞るか、作業をより小さい調査ステップに分けて続行してください。",
-                en="Narrow the scope of the turn or break the task into smaller investigation steps before continuing.",
-            )
         if reason_code == "model_action_empty":
             return self._localized_text(
                 locale,
                 zh_cn="请明确下一步要检查的文件、测试或命令，让模型基于更具体的目标继续。",
                 ja_jp="次に確認するファイル、テスト、またはコマンドを明示して、より具体的な目標で続行してください。",
                 en="Specify the next file, test, or command to inspect so the model can continue with a more concrete target.",
-            )
-        if reason_code == "invalid_tool_call_repeated":
-            return self._localized_text(
-                locale,
-                zh_cn="无需重新说明原任务；请重试当前轮次。若再次出现，请查看 LLM exchange 中记录的工具名称和 error_kind，以确认公司接口的 tool-call 参数兼容性。",
-                ja_jp="元のタスクを説明し直す必要はありません。この turn を再試行してください。再発する場合は LLM exchange のツール名と error_kind を確認し、社内 API の tool-call 引数互換性を調べてください。",
-                en="You do not need to restate the task; retry the turn. If it recurs, inspect the tool name and error_kind in the LLM exchange to verify company API tool-call argument compatibility.",
-            )
-        if reason_code == "model_action_empty_after_tool_failure":
-            return self._localized_text(
-                locale,
-                zh_cn="无需重新指定目标文件；请重试当前轮次。诊断时优先查看最近失败工具的 error_kind 和自动复盘记录。",
-                ja_jp="対象ファイルを指定し直す必要はありません。この turn を再試行し、診断時は直近の失敗ツールの error_kind と自動復盤記録を確認してください。",
-                en="You do not need to specify the target again; retry the turn. For diagnosis, inspect the latest failed tool error_kind and the automatic replan record.",
             )
         return self._localized_text(
             locale,
@@ -3344,8 +3033,6 @@ class VintageProgrammerRuntime:
         replan_history: list[dict[str, Any]],
         tool_events: list[ToolEvent],
         guard_rejection_count: int,
-        no_progress_cycles: int,
-        post_replan_no_progress_cycles: int,
     ) -> dict[str, Any]:
         return {
             "blocked_reason": str(blocked_reason or ""),
@@ -3353,8 +3040,6 @@ class VintageProgrammerRuntime:
             "tool_events_tail": [dump_model(item) for item in list(tool_events or [])[-3:]],
             "replan_history_tail": [dict(item) for item in list(replan_history or [])[-3:] if isinstance(item, dict)],
             "guard_rejection_count": int(guard_rejection_count or 0),
-            "no_progress_cycles": int(no_progress_cycles or 0),
-            "post_replan_no_progress_cycles": int(post_replan_no_progress_cycles or 0),
         }
 
     def _build_blocked_stop_message(
@@ -3365,22 +3050,11 @@ class VintageProgrammerRuntime:
         progress_signals: list[dict[str, Any]],
         replan_history: list[dict[str, Any]],
         tool_events: list[ToolEvent],
-        guard_rejection_count: int,
-        no_progress_cycles: int,
-        post_replan_no_progress_cycles: int,
-        same_action_repeat_count: int,
-        elapsed_seconds: int,
     ) -> str:
         reason_label = self._blocked_reason_label(locale, blocked_reason)
         reason_detail = self._blocked_reason_detail(
             locale=locale,
             blocked_reason=blocked_reason,
-            tool_events=tool_events,
-            guard_rejection_count=guard_rejection_count,
-            no_progress_cycles=no_progress_cycles,
-            post_replan_no_progress_cycles=post_replan_no_progress_cycles,
-            same_action_repeat_count=same_action_repeat_count,
-            elapsed_seconds=elapsed_seconds,
         )
         rejected_actions = self._dedup_recent_items(
             self._recent_guard_rejection_summaries(tool_events, limit=4),
@@ -3393,11 +3067,6 @@ class VintageProgrammerRuntime:
         recent_plan_updates = self._dedup_recent_items(
             self._recent_plan_update_summaries(progress_signals, limit=4),
             limit=3,
-        )
-        replan_detail = self._blocked_replan_detail(
-            locale=locale,
-            replan_history=replan_history,
-            post_replan_no_progress_cycles=post_replan_no_progress_cycles,
         )
         suggestion = self._next_step_suggestion_for_blocked_reason(locale=locale, blocked_reason=blocked_reason)
         lines = [
@@ -3434,63 +3103,8 @@ class VintageProgrammerRuntime:
                 )
             )
             lines.extend(f"- {item}" for item in recent_plan_updates)
-        lines.append(
-            self._localized_text(
-                locale,
-                zh_cn="复盘触发原因：",
-                ja_jp="復盤トリガー：",
-                en="Replan trigger:",
-            )
-        )
-        lines.append(f"- {replan_detail}")
         lines.append(translate(locale, "runtime.budget.detail.suggestion", detail=suggestion))
         return "\n".join(item for item in lines if str(item or "").strip()).strip()
-
-    def _build_replan_checkpoint_prompt(
-        self,
-        *,
-        locale: str,
-        current_goal: str,
-        run_workspace_state: dict[str, Any],
-        progress_signals: list[dict[str, Any]],
-        tool_events: list[ToolEvent],
-        trigger: str,
-    ) -> str:
-        active_files = [str(item) for item in list(run_workspace_state.get("active_files") or []) if str(item or "").strip()]
-        recent_progress = self._recent_action_summaries(progress_signals)
-        recent_failures = self._recent_failed_action_summaries(tool_events)
-        structured_failures = self._recent_structured_failures(tool_events)
-        lines = [
-            translate(locale, "runtime.replan.system_prompt", trigger=trigger),
-            f"current_goal: {current_goal}",
-        ]
-        if active_files:
-            lines.append("active_files: " + json.dumps(active_files[:6], ensure_ascii=False))
-        if recent_progress:
-            lines.append(translate(locale, "runtime.replan.known_facts_intro"))
-            lines.extend(f"- {item}" for item in recent_progress[:6])
-        if recent_failures:
-            lines.append(translate(locale, "runtime.replan.failed_actions_intro"))
-            lines.extend(f"- {item}" for item in recent_failures[:6])
-        if structured_failures:
-            lines.append("failure_contract: " + json.dumps(structured_failures, ensure_ascii=False))
-        guardrail_hints = self._guard_recovery_hints(
-            locale=locale,
-            trigger=trigger,
-            recent_failures=recent_failures,
-        )
-        if guardrail_hints:
-            lines.append(
-                self._localized_text(
-                    locale,
-                    zh_cn="恢复约束：",
-                    ja_jp="回復ガードレール：",
-                    en="Recovery guardrails:",
-                )
-            )
-            lines.extend(f"- {item}" for item in guardrail_hints[:6])
-        lines.append(translate(locale, "runtime.replan.required_next_move"))
-        return "\n".join(item for item in lines if item).strip()
 
     def _build_invalid_tool_call_recovery_prompt(
         self,
@@ -4587,18 +4201,6 @@ class VintageProgrammerRuntime:
             ]
         loop_safeguards = default_loop_safeguards() if selected_tools else {}
         runnable_tools = list(selected_tools if selected_tools else ())
-        max_turn_seconds = int(loop_safeguards.get("max_turn_seconds") or 0)
-        max_same_action_repeats = int(loop_safeguards.get("max_same_action_repeats") or 0)
-        no_progress_threshold_before_replan = int(loop_safeguards.get("no_progress_threshold_before_replan") or 0)
-        no_progress_threshold_after_replan = int(loop_safeguards.get("no_progress_threshold_after_replan") or 0)
-        max_guard_rejections = int(loop_safeguards.get("max_guard_rejections") or 0)
-        repeated_failures_before_replan = int(loop_safeguards.get("repeated_failures_before_replan") or 0)
-        repeated_failures_after_replan = int(loop_safeguards.get("repeated_failures_after_replan") or 0)
-        max_total_failures = int(loop_safeguards.get("max_total_failures") or 0)
-        automatic_replan_enabled = bool(loop_safeguards.get("automatic_replan"))
-        tool_failure_recovery_enabled = bool(loop_safeguards.get("tool_failure_recovery"))
-        progress_signal_guard_enabled = bool(loop_safeguards.get("progress_signal_guard"))
-        same_action_repeat_guard_enabled = bool(loop_safeguards.get("same_action_repeat_guard"))
         inline_document = looks_like_inline_document_payload(prompt_message)
         attachment_evidence_pack = [
             item for item in list(context_payload.get("attachment_evidence_pack") or [])
@@ -6109,13 +5711,8 @@ class VintageProgrammerRuntime:
                     )
 
             halt_for_user_input = False
-            turn_started_at = time.monotonic()
             round_idx = 0
             tool_call_count = 0
-            same_action_repeat_count = 0
-            last_action_fingerprint = ""
-            no_progress_cycles = 0
-            post_replan_no_progress_cycles = 0
             guard_rejection_count = 0
             safe_downgrade_attempt_count = 0
             llm_retry_used = False
@@ -6123,12 +5720,7 @@ class VintageProgrammerRuntime:
             failure_tracker = self._new_failure_tracker()
             progress_signals: list[dict[str, Any]] = []
             replan_history: list[dict[str, Any]] = []
-            replan_attempt_count = 0
-            replan_failure_key = ""
             compacted_tool_events = 0
-            invalid_tool_call_recovery_count = 0
-            empty_after_failure_recovery_count = 0
-            latest_tool_round_had_failure = False
 
             def request_model_action_recovery(
                 *,
@@ -6282,113 +5874,53 @@ class VintageProgrammerRuntime:
                         ),
                     )
                     break
-                if max_turn_seconds and (time.monotonic() - turn_started_at) >= max_turn_seconds:
-                    turn_status = "blocked"
-                    blocked_reason = blocked_reason or "turn_budget_wall_clock_exceeded"
-                    forced_text = translate(locale, "runtime.budget.wall_clock")
-                    notes.append("turn_budget_wall_clock_exceeded")
-                    break
-
                 ai_text = self._backend._content_to_text(getattr(ai_msg, "content", "")).strip()
                 tool_calls = list(model_action.get("tool_calls") or [])
                 invalid_tool_calls = list(model_action.get("invalid_tool_calls") or [])
                 step_action_type = str(model_action.get("action_type") or "").strip() or "empty"
                 step_accepted = bool(model_action.get("accepted"))
                 if invalid_tool_calls:
-                    if invalid_tool_call_recovery_count >= 1:
-                        blocked_reason = "invalid_tool_call_repeated"
-                        turn_status = "blocked"
-                        notes.append("invalid_tool_call_repeated")
-                    else:
-                        invalid_tool_call_recovery_count += 1
-                        recovery_prompt = self._build_invalid_tool_call_recovery_prompt(
-                            invalid_tool_calls=invalid_tool_calls,
-                        )
-                        replan_payload = {
-                            "trigger": "invalid_tool_call",
-                            "detail": ", ".join(
-                                f"{item.get('name') or 'tool'}:{item.get('error_kind') or 'invalid_tool_arguments'}"
-                                for item in invalid_tool_calls[:8]
-                            ),
-                            "known_facts": [],
-                            "failed_actions": [],
-                            "structured_failures": [
-                                {
-                                    "tool": str(item.get("name") or "tool"),
-                                    "category": "tool_call_failure",
-                                    "error_kind": str(item.get("error_kind") or "invalid_tool_arguments"),
-                                    "retryability": "change_arguments",
-                                }
-                                for item in invalid_tool_calls[:8]
-                            ],
-                            "prompt": recovery_prompt,
-                            "round_index": round_idx,
-                        }
-                        replan_history = [*replan_history, replan_payload][-8:]
-                        notes.append("model_action_recovery_requested:invalid_tool_call")
-                        emit_runtime_activity(
-                            "activity.delta",
-                            "loop.safeguard",
-                            "Malformed tool call detected; requesting a corrected native tool call.",
-                            payload={
-                                "model_action": dict(model_action),
-                                "replan_history": list(replan_history),
-                                **turn_activity_context,
-                            },
-                        )
-                        if request_model_action_recovery(
-                            trigger="invalid_tool_call",
-                            prompt=recovery_prompt,
-                        ):
-                            continue
-                        break
-                if (
-                    not tool_calls
-                    and not step_accepted
-                    and latest_tool_round_had_failure
-                    and not invalid_tool_calls
-                ):
-                    if empty_after_failure_recovery_count >= 1:
-                        blocked_reason = "model_action_empty_after_tool_failure"
-                        turn_status = "blocked"
-                        notes.append("model_action_empty_after_tool_failure")
-                    else:
-                        empty_after_failure_recovery_count += 1
-                        recovery_prompt = self._build_replan_checkpoint_prompt(
-                            locale=locale,
-                            current_goal=current_goal,
-                            run_workspace_state=run_workspace_state,
-                            progress_signals=progress_signals,
-                            tool_events=tool_events,
-                            trigger="empty_after_tool_failure",
-                        )
-                        replan_payload = {
-                            "trigger": "empty_after_tool_failure",
-                            "detail": "The model returned no executable action after a failed tool call.",
-                            "known_facts": self._recent_action_summaries(progress_signals),
-                            "failed_actions": self._recent_failed_action_summaries(tool_events),
-                            "structured_failures": self._recent_structured_failures(tool_events),
-                            "prompt": recovery_prompt,
-                            "round_index": round_idx,
-                        }
-                        replan_history = [*replan_history, replan_payload][-8:]
-                        notes.append("model_action_recovery_requested:empty_after_tool_failure")
-                        emit_runtime_activity(
-                            "activity.delta",
-                            "loop.safeguard",
-                            "The model stopped after a failed tool call; requesting a different executable action.",
-                            payload={
-                                "model_action": dict(model_action),
-                                "replan_history": list(replan_history),
-                                **turn_activity_context,
-                            },
-                        )
-                        if request_model_action_recovery(
-                            trigger="empty_after_tool_failure",
-                            prompt=recovery_prompt,
-                        ):
-                            continue
-                        break
+                    recovery_prompt = self._build_invalid_tool_call_recovery_prompt(
+                        invalid_tool_calls=invalid_tool_calls,
+                    )
+                    replan_payload = {
+                        "trigger": "invalid_tool_call",
+                        "detail": ", ".join(
+                            f"{item.get('name') or 'tool'}:{item.get('error_kind') or 'invalid_tool_arguments'}"
+                            for item in invalid_tool_calls[:8]
+                        ),
+                        "known_facts": [],
+                        "failed_actions": [],
+                        "structured_failures": [
+                            {
+                                "tool": str(item.get("name") or "tool"),
+                                "category": "tool_call_failure",
+                                "error_kind": str(item.get("error_kind") or "invalid_tool_arguments"),
+                                "retryability": "change_arguments",
+                            }
+                            for item in invalid_tool_calls[:8]
+                        ],
+                        "prompt": recovery_prompt,
+                        "round_index": round_idx,
+                    }
+                    replan_history = [*replan_history, replan_payload][-8:]
+                    notes.append("model_action_recovery_requested:invalid_tool_call")
+                    emit_runtime_activity(
+                        "activity.delta",
+                        "protocol_repair",
+                        "Malformed tool call detected; requesting a corrected native tool call.",
+                        payload={
+                            "model_action": dict(model_action),
+                            "replan_history": list(replan_history),
+                            **turn_activity_context,
+                        },
+                    )
+                    if request_model_action_recovery(
+                        trigger="invalid_tool_call",
+                        prompt=recovery_prompt,
+                    ):
+                        continue
+                    break
                 if not tool_calls:
                     pending_steers = drain_pending_steers(final=False)
                     if not pending_steers:
@@ -6474,11 +6006,7 @@ class VintageProgrammerRuntime:
                 round_success = False
                 round_signature_parts: list[dict[str, Any]] = []
                 round_progress_signals: list[dict[str, Any]] = []
-                round_has_progress = False
                 stop_after_tools = False
-                needs_replan = False
-                replan_trigger = ""
-                replan_detail = ""
                 emit_runtime_activity(
                     "activity.delta",
                     "execution",
@@ -6899,18 +6427,6 @@ class VintageProgrammerRuntime:
                                 }
                             )
                         notes.append("tool_validation_rejected")
-                        if guard_rejection_count > max_guard_rejections:
-                            if automatic_replan_enabled and replan_attempt_count == 0:
-                                needs_replan = True
-                                replan_trigger = "validation_rejection_limit"
-                                replan_detail = str(result.get("summary") or "")
-                                notes.append("tool_validation_rejection_replan_requested")
-                            else:
-                                turn_status = "blocked"
-                                blocked_reason = blocked_reason or "tool_validation_rejections_exceeded"
-                                forced_text = str(result.get("summary") or translate(locale, "runtime.budget.guard_rejections"))
-                                notes.append("tool_validation_rejections_exceeded")
-                            stop_after_tools = True
                     if name in {"spawn_subagent", "wait_subagents"} and isinstance(
                         result.get("token_usage"), dict
                     ):
@@ -6994,59 +6510,6 @@ class VintageProgrammerRuntime:
                     progress_signal_payload = dump_model(progress_signal)
                     round_progress_signals.append(progress_signal_payload)
                     progress_signals = [*progress_signals, progress_signal_payload][-48:]
-                    round_has_progress = round_has_progress or bool(progress_signal.has_progress)
-                    if progress_signal.has_progress or last_action_fingerprint != action_fingerprint:
-                        same_action_repeat_count = 1
-                    else:
-                        same_action_repeat_count += 1
-                    last_action_fingerprint = action_fingerprint
-                    if failure and tool_failure_recovery_enabled and not halt_for_user_input:
-                        consecutive_failures = int(failure.get("consecutive_occurrence") or 1)
-                        current_failure_key = failure_key(failure)
-                        precondition_failed = bool(failure.get("precondition"))
-                        repeated_before_replan = bool(
-                            replan_attempt_count == 0
-                            and repeated_failures_before_replan > 0
-                            and consecutive_failures >= repeated_failures_before_replan
-                        )
-                        repeated_after_replan = bool(
-                            replan_attempt_count > 0
-                            and bool(replan_failure_key)
-                            and current_failure_key == replan_failure_key
-                            and repeated_failures_after_replan > 0
-                            and consecutive_failures >= repeated_failures_after_replan
-                        )
-                        total_failure_budget_exceeded = bool(
-                            max_total_failures > 0
-                            and len(list(failure_tracker.get("records") or [])) >= max_total_failures
-                        )
-                        if precondition_failed and replan_attempt_count == 0:
-                            needs_replan = True
-                            replan_trigger = "verification_before_change"
-                            replan_detail = str(failure.get("error_kind") or "verification_failure")
-                            notes.append("tool_failure_replan_requested:verification_before_change")
-                            stop_after_tools = True
-                        elif repeated_before_replan:
-                            if automatic_replan_enabled:
-                                needs_replan = True
-                                replan_trigger = "repeated_tool_failure"
-                                replan_detail = failure_key(failure)
-                                notes.append("tool_failure_replan_requested:repeated_tool_failure")
-                            else:
-                                turn_status = "blocked"
-                                blocked_reason = blocked_reason or "tool_failure_repeated"
-                                notes.append("tool_failure_repeated")
-                            stop_after_tools = True
-                        elif repeated_after_replan:
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "tool_failure_repeated_after_replan"
-                            notes.append("tool_failure_repeated_after_replan")
-                            stop_after_tools = True
-                        elif total_failure_budget_exceeded:
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "tool_failure_budget_exceeded"
-                            notes.append("tool_failure_budget_exceeded")
-                            stop_after_tools = True
                     if name == "update_plan" and bool(result.get("ok")):
                         plan_state = list(result.get("plan") or [])
                         if progress_cb is not None:
@@ -7363,22 +6826,6 @@ class VintageProgrammerRuntime:
                         )
                         messages.append(tool_message)
                         turn_transcript_messages.append(tool_message)
-                    if (
-                        same_action_repeat_guard_enabled
-                        and max_same_action_repeats
-                        and same_action_repeat_count > max_same_action_repeats
-                    ):
-                        if automatic_replan_enabled and replan_attempt_count == 0:
-                            needs_replan = True
-                            replan_trigger = "same_action_repeat"
-                            replan_detail = action_fingerprint
-                            notes.append("turn_budget_same_action_repeat_replan_requested")
-                        else:
-                            turn_status = "blocked"
-                            blocked_reason = blocked_reason or "turn_budget_same_action_repeats_exceeded"
-                            forced_text = translate(locale, "runtime.budget.same_action_repeat")
-                            notes.append("turn_budget_same_action_repeats_exceeded")
-                        stop_after_tools = True
 
                 tool_boundary_clean = self._messages_at_tool_boundary(messages)
                 expected_pause = bool(halt_for_user_input and pending_turn)
@@ -7414,11 +6861,6 @@ class VintageProgrammerRuntime:
                         run_id=run_id,
                         locale=locale,
                     )
-                latest_tool_round_had_failure = any(
-                    str(item.get("status") or "").strip().lower() == "error"
-                    for item in round_signature_parts
-                )
-
                 if round_signature_parts:
                     execution_entry = ExecutionTraceEntry(
                         step_index=int(model_action.get("step_index") or current_step_index),
@@ -7466,77 +6908,6 @@ class VintageProgrammerRuntime:
                             **turn_activity_context,
                         },
                     )
-
-                if progress_signal_guard_enabled and round_signature_parts:
-                    if round_has_progress:
-                        no_progress_cycles = 0
-                        post_replan_no_progress_cycles = 0
-                    else:
-                        no_progress_cycles += 1
-                        if replan_attempt_count > 0:
-                            post_replan_no_progress_cycles += 1
-                    if (
-                        not needs_replan
-                        and not halt_for_user_input
-                        and automatic_replan_enabled
-                        and replan_attempt_count == 0
-                        and no_progress_threshold_before_replan > 0
-                        and no_progress_cycles >= no_progress_threshold_before_replan
-                    ):
-                        needs_replan = True
-                        replan_trigger = "no_progress"
-                        replan_detail = ", ".join(self._recent_action_summaries(progress_signals, limit=3))
-                    elif (
-                        not needs_replan
-                        and replan_attempt_count > 0
-                        and no_progress_threshold_after_replan > 0
-                        and post_replan_no_progress_cycles >= no_progress_threshold_after_replan
-                    ):
-                        turn_status = "blocked"
-                        blocked_reason = blocked_reason or "turn_budget_no_progress_after_replan_exceeded"
-                        forced_text = translate(locale, "runtime.budget.no_progress_after_replan")
-                        notes.append("turn_budget_no_progress_after_replan_exceeded")
-                        stop_after_tools = True
-
-                if needs_replan and not halt_for_user_input and turn_status not in {"blocked", "cancelled"}:
-                    replan_prompt = self._build_replan_checkpoint_prompt(
-                        locale=locale,
-                        current_goal=current_goal,
-                        run_workspace_state=run_workspace_state,
-                        progress_signals=progress_signals,
-                        tool_events=tool_events,
-                        trigger=replan_trigger or "no_progress",
-                    )
-                    replan_attempt_count += 1
-                    if replan_trigger == "repeated_tool_failure":
-                        replan_failure_key = str(replan_detail or "")
-                    post_replan_no_progress_cycles = 0
-                    replan_payload = {
-                        "trigger": replan_trigger or "no_progress",
-                        "detail": replan_detail,
-                        "known_facts": self._recent_action_summaries(progress_signals),
-                        "failed_actions": self._recent_failed_action_summaries(tool_events),
-                        "structured_failures": self._recent_structured_failures(tool_events),
-                        "prompt": replan_prompt,
-                        "round_index": round_idx,
-                    }
-                    replan_history = [*replan_history, replan_payload][-8:]
-                    notes.append(f"replan_requested:{replan_trigger or 'no_progress'}")
-                    emit_runtime_activity(
-                        "activity.delta",
-                        "loop.safeguard",
-                        translate(locale, "runtime.replan.requested", trigger=replan_trigger or "no_progress"),
-                        payload={
-                            "model_action": dict(model_action),
-                            "progress_signals": list(progress_signals),
-                            "replan_history": list(replan_history),
-                            **turn_activity_context,
-                        },
-                    )
-                    stop_after_tools = False
-                    turn_status = "running"
-                    blocked_reason = ""
-                    forced_text = ""
 
                 if halt_for_user_input or stop_after_tools:
                     break
@@ -7982,8 +7353,6 @@ class VintageProgrammerRuntime:
                 replan_history=replan_history,
                 tool_events=tool_events,
                 guard_rejection_count=guard_rejection_count,
-                no_progress_cycles=no_progress_cycles,
-                post_replan_no_progress_cycles=post_replan_no_progress_cycles,
             )
             forced_text = self._build_blocked_stop_message(
                 locale=locale,
@@ -7991,11 +7360,6 @@ class VintageProgrammerRuntime:
                 progress_signals=progress_signals,
                 replan_history=replan_history,
                 tool_events=tool_events,
-                guard_rejection_count=guard_rejection_count,
-                no_progress_cycles=no_progress_cycles,
-                post_replan_no_progress_cycles=post_replan_no_progress_cycles,
-                same_action_repeat_count=same_action_repeat_count,
-                elapsed_seconds=int(max(1.0, time.monotonic() - turn_started_at)),
             )
         raw_assistant_text = forced_text or (self._backend._content_to_text(getattr(ai_msg, "content", "")).strip() if ai_msg is not None else "")
         if not model_draft and str(answer_stream_state.get("text") or "").strip():

@@ -15,7 +15,6 @@ from app.models import ChatSettings, ToolEvent
 from app.runtime_boundary import RuntimeBoundary
 from app.answer_stream_state import new_answer_stream_state
 from app import vintage_programmer_runtime as runtime_module
-from app.tool_failures import classify_tool_event
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -63,21 +62,9 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.tool.validation.unavailable",
     "runtime.tool.validation.matched",
     "runtime.tool.validation.tool_unavailable",
-    "runtime.budget.emergency_tool_calls",
-    "runtime.budget.same_action_repeat",
-    "runtime.budget.no_progress_after_replan",
-    "runtime.budget.guard_rejections",
     "runtime.budget.detail.title",
     "runtime.budget.detail.reason",
-    "runtime.budget.detail.recent_actions",
-    "runtime.budget.detail.replan",
     "runtime.budget.detail.suggestion",
-    "runtime.budget.detail.guard_rejection",
-    "runtime.budget.detail.no_progress_after_replan",
-    "runtime.budget.detail.same_action_repeat",
-    "runtime.budget.detail.same_tool_repeat",
-    "runtime.budget.detail.wall_clock",
-    "runtime.budget.detail.emergency_tool_calls",
     "runtime.budget.detail.model_action_empty",
     "runtime.budget.detail.unknown",
     "runtime.progress.new_error_type",
@@ -95,11 +82,6 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
     "runtime.progress.new_tool_output",
     "runtime.progress.no_new_info",
     "runtime.progress.duplicate_result",
-    "runtime.replan.requested",
-    "runtime.replan.system_prompt",
-    "runtime.replan.known_facts_intro",
-    "runtime.replan.failed_actions_intro",
-    "runtime.replan.required_next_move",
 )
 
 
@@ -907,6 +889,9 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
     assert "modes" not in descriptor["workflow"]
     assert "max_tool_rounds" not in descriptor
     assert "emergency_max_tool_calls_per_turn" not in descriptor["loop_safeguards"]
+    assert descriptor["loop_safeguards"]["continuation_policy"] == "model_led"
+    assert "max_turn_seconds" not in descriptor["loop_safeguards"]
+    assert "max_total_failures" not in descriptor["loop_safeguards"]
     assert prompt.index("[soul.md]") < prompt.index("[identity.md]") < prompt.index("[agent.md]") < prompt.index("[tools.md]")
     assert "[runtime_protocol]" in prompt
     assert "[context_authority]" in prompt
@@ -3028,7 +3013,7 @@ def test_runtime_recovers_once_from_invalid_tool_call(tmp_path: Path) -> None:
     assert "args" not in result["replan_history"][0]["structured_failures"][0]
 
 
-def test_runtime_stops_after_corrected_tool_call_is_still_invalid(tmp_path: Path) -> None:
+def test_runtime_keeps_requesting_protocol_repair_for_invalid_tool_calls(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     invalid = {
@@ -3062,18 +3047,22 @@ def test_runtime_stops_after_corrected_tool_call_is_still_invalid(tmp_path: Path
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "invalid_tool_call_repeated"
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert result["text"] == "must not be reached"
     assert backend.tools.calls == []
-    assert len(backend.invocations) == 2
-    assert "重复返回了无效工具调用" in result["text"]
-    assert "请明确下一步要检查的文件" not in result["text"]
+    assert len(backend.invocations) == 3
+    assert [item["trigger"] for item in result["replan_history"]] == [
+        "invalid_tool_call",
+        "invalid_tool_call",
+    ]
     exchanges = result["activity"]["llm_exchanges"]
-    assert exchanges[-1]["harness_interpretation"]["decision"] == "invalid_tool_call"
-    assert exchanges[-1]["harness_interpretation"]["turn_status_after_round"] == "blocked"
+    assert exchanges[1]["harness_interpretation"]["decision"] == "invalid_tool_call"
+    assert exchanges[-1]["harness_interpretation"]["decision"] == "final_answer"
+    assert exchanges[-1]["harness_interpretation"]["turn_status_after_round"] == "completed"
 
 
-def test_runtime_replans_when_model_goes_empty_after_apply_patch_failure(tmp_path: Path) -> None:
+def test_runtime_does_not_invent_recovery_when_model_goes_empty_after_tool_failure(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -3142,20 +3131,15 @@ def test_runtime_replans_when_model_goes_empty_after_apply_patch_failure(tmp_pat
         },
     )
 
-    assert result["turn_status"] == "completed"
-    assert result["text"].startswith("updated the existing skill")
-    assert [name for name, _ in tools.calls] == ["apply_patch", "apply_patch"]
+    assert result["turn_status"] == "blocked"
+    assert result["blocked_reason"] == "model_action_empty"
+    assert [name for name, _ in tools.calls] == ["apply_patch"]
     assert result["failure_recovery"]["records"][0]["error_kind"] == "file_already_exists"
-    assert result["failure_recovery"]["recoveries"][-1]["recovered_by_tool"] == "apply_patch"
-    assert result["replan_history"][0]["trigger"] == "empty_after_tool_failure"
-    assert "file_already_exists" in result["replan_history"][0]["prompt"]
-    assert any(
-        exchange["phase"] == "model_action_recovery:empty_after_tool_failure"
-        for exchange in result["activity"]["llm_exchanges"]
-    )
+    assert result["replan_history"] == []
+    assert len(backend.invocations) == 2
 
 
-def test_runtime_reports_specific_block_when_empty_after_failure_recovery(tmp_path: Path) -> None:
+def test_runtime_reports_generic_empty_action_after_failure(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     tools = _ScriptedTools(
@@ -3199,11 +3183,9 @@ def test_runtime_reports_specific_block_when_empty_after_failure_recovery(tmp_pa
     )
 
     assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "model_action_empty_after_tool_failure"
-    assert len(backend.invocations) == 3
-    assert result["replan_history"][0]["trigger"] == "empty_after_tool_failure"
-    assert "自动恢复没有产生下一步" in result["text"]
-    assert "请明确下一步要检查的文件" not in result["text"]
+    assert result["blocked_reason"] == "model_action_empty"
+    assert len(backend.invocations) == 2
+    assert result["replan_history"] == []
 
 
 def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) -> None:
@@ -4191,7 +4173,7 @@ def test_runtime_ignores_legacy_emergency_tool_call_cap(monkeypatch: pytest.Monk
     assert "turn_budget_emergency_tool_calls_exceeded" not in result["inspector"]["notes"]
 
 
-def test_runtime_blocks_when_same_action_repeats_after_replan(tmp_path: Path) -> None:
+def test_runtime_leaves_repeated_actions_to_the_model(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend(
@@ -4223,14 +4205,11 @@ def test_runtime_blocks_when_same_action_repeats_after_replan(tmp_path: Path) ->
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert any(
-        note in {"replan_requested:no_progress", "replan_requested:same_action_repeat"}
-        for note in result["inspector"]["notes"]
-    )
-    assert "turn_budget_same_action_repeats_exceeded" in result["inspector"]["notes"]
-    assert result["inspector"]["run_state"]["replan_history"][0]["trigger"] in {"no_progress", "same_action_repeat"}
-    assert "should not reach" not in result["text"]
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "should not reach"
+    assert len(result["tool_events"]) == 6
+    assert result["inspector"]["run_state"]["replan_history"] == []
+    assert "turn_budget_same_action_repeats_exceeded" not in result["inspector"]["notes"]
 
 
 def test_runtime_different_read_file_paths_do_not_count_as_same_action_repeat(tmp_path: Path) -> None:
@@ -4272,7 +4251,7 @@ def test_runtime_different_read_file_paths_do_not_count_as_same_action_repeat(tm
     )
 
 
-def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> None:
+def test_runtime_does_not_guess_whether_repeated_searches_make_progress(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     backend = _FakeBackend(
@@ -4303,8 +4282,8 @@ def test_runtime_replans_after_repeated_no_progress_searches(tmp_path: Path) -> 
 
     assert result["turn_status"] == "completed"
     assert result["text"] == "replanned answer"
-    assert "replan_requested:no_progress" in result["inspector"]["notes"]
-    assert result["inspector"]["run_state"]["replan_history"][0]["trigger"] == "no_progress"
+    assert "replan_requested:no_progress" not in result["inspector"]["notes"]
+    assert result["inspector"]["run_state"]["replan_history"] == []
     assert all(
         len([item for item in invocation["messages"] if isinstance(item, _FakeSystemMessage)]) == 1
         for invocation in backend.invocations
@@ -4381,7 +4360,7 @@ def test_runtime_distinguishes_same_failure_class_with_different_targets(tmp_pat
     assert any("runtime_failure" in message and "command_path_outside_allowed_roots" in message for message in tool_messages)
 
 
-def test_runtime_stops_unrecoverable_environment_failure_after_one_replan(tmp_path: Path) -> None:
+def test_runtime_returns_environment_failures_to_the_model_without_stopping(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     tools = _ScriptedTools(
@@ -4418,67 +4397,16 @@ def test_runtime_stops_unrecoverable_environment_failure_after_one_replan(tmp_pa
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "tool_failure_repeated_after_replan"
-    assert "should not claim completion" not in result["text"]
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert result["text"] == "should not claim completion"
     assert len(tools.calls) == 3
     assert result["failure_recovery"]["failure_categories"] == {"environment_blocked": 3}
     assert result["failure_recovery"]["records"][-1]["retryability"] == "blocked"
-    assert len(result["replan_history"]) == 1
+    assert result["replan_history"] == []
 
 
-def test_new_user_turn_resets_failure_tracker_and_stop_latch(tmp_path: Path) -> None:
-    agent_dir = tmp_path / "agents" / "vintage_programmer"
-    _write_specs(agent_dir)
-    tools = _ScriptedTools(
-        [
-            {"ok": False, "error_kind": "tool_unavailable"},
-            {"ok": False, "error_kind": "tool_unavailable"},
-            {"ok": False, "error_kind": "tool_unavailable"},
-        ]
-    )
-    backend = _FakeBackendWithTools(
-        [
-            _FakeMessage(content="", tool_calls=[{"id": "tc1", "name": "read_file", "args": {"path": "one.md"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "read_file", "args": {"path": "two.md"}}]),
-            _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "read_file", "args": {"path": "three.md"}}]),
-            _FakeMessage(content="new turn can continue"),
-        ],
-        tools,
-    )
-    runtime = VintageProgrammerRuntime(
-        config=_isolated_config(tmp_path),
-        kernel_runtime=object(),
-        agent_dir=agent_dir,
-        backend=backend,
-    )
-    context = {
-        "session_id": "s-reset-failure-latch",
-        "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
-        "history_turns": [],
-        "attachments": [],
-    }
-
-    first = runtime.run(
-        message="first turn",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
-        context=context,
-    )
-    second = runtime.run(
-        message="second user turn",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
-        context=context,
-    )
-
-    assert first["turn_status"] == "blocked"
-    assert first["blocked_reason"] == "tool_failure_repeated_after_replan"
-    assert second["turn_status"] == "completed"
-    assert second["text"] == "new turn can continue"
-    assert second["blocked_reason"] == ""
-    assert second["failure_recovery"]["failure_count"] == 0
-
-
-def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -> None:
+def test_runtime_leaves_repeated_tool_failures_to_the_model(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -4520,16 +4448,16 @@ def test_runtime_stops_repeated_tool_call_failure_after_replan(tmp_path: Path) -
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "tool_failure_repeated_after_replan"
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
     assert len(tools.calls) == 3
     assert result["failure_recovery"]["failure_categories"] == {"tool_call_failure": 3}
     assert result["failure_recovery"]["repeated_failure_count"] == 2
-    assert "task_completion" not in result
-    assert "should not claim completion" not in result["text"]
+    assert result["text"] == "should not claim completion"
+    assert result["replan_history"] == []
 
 
-def test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_call(tmp_path: Path) -> None:
+def test_runtime_executes_all_calls_and_allows_new_strategy_after_failures(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -4543,6 +4471,7 @@ def test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_cal
     bad_root_path.write_text("PLP", encoding="utf-8")
     tools = _ScriptedTools(
         [
+            {"ok": False, "error": f"Not a directory: {bad_root}"},
             {"ok": False, "error": f"Not a directory: {bad_root}"},
             {"ok": False, "error": f"Not a directory: {bad_root}"},
             {"ok": True, "command": f"rg -n PLP {bad_root}", "returncode": 0, "output": "PLP_10.cpp:1:match"},
@@ -4599,25 +4528,30 @@ def test_runtime_allows_new_strategy_after_replan_and_does_not_count_skipped_cal
 
     assert result["turn_status"] == "completed"
     assert result["text"] == "recovered with rg"
-    assert [call[0] for call in tools.calls] == ["search_codebase", "search_codebase", "exec_command"]
-    assert [item["status"] for item in result["tool_events"]] == ["error", "error", "skipped", "rejected", "ok"]
-    assert classify_tool_event(result["tool_events"][2]) is None
+    assert [call[0] for call in tools.calls] == [
+        "search_codebase",
+        "search_codebase",
+        "search_codebase",
+        "exec_command",
+    ]
+    assert [item["status"] for item in result["tool_events"]] == ["error", "error", "error", "rejected", "ok"]
     recovery = result["failure_recovery"]
-    assert recovery["failure_count"] == 3
-    assert recovery["failure_outcomes"] == {"failed": 2, "rejected": 1}
+    assert recovery["failure_count"] == 4
+    assert recovery["failure_outcomes"] == {"failed": 3, "rejected": 1}
     assert [item["error_kind"] for item in recovery["records"]] == [
+        "not_a_directory",
         "not_a_directory",
         "not_a_directory",
         "command_not_allowed",
     ]
     assert recovery["records"][1]["repeated"] is True
-    assert recovery["records"][2]["outcome"] == "rejected"
-    assert recovery["records"][2]["failure_phase"] == "policy"
-    assert result["replan_history"][0]["trigger"] == "repeated_tool_failure"
+    assert recovery["records"][3]["outcome"] == "rejected"
+    assert recovery["records"][3]["failure_phase"] == "policy"
+    assert result["replan_history"] == []
     assert result["blocked_reason"] == ""
 
 
-def test_runtime_stops_after_total_distinct_failure_budget(tmp_path: Path) -> None:
+def test_runtime_has_no_total_distinct_failure_budget(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -4664,13 +4598,13 @@ def test_runtime_stops_after_total_distinct_failure_budget(tmp_path: Path) -> No
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "tool_failure_budget_exceeded"
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
     assert len(tools.calls) == 5
     assert result["failure_recovery"]["failure_count"] == 5
     assert len({item["target_fingerprint"] for item in result["failure_recovery"]["records"]}) == 5
     assert result["replan_history"] == []
-    assert "should not reach" not in result["text"]
+    assert result["text"] == "should not reach"
 
 
 def test_runtime_allows_model_to_recover_when_verification_precedes_target_mutation(tmp_path: Path) -> None:
@@ -4724,7 +4658,7 @@ def test_runtime_allows_model_to_recover_when_verification_precedes_target_mutat
     assert "task_completion" not in result
 
 
-def test_runtime_blocked_message_details_after_replan_no_progress(
+def test_runtime_ignores_legacy_no_progress_safeguard_settings(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4749,6 +4683,7 @@ def test_runtime_blocked_message_details_after_replan_no_progress(
             _FakeMessage(content="", tool_calls=[{"id": "tc2", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "search_contents_in_file", "args": {"path": "app.js", "query": "missing"}}]),
+            _FakeMessage(content="model chose to stop searching"),
         ]
     )
     runtime = VintageProgrammerRuntime(
@@ -4769,19 +4704,14 @@ def test_runtime_blocked_message_details_after_replan_no_progress(
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
-    assert "已停止" in result["text"]
-    assert "复盘后仍未取得新的有效进展" in result["text"]
-    assert "复盘触发原因" in result["text"]
-    assert "建议下一步" in result["text"]
-    blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
-    assert blocked_trace["payload"]["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
-    assert blocked_trace["payload"]["post_replan_no_progress_cycles"] >= 1
-    assert result["inspector"]["run_state"]["blocked_stop_diagnostics"]["blocked_reason"] == "turn_budget_no_progress_after_replan_exceeded"
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert result["text"] == "model chose to stop searching"
+    assert len(result["tool_events"]) == 4
+    assert result["replan_history"] == []
 
 
-def test_runtime_blocked_message_details_after_guard_rejections(
+def test_runtime_returns_repeated_guard_rejections_to_the_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4824,17 +4754,11 @@ def test_runtime_blocked_message_details_after_guard_rejections(
         },
     )
 
-    assert result["turn_status"] == "blocked"
-    assert result["blocked_reason"] == "tool_validation_rejections_exceeded"
-    assert "工具调用连续未通过 Guard 检查" in result["text"]
-    assert "最近被拒绝的动作" in result["text"]
-    assert "复盘触发原因" in result["text"]
-    assert "建议下一步" in result["text"]
-    assert "read" in result["text"]
-    blocked_trace = next(item for item in result["activity"]["trace_events"] if item["type"] == "blocked")
-    assert blocked_trace["payload"]["blocked_reason"] == "tool_validation_rejections_exceeded"
-    assert blocked_trace["payload"]["guard_rejection_count"] >= 2
-    assert result["inspector"]["run_state"]["blocked_stop_diagnostics"]["guard_rejection_count"] >= 2
+    assert result["turn_status"] == "completed"
+    assert result["blocked_reason"] == ""
+    assert result["text"] == "should not reach"
+    assert [item["status"] for item in result["tool_events"]] == ["rejected", "rejected"]
+    assert result["replan_history"] == []
 
 
 def test_runtime_guard_safe_downgrades_command_substitution_before_counting_rejection(tmp_path: Path) -> None:
@@ -4885,7 +4809,7 @@ def test_runtime_guard_safe_downgrades_command_substitution_before_counting_reje
     assert any("guard_safe_downgrade" in note for note in result["inspector"]["notes"])
 
 
-def test_runtime_replan_prompt_for_compound_shell_forbids_repeat_and_demands_simple_commands(
+def test_runtime_returns_compound_shell_rejection_without_forcing_replan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4930,13 +4854,12 @@ def test_runtime_replan_prompt_for_compound_shell_forbids_repeat_and_demands_sim
     )
 
     assert result["turn_status"] == "completed"
-    replan_prompt = result["inspector"]["run_state"]["replan_history"][0]["prompt"]
-    assert "不要再次使用 command substitution、内联 if/循环或复合 shell 验证链" in replan_prompt
-    assert "必须把 shell 动作拆成简单命令" in replan_prompt
-    assert "先执行 `python hello.py`" in replan_prompt
+    assert result["text"] == "replanned answer"
+    assert result["inspector"]["run_state"]["replan_history"] == []
+    assert result["tool_events"][0]["status"] == "rejected"
 
 
-def test_blocked_stop_message_separates_rejections_progress_plan_updates_and_replan_reason(tmp_path: Path) -> None:
+def test_empty_model_action_message_preserves_recent_observability_without_replan_claim(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     runtime = VintageProgrammerRuntime(
@@ -4948,7 +4871,7 @@ def test_blocked_stop_message_separates_rejections_progress_plan_updates_and_rep
 
     text = runtime._build_blocked_stop_message(
         locale="zh-CN",
-        blocked_reason="tool_validation_rejections_exceeded",
+        blocked_reason="model_action_empty",
         progress_signals=[
             {"has_progress": True, "kind": "command_result_changed", "summary": "命令结果发生了变化：python hello.py", "tool_name": "exec_command"},
             {"has_progress": True, "kind": "plan_updated", "summary": "检查清单新增完成项：1 项", "tool_name": "update_plan"},
@@ -4965,21 +4888,16 @@ def test_blocked_stop_message_separates_rejections_progress_plan_updates_and_rep
                 schema_validation={"status": "invalid"},
             )
         ],
-        guard_rejection_count=3,
-        no_progress_cycles=0,
-        post_replan_no_progress_cycles=0,
-        same_action_repeat_count=0,
-        elapsed_seconds=10,
     )
 
     assert "最近被拒绝的动作" in text
     assert "最近有效进展" in text
     assert "最近 plan 更新" in text
-    assert "复盘触发原因" in text
     assert "output=$(python hello.py) && if ..." in text
     assert "命令结果发生了变化：python hello.py" in text
     assert "检查清单新增完成项：1 项" in text
-    assert "触发点：validation_rejection_limit" in text
+    assert "复盘触发原因" not in text
+    assert "validation_rejection_limit" not in text
 
 
 @pytest.mark.parametrize("tool_count", [8, 12, 20])
@@ -5579,7 +5497,7 @@ def test_runtime_does_not_auto_rescue_missing_context_reply_for_image_attachment
     assert "auto_image_read_rescue" not in result["inspector"]["notes"]
 
 
-def test_runtime_repeated_image_read_uses_loop_safeguard_without_fallback_answer(tmp_path: Path) -> None:
+def test_runtime_leaves_repeated_image_reads_to_the_model(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     image_path = tmp_path / "screen.png"
@@ -5591,6 +5509,7 @@ def test_runtime_repeated_image_read_uses_loop_safeguard_without_fallback_answer
             _FakeMessage(content="", tool_calls=[{"id": "tc3", "name": "image_read", "args": {"path": str(image_path)}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc4", "name": "image_read", "args": {"path": str(image_path)}}]),
             _FakeMessage(content="", tool_calls=[{"id": "tc5", "name": "image_read", "args": {"path": str(image_path)}}]),
+            _FakeMessage(content="finished after repeated inspection"),
         ],
         _FakeImageReadTools(),
     )
@@ -5620,8 +5539,9 @@ def test_runtime_repeated_image_read_uses_loop_safeguard_without_fallback_answer
         },
     )
 
-    assert result["turn_status"] in {"blocked", "completed"}
-    assert len(result["tool_events"]) >= 3
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "finished after repeated inspection"
+    assert len(result["tool_events"]) == 5
     assert "image_read_repeat_fallback_answer" not in result["inspector"]["notes"]
     assert "image_read_result_forced_summary" not in result["inspector"]["notes"]
 

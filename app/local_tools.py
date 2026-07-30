@@ -2296,6 +2296,18 @@ class LocalToolExecutor:
         return str(raw or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
 
     @classmethod
+    def _is_expected_query_miss(cls, command: str, returncode: int | None) -> bool:
+        if returncode != 1:
+            return False
+        try:
+            argv = shlex.split(str(command or "").strip())
+        except Exception:
+            return False
+        if not argv:
+            return False
+        return cls._command_base_name(argv[0]) in {"rg", "rg.exe", "where", "where.exe"}
+
+    @classmethod
     def _is_direct_path_command(cls, raw: str) -> bool:
         text = str(raw or "").strip()
         return bool(text) and (text.startswith(("/", "./", "../", "~")) or "/" in text or "\\" in text)
@@ -3434,7 +3446,11 @@ class LocalToolExecutor:
         if tainted_execution_approved:
             payload["tainted_execution_approved"] = tainted_execution_approved
         if returncode is not None:
-            payload["summary"] = f"command exited with {returncode}"
+            if self._is_expected_query_miss(command, int(returncode)):
+                payload["query_miss"] = True
+                payload["summary"] = "query completed with no matches"
+            else:
+                payload["summary"] = f"command exited with {returncode}"
         return payload
 
     def _cancel_command_sessions(self, *, run_id: str = "") -> int:
