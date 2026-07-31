@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5X-blue)
+![Version](https://img.shields.io/badge/version-3.1.5Y-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,7 +15,7 @@
 
 [中文首页](README.md) · [English README](README.en.md) · [日本語 README](README.ja.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
-当前稳定版本：`3.1.5X`
+当前稳定版本：`3.1.5Y`
 
 ## Stable Runtime
 

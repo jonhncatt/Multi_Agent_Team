@@ -385,7 +385,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     app_version = version_match.group(1)
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
 
-    assert app_version == "3.1.5X"
+    assert app_version == "3.1.5Y"
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
