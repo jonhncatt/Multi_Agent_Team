@@ -130,6 +130,8 @@ Agent 阅读包含部署命令的 `SKILL.md`，把它整理成风险审查文档
 | `search_failure_rejection_then_rg_continues_model_led` | `search_codebase` 把文件当目录、`select-string` 被拒绝，随后改用 `rg` | 所有调用按序返回，Runtime 不提前跳过新策略 |
 | `invalid_tool_call_uses_protocol_repair` | 原生工具调用格式无效 | 请求模型修复协议，不作为进展判断 |
 | `verification_failure_can_be_recovered_by_model` | 验证先失败、模型随后修改并重试 | 允许模型自行恢复并完成 |
+| `turn_changes_are_independent_from_tool_failure_history` | Turn 结束时既有文件修改，也有先失败后通过的验证 | 独立报告保留的改动和最后一次验证，不用失败次数推导终态 |
+| `cancel_then_immediate_retry_is_isolated` | 执行中取消后立即在同一 Thread 提交新 Prompt | 旧 Turn 先确认 `interrupted` 并清理状态，新 Turn 才能启动 |
 
 这些案例主要通过对应 pytest 节点运行，确保审批、取消和技术边界之外的续行判断归模型所有。
 

@@ -1133,6 +1133,65 @@ def test_apply_patch_tool_event_exposes_changed_files_as_source_refs(tmp_path: P
     assert event.source_refs == [changed_path]
 
 
+def test_turn_changes_keep_file_updates_separate_from_tool_failures_and_latest_verification() -> None:
+    events = [
+        ToolEvent(
+            name="apply_patch",
+            normalized_arguments={"patch": "*** Begin Patch"},
+            output_preview="patched",
+            status="ok",
+            source_refs=["app/runtime.py", "tests/test_runtime.py"],
+        ),
+        ToolEvent(
+            name="exec_command",
+            normalized_arguments={"cmd": "pytest tests/test_runtime.py"},
+            output_preview="failed",
+            status="error",
+            summary="1 failed",
+        ),
+        ToolEvent(
+            name="exec_command",
+            normalized_arguments={"cmd": "pytest tests/test_runtime.py"},
+            output_preview="passed",
+            status="ok",
+            summary="1 passed",
+        ),
+    ]
+
+    changes = VintageProgrammerRuntime._build_turn_changes(events, turn_status="failed")
+
+    assert changes["count"] == 2
+    assert [item["path"] for item in changes["files"]] == ["app/runtime.py", "tests/test_runtime.py"]
+    assert changes["retained"] is True
+    assert changes["verification"]["status"] == "passed"
+    assert "failure_count" not in changes
+
+
+def test_turn_changes_do_not_claim_failed_or_skipped_patch_writes() -> None:
+    events = [
+        ToolEvent(
+            name="apply_patch",
+            normalized_arguments={"patch": "*** Begin Patch"},
+            output_preview="failed",
+            status="error",
+            source_refs=["app/uncertain.py"],
+        ),
+        ToolEvent(
+            name="exec_command",
+            normalized_arguments={"cmd": "python scripts/update_generated.py"},
+            output_preview="cancelled",
+            status="cancelled",
+        ),
+    ]
+
+    changes = VintageProgrammerRuntime._build_turn_changes(events, turn_status="cancelled")
+
+    assert changes["files"] == []
+    assert changes["count"] == 0
+    assert changes["possible_untracked_changes"] is True
+    assert changes["retained"] is True
+
+
 def test_runtime_activity_copy_has_locale_parity() -> None:
     for locale in ("zh-CN", "ja-JP", "en"):
         for key in REQUIRED_RUNTIME_ACTIVITY_KEYS:

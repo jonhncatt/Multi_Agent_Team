@@ -70,6 +70,28 @@ def test_activity_duration_falls_back_to_runtime_total_without_request_total() -
     assert activity["final_elapsed_ms"] == 11369
 
 
+def test_previous_turn_changes_are_injected_only_for_the_immediate_retained_outcome() -> None:
+    retained = {
+        "files": [{"path": "app/runtime.py", "kind": "modified"}],
+        "count": 1,
+        "retained": True,
+        "possible_untracked_changes": False,
+        "verification": {"status": "failed"},
+    }
+    session = {
+        "turns": [
+            {"role": "assistant", "activity": {"status": "failed", "turn_changes": retained}},
+        ]
+    }
+
+    assert main_app._previous_retained_turn_changes(session) == retained
+
+    session["turns"].append(
+        {"role": "assistant", "activity": {"status": "completed", "turn_changes": {}}}
+    )
+    assert main_app._previous_retained_turn_changes(session) == {}
+
+
 class _FakeRuntimeStatusTools:
     def docker_status(self) -> tuple[bool, str]:
         return False, "stub"
@@ -937,6 +959,53 @@ class _BlockingVintageRuntime(_FakeVintageRuntime):
         return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
 
 
+class _CancellableThenRetryRuntime(_FakeVintageRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_started = threading.Event()
+        self.first_cancel_seen = threading.Event()
+        self.allow_first_return = threading.Event()
+        self.second_started = threading.Event()
+        self.contexts: list[dict[str, object]] = []
+        self._call_lock = threading.Lock()
+
+    def run(self, *, message, settings, context, progress_cb=None):
+        with self._call_lock:
+            call_index = len(self.contexts)
+            self.contexts.append(dict(context))
+        if call_index == 0:
+            self.first_started.set()
+            cancel_event = context["cancel_event"]
+            assert cancel_event.wait(timeout=5.0)
+            self.first_cancel_seen.set()
+            assert self.allow_first_return.wait(timeout=5.0)
+            payload = super().run(
+                message=message,
+                settings=settings,
+                context=context,
+                progress_cb=progress_cb,
+            )
+            payload["text"] = "stopped"
+            payload["turn_status"] = "cancelled"
+            payload["pending_user_input"] = {}
+            payload["pending_approval"] = {}
+            payload["activity"] = {
+                **dict(payload.get("activity") or {}),
+                "status": "cancelled",
+            }
+            payload["inspector"]["run_state"]["turn_status"] = "cancelled"
+            payload["inspector"]["run_state"]["pending_user_input"] = {}
+            payload["inspector"]["run_state"]["pending_approval"] = {}
+            return payload
+        self.second_started.set()
+        return super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+
+
 class _FollowupContextRuntime(_FakeVintageRuntime):
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -1166,6 +1235,8 @@ class _UpdatePlanCreatesTaskRuntime(_DirectAnswerNoTaskRuntime):
 
 
 def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
+    with main_app._active_chat_runs_lock:
+        main_app._active_chat_runs.clear()
     for name in ("sessions", "uploads", "workspace/skills", "agents/vintage_programmer"):
         (tmp_path / name).mkdir(parents=True, exist_ok=True)
     (tmp_path / "agents" / "vintage_programmer" / "soul.md").write_text("soul", encoding="utf-8")
@@ -2844,12 +2915,89 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
         payload = response.json()
         assert payload["ok"] is True
         assert payload["cancelled"] is True
-        assert payload["status"] == "cancelling"
+        assert payload["status"] == "cancel_requested"
         assert cancel_event.is_set() is True
         assert main_app._active_chat_runs[run_id]["accepting_steers"] is False
+
+        status_response = client.get(f"/api/chat/runs/{run_id}")
+        assert status_response.status_code == 200
+        assert status_response.json()["status"] == "cancel_requested"
+        assert status_response.json()["terminal"] is False
     finally:
         with main_app._active_chat_runs_lock:
             main_app._active_chat_runs.pop(run_id, None)
+
+
+def test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    runtime = _CancellableThenRetryRuntime()
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", runtime)
+    responses: dict[str, object] = {}
+
+    def post_first() -> None:
+        with TestClient(main_app.app) as client:
+            responses["first"] = client.post(
+                "/api/chat/stream",
+                json={
+                    "message": "first turn",
+                    "settings": {"model": "gpt-test", "max_output_tokens": 1024},
+                },
+            )
+
+    first_thread = threading.Thread(target=post_first)
+    first_thread.start()
+    assert runtime.first_started.wait(timeout=5.0)
+    first_context = runtime.contexts[0]
+    first_run_id = str(first_context["run_id"])
+    session_id = str(first_context["session_id"])
+
+    with TestClient(main_app.app) as client:
+        cancel_payload = client.post(f"/api/chat/runs/{first_run_id}/cancel").json()
+    assert cancel_payload["status"] == "cancel_requested"
+    assert runtime.first_cancel_seen.wait(timeout=5.0)
+
+    def post_second() -> None:
+        with TestClient(main_app.app) as client:
+            responses["second"] = client.post(
+                "/api/chat/stream",
+                json={
+                    "session_id": session_id,
+                    "message": "second turn",
+                    "settings": {"model": "gpt-test", "max_output_tokens": 1024},
+                },
+            )
+
+    second_thread = threading.Thread(target=post_second)
+    second_thread.start()
+    time.sleep(0.1)
+    assert runtime.second_started.is_set() is False
+
+    runtime.allow_first_return.set()
+    first_thread.join(timeout=8.0)
+    second_thread.join(timeout=8.0)
+    assert first_thread.is_alive() is False
+    assert second_thread.is_alive() is False
+    assert runtime.second_started.is_set() is True
+    assert len(runtime.contexts) == 2
+    assert runtime.contexts[0]["cancel_event"] is not runtime.contexts[1]["cancel_event"]
+
+    first_events = _parse_sse_events(responses["first"].text)
+    second_events = _parse_sse_events(responses["second"].text)
+    first_final = dict(next(payload for name, payload in first_events if name == "final")["response"])
+    second_final = dict(next(payload for name, payload in second_events if name == "final")["response"])
+    assert first_final["turn_status"] == "cancelled"
+    assert second_final["turn_status"] == "completed"
+
+    second_run_id = str(runtime.contexts[1]["run_id"])
+    with TestClient(main_app.app) as client:
+        assert client.get(f"/api/chat/runs/{first_run_id}").json()["status"] == "interrupted"
+        assert client.get(f"/api/chat/runs/{second_run_id}").json()["status"] == "completed"
+    stored = main_app.session_store.load(session_id)
+    assert stored is not None
+    assert stored.get("pending_interaction") == {}
 
 
 def test_steer_chat_run_endpoint_queues_and_drains_at_model_boundary(monkeypatch, tmp_path: Path) -> None:

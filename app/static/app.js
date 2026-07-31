@@ -1182,6 +1182,33 @@ function isActivityTerminalStatus(status) {
   return normalized === "completed" || normalized === "failed" || normalized === "blocked" || normalized === "cancelled";
 }
 
+function normalizeTurnChanges(raw) {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const files = (Array.isArray(item.files) ? item.files : [])
+    .map((entry) => {
+      if (typeof entry === "string") return { path: entry, kind: "modified" };
+      const value = entry && typeof entry === "object" ? entry : {};
+      return {
+        path: String(value.path || "").trim(),
+        kind: String(value.kind || "modified").trim() || "modified",
+      };
+    })
+    .filter((entry) => entry.path);
+  return {
+    files,
+    count: Math.max(files.length, Number(item.count || 0) || 0),
+    retained: Boolean(item.retained),
+    possible_untracked_changes: Boolean(item.possible_untracked_changes),
+    verification: item.verification && typeof item.verification === "object"
+      ? {
+          status: String(item.verification.status || "").trim(),
+          tool: String(item.verification.tool || "").trim(),
+          summary: String(item.verification.summary || "").trim(),
+        }
+      : {},
+  };
+}
+
 function normalizeMessageActivity(raw) {
   const item = raw && typeof raw === "object" ? raw : {};
   if (item[NORMALIZED_ACTIVITY_MARKER]) return item;
@@ -1233,6 +1260,7 @@ function normalizeMessageActivity(raw) {
     runtime_inspector: item.runtime_inspector && typeof item.runtime_inspector === "object"
       ? item.runtime_inspector
       : {},
+    turn_changes: normalizeTurnChanges(item.turn_changes),
     tool_boundary_clean:
       typeof item.tool_boundary_clean === "boolean"
         ? item.tool_boundary_clean
@@ -1251,6 +1279,42 @@ function normalizeMessageActivity(raw) {
     enumerable: false,
   });
   return normalizedActivity;
+}
+
+function renderTurnChangesSummary(activity, locale) {
+  const changes = normalizeTurnChanges((activity && activity.turn_changes) || {});
+  const verificationStatus = normalizeProgressStatus(changes.verification.status || "");
+  if (!changes.count && !changes.possible_untracked_changes && verificationStatus !== "failed") return null;
+  const summaryParts = [];
+  if (changes.count) {
+    summaryParts.push(translateUi(locale, "activity.changes.file_count", { count: changes.count }));
+  }
+  if (verificationStatus === "failed") {
+    summaryParts.push(translateUi(locale, "activity.changes.verification_failed"));
+  } else if (verificationStatus === "completed") {
+    summaryParts.push(translateUi(locale, "activity.changes.verification_passed"));
+  }
+  if (changes.retained) {
+    summaryParts.push(translateUi(locale, "activity.changes.retained"));
+  }
+  return html`
+    <div className=${`turn-changes-summary ${changes.retained ? "is-retained" : ""}`}>
+      <div className="turn-changes-line">${summaryParts.join(" · ")}</div>
+      ${changes.possible_untracked_changes
+        ? html`<div className="turn-changes-note">${translateUi(locale, "activity.changes.possible_untracked")}</div>`
+        : null}
+      ${changes.files.length
+        ? html`
+            <details className="turn-changes-files">
+              <summary>${translateUi(locale, "activity.changes.view")}</summary>
+              <ul>
+                ${changes.files.map((entry) => html`<li key=${entry.path}>${entry.path}</li>`)}
+              </ul>
+            </details>
+          `
+        : null}
+    </div>
+  `;
 }
 
 function resumableTurnStartedAt(messages, runtimeState = {}) {
@@ -1651,7 +1715,7 @@ function normalizeProgressStatus(value) {
   if (["background_running", "background-running"].includes(normalized)) return "background_running";
   if (["failed", "error"].includes(normalized)) return "failed";
   if (["blocked", "needs_user_input"].includes(normalized)) return "blocked";
-  if (["cancelled", "canceled"].includes(normalized)) return "cancelled";
+  if (["cancelled", "canceled", "interrupted"].includes(normalized)) return "cancelled";
   return "pending";
 }
 
@@ -1705,6 +1769,13 @@ function shortenActivityTarget(value, limit = 52) {
   if (!text) return "";
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function skillTargetFromPath(value) {
+  const normalized = String(value || "").trim().replace(/\\/g, "/");
+  if (!normalized) return "";
+  const match = normalized.match(/(?:^|\/)skills\/(?:builtin|team)\/([^/]+)\/SKILL\.md$/i);
+  return match && match[1] ? `Skill · ${match[1]}` : "";
 }
 
 function toolCallIdentityFromSource(source, fallback = "") {
@@ -1775,6 +1846,8 @@ function toolCallTargetFromSource(source) {
     item.summary,
   ];
   for (const candidate of candidates) {
+    const skillTarget = skillTargetFromPath(candidate);
+    if (skillTarget) return shortenActivityTarget(skillTarget, 96);
     const text = shortenActivityTarget(candidate);
     if (text) return text;
   }
@@ -5088,6 +5161,20 @@ function App() {
     return res.json();
   }
 
+  async function waitForChatRunTerminal(runId, timeoutMs = 30000) {
+    const normalizedRunId = String(runId || "").trim();
+    if (!normalizedRunId) return null;
+    const deadline = Date.now() + Math.max(1000, Number(timeoutMs || 0) || 30000);
+    while (Date.now() < deadline) {
+      const payload = await fetchJson(`/api/chat/runs/${encodeURIComponent(normalizedRunId)}`);
+      if (payload && (payload.terminal || ["completed", "interrupted", "failed", "not_found"].includes(String(payload.status || "")))) {
+        return payload;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    return null;
+  }
+
   async function refreshEvalCatalog(options = {}) {
     try {
       const data = await fetchJson("/api/evals/catalog");
@@ -7027,6 +7114,7 @@ function App() {
     let cancelAssistantDeltaFlush = () => {};
     let uiFinalized = false;
     let shouldStartNextQueuedTurn = false;
+    let authoritativeRunId = "";
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -7987,6 +8075,7 @@ function App() {
           if (parsed) {
             const { event, payload } = parsed;
             if (payload && payload.run_id) {
+              authoritativeRunId = String(payload.run_id || authoritativeRunId || "");
               updateOwnerActiveTurn((prev) => ({ ...prev, activeRunId: String(payload.run_id || prev.activeRunId || "") }));
             }
             if (payload && payload.thread_id) {
@@ -8546,20 +8635,44 @@ function App() {
       }
       await cleanupRunUi();
     } catch (err) {
-      const nextError = applyUiError(err, t("errors.request_failed"));
-      pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
-      if (updateOwnerMessages) {
-        updateOwnerMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
-      } else {
-        setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+      let terminalRecord = null;
+      const runIdForAck = String(
+        authoritativeRunId
+        || ((latestActivity && latestActivity.run_id) || "")
+        || activeRunId
+        || "",
+      ).trim();
+      if (runIdForAck) {
+        try {
+          terminalRecord = await waitForChatRunTerminal(runIdForAck);
+        } catch {
+          terminalRecord = null;
+        }
       }
-      if (resumePendingState && runOwnerThreadId) {
-        updateThreadSnapshot(runOwnerThreadId, (existing) => ({
-          ...existing,
-          sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, resumePendingState),
-        }));
-        if (String(activeSessionIdRef.current || "").trim() === runOwnerThreadId) {
-          setSessionRuntimeState((prev) => mergeSessionRuntimeStateSnapshot(prev || {}, resumePendingState));
+      const interrupted = String((terminalRecord && terminalRecord.status) || "") === "interrupted";
+      if (interrupted) {
+        clearUiError();
+        shouldStartNextQueuedTurn = true;
+        const reconciledMessages = await reconcileCompletedThreadMessages(runOwnerThreadId);
+        if (!reconciledMessages && updateOwnerMessages) {
+          updateOwnerMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+        }
+      } else {
+        const nextError = applyUiError(err, t("errors.request_failed"));
+        pushLogWithLimit(setLogs, "error", t("log.send_failed", { summary: nextError.summary }));
+        if (updateOwnerMessages) {
+          updateOwnerMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+        } else {
+          setMessages((prev) => prev.filter((item) => !(pendingMessage && item.id === pendingMessage.id)));
+        }
+        if (resumePendingState && runOwnerThreadId) {
+          updateThreadSnapshot(runOwnerThreadId, (existing) => ({
+            ...existing,
+            sessionRuntimeState: mergeSessionRuntimeStateSnapshot(existing.sessionRuntimeState || {}, resumePendingState),
+          }));
+          if (String(activeSessionIdRef.current || "").trim() === runOwnerThreadId) {
+            setSessionRuntimeState((prev) => mergeSessionRuntimeStateSnapshot(prev || {}, resumePendingState));
+          }
         }
       }
     } finally {
@@ -10147,6 +10260,7 @@ function App() {
           <span>${pillLabel}</span>
           <span className="activity-pill-arrow">${isOpen ? "−" : ">"}</span>
         </button>
+        ${renderTurnChangesSummary(displayActivity, uiLocale)}
         ${subagentCards.length ? html`<div className="subagent-card-list">${subagentCards}</div>` : null}
         ${!isOpen
           ? renderActivityProgressList(projection, displayActivity, {

@@ -28,6 +28,16 @@ def test_mask_sensitive_text_hides_common_secret_patterns() -> None:
     assert "***" in masked
 
 
+def test_mask_sensitive_text_preserves_long_skill_names_and_masks_only_named_secrets() -> None:
+    skill_path = "/repo/skills/team/read-redmine-discussion-and-summarize-progress/SKILL.md"
+    long_identifier = "abcdefghijklmnopqrstuvwxyz123456"
+
+    assert mask_sensitive_text(skill_path) == skill_path
+    assert mask_sensitive_text(long_identifier) == long_identifier
+    assert mask_sensitive_text(f"REDMINE_API_KEY={long_identifier}") == "REDMINE_API_KEY=***"
+    assert mask_sensitive_text(f"https://example.test/?token={long_identifier}") == "https://example.test/?token=***"
+
+
 def test_safe_preview_truncates_nested_payloads() -> None:
     preview = safe_preview({"output": "x" * 5000, "nested": ["y" * 5000]}, limit=120)
 
@@ -40,6 +50,31 @@ def test_safe_preview_preserves_number_and_boolean_types() -> None:
     preview = safe_preview({"count": 5, "checked": True, "ratio": 0.5})
 
     assert preview == {"count": 5, "checked": True, "ratio": 0.5}
+
+
+def test_safe_preview_preserves_long_skill_path_and_masks_sensitive_dict_values() -> None:
+    skill_path = "/repo/skills/team/read-redmine-discussion-and-summarize-progress/SKILL.md"
+
+    preview = safe_preview(
+        {
+            "path": skill_path,
+            "REDMINE_API_KEY": "company-secret",
+            "nested": {
+                "client_secret": "oauth-secret",
+                "token_limit": 4096,
+            },
+        },
+        limit=4000,
+    )
+
+    assert preview == {
+        "path": skill_path,
+        "REDMINE_API_KEY": "***",
+        "nested": {
+            "client_secret": "***",
+            "token_limit": 4096,
+        },
+    }
 
 
 def test_summarize_tool_args_and_result_for_common_tools() -> None:

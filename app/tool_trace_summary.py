@@ -7,19 +7,69 @@ from typing import Any
 from app.i18n import translate
 
 
+_SENSITIVE_KEY_NAMES = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "cookie",
+    "access_token",
+    "refresh_token",
+    "token",
+    "secret",
+    "client_secret",
+    "private_key",
+}
+_SENSITIVE_KEY_SUFFIXES = (
+    "_api_key",
+    "_password",
+    "_passwd",
+    "_cookie",
+    "_access_token",
+    "_refresh_token",
+    "_token",
+    "_secret",
+    "_private_key",
+)
+_SENSITIVE_TEXT_KEY = (
+    r"(?:authorization|api[_-]?key|password|passwd|cookie|access[_-]?token|"
+    r"refresh[_-]?token|token|secret|client[_-]?secret|private[_-]?key|"
+    r"[A-Za-z][A-Za-z0-9_]*(?:_API_KEY|_PASSWORD|_PASSWD|_COOKIE|"
+    r"_ACCESS_TOKEN|_REFRESH_TOKEN|_TOKEN|_SECRET|_PRIVATE_KEY))"
+)
 _SENSITIVE_PATTERNS = [
-    (re.compile(r"(Authorization\s*:\s*Bearer\s+)[A-Za-z0-9._\-]+", re.IGNORECASE), r"\1***"),
-    (re.compile(r"((?:api[_-]?key|OPENAI_API_KEY|password|cookie)\s*[=:]\s*)[^\s,;]+", re.IGNORECASE), r"\1***"),
-    (re.compile(r"((?:access_token|refresh_token|token)\s*[=:]\s*)[^\s,;&]+", re.IGNORECASE), r"\1***"),
-    (re.compile(r"([?&](?:token|access_token|refresh_token|key|secret)=)[^&\s]+", re.IGNORECASE), r"\1***"),
+    (
+        re.compile(r"(Authorization\s*:\s*Bearer\s+)[^\s,;]+", re.IGNORECASE),
+        r"\1***",
+    ),
+    (
+        re.compile(
+            rf"((?:[\"']?{_SENSITIVE_TEXT_KEY}[\"']?)\s*[=:]\s*)"
+            r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)",
+            re.IGNORECASE,
+        ),
+        r"\1***",
+    ),
+    (
+        re.compile(
+            rf"([?&]{_SENSITIVE_TEXT_KEY}=)[^&\s]+",
+            re.IGNORECASE,
+        ),
+        r"\1***",
+    ),
 ]
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    return normalized in _SENSITIVE_KEY_NAMES or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
 
 
 def mask_sensitive_text(text: str) -> str:
     masked = str(text or "")
     for pattern, replacement in _SENSITIVE_PATTERNS:
         masked = pattern.sub(replacement, masked)
-    masked = re.sub(r"\b[A-Za-z0-9_\-]{32,}\b", "***", masked)
     return masked
 
 
@@ -38,7 +88,12 @@ def safe_preview(value: Any, *, limit: int = 2000) -> Any:
             if index >= 24:
                 preview["..."] = "truncated"
                 break
-            preview[str(key)] = safe_preview(item, limit=max(64, limit // 2))
+            normalized_key = str(key)
+            preview[normalized_key] = (
+                "***"
+                if _is_sensitive_key(normalized_key)
+                else safe_preview(item, limit=max(64, limit // 2))
+            )
         return preview
     if isinstance(value, (list, tuple)):
         preview_list = [safe_preview(item, limit=max(64, limit // 2)) for item in list(value)[:12]]

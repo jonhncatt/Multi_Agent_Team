@@ -88,6 +88,22 @@
       "max_tool_calls": 3
     },
     {
+      "name": "turn_changes_are_independent_from_tool_failure_history",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_turn_changes_keep_file_updates_separate_from_tool_failures_and_latest_verification",
+      "failure_category": "turn_outcome_observability",
+      "expected_turn_status": "failed",
+      "expected_continuation_policy": "model_led",
+      "max_tool_calls": 3
+    },
+    {
+      "name": "cancel_then_immediate_retry_is_isolated",
+      "test_node": "tests/integration/test_chat_vintage_programmer_api.py::test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts",
+      "failure_category": "turn_cancellation",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "terminal_ack_then_new_turn",
+      "max_tool_calls": 0
+    },
+    {
       "name": "tool_output_truncation_is_resumable_without_rerun",
       "test_node": "tests/test_tool_result_continuation.py::test_large_tool_result_is_token_bounded_and_resumable_without_rerun",
       "failure_category": "context_management",

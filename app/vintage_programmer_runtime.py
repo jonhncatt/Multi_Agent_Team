@@ -2009,6 +2009,82 @@ class VintageProgrammerRuntime:
         )
 
     @staticmethod
+    def _exec_command_may_modify_workspace(command: str) -> bool:
+        text = str(command or "").strip().lower()
+        if not text:
+            return False
+        if re.search(r"(?:^|[^>])>{1,2}(?!=)|\b(?:tee|touch|mkdir|cp|mv|rm)\b|\bsed\s+-i\b", text):
+            return True
+        if re.search(
+            r"\bgit\s+(?:apply|am|checkout|switch|merge|rebase|cherry-pick|reset|clean|restore)\b",
+            text,
+        ):
+            return True
+        first = re.split(r"\s+", text, maxsplit=1)[0].replace("\\", "/").rsplit("/", 1)[-1]
+        if first in {"python", "python3", "py", "node", "npm", "npx", "powershell", "pwsh", "bash", "sh"}:
+            return True
+        return False
+
+    @classmethod
+    def _build_turn_changes(
+        cls,
+        tool_events: list[ToolEvent],
+        *,
+        turn_status: str,
+    ) -> dict[str, Any]:
+        files: list[dict[str, str]] = []
+        seen_paths: set[str] = set()
+        possible_untracked_changes = False
+        verification: dict[str, Any] = {}
+        for event in tool_events:
+            name = str(getattr(event, "name", "") or "").strip()
+            status = str(getattr(event, "status", "") or "").strip().lower()
+            arguments = dict(getattr(event, "normalized_arguments", {}) or {})
+            if name == "apply_patch" and status in {"ok", "success", "completed"}:
+                result_preview = (
+                    dict(getattr(event, "result_preview", {}) or {})
+                    if isinstance(getattr(event, "result_preview", {}), dict)
+                    else {}
+                )
+                changed_paths = [
+                    *list(getattr(event, "source_refs", []) or []),
+                    *list(result_preview.get("files") or []),
+                ]
+                for raw_path in changed_paths:
+                    path = str(raw_path or "").strip()
+                    if not path or path in seen_paths:
+                        continue
+                    seen_paths.add(path)
+                    files.append({"path": path, "kind": "modified"})
+            if name not in {"exec_command", "write_stdin"}:
+                continue
+            command = str(arguments.get("cmd") or arguments.get("command") or "").strip()
+            is_verification = cls._looks_like_verification_command(command)
+            if is_verification and status not in {"skipped", "cancelled"}:
+                verification = {
+                    "status": "passed" if status in {"ok", "success", "completed"} else "failed",
+                    "tool": name,
+                    "summary": str(getattr(event, "summary", "") or "").strip(),
+                }
+            if (
+                not is_verification
+                and status not in {"rejected", "skipped"}
+                and cls._exec_command_may_modify_workspace(command)
+            ):
+                possible_untracked_changes = True
+        normalized_status = str(turn_status or "").strip().lower()
+        return {
+            "files": files,
+            "count": len(files),
+            "retained": bool(
+                (files or possible_untracked_changes)
+                and normalized_status in {"failed", "blocked", "cancelled", "interrupted"}
+            ),
+            "possible_untracked_changes": possible_untracked_changes,
+            "verification": verification,
+        }
+
+    @staticmethod
     def _activity_detail(**fields: Any) -> str:
         parts: list[str] = []
         for key, value in fields.items():
@@ -4329,6 +4405,22 @@ class VintageProgrammerRuntime:
                     )
                 )
             messages.extend(replay_messages)
+            previous_turn_changes = (
+                dict(context_payload.get("previous_turn_changes") or {})
+                if isinstance(context_payload.get("previous_turn_changes"), dict)
+                else {}
+            )
+            if bool(previous_turn_changes.get("retained")):
+                messages.append(
+                    self._backend._HumanMessage(
+                        content=(
+                            "[previous_turn_changes]\n"
+                            "The previous failed or interrupted Turn left workspace changes in place. "
+                            "Continue from the current working tree; do not assume rollback or blindly repeat earlier patches.\n"
+                            + json.dumps(previous_turn_changes, ensure_ascii=False, separators=(",", ":"))
+                        )
+                    )
+                )
             attachment_manifest = self._attachment_manifest_for_model(attachment_metas)
             model_visible_attachment_evidence = self._attachment_evidence_pack_for_model(
                 attachment_evidence_pack,
@@ -7506,6 +7598,7 @@ class VintageProgrammerRuntime:
             ),
         }
         failure_recovery = self._failure_recovery_summary(failure_tracker)
+        turn_changes = self._build_turn_changes(tool_events, turn_status=turn_status)
         inspector = {
             "agent": self.descriptor(),
             "run_state": {
@@ -7554,6 +7647,7 @@ class VintageProgrammerRuntime:
                 "progress_signals": list(progress_signals),
                 "replan_history": list(replan_history),
                 "failure_recovery": dict(failure_recovery),
+                "turn_changes": dict(turn_changes),
                 "project_contract_loaded": bool(project_contract_text),
                 "project_root": project_root,
                 "cwd": effective_cwd,
@@ -7623,6 +7717,7 @@ class VintageProgrammerRuntime:
             "progress_signals": list(progress_signals),
             "replan_history": list(replan_history),
             "failure_recovery": dict(failure_recovery),
+            "turn_changes": dict(turn_changes),
             "activity": {
                 "run_id": run_id,
                 "status": turn_status,
@@ -7634,6 +7729,7 @@ class VintageProgrammerRuntime:
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),
+                "turn_changes": dict(turn_changes),
                 "llm_exchanges": list(llm_exchanges),
                 "tool_boundary_clean": (
                     runtime_error.get("tool_boundary_clean")

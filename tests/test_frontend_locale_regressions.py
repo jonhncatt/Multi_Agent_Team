@@ -2554,7 +2554,7 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "isThreadActiveTurnLive" not in active_turn_busy_body
 
     terminal_status_match = re.search(
-        r"function isActivityTerminalStatus\(status\) \{(?P<body>.*?)\n}\n\nfunction normalizeMessageActivity",
+        r"function isActivityTerminalStatus\(status\) \{(?P<body>.*?)\n}\n\nfunction normalizeTurnChanges",
         script,
         re.S,
     )
@@ -2597,6 +2597,15 @@ def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt()
     debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
     assert "const rawTraceList = chatSettings.debug_raw" not in debug_block
     assert "phase_timings: item.phase_timings || {}" not in script
+
+
+def test_activity_tool_target_surfaces_skill_name_instead_of_long_absolute_path() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function skillTargetFromPath(value)" in script
+    assert ".replace(/\\\\/g, \"/\")" in script
+    assert r"skills\/(?:builtin|team)\/([^/]+)\/SKILL\.md" in script
+    assert "if (skillTarget) return shortenActivityTarget(skillTarget, 96);" in script
 
 
 def test_manual_update_button_is_click_only_and_reports_results() -> None:
@@ -2667,3 +2676,28 @@ def test_run_progress_waits_for_llm_started_before_model_copy() -> None:
     assert 'const modelName = String(heartbeat.model || liveModelNameFromActivity(activity) || "").trim();' in script
     assert 'translateUi(locale, "run.live_agent.model_detail", { detail: modelName })' in script
     assert 'detail: item.detail || "",' in script
+
+
+def test_retained_turn_changes_are_visible_without_opening_developer_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function normalizeTurnChanges(raw)" in script
+    assert "function renderTurnChangesSummary(activity, locale)" in script
+    message_activity = script.split("const renderMessageActivity = (item) => {", 1)[1].split("const renderSteerStatus", 1)[0]
+    before_open_panel = message_activity.split("${isOpen\n          ? html`", 1)[0]
+    assert "${renderTurnChangesSummary(displayActivity, uiLocale)}" in before_open_panel
+    assert ".turn-changes-summary.is-retained" in styles
+    assert '"activity.changes.retained": "更改仍然保留"' in locales
+    assert '"activity.changes.view": "View changes"' in locales
+
+
+def test_cancelled_stream_waits_for_authoritative_terminal_ack_before_releasing_turn() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert '"interrupted"].includes(normalized)' in script
+    assert "async function waitForChatRunTerminal(runId, timeoutMs = 30000)" in script
+    assert "terminalRecord = await waitForChatRunTerminal(runIdForAck);" in script
+    assert 'const interrupted = String((terminalRecord && terminalRecord.status) || "") === "interrupted";' in script
+    assert "shouldStartNextQueuedTurn = true;" in script

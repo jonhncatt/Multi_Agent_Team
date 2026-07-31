@@ -347,6 +347,10 @@ class _AgentRunQueueTicket:
         self.wait_ms = max(0, int(wait_ms))
         self.waited = bool(waited)
         self._released = False
+        self._held_until_released = False
+
+    def hold_until_released(self) -> None:
+        self._held_until_released = True
 
     def release(self) -> None:
         if self._released:
@@ -361,7 +365,8 @@ class _AgentRunQueueTicket:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self.release()
+        if not self._held_until_released:
+            self.release()
         return False
 
 
@@ -392,10 +397,22 @@ def _runtime_meta_payload() -> dict[str, Any]:
 
 def _register_active_chat_run(run_id: str) -> threading.Event:
     cancel_event = threading.Event()
+    terminal_event = threading.Event()
     with _active_chat_runs_lock:
+        cutoff = time.time() - 300.0
+        stale_ids = [
+            key
+            for key, item in _active_chat_runs.items()
+            if isinstance(item, dict)
+            and str(item.get("status") or "") in {"completed", "interrupted", "failed"}
+            and float(item.get("finished_at") or 0.0) < cutoff
+        ]
+        for key in stale_ids:
+            _active_chat_runs.pop(key, None)
         _active_chat_runs[run_id] = {
             "run_id": run_id,
             "cancel_event": cancel_event,
+            "terminal_event": terminal_event,
             "status": "running",
             "session_id": "",
             "project_id": "",
@@ -420,10 +437,12 @@ def _cancel_active_chat_run(run_id: str) -> dict[str, Any] | None:
         record = _active_chat_runs.get(str(run_id or "").strip())
         if not isinstance(record, dict):
             return None
+        if str(record.get("status") or "") in {"completed", "interrupted", "failed"}:
+            return dict(record)
         cancel_event = record.get("cancel_event")
         if cancel_event and hasattr(cancel_event, "set"):
             cancel_event.set()
-        record["status"] = "cancelling"
+        record["status"] = "cancel_requested"
         record["accepting_steers"] = False
         record["cancel_requested_at"] = time.time()
         return dict(record)
@@ -490,9 +509,21 @@ def _drain_active_chat_run_steers(run_id: str, *, final: bool = False) -> list[d
         return pending
 
 
-def _unregister_active_chat_run(run_id: str) -> None:
+def _finish_active_chat_run(run_id: str, *, status: str) -> None:
     with _active_chat_runs_lock:
-        _active_chat_runs.pop(str(run_id or "").strip(), None)
+        record = _active_chat_runs.get(str(run_id or "").strip())
+        if not isinstance(record, dict):
+            return
+        normalized = str(status or "").strip().lower()
+        if normalized not in {"completed", "interrupted", "failed"}:
+            normalized = "failed"
+        record["status"] = normalized
+        record["accepting_steers"] = False
+        record["pending_steers"] = []
+        record["finished_at"] = time.time()
+        terminal_event = record.get("terminal_event")
+        if terminal_event and hasattr(terminal_event, "set"):
+            terminal_event.set()
 
 
 def _build_provider_payload_uncached() -> dict[str, Any]:
@@ -1330,7 +1361,9 @@ def _active_thread_ids() -> set[str]:
         return {
             str(item.get("session_id") or "").strip()
             for item in _active_chat_runs.values()
-            if isinstance(item, dict) and str(item.get("session_id") or "").strip()
+            if isinstance(item, dict)
+            and str(item.get("status") or "") in {"running", "cancel_requested"}
+            and str(item.get("session_id") or "").strip()
         }
 
 
@@ -1339,6 +1372,16 @@ def _thread_status_value(session_id: str) -> str:
     if normalized and normalized in _active_thread_ids():
         return "active"
     return "idle"
+
+
+def _previous_retained_turn_changes(session: dict[str, Any]) -> dict[str, Any]:
+    for turn in reversed(list(session.get("turns") or [])):
+        if not isinstance(turn, dict) or str(turn.get("role") or "") not in {"assistant", "runtime"}:
+            continue
+        activity = dict(turn.get("activity") or {}) if isinstance(turn.get("activity"), dict) else {}
+        changes = dict(activity.get("turn_changes") or {}) if isinstance(activity.get("turn_changes"), dict) else {}
+        return changes if bool(changes.get("retained")) else {}
+    return {}
 
 
 def _thread_list_item_from_session_row(row: dict[str, Any]) -> ThreadListItem:
@@ -2718,6 +2761,8 @@ def _process_chat_request(
     runtime_request_message = str(req.message or "")
     task_context: dict[str, Any] = {}
     cancel_event = _register_active_chat_run(run_id)
+    terminal_run_status = "failed"
+    turn_ticket: _AgentRunQueueTicket | None = None
     _emit_progress(
         progress_cb,
         "stage",
@@ -2749,6 +2794,8 @@ def _process_chat_request(
 
         queue_wait_ms = 0
         with run_queue.run_slot(session_id) as ticket:
+            turn_ticket = ticket
+            ticket.hold_until_released()
             queue_wait_ms = int(ticket.wait_ms)
             request_phase_timer.record_duration_ms("queue_wait_ms", queue_wait_ms)
             if queue_wait_ms >= config.run_queue_wait_notice_ms:
@@ -3085,6 +3132,7 @@ def _process_chat_request(
             resolved_attachment_context_key = "|".join(normalize_attachment_ids(resolved_attachment_ids))
         with request_phase_timer.measure("runtime_context_ms"):
             thread_transcript_for_runtime = copy.deepcopy(session.get("thread_transcript") or {})
+            previous_turn_changes_for_runtime = _previous_retained_turn_changes(session)
             compaction = dict(session.get("compaction") or {})
             compaction_state = dict(session.get("compaction_state") or {})
             summary_for_runtime = str(
@@ -3196,6 +3244,7 @@ def _process_chat_request(
                         **_project_instruction_context(session_project),
                     },
                     "thread_transcript": thread_transcript_for_runtime,
+                    "previous_turn_changes": previous_turn_changes_for_runtime,
                     "task_context": task_context,
                     "summary": summary_for_runtime,
                     "compaction_status": compaction_status_for_runtime,
@@ -3232,6 +3281,11 @@ def _process_chat_request(
             runtime_result.get("permission_profile") or getattr(req.settings, "permission_profile", "auto")
         )
         turn_status = str(runtime_result.get("turn_status") or "completed")
+        turn_changes = (
+            dict(runtime_result.get("turn_changes") or {})
+            if isinstance(runtime_result.get("turn_changes"), dict)
+            else {}
+        )
         plan = list(runtime_result.get("plan") or [])
         pending_user_input = (
             dict(runtime_result.get("pending_user_input") or {})
@@ -3248,6 +3302,10 @@ def _process_chat_request(
             if isinstance(runtime_result.get("pending_turn"), dict)
             else {}
         )
+        if str(turn_status or "").strip().lower() in {"cancelled", "interrupted"}:
+            pending_user_input = {}
+            pending_approval = {}
+            pending_turn = {}
         if pending_turn:
             pending_turn["turn_started_at"] = logical_turn_started_at
         with request_phase_timer.measure("thread_title_generation_ms"):
@@ -3285,6 +3343,7 @@ def _process_chat_request(
             "model_draft": model_draft,
             "final_answer": final_answer,
             "runtime_error": runtime_error,
+            "turn_changes": turn_changes,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }
         activity = _activity_with_end_to_end_duration(activity, combined_phase_timings)
@@ -3661,6 +3720,7 @@ def _process_chat_request(
             attachment_context_key=resolved_attachment_context_key,
             permission_profile=permission_profile,
             turn_status=turn_status,
+            turn_changes=turn_changes,
             plan=plan,
             pending_user_input=pending_user_input,
             pending_approval=pending_approval,
@@ -3755,9 +3815,16 @@ def _process_chat_request(
             ),
         )
         _emit_thread_status_changed(progress_cb, thread_id=session_id, status="idle")
+        terminal_run_status = (
+            "interrupted"
+            if str(turn_status or "").strip().lower() in {"cancelled", "interrupted"}
+            else ("failed" if str(turn_status or "").strip().lower() == "failed" else "completed")
+        )
         return response
     finally:
-        _unregister_active_chat_run(run_id)
+        _finish_active_chat_run(run_id, status=terminal_run_status)
+        if turn_ticket is not None:
+            turn_ticket.release()
 
 
 def _sse_pack(event: str, payload: dict[str, Any]) -> str:
@@ -3775,14 +3842,41 @@ def cancel_chat_run(run_id: str) -> dict[str, Any]:
             "cancelled": False,
             "status": "not_found",
         }
+    status = str(record.get("status") or "cancel_requested")
     return {
         "ok": True,
         "run_id": str(record.get("run_id") or run_id or ""),
-        "cancelled": True,
-        "status": "cancelling",
+        "cancelled": status in {"cancel_requested", "interrupted"},
+        "status": status,
         "session_id": str(record.get("session_id") or ""),
         "project_id": str(record.get("project_id") or ""),
     }
+
+
+@app.get("/api/chat/runs/{run_id}")
+def get_chat_run_status(run_id: str) -> dict[str, Any]:
+    with _active_chat_runs_lock:
+        record = _active_chat_runs.get(str(run_id or "").strip())
+        if not isinstance(record, dict):
+            return {
+                "ok": False,
+                "run_id": str(run_id or ""),
+                "status": "not_found",
+                "terminal": True,
+                "thread_status": "idle",
+            }
+        status = str(record.get("status") or "running")
+        return {
+            "ok": True,
+            "run_id": str(record.get("run_id") or run_id or ""),
+            "session_id": str(record.get("session_id") or ""),
+            "project_id": str(record.get("project_id") or ""),
+            "status": status,
+            "terminal": status in {"completed", "interrupted", "failed"},
+            "thread_status": "idle" if status in {"completed", "interrupted", "failed"} else "active",
+            "cancel_requested_at": float(record.get("cancel_requested_at") or 0.0),
+            "finished_at": float(record.get("finished_at") or 0.0),
+        }
 
 
 @app.post("/api/chat/runs/{run_id}/steer")

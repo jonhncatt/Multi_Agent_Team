@@ -1233,6 +1233,52 @@ button {
   color: var(--ink-faint);
 }
 
+.turn-changes-summary {
+  margin: 10px 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(188, 198, 212, 0.72);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.turn-changes-summary.is-retained {
+  border-color: rgba(217, 119, 6, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--ink);
+}
+
+.turn-changes-line {
+  font-weight: 650;
+}
+
+.turn-changes-note {
+  margin-top: 4px;
+  color: var(--ink-soft);
+}
+
+.turn-changes-files {
+  margin-top: 6px;
+}
+
+.turn-changes-files summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.turn-changes-files ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.turn-changes-files li {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .activity-badge {
   display: inline-flex;
   align-items: center;

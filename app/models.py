@@ -122,6 +122,14 @@ class TraceEventPayload(BaseModel):
     visible: bool = True
 
 
+class TurnChanges(BaseModel):
+    files: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    retained: bool = False
+    possible_untracked_changes: bool = False
+    verification: dict[str, Any] = Field(default_factory=dict)
+
+
 class MessageActivity(BaseModel):
     run_id: str = ""
     trace_ref: str = ""
@@ -147,6 +155,7 @@ class MessageActivity(BaseModel):
     runtime_outcome: dict[str, Any] = Field(default_factory=dict)
     runtime_inspector: dict[str, Any] = Field(default_factory=dict)
     task_completion: dict[str, Any] = Field(default_factory=dict)
+    turn_changes: TurnChanges = Field(default_factory=TurnChanges)
     tool_boundary_clean: bool | None = None
     plan: list[dict[str, Any]] = Field(default_factory=list)
     plan_explanation: str = ""
@@ -365,6 +374,7 @@ class ChatResponse(BaseModel):
     permission_profile: str = "auto"
     turn_status: str = "completed"
     task_completion: dict[str, Any] = Field(default_factory=dict)
+    turn_changes: TurnChanges = Field(default_factory=TurnChanges)
     plan: list[dict[str, Any]] = Field(default_factory=list)
     pending_user_input: dict[str, Any] = Field(default_factory=dict)
     pending_approval: dict[str, Any] = Field(default_factory=dict)

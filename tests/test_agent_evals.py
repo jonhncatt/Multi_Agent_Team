@@ -27,7 +27,6 @@ from app.agent_evals import (
     snapshot_workspace,
 )
 from app.config import load_config
-from app.tool_trace_summary import safe_preview
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -258,7 +257,7 @@ def test_workspace_write_check_does_not_treat_redacted_preview_as_real_path(tmp_
     workspace = tmp_path / "c_style_cpp_protocol_frame_parser" / "attempt-1"
     target = workspace / "src" / "frame_parser.cpp"
     target.parent.mkdir(parents=True)
-    masked_target = safe_preview(str(target), limit=4000)
+    masked_target = str(target).replace("c_style_cpp_protocol_frame_parser", "***")
 
     assert "***" in str(masked_target)
     assert _outside_workspace_write_detected(
