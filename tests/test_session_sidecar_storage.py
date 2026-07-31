@@ -52,6 +52,20 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
             "summary": "read and answered",
             "activity_summary": "read and answered",
             "run_duration_ms": 12,
+            "turn_changes": {
+                "files": [
+                    {"path": "app/main.py", "kind": "modified"},
+                    {"path": "tests/test_main.py", "kind": "modified"},
+                ],
+                "count": 2,
+                "retained": False,
+                "possible_untracked_changes": False,
+                "verification": {
+                    "status": "passed",
+                    "tool": "exec_command",
+                    "summary": "2 passed",
+                },
+            },
             "triggering_user_message": "inspect",
             "tool_boundary_clean": True,
             "plan": [{"step": "inspect", "status": "completed"}],
@@ -148,6 +162,21 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
         "status",
         "tool_count",
         "duration_ms",
+        "turn_changes",
+    }
+    assert raw_trace["turn_changes"] == {
+        "files": [
+            {"path": "app/main.py", "kind": "modified"},
+            {"path": "tests/test_main.py", "kind": "modified"},
+        ],
+        "count": 2,
+        "retained": False,
+        "possible_untracked_changes": False,
+        "verification": {
+            "status": "passed",
+            "tool": "exec_command",
+            "summary": "2 passed",
+        },
     }
     for heavy_key in (
         "trace_events",
@@ -197,6 +226,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     projected_turn = _projected_assistant_turn(store, str(session["id"]))
     summary_turn = store.expand_turn_for_view(session["id"], projected_turn, view="summary")
     assert summary_turn["answer_bundle"] == {}
+    assert summary_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert "trace_events" not in summary_turn["activity"]
     assert "model_draft" not in summary_turn["activity"]
     assert "runtime_error" not in summary_turn["activity"]

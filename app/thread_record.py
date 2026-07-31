@@ -4,6 +4,7 @@ from typing import Any
 
 from app.thread_transcript import (
     THREAD_TRANSCRIPT_SCHEMA_VERSION,
+    normalize_turn_changes_summary,
     normalize_thread_transcript,
 )
 
@@ -161,6 +162,9 @@ def _run_summary_from_activity(activity: Any) -> dict[str, Any]:
             summary[target_key] = max(0, int(payload.get(source_key) or 0))
         except Exception:
             continue
+    turn_changes = normalize_turn_changes_summary(payload.get("turn_changes"))
+    if turn_changes:
+        summary["turn_changes"] = turn_changes
     return summary
 
 
@@ -202,6 +206,7 @@ def project_turns_from_thread(session: dict[str, Any]) -> list[dict[str, Any]]:
         if role not in {"user", "assistant"}:
             continue
         run = _dict(item.get("trace") or item.get("run")) if role == "assistant" else {}
+        turn_changes = normalize_turn_changes_summary(run.get("turn_changes"))
         activity = {
             **({"run_id": _text(run.get("run_id"))} if _text(run.get("run_id")) else {}),
             **({"trace_ref": _text(run.get("trace_ref"))} if _text(run.get("trace_ref")) else {}),
@@ -214,6 +219,7 @@ def project_turns_from_thread(session: dict[str, Any]) -> list[dict[str, Any]]:
             ),
             **({"tool_count": max(0, int(run.get("tool_count") or 0))} if run else {}),
             **({"run_duration_ms": max(0, int(run.get("duration_ms") or 0))} if run else {}),
+            **({"turn_changes": turn_changes} if turn_changes else {}),
         }
         turns.append(
             {

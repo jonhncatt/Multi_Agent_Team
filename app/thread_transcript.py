@@ -8,6 +8,9 @@ import uuid
 
 THREAD_TRANSCRIPT_SCHEMA_VERSION = 2
 _ROLES = {"user", "assistant", "tool"}
+_TURN_CHANGE_FILE_LIMIT = 64
+_TURN_CHANGE_PATH_LIMIT = 1000
+_TURN_CHANGE_SUMMARY_LIMIT = 300
 
 
 def _now_iso() -> str:
@@ -56,6 +59,61 @@ def _normalize_tool_calls(raw: Any) -> list[dict[str, Any]]:
     return calls
 
 
+def normalize_turn_changes_summary(raw: Any) -> dict[str, Any]:
+    payload = dict(raw or {}) if isinstance(raw, dict) else {}
+    files: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for entry in list(payload.get("files") or []):
+        value = (
+            {"path": entry}
+            if isinstance(entry, str)
+            else (dict(entry) if isinstance(entry, dict) else {})
+        )
+        path = str(value.get("path") or "").strip()[:_TURN_CHANGE_PATH_LIMIT]
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        files.append(
+            {
+                "path": path,
+                "kind": str(value.get("kind") or "modified").strip()[:40] or "modified",
+            }
+        )
+        if len(files) >= _TURN_CHANGE_FILE_LIMIT:
+            break
+    try:
+        count = max(len(files), int(payload.get("count") or 0))
+    except Exception:
+        count = len(files)
+    verification_payload = (
+        dict(payload.get("verification") or {})
+        if isinstance(payload.get("verification"), dict)
+        else {}
+    )
+    verification = {
+        key: value
+        for key, value in {
+            "status": str(verification_payload.get("status") or "").strip()[:40],
+            "tool": str(verification_payload.get("tool") or "").strip()[:80],
+            "summary": str(verification_payload.get("summary") or "").strip()[
+                :_TURN_CHANGE_SUMMARY_LIMIT
+            ],
+        }.items()
+        if value
+    }
+    retained = bool(payload.get("retained"))
+    possible_untracked_changes = bool(payload.get("possible_untracked_changes"))
+    if not count and not retained and not possible_untracked_changes and not verification:
+        return {}
+    return {
+        "files": files,
+        "count": count,
+        "retained": retained,
+        "possible_untracked_changes": possible_untracked_changes,
+        "verification": verification,
+    }
+
+
 def _normalize_trace_summary(raw: Any) -> dict[str, Any]:
     payload = dict(raw or {}) if isinstance(raw, dict) else {}
     if not payload:
@@ -72,6 +130,9 @@ def _normalize_trace_summary(raw: Any) -> dict[str, Any]:
             summary[key] = max(0, int(payload.get(key) or 0))
         except Exception:
             continue
+    turn_changes = normalize_turn_changes_summary(payload.get("turn_changes"))
+    if turn_changes:
+        summary["turn_changes"] = turn_changes
     return summary
 
 

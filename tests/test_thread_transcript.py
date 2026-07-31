@@ -69,6 +69,53 @@ def test_transcript_preserves_assistant_tool_call_and_tool_result() -> None:
     assert items[2]["tool_call_id"] == "call-1"
 
 
+def test_transcript_preserves_bounded_turn_change_summary() -> None:
+    transcript = {
+        "schema_version": 2,
+        "items": [
+            {
+                "id": "a1",
+                "role": "assistant",
+                "content": "done",
+                "trace": {
+                    "trace_ref": "turn_traces/thread-1/turn-1",
+                    "status": "completed",
+                    "turn_changes": {
+                        "files": [
+                            {"path": "app/main.py", "kind": "modified"},
+                            {"path": "app/main.py", "kind": "modified"},
+                            {"path": "tests/test_main.py", "kind": "modified"},
+                        ],
+                        "count": 2,
+                        "verification": {
+                            "status": "passed",
+                            "tool": "exec_command",
+                            "summary": "2 passed",
+                        },
+                    },
+                },
+            }
+        ],
+    }
+
+    [assistant] = normalize_thread_transcript(transcript)["items"]
+
+    assert assistant["trace"]["turn_changes"] == {
+        "files": [
+            {"path": "app/main.py", "kind": "modified"},
+            {"path": "tests/test_main.py", "kind": "modified"},
+        ],
+        "count": 2,
+        "retained": False,
+        "possible_untracked_changes": False,
+        "verification": {
+            "status": "passed",
+            "tool": "exec_command",
+            "summary": "2 passed",
+        },
+    }
+
+
 def test_user_turn_preserves_hidden_task_context_without_changing_visible_text(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(

@@ -21,6 +21,7 @@ from app.thread_transcript import (
     append_transcript_items,
     default_thread_transcript,
     migrate_session_to_thread_transcript,
+    normalize_turn_changes_summary,
     normalize_thread_transcript,
 )
 from app.thread_record import (
@@ -449,6 +450,9 @@ class SessionStore:
                 summary["run_duration_ms"] = max(0, int(source.get("run_duration_ms") or 0))
             except Exception:
                 pass
+        turn_changes = normalize_turn_changes_summary(source.get("turn_changes"))
+        if turn_changes:
+            summary["turn_changes"] = turn_changes
         return summary
 
     def _run_id_for_turn(self, turn: dict[str, Any]) -> str:
@@ -608,7 +612,7 @@ class SessionStore:
             linked_summary = linked_summaries.get(item_id)
             if not linked_summary:
                 continue
-            item["trace"] = {
+            item_trace = {
                 "trace_ref": trace_ref,
                 "status": str(linked_summary.get("status") or "completed"),
                 "summary": str(linked_summary.get("summary") or ""),
@@ -616,6 +620,10 @@ class SessionStore:
                 "duration_ms": max(0, int(linked_summary.get("run_duration_ms") or 0)),
                 "tool_count": max(0, int(linked_summary.get("tool_count") or 0)),
             }
+            turn_changes = normalize_turn_changes_summary(linked_summary.get("turn_changes"))
+            if turn_changes:
+                item_trace["turn_changes"] = turn_changes
+            item["trace"] = item_trace
         session["thread_transcript"] = normalize_thread_transcript(transcript)
         return turn_trace
 

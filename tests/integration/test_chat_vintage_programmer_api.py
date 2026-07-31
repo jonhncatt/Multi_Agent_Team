@@ -2072,6 +2072,16 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
             "summary": "read and answered",
             "activity_summary": "read and answered",
             "run_duration_ms": 12,
+            "turn_changes": {
+                "files": [
+                    {"path": "app/main.py", "kind": "modified"},
+                    {"path": "tests/test_main.py", "kind": "modified"},
+                ],
+                "count": 2,
+                "retained": False,
+                "possible_untracked_changes": False,
+                "verification": {"status": "passed", "tool": "exec_command", "summary": "2 passed"},
+            },
             "triggering_user_message": "inspect",
             "trace_events": [{"id": "trace-1", "type": "tool.started", "payload": {"call_id": "call-1"}}],
             "llm_exchanges": [{"round": 1, "status": "completed"}],
@@ -2113,7 +2123,13 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
         "activity_summary",
         "tool_count",
         "run_duration_ms",
+        "turn_changes",
     }
+    assert summary_turn["activity"]["turn_changes"]["count"] == 2
+    assert [item["path"] for item in summary_turn["activity"]["turn_changes"]["files"]] == [
+        "app/main.py",
+        "tests/test_main.py",
+    ]
     assert "triggering_user_message" not in summary_turn["activity"]
     assert "llm_exchanges" not in summary_turn["activity"]
     assert "answer_bundle" not in summary_turn
