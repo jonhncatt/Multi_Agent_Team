@@ -4126,8 +4126,7 @@ class LocalToolExecutor:
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["", "active", "blocked", "completed", "archived"],
-                            "description": "Optional exact lifecycle status filter.",
+                            "description": "Optional exact lifecycle status filter. Omit it for all non-archived statuses; accepted values are active, blocked, completed, and archived.",
                             "default": "",
                         },
                         "project_scope": {

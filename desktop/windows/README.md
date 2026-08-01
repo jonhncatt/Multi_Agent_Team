@@ -48,7 +48,12 @@ tools. Do not point both settings at the same directory.
 VP_DESKTOP_BROWSER_PATH=
 VP_DESKTOP_BROWSER_USER_DATA_DIR=app/data/desktop_browser_profile
 VP_DESKTOP_STARTUP_TIMEOUT_SEC=45
+VP_DESKTOP_INITIAL_WINDOW_SIZE=1360,840
 ```
+
+The first window for each desktop profile opens maximized, with the configured size
+as a fallback on platforms that ignore the maximize switch. Chrome remembers later
+user resizing, so subsequent launches don't force the initial size again.
 
 `VP_BROWSER_USER_DATA_DIR` remains reserved for the Agent's Playwright/Redmine
 browser session.

@@ -61,6 +61,21 @@ def _missing_property_descriptions(schema: dict[str, Any], prefix: str = "") -> 
     return missing
 
 
+def _empty_enum_values(value: Any, prefix: str = "") -> list[str]:
+    invalid: list[str] = []
+    if isinstance(value, dict):
+        enum_values = value.get("enum")
+        if isinstance(enum_values, list) and any(item == "" for item in enum_values):
+            invalid.append(prefix or "<root>")
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            invalid.extend(_empty_enum_values(child, child_prefix))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            invalid.extend(_empty_enum_values(child, f"{prefix}[{index}]"))
+    return invalid
+
+
 def test_every_runtime_tool_has_one_model_visible_contract(tmp_path: Path) -> None:
     backend, model_specs, runtime_specs = _tool_surfaces(tmp_path)
 
@@ -72,6 +87,8 @@ def test_every_runtime_tool_has_one_model_visible_contract(tmp_path: Path) -> No
         model_fields = set(dict(model_spec["parameters"].get("properties") or {}))
         runtime_fields = set(dict(runtime_specs[name]["parameters"].get("properties") or {}))
         assert model_fields <= runtime_fields, name
+        assert _empty_enum_values(model_spec) == [], name
+        assert _empty_enum_values(runtime_specs[name]) == [], name
 
     for tool in backend.build_langchain_tools():
         callable_fields = set(inspect.signature(tool.func).parameters)
@@ -135,6 +152,7 @@ def test_structured_choices_are_visible_to_the_model(tmp_path: Path) -> None:
         "summary",
         "full",
     ]
+    assert "enum" not in specs["list_tasks"]["parameters"]["properties"]["status"]
 
 
 def test_tool_contracts_expose_non_obvious_side_effects_and_limits(tmp_path: Path) -> None:

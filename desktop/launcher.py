@@ -19,6 +19,7 @@ APP_TITLE = "Vintage Programmer"
 DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
+DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 
 
 class LauncherError(RuntimeError):
@@ -34,6 +35,8 @@ class DesktopLaunchConfig:
     app_module: str
     port: int
     startup_timeout_sec: float
+    initial_window_width: int = DEFAULT_INITIAL_WINDOW_SIZE[0]
+    initial_window_height: int = DEFAULT_INITIAL_WINDOW_SIZE[1]
 
     @property
     def app_url(self) -> str:
@@ -46,6 +49,10 @@ class DesktopLaunchConfig:
     @property
     def log_path(self) -> Path:
         return self.project_root / "app" / "data" / "runtime" / "desktop-launcher.log"
+
+    @property
+    def window_initialized_marker(self) -> Path:
+        return self.browser_profile_dir / ".vp-window-initialized"
 
     def diagnostics(self) -> dict[str, object]:
         payload = asdict(self)
@@ -155,6 +162,26 @@ def _resolve_relative_path(raw: str, project_root: Path) -> Path:
     if not candidate.is_absolute():
         candidate = project_root / candidate
     return candidate.resolve()
+
+
+def parse_window_size(raw: str) -> tuple[int, int]:
+    normalized = str(raw or "").strip().lower().replace("x", ",")
+    parts = [item.strip() for item in normalized.split(",")]
+    if len(parts) != 2:
+        raise LauncherError(
+            f"VP_DESKTOP_INITIAL_WINDOW_SIZE must look like 1360,840, got: {raw}"
+        )
+    try:
+        width, height = (int(item) for item in parts)
+    except ValueError as exc:
+        raise LauncherError(
+            f"VP_DESKTOP_INITIAL_WINDOW_SIZE must contain two integers, got: {raw}"
+        ) from exc
+    if width < 900 or height < 600 or width > 7680 or height > 4320:
+        raise LauncherError(
+            "VP_DESKTOP_INITIAL_WINDOW_SIZE must be between 900x600 and 7680x4320."
+        )
+    return width, height
 
 
 def resolve_python_command(
@@ -290,6 +317,14 @@ def build_launch_config(
     configured_browser = browser_path or _setting(
         "VP_DESKTOP_BROWSER_PATH", env=current_env, dotenv=dotenv
     )
+    initial_window_width, initial_window_height = parse_window_size(
+        _setting(
+            "VP_DESKTOP_INITIAL_WINDOW_SIZE",
+            env=current_env,
+            dotenv=dotenv,
+            default=f"{DEFAULT_INITIAL_WINDOW_SIZE[0]},{DEFAULT_INITIAL_WINDOW_SIZE[1]}",
+        )
+    )
     return DesktopLaunchConfig(
         project_root=root,
         python_command=resolve_python_command(root),
@@ -300,6 +335,8 @@ def build_launch_config(
         ),
         port=port,
         startup_timeout_sec=startup_timeout_sec,
+        initial_window_width=initial_window_width,
+        initial_window_height=initial_window_height,
     )
 
 
@@ -316,8 +353,10 @@ def build_server_command(config: DesktopLaunchConfig) -> list[str]:
     ]
 
 
-def build_browser_command(config: DesktopLaunchConfig) -> list[str]:
-    return [
+def build_browser_command(
+    config: DesktopLaunchConfig, *, initialize_window: bool = False
+) -> list[str]:
+    command = [
         str(config.browser_path),
         f"--app={config.app_url}",
         f"--user-data-dir={config.browser_profile_dir}",
@@ -325,6 +364,14 @@ def build_browser_command(config: DesktopLaunchConfig) -> list[str]:
         "--no-default-browser-check",
         "--disable-background-mode",
     ]
+    if initialize_window:
+        command.extend(
+            [
+                "--start-maximized",
+                f"--window-size={config.initial_window_width},{config.initial_window_height}",
+            ]
+        )
+    return command
 
 
 def health_check(url: str, *, timeout_sec: float = 1.0) -> bool:
@@ -381,14 +428,18 @@ def start_server(config: DesktopLaunchConfig) -> tuple[subprocess.Popen[bytes], 
 
 def start_browser(config: DesktopLaunchConfig) -> subprocess.Popen[bytes]:
     config.browser_profile_dir.mkdir(parents=True, exist_ok=True)
-    return subprocess.Popen(
-        build_browser_command(config),
+    initialize_window = not config.window_initialized_marker.is_file()
+    process = subprocess.Popen(
+        build_browser_command(config, initialize_window=initialize_window),
         cwd=str(config.project_root),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
     )
+    if initialize_window:
+        config.window_initialized_marker.write_text("1\n", encoding="utf-8")
+    return process
 
 
 def stop_owned_server(process: subprocess.Popen[bytes]) -> None:

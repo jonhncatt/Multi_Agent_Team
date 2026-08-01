@@ -324,9 +324,9 @@ class ListTasksArgs(BaseModel):
         default="",
         description="Optional topic text matched against Task titles, goals, summaries, lists, and project names.",
     )
-    status: Literal["", "active", "blocked", "completed", "archived"] = Field(
+    status: str = Field(
         default="",
-        description="Optional exact lifecycle status filter.",
+        description="Optional exact lifecycle status filter: active, blocked, completed, or archived. Leave empty to avoid filtering.",
     )
     project_scope: Literal["current_project", "all_projects"] = Field(
         default="current_project",

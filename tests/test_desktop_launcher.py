@@ -11,6 +11,7 @@ from desktop.launcher import (
     build_launch_config,
     build_server_command,
     read_dotenv,
+    parse_window_size,
     resolve_browser_path,
     resolve_project_root,
     resolve_python_command,
@@ -50,6 +51,13 @@ def test_read_dotenv_matches_repository_style_values(tmp_path: Path) -> None:
         "VP_APP_PORT": "8123",
         "VP_APP_MODULE": "sample.main:app",
     }
+
+
+def test_parse_window_size_accepts_comma_or_x_and_rejects_tiny_windows() -> None:
+    assert parse_window_size("1360,840") == (1360, 840)
+    assert parse_window_size("1440x900") == (1440, 900)
+    with pytest.raises(LauncherError, match="between 900x600"):
+        parse_window_size("800,500")
 
 
 def test_python_resolution_prefers_repository_virtualenv(tmp_path: Path) -> None:
@@ -150,6 +158,11 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
     assert "--app=http://127.0.0.1:8181" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'desktop_browser_profile'}" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'browser_profile'}" not in browser_command
+    assert "--start-maximized" not in browser_command
+
+    initial_command = build_browser_command(config, initialize_window=True)
+    assert "--start-maximized" in initial_command
+    assert "--window-size=1360,840" in initial_command
 
 
 def test_successful_launch_does_not_terminate_owned_backend(
