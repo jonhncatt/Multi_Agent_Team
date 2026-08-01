@@ -56,8 +56,24 @@ jobs:
         shell: pwsh
         run: |
           $env:VP_DESKTOP_BROWSER_PATH = "$env:WINDIR\System32\notepad.exe"
-          dist\VintageProgrammer.exe --dry-run --probe-native-shell --project-root . --diagnostics-file launcher-diagnostics.json
-          $diagnostics = Get-Content launcher-diagnostics.json | ConvertFrom-Json
+          $diagnosticsPath = Join-Path $PWD "launcher-diagnostics.json"
+          $launcher = Start-Process `
+            -FilePath "dist\VintageProgrammer.exe" `
+            -ArgumentList @(
+              "--dry-run",
+              "--probe-native-shell",
+              "--project-root", $PWD.Path,
+              "--diagnostics-file", $diagnosticsPath
+            ) `
+            -Wait `
+            -PassThru
+          if ($launcher.ExitCode -ne 0) {
+            throw "Launcher diagnostics exited with code $($launcher.ExitCode)"
+          }
+          if (-not (Test-Path $diagnosticsPath)) {
+            throw "Launcher diagnostics file was not created: $diagnosticsPath"
+          }
+          $diagnostics = Get-Content $diagnosticsPath | ConvertFrom-Json
           if ($diagnostics.app_url -ne "http://127.0.0.1:8080") {
             throw "Unexpected launcher URL: $($diagnostics.app_url)"
           }

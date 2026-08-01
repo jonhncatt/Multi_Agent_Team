@@ -160,4 +160,7 @@ def test_windows_build_embeds_multisize_vp_icon_and_webview_host() -> None:
     assert "#f37021" in svg
     assert "--icon desktop\\windows\\assets\\vintage_programmer.ico" in build_script
     assert "--icon desktop/windows/assets/vintage_programmer.ico" in workflow
+    assert "Start-Process" in workflow
+    assert "-Wait" in workflow
+    assert "if ($launcher.ExitCode -ne 0)" in workflow
     assert "pywebview==6.2.1" in requirements
