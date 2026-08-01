@@ -62,6 +62,28 @@ Copy-Item .env.example .env
 
 - <http://127.0.0.1:8080>
 
+## 独立桌面窗口
+
+仓库提供一个轻量 Windows launcher，用现有 FastAPI 服务打开 Chrome App Mode
+独立窗口，不显示地址栏和标签栏。它不修改 Agent Runtime、工具执行、审批或上下文逻辑。
+
+从 GitHub Actions 的 **Windows Desktop Launcher** workflow 下载
+`vintage-programmer-windows-launcher`，把其中的 `VintageProgrammer.exe` 放在仓库根目录，
+完成上面的 `.venv` 与 `.env` 配置后即可双击启动。Chrome 优先，未找到时回退到 Edge。
+窗口打开后 launcher 自身立即退出，关闭窗口不会停止后端或中断正在运行的 Agent；再次双击会复用
+同一个本地服务。
+
+桌面窗口使用独立的 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
+`VP_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。
+
+在 Mac 上可以用相同核心预览无地址栏的 App Mode 窗口：
+
+```bash
+./.venv/bin/python -m desktop.launcher
+```
+
+Windows 本地构建和其他配置见 [desktop/windows/README.md](desktop/windows/README.md)。
+
 ## 最小 `.env`
 
 OpenAI 官方：
