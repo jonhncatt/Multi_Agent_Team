@@ -14,6 +14,8 @@ from typing import Callable, Iterator, Mapping, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from desktop.webview_host import WebViewHostError, open_webview2_window, probe_webview2_host
+
 
 APP_TITLE = "Vintage Programmer"
 DEFAULT_APP_MODULE = "app.main:app"
@@ -21,6 +23,7 @@ DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
+DEFAULT_DESKTOP_SHELL = "auto"
 
 
 class LauncherError(RuntimeError):
@@ -31,11 +34,13 @@ class LauncherError(RuntimeError):
 class DesktopLaunchConfig:
     project_root: Path
     python_command: tuple[str, ...]
-    browser_path: Path
+    browser_path: Path | None
     browser_profile_dir: Path
+    webview_profile_dir: Path
     app_module: str
     port: int
     startup_timeout_sec: float
+    shell_mode: str = DEFAULT_DESKTOP_SHELL
     initial_window_width: int = DEFAULT_INITIAL_WINDOW_SIZE[0]
     initial_window_height: int = DEFAULT_INITIAL_WINDOW_SIZE[1]
     ui_scale: float = DEFAULT_DESKTOP_UI_SCALE
@@ -64,8 +69,9 @@ class DesktopLaunchConfig:
         payload = asdict(self)
         payload["project_root"] = str(self.project_root)
         payload["python_command"] = list(self.python_command)
-        payload["browser_path"] = str(self.browser_path)
+        payload["browser_path"] = str(self.browser_path) if self.browser_path else ""
         payload["browser_profile_dir"] = str(self.browser_profile_dir)
+        payload["webview_profile_dir"] = str(self.webview_profile_dir)
         payload["app_url"] = self.app_url
         payload["desktop_url"] = self.desktop_url
         payload["health_url"] = self.health_url
@@ -201,6 +207,13 @@ def parse_ui_scale(raw: str) -> float:
     return scale
 
 
+def parse_shell_mode(raw: str) -> str:
+    mode = str(raw or DEFAULT_DESKTOP_SHELL).strip().lower()
+    if mode not in {"auto", "webview2", "chrome"}:
+        raise LauncherError("VP_DESKTOP_SHELL must be auto, webview2, or chrome.")
+    return mode
+
+
 def resolve_python_command(
     project_root: Path,
     *,
@@ -322,14 +335,37 @@ def build_launch_config(
         default="app/data/desktop_browser_profile",
     )
     desktop_profile = _resolve_relative_path(desktop_profile_raw, root)
+    webview_profile = _resolve_relative_path(
+        _setting(
+            "VP_DESKTOP_WEBVIEW2_USER_DATA_DIR",
+            env=current_env,
+            dotenv=dotenv,
+            default="app/data/desktop_webview2_profile",
+        ),
+        root,
+    )
+    if desktop_profile == webview_profile:
+        raise LauncherError(
+            "VP_DESKTOP_BROWSER_USER_DATA_DIR and VP_DESKTOP_WEBVIEW2_USER_DATA_DIR "
+            "must use different directories."
+        )
     agent_profile_raw = _setting("VP_BROWSER_USER_DATA_DIR", env=current_env, dotenv=dotenv)
     if agent_profile_raw:
         agent_profile = _resolve_relative_path(agent_profile_raw, root)
-        if agent_profile == desktop_profile:
+        if agent_profile in {desktop_profile, webview_profile}:
             raise LauncherError(
-                "VP_DESKTOP_BROWSER_USER_DATA_DIR must differ from VP_BROWSER_USER_DATA_DIR; "
-                "the desktop window and Agent browser cannot share a live Chrome profile."
+                "Desktop shell profiles must differ from VP_BROWSER_USER_DATA_DIR; "
+                "the desktop window and Agent browser cannot share a live browser profile."
             )
+
+    shell_mode = parse_shell_mode(
+        _setting(
+            "VP_DESKTOP_SHELL",
+            env=current_env,
+            dotenv=dotenv,
+            default=DEFAULT_DESKTOP_SHELL,
+        )
+    )
 
     configured_browser = browser_path or _setting(
         "VP_DESKTOP_BROWSER_PATH", env=current_env, dotenv=dotenv
@@ -350,16 +386,30 @@ def build_launch_config(
             default=str(DEFAULT_DESKTOP_UI_SCALE),
         )
     )
+    resolved_browser: Path | None
+    try:
+        resolved_browser = resolve_browser_path(
+            configured_path=configured_browser,
+            env=current_env,
+        )
+    except LauncherError:
+        browser_is_required = shell_mode == "chrome" or sys.platform != "win32"
+        if configured_browser or browser_is_required:
+            raise
+        resolved_browser = None
+
     return DesktopLaunchConfig(
         project_root=root,
         python_command=resolve_python_command(root),
-        browser_path=resolve_browser_path(configured_path=configured_browser, env=current_env),
+        browser_path=resolved_browser,
         browser_profile_dir=desktop_profile,
+        webview_profile_dir=webview_profile,
         app_module=_setting(
             "VP_APP_MODULE", env=current_env, dotenv=dotenv, default=DEFAULT_APP_MODULE
         ),
         port=port,
         startup_timeout_sec=startup_timeout_sec,
+        shell_mode=shell_mode,
         initial_window_width=initial_window_width,
         initial_window_height=initial_window_height,
         ui_scale=ui_scale,
@@ -382,6 +432,10 @@ def build_server_command(config: DesktopLaunchConfig) -> list[str]:
 def build_browser_command(
     config: DesktopLaunchConfig, *, initialize_window: bool = False
 ) -> list[str]:
+    if config.browser_path is None:
+        raise LauncherError(
+            "Chrome fallback is unavailable. Install Chrome or set VP_DESKTOP_BROWSER_PATH."
+        )
     command = [
         str(config.browser_path),
         f"--app={config.desktop_url}",
@@ -480,6 +534,33 @@ def start_browser(config: DesktopLaunchConfig) -> subprocess.Popen[bytes]:
     return process
 
 
+def should_try_webview2(
+    config: DesktopLaunchConfig,
+    *,
+    platform_name: str | None = None,
+) -> bool:
+    return (platform_name or sys.platform) == "win32" and config.shell_mode in {
+        "auto",
+        "webview2",
+    }
+
+
+def start_webview2(config: DesktopLaunchConfig) -> None:
+    open_webview2_window(
+        url=config.desktop_url,
+        project_root=config.project_root,
+        profile_dir=config.webview_profile_dir,
+        width=config.initial_window_width,
+        height=config.initial_window_height,
+    )
+
+
+def _append_launcher_note(config: DesktopLaunchConfig, message: str) -> None:
+    config.log_path.parent.mkdir(parents=True, exist_ok=True)
+    with config.log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[desktop-shell] {message.strip()}\n")
+
+
 def stop_owned_server(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
@@ -549,6 +630,27 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                     raise LauncherError(
                         f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
                     )
+        # WebView2 owns the foreground GUI loop until the user closes the
+        # native window. Keep that lifetime outside the short startup lock so a
+        # window does not make later health checks look like a stuck launch.
+        if should_try_webview2(config):
+            try:
+                start_webview2(config)
+            except WebViewHostError as exc:
+                if config.shell_mode == "webview2":
+                    raise LauncherError(str(exc)) from exc
+                _append_launcher_note(
+                    config,
+                    f"Native WebView2 unavailable; using Chrome App Mode. {exc}",
+                )
+                if config.browser_path is None:
+                    raise LauncherError(
+                        f"{exc} Chrome fallback is also unavailable; install Chrome or Edge."
+                    ) from exc
+                start_browser(config)
+        else:
+            if config.shell_mode == "webview2":
+                raise LauncherError("VP_DESKTOP_SHELL=webview2 is supported only on Windows.")
             start_browser(config)
     except BaseException:
         # Only undo a server created by this invocation when opening the desktop
@@ -583,10 +685,17 @@ def _write_diagnostics(payload: dict[str, object], output_path: str) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Open Vintage Programmer in a dedicated Chrome App Mode window.")
+    parser = argparse.ArgumentParser(
+        description="Open Vintage Programmer in a native Windows WebView2 window or Chrome fallback."
+    )
     parser.add_argument("--project-root", default="", help="Vintage Programmer repository root")
     parser.add_argument("--browser-path", default="", help="Chrome or Edge executable path")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print configuration without launching")
+    parser.add_argument(
+        "--probe-native-shell",
+        action="store_true",
+        help="Validate the bundled Windows WebView2 host without opening a window",
+    )
     parser.add_argument("--diagnostics-file", default="", help="Write dry-run diagnostics to a JSON file")
     return parser
 
@@ -599,7 +708,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             browser_path=args.browser_path,
         )
         if args.dry_run:
-            _write_diagnostics(config.diagnostics(), args.diagnostics_file)
+            diagnostics = config.diagnostics()
+            if args.probe_native_shell:
+                diagnostics["native_shell_probe"] = probe_webview2_host()
+            _write_diagnostics(diagnostics, args.diagnostics_file)
             return 0
         run_desktop(config)
         return 0

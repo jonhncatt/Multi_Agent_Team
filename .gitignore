@@ -29,6 +29,7 @@ app/data/uploads/*
 app/data/browser_artifacts/*
 app/data/browser_profile/*
 app/data/desktop_browser_profile/*
+app/data/desktop_webview2_profile/*
 app/data/document_cache/*
 !app/data/document_cache/.gitkeep
 app/data/web_cache/*

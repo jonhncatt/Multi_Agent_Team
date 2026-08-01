@@ -25,6 +25,8 @@ if (-not (Test-Path $Python)) {
     --clean `
     --onefile `
     --noconsole `
+    --icon desktop\windows\assets\vintage_programmer.ico `
+    --add-data "desktop\windows\assets\vintage_programmer.ico;desktop\windows\assets" `
     --name VintageProgrammer `
     desktop\launcher.py
 
