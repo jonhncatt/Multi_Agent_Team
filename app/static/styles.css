@@ -534,6 +534,9 @@ button {
 
 .workspace-head {
   display: flex;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   justify-content: space-between;
   gap: 10px;
   align-items: center;
@@ -552,6 +555,7 @@ button {
 }
 
 .head-stack {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -622,6 +626,9 @@ button {
 }
 
 .conversation-plane {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   min-height: 0;
   overflow: auto;
   padding: 10px 18px 8px;
@@ -1909,6 +1916,9 @@ button {
 }
 
 .composer-shell {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   border-top: 1px solid var(--line);
   background: rgba(247, 248, 250, 0.95);
   backdrop-filter: blur(12px);

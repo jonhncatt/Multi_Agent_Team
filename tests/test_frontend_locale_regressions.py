@@ -409,6 +409,22 @@ def test_index_renders_static_boot_loading_fallback() -> None:
         assert token in styles, token
 
 
+def test_workspace_grid_children_can_shrink_inside_app_mode_viewport() -> None:
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    for selector in (".workspace-head", ".conversation-plane", ".composer-shell"):
+        rule_match = re.search(rf"{re.escape(selector)}\s*\{{([^}}]+)\}}", styles)
+        assert rule_match, selector
+        declarations = rule_match.group(1)
+        assert "min-width: 0;" in declarations, selector
+        assert "width: 100%;" in declarations, selector
+        assert "max-width: 100%;" in declarations, selector
+
+    head_stack_match = re.search(r"\.head-stack\s*\{([^}]+)\}", styles)
+    assert head_stack_match
+    assert "flex: 1 1 auto;" in head_stack_match.group(1)
+
+
 def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_status() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
