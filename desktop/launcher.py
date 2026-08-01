@@ -20,6 +20,7 @@ DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
+DEFAULT_DESKTOP_UI_SCALE = 0.8
 
 
 class LauncherError(RuntimeError):
@@ -37,10 +38,15 @@ class DesktopLaunchConfig:
     startup_timeout_sec: float
     initial_window_width: int = DEFAULT_INITIAL_WINDOW_SIZE[0]
     initial_window_height: int = DEFAULT_INITIAL_WINDOW_SIZE[1]
+    ui_scale: float = DEFAULT_DESKTOP_UI_SCALE
 
     @property
     def app_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def desktop_url(self) -> str:
+        return f"{self.app_url}/?vp_desktop=1&vp_scale={self.ui_scale:g}"
 
     @property
     def health_url(self) -> str:
@@ -61,6 +67,7 @@ class DesktopLaunchConfig:
         payload["browser_path"] = str(self.browser_path)
         payload["browser_profile_dir"] = str(self.browser_profile_dir)
         payload["app_url"] = self.app_url
+        payload["desktop_url"] = self.desktop_url
         payload["health_url"] = self.health_url
         payload["log_path"] = str(self.log_path)
         return payload
@@ -182,6 +189,16 @@ def parse_window_size(raw: str) -> tuple[int, int]:
             "VP_DESKTOP_INITIAL_WINDOW_SIZE must be between 900x600 and 7680x4320."
         )
     return width, height
+
+
+def parse_ui_scale(raw: str) -> float:
+    try:
+        scale = float(str(raw or "").strip())
+    except ValueError as exc:
+        raise LauncherError(f"VP_DESKTOP_UI_SCALE must be numeric, got: {raw}") from exc
+    if scale < 0.65 or scale > 1.25:
+        raise LauncherError("VP_DESKTOP_UI_SCALE must be between 0.65 and 1.25.")
+    return scale
 
 
 def resolve_python_command(
@@ -325,6 +342,14 @@ def build_launch_config(
             default=f"{DEFAULT_INITIAL_WINDOW_SIZE[0]},{DEFAULT_INITIAL_WINDOW_SIZE[1]}",
         )
     )
+    ui_scale = parse_ui_scale(
+        _setting(
+            "VP_DESKTOP_UI_SCALE",
+            env=current_env,
+            dotenv=dotenv,
+            default=str(DEFAULT_DESKTOP_UI_SCALE),
+        )
+    )
     return DesktopLaunchConfig(
         project_root=root,
         python_command=resolve_python_command(root),
@@ -337,6 +362,7 @@ def build_launch_config(
         startup_timeout_sec=startup_timeout_sec,
         initial_window_width=initial_window_width,
         initial_window_height=initial_window_height,
+        ui_scale=ui_scale,
     )
 
 
@@ -358,7 +384,7 @@ def build_browser_command(
 ) -> list[str]:
     command = [
         str(config.browser_path),
-        f"--app={config.app_url}",
+        f"--app={config.desktop_url}",
         f"--user-data-dir={config.browser_profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",

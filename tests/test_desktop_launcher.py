@@ -10,8 +10,9 @@ from desktop.launcher import (
     build_browser_command,
     build_launch_config,
     build_server_command,
-    read_dotenv,
     parse_window_size,
+    parse_ui_scale,
+    read_dotenv,
     resolve_browser_path,
     resolve_project_root,
     resolve_python_command,
@@ -59,6 +60,13 @@ def test_parse_window_size_accepts_comma_or_x_and_rejects_tiny_windows() -> None
     assert parse_window_size("1440x900") == (1440, 900)
     with pytest.raises(LauncherError, match="between 900x600"):
         parse_window_size("800,500")
+
+
+def test_parse_ui_scale_accepts_desktop_density_and_rejects_extremes() -> None:
+    assert parse_ui_scale("0.8") == 0.8
+    assert parse_ui_scale("1") == 1.0
+    with pytest.raises(LauncherError, match="between 0.65 and 1.25"):
+        parse_ui_scale("0.5")
 
 
 def test_python_resolution_prefers_repository_virtualenv(tmp_path: Path) -> None:
@@ -128,6 +136,7 @@ def test_launch_config_uses_same_dotenv_port_as_runtime(
 
     assert config.port == 9123
     assert config.app_url == "http://127.0.0.1:9123"
+    assert config.desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8"
     assert config.browser_profile_dir == (
         root / "app" / "data" / "desktop_browser_profile"
     ).resolve()
@@ -156,7 +165,7 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
         "8181",
     ]
     browser_command = build_browser_command(config)
-    assert "--app=http://127.0.0.1:8181" in browser_command
+    assert "--app=http://127.0.0.1:8181/?vp_desktop=1&vp_scale=0.8" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'desktop_browser_profile'}" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'browser_profile'}" not in browser_command
     assert "--start-maximized" not in browser_command

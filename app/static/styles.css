@@ -25,6 +25,10 @@
   box-sizing: border-box;
 }
 
+html[data-vp-desktop-shell="true"] {
+  zoom: var(--vp-desktop-ui-scale, 0.8);
+}
+
 html,
 body {
   margin: 0;
@@ -133,6 +137,11 @@ button {
   grid-template-columns: 248px minmax(0, 1fr);
   background: transparent;
   overflow: hidden;
+}
+
+html[data-vp-desktop-shell="true"] .workspace-shell,
+html[data-vp-desktop-shell="true"] .workspace-main {
+  height: var(--vp-desktop-viewport-height, 125vh);
 }
 
 .thread-rail {

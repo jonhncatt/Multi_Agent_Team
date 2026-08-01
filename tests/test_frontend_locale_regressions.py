@@ -425,6 +425,19 @@ def test_workspace_grid_children_can_shrink_inside_app_mode_viewport() -> None:
     assert "flex: 1 1 auto;" in head_stack_match.group(1)
 
 
+def test_desktop_shell_uses_isolated_configurable_ui_density() -> None:
+    index = INDEX_HTML_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'params.get("vp_desktop") !== "1"' in index
+    assert 'params.get("vp_scale") || "0.8"' in index
+    assert 'document.documentElement.dataset.vpDesktopShell = "true"' in index
+    assert '--vp-desktop-viewport-height' in index
+    assert 'html[data-vp-desktop-shell="true"] {' in styles
+    assert 'zoom: var(--vp-desktop-ui-scale, 0.8);' in styles
+    assert 'html[data-vp-desktop-shell="true"] .workspace-main' in styles
+
+
 def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_status() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
