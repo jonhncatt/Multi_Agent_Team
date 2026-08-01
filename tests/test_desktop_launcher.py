@@ -269,6 +269,7 @@ def test_successful_launch_does_not_terminate_owned_backend(
     monkeypatch.setattr("desktop.launcher.health_check", lambda _url: False)
     monkeypatch.setattr("desktop.launcher.start_server", lambda _config: (server, log))
     monkeypatch.setattr("desktop.launcher.wait_until_healthy", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("desktop.launcher.should_try_webview2", lambda _config: False)
     monkeypatch.setattr(
         "desktop.launcher.start_browser",
         lambda browser_config: browser_started.append(browser_config),
