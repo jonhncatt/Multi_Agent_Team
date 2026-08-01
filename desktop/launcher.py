@@ -411,6 +411,17 @@ def _server_creation_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
+def _browser_creation_kwargs() -> dict[str, object]:
+    if os.name == "nt":
+        flags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        return {"creationflags": flags}
+    # A Chrome App Mode window must outlive the short launcher process and the
+    # terminal that invoked it during macOS/Linux development previews.
+    return {"start_new_session": True}
+
+
 def start_server(config: DesktopLaunchConfig) -> tuple[subprocess.Popen[bytes], object]:
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = config.log_path.open("ab", buffering=0)
@@ -436,6 +447,7 @@ def start_browser(config: DesktopLaunchConfig) -> subprocess.Popen[bytes]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
+        **_browser_creation_kwargs(),
     )
     if initialize_window:
         config.window_initialized_marker.write_text("1\n", encoding="utf-8")

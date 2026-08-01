@@ -16,6 +16,7 @@ from desktop.launcher import (
     resolve_project_root,
     resolve_python_command,
     run_desktop,
+    start_browser,
 )
 
 
@@ -210,3 +211,32 @@ def test_successful_launch_does_not_terminate_owned_backend(
     assert browser_started == [config]
     assert server.terminated is False
     assert log.closed is True
+
+
+def test_browser_process_is_detached_and_initial_size_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome",
+        browser_profile_dir=root / "app" / "data" / "desktop_browser_profile",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    popen_calls: list[tuple[list[str], dict[str, object]]] = []
+    process = object()
+
+    def _popen(command: list[str], **kwargs: object) -> object:
+        popen_calls.append((command, kwargs))
+        return process
+
+    monkeypatch.setattr("desktop.launcher.subprocess.Popen", _popen)
+    monkeypatch.setattr("desktop.launcher.os.name", "posix")
+
+    assert start_browser(config) is process
+    assert "--start-maximized" in popen_calls[0][0]
+    assert popen_calls[0][1]["start_new_session"] is True
+    assert config.window_initialized_marker.read_text(encoding="utf-8") == "1\n"
