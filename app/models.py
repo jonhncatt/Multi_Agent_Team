@@ -723,6 +723,7 @@ class HealthResponse(BaseModel):
     app_version: str = ""
     build_version: str = ""
     uptime_sec: int = 0
+    process_id: int = 0
 
 
 class BootstrapResponse(BaseModel):

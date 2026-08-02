@@ -10,6 +10,8 @@ from desktop.launcher import (
     build_browser_command,
     build_launch_config,
     build_server_command,
+    desktop_instance_guard,
+    handle_desktop_close,
     parse_shell_mode,
     parse_window_size,
     parse_ui_scale,
@@ -398,7 +400,7 @@ def test_webview2_failure_falls_back_to_chrome_without_stopping_backend(
     assert "using Chrome App Mode" in config.log_path.read_text(encoding="utf-8")
 
 
-def test_webview2_window_close_does_not_stop_owned_backend(
+def test_webview2_window_close_stops_owned_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -423,6 +425,13 @@ def test_webview2_window_close_does_not_stop_owned_backend(
         def terminate(self) -> None:
             self.terminated = True
 
+        def wait(self, timeout: float) -> int:
+            _ = timeout
+            return 0
+
+        def kill(self) -> None:
+            self.terminated = True
+
     class _Log:
         closed = False
 
@@ -444,5 +453,130 @@ def test_webview2_window_close_does_not_stop_owned_backend(
     run_desktop(config)
 
     assert native_started == [config]
-    assert server.terminated is False
+    assert server.terminated is True
     assert log.closed is True
+
+
+def test_webview2_window_close_stops_a_reused_backend_by_verified_health_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=None,
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    stopped: list[int] = []
+    monkeypatch.setattr("desktop.launcher.health_check", lambda _url: True)
+    monkeypatch.setattr(
+        "desktop.launcher.read_health_payload",
+        lambda _url: {"ok": True, "app_version": "3.1.5Y", "process_id": 8123},
+    )
+    monkeypatch.setattr("desktop.launcher.should_try_webview2", lambda _config: True)
+    monkeypatch.setattr("desktop.launcher.start_webview2", lambda _config: None)
+    monkeypatch.setattr(
+        "desktop.launcher.start_server",
+        lambda _config: (_ for _ in ()).throw(AssertionError("must reuse backend")),
+    )
+    monkeypatch.setattr(
+        "desktop.launcher.terminate_managed_server_pid",
+        lambda pid: stopped.append(pid) or True,
+    )
+
+    run_desktop(config)
+
+    assert stopped == [8123]
+
+
+def test_desktop_close_is_immediate_when_runtime_is_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=None,
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    monkeypatch.setattr(
+        "desktop.launcher.read_desktop_lifecycle",
+        lambda _config: {"ok": True, "active": False, "active_runs": [], "active_evals": []},
+    )
+
+    assert handle_desktop_close(
+        config,
+        object(),
+        confirmer=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("no prompt")),
+    ) is True
+
+
+def test_desktop_close_active_run_has_only_cancel_or_stop_and_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=None,
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+        locale="zh-CN",
+    )
+    lifecycle = {
+        "ok": True,
+        "active": True,
+        "active_runs": [{"run_id": "run-1", "status": "running"}],
+        "active_evals": [],
+    }
+    monkeypatch.setattr("desktop.launcher.read_desktop_lifecycle", lambda _config: lifecycle)
+    cancelled: list[str] = []
+    monkeypatch.setattr(
+        "desktop.launcher.cancel_active_chat_runs",
+        lambda _config, runs: cancelled.extend(str(item["run_id"]) for item in runs),
+    )
+    monkeypatch.setattr("desktop.launcher.wait_for_chat_runs_to_stop", lambda _config: True)
+
+    assert handle_desktop_close(config, object(), confirmer=lambda *_args, **_kwargs: False) is False
+    assert cancelled == []
+
+    confirmation: dict[str, object] = {}
+
+    def _confirm(_owner: object, **kwargs: object) -> bool:
+        confirmation.update(kwargs)
+        return True
+
+    assert handle_desktop_close(config, object(), confirmer=_confirm) is True
+    assert cancelled == ["run-1"]
+    assert confirmation == {"active_count": 1, "locale": "zh-CN"}
+
+
+def test_desktop_single_instance_guard_focuses_existing_window() -> None:
+    focused: list[bool] = []
+    closed: list[object] = []
+
+    with desktop_instance_guard(
+        platform_name="win32",
+        create_mutex=lambda *_args: 42,
+        get_last_error=lambda: 183,
+        close_handle=lambda handle: closed.append(handle),
+        focus_existing=lambda: focused.append(True) or True,
+    ) as primary:
+        assert primary is False
+
+    assert focused == [True]
+    assert closed == [42]

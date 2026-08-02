@@ -72,7 +72,10 @@ Copy-Item .env.example .env
 `vintage-programmer-windows-launcher`，把其中的 `VintageProgrammer.exe` 放在仓库根目录，
 完成上面的 `.venv` 与 `.env` 配置后即可双击启动。Windows 默认使用系统的 Edge WebView2
 Runtime；如果 WebView2 不可用，会自动回退到 Chrome App Mode。原生窗口打开期间 EXE 保持运行，
-但关闭窗口不会停止后端或中断正在运行的 Agent；再次双击会复用同一个本地服务。
+并且只允许一个 VP 窗口；再次双击会唤醒已有窗口。空闲时关闭原生窗口会同时停止后台；如果仍有
+Agent 或 Eval 在运行，关闭对话框只提供“停止任务并完全退出”和“取消关闭”。选择完全退出时，
+Agent 会先走正常取消流程，再结束后台。Chrome App Mode 只是兼容回退，无法提供完全相同的原生
+窗口生命周期保证。
 
 WebView2 使用独立的 `app/data/desktop_webview2_profile`，Chrome 回退使用
 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的

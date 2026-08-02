@@ -8,6 +8,7 @@ from desktop.webview_host import (
     APP_USER_MODEL_ID,
     WebViewHostError,
     bundled_asset_path,
+    close_dialog_copy,
     open_webview2_window,
     probe_webview2_host,
     set_windows_app_identity,
@@ -33,6 +34,7 @@ class _Events:
     def __init__(self) -> None:
         self.initialized = _Event()
         self.before_show = _Event()
+        self.closing = _Event()
 
 
 class _Window:
@@ -66,6 +68,14 @@ def test_windows_app_identity_uses_stable_vp_identifier() -> None:
     set_windows_app_identity(platform_name="win32", setter=lambda value: calls.append(value) or 0)
 
     assert calls == [APP_USER_MODEL_ID]
+
+
+def test_active_close_dialog_has_only_stop_exit_and_cancel_choices() -> None:
+    message, stop_label, cancel_label = close_dialog_copy("zh-CN", 2)
+
+    assert "2 个任务" in message
+    assert stop_label == "停止任务并完全退出"
+    assert cancel_label == "取消关闭"
 
 
 def test_bundled_asset_path_falls_back_to_repository_asset(tmp_path: Path) -> None:
@@ -113,6 +123,28 @@ def test_native_host_opens_persistent_maximized_edgechromium_window(tmp_path: Pa
         "icon": str(icon),
     }
     assert applied_icons == [icon]
+
+
+def test_native_host_closing_event_can_cancel_or_allow_window_close(tmp_path: Path) -> None:
+    fake = _FakeWebView()
+    decisions = iter((False, True))
+    owners: list[object] = []
+
+    open_webview2_window(
+        url="http://127.0.0.1:8080",
+        project_root=tmp_path,
+        profile_dir=tmp_path / "profile",
+        width=1360,
+        height=840,
+        platform_name="win32",
+        webview_module=fake,
+        app_identity_setter=lambda _value: 0,
+        closing_handler=lambda owner: owners.append(owner) or next(decisions),
+    )
+
+    assert fake.window.events.closing.fire() == [False]
+    assert fake.window.events.closing.fire() == [True]
+    assert owners == [fake.window, fake.window]
 
 
 def test_native_host_rejects_mshtml_so_launcher_can_fallback(tmp_path: Path) -> None:

@@ -19,10 +19,13 @@ falls back to Chrome App Mode.
 The launcher has no console window. Startup failures are shown in a message box
 and written to `app/data/runtime/desktop-launcher.log`.
 
-The native host stays alive while its window is open, but the existing VP backend
-lifecycle remains independent. Closing either the WebView2 window or its Chrome
-fallback does not cancel a running Agent; double-clicking the executable again
-reconnects to the same backend.
+The WebView2 host is single-instance. Double-clicking the executable while its window
+is open restores the existing window instead of opening another backend or window.
+Closing an idle native window also stops the local VP backend. If an Agent or Eval is
+still running, the close dialog offers only **Stop tasks and exit** or **Cancel
+closing**. Agent cancellation uses the normal runtime cancel path before the backend
+exits. Chrome App Mode remains a compatibility fallback and cannot provide the same
+native window-lifecycle guarantees.
 
 ## Build on Windows
 
@@ -53,6 +56,7 @@ VP_DESKTOP_BROWSER_PATH=
 VP_DESKTOP_BROWSER_USER_DATA_DIR=app/data/desktop_browser_profile
 VP_DESKTOP_WEBVIEW2_USER_DATA_DIR=app/data/desktop_webview2_profile
 VP_DESKTOP_STARTUP_TIMEOUT_SEC=45
+VP_DESKTOP_CLOSE_TIMEOUT_SEC=5
 VP_DESKTOP_INITIAL_WINDOW_SIZE=1360,840
 VP_DESKTOP_UI_SCALE=0.8
 ```

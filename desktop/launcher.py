@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 from dataclasses import asdict, dataclass
 import json
 import os
@@ -12,9 +13,14 @@ import sys
 import time
 from typing import Callable, Iterator, Mapping, Sequence
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
-from desktop.webview_host import WebViewHostError, open_webview2_window, probe_webview2_host
+from desktop.webview_host import (
+    WebViewHostError,
+    confirm_stop_and_exit,
+    open_webview2_window,
+    probe_webview2_host,
+)
 
 
 APP_TITLE = "Vintage Programmer"
@@ -24,6 +30,8 @@ DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
 DEFAULT_DESKTOP_SHELL = "auto"
+DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC = 5.0
+DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 
 
 class LauncherError(RuntimeError):
@@ -44,6 +52,8 @@ class DesktopLaunchConfig:
     initial_window_width: int = DEFAULT_INITIAL_WINDOW_SIZE[0]
     initial_window_height: int = DEFAULT_INITIAL_WINDOW_SIZE[1]
     ui_scale: float = DEFAULT_DESKTOP_UI_SCALE
+    locale: str = "ja-JP"
+    close_timeout_sec: float = DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC
 
     @property
     def app_url(self) -> str:
@@ -56,6 +66,10 @@ class DesktopLaunchConfig:
     @property
     def health_url(self) -> str:
         return f"{self.app_url}/api/health"
+
+    @property
+    def lifecycle_url(self) -> str:
+        return f"{self.app_url}/api/desktop/lifecycle"
 
     @property
     def log_path(self) -> Path:
@@ -328,6 +342,19 @@ def build_launch_config(
     except ValueError as exc:
         raise LauncherError(f"VP_DESKTOP_STARTUP_TIMEOUT_SEC must be numeric, got: {raw_timeout}") from exc
 
+    raw_close_timeout = _setting(
+        "VP_DESKTOP_CLOSE_TIMEOUT_SEC",
+        env=current_env,
+        dotenv=dotenv,
+        default=str(DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC),
+    )
+    try:
+        close_timeout_sec = max(1.0, min(60.0, float(raw_close_timeout)))
+    except ValueError as exc:
+        raise LauncherError(
+            f"VP_DESKTOP_CLOSE_TIMEOUT_SEC must be numeric, got: {raw_close_timeout}"
+        ) from exc
+
     desktop_profile_raw = _setting(
         "VP_DESKTOP_BROWSER_USER_DATA_DIR",
         env=current_env,
@@ -413,6 +440,13 @@ def build_launch_config(
         initial_window_width=initial_window_width,
         initial_window_height=initial_window_height,
         ui_scale=ui_scale,
+        locale=_setting(
+            "VP_DEFAULT_LOCALE",
+            env=current_env,
+            dotenv=dotenv,
+            default="ja-JP",
+        ),
+        close_timeout_sec=close_timeout_sec,
     )
 
 
@@ -454,15 +488,46 @@ def build_browser_command(
     return command
 
 
-def health_check(url: str, *, timeout_sec: float = 1.0) -> bool:
+def request_local_json(
+    url: str,
+    *,
+    method: str = "GET",
+    timeout_sec: float = 2.0,
+) -> dict[str, object]:
+    normalized_method = str(method or "GET").strip().upper()
+    request = Request(
+        url,
+        data=b"" if normalized_method == "POST" else None,
+        method=normalized_method,
+        headers={"Accept": "application/json"},
+    )
     try:
-        with urlopen(url, timeout=timeout_sec) as response:  # noqa: S310 - localhost URL is constructed internally
-            if getattr(response, "status", 200) != 200:
-                return False
+        with urlopen(request, timeout=timeout_sec) as response:  # noqa: S310 - localhost URL is constructed internally
+            status = int(getattr(response, "status", 200) or 200)
+            if status < 200 or status >= 300:
+                raise LauncherError(f"Local runtime request failed with HTTP {status}.")
             payload = json.loads(response.read().decode("utf-8"))
-    except (URLError, OSError, ValueError, json.JSONDecodeError):
+    except (URLError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise LauncherError(f"Local runtime request failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise LauncherError("Local runtime returned an invalid response.")
+    return dict(payload)
+
+
+def read_health_payload(url: str, *, timeout_sec: float = 1.0) -> dict[str, object]:
+    try:
+        payload = request_local_json(url, timeout_sec=timeout_sec)
+    except LauncherError:
+        return {}
+    if payload.get("ok") is not True or not payload.get("app_version"):
+        return {}
+    return payload
+
+
+def health_check(url: str, *, timeout_sec: float = 1.0) -> bool:
+    if not read_health_payload(url, timeout_sec=timeout_sec):
         return False
-    return bool(isinstance(payload, dict) and payload.get("ok") is True and payload.get("app_version"))
+    return True
 
 
 def wait_until_healthy(
@@ -545,6 +610,82 @@ def should_try_webview2(
     }
 
 
+def read_desktop_lifecycle(config: DesktopLaunchConfig) -> dict[str, object]:
+    payload = request_local_json(config.lifecycle_url, timeout_sec=2.0)
+    if payload.get("ok") is not True:
+        raise LauncherError("Local runtime lifecycle status is unavailable.")
+    return payload
+
+
+def _active_lifecycle_items(payload: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    active_runs = [dict(item) for item in list(payload.get("active_runs") or []) if isinstance(item, dict)]
+    active_evals = [dict(item) for item in list(payload.get("active_evals") or []) if isinstance(item, dict)]
+    return active_runs, active_evals
+
+
+def cancel_active_chat_runs(
+    config: DesktopLaunchConfig,
+    active_runs: Sequence[Mapping[str, object]],
+) -> None:
+    for item in active_runs:
+        run_id = str(item.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        try:
+            request_local_json(
+                f"{config.app_url}/api/chat/runs/{run_id}/cancel",
+                method="POST",
+                timeout_sec=2.0,
+            )
+        except LauncherError as exc:
+            _append_launcher_note(config, f"Could not request cancellation for run {run_id}: {exc}")
+
+
+def wait_for_chat_runs_to_stop(config: DesktopLaunchConfig) -> bool:
+    deadline = time.monotonic() + config.close_timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            active_runs, _active_evals = _active_lifecycle_items(read_desktop_lifecycle(config))
+        except LauncherError:
+            return False
+        if not active_runs:
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def handle_desktop_close(
+    config: DesktopLaunchConfig,
+    owner_window: object,
+    *,
+    confirmer: Callable[..., bool] = confirm_stop_and_exit,
+) -> bool:
+    try:
+        lifecycle = read_desktop_lifecycle(config)
+        active_runs, active_evals = _active_lifecycle_items(lifecycle)
+        active_count = len(active_runs) + len(active_evals)
+    except LauncherError as exc:
+        # An older or temporarily unavailable backend cannot prove that closing
+        # is safe. Ask for the destructive choice instead of silently exiting.
+        _append_launcher_note(config, f"Could not read close lifecycle status: {exc}")
+        active_runs = []
+        active_count = 1
+
+    if active_count == 0:
+        return True
+    if not confirmer(owner_window, active_count=active_count, locale=config.locale):
+        return False
+
+    cancel_active_chat_runs(config, active_runs)
+    if active_runs and not wait_for_chat_runs_to_stop(config):
+        _append_launcher_note(
+            config,
+            "Active Agent cleanup did not finish before the desktop close grace period; "
+            "the managed backend will now be terminated.",
+        )
+    return True
+
+
 def start_webview2(config: DesktopLaunchConfig) -> None:
     open_webview2_window(
         url=config.desktop_url,
@@ -552,6 +693,7 @@ def start_webview2(config: DesktopLaunchConfig) -> None:
         profile_dir=config.webview_profile_dir,
         width=config.initial_window_width,
         height=config.initial_window_height,
+        closing_handler=lambda owner_window: handle_desktop_close(config, owner_window),
     )
 
 
@@ -570,6 +712,89 @@ def stop_owned_server(process: subprocess.Popen[bytes]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=3)
+
+
+def terminate_managed_server_pid(pid: int, *, platform_name: str | None = None) -> bool:
+    server_pid = int(pid or 0)
+    if server_pid <= 0 or server_pid == os.getpid() or (platform_name or sys.platform) != "win32":
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    open_process.restype = ctypes.c_void_p
+    terminate_process = kernel32.TerminateProcess
+    terminate_process.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    terminate_process.restype = ctypes.c_int
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    wait_for_single_object.restype = ctypes.c_uint32
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+
+    process_handle = open_process(0x0001 | 0x00100000, False, server_pid)  # TERMINATE | SYNCHRONIZE
+    if not process_handle:
+        return False
+    try:
+        if not terminate_process(process_handle, 0):
+            return False
+        wait_for_single_object(process_handle, 8000)
+        return True
+    finally:
+        close_handle(process_handle)
+
+
+def focus_existing_desktop_window(
+    *,
+    platform_name: str | None = None,
+    user32: object | None = None,
+) -> bool:
+    if (platform_name or sys.platform) != "win32":
+        return False
+    api = user32 or ctypes.windll.user32
+    window_handle = int(api.FindWindowW(None, APP_TITLE) or 0)
+    if not window_handle:
+        return False
+    api.ShowWindow(window_handle, 9)  # SW_RESTORE
+    api.SetForegroundWindow(window_handle)
+    return True
+
+
+@contextmanager
+def desktop_instance_guard(
+    *,
+    platform_name: str | None = None,
+    create_mutex: Callable[..., object] | None = None,
+    get_last_error: Callable[[], int] | None = None,
+    close_handle: Callable[[object], object] | None = None,
+    focus_existing: Callable[[], bool] = focus_existing_desktop_window,
+) -> Iterator[bool]:
+    if (platform_name or sys.platform) != "win32":
+        yield True
+        return
+
+    if create_mutex is None or get_last_error is None or close_handle is None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        native_create_mutex = kernel32.CreateMutexW
+        native_create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        native_create_mutex.restype = ctypes.c_void_p
+        native_close_handle = kernel32.CloseHandle
+        native_close_handle.argtypes = [ctypes.c_void_p]
+        native_close_handle.restype = ctypes.c_int
+        create_mutex = native_create_mutex
+        get_last_error = ctypes.get_last_error
+        close_handle = native_close_handle
+
+    handle = create_mutex(None, False, DESKTOP_INSTANCE_MUTEX)
+    if not handle:
+        raise LauncherError("Windows could not create the desktop single-instance guard.")
+    already_running = int(get_last_error() or 0) == 183  # ERROR_ALREADY_EXISTS
+    try:
+        if already_running:
+            focus_existing()
+        yield not already_running
+    finally:
+        close_handle(handle)
 
 
 @contextmanager
@@ -617,6 +842,9 @@ def startup_lock(path: Path, *, timeout_sec: float = 15.0) -> Iterator[None]:
 def run_desktop(config: DesktopLaunchConfig) -> None:
     owned_server: subprocess.Popen[bytes] | None = None
     log_handle: object | None = None
+    adopted_server_pid = 0
+    native_window_closed = False
+    server_stopped = False
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
     try:
         with startup_lock(lock_path):
@@ -630,12 +858,19 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                     raise LauncherError(
                         f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
                     )
+            else:
+                health_payload = read_health_payload(config.health_url)
+                try:
+                    adopted_server_pid = max(0, int(health_payload.get("process_id") or 0))
+                except (TypeError, ValueError):
+                    adopted_server_pid = 0
         # WebView2 owns the foreground GUI loop until the user closes the
         # native window. Keep that lifetime outside the short startup lock so a
         # window does not make later health checks look like a stuck launch.
         if should_try_webview2(config):
             try:
                 start_webview2(config)
+                native_window_closed = True
             except WebViewHostError as exc:
                 if config.shell_mode == "webview2":
                     raise LauncherError(str(exc)) from exc
@@ -653,13 +888,21 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                 raise LauncherError("VP_DESKTOP_SHELL=webview2 is supported only on Windows.")
             start_browser(config)
     except BaseException:
-        # Only undo a server created by this invocation when opening the desktop
-        # window itself failed. Once the window opens, the backend intentionally
-        # keeps its existing lifecycle so closing a window cannot interrupt an Agent.
         if owned_server is not None:
             stop_owned_server(owned_server)
+            server_stopped = True
         raise
     finally:
+        if native_window_closed and not server_stopped:
+            if owned_server is not None:
+                stop_owned_server(owned_server)
+                server_stopped = True
+            elif adopted_server_pid:
+                if not terminate_managed_server_pid(adopted_server_pid):
+                    _append_launcher_note(
+                        config,
+                        f"Could not stop the reused backend process {adopted_server_pid}.",
+                    )
         if log_handle is not None:
             close = getattr(log_handle, "close", None)
             if callable(close):
@@ -713,7 +956,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 diagnostics["native_shell_probe"] = probe_webview2_host()
             _write_diagnostics(diagnostics, args.diagnostics_file)
             return 0
-        run_desktop(config)
+        with desktop_instance_guard() as is_primary_instance:
+            if not is_primary_instance:
+                return 0
+            run_desktop(config)
         return 0
     except (LauncherError, OSError, subprocess.SubprocessError) as exc:
         _show_error(str(exc))

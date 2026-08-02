@@ -1324,9 +1324,11 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
         "app_version": main_app.APP_VERSION,
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
+        "process_id": payload["process_id"],
     }
     assert isinstance(payload["uptime_sec"], int)
     assert payload["uptime_sec"] >= 0
+    assert payload["process_id"] > 0
 
 
 def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypatch, tmp_path: Path) -> None:
@@ -2939,6 +2941,47 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
         assert status_response.status_code == 200
         assert status_response.json()["status"] == "cancel_requested"
         assert status_response.json()["terminal"] is False
+    finally:
+        with main_app._active_chat_runs_lock:
+            main_app._active_chat_runs.pop(run_id, None)
+
+
+def test_desktop_lifecycle_reports_active_agent_and_eval_work(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+
+    class _EvalManager:
+        def list(self, *, limit=20):
+            assert limit == 100
+            return [
+                {"id": "eval-running", "status": "running"},
+                {"id": "eval-done", "status": "passed"},
+            ]
+
+    monkeypatch.setattr(main_app, "_eval_job_manager", _EvalManager())
+    run_id = "run-desktop-lifecycle"
+    with main_app._active_chat_runs_lock:
+        main_app._active_chat_runs[run_id] = {
+            "run_id": run_id,
+            "status": "running",
+            "session_id": "thread-1",
+            "project_id": "project-1",
+        }
+    try:
+        response = TestClient(main_app.app).get("/api/desktop/lifecycle")
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": True,
+            "active": True,
+            "active_runs": [
+                {
+                    "run_id": run_id,
+                    "session_id": "thread-1",
+                    "project_id": "project-1",
+                    "status": "running",
+                }
+            ],
+            "active_evals": [{"job_id": "eval-running", "status": "running"}],
+        }
     finally:
         with main_app._active_chat_runs_lock:
             main_app._active_chat_runs.pop(run_id, None)

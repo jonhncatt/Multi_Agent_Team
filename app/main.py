@@ -878,7 +878,41 @@ def health() -> HealthResponse:
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         uptime_sec=max(0, int(time.monotonic() - APP_STARTED_AT)),
+        process_id=os.getpid(),
     )
+
+
+@app.get("/api/desktop/lifecycle")
+def desktop_lifecycle() -> dict[str, Any]:
+    with _active_chat_runs_lock:
+        active_runs = [
+            {
+                "run_id": str(item.get("run_id") or key),
+                "session_id": str(item.get("session_id") or ""),
+                "project_id": str(item.get("project_id") or ""),
+                "status": str(item.get("status") or "running"),
+            }
+            for key, item in _active_chat_runs.items()
+            if isinstance(item, dict)
+            and str(item.get("status") or "") in {"running", "cancel_requested"}
+        ]
+    with _eval_job_manager_lock:
+        eval_manager = _eval_job_manager
+    eval_rows = eval_manager.list(limit=100) if eval_manager is not None else []
+    active_evals = [
+        {
+            "job_id": str(item.get("id") or ""),
+            "status": str(item.get("status") or ""),
+        }
+        for item in eval_rows
+        if str(item.get("status") or "") in {"queued", "running"}
+    ]
+    return {
+        "ok": True,
+        "active": bool(active_runs or active_evals),
+        "active_runs": active_runs,
+        "active_evals": active_evals,
+    }
 
 
 @app.get("/api/bootstrap", response_model=BootstrapResponse)

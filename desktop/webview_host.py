@@ -73,6 +73,96 @@ def _apply_windows_window_icon(window: Any, icon_path: Path) -> None:
         return
 
 
+def close_dialog_copy(locale: str, active_count: int) -> tuple[str, str, str]:
+    count = max(1, int(active_count or 1))
+    normalized = str(locale or "").strip().lower()
+    if normalized.startswith("zh"):
+        return (
+            f"Agent 仍有 {count} 个任务正在运行。关闭前将停止正在执行的任务。",
+            "停止任务并完全退出",
+            "取消关闭",
+        )
+    if normalized.startswith("ja"):
+        return (
+            f"Agent で {count} 件のタスクが実行中です。終了する前に実行中のタスクを停止します。",
+            "タスクを停止して完全に終了",
+            "終了をキャンセル",
+        )
+    return (
+        f"Agent still has {count} running task(s). Running work will be stopped before exit.",
+        "Stop tasks and exit",
+        "Cancel closing",
+    )
+
+
+def confirm_stop_and_exit(
+    owner_window: Any,
+    *,
+    active_count: int,
+    locale: str,
+) -> bool:
+    """Show a safe, native two-choice dialog for closing an active desktop run."""
+
+    message, stop_label, cancel_label = close_dialog_copy(locale, active_count)
+    dialog = None
+    try:
+        from System.Drawing import Size  # type: ignore[import-not-found]
+        from System.Windows.Forms import (  # type: ignore[import-not-found]
+            Button,
+            DialogResult,
+            Form,
+            FormBorderStyle,
+            FormStartPosition,
+            Label,
+        )
+
+        dialog = Form()
+        dialog.Text = "Vintage Programmer"
+        dialog.ClientSize = Size(560, 168)
+        dialog.FormBorderStyle = FormBorderStyle.FixedDialog
+        dialog.StartPosition = FormStartPosition.CenterParent
+        dialog.MaximizeBox = False
+        dialog.MinimizeBox = False
+        dialog.ShowInTaskbar = False
+
+        label = Label()
+        label.Text = message
+        label.AutoSize = False
+        label.SetBounds(24, 22, 512, 58)
+
+        stop_button = Button()
+        stop_button.Text = stop_label
+        stop_button.DialogResult = DialogResult.Yes
+        stop_button.SetBounds(178, 102, 220, 38)
+
+        cancel_button = Button()
+        cancel_button.Text = cancel_label
+        cancel_button.DialogResult = DialogResult.Cancel
+        cancel_button.SetBounds(410, 102, 126, 38)
+
+        dialog.Controls.Add(label)
+        dialog.Controls.Add(stop_button)
+        dialog.Controls.Add(cancel_button)
+        dialog.AcceptButton = cancel_button
+        dialog.CancelButton = cancel_button
+        dialog.ActiveControl = cancel_button
+
+        native_owner = getattr(owner_window, "native", None)
+        result = dialog.ShowDialog(native_owner) if native_owner is not None else dialog.ShowDialog()
+        return result == DialogResult.Yes
+    except Exception:
+        # WinForms is bundled with the Windows host, but retain a native safe-default
+        # fallback in case a host-specific owner cannot be attached to the custom form.
+        flags = 0x00000004 | 0x00000030 | 0x00000100  # YESNO | ICONWARNING | DEFBUTTON2
+        return int(ctypes.windll.user32.MessageBoxW(None, message, "Vintage Programmer", flags)) == 6
+    finally:
+        if dialog is not None:
+            try:
+                dialog.Dispose()
+            except Exception:
+                pass
+
+
 def open_webview2_window(
     *,
     url: str,
@@ -84,6 +174,7 @@ def open_webview2_window(
     webview_module: Any | None = None,
     app_identity_setter: Callable[[str], int] | None = None,
     icon_applier: Callable[[Any, Path], None] = _apply_windows_window_icon,
+    closing_handler: Callable[[Any], bool] | None = None,
 ) -> None:
     if (platform_name or sys.platform) != "win32":
         raise WebViewHostError("The WebView2 desktop shell is available only on Windows.")
@@ -124,8 +215,19 @@ def open_webview2_window(
         def apply_branding() -> None:
             icon_applier(window, icon_path)
 
+        def handle_closing() -> bool:
+            if closing_handler is None:
+                return True
+            try:
+                return bool(closing_handler(window))
+            except Exception:
+                # Closing is a destructive boundary. Any lifecycle check failure
+                # keeps the window open instead of accidentally killing active work.
+                return False
+
         window.events.initialized += record_renderer
         window.events.before_show += apply_branding
+        window.events.closing += handle_closing
         webview_module.start(
             gui="edgechromium",
             private_mode=False,
