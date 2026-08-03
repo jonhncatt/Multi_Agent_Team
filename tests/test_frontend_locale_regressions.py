@@ -160,6 +160,7 @@ REQUIRED_CORE_KEYS = (
     "runtime.error.title",
     "runtime.error.llm_request_failed",
     "runtime.error.llm_empty_response",
+    "runtime.error.request_too_large",
     "runtime.error.phase",
     "runtime.error.kind",
     "runtime.error.debug_hint",

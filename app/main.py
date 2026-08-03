@@ -3382,6 +3382,39 @@ def _process_chat_request(
                 },
                 progress_cb=progress_cb,
             )
+        request_too_large_recovery = (
+            dict(runtime_result.get("request_too_large_recovery") or {})
+            if isinstance(runtime_result.get("request_too_large_recovery"), dict)
+            else {}
+        )
+        if bool(request_too_large_recovery.get("compacted")):
+            try:
+                with request_phase_timer.measure("request_too_large_compaction_persist_ms"):
+                    persisted_recovery = maybe_auto_compact_session(
+                        session=session,
+                        model=requested_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message="",
+                        phase="request_too_large_recovery",
+                        llm_compactor=None,
+                        force=True,
+                        trigger="request_too_large_recovery",
+                        auto_compact_ratio=config.context_auto_compact_ratio,
+                        danger_compact_ratio=config.context_danger_compact_ratio,
+                        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+                        **_context_profile_overrides(requested_provider, requested_model),
+                    )
+                request_too_large_recovery["persisted"] = bool(
+                    persisted_recovery.get("compacted")
+                )
+            except Exception as persist_exc:
+                request_too_large_recovery["persisted"] = False
+                request_too_large_recovery["persist_error"] = (
+                    f"{persist_exc.__class__.__name__}: {str(persist_exc)[:500]}"
+                )
+            runtime_result["request_too_large_recovery"] = dict(
+                request_too_large_recovery
+            )
         text = str(runtime_result.get("text") or "")
         final_answer = str(runtime_result.get("final_answer") or "")
         model_draft = str(runtime_result.get("model_draft") or "")
@@ -3462,6 +3495,7 @@ def _process_chat_request(
             "model_draft": model_draft,
             "final_answer": final_answer,
             "runtime_error": runtime_error,
+            "request_too_large_recovery": dict(request_too_large_recovery),
             "turn_changes": turn_changes,
             "tool_boundary_clean": tool_boundary_clean if isinstance(tool_boundary_clean, bool) else None,
         }

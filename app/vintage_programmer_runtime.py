@@ -59,7 +59,10 @@ from app.openai_auth import OpenAIAuthManager
 from app.phase_timing import PhaseTimer
 from app.runtime_boundary import RuntimeBoundary, build_turn_runtime_boundary
 from app.runtime_contract import RuntimeContract, build_full_auto_runtime_contract
-from app.runtime_errors import classify_llm_exception, runtime_error_user_text
+from app.runtime_errors import (
+    classify_llm_exception,
+    runtime_error_user_text,
+)
 from app.runtime_hints import looks_like_inline_document_payload
 from app.runtime_trace_labels import trace_label
 from app.serialization import dump_model, safe_model_dump
@@ -3707,6 +3710,247 @@ class VintageProgrammerRuntime:
         except Exception:
             return quick_count_tokens(serialized_payload)
 
+    def _model_request_size_bytes(
+        self,
+        messages: list[Any],
+        *,
+        tool_names: tuple[str, ...] | list[str] | None,
+    ) -> int:
+        selected_names = {
+            str(name or "").strip()
+            for name in list(tool_names or [])
+            if str(name or "").strip()
+        }
+        selected_tools = [
+            dict(spec)
+            for spec in self._tool_specs
+            if isinstance(spec, dict)
+            and (
+                tool_names is None
+                or str(spec.get("name") or "") in selected_names
+            )
+        ]
+        payload = {
+            "messages": [
+                self._serialize_model_message(message)
+                for message in list(messages or [])
+            ],
+            **({"tools": selected_tools} if selected_tools else {}),
+        }
+        return len(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        )
+
+    def _compact_replay_after_request_too_large(
+        self,
+        *,
+        messages: list[Any],
+        replay_start_index: int,
+        replay_end_index: int,
+        model: str | None,
+        tool_names: tuple[str, ...] | list[str] | None,
+        max_output_tokens: int,
+        progress_cb: Callable[[dict[str, Any]], None] | None,
+        run_id: str,
+        locale: str,
+        trace_events: list[dict[str, Any]],
+        retained_context_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
+    ) -> tuple[list[Any], bool, ContextWindowStatus, dict[str, Any]]:
+        start = max(0, min(int(replay_start_index), len(messages)))
+        end = max(start, min(int(replay_end_index), len(messages)))
+        replay = list(messages[start:end])
+        before_bytes = self._model_request_size_bytes(messages, tool_names=tool_names)
+        if not replay:
+            status = build_context_window_status(
+                model=model,
+                current_tokens=self._estimate_model_request_tokens(
+                    messages,
+                    model=model,
+                    tool_names=tool_names,
+                    exact=True,
+                ),
+                max_output_tokens=max_output_tokens,
+                auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                estimate_source="request_too_large_no_replay",
+            )
+            return messages, False, status, {
+                "before_bytes": before_bytes,
+                "after_bytes": before_bytes,
+                "omitted_message_count": 0,
+                "retained_message_count": 0,
+                "summary": "",
+            }
+
+        transactions = self._live_message_transactions(replay)
+        budget = max(1, int(retained_context_tokens or DEFAULT_RETAINED_CONTEXT_TOKENS))
+        retained_groups: list[list[Any]] = []
+        retained_tokens = 0
+        for transaction in reversed(transactions):
+            transaction_tokens = count_tokens(
+                json.dumps(
+                    [self._serialize_model_message(message) for message in transaction],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+                model,
+            )
+            if retained_tokens + transaction_tokens > budget:
+                break
+            retained_groups.append(transaction)
+            retained_tokens += transaction_tokens
+        retained_groups.reverse()
+        retained_messages = [
+            message
+            for transaction in retained_groups
+            for message in transaction
+        ]
+        omitted_count = len(replay) - len(retained_messages)
+        if omitted_count <= 0:
+            status = build_context_window_status(
+                model=model,
+                current_tokens=self._estimate_model_request_tokens(
+                    messages,
+                    model=model,
+                    tool_names=tool_names,
+                    exact=True,
+                ),
+                max_output_tokens=max_output_tokens,
+                auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+                danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+                context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+                max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+                auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+                estimate_source="request_too_large_no_omission",
+            )
+            return messages, False, status, {
+                "before_bytes": before_bytes,
+                "after_bytes": before_bytes,
+                "omitted_message_count": 0,
+                "retained_message_count": len(retained_messages),
+                "summary": "",
+            }
+
+        omitted_messages = replay[:omitted_count]
+        summary = self._build_live_compaction_summary(
+            tool_events=[],
+            start_index=0,
+            end_index=0,
+            old_messages=[
+                self._serialize_model_message(message)
+                for message in omitted_messages
+            ],
+            model=model,
+            max_output_tokens=max_output_tokens,
+            progress_cb=progress_cb,
+            run_id=run_id,
+            locale=locale,
+            trace_events=trace_events,
+            allow_llm=False,
+        )
+        if not summary:
+            status = build_context_window_status(
+                model=model,
+                current_tokens=self._estimate_model_request_tokens(
+                    messages,
+                    model=model,
+                    tool_names=tool_names,
+                    exact=True,
+                ),
+                max_output_tokens=max_output_tokens,
+                estimate_source="request_too_large_summary_empty",
+            )
+            return messages, False, status, {
+                "before_bytes": before_bytes,
+                "after_bytes": before_bytes,
+                "omitted_message_count": omitted_count,
+                "retained_message_count": len(retained_messages),
+                "summary": "",
+            }
+
+        compacted_messages = [
+            *messages[:start],
+            self._backend._HumanMessage(content=summary),
+            *retained_messages,
+            *messages[end:],
+        ]
+        if not self._messages_at_tool_boundary(compacted_messages):
+            status = build_context_window_status(
+                model=model,
+                current_tokens=self._estimate_model_request_tokens(
+                    messages,
+                    model=model,
+                    tool_names=tool_names,
+                    exact=True,
+                ),
+                max_output_tokens=max_output_tokens,
+                estimate_source="request_too_large_boundary_rejected",
+            )
+            return messages, False, status, {
+                "before_bytes": before_bytes,
+                "after_bytes": before_bytes,
+                "omitted_message_count": omitted_count,
+                "retained_message_count": len(retained_messages),
+                "summary": summary,
+            }
+        after_bytes = self._model_request_size_bytes(
+            compacted_messages,
+            tool_names=tool_names,
+        )
+        if after_bytes >= before_bytes:
+            status = build_context_window_status(
+                model=model,
+                current_tokens=self._estimate_model_request_tokens(
+                    messages,
+                    model=model,
+                    tool_names=tool_names,
+                    exact=True,
+                ),
+                max_output_tokens=max_output_tokens,
+                estimate_source="request_too_large_not_reduced",
+            )
+            return messages, False, status, {
+                "before_bytes": before_bytes,
+                "after_bytes": after_bytes,
+                "omitted_message_count": omitted_count,
+                "retained_message_count": len(retained_messages),
+                "summary": summary,
+            }
+
+        after_tokens = self._estimate_model_request_tokens(
+            compacted_messages,
+            model=model,
+            tool_names=tool_names,
+            exact=True,
+        )
+        status = build_context_window_status(
+            model=model,
+            current_tokens=after_tokens,
+            max_output_tokens=max_output_tokens,
+            auto_compact_ratio=float(getattr(self._config, "context_auto_compact_ratio", 0.9) or 0.9),
+            danger_compact_ratio=float(getattr(self._config, "context_danger_compact_ratio", 0.95) or 0.95),
+            context_window_tokens=int(getattr(self._config, "context_window_tokens", 0) or 0),
+            max_context_window_tokens=int(getattr(self._config, "model_max_context_window_tokens", 0) or 0),
+            auto_compact_token_limit=int(getattr(self._config, "context_auto_compact_token_limit", 0) or 0),
+            estimate_source="request_too_large_local_compaction",
+        )
+        return compacted_messages, True, status, {
+            "before_bytes": before_bytes,
+            "after_bytes": after_bytes,
+            "omitted_message_count": omitted_count,
+            "retained_message_count": len(retained_messages),
+            "summary": summary,
+        }
+
     @staticmethod
     def _serialize_model_message(message: Any) -> dict[str, Any]:
         class_name = message.__class__.__name__.lower()
@@ -4402,9 +4646,11 @@ class VintageProgrammerRuntime:
                             "Unverified working summary replacing older transcript items that are no longer replayed.\n"
                             + thread_summary
                         )
+                        )
                     )
-                )
+            replay_start_index = len(messages)
             messages.extend(replay_messages)
+            replay_end_index = len(messages)
             previous_turn_changes = (
                 dict(context_payload.get("previous_turn_changes") or {})
                 if isinstance(context_payload.get("previous_turn_changes"), dict)
@@ -4502,6 +4748,12 @@ class VintageProgrammerRuntime:
         model_draft = ""
         final_answer = ""
         runtime_error: dict[str, Any] = {}
+        request_too_large_recovery: dict[str, Any] = {
+            "attempted": False,
+            "compacted": False,
+            "retried": False,
+            "recovered": False,
+        }
         blocked_stop_diagnostics: dict[str, Any] = {}
         last_successful_round = 0
         turn_activity_context = {
@@ -5051,6 +5303,165 @@ class VintageProgrammerRuntime:
                 "error": None,
                 "harness_interpretation": {},
             }
+
+        def compact_request_too_large_once(
+            *,
+            phase: str,
+            failure_payload: dict[str, Any],
+        ) -> bool:
+            nonlocal messages
+            nonlocal base_message_count
+            nonlocal replay_end_index
+            nonlocal context_window_status
+
+            if request_too_large_recovery.get("attempted"):
+                return False
+            if str(failure_payload.get("kind") or "") != "request_too_large":
+                return False
+            request_too_large_recovery["attempted"] = True
+            item_id = f"{run_id or 'turn'}:context_compaction:request_too_large"
+            started_item = {
+                "id": item_id,
+                "type": "contextCompaction",
+                "status": "inProgress",
+                "phase": "request_too_large_recovery",
+                "generation": int(live_compaction_status.get("generation") or 0) + 1,
+                "reason": "request_too_large",
+                "before_tokens": int(latest_request_estimated_tokens or 0),
+                "after_tokens": 0,
+                "summary": translate(locale, "runtime.request_too_large.compacting"),
+            }
+            self._emit_message_item_event(
+                progress_cb,
+                event="item/started",
+                thread_id=session_id,
+                turn_id=run_id,
+                item=started_item,
+            )
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="llm.request_too_large.compacting",
+                title="Compacting oversized LLM request",
+                detail=translate(locale, "runtime.request_too_large.compacting"),
+                status="running",
+                payload={
+                    "phase": str(phase or ""),
+                    "kind": "request_too_large",
+                    "status_code": 413,
+                    "retry_attempt": 1,
+                },
+                trace_events=trace_events,
+            )
+            original_count = len(messages)
+            try:
+                compacted_messages, compacted, compacted_status, recovery_meta = (
+                    self._compact_replay_after_request_too_large(
+                        messages=messages,
+                        replay_start_index=replay_start_index,
+                        replay_end_index=replay_end_index,
+                        model=effective_model or requested_model,
+                        tool_names=runnable_tools,
+                        max_output_tokens=int(settings.max_output_tokens),
+                        progress_cb=progress_cb,
+                        run_id=run_id,
+                        locale=locale,
+                        trace_events=trace_events,
+                    )
+                )
+            except Exception as compaction_exc:
+                compacted_messages = messages
+                compacted = False
+                compacted_status = context_window_status
+                recovery_meta = {
+                    "before_bytes": 0,
+                    "after_bytes": 0,
+                    "omitted_message_count": 0,
+                    "retained_message_count": 0,
+                    "summary": "",
+                    "compaction_error": (
+                        f"{compaction_exc.__class__.__name__}: {safe_error_message(compaction_exc)}"
+                    ),
+                }
+            request_too_large_recovery.update(
+                {
+                    **recovery_meta,
+                    "compacted": bool(compacted),
+                    "phase": str(phase or ""),
+                }
+            )
+            if not compacted:
+                completed_item = {
+                    **started_item,
+                    "status": "blocked",
+                    "summary": translate(locale, "runtime.request_too_large.not_compactable"),
+                }
+                stream_items.append(dict(completed_item))
+                self._emit_message_item_event(
+                    progress_cb,
+                    event="item/completed",
+                    thread_id=session_id,
+                    turn_id=run_id,
+                    item=completed_item,
+                )
+                notes.append("request_too_large_not_compactable")
+                return False
+
+            messages = compacted_messages
+            message_count_delta = len(messages) - original_count
+            base_message_count = max(0, base_message_count + message_count_delta)
+            replay_end_index = max(
+                replay_start_index,
+                replay_end_index + message_count_delta,
+            )
+            context_window_status = compacted_status
+            live_compaction_status.update(compacted_status.to_dict())
+            live_compaction_status["context_window_status"] = compacted_status.to_dict()
+            live_compaction_status["generation"] = int(live_compaction_status.get("generation") or 0) + 1
+            live_compaction_status["last_compaction_phase"] = "request_too_large_recovery"
+            live_compaction_status["phase"] = "request_too_large_recovery"
+            live_compaction_status["reason"] = "request_too_large"
+            live_compaction_status["last_compaction_reason"] = "request_too_large:413"
+            live_compaction_status["last_compacted_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(),
+            )
+            live_compaction_status["before_tokens"] = int(latest_request_estimated_tokens or 0)
+            live_compaction_status["after_tokens"] = int(compacted_status.estimated_context_tokens or 0)
+            completed_item = {
+                **started_item,
+                "status": "completed",
+                "after_tokens": int(compacted_status.estimated_context_tokens or 0),
+                "summary": translate(locale, "runtime.request_too_large.compacted"),
+            }
+            stream_items.append(dict(completed_item))
+            self._emit_message_item_event(
+                progress_cb,
+                event="item/completed",
+                thread_id=session_id,
+                turn_id=run_id,
+                item=completed_item,
+            )
+            self._emit_trace(
+                progress_cb,
+                run_id=run_id,
+                type="context.compacted",
+                title="Oversized request compacted locally",
+                detail=translate(locale, "runtime.request_too_large.compacted"),
+                status="success",
+                payload={
+                    "phase": "request_too_large_recovery",
+                    "reason": "request_too_large",
+                    "before_bytes": int(recovery_meta.get("before_bytes") or 0),
+                    "after_bytes": int(recovery_meta.get("after_bytes") or 0),
+                    "omitted_message_count": int(recovery_meta.get("omitted_message_count") or 0),
+                    "retained_message_count": int(recovery_meta.get("retained_message_count") or 0),
+                    "retry_attempt": 1,
+                },
+                trace_events=trace_events,
+            )
+            notes.append("request_too_large_compacted_locally")
+            return True
 
         with phase_timer.measure("runtime_initial_trace_ms"):
             self._emit_trace(
@@ -5611,6 +6022,7 @@ class VintageProgrammerRuntime:
                 if_missing=True,
             )
             initial_invoke_ok = False
+            invoke_notes: list[str] = []
             initial_exchange = begin_llm_exchange("initial", requested_model, messages)
             latest_request_estimated_tokens = self._estimate_model_request_tokens(
                 messages,
@@ -5646,38 +6058,139 @@ class VintageProgrammerRuntime:
                 )
                 initial_invoke_ok = True
             except Exception as exc:
-                runtime_error = self._llm_failure_payload(
+                failure_payload = self._llm_failure_payload(
                     exc,
                     messages=messages,
                     phase="initial_model_response",
                     model=requested_model,
                 )
+                compacted_for_retry = compact_request_too_large_once(
+                    phase="initial_model_response",
+                    failure_payload=failure_payload,
+                )
                 initial_exchange["status"] = "failed"
-                initial_exchange["error"] = snapshot_error(exc, classified=runtime_error)
+                initial_exchange["error"] = snapshot_error(exc, classified=failure_payload)
                 initial_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
                     model_action={},
                     assistant_text="",
-                    turn_status_after_round="failed",
-                    decision="runtime_error",
+                    turn_status_after_round="running" if compacted_for_retry else "failed",
+                    decision="context_compaction_retry" if compacted_for_retry else "runtime_error",
                 )
                 self._append_llm_exchange(llm_exchanges, initial_exchange)
-                turn_status = "failed"
-                notes.append(str(runtime_error.get("kind") or "llm_request_error"))
-                self._emit_trace(
-                    progress_cb,
-                    run_id=run_id,
-                    type="llm.failed",
-                    title=trace_label(locale, "llm.failed"),
-                    detail=str(runtime_error.get("message") or safe_error_message(exc)),
-                    status="failed",
-                    payload={
-                        **runtime_error,
-                        "last_successful_round": 0,
-                        "failed_round": 0,
-                        "tool_count_total": 0,
-                    },
-                    trace_events=trace_events,
-                )
+                if compacted_for_retry:
+                    request_too_large_recovery["retried"] = True
+                    runtime_error = {}
+                    initial_exchange = begin_llm_exchange(
+                        "initial_request_too_large_retry",
+                        requested_model,
+                        messages,
+                    )
+                    latest_request_estimated_tokens = self._estimate_model_request_tokens(
+                        messages,
+                        model=requested_model,
+                        tool_names=runnable_tools,
+                    )
+                    latest_estimated_static_tokens = max(
+                        1200,
+                        latest_request_estimated_tokens
+                        - int(compaction_status.get("estimated_payload_tokens") or 0),
+                    )
+                    try:
+                        ai_msg, runner, effective_model, invoke_notes = self._invoke_backend_method(
+                            self._backend._invoke_chat_with_runner,
+                            messages=messages,
+                            model=requested_model,
+                            max_output_tokens=int(settings.max_output_tokens),
+                            enable_tools=bool(runnable_tools),
+                            tool_names=runnable_tools if runnable_tools else None,
+                            event_cb=self._make_model_stream_observer(
+                                progress_cb=progress_cb,
+                                run_id=run_id,
+                                thread_id=session_id,
+                                locale=locale,
+                                trace_events=trace_events,
+                                answer_stream_state=answer_stream_state,
+                                stage="initial_request_too_large_retry",
+                                model=requested_model,
+                                tool_round=0,
+                                answer_context=turn_activity_context,
+                                phase_timer=phase_timer,
+                            ),
+                        )
+                        initial_invoke_ok = True
+                        request_too_large_recovery["recovered"] = True
+                        notes.append("request_too_large_retry_succeeded")
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="llm.request_too_large.retry_succeeded",
+                            title="Oversized LLM request retry succeeded",
+                            detail=translate(locale, "runtime.request_too_large.compacted"),
+                            status="success",
+                            payload={
+                                "phase": "initial_request_too_large_retry",
+                                "retry_attempt": 1,
+                            },
+                            trace_events=trace_events,
+                        )
+                    except Exception as retry_exc:
+                        runtime_error = self._llm_failure_payload(
+                            retry_exc,
+                            messages=messages,
+                            phase="initial_request_too_large_retry",
+                            model=requested_model,
+                            retry_attempt=1,
+                        )
+                        initial_exchange["status"] = "failed"
+                        initial_exchange["error"] = snapshot_error(
+                            retry_exc,
+                            classified=runtime_error,
+                        )
+                        initial_exchange["harness_interpretation"] = (
+                            self._build_llm_exchange_harness_interpretation(
+                                model_action={},
+                                assistant_text="",
+                                turn_status_after_round="failed",
+                                decision="runtime_error",
+                            )
+                        )
+                        self._append_llm_exchange(llm_exchanges, initial_exchange)
+                        turn_status = "failed"
+                        notes.append(str(runtime_error.get("kind") or "llm_request_error"))
+                        self._emit_trace(
+                            progress_cb,
+                            run_id=run_id,
+                            type="llm.failed",
+                            title=trace_label(locale, "llm.failed"),
+                            detail=str(runtime_error.get("message") or safe_error_message(retry_exc)),
+                            status="failed",
+                            payload={
+                                **runtime_error,
+                                "last_successful_round": 0,
+                                "failed_round": 0,
+                                "tool_count_total": 0,
+                            },
+                            trace_events=trace_events,
+                        )
+                else:
+                    runtime_error = failure_payload
+                    turn_status = "failed"
+                    notes.append(str(runtime_error.get("kind") or "llm_request_error"))
+                    self._emit_trace(
+                        progress_cb,
+                        run_id=run_id,
+                        type="llm.failed",
+                        title=trace_label(locale, "llm.failed"),
+                        detail=str(runtime_error.get("message") or safe_error_message(exc)),
+                        status="failed",
+                        payload={
+                            **runtime_error,
+                            "last_successful_round": 0,
+                            "failed_round": 0,
+                            "tool_count_total": 0,
+                        },
+                        trace_events=trace_events,
+                    )
             finally:
                 initial_response_ms = int((time.perf_counter() - initial_model_request_started_perf) * 1000)
                 phase_timer.record_duration_ms("model_initial_response_ms", initial_response_ms)
@@ -7230,33 +7743,70 @@ class VintageProgrammerRuntime:
                         phase="before_followup_llm",
                         model=effective_model or requested_model,
                     )
+                    compacted_for_request_too_large = compact_request_too_large_once(
+                        phase="before_followup_llm",
+                        failure_payload=failure_payload,
+                    )
                     followup_exchange["status"] = "failed"
                     followup_exchange["error"] = snapshot_error(exc, classified=failure_payload)
                     followup_exchange["harness_interpretation"] = self._build_llm_exchange_harness_interpretation(
                         model_action={},
                         assistant_text="",
-                        turn_status_after_round="failed",
-                        decision="runtime_error",
+                        turn_status_after_round=(
+                            "running" if compacted_for_request_too_large else "failed"
+                        ),
+                        decision=(
+                            "context_compaction_retry"
+                            if compacted_for_request_too_large
+                            else "runtime_error"
+                        ),
                     )
                     self._append_llm_exchange(llm_exchanges, followup_exchange)
                     if (
-                        not llm_retry_used
-                        and bool(failure_payload.get("tool_boundary_clean"))
-                        and self._is_retryable_llm_failure(error_message)
+                        compacted_for_request_too_large
+                        or (
+                            not llm_retry_used
+                            and bool(failure_payload.get("tool_boundary_clean"))
+                            and self._is_retryable_llm_failure(error_message)
+                        )
                     ):
                         llm_retry_used = True
-                        notes.append("llm_retrying")
+                        if compacted_for_request_too_large:
+                            request_too_large_recovery["retried"] = True
+                            notes.append("request_too_large_retrying")
+                        else:
+                            notes.append("llm_retrying")
                         self._emit_trace(
                             progress_cb,
                             run_id=run_id,
-                            type="llm.retrying",
-                            title="Retrying LLM request",
-                            detail=error_message,
+                            type=(
+                                "llm.request_too_large.retrying"
+                                if compacted_for_request_too_large
+                                else "llm.retrying"
+                            ),
+                            title=(
+                                "Retrying compacted LLM request"
+                                if compacted_for_request_too_large
+                                else "Retrying LLM request"
+                            ),
+                            detail=(
+                                translate(locale, "runtime.request_too_large.compacted")
+                                if compacted_for_request_too_large
+                                else error_message
+                            ),
                             status="running",
                             payload={**failure_payload, "retry_attempt": 1},
                             trace_events=trace_events,
                         )
-                        retry_exchange = begin_llm_exchange("post_tool_response_retry", effective_model or requested_model, messages)
+                        retry_exchange = begin_llm_exchange(
+                            (
+                                "post_tool_response_request_too_large_retry"
+                                if compacted_for_request_too_large
+                                else "post_tool_response_retry"
+                            ),
+                            effective_model or requested_model,
+                            messages,
+                        )
                         retry_model_request_started_perf = time.perf_counter()
                         latest_request_estimated_tokens = self._estimate_model_request_tokens(
                             messages,
@@ -7292,8 +7842,16 @@ class VintageProgrammerRuntime:
                             self._emit_trace(
                                 progress_cb,
                                 run_id=run_id,
-                                type="llm.retry_succeeded",
-                                title="LLM retry succeeded",
+                                type=(
+                                    "llm.request_too_large.retry_succeeded"
+                                    if compacted_for_request_too_large
+                                    else "llm.retry_succeeded"
+                                ),
+                                title=(
+                                    "Oversized LLM request retry succeeded"
+                                    if compacted_for_request_too_large
+                                    else "LLM retry succeeded"
+                                ),
                                 status="success",
                                 payload={
                                     "model": effective_model or requested_model,
@@ -7304,6 +7862,9 @@ class VintageProgrammerRuntime:
                                 },
                                 trace_events=trace_events,
                             )
+                            if compacted_for_request_too_large:
+                                request_too_large_recovery["recovered"] = True
+                                notes.append("request_too_large_retry_succeeded")
                             completed_exchange = retry_exchange
                         except Exception as retry_exc:
                             retry_response_ms = int((time.perf_counter() - retry_model_request_started_perf) * 1000)
@@ -7312,7 +7873,11 @@ class VintageProgrammerRuntime:
                             retry_payload = self._llm_failure_payload(
                                 retry_exc,
                                 messages=messages,
-                                phase="before_followup_llm_retry",
+                                phase=(
+                                    "post_tool_response_request_too_large_retry"
+                                    if compacted_for_request_too_large
+                                    else "before_followup_llm_retry"
+                                ),
                                 model=effective_model or requested_model,
                                 retry_attempt=1,
                             )
@@ -7634,6 +8199,7 @@ class VintageProgrammerRuntime:
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),
+                "request_too_large_recovery": dict(request_too_large_recovery),
                 "llm_exchanges": list(llm_exchanges),
                 "tool_boundary_clean": (
                     runtime_error.get("tool_boundary_clean")
@@ -7690,6 +8256,7 @@ class VintageProgrammerRuntime:
             "final_answer": final_answer,
             "model_draft": model_draft,
             "runtime_error": dict(runtime_error),
+            "request_too_large_recovery": dict(request_too_large_recovery),
             "effective_model": effective_model or requested_model,
             "permission_profile": str(turn_runtime_boundary.permission_profile or "auto"),
             "turn_status": turn_status,
@@ -7729,6 +8296,7 @@ class VintageProgrammerRuntime:
                 "model_draft": model_draft,
                 "final_answer": final_answer,
                 "runtime_error": dict(runtime_error),
+                "request_too_large_recovery": dict(request_too_large_recovery),
                 "turn_changes": dict(turn_changes),
                 "llm_exchanges": list(llm_exchanges),
                 "tool_boundary_clean": (

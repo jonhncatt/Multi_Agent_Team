@@ -741,6 +741,56 @@ class _FlakyNoneTypeFollowupBackend(_FakeBackend):
         return self._next(), object(), model, []
 
 
+class _RequestTooLargeInitialBackend(_FakeBackend):
+    def __init__(self, scripted_messages: list[_FakeMessage], *, fail_times: int) -> None:
+        super().__init__(scripted_messages)
+        self._fail_times = max(0, int(fail_times))
+
+    def _invoke_chat_with_runner(
+        self,
+        *,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+        event_cb=None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (max_output_tokens, enable_tools, tool_names, event_cb)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "initial"})
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError(
+                "<html><head><title>413 Request Entity Too Large</title></head>"
+                "<body><h1>413 Request Entity Too Large</h1><p>nginx/1.30.1</p></body></html>"
+            )
+        return self._next(), object(), model, []
+
+
+class _RequestTooLargeFollowupBackend(_FakeBackend):
+    def __init__(self, scripted_messages: list[_FakeMessage], *, fail_times: int) -> None:
+        super().__init__(scripted_messages)
+        self._fail_times = max(0, int(fail_times))
+
+    def _invoke_with_runner_recovery(
+        self,
+        *,
+        runner: Any,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+        tool_names: list[str] | None = None,
+        event_cb=None,
+    ) -> tuple[Any, Any, str, list[str]]:
+        _ = (runner, max_output_tokens, enable_tools, tool_names, event_cb)
+        self.invocations.append({"messages": list(messages), "model": model, "kind": "followup"})
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("413 Request Entity Too Large")
+        return self._next(), object(), model, []
+
+
 def _write_specs(agent_dir: Path, *, include_soul: bool = True, include_tools: bool = True) -> None:
     agent_dir.mkdir(parents=True, exist_ok=True)
     if include_soul:
@@ -3303,6 +3353,240 @@ def test_runtime_llm_followup_failure_preserves_debug_context(tmp_path: Path) ->
     assert any(item["tool_call_id"] == "tc-debug" for item in failed_exchange["sent_messages_exact"] if item["role"] == "tool")
     assert failed_exchange["harness_interpretation"]["decision"] == "runtime_error"
     assert failed_exchange["harness_interpretation"]["turn_status_after_round"] == "failed"
+
+
+def _oversized_thread_transcript() -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for index in range(8):
+        items.extend(
+            [
+                {
+                    "id": f"old-user-{index}",
+                    "turn_id": f"old-turn-{index}",
+                    "role": "user",
+                    "content": f"old request {index} " + ("attachment evidence " * 3000),
+                },
+                {
+                    "id": f"old-assistant-{index}",
+                    "turn_id": f"old-turn-{index}",
+                    "role": "assistant",
+                    "content": f"old answer {index} " + ("investigation result " * 3000),
+                },
+            ]
+        )
+    return {"schema_version": 1, "items": items}
+
+
+def test_runtime_compacts_locally_and_retries_one_413_request(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _RequestTooLargeInitialBackend(
+        [_FakeMessage(content="Recovered after local compaction.")],
+        fail_times=1,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="继续调查，但不要重新读取大附件",
+        settings=ChatSettings(
+            model="gpt-test",
+            enable_tools=True,
+            permission_profile="full_dev",
+            locale="zh-CN",
+        ),
+        context={
+            "session_id": "s-request-too-large-recovers",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": _oversized_thread_transcript(),
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "Recovered after local compaction."
+    assert result["runtime_error"] == {}
+    assert len(backend.invocations) == 2
+    first_chars = sum(len(str(message.content)) for message in backend.invocations[0]["messages"])
+    retry_chars = sum(len(str(message.content)) for message in backend.invocations[1]["messages"])
+    assert retry_chars < first_chars
+    recovery = result["request_too_large_recovery"]
+    assert recovery["attempted"] is True
+    assert recovery["compacted"] is True
+    assert recovery["retried"] is True
+    assert recovery["recovered"] is True
+    assert recovery["after_bytes"] < recovery["before_bytes"]
+
+    exchanges = result["activity"]["llm_exchanges"]
+    assert [item["phase"] for item in exchanges] == [
+        "initial",
+        "initial_request_too_large_retry",
+    ]
+    assert [item["status"] for item in exchanges] == ["failed", "completed"]
+    assert exchanges[0]["error"]["kind"] == "request_too_large"
+    assert "nginx/1.30.1" in exchanges[0]["error"]["raw_message"]
+    assert "nginx/1.30.1" not in exchanges[0]["error"]["message"]
+    trace_types = [item.get("type") for item in result["activity"]["trace_events"]]
+    assert "llm.request_too_large.compacting" in trace_types
+    assert "llm.request_too_large.retry_succeeded" in trace_types
+    assert "llm.failed" not in trace_types
+    compaction_items = [
+        event["item"]
+        for event in progress_events
+        if event.get("event") == "item/completed"
+        and str((event.get("item") or {}).get("type") or "") == "contextCompaction"
+    ]
+    assert len(compaction_items) == 1
+    assert compaction_items[0]["reason"] == "request_too_large"
+    assert "正在进行唯一一次重试" in compaction_items[0]["summary"]
+
+
+def test_runtime_does_not_resend_413_when_no_old_context_can_be_compacted(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _RequestTooLargeInitialBackend([], fail_times=2)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="读取当前这个很大的附件",
+        settings=ChatSettings(
+            model="gpt-test",
+            enable_tools=True,
+            permission_profile="full_dev",
+            locale="zh-CN",
+        ),
+        context={
+            "session_id": "s-request-too-large-current-attachment",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": {"schema_version": 1, "items": []},
+            "attachments": [],
+        },
+    )
+
+    assert len(backend.invocations) == 1
+    assert result["turn_status"] == "failed"
+    assert result["runtime_error"]["kind"] == "request_too_large"
+    assert result["runtime_error"]["status_code"] == 413
+    assert "nginx/1.30.1" in result["runtime_error"]["raw_message"]
+    assert "nginx/1.30.1" not in result["text"]
+    assert "移除或缩小" in result["text"]
+    recovery = result["request_too_large_recovery"]
+    assert recovery["attempted"] is True
+    assert recovery["compacted"] is False
+    assert recovery["retried"] is False
+
+
+def test_runtime_stops_after_single_compacted_413_retry(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _RequestTooLargeInitialBackend([], fail_times=3)
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="继续调查",
+        settings=ChatSettings(
+            model="gpt-test",
+            enable_tools=True,
+            permission_profile="full_dev",
+            locale="zh-CN",
+        ),
+        context={
+            "session_id": "s-request-too-large-retry-once",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": _oversized_thread_transcript(),
+            "attachments": [],
+        },
+    )
+
+    assert len(backend.invocations) == 2
+    assert result["turn_status"] == "failed"
+    assert result["runtime_error"]["kind"] == "request_too_large"
+    assert result["runtime_error"]["retry_attempt"] == 1
+    assert result["runtime_error"]["phase"] == "initial_request_too_large_retry"
+    recovery = result["request_too_large_recovery"]
+    assert recovery["compacted"] is True
+    assert recovery["retried"] is True
+    assert recovery["recovered"] is False
+
+
+def test_runtime_compacts_and_retries_one_followup_413_request(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _RequestTooLargeFollowupBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-413-followup",
+                        "name": "web_search",
+                        "args": {"query": "latest evidence"},
+                    }
+                ],
+            ),
+            _FakeMessage(content="Recovered follow-up response."),
+        ],
+        fail_times=1,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="搜索后继续总结",
+        settings=ChatSettings(
+            model="gpt-test",
+            enable_tools=True,
+            permission_profile="full_dev",
+            locale="zh-CN",
+        ),
+        context={
+            "session_id": "s-request-too-large-followup",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "thread_transcript": _oversized_thread_transcript(),
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "Recovered follow-up response."
+    assert [item["kind"] for item in backend.invocations] == [
+        "initial",
+        "followup",
+        "followup",
+    ]
+    assert result["request_too_large_recovery"]["recovered"] is True
+    exchanges = result["activity"]["llm_exchanges"]
+    assert [item["phase"] for item in exchanges] == [
+        "initial",
+        "post_tool_response",
+        "post_tool_response_request_too_large_retry",
+    ]
+    assert [item["status"] for item in exchanges] == [
+        "completed",
+        "failed",
+        "completed",
+    ]
+    assert runtime._messages_at_tool_boundary(backend.invocations[-1]["messages"])
 
 
 def test_runtime_retries_clean_boundary_nonetype_model_dump_failure(tmp_path: Path) -> None:

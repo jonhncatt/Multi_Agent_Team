@@ -757,6 +757,25 @@ class _ContextCapturingRuntime(_FakeVintageRuntime):
         return super().run(message=message, settings=settings, context=context, progress_cb=progress_cb)
 
 
+class _RequestTooLargeRecoveredRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        payload = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        payload["request_too_large_recovery"] = {
+            "attempted": True,
+            "compacted": True,
+            "retried": True,
+            "recovered": True,
+            "before_bytes": 300_000,
+            "after_bytes": 120_000,
+        }
+        return payload
+
+
 class _StreamingVintageRuntime(_FakeVintageRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings)
@@ -2725,6 +2744,57 @@ def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_pa
     seen_transcript = list(dict(seen["thread_transcript"]).get("items") or [])
     assert seen_transcript
     assert all(item["content"] != "继续总结" for item in seen_transcript)
+
+
+def test_chat_persists_runtime_413_compaction_for_the_next_turn(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _RequestTooLargeRecoveredRuntime())
+    client = TestClient(main_app.app)
+
+    project = main_app.project_store.ensure_default_project()
+    session = main_app.session_store.create(project)
+    for index in range(24):
+        words = " ".join(f"legacy_{index}_{item}" for item in range(1_000))
+        main_app.session_store.append_turn(
+            session,
+            role="user" if index % 2 == 0 else "assistant",
+            text=f"large but normally sub-threshold history {index}: {words}",
+        )
+    main_app.session_store.save(session)
+
+    pre_status = main_app._build_compaction_status_for_session(
+        session=session,
+        model="gpt-test",
+        max_output_tokens=1024,
+        pending_message="继续调查",
+    )
+    assert pre_status["compact_recommendation"] == "none"
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "session_id": session["id"],
+            "message": "继续调查",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 40,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compaction_status"]["last_compaction_phase"] == (
+        "request_too_large_recovery"
+    )
+
+    loaded = main_app.session_store.load(session["id"], default_project=project)
+    assert loaded is not None
+    assert loaded["compaction_state"]["generation"] == 1
+    assert loaded["compaction_state"]["compacted_history"]
 
 
 def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tmp_path: Path) -> None:

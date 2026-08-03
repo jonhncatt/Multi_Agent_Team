@@ -2322,7 +2322,9 @@ function buildMainLiveCards(activity, liveItems = [], runtimeTrace = [], locale 
   if (String(item.runtime_error.kind || item.runtime_error.message || "").trim()) {
     const errorMessage = item.runtime_error.kind === "llm_empty_response"
       ? translateUi(locale, "runtime.error.llm_empty_response")
-      : (String(item.runtime_error.message || "").trim() || translateUi(locale, "runtime.error.llm_request_failed"));
+      : item.runtime_error.kind === "request_too_large"
+        ? translateUi(locale, "runtime.error.request_too_large")
+        : (String(item.runtime_error.message || "").trim() || translateUi(locale, "runtime.error.llm_request_failed"));
     const detailLines = [
       `${translateUi(locale, "runtime.error.phase")}：${String(item.runtime_error.phase || "-").trim() || "-"}`,
       `${translateUi(locale, "runtime.error.kind")}：${String(item.runtime_error.kind || "-").trim() || "-"}`,
