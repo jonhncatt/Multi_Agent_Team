@@ -8,7 +8,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 CANVAS_SIZE = 1024
 MASTER_FILENAME = "vintage_programmer_master.png"
-ICON_SIZES = tuple((size, size) for size in (16, 24, 32, 48, 64, 128, 256))
+ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
+WEB_ICON_SIZES = (16, 32, 48)
 
 
 def _remove_connected_light_background(source: Image.Image) -> Image.Image:
@@ -58,14 +60,43 @@ def load_master(asset_dir: Path) -> Image.Image:
     return Image.open(master_path).convert("RGBA")
 
 
+def render_icon_frame(master: Image.Image, size: int) -> Image.Image:
+    frame = master.resize((size, size), Image.Resampling.LANCZOS)
+    if size <= 64:
+        # Small Windows taskbar icons need a little more edge contrast than the
+        # large artwork. Supplying these frames explicitly also avoids a second
+        # resize by the ICO writer.
+        frame = frame.filter(
+            ImageFilter.UnsharpMask(
+                radius=max(0.45, size / 64),
+                percent=145,
+                threshold=2,
+            )
+        )
+    return frame
+
+
 def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
     png = master.resize((512, 512), Image.Resampling.LANCZOS)
     png.save(asset_dir / "vintage_programmer.png", optimize=True)
-    master.save(asset_dir / "vintage_programmer.ico", format="ICO", sizes=ICON_SIZES)
+    icon_frames = [render_icon_frame(master, size) for size in ICON_PIXEL_SIZES]
+    icon_path = asset_dir / "vintage_programmer.ico"
+    icon_frames[-1].save(
+        icon_path,
+        format="ICO",
+        append_images=icon_frames[:-1],
+        sizes=ICON_SIZES,
+    )
 
     web_asset_dir = asset_dir.parents[2] / "app" / "static" / "assets"
     web_asset_dir.mkdir(parents=True, exist_ok=True)
     png.save(web_asset_dir / "vintage_programmer.png", optimize=True)
+    for size in WEB_ICON_SIZES:
+        render_icon_frame(master, size).save(
+            web_asset_dir / f"vintage_programmer_{size}.png",
+            optimize=True,
+        )
+    (web_asset_dir / "vintage_programmer.ico").write_bytes(icon_path.read_bytes())
 
 
 def main() -> None:

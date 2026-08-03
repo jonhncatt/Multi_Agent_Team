@@ -768,15 +768,6 @@ def ensure_desktop_control_token(config: DesktopLaunchConfig) -> DesktopLaunchCo
     return replace(config, desktop_control_token=token)
 
 
-def _preparing_detail(locale: str) -> str:
-    normalized = str(locale or "").strip().lower()
-    if normalized.startswith("zh"):
-        return "正在启动本地工作区"
-    if normalized.startswith("ja"):
-        return "ローカルワークスペースを起動しています"
-    return "Starting the local workspace"
-
-
 def _write_preparing_document(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(".tmp")
@@ -820,8 +811,15 @@ def write_chrome_preparation_page(
         if icon_path.is_file()
         else '<div class="mark fallback">VP</div>'
     )
+    favicon_path = config.project_root / "app" / "static" / "assets" / "vintage_programmer.ico"
+    favicon_source = favicon_path if favicon_path.is_file() else icon_path
+    favicon_markup = (
+        f'<link rel="icon" href="{escape(favicon_source.resolve().as_uri())}" sizes="any">'
+        if favicon_source.is_file()
+        else ""
+    )
     heading = "Preparing…"
-    detail = _preparing_detail(config.locale)
+    detail = "Vintage Programmer will open automatically when ready."
     spinner = '<span class="spinner" aria-hidden="true"></span>'
     document = f"""<!doctype html>
 <html lang="en">
@@ -829,6 +827,7 @@ def write_chrome_preparation_page(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{APP_TITLE}</title>
+  {favicon_markup}
   <style>
     * {{ box-sizing: border-box; }}
     html, body {{ margin: 0; min-height: 100%; }}

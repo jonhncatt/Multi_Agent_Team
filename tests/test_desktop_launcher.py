@@ -339,11 +339,13 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     assert log.closed is True
 
 
-def test_chrome_preparing_page_uses_brand_icon_and_localized_detail(tmp_path: Path) -> None:
+def test_chrome_preparing_page_uses_brand_icon_and_fixed_english_detail(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
     icon = root / "app" / "static" / "assets" / "vintage_programmer.png"
     icon.parent.mkdir(parents=True)
     icon.write_bytes(b"png")
+    favicon = icon.with_suffix(".ico")
+    favicon.write_bytes(b"ico")
     config = DesktopLaunchConfig(
         project_root=root,
         python_command=("python",),
@@ -362,8 +364,10 @@ def test_chrome_preparing_page_uses_brand_icon_and_localized_detail(tmp_path: Pa
     assert path == config.desktop_preparing_path
     assert chrome_preparation_url(config).startswith("file://")
     assert "Preparing…" in document
-    assert "正在启动本地工作区" in document
+    assert "Vintage Programmer will open automatically when ready." in document
+    assert "正在启动本地工作区" not in document
     assert icon.resolve().as_uri() in document
+    assert favicon.resolve().as_uri() in document
     assert "Date.now()" in document
     assert config.desktop_preparing_state_path.read_text(encoding="utf-8") == (
         "window.__VP_PREPARING_STATE__='preparing';"
