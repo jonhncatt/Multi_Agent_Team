@@ -175,7 +175,8 @@ def test_windows_build_embeds_multisize_vp_icon_and_webview_host() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
     icon = (asset_dir / "vintage_programmer.ico").read_bytes()
     png = (asset_dir / "vintage_programmer.png").read_bytes()
-    svg = (asset_dir / "vintage_programmer.svg").read_text(encoding="utf-8")
+    master = (asset_dir / "vintage_programmer_master.png").read_bytes()
+    web_png = (REPO_ROOT / "app" / "static" / "assets" / "vintage_programmer.png").read_bytes()
     build_script = (REPO_ROOT / "desktop" / "windows" / "build.ps1").read_text(
         encoding="utf-8"
     )
@@ -187,9 +188,10 @@ def test_windows_build_embeds_multisize_vp_icon_and_webview_host() -> None:
     ).read_text(encoding="utf-8")
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert master.startswith(b"\x89PNG\r\n\x1a\n")
+    assert web_png == png
     assert icon[:4] == b"\x00\x00\x01\x00"
     assert int.from_bytes(icon[4:6], "little") == 7
-    assert "#f37021" in svg
     assert "--icon desktop\\windows\\assets\\vintage_programmer.ico" in build_script
     assert "--icon desktop/windows/assets/vintage_programmer.ico" in workflow
     assert "Start-Process" in workflow

@@ -3,16 +3,18 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import ctypes
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import subprocess
 import sys
 import time
 from typing import Callable, Iterator, Mapping, Sequence
 from urllib.error import URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from desktop.webview_host import (
@@ -32,6 +34,7 @@ DEFAULT_DESKTOP_UI_SCALE = 0.8
 DEFAULT_DESKTOP_SHELL = "auto"
 DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC = 5.0
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
+DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 
 
 class LauncherError(RuntimeError):
@@ -54,6 +57,7 @@ class DesktopLaunchConfig:
     ui_scale: float = DEFAULT_DESKTOP_UI_SCALE
     locale: str = "ja-JP"
     close_timeout_sec: float = DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC
+    desktop_control_token: str = ""
 
     @property
     def app_url(self) -> str:
@@ -62,6 +66,16 @@ class DesktopLaunchConfig:
     @property
     def desktop_url(self) -> str:
         return f"{self.app_url}/?vp_desktop=1&vp_scale={self.ui_scale:g}"
+
+    @property
+    def chrome_desktop_url(self) -> str:
+        base = f"{self.desktop_url}&vp_host=chrome"
+        token = str(self.desktop_control_token or "").strip()
+        return f"{base}#vp_control={quote(token, safe='')}" if token else base
+
+    @property
+    def webview_desktop_url(self) -> str:
+        return f"{self.desktop_url}&vp_host=webview2"
 
     @property
     def health_url(self) -> str:
@@ -76,11 +90,16 @@ class DesktopLaunchConfig:
         return self.project_root / "app" / "data" / "runtime" / "desktop-launcher.log"
 
     @property
+    def desktop_control_token_path(self) -> Path:
+        return self.project_root / "app" / "data" / "runtime" / DESKTOP_CONTROL_TOKEN_FILENAME
+
+    @property
     def window_initialized_marker(self) -> Path:
         return self.browser_profile_dir / ".vp-window-initialized"
 
     def diagnostics(self) -> dict[str, object]:
         payload = asdict(self)
+        payload.pop("desktop_control_token", None)
         payload["project_root"] = str(self.project_root)
         payload["python_command"] = list(self.python_command)
         payload["browser_path"] = str(self.browser_path) if self.browser_path else ""
@@ -88,6 +107,8 @@ class DesktopLaunchConfig:
         payload["webview_profile_dir"] = str(self.webview_profile_dir)
         payload["app_url"] = self.app_url
         payload["desktop_url"] = self.desktop_url
+        payload["chrome_desktop_url"] = self.chrome_desktop_url.split("#", 1)[0]
+        payload["webview_desktop_url"] = self.webview_desktop_url
         payload["health_url"] = self.health_url
         payload["log_path"] = str(self.log_path)
         return payload
@@ -472,7 +493,7 @@ def build_browser_command(
         )
     command = [
         str(config.browser_path),
-        f"--app={config.desktop_url}",
+        f"--app={config.chrome_desktop_url}",
         f"--user-data-dir={config.browser_profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -604,10 +625,11 @@ def should_try_webview2(
     *,
     platform_name: str | None = None,
 ) -> bool:
-    return (platform_name or sys.platform) == "win32" and config.shell_mode in {
-        "auto",
-        "webview2",
-    }
+    if (platform_name or sys.platform) != "win32":
+        return False
+    if config.shell_mode == "webview2":
+        return True
+    return config.shell_mode == "auto" and config.browser_path is None
 
 
 def read_desktop_lifecycle(config: DesktopLaunchConfig) -> dict[str, object]:
@@ -688,7 +710,7 @@ def handle_desktop_close(
 
 def start_webview2(config: DesktopLaunchConfig) -> None:
     open_webview2_window(
-        url=config.desktop_url,
+        url=config.webview_desktop_url,
         project_root=config.project_root,
         profile_dir=config.webview_profile_dir,
         width=config.initial_window_width,
@@ -701,6 +723,27 @@ def _append_launcher_note(config: DesktopLaunchConfig, message: str) -> None:
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
     with config.log_path.open("a", encoding="utf-8") as handle:
         handle.write(f"[desktop-shell] {message.strip()}\n")
+
+
+def ensure_desktop_control_token(config: DesktopLaunchConfig) -> DesktopLaunchConfig:
+    """Attach a stable local token used only by the Chrome App exit control."""
+
+    token_path = config.desktop_control_token_path
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        temporary_path = token_path.with_suffix(".tmp")
+        temporary_path.write_text(token + "\n", encoding="utf-8")
+        try:
+            os.chmod(temporary_path, 0o600)
+        except OSError:
+            pass
+        temporary_path.replace(token_path)
+    return replace(config, desktop_control_token=token)
 
 
 def stop_owned_server(process: subprocess.Popen[bytes]) -> None:
@@ -956,6 +999,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 diagnostics["native_shell_probe"] = probe_webview2_host()
             _write_diagnostics(diagnostics, args.diagnostics_file)
             return 0
+        config = ensure_desktop_control_token(config)
         with desktop_instance_guard() as is_primary_instance:
             if not is_primary_instance:
                 return 0

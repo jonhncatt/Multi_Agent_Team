@@ -70,6 +70,8 @@ def test_workstation_shell_behaviors_are_wired() -> None:
         "DOMPurifyRuntime.sanitize",
         "modelStorageKeyForProvider(",
         "health && health.provider_options",
+        "handleChromeDesktopExit",
+        '"X-VP-Desktop-Token"',
     ]
     for token in required_tokens:
         assert token in script, token

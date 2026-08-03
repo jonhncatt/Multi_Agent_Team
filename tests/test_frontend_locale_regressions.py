@@ -83,6 +83,9 @@ REQUIRED_CORE_KEYS = (
     "tabs.run",
     "tabs.settings",
     "tabs.eval",
+    "desktop.exit.button",
+    "desktop.exit.confirm",
+    "desktop.exit.stopped",
     "eval.title",
     "eval.start",
     "eval.status.running",
@@ -400,6 +403,8 @@ def test_index_renders_static_boot_loading_fallback() -> None:
     assert 'class="app-boot-screen"' in index
     assert 'role="status"' in index
     assert "Loading workspace..." in index
+    assert 'src="/static/assets/vintage_programmer.png"' in index
+    assert 'window.__VP_DESKTOP_CONTROL_TOKEN__' in index
     for token in (
         ".app-boot-screen",
         ".app-boot-card",

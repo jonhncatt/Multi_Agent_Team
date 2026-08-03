@@ -24,8 +24,9 @@ is open restores the existing window instead of opening another backend or windo
 Closing an idle native window also stops the local VP backend. If an Agent or Eval is
 still running, the close dialog offers only **Stop tasks and exit** or **Cancel
 closing**. Agent cancellation uses the normal runtime cancel path before the backend
-exits. Chrome App Mode remains a compatibility fallback and cannot provide the same
-native window-lifecycle guarantees.
+exits. Chrome App Mode shows an explicit **Exit** button in the top-right navigation.
+Use that button to stop active work and the local backend before closing; Chrome's
+ordinary window close cannot reliably report its lifecycle to the launcher.
 
 ## Build on Windows
 
@@ -61,8 +62,9 @@ VP_DESKTOP_INITIAL_WINDOW_SIZE=1360,840
 VP_DESKTOP_UI_SCALE=0.8
 ```
 
-`auto` prefers WebView2 on Windows and falls back to Chrome. Use `webview2` to require
-the native host or `chrome` to force the legacy App Mode window. The native window
+`auto` prefers Chrome App Mode when Chrome is installed because it is lighter on
+managed Windows machines, and uses WebView2 when Chrome is unavailable. Use `webview2`
+to require the native host or `chrome` to force App Mode. The native window
 opens maximized; Chrome uses the configured size on first launch and remembers later
 resizing.
 The desktop-only UI scale defaults to 80% to keep the workspace density close to

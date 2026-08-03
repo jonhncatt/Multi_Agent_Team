@@ -4,11 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Vintage Programmer</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+    <link rel="icon" type="image/png" href="/static/assets/vintage_programmer.png" />
     <script>
       (() => {
         const params = new URLSearchParams(window.location.search);
         if (params.get("vp_desktop") !== "1") return;
+        const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+        const fragmentToken = String(fragment.get("vp_control") || "");
+        if (fragmentToken) window.sessionStorage.setItem("vp_desktop_control_token", fragmentToken);
+        window.__VP_DESKTOP_HOST__ = String(params.get("vp_host") || "");
+        window.__VP_DESKTOP_CONTROL_TOKEN__ = fragmentToken || String(
+          window.sessionStorage.getItem("vp_desktop_control_token") || "",
+        );
+        if (fragmentToken) {
+          window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+        }
         const requestedScale = Number.parseFloat(params.get("vp_scale") || "0.8");
         const scale = Number.isFinite(requestedScale)
           ? Math.min(1.25, Math.max(0.65, requestedScale))
@@ -27,7 +37,7 @@
     <div id="root" data-app="vintage-programmer">
       <main class="app-boot-screen" role="status" aria-live="polite">
         <div class="app-boot-card">
-          <div class="app-boot-mark" aria-hidden="true">VP</div>
+          <img class="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
           <div class="app-boot-copy">
             <div class="app-boot-title">Vintage Programmer</div>
             <div class="app-boot-status">

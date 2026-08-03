@@ -38,6 +38,9 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
+const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
+const DESKTOP_CONTROL_TOKEN = String(window.__VP_DESKTOP_CONTROL_TOKEN__ || "").trim();
+const IS_CHROME_DESKTOP_APP = DESKTOP_HOST === "chrome" && Boolean(DESKTOP_CONTROL_TOKEN);
 const PROJECTS_REFRESH_STALE_MS = 60_000;
 const MODEL_WAIT_SLOW_HINT_MS = 8_000;
 const UPLOAD_CONCURRENCY = 3;
@@ -4217,6 +4220,7 @@ function App() {
   });
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
+  const [desktopExitState, setDesktopExitState] = useState("idle");
   const [bootState, setBootState] = useState({ active: true, phase: "workspace" });
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
@@ -5159,6 +5163,29 @@ function App() {
       throw errorWithUiError(uiError);
     }
     return res.json();
+  }
+
+  async function handleChromeDesktopExit() {
+    if (!IS_CHROME_DESKTOP_APP || desktopExitState !== "idle") return;
+    try {
+      const lifecycle = await fetchJson("/api/desktop/lifecycle");
+      const activeRuns = Array.isArray(lifecycle.active_runs) ? lifecycle.active_runs : [];
+      const activeEvals = Array.isArray(lifecycle.active_evals) ? lifecycle.active_evals : [];
+      const activeCount = activeRuns.length + activeEvals.length;
+      if (activeCount > 0 && !window.confirm(t("desktop.exit.confirm", { count: activeCount }))) {
+        return;
+      }
+      setDesktopExitState("exiting");
+      await fetchJson("/api/desktop/exit", {
+        method: "POST",
+        headers: { "X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN },
+      });
+      setDesktopExitState("stopped");
+      window.setTimeout(() => window.close(), 80);
+    } catch (err) {
+      setDesktopExitState("idle");
+      applyUiError(err, t("desktop.exit.failed"));
+    }
   }
 
   async function waitForChatRunTerminal(runId, timeoutMs = 30000) {
@@ -10341,7 +10368,7 @@ function App() {
     <div className="workspace-shell" id="appShell" aria-hidden=${bootLoadingActive ? "true" : undefined}>
       <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
         <div className="rail-brand">
-          <div className="brand-mark">VP</div>
+          <img className="brand-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
           <div>
             <div className="brand-title">Vintage Programmer</div>
             <div className="brand-subline">
@@ -10582,6 +10609,19 @@ function App() {
             >
               ${evalButtonLabel}
             </button>
+            ${IS_CHROME_DESKTOP_APP
+              ? html`
+                  <button
+                    className="mini-btn desktop-exit-btn"
+                    type="button"
+                    onClick=${handleChromeDesktopExit}
+                    disabled=${desktopExitState !== "idle"}
+                    title=${t("desktop.exit.help")}
+                  >
+                    ${desktopExitState === "idle" ? t("desktop.exit.button") : t("desktop.exit.exiting")}
+                  </button>
+                `
+              : null}
           </div>
         </header>
 
@@ -12118,7 +12158,7 @@ function App() {
       ? html`
           <main className="app-boot-screen app-boot-screen-overlay" role="status" aria-live="polite" aria-label=${bootLoadingText}>
             <div className="app-boot-card">
-              <div className="app-boot-mark" aria-hidden="true">VP</div>
+              <img className="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
               <div className="app-boot-copy">
                 <div className="app-boot-title">Vintage Programmer</div>
                 <div className="app-boot-status">
@@ -12128,6 +12168,18 @@ function App() {
               </div>
             </div>
           </main>
+        `
+      : null}
+    ${desktopExitState === "stopped"
+      ? html`
+          <div className="desktop-exit-overlay" role="status" aria-live="polite">
+            <div className="desktop-exit-card">
+              <img src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <strong>${t("desktop.exit.stopped")}</strong>
+              <span>${t("desktop.exit.close_hint")}</span>
+              <button className="solid-btn" type="button" onClick=${() => window.close()}>${t("desktop.exit.close_window")}</button>
+            </div>
+          </div>
         `
       : null}
     </div>

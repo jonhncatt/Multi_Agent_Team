@@ -92,6 +92,13 @@ body {
   font-weight: 700;
 }
 
+img.app-boot-mark {
+  display: block;
+  padding: 0;
+  object-fit: contain;
+  background: transparent;
+}
+
 .app-boot-copy {
   min-width: 0;
 }
@@ -176,6 +183,58 @@ html[data-vp-desktop-shell="true"] .workspace-main {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+
+img.brand-mark {
+  display: block;
+  flex: 0 0 auto;
+  padding: 0;
+  object-fit: contain;
+  background: transparent;
+}
+
+.desktop-exit-btn {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  color: var(--accent-dark);
+}
+
+.desktop-exit-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.desktop-exit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 240;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 22, 26, 0.34);
+  backdrop-filter: blur(8px);
+}
+
+.desktop-exit-card {
+  width: min(420px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--ink);
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.desktop-exit-card > img {
+  width: 64px;
+  height: 64px;
+}
+
+.desktop-exit-card > span {
+  color: var(--ink-soft);
 }
 
 .brand-title {
@@ -3869,6 +3928,12 @@ body.theme-minimal .brand-mark {
   background: linear-gradient(145deg, #1d3444, #39586c);
   color: #fcfdff;
   box-shadow: 0 16px 28px rgba(32, 55, 72, 0.18);
+}
+
+body.theme-minimal img.brand-mark {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 body.theme-minimal .brand-kicker,

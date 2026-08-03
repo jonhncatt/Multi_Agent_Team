@@ -11,6 +11,7 @@ from desktop.launcher import (
     build_launch_config,
     build_server_command,
     desktop_instance_guard,
+    ensure_desktop_control_token,
     handle_desktop_close,
     parse_shell_mode,
     parse_window_size,
@@ -171,6 +172,23 @@ def test_windows_auto_mode_does_not_require_chrome_when_webview2_is_primary(
     assert should_try_webview2(config, platform_name="win32") is True
 
 
+def test_windows_auto_mode_prefers_installed_chrome_over_webview2(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+        shell_mode="auto",
+    )
+
+    assert should_try_webview2(config, platform_name="win32") is False
+
+
 def test_launch_config_uses_same_dotenv_port_as_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -192,6 +210,8 @@ def test_launch_config_uses_same_dotenv_port_as_runtime(
     assert config.port == 9123
     assert config.app_url == "http://127.0.0.1:9123"
     assert config.desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8"
+    assert config.chrome_desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8&vp_host=chrome"
+    assert config.webview_desktop_url == "http://127.0.0.1:9123/?vp_desktop=1&vp_scale=0.8&vp_host=webview2"
     assert config.shell_mode == "auto"
     assert config.browser_profile_dir == (
         root / "app" / "data" / "desktop_browser_profile"
@@ -225,7 +245,7 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
         "8181",
     ]
     browser_command = build_browser_command(config)
-    assert "--app=http://127.0.0.1:8181/?vp_desktop=1&vp_scale=0.8" in browser_command
+    assert "--app=http://127.0.0.1:8181/?vp_desktop=1&vp_scale=0.8&vp_host=chrome" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'desktop_browser_profile'}" in browser_command
     assert f"--user-data-dir={root / 'app' / 'data' / 'browser_profile'}" not in browser_command
     assert "--start-maximized" not in browser_command
@@ -233,6 +253,29 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
     initial_command = build_browser_command(config, initialize_window=True)
     assert "--start-maximized" in initial_command
     assert "--window-size=1360,840" in initial_command
+
+
+def test_desktop_control_token_is_stable_and_never_exposed_in_diagnostics(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+
+    first = ensure_desktop_control_token(config)
+    second = ensure_desktop_control_token(config)
+
+    assert len(first.desktop_control_token) >= 32
+    assert second.desktop_control_token == first.desktop_control_token
+    assert first.desktop_control_token_path.read_text(encoding="utf-8").strip() == first.desktop_control_token
+    assert first.chrome_desktop_url.endswith(f"#vp_control={first.desktop_control_token}")
+    assert first.desktop_control_token not in str(first.diagnostics())
 
 
 def test_successful_launch_does_not_terminate_owned_backend(
@@ -314,7 +357,7 @@ def test_browser_process_is_detached_and_initial_size_is_recorded(
     assert config.window_initialized_marker.read_text(encoding="utf-8") == "1\n"
 
 
-def test_windows_auto_mode_prefers_webview2_and_chrome_mode_does_not(tmp_path: Path) -> None:
+def test_windows_explicit_shell_modes_override_auto_selection(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
     config = DesktopLaunchConfig(
         project_root=root,
@@ -327,7 +370,7 @@ def test_windows_auto_mode_prefers_webview2_and_chrome_mode_does_not(tmp_path: P
         startup_timeout_sec=45,
     )
 
-    assert should_try_webview2(config, platform_name="win32") is True
+    assert should_try_webview2(config, platform_name="win32") is False
     assert should_try_webview2(config, platform_name="darwin") is False
     assert should_try_webview2(
         DesktopLaunchConfig(
@@ -343,6 +386,20 @@ def test_windows_auto_mode_prefers_webview2_and_chrome_mode_does_not(tmp_path: P
         ),
         platform_name="win32",
     ) is False
+    assert should_try_webview2(
+        DesktopLaunchConfig(
+            project_root=config.project_root,
+            python_command=config.python_command,
+            browser_path=config.browser_path,
+            browser_profile_dir=config.browser_profile_dir,
+            webview_profile_dir=config.webview_profile_dir,
+            app_module=config.app_module,
+            port=config.port,
+            startup_timeout_sec=config.startup_timeout_sec,
+            shell_mode="webview2",
+        ),
+        platform_name="win32",
+    ) is True
 
 
 def test_webview2_failure_falls_back_to_chrome_without_stopping_backend(

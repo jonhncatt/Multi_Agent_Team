@@ -8,13 +8,14 @@ import json
 import os
 import queue
 from pathlib import Path
+import secrets
 import subprocess
 import threading
 import time
 from typing import Any, Callable
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -138,6 +139,8 @@ workbench_store = WorkbenchStore(
     agent_dir=AGENT_DIR,
 )
 APP_VERSION = "3.1.5Y"
+DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
+DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
@@ -163,6 +166,8 @@ _active_chat_runs_lock = threading.Lock()
 _active_chat_runs: dict[str, dict[str, Any]] = {}
 _eval_job_manager_lock = threading.Lock()
 _eval_job_manager: EvalJobManager | None = None
+_desktop_exit_lock = threading.Lock()
+_desktop_exit_scheduled = False
 
 
 def _get_eval_job_manager() -> EvalJobManager:
@@ -171,6 +176,50 @@ def _get_eval_job_manager() -> EvalJobManager:
         if _eval_job_manager is None:
             _eval_job_manager = EvalJobManager(repo_root=Path(__file__).resolve().parent.parent)
         return _eval_job_manager
+
+
+def _read_desktop_control_token() -> str:
+    try:
+        return DESKTOP_CONTROL_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _desktop_exit_worker(run_ids: list[str]) -> None:
+    for run_id in run_ids:
+        _cancel_active_chat_run(run_id)
+
+    deadline = time.monotonic() + DESKTOP_EXIT_GRACE_SEC
+    while time.monotonic() < deadline:
+        with _active_chat_runs_lock:
+            still_active = any(
+                str((_active_chat_runs.get(run_id) or {}).get("status") or "")
+                in {"running", "cancel_requested"}
+                for run_id in run_ids
+            )
+        if not still_active:
+            break
+        time.sleep(0.15)
+
+    # Give the HTTP response enough time to reach the Chrome App before the
+    # local backend process exits. Any active Eval ends with this process too.
+    time.sleep(0.35)
+    os._exit(0)
+
+
+def _schedule_desktop_exit(run_ids: list[str]) -> bool:
+    global _desktop_exit_scheduled
+    with _desktop_exit_lock:
+        if _desktop_exit_scheduled:
+            return False
+        _desktop_exit_scheduled = True
+    threading.Thread(
+        target=_desktop_exit_worker,
+        args=(list(run_ids),),
+        name="vp-desktop-exit",
+        daemon=True,
+    ).start()
+    return True
 
 
 def _merge_phase_timings(*payloads: Any) -> dict[str, int]:
@@ -912,6 +961,43 @@ def desktop_lifecycle() -> dict[str, Any]:
         "active": bool(active_runs or active_evals),
         "active_runs": active_runs,
         "active_evals": active_evals,
+    }
+
+
+@app.post("/api/desktop/exit")
+def desktop_exit(
+    x_vp_desktop_token: str = Header(default="", alias="X-VP-Desktop-Token"),
+) -> dict[str, Any]:
+    expected_token = _read_desktop_control_token()
+    supplied_token = str(x_vp_desktop_token or "").strip()
+    if not expected_token or not supplied_token or not secrets.compare_digest(
+        supplied_token,
+        expected_token,
+    ):
+        raise HTTPException(status_code=403, detail="Desktop control token is invalid.")
+
+    lifecycle = desktop_lifecycle()
+    active_runs = [
+        dict(item)
+        for item in list(lifecycle.get("active_runs") or [])
+        if isinstance(item, dict)
+    ]
+    active_evals = [
+        dict(item)
+        for item in list(lifecycle.get("active_evals") or [])
+        if isinstance(item, dict)
+    ]
+    run_ids = [str(item.get("run_id") or "").strip() for item in active_runs]
+    run_ids = [run_id for run_id in run_ids if run_id]
+    for run_id in run_ids:
+        _cancel_active_chat_run(run_id)
+
+    scheduled = _schedule_desktop_exit(run_ids)
+    return {
+        "ok": True,
+        "shutdown_scheduled": scheduled,
+        "active_count": len(active_runs) + len(active_evals),
+        "cancelled_run_count": len(run_ids),
     }
 
 

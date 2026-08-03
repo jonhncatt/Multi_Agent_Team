@@ -2987,6 +2987,56 @@ def test_desktop_lifecycle_reports_active_agent_and_eval_work(monkeypatch, tmp_p
             main_app._active_chat_runs.pop(run_id, None)
 
 
+def test_chrome_desktop_exit_requires_local_token_and_cancels_active_runs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "desktop-control-token"
+    token_path.write_text("desktop-secret-token-abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8")
+    monkeypatch.setattr(main_app, "DESKTOP_CONTROL_TOKEN_PATH", token_path)
+    scheduled: list[list[str]] = []
+    monkeypatch.setattr(
+        main_app,
+        "_schedule_desktop_exit",
+        lambda run_ids: scheduled.append(list(run_ids)) or True,
+    )
+    run_id = "run-desktop-exit"
+    cancel_event = threading.Event()
+    with main_app._active_chat_runs_lock:
+        main_app._active_chat_runs[run_id] = {
+            "run_id": run_id,
+            "status": "running",
+            "session_id": "thread-1",
+            "project_id": "project-1",
+            "cancel_event": cancel_event,
+        }
+    try:
+        with TestClient(main_app.app) as client:
+            assert client.post("/api/desktop/exit").status_code == 403
+            assert client.post(
+                "/api/desktop/exit",
+                headers={"X-VP-Desktop-Token": "wrong"},
+            ).status_code == 403
+            response = client.post(
+                "/api/desktop/exit",
+                headers={"X-VP-Desktop-Token": "desktop-secret-token-abcdefghijklmnopqrstuvwxyz"},
+            )
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": True,
+            "shutdown_scheduled": True,
+            "active_count": 1,
+            "cancelled_run_count": 1,
+        }
+        assert scheduled == [[run_id]]
+        assert cancel_event.is_set() is True
+        with main_app._active_chat_runs_lock:
+            assert main_app._active_chat_runs[run_id]["status"] == "cancel_requested"
+    finally:
+        with main_app._active_chat_runs_lock:
+            main_app._active_chat_runs.pop(run_id, None)
+
+
 def test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts(
     monkeypatch,
     tmp_path: Path,
