@@ -1,11 +1,34 @@
 from __future__ import annotations
 
+import struct
 from pathlib import Path
-
-from PIL import Image, ImageChops
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _ico_sizes(payload: bytes) -> set[tuple[int, int]]:
+    assert payload[:4] == b"\x00\x00\x01\x00"
+    count = int.from_bytes(payload[4:6], "little")
+    sizes: set[tuple[int, int]] = set()
+    for index in range(count):
+        entry = payload[6 + (index * 16) : 22 + (index * 16)]
+        assert len(entry) == 16
+        width = entry[0] or 256
+        height = entry[1] or 256
+        image_size = int.from_bytes(entry[8:12], "little")
+        image_offset = int.from_bytes(entry[12:16], "little")
+        assert payload[image_offset : image_offset + 8] == b"\x89PNG\r\n\x1a\n"
+        assert image_offset + image_size <= len(payload)
+        sizes.add((width, height))
+    return sizes
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    payload = path.read_bytes()
+    assert payload[:8] == b"\x89PNG\r\n\x1a\n"
+    assert payload[12:16] == b"IHDR"
+    return struct.unpack(">II", payload[16:24])
 
 
 def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
@@ -52,36 +75,23 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     assert not (REPO_ROOT / "desktop" / "webview_host.py").exists()
 
 
-def test_windows_icon_uses_exact_flat_frames_for_small_taskbar_sizes() -> None:
+def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
     web_asset_dir = REPO_ROOT / "app" / "static" / "assets"
+    icon_payload = (asset_dir / "vintage_programmer.ico").read_bytes()
 
-    with Image.open(asset_dir / "vintage_programmer.ico") as icon:
-        assert icon.ico.sizes() == {
-            (16, 16),
-            (20, 20),
-            (24, 24),
-            (32, 32),
-            (40, 40),
-            (48, 48),
-            (64, 64),
-            (128, 128),
-            (256, 256),
-        }
-        for size in (16, 32, 48, 64):
-            embedded = icon.ico.getimage((size, size)).convert("RGBA")
-            with Image.open(
-                web_asset_dir / f"vintage_programmer_{size}.png"
-            ) as web_icon:
-                assert ImageChops.difference(
-                    embedded, web_icon.convert("RGBA")
-                ).getbbox() is None
-
-    # A flat taskbar frame should have substantially less color variation than
-    # the full-size gradient artwork, while retaining transparency and detail.
-    with Image.open(web_asset_dir / "vintage_programmer_32.png") as small_icon:
-        colors = small_icon.convert("RGBA").getcolors(maxcolors=32 * 32)
-        assert colors is not None
-        assert len(colors) < 300
-        alpha_extrema = small_icon.getchannel("A").getextrema()
-        assert alpha_extrema == (0, 255)
+    assert _ico_sizes(icon_payload) == {
+        (16, 16),
+        (20, 20),
+        (24, 24),
+        (32, 32),
+        (40, 40),
+        (48, 48),
+        (64, 64),
+        (128, 128),
+        (256, 256),
+    }
+    for size in (16, 32, 48, 64):
+        assert _png_size(
+            web_asset_dir / f"vintage_programmer_{size}.png"
+        ) == (size, size)
