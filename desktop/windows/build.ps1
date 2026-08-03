@@ -19,7 +19,7 @@ if (-not (Test-Path $Python)) {
 }
 
 & $Python -m pip install -r desktop\windows\requirements-build.txt
-& $Python -m pytest -q tests\test_desktop_launcher.py
+& $Python -m pytest -q tests\test_desktop_assets.py tests\test_desktop_launcher.py
 & $Python -m PyInstaller `
     --noconfirm `
     --clean `

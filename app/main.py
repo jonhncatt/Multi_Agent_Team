@@ -927,7 +927,6 @@ def health() -> HealthResponse:
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         uptime_sec=max(0, int(time.monotonic() - APP_STARTED_AT)),
-        process_id=os.getpid(),
     )
 
 

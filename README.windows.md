@@ -64,17 +64,14 @@ Copy-Item .env.example .env
 
 ## 独立桌面窗口
 
-仓库提供一个轻量 Windows launcher，用现有 FastAPI 服务打开 WebView2 原生独立窗口，
-不显示地址栏和标签栏，并拥有独立的 VP 图标和任务栏身份。它不修改 Agent Runtime、
+仓库提供一个轻量 Windows launcher，用现有 FastAPI 服务打开 Chrome App Mode 独立窗口，
+不显示地址栏和标签栏，并使用独立的 VP 图标和 Chrome profile。它不修改 Agent Runtime、
 工具执行、审批或上下文逻辑。
 
 从 GitHub Actions 的 **Windows Desktop Launcher** workflow 下载
 `vintage-programmer-windows-launcher`，把其中的 `VintageProgrammer.exe` 放在仓库根目录，
-完成上面的 `.venv` 与 `.env` 配置后即可双击启动。`auto` 模式检测到 Chrome 时优先使用更轻量的
-Chrome App Mode；没有 Chrome 时使用系统 Edge WebView2 Runtime。原生窗口打开期间 EXE 保持运行，
-并且只允许一个 VP 窗口；再次双击会唤醒已有窗口。空闲时关闭原生窗口会同时停止后台；如果仍有
-Agent 或 Eval 在运行，关闭对话框只提供“停止任务并完全退出”和“取消关闭”。选择完全退出时，
-Agent 会先走正常取消流程，再结束后台。Chrome App Mode 的右上角会显示 `Exit` 按钮；应使用它
+完成上面的 `.venv` 与 `.env` 配置后即可双击启动。必须安装 Google Chrome；再次双击会优先
+唤醒已有的 VP 窗口，只有窗口已关闭时才会重新打开。右上角的 `Exit` 按钮会
 停止任务和本地后台后完全退出。直接关闭 Chrome 窗口无法可靠通知 launcher，因此不会自动承担
 后台关闭职责。
 
@@ -82,9 +79,8 @@ Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健
 随后出现的 `Loading workspace…` 只表示正在加载项目、Thread 和本地设置。如果后台已经运行，
 则直接进入 VP，不显示准备页。
 
-WebView2 使用独立的 `app/data/desktop_webview2_profile`，Chrome 回退使用
-`app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
-`VP_BROWSER_USER_DATA_DIR` 保持不变，这些 profile 不能指向同一目录。
+Chrome 桌面窗口使用 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
+`VP_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。
 
 在 Mac 上可以用相同核心预览无地址栏的 App Mode 窗口：
 

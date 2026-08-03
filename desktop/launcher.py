@@ -18,22 +18,12 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from desktop.webview_host import (
-    WebViewHostError,
-    confirm_stop_and_exit,
-    open_webview2_window,
-    probe_webview2_host,
-)
-
-
 APP_TITLE = "Vintage Programmer"
 DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
-DEFAULT_DESKTOP_SHELL = "auto"
-DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC = 5.0
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
@@ -50,16 +40,12 @@ class DesktopLaunchConfig:
     python_command: tuple[str, ...]
     browser_path: Path | None
     browser_profile_dir: Path
-    webview_profile_dir: Path
     app_module: str
     port: int
     startup_timeout_sec: float
-    shell_mode: str = DEFAULT_DESKTOP_SHELL
     initial_window_width: int = DEFAULT_INITIAL_WINDOW_SIZE[0]
     initial_window_height: int = DEFAULT_INITIAL_WINDOW_SIZE[1]
     ui_scale: float = DEFAULT_DESKTOP_UI_SCALE
-    locale: str = "ja-JP"
-    close_timeout_sec: float = DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC
     desktop_control_token: str = ""
 
     @property
@@ -77,16 +63,8 @@ class DesktopLaunchConfig:
         return f"{base}#vp_control={quote(token, safe='')}" if token else base
 
     @property
-    def webview_desktop_url(self) -> str:
-        return f"{self.desktop_url}&vp_host=webview2"
-
-    @property
     def health_url(self) -> str:
         return f"{self.app_url}/api/health"
-
-    @property
-    def lifecycle_url(self) -> str:
-        return f"{self.app_url}/api/desktop/lifecycle"
 
     @property
     def log_path(self) -> Path:
@@ -115,11 +93,9 @@ class DesktopLaunchConfig:
         payload["python_command"] = list(self.python_command)
         payload["browser_path"] = str(self.browser_path) if self.browser_path else ""
         payload["browser_profile_dir"] = str(self.browser_profile_dir)
-        payload["webview_profile_dir"] = str(self.webview_profile_dir)
         payload["app_url"] = self.app_url
         payload["desktop_url"] = self.desktop_url
         payload["chrome_desktop_url"] = self.chrome_desktop_url.split("#", 1)[0]
-        payload["webview_desktop_url"] = self.webview_desktop_url
         payload["health_url"] = self.health_url
         payload["log_path"] = str(self.log_path)
         return payload
@@ -253,11 +229,13 @@ def parse_ui_scale(raw: str) -> float:
     return scale
 
 
-def parse_shell_mode(raw: str) -> str:
-    mode = str(raw or DEFAULT_DESKTOP_SHELL).strip().lower()
-    if mode not in {"auto", "webview2", "chrome"}:
-        raise LauncherError("VP_DESKTOP_SHELL must be auto, webview2, or chrome.")
-    return mode
+def validate_chrome_shell_mode(raw: str) -> None:
+    mode = str(raw or "auto").strip().lower()
+    if mode not in {"auto", "chrome"}:
+        raise LauncherError(
+            "Vintage Programmer desktop now supports Chrome App Mode only. "
+            "Remove VP_DESKTOP_SHELL or set it to chrome."
+        )
 
 
 def resolve_python_command(
@@ -291,7 +269,6 @@ def _browser_candidates(platform_name: str, env: Mapping[str, str]) -> list[Path
         return [
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
         ]
     if platform_name == "win32":
         roots = [
@@ -305,11 +282,6 @@ def _browser_candidates(platform_name: str, env: Mapping[str, str]) -> list[Path
                 continue
             root = Path(raw_root)
             candidates.append(root / "Google" / "Chrome" / "Application" / "chrome.exe")
-        for raw_root in roots:
-            if not raw_root:
-                continue
-            root = Path(raw_root)
-            candidates.append(root / "Microsoft" / "Edge" / "Application" / "msedge.exe")
         return candidates
     return []
 
@@ -336,12 +308,12 @@ def resolve_browser_path(
     for candidate in _browser_candidates(current_platform, current_env):
         if candidate.is_file():
             return candidate.resolve()
-    for command in ("chrome.exe", "chrome", "google-chrome", "msedge.exe", "msedge", "microsoft-edge"):
+    for command in ("chrome.exe", "chrome", "google-chrome"):
         resolved_command = which(command)
         if resolved_command:
             return Path(resolved_command).resolve()
     raise LauncherError(
-        "Google Chrome or Microsoft Edge was not found. Install Chrome, or set VP_DESKTOP_BROWSER_PATH."
+        "Google Chrome was not found. Install Chrome, or set VP_DESKTOP_BROWSER_PATH."
     )
 
 
@@ -374,19 +346,6 @@ def build_launch_config(
     except ValueError as exc:
         raise LauncherError(f"VP_DESKTOP_STARTUP_TIMEOUT_SEC must be numeric, got: {raw_timeout}") from exc
 
-    raw_close_timeout = _setting(
-        "VP_DESKTOP_CLOSE_TIMEOUT_SEC",
-        env=current_env,
-        dotenv=dotenv,
-        default=str(DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC),
-    )
-    try:
-        close_timeout_sec = max(1.0, min(60.0, float(raw_close_timeout)))
-    except ValueError as exc:
-        raise LauncherError(
-            f"VP_DESKTOP_CLOSE_TIMEOUT_SEC must be numeric, got: {raw_close_timeout}"
-        ) from exc
-
     desktop_profile_raw = _setting(
         "VP_DESKTOP_BROWSER_USER_DATA_DIR",
         env=current_env,
@@ -394,35 +353,21 @@ def build_launch_config(
         default="app/data/desktop_browser_profile",
     )
     desktop_profile = _resolve_relative_path(desktop_profile_raw, root)
-    webview_profile = _resolve_relative_path(
-        _setting(
-            "VP_DESKTOP_WEBVIEW2_USER_DATA_DIR",
-            env=current_env,
-            dotenv=dotenv,
-            default="app/data/desktop_webview2_profile",
-        ),
-        root,
-    )
-    if desktop_profile == webview_profile:
-        raise LauncherError(
-            "VP_DESKTOP_BROWSER_USER_DATA_DIR and VP_DESKTOP_WEBVIEW2_USER_DATA_DIR "
-            "must use different directories."
-        )
     agent_profile_raw = _setting("VP_BROWSER_USER_DATA_DIR", env=current_env, dotenv=dotenv)
     if agent_profile_raw:
         agent_profile = _resolve_relative_path(agent_profile_raw, root)
-        if agent_profile in {desktop_profile, webview_profile}:
+        if agent_profile == desktop_profile:
             raise LauncherError(
-                "Desktop shell profiles must differ from VP_BROWSER_USER_DATA_DIR; "
+                "The desktop Chrome profile must differ from VP_BROWSER_USER_DATA_DIR; "
                 "the desktop window and Agent browser cannot share a live browser profile."
             )
 
-    shell_mode = parse_shell_mode(
+    validate_chrome_shell_mode(
         _setting(
             "VP_DESKTOP_SHELL",
             env=current_env,
             dotenv=dotenv,
-            default=DEFAULT_DESKTOP_SHELL,
+            default="auto",
         )
     )
 
@@ -445,40 +390,24 @@ def build_launch_config(
             default=str(DEFAULT_DESKTOP_UI_SCALE),
         )
     )
-    resolved_browser: Path | None
-    try:
-        resolved_browser = resolve_browser_path(
-            configured_path=configured_browser,
-            env=current_env,
-        )
-    except LauncherError:
-        browser_is_required = shell_mode == "chrome" or sys.platform != "win32"
-        if configured_browser or browser_is_required:
-            raise
-        resolved_browser = None
+    resolved_browser = resolve_browser_path(
+        configured_path=configured_browser,
+        env=current_env,
+    )
 
     return DesktopLaunchConfig(
         project_root=root,
         python_command=resolve_python_command(root),
         browser_path=resolved_browser,
         browser_profile_dir=desktop_profile,
-        webview_profile_dir=webview_profile,
         app_module=_setting(
             "VP_APP_MODULE", env=current_env, dotenv=dotenv, default=DEFAULT_APP_MODULE
         ),
         port=port,
         startup_timeout_sec=startup_timeout_sec,
-        shell_mode=shell_mode,
         initial_window_width=initial_window_width,
         initial_window_height=initial_window_height,
         ui_scale=ui_scale,
-        locale=_setting(
-            "VP_DEFAULT_LOCALE",
-            env=current_env,
-            dotenv=dotenv,
-            default="ja-JP",
-        ),
-        close_timeout_sec=close_timeout_sec,
     )
 
 
@@ -503,7 +432,7 @@ def build_browser_command(
 ) -> list[str]:
     if config.browser_path is None:
         raise LauncherError(
-            "Chrome fallback is unavailable. Install Chrome or set VP_DESKTOP_BROWSER_PATH."
+            "Google Chrome is unavailable. Install Chrome or set VP_DESKTOP_BROWSER_PATH."
         )
     command = [
         str(config.browser_path),
@@ -640,111 +569,6 @@ def start_browser(
     if initialize_window:
         config.window_initialized_marker.write_text("1\n", encoding="utf-8")
     return process
-
-
-def should_try_webview2(
-    config: DesktopLaunchConfig,
-    *,
-    platform_name: str | None = None,
-) -> bool:
-    if (platform_name or sys.platform) != "win32":
-        return False
-    if config.shell_mode == "webview2":
-        return True
-    return config.shell_mode == "auto" and config.browser_path is None
-
-
-def read_desktop_lifecycle(config: DesktopLaunchConfig) -> dict[str, object]:
-    payload = request_local_json(config.lifecycle_url, timeout_sec=2.0)
-    if payload.get("ok") is not True:
-        raise LauncherError("Local runtime lifecycle status is unavailable.")
-    return payload
-
-
-def _active_lifecycle_items(payload: Mapping[str, object]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    active_runs = [dict(item) for item in list(payload.get("active_runs") or []) if isinstance(item, dict)]
-    active_evals = [dict(item) for item in list(payload.get("active_evals") or []) if isinstance(item, dict)]
-    return active_runs, active_evals
-
-
-def cancel_active_chat_runs(
-    config: DesktopLaunchConfig,
-    active_runs: Sequence[Mapping[str, object]],
-) -> None:
-    for item in active_runs:
-        run_id = str(item.get("run_id") or "").strip()
-        if not run_id:
-            continue
-        try:
-            request_local_json(
-                f"{config.app_url}/api/chat/runs/{run_id}/cancel",
-                method="POST",
-                timeout_sec=2.0,
-            )
-        except LauncherError as exc:
-            _append_launcher_note(config, f"Could not request cancellation for run {run_id}: {exc}")
-
-
-def wait_for_chat_runs_to_stop(config: DesktopLaunchConfig) -> bool:
-    deadline = time.monotonic() + config.close_timeout_sec
-    while time.monotonic() < deadline:
-        try:
-            active_runs, _active_evals = _active_lifecycle_items(read_desktop_lifecycle(config))
-        except LauncherError:
-            return False
-        if not active_runs:
-            return True
-        time.sleep(0.15)
-    return False
-
-
-def handle_desktop_close(
-    config: DesktopLaunchConfig,
-    owner_window: object,
-    *,
-    confirmer: Callable[..., bool] = confirm_stop_and_exit,
-) -> bool:
-    try:
-        lifecycle = read_desktop_lifecycle(config)
-        active_runs, active_evals = _active_lifecycle_items(lifecycle)
-        active_count = len(active_runs) + len(active_evals)
-    except LauncherError as exc:
-        # An older or temporarily unavailable backend cannot prove that closing
-        # is safe. Ask for the destructive choice instead of silently exiting.
-        _append_launcher_note(config, f"Could not read close lifecycle status: {exc}")
-        active_runs = []
-        active_count = 1
-
-    if active_count == 0:
-        return True
-    if not confirmer(owner_window, active_count=active_count, locale=config.locale):
-        return False
-
-    cancel_active_chat_runs(config, active_runs)
-    if active_runs and not wait_for_chat_runs_to_stop(config):
-        _append_launcher_note(
-            config,
-            "Active Agent cleanup did not finish before the desktop close grace period; "
-            "the managed backend will now be terminated.",
-        )
-    return True
-
-
-def start_webview2(config: DesktopLaunchConfig) -> None:
-    open_webview2_window(
-        url=config.webview_desktop_url,
-        project_root=config.project_root,
-        profile_dir=config.webview_profile_dir,
-        width=config.initial_window_width,
-        height=config.initial_window_height,
-        closing_handler=lambda owner_window: handle_desktop_close(config, owner_window),
-    )
-
-
-def _append_launcher_note(config: DesktopLaunchConfig, message: str) -> None:
-    config.log_path.parent.mkdir(parents=True, exist_ok=True)
-    with config.log_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"[desktop-shell] {message.strip()}\n")
 
 
 def ensure_desktop_control_token(config: DesktopLaunchConfig) -> DesktopLaunchConfig:
@@ -897,36 +721,6 @@ def stop_owned_server(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=3)
 
 
-def terminate_managed_server_pid(pid: int, *, platform_name: str | None = None) -> bool:
-    server_pid = int(pid or 0)
-    if server_pid <= 0 or server_pid == os.getpid() or (platform_name or sys.platform) != "win32":
-        return False
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    open_process = kernel32.OpenProcess
-    open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    open_process.restype = ctypes.c_void_p
-    terminate_process = kernel32.TerminateProcess
-    terminate_process.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    terminate_process.restype = ctypes.c_int
-    wait_for_single_object = kernel32.WaitForSingleObject
-    wait_for_single_object.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    wait_for_single_object.restype = ctypes.c_uint32
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [ctypes.c_void_p]
-    close_handle.restype = ctypes.c_int
-
-    process_handle = open_process(0x0001 | 0x00100000, False, server_pid)  # TERMINATE | SYNCHRONIZE
-    if not process_handle:
-        return False
-    try:
-        if not terminate_process(process_handle, 0):
-            return False
-        wait_for_single_object(process_handle, 8000)
-        return True
-    finally:
-        close_handle(process_handle)
-
-
 def focus_existing_desktop_window(
     *,
     platform_name: str | None = None,
@@ -1025,20 +819,15 @@ def startup_lock(path: Path, *, timeout_sec: float = 15.0) -> Iterator[None]:
 def run_desktop(config: DesktopLaunchConfig) -> None:
     owned_server: subprocess.Popen[bytes] | None = None
     log_handle: object | None = None
-    adopted_server_pid = 0
-    native_window_closed = False
-    server_stopped = False
     chrome_window_started = False
     chrome_preparation_ready = False
-    use_webview2 = should_try_webview2(config)
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
     try:
         with startup_lock(lock_path):
             if not health_check(config.health_url):
-                if not use_webview2:
-                    write_chrome_preparation_page(config, state="preparing")
-                    start_browser(config, app_url=chrome_preparation_url(config))
-                    chrome_window_started = True
+                write_chrome_preparation_page(config, state="preparing")
+                start_browser(config, app_url=chrome_preparation_url(config))
+                chrome_window_started = True
                 owned_server, log_handle = start_server(config)
                 if not wait_until_healthy(
                     config.health_url,
@@ -1052,54 +841,17 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                 if chrome_window_started:
                     write_chrome_preparation_page(config, state="ready")
                     chrome_preparation_ready = True
-            else:
-                health_payload = read_health_payload(config.health_url)
-                try:
-                    adopted_server_pid = max(0, int(health_payload.get("process_id") or 0))
-                except (TypeError, ValueError):
-                    adopted_server_pid = 0
-        # WebView2 owns the foreground GUI loop until the user closes the
-        # native window. Keep that lifetime outside the short startup lock so a
-        # window does not make later health checks look like a stuck launch.
-        if use_webview2:
-            try:
-                start_webview2(config)
-                native_window_closed = True
-            except WebViewHostError as exc:
-                if config.shell_mode == "webview2":
-                    raise LauncherError(str(exc)) from exc
-                _append_launcher_note(
-                    config,
-                    f"Native WebView2 unavailable; using Chrome App Mode. {exc}",
-                )
-                if config.browser_path is None:
-                    raise LauncherError(
-                        f"{exc} Chrome fallback is also unavailable; install Chrome or Edge."
-                    ) from exc
-                start_browser(config)
-        else:
-            if config.shell_mode == "webview2":
-                raise LauncherError("VP_DESKTOP_SHELL=webview2 is supported only on Windows.")
-            if not chrome_window_started:
-                start_browser(config)
+            elif focus_existing_desktop_window():
+                return
+        if not chrome_window_started:
+            start_browser(config)
     except BaseException as exc:
         if chrome_window_started and not chrome_preparation_ready:
             write_chrome_preparation_page(config, state="failed", error=str(exc))
         if owned_server is not None:
             stop_owned_server(owned_server)
-            server_stopped = True
         raise
     finally:
-        if native_window_closed and not server_stopped:
-            if owned_server is not None:
-                stop_owned_server(owned_server)
-                server_stopped = True
-            elif adopted_server_pid:
-                if not terminate_managed_server_pid(adopted_server_pid):
-                    _append_launcher_note(
-                        config,
-                        f"Could not stop the reused backend process {adopted_server_pid}.",
-                    )
         if log_handle is not None:
             close = getattr(log_handle, "close", None)
             if callable(close):
@@ -1126,16 +878,11 @@ def _write_diagnostics(payload: dict[str, object], output_path: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Open Vintage Programmer in a native Windows WebView2 window or Chrome fallback."
+        description="Open Vintage Programmer in Google Chrome App Mode."
     )
     parser.add_argument("--project-root", default="", help="Vintage Programmer repository root")
-    parser.add_argument("--browser-path", default="", help="Chrome or Edge executable path")
+    parser.add_argument("--browser-path", default="", help="Google Chrome executable path")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print configuration without launching")
-    parser.add_argument(
-        "--probe-native-shell",
-        action="store_true",
-        help="Validate the bundled Windows WebView2 host without opening a window",
-    )
     parser.add_argument("--diagnostics-file", default="", help="Write dry-run diagnostics to a JSON file")
     return parser
 
@@ -1149,8 +896,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if args.dry_run:
             diagnostics = config.diagnostics()
-            if args.probe_native_shell:
-                diagnostics["native_shell_probe"] = probe_webview2_host()
             _write_diagnostics(diagnostics, args.diagnostics_file)
             return 0
         config = ensure_desktop_control_token(config)

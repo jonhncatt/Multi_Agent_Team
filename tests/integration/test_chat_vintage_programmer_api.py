@@ -1324,11 +1324,9 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
         "app_version": main_app.APP_VERSION,
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
-        "process_id": payload["process_id"],
     }
     assert isinstance(payload["uptime_sec"], int)
     assert payload["uptime_sec"] >= 0
-    assert payload["process_id"] > 0
 
 
 def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypatch, tmp_path: Path) -> None:

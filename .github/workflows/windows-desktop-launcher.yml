@@ -8,14 +8,14 @@ on:
       - "codex/**"
     paths:
       - "desktop/**"
+      - "tests/test_desktop_assets.py"
       - "tests/test_desktop_launcher.py"
-      - "tests/test_webview_host.py"
       - ".github/workflows/windows-desktop-launcher.yml"
   pull_request:
     paths:
       - "desktop/**"
+      - "tests/test_desktop_assets.py"
       - "tests/test_desktop_launcher.py"
-      - "tests/test_webview_host.py"
       - ".github/workflows/windows-desktop-launcher.yml"
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
         run: python -m pip install -r desktop/windows/requirements-build.txt
 
       - name: Test launcher core
-        run: python -m pytest -q tests/test_desktop_launcher.py tests/test_webview_host.py
+        run: python -m pytest -q tests/test_desktop_assets.py tests/test_desktop_launcher.py
 
       - name: Build console-free executable
         run: >-
@@ -61,7 +61,6 @@ jobs:
             -FilePath "dist\VintageProgrammer.exe" `
             -ArgumentList @(
               "--dry-run",
-              "--probe-native-shell",
               "--project-root", $PWD.Path,
               "--diagnostics-file", $diagnosticsPath
             ) `
@@ -77,8 +76,8 @@ jobs:
           if ($diagnostics.app_url -ne "http://127.0.0.1:8080") {
             throw "Unexpected launcher URL: $($diagnostics.app_url)"
           }
-          if (-not $diagnostics.native_shell_probe.available) {
-            throw "Bundled WebView2 host is unavailable: $($diagnostics.native_shell_probe.reason)"
+          if (-not $diagnostics.browser_path) {
+            throw "Packaged launcher did not resolve Google Chrome."
           }
 
       - name: Upload Windows executable
