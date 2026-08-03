@@ -75,6 +75,10 @@ Copy-Item .env.example .env
 停止任务和本地后台后完全退出。直接关闭 Chrome 窗口无法可靠通知 launcher，因此不会自动承担
 后台关闭职责。
 
+打包后的 launcher 只检查 EXE 所在目录，不会搜索父目录或其他仓库。该目录必须同时包含
+`app/main.py`、`requirements.txt` 和 `desktop/launcher.py`。如需显式绑定其他位置，设置
+`VP_DESKTOP_PROJECT_ROOT`。
+
 Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健康后在同一个窗口自动进入 VP；
 随后出现的 `Loading workspace…` 只表示正在加载项目、Thread 和本地设置。如果后台已经运行，
 则直接进入 VP，不显示准备页。

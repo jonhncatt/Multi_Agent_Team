@@ -28,6 +28,11 @@ DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
 DESKTOP_PREPARING_STATE_FILENAME = "desktop-preparing-state.js"
+PROJECT_ROOT_MARKERS = (
+    Path("app/main.py"),
+    Path("requirements.txt"),
+    Path("desktop/launcher.py"),
+)
 
 
 class LauncherError(RuntimeError):
@@ -102,15 +107,7 @@ class DesktopLaunchConfig:
 
 
 def _looks_like_project_root(path: Path) -> bool:
-    return (path / "app" / "main.py").is_file() and (path / "requirements.txt").is_file()
-
-
-def _walk_candidates(start: Path) -> Iterator[Path]:
-    current = start.resolve()
-    if current.is_file():
-        current = current.parent
-    yield current
-    yield from current.parents
+    return all((path / marker).is_file() for marker in PROJECT_ROOT_MARKERS)
 
 
 def resolve_project_root(
@@ -118,7 +115,6 @@ def resolve_project_root(
     *,
     cwd: Path | None = None,
     executable: Path | None = None,
-    module_file: Path | None = None,
 ) -> Path:
     if explicit_root:
         resolved = Path(explicit_root).expanduser().resolve()
@@ -128,24 +124,21 @@ def resolve_project_root(
             )
         return resolved
 
-    starts = [cwd or Path.cwd()]
     if executable is not None:
-        starts.append(executable)
+        candidate = Path(executable).expanduser().resolve()
+        if candidate.is_file() or candidate.suffix.lower() == ".exe":
+            candidate = candidate.parent
     elif getattr(sys, "frozen", False):
-        starts.append(Path(sys.executable))
-    starts.append(module_file or Path(__file__))
+        candidate = Path(sys.executable).resolve().parent
+    else:
+        candidate = (cwd or Path.cwd()).expanduser().resolve()
 
-    seen: set[Path] = set()
-    for start in starts:
-        for candidate in _walk_candidates(start):
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            if _looks_like_project_root(candidate):
-                return candidate
+    if _looks_like_project_root(candidate):
+        return candidate
+    expected = ", ".join(str(marker).replace("\\", "/") for marker in PROJECT_ROOT_MARKERS)
     raise LauncherError(
-        "Vintage Programmer project files were not found. Put VintageProgrammer.exe in the "
-        "repository root, or set VP_DESKTOP_PROJECT_ROOT to that directory."
+        f"VintageProgrammer.exe must be in the Vintage Programmer repository root: {candidate}. "
+        f"Expected files: {expected}. To bind another explicit location, set VP_DESKTOP_PROJECT_ROOT."
     )
 
 

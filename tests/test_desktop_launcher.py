@@ -30,16 +30,32 @@ def _project_root(tmp_path: Path) -> Path:
     root = tmp_path / "vintage-programmer"
     (root / "app").mkdir(parents=True)
     (root / "app" / "main.py").write_text("", encoding="utf-8")
+    (root / "desktop").mkdir(parents=True)
+    (root / "desktop" / "launcher.py").write_text("", encoding="utf-8")
     (root / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
     return root
 
 
-def test_resolve_project_root_walks_up_from_launcher_location(tmp_path: Path) -> None:
+def test_resolve_project_root_uses_executable_directory_only(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
-    nested = root / "desktop" / "windows"
-    nested.mkdir(parents=True)
+    executable = root / "VintageProgrammer.exe"
 
-    assert resolve_project_root(cwd=nested, module_file=nested / "launcher.py") == root.resolve()
+    assert resolve_project_root(executable=executable) == root.resolve()
+
+
+def test_resolve_project_root_does_not_walk_up_from_nested_directory(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    nested = root / "dist"
+    nested.mkdir()
+
+    with pytest.raises(LauncherError, match="must be in the Vintage Programmer repository root"):
+        resolve_project_root(executable=nested / "VintageProgrammer.exe")
+
+
+def test_source_launcher_uses_current_directory_only(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+
+    assert resolve_project_root(cwd=root) == root.resolve()
 
 
 def test_resolve_project_root_rejects_unrelated_explicit_directory(tmp_path: Path) -> None:

@@ -16,6 +16,11 @@ normal address bar or tabs while leaving Agent Runtime behavior unchanged.
 The launcher has no console window. Startup failures are shown in a message box
 and written to `app/data/runtime/desktop-launcher.log`.
 
+The packaged launcher checks only the directory containing the executable. It
+does not search parent directories or other checkouts. That directory must also
+contain `app/main.py`, `requirements.txt`, and `desktop/launcher.py`. Use
+`VP_DESKTOP_PROJECT_ROOT` only when intentionally binding an explicit location.
+
 When a new backend is required, Chrome opens immediately on a local `Preparing…`
 page and moves to Vintage Programmer when `/api/health` is ready. The later
 `Loading workspace…` state covers only project, Thread, and local-setting loading.
@@ -36,6 +41,8 @@ desktop\windows\build.ps1
 ```
 
 The executable is written to `dist\VintageProgrammer.exe`.
+Copy it to the repository root before launching it; the build output directory is
+not treated as the application root.
 
 ## Preview on macOS
 

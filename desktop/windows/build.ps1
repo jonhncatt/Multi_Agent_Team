@@ -31,3 +31,4 @@ if (-not (Test-Path $Python)) {
     desktop\launcher.py
 
 Write-Host "Built: $RepoRoot\dist\VintageProgrammer.exe"
+Write-Host "Copy VintageProgrammer.exe into $RepoRoot before double-clicking it."
