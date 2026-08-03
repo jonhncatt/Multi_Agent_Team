@@ -405,11 +405,11 @@ def test_index_renders_static_boot_loading_fallback() -> None:
     assert 'role="status"' in index
     assert "Loading workspace..." in index
     assert 'src="/static/assets/vintage_programmer.png"' in index
-    assert 'href="/static/assets/vintage_programmer.ico?v=2"' in index
-    for size in (16, 32, 48):
+    assert 'href="/static/assets/vintage_programmer.ico?v=3"' in index
+    for size in (16, 32, 48, 64):
         assert (
             f'sizes="{size}x{size}" '
-            f'href="/static/assets/vintage_programmer_{size}.png?v=2"'
+            f'href="/static/assets/vintage_programmer_{size}.png?v=3"'
         ) in index
     assert 'window.__VP_DESKTOP_CONTROL_TOKEN__' in index
     for token in (

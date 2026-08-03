@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 
 CANVAS_SIZE = 1024
 MASTER_FILENAME = "vintage_programmer_master.png"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
-WEB_ICON_SIZES = (16, 32, 48)
+WEB_ICON_SIZES = (16, 32, 48, 64)
+TASKBAR_MAX_SIZE = 64
+TASKBAR_ORANGE = (247, 91, 30)
+TASKBAR_MARK = (255, 250, 244)
 
 
 def _remove_connected_light_background(source: Image.Image) -> Image.Image:
@@ -60,26 +63,58 @@ def load_master(asset_dir: Path) -> Image.Image:
     return Image.open(master_path).convert("RGBA")
 
 
-def render_icon_frame(master: Image.Image, size: int) -> Image.Image:
-    frame = master.resize((size, size), Image.Resampling.LANCZOS)
-    if size <= 64:
-        # Small Windows taskbar icons need a little more edge contrast than the
-        # large artwork. Supplying these frames explicitly also avoids a second
-        # resize by the ICO writer.
-        frame = frame.filter(
-            ImageFilter.UnsharpMask(
-                radius=max(0.45, size / 64),
-                percent=145,
-                threshold=2,
-            )
-        )
-    return frame
+def build_taskbar_master(master: Image.Image) -> Image.Image:
+    """Flatten soft artwork so the VP mark stays legible at taskbar sizes."""
+
+    # The source artwork intentionally has gradients, glow, and a soft shadow.
+    # Those details look good at large sizes but turn into a fuzzy fringe when
+    # Chrome asks Windows for a 16-64 px favicon. Preserve the original shape
+    # while reducing the small rendition to two high-contrast brand colors.
+    shape = master.getchannel("A").point(
+        lambda value: 0
+        if value < 24
+        else 255
+        if value > 232
+        else round((value - 24) * 255 / 208)
+    )
+    mark = master.getchannel("B").point(
+        lambda value: 0
+        if value < 96
+        else 255
+        if value > 210
+        else round((value - 96) * 255 / 114)
+    )
+    mark = ImageChops.multiply(mark, shape)
+
+    taskbar_master = Image.new("RGBA", master.size, (*TASKBAR_ORANGE, 0))
+    taskbar_master.putalpha(shape)
+    foreground = Image.new("RGBA", master.size, (*TASKBAR_MARK, 0))
+    foreground.putalpha(mark)
+    taskbar_master.alpha_composite(foreground)
+    return taskbar_master
+
+
+def render_icon_frame(
+    master: Image.Image,
+    size: int,
+    *,
+    taskbar_master: Image.Image | None = None,
+) -> Image.Image:
+    if size <= TASKBAR_MAX_SIZE:
+        source = taskbar_master or build_taskbar_master(master)
+    else:
+        source = master
+    return source.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
     png = master.resize((512, 512), Image.Resampling.LANCZOS)
     png.save(asset_dir / "vintage_programmer.png", optimize=True)
-    icon_frames = [render_icon_frame(master, size) for size in ICON_PIXEL_SIZES]
+    taskbar_master = build_taskbar_master(master)
+    icon_frames = [
+        render_icon_frame(master, size, taskbar_master=taskbar_master)
+        for size in ICON_PIXEL_SIZES
+    ]
     icon_path = asset_dir / "vintage_programmer.ico"
     icon_frames[-1].save(
         icon_path,
@@ -92,7 +127,7 @@ def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
     web_asset_dir.mkdir(parents=True, exist_ok=True)
     png.save(web_asset_dir / "vintage_programmer.png", optimize=True)
     for size in WEB_ICON_SIZES:
-        render_icon_frame(master, size).save(
+        render_icon_frame(master, size, taskbar_master=taskbar_master).save(
             web_asset_dir / f"vintage_programmer_{size}.png",
             optimize=True,
         )

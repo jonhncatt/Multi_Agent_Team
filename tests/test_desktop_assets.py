@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PIL import Image, ImageChops
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +21,7 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     ).read_bytes()
     web_small_icons = [
         REPO_ROOT / "app" / "static" / "assets" / f"vintage_programmer_{size}.png"
-        for size in (16, 32, 48)
+        for size in (16, 32, 48, 64)
     ]
     build_script = (REPO_ROOT / "desktop" / "windows" / "build.ps1").read_text(
         encoding="utf-8"
@@ -48,3 +50,38 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     assert "if ($launcher.ExitCode -ne 0)" in workflow
     assert "pywebview" not in requirements.lower()
     assert not (REPO_ROOT / "desktop" / "webview_host.py").exists()
+
+
+def test_windows_icon_uses_exact_flat_frames_for_small_taskbar_sizes() -> None:
+    asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
+    web_asset_dir = REPO_ROOT / "app" / "static" / "assets"
+
+    with Image.open(asset_dir / "vintage_programmer.ico") as icon:
+        assert icon.ico.sizes() == {
+            (16, 16),
+            (20, 20),
+            (24, 24),
+            (32, 32),
+            (40, 40),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        }
+        for size in (16, 32, 48, 64):
+            embedded = icon.ico.getimage((size, size)).convert("RGBA")
+            with Image.open(
+                web_asset_dir / f"vintage_programmer_{size}.png"
+            ) as web_icon:
+                assert ImageChops.difference(
+                    embedded, web_icon.convert("RGBA")
+                ).getbbox() is None
+
+    # A flat taskbar frame should have substantially less color variation than
+    # the full-size gradient artwork, while retaining transparency and detail.
+    with Image.open(web_asset_dir / "vintage_programmer_32.png") as small_icon:
+        colors = small_icon.convert("RGBA").getcolors(maxcolors=32 * 32)
+        assert colors is not None
+        assert len(colors) < 300
+        alpha_extrema = small_icon.getchannel("A").getextrema()
+        assert alpha_extrema == (0, 255)
