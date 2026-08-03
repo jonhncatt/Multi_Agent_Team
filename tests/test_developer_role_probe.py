@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from app.config import build_provider_config, load_config
 from scripts.check_developer_role import (
+    DEFAULT_PROVIDER,
     DEVELOPER_MARKER,
     TOOL_MARKER,
     TOOL_NAME,
     USER_MARKER,
+    _parser,
     build_summary,
     classify_precedence_reply,
     probe_developer_precedence,
@@ -43,6 +46,21 @@ def test_classify_precedence_reply_is_exact() -> None:
     assert classify_precedence_reply(f"  {DEVELOPER_MARKER}\n") == "developer_won"
     assert classify_precedence_reply(USER_MARKER) == "user_won"
     assert classify_precedence_reply(f"Answer: {DEVELOPER_MARKER}") == "unexpected_reply"
+
+
+def test_probe_defaults_to_openai_compatible_environment_group(monkeypatch) -> None:
+    monkeypatch.setenv("VP_OPENAI_COMPAT_API_KEY", "test-company-key")
+    monkeypatch.setenv("VP_OPENAI_COMPAT_BASE_URL", "https://company.example/v1")
+    monkeypatch.setenv("VP_OPENAI_COMPAT_CA_CERT_PATH", "/tmp/company-ca.pem")
+    monkeypatch.setenv("VP_OPENAI_COMPAT_DEFAULT_MODEL", "company-gpt-5.6")
+    args = _parser().parse_args([])
+    config = build_provider_config(load_config(), args.provider)
+
+    assert DEFAULT_PROVIDER == "openai_compatible"
+    assert args.provider == "openai_compatible"
+    assert config.openai_base_url == "https://company.example/v1"
+    assert config.openai_ca_cert_path == "/tmp/company-ca.pem"
+    assert config.default_model == "company-gpt-5.6"
 
 
 def test_precedence_probe_sends_developer_and_conflicting_user_messages() -> None:

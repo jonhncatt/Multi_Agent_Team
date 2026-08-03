@@ -31,6 +31,7 @@ from app.openai_auth import OpenAIAuthManager  # noqa: E402
 
 
 SCHEMA_VERSION = 1
+DEFAULT_PROVIDER = "openai_compatible"
 DEVELOPER_MARKER = "VP_DEVELOPER_WINS_74B2"
 USER_MARKER = "VP_USER_WINS_19C8"
 TOOL_NAME = "developer_role_probe"
@@ -304,6 +305,21 @@ def _print_summary(report: dict[str, Any]) -> None:
     print("Developer role probe")
     print(f"  provider: {provider.get('name', '')}")
     print(f"  model: {provider.get('model', '')}")
+    print(
+        "  API key configured: "
+        f"{'yes' if provider.get('auth_available') else 'no'} "
+        f"({provider.get('api_key_env', '')})"
+    )
+    print(
+        "  base URL configured: "
+        f"{'yes' if provider.get('base_url_configured') else 'no'} "
+        f"({provider.get('base_url_env', '')})"
+    )
+    print(
+        "  custom CA configured: "
+        f"{'yes' if provider.get('custom_ca_configured') else 'no'} "
+        f"({provider.get('ca_cert_env', '')})"
+    )
     print(f"  precedence: {precedence.get('result', 'not_run')}")
     print(f"  developer + tools: {tools.get('result', 'not_run')}")
     print(f"  safe to migrate: {'YES' if summary.get('safe_to_migrate_to_developer') else 'NO'}")
@@ -314,8 +330,16 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Probe developer-role precedence through the configured Chat Completions provider.",
     )
-    parser.add_argument("--provider", default="", help="Optional provider profile. Defaults to VP_LLM_PROVIDER.")
-    parser.add_argument("--model", default="", help="Optional model override. Defaults to the active provider model.")
+    parser.add_argument(
+        "--provider",
+        default=DEFAULT_PROVIDER,
+        help="Provider profile. Default: openai_compatible (the VP_OPENAI_COMPAT_* configuration).",
+    )
+    parser.add_argument(
+        "--model",
+        default="",
+        help="Optional model override. Defaults to VP_OPENAI_COMPAT_DEFAULT_MODEL for the default provider.",
+    )
     parser.add_argument("--timeout-sec", type=float, default=60.0, help="Timeout per request. Default: 60.")
     parser.add_argument("--output", default="", help="Optional JSON report path under your chosen location.")
     parser.add_argument("--dry-run", action="store_true", help="Validate local configuration without API requests.")
@@ -324,9 +348,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    config = load_config()
-    if str(args.provider or "").strip():
-        config = build_provider_config(config, str(args.provider).strip())
+    base_config = load_config()
+    selected_provider = str(args.provider or DEFAULT_PROVIDER).strip() or DEFAULT_PROVIDER
+    config = build_provider_config(base_config, selected_provider)
     auth = OpenAIAuthManager(config).resolve()
     model = str(args.model or config.default_model or "").strip()
     output_path = Path(args.output).expanduser().resolve() if args.output else _default_report_path()
@@ -335,6 +359,21 @@ def main(argv: list[str] | None = None) -> int:
         "model": model,
         "auth_mode": str(auth.mode or ""),
         "auth_available": bool(auth.available),
+        "api_key_env": (
+            "VP_OPENAI_COMPAT_API_KEY"
+            if selected_provider == DEFAULT_PROVIDER
+            else str(config.llm_primary_api_key_env or "")
+        ),
+        "base_url_env": (
+            "VP_OPENAI_COMPAT_BASE_URL"
+            if selected_provider == DEFAULT_PROVIDER
+            else f"VP_PROVIDER_{selected_provider.upper()}_BASE_URL"
+        ),
+        "ca_cert_env": (
+            "VP_OPENAI_COMPAT_CA_CERT_PATH"
+            if selected_provider == DEFAULT_PROVIDER
+            else f"VP_PROVIDER_{selected_provider.upper()}_CA_CERT_PATH"
+        ),
         "base_url_configured": bool(config.openai_base_url),
         "custom_ca_configured": bool(config.openai_ca_cert_path),
     }
