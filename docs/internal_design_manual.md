@@ -53,7 +53,7 @@ Trace 不是第二份聊天历史，也不参与下轮模型记忆。旧 `app/da
 
 ```text
 messages = [
-  SystemMessage(agent spec + RuntimeBoundary),
+  ChatMessage(role="developer", agent spec + RuntimeBoundary),
   optional project instructions,
   optional compaction summary,
   uncompressed typed transcript,
@@ -64,7 +64,7 @@ messages = [
 tools = 当前 Runtime 暴露的 structured tool schemas
 ```
 
-System Message 只有一个。项目说明、压缩摘要和附件带来源进入上下文，不能覆盖 System 或 RuntimeBoundary。工具结果必须使用原 `tool_call_id` 形成 ToolMessage。
+Developer Message 只有一个。项目说明、压缩摘要和附件带来源进入上下文，不能覆盖 Developer Message 或 RuntimeBoundary。工具结果必须使用原 `tool_call_id` 形成 ToolMessage。
 
 详细结构见 [Session = Thread 架构](thread_transcript_architecture.md)。
 
@@ -148,7 +148,7 @@ skills/team/<name>/SKILL.md      # 团队维护，随 VP Git 仓库共享
 
 首页同时展示模型 Plan 和最近执行状态。实时状态来自 SSE，heartbeat 只代表连接存活，不冒充语义进展。
 
-每条 Assistant 消息的“执行过程”按需加载该 Turn 的 activity；“开发者调试”显示截至该消息的 Thread 历史。工具项通过 `item_id`、`assistant_item_id`、`tool_call_id` 和 `tool_result_item_id` 对应到 Turn Trace。System Prompt 单独折叠展示。
+每条 Assistant 消息的“执行过程”按需加载该 Turn 的 activity；“开发者调试”显示截至该消息的 Thread 历史。工具项通过 `item_id`、`assistant_item_id`、`tool_call_id` 和 `tool_result_item_id` 对应到 Turn Trace。Developer Prompt 单独折叠展示。
 
 ## 11. Eval 与质量门禁
 

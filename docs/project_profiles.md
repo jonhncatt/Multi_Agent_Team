@@ -35,6 +35,6 @@ Project Profile 不保存个人绝对路径、凭证、Session、审批或运行
 
 ## Runtime
 
-Runtime 根据当前项目记录直接解析一个 Profile，不扫描或加载其他 Profile。绑定说明以来源明确的 `[project_instructions]` HumanMessage 进入请求；SystemMessage、权限边界和工具契约不受其覆盖。
+Runtime 根据当前项目记录直接解析一个 Profile，不扫描或加载其他 Profile。绑定说明以来源明确的 `[project_instructions]` HumanMessage 进入请求；Developer Message、权限边界和工具契约不受其覆盖。
 
 Subagent 继承父任务已经解析的项目上下文，不进行第二次绑定或匹配。

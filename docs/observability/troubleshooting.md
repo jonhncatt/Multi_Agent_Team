@@ -21,7 +21,7 @@ Windows：
 1. 查看 Assistant 消息下的“执行过程”：当前步骤、工具、等待状态和最后进展。
 2. 查看完整 Thread 历史，确认 user / assistant / tool 顺序和追加指令位置。
 3. 从有问题的 Tool Item 展开 Trace，检查 schema、边界、`error_kind` 和恢复。
-4. 只有怀疑上下文错误时查看 System Prompt 和 RuntimeBoundary。
+4. 只有怀疑上下文错误时查看 Developer Prompt 和 RuntimeBoundary。
 5. 查看 `/api/runtime-status` 的 provider、权限、cwd、context 和 compaction 状态。
 6. 最后再使用浏览器 Network 面板确认 SSE 或 API 传输问题。
 
@@ -92,4 +92,4 @@ Plan 是模型 checklist，不是 Harness 任务真相。以 Thread 中真实 To
 - 已脱敏的最终状态与最小复现步骤；
 - Eval 安全摘要（如果问题来自 Eval）。
 
-不要提交 `.env`、完整 System Prompt、原始工具参数、用户业务文件、公司 URL、token、完整绝对路径或整个 `app/data/`。
+不要提交 `.env`、完整 Developer Prompt、原始工具参数、用户业务文件、公司 URL、token、完整绝对路径或整个 `app/data/`。

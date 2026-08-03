@@ -50,7 +50,7 @@ def test_runtime_thread_title_call_is_isolated_and_has_no_tools() -> None:
             self.content = content
 
     class _Backend:
-        _SystemMessage = _Message
+        _DeveloperMessage = _Message
         _HumanMessage = _Message
 
         def __init__(self) -> None:

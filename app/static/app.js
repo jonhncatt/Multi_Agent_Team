@@ -531,6 +531,7 @@ function parseSseChunk(chunk) {
 function roleLabel(role, locale) {
   if (role === "user") return translateUi(locale, "role.user");
   if (role === "assistant") return translateUi(locale, "role.assistant");
+  if (role === "developer") return translateUi(locale, "role.developer");
   if (role === "runtime") return translateUi(locale, "role.runtime");
   return translateUi(locale, "role.system");
 }
@@ -10094,47 +10095,47 @@ function App() {
         `
       : null;
 
-    const legacySystemMessages = legacyExchanges
+    const legacyInstructionMessages = legacyExchanges
       .flatMap((exchange) => Array.isArray(exchange && exchange.sent_messages_exact) ? exchange.sent_messages_exact : [])
-      .filter((item) => String((item && item.role) || "") === "system")
+      .filter((item) => ["developer", "system"].includes(String((item && item.role) || "")))
       .map((item) => String((item && item.content) || ""))
       .filter(Boolean);
-    const systemPromptContexts = contexts.length
+    const developerPromptContexts = contexts.length
       ? contexts
-      : (legacySystemMessages.length ? [{ context_id: "legacy-context", system_message: legacySystemMessages[0] }] : []);
-    const systemPromptGroupsByText = new Map();
-    systemPromptContexts.forEach((context, index) => {
-      const systemMessage = String((context && context.system_message) || "");
-      const groupKey = systemMessage || `empty-system-prompt-${index}`;
+      : (legacyInstructionMessages.length ? [{ context_id: "legacy-context", developer_message: legacyInstructionMessages[0] }] : []);
+    const developerPromptGroupsByText = new Map();
+    developerPromptContexts.forEach((context, index) => {
+      const developerMessage = String((context && (context.developer_message || context.system_message)) || "");
+      const groupKey = developerMessage || `empty-developer-prompt-${index}`;
       const normalizedContext = {
         ...context,
         context_id: String((context && context.context_id) || `context-${index + 1}`),
         supporting_messages: Array.isArray(context && context.supporting_messages) ? context.supporting_messages : [],
         tool_names: Array.isArray(context && context.tool_names) ? context.tool_names : [],
       };
-      if (systemPromptGroupsByText.has(groupKey)) {
-        systemPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);
+      if (developerPromptGroupsByText.has(groupKey)) {
+        developerPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);
       } else {
-        systemPromptGroupsByText.set(groupKey, {
-          system_message: systemMessage,
+        developerPromptGroupsByText.set(groupKey, {
+          developer_message: developerMessage,
           contexts: [normalizedContext],
         });
       }
     });
-    const systemPromptGroups = Array.from(systemPromptGroupsByText.values());
-    const systemPrompt = systemPromptGroups.length
+    const developerPromptGroups = Array.from(developerPromptGroupsByText.values());
+    const developerPrompt = developerPromptGroups.length
       ? html`
           <details className="system-prompt-debug">
-            <summary>${t("activity.debug.view_system_prompt")}</summary>
-            ${systemPromptGroups.map((group, groupIndex) => html`
-              <div className="system-prompt-context" key=${`system-prompt-${groupIndex}`}>
+            <summary>${t("activity.debug.view_developer_prompt")}</summary>
+            ${developerPromptGroups.map((group, groupIndex) => html`
+              <div className="system-prompt-context" key=${`developer-prompt-${groupIndex}`}>
                 <div className="system-prompt-context-head">
-                  <strong>${t("activity.debug.base_system_prompt")}</strong>
+                  <strong>${t("activity.debug.base_developer_prompt")}</strong>
                   ${group.contexts.length > 1
                     ? html`<code>${group.contexts.map((context) => context.context_id).join(" · ")}</code>`
                     : null}
                 </div>
-                <pre>${group.system_message}</pre>
+                <pre>${group.developer_message}</pre>
                 ${group.contexts.length > 1
                   ? html`
                       <div className="system-prompt-variants">
@@ -10163,7 +10164,7 @@ function App() {
     const loadError = String((message && message.runDebugError) || "").trim();
     const loading = Boolean(message && message.runDebugLoading);
     const canLoad = Boolean(activity.trace_ref || activity.run_id);
-    if (!canLoad && !threadHistory && !runtimeControls && !systemPrompt && !loadError && !loading) return null;
+    if (!canLoad && !threadHistory && !runtimeControls && !developerPrompt && !loadError && !loading) return null;
     return html`
       <details
         className="activity-debug-drawer"
@@ -10176,7 +10177,7 @@ function App() {
           ${loadError ? html`<div className="status-error">${loadError}</div>` : null}
           ${threadHistory}
           ${runtimeControls}
-          ${systemPrompt}
+          ${developerPrompt}
         </div>
       </details>
     `;

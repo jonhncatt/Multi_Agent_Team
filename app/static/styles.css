@@ -1871,6 +1871,7 @@ html[data-vp-desktop-shell="true"] .workspace-main {
 }
 
 .role-system .message-card,
+.role-developer .message-card,
 .role-runtime .message-card {
   width: min(760px, 100%);
   background: var(--danger-soft);

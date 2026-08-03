@@ -17,6 +17,7 @@ MAX_METADATA_CHARS = 12000
 _ROLE_ALIASES = {
     "ai": "assistant",
     "assistant": "assistant",
+    "developer": "developer",
     "function": "function",
     "human": "user",
     "system": "system",

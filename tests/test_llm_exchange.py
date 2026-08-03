@@ -10,6 +10,13 @@ class _SystemMessage:
         self.content = content
 
 
+class _DeveloperMessage:
+    role = "developer"
+
+    def __init__(self, *, content: str) -> None:
+        self.content = content
+
+
 class _ToolMessage:
     def __init__(self, *, content: str, tool_call_id: str, name: str) -> None:
         self.content = content
@@ -39,13 +46,13 @@ class _AIMessage:
 def test_snapshot_messages_truncates_content_and_preserves_tool_call_id() -> None:
     snapshots = snapshot_messages(
         [
-            _SystemMessage(content="system rules"),
+            _DeveloperMessage(content="developer rules"),
             _ToolMessage(content="x" * 25050, tool_call_id="tc-1", name="web_search"),
         ],
         max_content_chars=50,
     )
 
-    assert snapshots[0]["role"] == "system"
+    assert snapshots[0]["role"] == "developer"
     assert snapshots[1]["role"] == "tool"
     assert snapshots[1]["tool_call_id"] == "tc-1"
     assert snapshots[1]["name"] == "web_search"

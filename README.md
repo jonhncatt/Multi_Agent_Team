@@ -60,9 +60,9 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Session = Thread
 
-`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录和权限合并进唯一的 SystemMessage；只有用户显式绑定的 Project Profile 才提供 `AGENTS.md` 项目说明，压缩摘要和附件也按需作为带来源标记的上下文消息提供。Thread 文件只保存 transcript、最小 compaction、活动附件、待处理交互和精简 Trace 引用；`task_state`、`work_cursor`、`thread_memory`、`current_task_focus` 等旧 Harness 语义状态不再持久化。`turns` 只在加载后由 transcript 临时投影，兼容现有 API 和前端。
+`Session` 现在就是一条持久 Thread。模型输入按 typed transcript 回放真实的 `user`、`assistant`、`tool` 消息，最后追加当前用户消息；不再构造六/八要素 `ModelContext` JSON，也不再调用任务关系分类器。当前目录和权限合并进唯一的 Chat Completions `developer` 消息；只有用户显式绑定的 Project Profile 才提供 `AGENTS.md` 项目说明，压缩摘要和附件也按需作为带来源标记的上下文消息提供。Thread 文件只保存 transcript、最小 compaction、活动附件、待处理交互和精简 Trace 引用；`task_state`、`work_cursor`、`thread_memory`、`current_task_focus` 等旧 Harness 语义状态不再持久化。`turns` 只在加载后由 transcript 临时投影，兼容现有 API 和前端。
 
-磁盘目录继续使用 `app/data/sessions/`，所以现有 URL、Session ID 和聊天记录不变。旧 Session 首次打开时会自动备份并迁移为 Thread V4，无需手动脚本。命令审批和 `request_user_input` 不会创建新的用户消息：原 Turn 暂停，用户决定后以同一 `tool_call_id` 的 ToolMessage 恢复。Plan 在暂停期间保留，Turn 结束后只留在历史中。上下文压缩是 Thread 内部的替换历史操作；它不创建聊天消息，也不会压缩尚未闭合的 tool call。新执行的技术事实保存在 `app/data/turn_traces/<thread_id>/<turn_id>.json`，旧 `runs` 仅用于读取兼容。开发者调试以完整 Thread 历史为主体，工具结果按需展开对应 Trace，System Prompt 单独按需查看。
+磁盘目录继续使用 `app/data/sessions/`，所以现有 URL、Session ID 和聊天记录不变。旧 Session 首次打开时会自动备份并迁移为 Thread V4，无需手动脚本。命令审批和 `request_user_input` 不会创建新的用户消息：原 Turn 暂停，用户决定后以同一 `tool_call_id` 的 ToolMessage 恢复。Plan 在暂停期间保留，Turn 结束后只留在历史中。上下文压缩是 Thread 内部的替换历史操作；它不创建聊天消息，也不会压缩尚未闭合的 tool call。新执行的技术事实保存在 `app/data/turn_traces/<thread_id>/<turn_id>.json`，旧 `runs` 仅用于读取兼容。开发者调试以完整 Thread 历史为主体，工具结果按需展开对应 Trace，Developer Prompt 单独按需查看；历史 `system` Trace 仍可读取。
 
 ## Manual Update
 
@@ -148,7 +148,7 @@ Vintage Programmer 更关注 Agent 的执行过程可见性。
 - 运行耗时和等待状态
 - 最终回答
 
-需要排查工具行为时，可在执行过程内展开“开发者调试”：先查看完整 Thread 历史，再从具体 Tool Item 展开对应 Trace；System Prompt 也只在主动打开时加载和显示。
+需要排查工具行为时，可在执行过程内展开“开发者调试”：先查看完整 Thread 历史，再从具体 Tool Item 展开对应 Trace；Developer Prompt 也只在主动打开时加载和显示。
 
 因此它更适合用来开发、调试和演示 AI Agent，而不只是把模型当成聊天框。
 

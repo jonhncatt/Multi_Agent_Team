@@ -49,7 +49,7 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
                         "model": "gpt-test",
                         "status": "completed",
                         "sent_messages_exact": [
-                            {"role": "system", "content": "[agent.md]\nRules"},
+                            {"role": "developer", "content": "[agent.md]\nRules"},
                             {"role": "user", "content": "inspect"},
                         ],
                         "request_composition": {"bound_tool_names": ["read_file"]},
@@ -64,7 +64,7 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
                         "model": "gpt-test",
                         "status": "completed",
                         "sent_messages_exact": [
-                            {"role": "system", "content": "[agent.md]\nRules"},
+                            {"role": "developer", "content": "[agent.md]\nRules"},
                             {"role": "user", "content": "inspect"},
                             {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "name": "read_file"}]},
                             {"role": "tool", "tool_call_id": "call-1", "content": '{"ok": true}'},
@@ -106,7 +106,8 @@ def test_turn_trace_uses_thread_item_ids_as_its_timeline() -> None:
         "schema_validation": {"status": "valid"},
         "result_preview": {"ok": True, "content": "preview"},
     }
-    assert trace["contexts"][0]["system_message"] == "[agent.md]\nRules"
+    assert trace["contexts"][0]["developer_message"] == "[agent.md]\nRules"
+    assert "system_message" not in trace["contexts"][0]
     assert trace["contexts"][0]["components"] == ["agent.md"]
     assert len(trace["contexts"]) == 1
     assert "sha256" not in json.dumps(trace)
@@ -182,7 +183,7 @@ def test_turn_trace_matches_repeated_history_to_the_latest_item() -> None:
                     {
                         "status": "completed",
                         "sent_messages_exact": [
-                            {"role": "system", "content": "rules"},
+                            {"role": "developer", "content": "rules"},
                             {"role": "user", "content": "hi"},
                         ],
                         "model_returned_exact": {"role": "assistant", "content": "hello again"},

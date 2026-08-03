@@ -2569,7 +2569,7 @@ def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(mon
                         "model": "gpt-test",
                         "status": "completed",
                         "sent_messages_exact": [
-                            {"role": "system", "content": "[system]\nShared rules"},
+                            {"role": "developer", "content": "[developer]\nShared rules"},
                             {"role": "user", "content": "先处理原任务"},
                         ],
                         "request_composition": {"bound_tool_names": []},
@@ -2648,7 +2648,7 @@ def test_chat_persists_intermediate_assistant_reply_before_steered_user_turn(mon
     )
     assert first_debug.status_code == 200
     first_contexts = first_debug.json()["activity"]["turn_trace"]["contexts"]
-    assert first_contexts[0]["system_message"] == "[system]\nShared rules"
+    assert first_contexts[0]["developer_message"] == "[developer]\nShared rules"
 
 
 def test_chat_endpoint_runs_and_persists_pre_turn_compaction(monkeypatch, tmp_path: Path) -> None:

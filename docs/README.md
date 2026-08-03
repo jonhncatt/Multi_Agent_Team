@@ -36,7 +36,7 @@
 
 | 文档 | 用途 |
 | --- | --- |
-| [Turn Trace 指南](observability/trace_guide.md) | Thread 历史、工具事务、Trace 和 System Prompt 如何对应 |
+| [Turn Trace 指南](observability/trace_guide.md) | Thread 历史、工具事务、Trace 和 Developer Prompt 如何对应 |
 | [Troubleshooting](observability/troubleshooting.md) | Provider、工具、附件、等待和前端显示问题的排查顺序 |
 
 ## Eval

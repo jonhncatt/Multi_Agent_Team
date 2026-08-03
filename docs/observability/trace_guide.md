@@ -19,7 +19,7 @@ app/data/runs/<thread_id>/<legacy_run_id>.json   # 仅旧记录兼容
 1. 在 Assistant 消息下展开“执行过程”，先看 Plan、最近活动和工具摘要。
 2. 展开“开发者调试”，查看截至该 Assistant Item 的完整 Thread 历史。
 3. 找到对应 Tool Item，展开“查看 Trace”。
-4. 只有怀疑提示词或权限范围错误时，再展开 System Prompt。
+4. 只有怀疑提示词或权限范围错误时，再展开 Developer Prompt。
 
 UI 通过以下稳定标识建立对应关系：
 
@@ -35,7 +35,7 @@ UI 通过以下稳定标识建立对应关系：
 
 ## Trace 能回答什么
 
-- 模型实际看到了哪个 System Prompt 和 RuntimeBoundary；
+- 模型实际看到了哪个 Developer Prompt 和 RuntimeBoundary；
 - 哪个 Assistant Item 发起了哪个工具；
 - 原始参数如何被归一化，schema 和边界是否通过；
 - 工具执行了多久，返回成功、失败还是等待；
@@ -54,10 +54,10 @@ GET /api/thread/<thread_id>/turn/<assistant_item_id>?view=debug
 ```
 
 - `activity` 返回当前 Turn 的执行详情。
-- `debug` 额外返回截至该消息的 Thread items 和 System Prompt context。
+- `debug` 额外返回截至该消息的 Thread items 和 Developer Prompt context。
 
 ## 分享前检查
 
-Turn Trace 可能含 System Prompt、用户内容、工具参数、路径和结果预览。向公司工单或外部人员提供前，应优先发送错误分类、时间、工具名和最小复现；不要直接提交整个 `app/data/turn_traces/`。
+Turn Trace 可能含 Developer Prompt、用户内容、工具参数、路径和结果预览。向公司工单或外部人员提供前，应优先发送错误分类、时间、工具名和最小复现；不要直接提交整个 `app/data/turn_traces/`。
 
 Eval 报告采用单独的安全摘要规则，不能用 raw Trace 替代脱敏报告。

@@ -13,7 +13,7 @@ Thread（长期、可重放）
   └─ pending_interaction
 
 Turn Trace（按 Turn 保存的执行事实）
-  ├─ contexts / System Prompt
+  ├─ contexts / Developer Prompt（兼容历史 System Prompt）
   ├─ steps（引用 transcript item_id）
   └─ timing / validation / error / terminal
 
@@ -116,7 +116,7 @@ Runtime 用切点跳过较早 transcript，发送 summary 和切点后的完整�
 
 ```text
 messages = [
-  SystemMessage(agent spec + runtime boundary),
+  ChatMessage(role="developer", agent spec + runtime boundary),
   HumanMessage([project_instructions] ...),       # 仅在当前项目显式绑定 Project Profile 时
   HumanMessage([compaction_summary] ...),         # 仅在发生过压缩时
   ...未被压缩的 typed transcript messages,
@@ -129,13 +129,13 @@ tools = provider 绑定的工具 schema
 
 恢复一个暂停的 Turn 时，不再伪造新的用户请求；Runtime 保留原 Assistant tool call，追加同一 `tool_call_id` 的真实 ToolMessage 后继续模型循环。
 
-开发者调试不再显示容易误解的 `architecture`、`replayed_message_count`、`roles` 和 `compaction_summary_chars` 摘要。UI 直接展示持久 Thread 历史；System Prompt 作为本轮 Trace 的上下文快照按需查看。
+开发者调试不再显示容易误解的 `architecture`、`replayed_message_count`、`roles` 和 `compaction_summary_chars` 摘要。UI 直接展示持久 Thread 历史；Developer Prompt 作为本轮 Trace 的上下文快照按需查看。
 
 ## Turn Trace 为什么保留
 
 Turn Trace 不是第二份历史，也不是任务记忆。它只解释 Thread Item 是怎样产生的：
 
-- 模型生成哪个 Assistant Item、使用哪个 System Prompt；
+- 模型生成哪个 Assistant Item、使用哪个 Developer Prompt；
 - 工具调用由哪个 Assistant Item 发起、生成哪个 Tool Item；
 - 工具耗时、边界检查、错误类型、重试与恢复结果；
 - Turn 最终以完成、失败、取消还是等待结束。
@@ -150,7 +150,7 @@ Trace 只有一个技术状态：`running`、`waiting_user`、`completed`、`fai
 - 展开执行过程时按需读取本 Turn 的技术记录；
 - 展开“开发者调试”后，首先显示截至该 Assistant Item 的完整 Thread 历史；
 - 工具结果旁的“查看 Trace”只展开该工具的耗时、校验、错误和恢复信息；
-- System Prompt 通过一个独立的小入口按需展开；不再展示 Runtime Inspector 和大块 Raw JSON。
+- Developer Prompt 通过一个独立的小入口按需展开；不再展示 Runtime Inspector 和大块 Raw JSON。
 
 Trace 的 `steps` 按 transcript 顺序保存 `item_id`。例如 Assistant `a1` 发起 `call-1`，Tool Item `tool-1` 返回结果，Trace 会同时保存 `requested_by_item_id=a1`、`tool_call_id=call-1` 和 `item_id=tool-1`。调试人员不需要在两套无关时间线之间猜测对应关系。
 

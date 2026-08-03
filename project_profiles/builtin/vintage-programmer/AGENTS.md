@@ -14,7 +14,7 @@ Vintage Programmer is a local-first coding Agent application. Keep the Runtime m
 
 ## Working conventions
 
-- Preserve the typed Thread transcript and the single-SystemMessage request structure.
+- Preserve the typed Thread transcript and the single Chat Completions developer-message request structure.
 - Keep project paths, Session data, approvals, caches, and credentials out of version-controlled shared resources.
 - Treat skipped, rejected, and executed failures as different Runtime outcomes.
 - Do not add keyword-based intent routing when an explicit state, API field, or user choice can express the same decision.

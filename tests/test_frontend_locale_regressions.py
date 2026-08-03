@@ -665,7 +665,7 @@ def test_developer_debug_view_is_thread_first_and_trace_on_demand() -> None:
         "const traceSteps = Array.isArray(turnTrace.steps)",
         't("activity.debug.thread_history")',
         't("activity.debug.view_trace")',
-        't("activity.debug.view_system_prompt")',
+        't("activity.debug.view_developer_prompt")',
         "traceStepByItemId.get(itemId)",
         "requested_by_item_id",
         "tool_result_item_id",
@@ -1411,7 +1411,7 @@ def test_internal_design_manual_describes_current_thread_runtime() -> None:
 
     assert manual.startswith("# Vintage Programmer 内部设计手册")
     assert "`thread_transcript.items` 是可继续对话的唯一历史事实源" in manual
-    assert "System Message 只有一个" in manual
+    assert "Developer Message 只有一个" in manual
     assert "Trace 不是第二份聊天历史" in manual
     assert "选择 Full Access 就是本轮完整文件系统授权" in manual
     assert "skills/builtin/<name>/SKILL.md" in manual
@@ -2601,7 +2601,7 @@ def test_completed_thread_runs_release_busy_state() -> None:
     assert "activeRunThreadId: \"\"," in cleanup_body
 
 
-def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt() -> None:
+def test_activity_debug_drawer_contains_thread_history_trace_and_developer_prompt() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "triggering_user_message" in script
@@ -2610,10 +2610,10 @@ def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt()
     assert "structured.sent_to_model" not in script
     assert 't("activity.debug.thread_history")' in script
     assert 't("activity.debug.view_trace")' in script
-    assert 't("activity.debug.view_system_prompt")' in script
-    assert "const systemPromptGroupsByText = new Map();" in script
-    assert "systemPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);" in script
-    assert 't("activity.debug.base_system_prompt")' in script
+    assert 't("activity.debug.view_developer_prompt")' in script
+    assert "const developerPromptGroupsByText = new Map();" in script
+    assert "developerPromptGroupsByText.get(groupKey).contexts.push(normalizedContext);" in script
+    assert 't("activity.debug.base_developer_prompt")' in script
     assert 't("activity.debug.context_variants")' in script
     assert "context.supporting_messages.length" in script
     assert "context.tool_names.length" in script
@@ -2622,7 +2622,7 @@ def test_activity_debug_drawer_contains_thread_history_trace_and_system_prompt()
     assert 'className="system-prompt-variants"' in script
     assert ".system-prompt-variants" in STYLES_CSS_PATH.read_text(encoding="utf-8")
     assert "${threadHistory}" in script
-    assert "${systemPrompt}" in script
+    assert "${developerPrompt}" in script
     debug_block = script.split("const renderActivityDebugDetails", 1)[1].split("const renderMessageActivity", 1)[0]
     assert "const rawTraceList = chatSettings.debug_raw" not in debug_block
     assert "phase_timings: item.phase_timings || {}" not in script

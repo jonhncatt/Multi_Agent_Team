@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from functools import partial
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
@@ -390,7 +391,7 @@ class VPRuntimeBackend:
         self._auth_manager = OpenAIAuthManager(config)
 
         try:
-            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+            from langchain_core.messages import AIMessage, ChatMessage, HumanMessage, SystemMessage, ToolMessage
             from langchain_core.tools import StructuredTool
         except Exception as exc:
             raise RuntimeError(
@@ -398,7 +399,10 @@ class VPRuntimeBackend:
             ) from exc
 
         self._AIMessage = AIMessage
+        self._DeveloperMessage = partial(ChatMessage, role="developer")
         self._HumanMessage = HumanMessage
+        # Retained only for compatibility with historical records and callers.
+        # App-owned trusted instructions are sent as developer messages.
         self._SystemMessage = SystemMessage
         self._ToolMessage = ToolMessage
         self._StructuredTool = StructuredTool
@@ -1202,7 +1206,7 @@ class VPRuntimeBackend:
             }
 
         warnings = [item for item in (base_warning, data_warning) if str(item or "").strip()]
-        system_text = (
+        developer_text = (
             "You are a local image reading helper. "
             "Return JSON only with keys visible_text and analysis. "
             "visible_text must contain the readable text in the image as faithfully as possible, preserving line breaks when useful. "
@@ -1212,7 +1216,7 @@ class VPRuntimeBackend:
         prompt_text = str(prompt or "").strip() or "Read the image. Extract visible text and provide a concise analysis of the content."
         max_tokens = max(300, min(4096, int(max_output_chars / 3) + 256))
         messages = [
-            self._SystemMessage(content=system_text),
+            self._DeveloperMessage(content=developer_text),
             self._HumanMessage(
                 content=[
                     {"type": "text", "text": prompt_text},

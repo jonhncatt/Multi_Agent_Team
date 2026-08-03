@@ -95,7 +95,7 @@ def _match_sent_items(
     unmatched_reversed: list[dict[str, Any]] = []
     cursor = len(candidates) - 1
     for message in reversed(sent_messages):
-        if _message_role(message) == "system":
+        if _message_role(message) in {"developer", "system"}:
             continue
         found = -1
         for index in range(cursor, -1, -1):
@@ -112,9 +112,9 @@ def _match_sent_items(
     return list(reversed(matched_ids_reversed)), list(reversed(unmatched_reversed))
 
 
-def _system_components(system_message: str) -> list[str]:
+def _instruction_components(instruction_message: str) -> list[str]:
     values: list[str] = []
-    for match in re.finditer(r"^\[([^\]\n]+)\]\s*$", str(system_message or ""), re.MULTILINE):
+    for match in re.finditer(r"^\[([^\]\n]+)\]\s*$", str(instruction_message or ""), re.MULTILINE):
         name = match.group(1).strip()
         if name and name not in values:
             values.append(name)
@@ -128,8 +128,11 @@ def _context_for_exchange(
     before_index: int | None,
 ) -> tuple[dict[str, Any], list[str]]:
     sent = _list_of_dicts(exchange.get("sent_messages_exact"))
+    developer_parts = [str(item.get("content") or "") for item in sent if _message_role(item) == "developer"]
     system_parts = [str(item.get("content") or "") for item in sent if _message_role(item) == "system"]
+    developer_message = "\n\n".join(part for part in developer_parts if part).strip()
     system_message = "\n\n".join(part for part in system_parts if part).strip()
+    instruction_message = developer_message or system_message
     input_item_ids, unmatched = _match_sent_items(sent, thread_items, before_index=before_index)
     supporting_messages = [
         {
@@ -147,8 +150,10 @@ def _context_for_exchange(
     ]
     composition = _dict(exchange.get("request_composition"))
     context = {
-        "system_message": system_message,
-        "components": _system_components(system_message),
+        **({"developer_message": developer_message} if developer_message else {}),
+        # Keep legacy system traces readable during and after the migration.
+        **({"system_message": system_message} if system_message else {}),
+        "components": _instruction_components(instruction_message),
         "supporting_messages": supporting_messages,
         "tool_names": [_text(item) for item in list(composition.get("bound_tool_names") or []) if _text(item)],
     }
@@ -354,6 +359,7 @@ def build_turn_trace(
             before_index=before_index,
         )
         key = (
+            context.get("developer_message"),
             context.get("system_message"),
             tuple((item.get("role"), item.get("content"), item.get("tool_call_id"), item.get("name")) for item in context.get("supporting_messages") or []),
             tuple(context.get("tool_names") or []),

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from langchain_openai.chat_models.base import _convert_message_to_dict
 
 from app.config import load_config
 from app.local_tools import (
@@ -45,6 +46,17 @@ def _tool_surfaces(tmp_path: Path):
         if str(item.get("name") or "")
     }
     return backend, model_specs, runtime_specs
+
+
+def test_backend_developer_message_serializes_for_chat_completions(tmp_path: Path) -> None:
+    backend, _, _ = _tool_surfaces(tmp_path)
+
+    message = backend._DeveloperMessage(content="trusted runtime instructions")
+
+    assert _convert_message_to_dict(message) == {
+        "role": "developer",
+        "content": "trusted runtime instructions",
+    }
 
 
 def _missing_property_descriptions(schema: dict[str, Any], prefix: str = "") -> list[str]:

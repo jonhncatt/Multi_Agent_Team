@@ -81,7 +81,7 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
                     "status": "completed",
                     "duration_ms": 7,
                     "sent_messages_exact": [
-                        {"role": "system", "content": "[agent.md]\nRules"},
+                        {"role": "developer", "content": "[agent.md]\nRules"},
                         {"role": "user", "content": "inspect"},
                     ],
                     "request_composition": {"bound_tool_names": ["read_file"]},
@@ -98,7 +98,7 @@ def _build_sidecar_session(tmp_path: Path) -> tuple[SessionStore, dict[str, obje
                     "status": "completed",
                     "duration_ms": 5,
                     "sent_messages_exact": [
-                        {"role": "system", "content": "[agent.md]\nRules"},
+                        {"role": "developer", "content": "[agent.md]\nRules"},
                         {"role": "user", "content": "inspect"},
                         {"role": "assistant", "content": "", "tool_calls": [{"id": "call-1", "name": "read_file", "args": {"path": "README.md"}}]},
                         {"role": "tool", "tool_call_id": "call-1", "name": "read_file", "content": '{"ok": true}'},
@@ -203,7 +203,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert trace["contexts"] == [
         {
             "context_id": "context-1",
-            "system_message": "[agent.md]\nRules",
+            "developer_message": "[agent.md]\nRules",
             "components": ["agent.md"],
             "supporting_messages": [],
             "tool_names": ["read_file"],

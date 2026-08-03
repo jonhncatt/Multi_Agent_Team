@@ -98,6 +98,10 @@ class _FakeSystemMessage(_FakeMessage):
     pass
 
 
+class _FakeDeveloperMessage(_FakeMessage):
+    role = "developer"
+
+
 class _FakeHumanMessage(_FakeMessage):
     pass
 
@@ -523,6 +527,7 @@ class _FakeBackend:
         self.tools = _FakeTools()
         self._scripted_messages = list(scripted_messages)
         self.invocations: list[dict[str, Any]] = []
+        self._DeveloperMessage = _FakeDeveloperMessage
         self._SystemMessage = _FakeSystemMessage
         self._HumanMessage = _FakeHumanMessage
         self._ToolMessage = _FakeToolMessage
@@ -804,7 +809,7 @@ def test_model_request_estimate_includes_full_messages_and_selected_tool_schemas
         backend=_FakeBackend([_FakeMessage(content="ok")]),
     )
     messages = [
-        _FakeSystemMessage(content="system " + "S" * 8_000),
+        _FakeDeveloperMessage(content="developer " + "D" * 8_000),
         _FakeHumanMessage(content="attachment " + "A" * 12_000),
     ]
 
@@ -879,7 +884,7 @@ def test_runtime_parses_frontmatter_and_prompt_order(tmp_path: Path) -> None:
 
     descriptor = runtime.descriptor()
     spec = runtime._load_spec()
-    prompt = runtime._render_system_prompt(ChatSettings(model="gpt-test"), spec=spec, available_skills=[])
+    prompt = runtime._render_developer_prompt(ChatSettings(model="gpt-test"), spec=spec, available_skills=[])
 
     assert descriptor["agent_id"] == "vintage_programmer"
     assert descriptor["tool_scope"] == "read_only"
@@ -1239,7 +1244,7 @@ def test_rendered_prompt_has_single_policy_owners() -> None:
         agent_dir=REPO_ROOT / "agents" / "vintage_programmer",
         backend=_FakeBackend([_FakeMessage(content="ok")]),
     )
-    prompt = runtime._render_system_prompt(
+    prompt = runtime._render_developer_prompt(
         ChatSettings(model="gpt-5.4", locale="zh-CN"),
         spec=runtime._load_spec(locale="zh-CN"),
         available_skills=[],
@@ -2402,7 +2407,7 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
     assert result["inspector"]["run_state"]["pending_approval"] == {}
     assert any(item["type"] == "approval.approved" for item in result["inspector"]["trace_events"])
     assert len(
-        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
+        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeDeveloperMessage)]
     ) == 1
     sent_messages = backend.invocations[0]["messages"]
     assert not any(
@@ -2862,7 +2867,7 @@ def test_runtime_records_completed_initial_llm_exchange(tmp_path: Path) -> None:
     exchange = exchanges[0]
     assert exchange["phase"] == "initial"
     assert exchange["status"] == "completed"
-    assert exchange["sent_messages_exact"][0]["role"] == "system"
+    assert exchange["sent_messages_exact"][0]["role"] == "developer"
     assert exchange["sent_messages_exact"][-1]["role"] == "user"
     assert exchange["model_returned_exact"]["content"] == "Done."
     assert exchange["harness_interpretation"]["decision"] == "final_answer"
@@ -2911,7 +2916,7 @@ def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> 
     assert attachment_path in sent
     assert backend.invocations[0]["messages"][-1].content == "帮我看一下这个附件"
     assert len(
-        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
+        [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeDeveloperMessage)]
     ) == 1
     assert any(
         '"current_attachments"' in str(item.content or "")
@@ -3752,9 +3757,9 @@ def test_runtime_loads_only_explicitly_bound_project_profile_instructions(tmp_pa
     )
 
     messages = backend.invocations[0]["messages"]
-    system_messages = [item for item in messages if isinstance(item, _FakeSystemMessage)]
-    assert len(system_messages) == 1
-    assert "Project contract: model-led turn planning only." not in str(system_messages[0].content or "")
+    developer_messages = [item for item in messages if isinstance(item, _FakeDeveloperMessage)]
+    assert len(developer_messages) == 1
+    assert "Project contract: model-led turn planning only." not in str(developer_messages[0].content or "")
     assert any(
         "[project_instructions]" in str(item.content or "")
         and "Project contract: model-led turn planning only." in str(item.content or "")
@@ -3796,7 +3801,7 @@ def test_runtime_does_not_load_project_instructions_without_profile_binding(tmp_
     )
 
 
-def test_runtime_message_layers_keep_context_below_single_system_message(tmp_path: Path) -> None:
+def test_runtime_message_layers_keep_context_below_single_developer_message(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     attachment_path = tmp_path / "spec.md"
@@ -3846,7 +3851,7 @@ def test_runtime_message_layers_keep_context_below_single_system_message(tmp_pat
 
     messages = backend.invocations[0]["messages"]
     assert [type(item) for item in messages] == [
-        _FakeSystemMessage,
+        _FakeDeveloperMessage,
         _FakeHumanMessage,
         _FakeHumanMessage,
         _FakeHumanMessage,
@@ -4344,7 +4349,7 @@ def test_runtime_does_not_guess_whether_repeated_searches_make_progress(tmp_path
     assert "replan_requested:no_progress" not in result["inspector"]["notes"]
     assert result["inspector"]["run_state"]["replan_history"] == []
     assert all(
-        len([item for item in invocation["messages"] if isinstance(item, _FakeSystemMessage)]) == 1
+        len([item for item in invocation["messages"] if isinstance(item, _FakeDeveloperMessage)]) == 1
         for invocation in backend.invocations
     )
     assert not any(
@@ -4971,7 +4976,7 @@ def test_mid_turn_compaction_does_not_trigger_from_tool_count_alone(
         agent_dir=tmp_path / "agents" / "vintage_programmer",
         backend=_FakeBackend([]),
     )
-    messages = [_FakeSystemMessage(content="system"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
+    messages = [_FakeDeveloperMessage(content="developer"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
     tool_events = [
         ToolEvent(name="read_file", output_preview="ok", status="ok", summary=f"event-{idx}")
         for idx in range(tool_count)
@@ -5014,7 +5019,7 @@ def test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed(
         agent_dir=tmp_path / "agents" / "vintage_programmer",
         backend=_FakeBackend([]),
     )
-    messages = [_FakeSystemMessage(content="system"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
+    messages = [_FakeDeveloperMessage(content="developer"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
     tool_events = [
         ToolEvent(name="read_file", output_preview="ok", status="ok", summary=f"event-{idx}")
         for idx in range(20)
@@ -5119,7 +5124,7 @@ def test_mid_turn_compaction_recalculates_after_model_downgrade(
         agent_dir=tmp_path / "agents" / "vintage_programmer",
         backend=_FakeBackend([]),
     )
-    messages: list[Any] = [_FakeSystemMessage(content="system")]
+    messages: list[Any] = [_FakeDeveloperMessage(content="developer")]
     tool_events: list[ToolEvent] = []
     for index in range(3):
         call_id = f"call-{index}"
@@ -5179,7 +5184,7 @@ def test_model_downgrade_compacts_large_base_before_the_next_request(
         backend=_FakeBackend([]),
     )
     messages = [
-        _FakeSystemMessage(content="system contract"),
+        _FakeDeveloperMessage(content="developer contract"),
         _FakeHumanMessage(content="old replay one"),
         _FakeAIMessage(content="old replay answer"),
         _FakeHumanMessage(content="current request"),
@@ -5945,12 +5950,12 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
         context={"session_id": "s-skills-light", "project": {"project_root": str(tmp_path)}, "history_turns": [], "attachments": []},
     )
 
-    system_prompt = str(backend.invocations[0]["messages"][0].content)
-    assert "[available_skills]" in system_prompt
-    assert "team:repo_triage" in system_prompt
-    assert "Use for repository triage." in system_prompt
-    assert "Full secret instruction body." not in system_prompt
-    available_section = system_prompt.split("[available_skills]", 1)[1].split("\n\n", 1)[0]
+    developer_prompt = str(backend.invocations[0]["messages"][0].content)
+    assert "[available_skills]" in developer_prompt
+    assert "team:repo_triage" in developer_prompt
+    assert "Use for repository triage." in developer_prompt
+    assert "Full secret instruction body." not in developer_prompt
+    available_section = developer_prompt.split("[available_skills]", 1)[1].split("\n\n", 1)[0]
     assert '"path"' in available_section
     assert str((skill_dir / "SKILL.md").resolve()) in available_section
     assert "read_file" in available_section
