@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 from dataclasses import asdict, dataclass, replace
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,8 @@ DEFAULT_DESKTOP_SHELL = "auto"
 DEFAULT_DESKTOP_CLOSE_TIMEOUT_SEC = 5.0
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
+DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
+DESKTOP_PREPARING_STATE_FILENAME = "desktop-preparing-state.js"
 
 
 class LauncherError(RuntimeError):
@@ -92,6 +95,14 @@ class DesktopLaunchConfig:
     @property
     def desktop_control_token_path(self) -> Path:
         return self.project_root / "app" / "data" / "runtime" / DESKTOP_CONTROL_TOKEN_FILENAME
+
+    @property
+    def desktop_preparing_path(self) -> Path:
+        return self.project_root / "app" / "data" / "runtime" / DESKTOP_PREPARING_FILENAME
+
+    @property
+    def desktop_preparing_state_path(self) -> Path:
+        return self.project_root / "app" / "data" / "runtime" / DESKTOP_PREPARING_STATE_FILENAME
 
     @property
     def window_initialized_marker(self) -> Path:
@@ -485,7 +496,10 @@ def build_server_command(config: DesktopLaunchConfig) -> list[str]:
 
 
 def build_browser_command(
-    config: DesktopLaunchConfig, *, initialize_window: bool = False
+    config: DesktopLaunchConfig,
+    *,
+    initialize_window: bool = False,
+    app_url: str = "",
 ) -> list[str]:
     if config.browser_path is None:
         raise LauncherError(
@@ -493,7 +507,7 @@ def build_browser_command(
         )
     command = [
         str(config.browser_path),
-        f"--app={config.chrome_desktop_url}",
+        f"--app={str(app_url or config.chrome_desktop_url).strip()}",
         f"--user-data-dir={config.browser_profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -603,11 +617,19 @@ def start_server(config: DesktopLaunchConfig) -> tuple[subprocess.Popen[bytes], 
     return process, log_handle
 
 
-def start_browser(config: DesktopLaunchConfig) -> subprocess.Popen[bytes]:
+def start_browser(
+    config: DesktopLaunchConfig,
+    *,
+    app_url: str = "",
+) -> subprocess.Popen[bytes]:
     config.browser_profile_dir.mkdir(parents=True, exist_ok=True)
     initialize_window = not config.window_initialized_marker.is_file()
     process = subprocess.Popen(
-        build_browser_command(config, initialize_window=initialize_window),
+        build_browser_command(
+            config,
+            initialize_window=initialize_window,
+            app_url=app_url,
+        ),
         cwd=str(config.project_root),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -744,6 +766,123 @@ def ensure_desktop_control_token(config: DesktopLaunchConfig) -> DesktopLaunchCo
             pass
         temporary_path.replace(token_path)
     return replace(config, desktop_control_token=token)
+
+
+def _preparing_detail(locale: str) -> str:
+    normalized = str(locale or "").strip().lower()
+    if normalized.startswith("zh"):
+        return "正在启动本地工作区"
+    if normalized.startswith("ja"):
+        return "ローカルワークスペースを起動しています"
+    return "Starting the local workspace"
+
+
+def _write_preparing_document(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(".tmp")
+    temporary_path.write_text(content, encoding="utf-8")
+    try:
+        temporary_path.replace(path)
+    except PermissionError:
+        # Chrome normally closes the file immediately after parsing. Retain a
+        # direct-write fallback for managed Windows builds that deny replacement.
+        path.write_text(content, encoding="utf-8")
+        temporary_path.unlink(missing_ok=True)
+
+
+def chrome_preparation_url(config: DesktopLaunchConfig) -> str:
+    return config.desktop_preparing_path.resolve().as_uri()
+
+
+def write_chrome_preparation_page(
+    config: DesktopLaunchConfig,
+    *,
+    state: str,
+    error: str = "",
+) -> Path:
+    normalized_state = str(state or "preparing").strip().lower()
+    if normalized_state == "ready":
+        state_script = (
+            "window.__VP_PREPARING_TERMINAL__=true;"
+            f"window.location.replace({json.dumps(config.chrome_desktop_url)});"
+        )
+        _write_preparing_document(config.desktop_preparing_state_path, state_script)
+        return config.desktop_preparing_path
+    if normalized_state == "failed":
+        failure = str(error or f"See {config.log_path}").strip()
+        state_script = f"window.vpPreparingFailed({json.dumps(failure)});"
+        _write_preparing_document(config.desktop_preparing_state_path, state_script)
+        return config.desktop_preparing_path
+
+    icon_path = config.project_root / "app" / "static" / "assets" / "vintage_programmer.png"
+    icon_markup = (
+        f'<img class="mark" src="{escape(icon_path.resolve().as_uri())}" alt="">'
+        if icon_path.is_file()
+        else '<div class="mark fallback">VP</div>'
+    )
+    heading = "Preparing…"
+    detail = _preparing_detail(config.locale)
+    spinner = '<span class="spinner" aria-hidden="true"></span>'
+    document = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{APP_TITLE}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; min-height: 100%; }}
+    body {{
+      min-height: 100vh; display: grid; place-items: center; color: #24211f;
+      font-family: "Segoe UI", "PingFang SC", "Yu Gothic UI", sans-serif;
+      background: linear-gradient(145deg, #fffaf5 0%, #f4f6f8 58%, #eef1f5 100%);
+    }}
+    main {{ display: grid; justify-items: center; gap: 14px; padding: 32px; text-align: center; }}
+    .mark {{ width: 72px; height: 72px; object-fit: contain; }}
+    .mark.fallback {{ display: grid; place-items: center; border-radius: 18px; background: #f37021; color: white; font-weight: 750; }}
+    h1 {{ margin: 2px 0 0; font-size: 22px; letter-spacing: -0.02em; }}
+    p {{ margin: 0; color: #6b625b; font-size: 14px; }}
+    .spinner {{ width: 22px; height: 22px; margin-top: 4px; border: 2px solid rgba(243,112,33,.18); border-top-color: #f37021; border-radius: 50%; animation: spin .8s linear infinite; }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  </style>
+</head>
+<body>
+  <main role="status" aria-live="polite">
+    {icon_markup}
+    <h1 id="preparingHeading">{escape(heading)}</h1>
+    <p id="preparingDetail">{escape(detail)}</p>
+    {spinner}
+  </main>
+  <script>
+    window.__VP_PREPARING_TERMINAL__ = false;
+    window.vpPreparingFailed = (message) => {{
+      window.__VP_PREPARING_TERMINAL__ = true;
+      document.getElementById("preparingHeading").textContent = "Startup failed";
+      document.getElementById("preparingDetail").textContent = String(message || "");
+      const spinner = document.querySelector(".spinner");
+      if (spinner) spinner.remove();
+    }};
+    const pollState = () => {{
+      if (window.__VP_PREPARING_TERMINAL__) return;
+      const script = document.createElement("script");
+      script.src = {json.dumps(config.desktop_preparing_state_path.name)} + "?check=" + Date.now();
+      script.onload = script.onerror = () => {{
+        script.remove();
+        if (!window.__VP_PREPARING_TERMINAL__) window.setTimeout(pollState, 250);
+      }};
+      document.head.appendChild(script);
+    }};
+    pollState();
+  </script>
+</body>
+</html>
+"""
+    _write_preparing_document(
+        config.desktop_preparing_state_path,
+        "window.__VP_PREPARING_STATE__='preparing';",
+    )
+    _write_preparing_document(config.desktop_preparing_path, document)
+    return config.desktop_preparing_path
 
 
 def stop_owned_server(process: subprocess.Popen[bytes]) -> None:
@@ -888,19 +1027,30 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
     adopted_server_pid = 0
     native_window_closed = False
     server_stopped = False
+    chrome_window_started = False
+    chrome_preparation_ready = False
+    use_webview2 = should_try_webview2(config)
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
     try:
         with startup_lock(lock_path):
             if not health_check(config.health_url):
+                if not use_webview2:
+                    write_chrome_preparation_page(config, state="preparing")
+                    start_browser(config, app_url=chrome_preparation_url(config))
+                    chrome_window_started = True
                 owned_server, log_handle = start_server(config)
                 if not wait_until_healthy(
                     config.health_url,
                     timeout_sec=config.startup_timeout_sec,
                     process=owned_server,
                 ):
-                    raise LauncherError(
-                        f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
-                    )
+                    failure = f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
+                    if chrome_window_started:
+                        write_chrome_preparation_page(config, state="failed", error=failure)
+                    raise LauncherError(failure)
+                if chrome_window_started:
+                    write_chrome_preparation_page(config, state="ready")
+                    chrome_preparation_ready = True
             else:
                 health_payload = read_health_payload(config.health_url)
                 try:
@@ -910,7 +1060,7 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
         # WebView2 owns the foreground GUI loop until the user closes the
         # native window. Keep that lifetime outside the short startup lock so a
         # window does not make later health checks look like a stuck launch.
-        if should_try_webview2(config):
+        if use_webview2:
             try:
                 start_webview2(config)
                 native_window_closed = True
@@ -929,8 +1079,11 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
         else:
             if config.shell_mode == "webview2":
                 raise LauncherError("VP_DESKTOP_SHELL=webview2 is supported only on Windows.")
-            start_browser(config)
-    except BaseException:
+            if not chrome_window_started:
+                start_browser(config)
+    except BaseException as exc:
+        if chrome_window_started and not chrome_preparation_ready:
+            write_chrome_preparation_page(config, state="failed", error=str(exc))
         if owned_server is not None:
             stop_owned_server(owned_server)
             server_stopped = True

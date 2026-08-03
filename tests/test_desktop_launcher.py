@@ -10,6 +10,7 @@ from desktop.launcher import (
     build_browser_command,
     build_launch_config,
     build_server_command,
+    chrome_preparation_url,
     desktop_instance_guard,
     ensure_desktop_control_token,
     handle_desktop_close,
@@ -23,6 +24,7 @@ from desktop.launcher import (
     run_desktop,
     should_try_webview2,
     start_browser,
+    write_chrome_preparation_page,
 )
 from desktop.webview_host import WebViewHostError
 
@@ -253,6 +255,8 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
     initial_command = build_browser_command(config, initialize_window=True)
     assert "--start-maximized" in initial_command
     assert "--window-size=1360,840" in initial_command
+    preparing_command = build_browser_command(config, app_url="file:///C:/vp/preparing.html")
+    assert "--app=file:///C:/vp/preparing.html" in preparing_command
 
 
 def test_desktop_control_token_is_stable_and_never_exposed_in_diagnostics(tmp_path: Path) -> None:
@@ -278,7 +282,7 @@ def test_desktop_control_token_is_stable_and_never_exposed_in_diagnostics(tmp_pa
     assert first.desktop_control_token not in str(first.diagnostics())
 
 
-def test_successful_launch_does_not_terminate_owned_backend(
+def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _project_root(tmp_path)
@@ -310,21 +314,137 @@ def test_successful_launch_does_not_terminate_owned_backend(
 
     server = _Process()
     log = _Log()
-    browser_started: list[DesktopLaunchConfig] = []
+    browser_started: list[tuple[DesktopLaunchConfig, str]] = []
     monkeypatch.setattr("desktop.launcher.health_check", lambda _url: False)
     monkeypatch.setattr("desktop.launcher.start_server", lambda _config: (server, log))
     monkeypatch.setattr("desktop.launcher.wait_until_healthy", lambda *_args, **_kwargs: True)
     monkeypatch.setattr("desktop.launcher.should_try_webview2", lambda _config: False)
     monkeypatch.setattr(
         "desktop.launcher.start_browser",
-        lambda browser_config: browser_started.append(browser_config),
+        lambda browser_config, **kwargs: browser_started.append(
+            (browser_config, str(kwargs.get("app_url") or ""))
+        ),
     )
 
     run_desktop(config)
 
-    assert browser_started == [config]
+    assert browser_started == [(config, chrome_preparation_url(config))]
+    preparation_document = config.desktop_preparing_path.read_text(encoding="utf-8")
+    preparation_state = config.desktop_preparing_state_path.read_text(encoding="utf-8")
+    assert "Preparing…" in preparation_document
+    assert config.desktop_preparing_state_path.name in preparation_document
+    assert config.chrome_desktop_url in preparation_state
+    assert "window.location.replace" in preparation_state
     assert server.terminated is False
     assert log.closed is True
+
+
+def test_chrome_preparing_page_uses_brand_icon_and_localized_detail(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    icon = root / "app" / "static" / "assets" / "vintage_programmer.png"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"png")
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+        locale="zh-CN",
+    )
+
+    path = write_chrome_preparation_page(config, state="preparing")
+    document = path.read_text(encoding="utf-8")
+
+    assert path == config.desktop_preparing_path
+    assert chrome_preparation_url(config).startswith("file://")
+    assert "Preparing…" in document
+    assert "正在启动本地工作区" in document
+    assert icon.resolve().as_uri() in document
+    assert "Date.now()" in document
+    assert config.desktop_preparing_state_path.read_text(encoding="utf-8") == (
+        "window.__VP_PREPARING_STATE__='preparing';"
+    )
+
+
+def test_chrome_preparing_page_reports_backend_start_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+
+    class _Process:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self, timeout: int) -> None:
+            return None
+
+    class _Log:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("desktop.launcher.health_check", lambda _url: False)
+    monkeypatch.setattr("desktop.launcher.start_browser", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("desktop.launcher.start_server", lambda _config: (_Process(), _Log()))
+    monkeypatch.setattr("desktop.launcher.wait_until_healthy", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("desktop.launcher.should_try_webview2", lambda _config: False)
+
+    with pytest.raises(LauncherError, match="did not start"):
+        run_desktop(config)
+
+    state_script = config.desktop_preparing_state_path.read_text(encoding="utf-8")
+    assert "vpPreparingFailed" in state_script
+    assert "did not start" in state_script
+
+
+def test_chrome_opens_final_page_immediately_when_backend_is_already_healthy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        webview_profile_dir=root / "webview",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    opened: list[dict[str, object]] = []
+    monkeypatch.setattr("desktop.launcher.health_check", lambda _url: True)
+    monkeypatch.setattr(
+        "desktop.launcher.read_health_payload",
+        lambda _url: {"ok": True, "app_version": "3.1.5Y", "process_id": 8123},
+    )
+    monkeypatch.setattr("desktop.launcher.should_try_webview2", lambda _config: False)
+    monkeypatch.setattr(
+        "desktop.launcher.start_browser",
+        lambda _config, **kwargs: opened.append(dict(kwargs)) or object(),
+    )
+
+    run_desktop(config)
+
+    assert opened == [{}]
+    assert config.desktop_preparing_path.exists() is False
 
 
 def test_browser_process_is_detached_and_initial_size_is_recorded(

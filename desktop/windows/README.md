@@ -19,6 +19,11 @@ falls back to Chrome App Mode.
 The launcher has no console window. Startup failures are shown in a message box
 and written to `app/data/runtime/desktop-launcher.log`.
 
+When Chrome App Mode needs to start a new backend, it opens immediately on a local
+`Preparing…` page. The same window moves to Vintage Programmer as soon as `/api/health`
+is ready; `Loading workspace…` then covers only project and Thread initialization.
+An already-running healthy backend skips the preparation page.
+
 The WebView2 host is single-instance. Double-clicking the executable while its window
 is open restores the existing window instead of opening another backend or window.
 Closing an idle native window also stops the local VP backend. If an Agent or Eval is

@@ -74,9 +74,13 @@ Copy-Item .env.example .env
 Chrome App Mode；没有 Chrome 时使用系统 Edge WebView2 Runtime。原生窗口打开期间 EXE 保持运行，
 并且只允许一个 VP 窗口；再次双击会唤醒已有窗口。空闲时关闭原生窗口会同时停止后台；如果仍有
 Agent 或 Eval 在运行，关闭对话框只提供“停止任务并完全退出”和“取消关闭”。选择完全退出时，
-Agent 会先走正常取消流程，再结束后台。Chrome App Mode 的右上角会显示“退出”按钮；应使用它
+Agent 会先走正常取消流程，再结束后台。Chrome App Mode 的右上角会显示 `Exit` 按钮；应使用它
 停止任务和本地后台后完全退出。直接关闭 Chrome 窗口无法可靠通知 launcher，因此不会自动承担
 后台关闭职责。
+
+Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健康后在同一个窗口自动进入 VP；
+随后出现的 `Loading workspace…` 只表示正在加载项目、Thread 和本地设置。如果后台已经运行，
+则直接进入 VP，不显示准备页。
 
 WebView2 使用独立的 `app/data/desktop_webview2_profile`，Chrome 回退使用
 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
