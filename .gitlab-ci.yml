@@ -1,0 +1,111 @@
+stages:
+  - build
+
+# This job deliberately refuses to use public PyPI implicitly. Configure one of:
+# - VP_INTERNAL_WHEELHOUSE: approved local/UNC directory containing all wheels
+# - VP_INTERNAL_PYPI_URL: company-managed Python package index
+# - VP_USE_RUNNER_PIP_CONFIG=1: explicit confirmation that the Runner pip config is internal-only
+build_windows_launcher:
+  stage: build
+  tags:
+    - windows
+  timeout: 10m
+  interruptible: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+  script:
+    - |
+      $ErrorActionPreference = "Stop"
+      function Assert-NativeSuccess([string]$Step) {
+        if ($LASTEXITCODE -ne 0) {
+          throw "$Step failed with exit code $LASTEXITCODE"
+        }
+      }
+
+      if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3.11 -m venv .venv-build
+      }
+      elseif (Get-Command python -ErrorAction SilentlyContinue) {
+        & python -m venv .venv-build
+      }
+      else {
+        throw "Python 3.11 was not found on the Windows Runner."
+      }
+      Assert-NativeSuccess "Create build virtual environment"
+
+      $Python = (Resolve-Path ".venv-build\Scripts\python.exe").Path
+      $Requirements = "desktop\windows\requirements-build.txt"
+      $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
+
+      if ($env:VP_INTERNAL_WHEELHOUSE) {
+        & $Python -m pip --isolated install `
+          --no-index `
+          --find-links "$env:VP_INTERNAL_WHEELHOUSE" `
+          -r $Requirements
+      }
+      elseif ($env:VP_INTERNAL_PYPI_URL) {
+        if ($env:VP_INTERNAL_PYPI_URL -match "(?i)(pypi\.org|pythonhosted\.org)") {
+          throw "VP_INTERNAL_PYPI_URL must point to a company-internal package index."
+        }
+        & $Python -m pip --isolated install `
+          --index-url "$env:VP_INTERNAL_PYPI_URL" `
+          -r $Requirements
+      }
+      elseif ($env:VP_USE_RUNNER_PIP_CONFIG -eq "1") {
+        & $Python -m pip install -r $Requirements
+      }
+      else {
+        throw "Configure VP_INTERNAL_WHEELHOUSE or VP_INTERNAL_PYPI_URL. Set VP_USE_RUNNER_PIP_CONFIG=1 only when the Runner pip configuration is confirmed internal-only."
+      }
+      Assert-NativeSuccess "Install approved launcher build dependencies"
+
+      & $Python -m pytest -q tests\test_desktop_launcher.py tests\test_webview_host.py
+      Assert-NativeSuccess "Test desktop launcher"
+
+      & $Python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --noconsole `
+        --icon desktop\windows\assets\vintage_programmer.ico `
+        --add-data "desktop\windows\assets\vintage_programmer.ico;desktop\windows\assets" `
+        --name VintageProgrammer `
+        desktop\launcher.py
+      Assert-NativeSuccess "Build VintageProgrammer.exe"
+
+      $env:VP_DESKTOP_BROWSER_PATH = "$env:WINDIR\System32\notepad.exe"
+      $DiagnosticsPath = Join-Path $PWD "launcher-diagnostics.json"
+      $Launcher = Start-Process `
+        -FilePath "dist\VintageProgrammer.exe" `
+        -ArgumentList @(
+          "--dry-run",
+          "--probe-native-shell",
+          "--project-root", $PWD.Path,
+          "--diagnostics-file", $DiagnosticsPath
+        ) `
+        -Wait `
+        -PassThru
+      if ($Launcher.ExitCode -ne 0) {
+        throw "Packaged launcher probe exited with code $($Launcher.ExitCode)"
+      }
+      if (-not (Test-Path $DiagnosticsPath)) {
+        throw "Packaged launcher did not create diagnostics: $DiagnosticsPath"
+      }
+      $Diagnostics = Get-Content $DiagnosticsPath | ConvertFrom-Json
+      if ($Diagnostics.app_url -ne "http://127.0.0.1:8080") {
+        throw "Unexpected launcher URL: $($Diagnostics.app_url)"
+      }
+      if (-not $Diagnostics.native_shell_probe.available) {
+        throw "WebView2 host is unavailable: $($Diagnostics.native_shell_probe.reason)"
+      }
+
+  artifacts:
+    name: "vintage-programmer-windows-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    when: on_success
+    expire_in: 30 days
+    paths:
+      - dist/VintageProgrammer.exe
+      - desktop/windows/README.md
