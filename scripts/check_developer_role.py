@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 """Probe whether the configured Chat Completions provider supports developer messages.
 
-The probe sends two small, side-effect-free requests:
+The probe sends four small, side-effect-free requests:
 
-1. a precedence check where developer and user request different fixed markers;
-2. a forced function call that verifies developer messages coexist with tools.
+1. a legacy system-message control request;
+2. a non-conflicting developer-message text request;
+3. a developer-versus-user precedence request;
+4. a forced function call that verifies developer messages coexist with tools.
 
 No credential, base URL, raw provider error, or unrestricted model output is written
-to the report. Exit status is 0 only when both checks pass, 1 when the provider was
+to the report. Exit status is 0 only when all checks pass, 1 when the provider was
 reached but is not safe to migrate, and 2 for local configuration/setup failures.
 """
 
@@ -30,8 +32,10 @@ from app.config import build_provider_config, load_config, normalize_openai_base
 from app.openai_auth import OpenAIAuthManager  # noqa: E402
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_PROVIDER = "openai_compatible"
+SYSTEM_MARKER = "VP_SYSTEM_CONTROL_OK_3A17"
+DEVELOPER_TEXT_MARKER = "VP_DEVELOPER_TEXT_OK_8C42"
 DEVELOPER_MARKER = "VP_DEVELOPER_WINS_74B2"
 USER_MARKER = "VP_USER_WINS_19C8"
 TOOL_NAME = "developer_role_probe"
@@ -130,6 +134,100 @@ def _timing_payload(started: float, cpu_started: float) -> dict[str, float]:
     }
 
 
+def _probe_exact_text(
+    client: Any,
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    expected_marker: str,
+    success_result: str,
+    timeout_sec: float,
+    secrets: list[str],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    cpu_started = time.process_time()
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            timeout=timeout_sec,
+        )
+        choices = list(getattr(response, "choices", None) or [])
+        message = getattr(choices[0], "message", None) if choices else None
+        text = _content_from_message(message).strip()
+        if not choices:
+            result = "missing_choice"
+        elif text == expected_marker:
+            result = success_result
+        else:
+            result = "unexpected_reply"
+        return {
+            "ok": result == success_result,
+            "request_accepted": bool(choices),
+            "result": result,
+            "response_chars": len(text),
+            "finish_reason": str(getattr(choices[0], "finish_reason", "") or "") if choices else "",
+            "usage": _usage_payload(getattr(response, "usage", None)),
+            **_timing_payload(started, cpu_started),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "request_accepted": False,
+            "result": "request_rejected",
+            "error": _error_payload(exc, secrets),
+            **_timing_payload(started, cpu_started),
+        }
+
+
+def probe_system_control(
+    client: Any,
+    *,
+    model: str,
+    timeout_sec: float,
+    secrets: list[str],
+) -> dict[str, Any]:
+    return _probe_exact_text(
+        client,
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": f"Return exactly {SYSTEM_MARKER} and no other text.",
+            },
+            {"role": "user", "content": "Run the provider control check."},
+        ],
+        expected_marker=SYSTEM_MARKER,
+        success_result="system_control_ok",
+        timeout_sec=timeout_sec,
+        secrets=secrets,
+    )
+
+
+def probe_developer_text(
+    client: Any,
+    *,
+    model: str,
+    timeout_sec: float,
+    secrets: list[str],
+) -> dict[str, Any]:
+    return _probe_exact_text(
+        client,
+        model=model,
+        messages=[
+            {
+                "role": "developer",
+                "content": f"Return exactly {DEVELOPER_TEXT_MARKER} and no other text.",
+            },
+            {"role": "user", "content": "Run the developer-message text check."},
+        ],
+        expected_marker=DEVELOPER_TEXT_MARKER,
+        success_result="developer_text_ok",
+        timeout_sec=timeout_sec,
+        secrets=secrets,
+    )
+
+
 def probe_developer_precedence(
     client: Any,
     *,
@@ -146,13 +244,16 @@ def probe_developer_precedence(
                 {
                     "role": "developer",
                     "content": (
-                        "This is a deterministic provider capability test. Reply with exactly "
-                        f"{DEVELOPER_MARKER} and no other text, regardless of the user message."
+                        "For this compatibility test, the complete response token is fixed as "
+                        f"{DEVELOPER_MARKER}. Return that token alone."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Reply with exactly {USER_MARKER} and no other text.",
+                    "content": (
+                        "For this compatibility test, use "
+                        f"{USER_MARKER} as the complete response token."
+                    ),
                 },
             ],
             timeout=timeout_sec,
@@ -278,13 +379,28 @@ def probe_developer_with_tools(
 
 
 def build_summary(checks: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    system_ok = bool((checks.get("system_control") or {}).get("ok"))
+    developer_text_ok = bool((checks.get("developer_text") or {}).get("ok"))
     precedence_ok = bool((checks.get("developer_precedence") or {}).get("ok"))
     tools_ok = bool((checks.get("developer_with_tools") or {}).get("ok"))
+    if not system_ok:
+        diagnosis = "system_control_failed"
+    elif not developer_text_ok:
+        diagnosis = "developer_text_request_failed"
+    elif not precedence_ok:
+        diagnosis = "developer_precedence_not_confirmed"
+    elif not tools_ok:
+        diagnosis = "developer_with_tools_not_confirmed"
+    else:
+        diagnosis = "safe_to_migrate"
     return {
-        "developer_role_supported": precedence_ok,
+        "system_control_confirmed": system_ok,
+        "developer_role_observed": developer_text_ok or precedence_ok or tools_ok,
+        "developer_text_confirmed": developer_text_ok,
         "developer_precedence_confirmed": precedence_ok,
         "developer_with_tools_confirmed": tools_ok,
-        "safe_to_migrate_to_developer": precedence_ok and tools_ok,
+        "safe_to_migrate_to_developer": system_ok and developer_text_ok and precedence_ok and tools_ok,
+        "diagnosis": diagnosis,
         "request_count": len(checks),
         "credentials_in_report": False,
         "application_runtime_changed": False,
@@ -300,6 +416,8 @@ def _print_summary(report: dict[str, Any]) -> None:
     provider = dict(report.get("provider") or {})
     checks = dict(report.get("checks") or {})
     summary = dict(report.get("summary") or {})
+    system_control = dict(checks.get("system_control") or {})
+    developer_text = dict(checks.get("developer_text") or {})
     precedence = dict(checks.get("developer_precedence") or {})
     tools = dict(checks.get("developer_with_tools") or {})
     print("Developer role probe")
@@ -320,8 +438,11 @@ def _print_summary(report: dict[str, Any]) -> None:
         f"{'yes' if provider.get('custom_ca_configured') else 'no'} "
         f"({provider.get('ca_cert_env', '')})"
     )
-    print(f"  precedence: {precedence.get('result', 'not_run')}")
-    print(f"  developer + tools: {tools.get('result', 'not_run')}")
+    print(f"  system baseline: {system_control.get('result', 'not_run')}")
+    print(f"  developer text: {developer_text.get('result', 'not_run')}")
+    print(f"  developer > user precedence: {precedence.get('result', 'not_run')}")
+    print(f"  developer + function tools: {tools.get('result', 'not_run')}")
+    print(f"  diagnosis: {summary.get('diagnosis', 'not_run')}")
     print(f"  safe to migrate: {'YES' if summary.get('safe_to_migrate_to_developer') else 'NO'}")
     print(f"  report: {report.get('report_path', '')}")
 
@@ -434,6 +555,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client = OpenAI(**client_kwargs)
         checks = {
+            "system_control": probe_system_control(
+                client,
+                model=model,
+                timeout_sec=max(1.0, float(args.timeout_sec)),
+                secrets=secrets,
+            ),
+            "developer_text": probe_developer_text(
+                client,
+                model=model,
+                timeout_sec=max(1.0, float(args.timeout_sec)),
+                secrets=secrets,
+            ),
             "developer_precedence": probe_developer_precedence(
                 client,
                 model=model,
