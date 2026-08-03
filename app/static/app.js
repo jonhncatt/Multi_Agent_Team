@@ -5172,9 +5172,10 @@ function App() {
       const activeRuns = Array.isArray(lifecycle.active_runs) ? lifecycle.active_runs : [];
       const activeEvals = Array.isArray(lifecycle.active_evals) ? lifecycle.active_evals : [];
       const activeCount = activeRuns.length + activeEvals.length;
-      if (activeCount > 0 && !window.confirm(t("desktop.exit.confirm", { count: activeCount }))) {
-        return;
-      }
+      const confirmation = activeCount > 0
+        ? t("desktop.exit.confirm", { count: activeCount })
+        : t("desktop.exit.confirm_idle");
+      if (!window.confirm(confirmation)) return;
       setDesktopExitState("exiting");
       await fetchJson("/api/desktop/exit", {
         method: "POST",

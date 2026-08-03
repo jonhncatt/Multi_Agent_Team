@@ -819,13 +819,13 @@ def write_chrome_preparation_page(
         else ""
     )
     heading = "Preparing…"
-    detail = "Vintage Programmer will open automatically when ready."
     spinner = '<span class="spinner" aria-hidden="true"></span>'
     document = f"""<!doctype html>
-<html lang="en">
+<html lang="en" translate="no" class="notranslate">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="google" content="notranslate">
   <title>{APP_TITLE}</title>
   {favicon_markup}
   <style>
@@ -849,7 +849,7 @@ def write_chrome_preparation_page(
   <main role="status" aria-live="polite">
     {icon_markup}
     <h1 id="preparingHeading">{escape(heading)}</h1>
-    <p id="preparingDetail">{escape(detail)}</p>
+    <p id="preparingDetail" hidden></p>
     {spinner}
   </main>
   <script>
@@ -857,7 +857,9 @@ def write_chrome_preparation_page(
     window.vpPreparingFailed = (message) => {{
       window.__VP_PREPARING_TERMINAL__ = true;
       document.getElementById("preparingHeading").textContent = "Startup failed";
-      document.getElementById("preparingDetail").textContent = String(message || "");
+      const detail = document.getElementById("preparingDetail");
+      detail.textContent = String(message || "");
+      detail.hidden = false;
       const spinner = document.querySelector(".spinner");
       if (spinner) spinner.remove();
     }};

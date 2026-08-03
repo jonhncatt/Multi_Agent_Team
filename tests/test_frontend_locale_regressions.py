@@ -85,6 +85,7 @@ REQUIRED_CORE_KEYS = (
     "tabs.eval",
     "desktop.exit.button",
     "desktop.exit.confirm",
+    "desktop.exit.confirm_idle",
     "desktop.exit.stopped",
     "eval.title",
     "eval.start",
@@ -447,6 +448,18 @@ def test_desktop_shell_uses_isolated_configurable_ui_density() -> None:
     assert 'html[data-vp-desktop-shell="true"] {' in styles
     assert 'zoom: var(--vp-desktop-ui-scale, 0.8);' in styles
     assert 'html[data-vp-desktop-shell="true"] .workspace-main' in styles
+
+
+def test_chrome_desktop_exit_always_requires_confirmation() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const confirmation = activeCount > 0" in script
+    assert ': t("desktop.exit.confirm_idle");' in script
+    assert "if (!window.confirm(confirmation)) return;" in script
+    assert 'activeCount > 0 && !window.confirm' not in script
+    assert '"desktop.exit.confirm_idle": "确定退出 Vintage Programmer 吗？本地后台也会同时关闭。"' in locales
+    assert '"desktop.exit.confirm_idle": "Exit Vintage Programmer? The local backend will also stop."' in locales
 
 
 def test_react_boot_overlay_waits_for_workspace_and_thread_but_not_runtime_status() -> None:

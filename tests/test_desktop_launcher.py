@@ -339,7 +339,7 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     assert log.closed is True
 
 
-def test_chrome_preparing_page_uses_brand_icon_and_fixed_english_detail(tmp_path: Path) -> None:
+def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_path: Path) -> None:
     root = _project_root(tmp_path)
     icon = root / "app" / "static" / "assets" / "vintage_programmer.png"
     icon.parent.mkdir(parents=True)
@@ -364,8 +364,11 @@ def test_chrome_preparing_page_uses_brand_icon_and_fixed_english_detail(tmp_path
     assert path == config.desktop_preparing_path
     assert chrome_preparation_url(config).startswith("file://")
     assert "Preparing…" in document
-    assert "Vintage Programmer will open automatically when ready." in document
+    assert "Vintage Programmer will open automatically when ready." not in document
     assert "正在启动本地工作区" not in document
+    assert '<meta name="google" content="notranslate">' in document
+    assert 'translate="no" class="notranslate"' in document
+    assert '<p id="preparingDetail" hidden></p>' in document
     assert icon.resolve().as_uri() in document
     assert favicon.resolve().as_uri() in document
     assert "Date.now()" in document
