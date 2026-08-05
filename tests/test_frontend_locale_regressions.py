@@ -47,6 +47,7 @@ REQUIRED_CORE_KEYS = (
     "buttons.load_task",
     "buttons.edit_task",
     "confirm.delete_task",
+    "confirm.switch_project_for_task",
     "errors.update_task_failed",
     "errors.delete_task_failed",
     "errors.task_required_fields",
@@ -2079,7 +2080,7 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
-def test_tasks_entry_loads_snapshot_into_current_thread_and_exposes_archived_tasks() -> None:
+def test_tasks_entry_queries_globally_and_confirms_before_loading_across_projects() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
@@ -2092,11 +2093,14 @@ def test_tasks_entry_loads_snapshot_into_current_thread_and_exposes_archived_tas
     assert 'showArchivedTasks ? "/api/tasks?include_archived=true" : "/api/tasks"' in script
     assert 't("tasks.show_archived")' in script
     assert '${["active", "blocked", "completed", "archived"].map' in script
-    assert 'const activeProjectId = String(projectId || "").trim();' in script
+    assert 'const taskProjectId = String(normalized.project_id || "").trim();' in load_handler
+    assert 'const switchesProject = Boolean(taskProjectId && taskProjectId !== activeProjectId);' in load_handler
+    assert 'window.confirm(t("confirm.switch_project_for_task", { title: taskTitle, project: projectTitle }))' in load_handler
+    assert 'await selectProject(taskProjectId, { silentNotFound: false })' in load_handler
     assert "createSession(" not in load_handler
-    assert "projectIdOverride: activeProjectId" in script
-    assert 'sessionIdOverride: String(sessionId || "").trim()' in load_handler
-    assert 'selectProject(taskProjectId' not in script
+    assert "projectIdOverride: targetProjectId" in load_handler
+    assert "sessionIdOverride: targetSessionId" in load_handler
+    assert 'targetSessionId = String(activeSessionIdRef.current || "").trim();' in load_handler
     assert "const targetProjectId = String(options.projectIdOverride || projectId || \"\").trim();" in script
     assert "const targetSessionId = String(options.sessionIdOverride || sessionId || \"\").trim();" in script
     assert 'task_id: String(options.taskId || "").trim() || null' in script
@@ -2124,6 +2128,7 @@ def test_tasks_entry_loads_snapshot_into_current_thread_and_exposes_archived_tas
     assert '"tasks.show_archived": "显示已归档"' in locales
     assert '"tasks.show_archived": "アーカイブ済みを表示"' in locales
     assert '"tasks.show_archived": "Show archived"' in locales
+    assert '"confirm.switch_project_for_task": "Task“{title}”属于项目“{project}”。是否切换到该项目并加载？"' in locales
 
 
 def test_runtime_control_center_uses_live_progress_without_task_state_details() -> None:

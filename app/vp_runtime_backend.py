@@ -339,8 +339,8 @@ class ListTasksArgs(BaseModel):
         description="Optional exact lifecycle status filter: active, blocked, completed, or archived. Leave empty to avoid filtering.",
     )
     project_scope: Literal["current_project", "all_projects"] = Field(
-        default="current_project",
-        description="Search the active project by default, or all locally registered Task snapshots.",
+        default="all_projects",
+        description="Search all locally registered Task snapshots by default, or only the active project when explicitly requested.",
     )
     include_archived: bool = Field(
         default=False,
@@ -857,7 +857,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="list_tasks",
-                description="Search durable Tasks and return real task_id values before updating an existing Task. Search the current project first and broaden to all projects only when needed.",
+                description="Search durable Tasks across all registered projects by default and return real task_id values before updating an existing Task. Use current_project only when the user explicitly limits the request to the active project.",
                 args_schema=ListTasksArgs,
                 func=self._list_tasks_tool,
             ),
@@ -1145,7 +1145,7 @@ class VPRuntimeBackend:
         self,
         query: str = "",
         status: str = "",
-        project_scope: str = "current_project",
+        project_scope: str = "all_projects",
         include_archived: bool = False,
         detail_level: str = "summary",
         limit: int = 20,

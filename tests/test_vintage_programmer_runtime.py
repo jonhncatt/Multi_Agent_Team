@@ -330,7 +330,7 @@ class _FakeTools:
         if name == "save_skill" and callable(self.skill_writer):
             return self.skill_writer(**arguments)
         if name == "list_tasks" and callable(self.task_lister):
-            project_scope = str(arguments.get("project_scope") or "current_project")
+            project_scope = str(arguments.get("project_scope") or "all_projects")
             rows = self.task_lister(
                 project_id=(
                     None

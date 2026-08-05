@@ -1427,6 +1427,7 @@ function normalizeTaskDescriptor(raw) {
     ...item,
     task_id: String(item.task_id || item.id || "").trim(),
     project_id: String(item.project_id || "").trim(),
+    project_title: String(item.project_title || "").trim(),
     title: String(item.title || "").trim(),
     status,
     goal: String(item.goal || "").trim(),
@@ -6944,14 +6945,30 @@ function App() {
   async function handleLoadTask(task) {
     const normalized = normalizeTaskDescriptor(task);
     if (!normalized.task_id || loadingTaskId || currentThreadBusy) return;
+    const activeProjectId = String(projectId || "").trim();
+    const taskProjectId = String(normalized.project_id || "").trim();
+    const switchesProject = Boolean(taskProjectId && taskProjectId !== activeProjectId);
+    if (switchesProject) {
+      const taskProject = projects.find((item) => String(item.project_id || "").trim() === taskProjectId) || {};
+      const projectTitle = String(taskProject.title || normalized.project_title || taskProjectId).trim();
+      const taskTitle = String(normalized.title || normalized.goal || normalized.task_id).trim();
+      if (!window.confirm(t("confirm.switch_project_for_task", { title: taskTitle, project: projectTitle }))) return;
+    }
     setLoadingTaskId(normalized.task_id);
     setDrawerView("");
     try {
-      const activeProjectId = String(projectId || "").trim();
+      let targetProjectId = activeProjectId;
+      let targetSessionId = String(sessionId || "").trim();
+      if (switchesProject) {
+        const switched = await selectProject(taskProjectId, { silentNotFound: false });
+        if (!switched) return;
+        targetProjectId = taskProjectId;
+        targetSessionId = String(activeSessionIdRef.current || "").trim();
+      }
       await handleSend(t("tasks.load_prompt"), undefined, {
         taskId: normalized.task_id,
-        projectIdOverride: activeProjectId,
-        sessionIdOverride: String(sessionId || "").trim(),
+        projectIdOverride: targetProjectId,
+        sessionIdOverride: targetSessionId,
       });
     } catch (err) {
       applyUiError(err, t("errors.load_task_failed"));

@@ -4226,8 +4226,8 @@ class LocalToolExecutor:
                 "name": "list_tasks",
                 "description": (
                     "Search durable Tasks and return their real task_id values before updating an existing Task. "
-                    "Search the current project first; use all_projects only when the user refers to a Task outside "
-                    "the current project or no current-project match is found."
+                    "Search all registered projects by default; use current_project only when the user explicitly "
+                    "limits the request to the active project."
                 ),
                 "parameters": {
                     "type": "object",
@@ -4245,8 +4245,8 @@ class LocalToolExecutor:
                         "project_scope": {
                             "type": "string",
                             "enum": ["current_project", "all_projects"],
-                            "description": "Search only the active project by default, or all locally registered Task snapshots.",
-                            "default": "current_project",
+                            "description": "Search all locally registered Task snapshots by default, or only the active project when explicitly requested.",
+                            "default": "all_projects",
                         },
                         "include_archived": {
                             "type": "boolean",
@@ -5334,7 +5334,7 @@ class LocalToolExecutor:
         self,
         query: str = "",
         status: str = "",
-        project_scope: str = "current_project",
+        project_scope: str = "all_projects",
         include_archived: bool = False,
         detail_level: str = "summary",
         limit: int = 20,
@@ -5362,7 +5362,7 @@ class LocalToolExecutor:
                 },
                 "summary": message,
             }
-        normalized_scope = str(project_scope or "current_project").strip().lower()
+        normalized_scope = str(project_scope or "all_projects").strip().lower()
         if normalized_scope not in {"current_project", "all_projects"}:
             message = f"Unsupported Task project_scope: {normalized_scope}"
             return {

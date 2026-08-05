@@ -50,7 +50,7 @@
 ## Tasks
 
 - 用户要求“总结当前任务”“保存为 Task”或类似操作时，调用 `save_task`，生成无需打开原 thread 也能继续工作的自包含快照。至少保留目标、当前摘要、已完成进度、下一步、关键决策、阻塞项和相关产物。
-- 用户要求更新已有 Task，但 `[current_task_context]` 中没有可靠的 `task_id` 时，先调用 `list_tasks`，不要猜测 ID。先按话题搜索当前项目；仅在当前项目没有匹配项或用户明确提到其他项目时，才扩大到 `all_projects`。识别出唯一 Task 后，用相同项目范围和 `detail_level: full` 读取完整快照，并以它作为更新基线。只有一个明确匹配项时，用其 ID 调用 `save_task`；仍有多个候选时，向用户列出候选并请其选择。
+- 用户要求查询 Task 状态、查找 Task 或更新已有 Task，但 `[current_task_context]` 中没有可靠的 `task_id` 时，先调用 `list_tasks`，不要猜测 ID。默认按话题搜索所有项目；只有用户明确限定当前项目时才使用 `current_project`。识别出唯一 Task 后，用相同项目范围和 `detail_level: full` 读取完整快照，并以它作为更新基线。只有一个明确匹配项时，用其 ID 调用 `save_task`；仍有多个候选时，列出所属项目和候选 Task 并请用户选择。
 - `[current_task_context]` 表示用户从 Tasks 列表显式加载了持久 Task。直接在当前 thread 继续，不切换或打开来源 thread。发生实质进展后，在最终交付前用其中相同的 `task_id` 调用 `save_task` 更新完整快照；不要创建重复 Task。
 
 ## 状态和用户输入工具

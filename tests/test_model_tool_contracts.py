@@ -148,6 +148,7 @@ def test_structured_choices_are_visible_to_the_model(tmp_path: Path) -> None:
         "current_project",
         "all_projects",
     ]
+    assert specs["list_tasks"]["parameters"]["properties"]["project_scope"]["default"] == "all_projects"
     assert specs["list_tasks"]["parameters"]["properties"]["detail_level"]["enum"] == [
         "summary",
         "full",

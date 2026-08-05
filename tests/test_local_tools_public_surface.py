@@ -80,7 +80,7 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
     }.isdisjoint(tool_names)
     save_task = next(item for item in executor.tool_specs if item.get("name") == "save_task")
     list_tasks = next(item for item in executor.tool_specs if item.get("name") == "list_tasks")
-    assert list_tasks["parameters"]["properties"]["project_scope"]["default"] == "current_project"
+    assert list_tasks["parameters"]["properties"]["project_scope"]["default"] == "all_projects"
     assert list_tasks["parameters"]["properties"]["detail_level"]["enum"] == ["summary", "full"]
     assert "approval_token" in save_task["parameters"]["properties"]
     assert "review and approve" in str(save_task.get("description") or "")
@@ -199,7 +199,7 @@ def test_list_tasks_resolves_ids_and_can_return_full_cross_project_baseline(tmp_
     assert current["tasks"][0]["task_id"] == "task-redmine-123"
     assert current["tasks"][0]["summary"] == "Driver analysis remains active."
     assert calls[-1] == {
-        "project_id": "current-project",
+        "project_id": None,
         "include_archived": False,
         "limit": None,
     }
