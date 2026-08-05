@@ -201,7 +201,7 @@ def test_list_tasks_resolves_ids_and_can_return_full_cross_project_baseline(tmp_
     assert calls[-1] == {
         "project_id": "current-project",
         "include_archived": False,
-        "limit": 500,
+        "limit": None,
     }
 
     archived = executor.execute(
@@ -224,8 +224,62 @@ def test_list_tasks_resolves_ids_and_can_return_full_cross_project_baseline(tmp_
     assert calls[-1] == {
         "project_id": None,
         "include_archived": True,
-        "limit": 500,
+        "limit": None,
     }
+
+
+def test_list_tasks_counts_more_than_five_hundred_candidates_and_marks_compacted_details(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    tasks = [
+        {
+            "task_id": f"task-{index}",
+            "project_id": "project",
+            "title": f"Candidate {index}",
+            "goal": "g" * 700,
+            "summary": "s" * 1300,
+            "decisions": ["preserve this"],
+            "status": "active",
+        }
+        for index in range(550)
+    ]
+
+    def lister(**_kwargs):
+        return tasks
+
+    executor.set_runtime_context(project_id="project", task_lister=lister)
+    result = executor.list_tasks(limit=20)
+
+    assert result["ok"] is True
+    assert result["matched_count"] == 550
+    assert result["returned_count"] == 20
+    assert result["results_truncated"] is True
+    assert result["details_compacted"] is True
+    assert result["tasks"][0]["details_compacted"] is True
+    assert result["tasks"][0]["full_detail_available"] is True
+
+
+def test_save_task_rejects_oversized_payload_instead_of_silently_truncating(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    writes: list[dict[str, object]] = []
+    executor.set_runtime_context(
+        project_id="project",
+        task_writer=lambda **kwargs: writes.append(kwargs) or {"ok": True},
+    )
+
+    result = executor.save_task(
+        title="t" * 121,
+        goal="goal",
+        summary="summary",
+        progress=["p" * 801],
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["kind"] == "invalid_task_payload"
+    assert {item["field"] for item in result["error"]["violations"]} == {
+        "title",
+        "progress[0]",
+    }
+    assert writes == []
 
 
 def test_save_task_update_requires_exact_single_use_human_approval(tmp_path: Path) -> None:
@@ -628,6 +682,32 @@ def test_image_read_uses_registered_handler_and_model_hint(tmp_path: Path) -> No
     assert seen["max_output_chars"] == "1234"
 
 
+def test_image_read_keeps_complete_ocr_text_for_generic_result_paging(tmp_path: Path, monkeypatch) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    image_path = tmp_path / "tiny.png"
+    image_path.write_bytes(_ONE_PIXEL_PNG)
+    ocr_text = "OCR" * 10000
+    monkeypatch.setattr(
+        executor,
+        "_perform_local_image_ocr",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "visible_text": ocr_text,
+            "ocr_available": True,
+            "engines_tried": ["fake"],
+            "ocr_engine": "fake",
+        },
+    )
+
+    result = executor.image_read(str(image_path), max_output_chars=12000)
+
+    assert result["ok"] is True
+    assert result["visible_text"] == ocr_text
+    assert result["visible_text_total_chars"] == len(ocr_text)
+    assert result["truncated"] is False
+    assert result["source_complete"] is True
+
+
 def test_execute_image_read_accepts_legacy_image_path_argument(tmp_path: Path) -> None:
     config = _config(tmp_path)
     executor = LocalToolExecutor(config)
@@ -1020,6 +1100,221 @@ def test_search_codebase_file_root_returns_structured_not_a_directory_error(tmp_
     assert result["ok"] is False
     assert result["error_kind"] == "not_a_directory"
     assert result["error"] == "Not a directory: PLP_10.cpp"
+
+
+def test_search_codebase_declares_when_more_than_one_hundred_matches_exist(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    executor.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path))
+    for index in range(125):
+        (tmp_path / f"source_{index:03d}.cpp").write_text("needle_token\n", encoding="utf-8")
+    (tmp_path / "needle_token_target.cpp").write_text("no content match\n", encoding="utf-8")
+
+    result = executor.search_codebase(query="needle_token", root=".", max_matches=100)
+
+    assert result["ok"] is True
+    assert result["returned_count"] == 100
+    assert result["truncated"] is True
+    assert result["has_more"] is True
+    assert result["search_complete"] is False
+    assert result["total_matches"] is None
+    assert result["matches"][0]["path"] == "needle_token_target.cpp"
+    assert result["matches"][0]["match_type"] == "path"
+
+
+def test_search_contents_scans_plain_text_beyond_old_one_megabyte_boundary(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "large.log"
+    target.write_text("x" * 1_050_000 + "\nlate_unique_marker\n", encoding="utf-8")
+
+    result = executor.search_contents_in_file(str(target), "late_unique_marker")
+
+    assert result["ok"] is True
+    assert result["match_count"] == 1
+    assert result["search_complete"] is True
+    assert result["source_complete"] is True
+
+
+def test_fact_check_marks_evidence_list_compaction(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    target = tmp_path / "facts.txt"
+    target.write_text("alpha evidence\nbeta evidence\ngamma evidence\n", encoding="utf-8")
+
+    result = executor.fact_check_file(
+        str(target),
+        "The evidence exists",
+        queries=["alpha", "beta", "gamma"],
+        max_evidence=2,
+    )
+
+    assert result["ok"] is True
+    assert result["evidence_count"] == 2
+    assert result["observed_evidence_count"] == 3
+    assert result["evidence_truncated"] is True
+    assert result["search_complete"] is False
+    assert result["has_more"] is True
+
+
+def test_read_section_can_continue_without_losing_the_remainder(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    content = "A" * 900 + "B" * 900
+    target = tmp_path / "spec.md"
+    target.write_text(f"1 Target Section\n{content}\n2 Next Section\nstop\n", encoding="utf-8")
+
+    first = executor.read_section(str(target), "Target Section", max_chars=600)
+    second = executor.read_section(
+        str(target),
+        "Target Section",
+        max_chars=2000,
+        start_char=first["next_start_char"],
+    )
+
+    assert first["has_more"] is True
+    assert first["next_start_char"] == 600
+    combined = str(first["content"]) + str(second["content"])
+    assert combined == "1 Target Section\n" + content
+    assert second["complete"] is True
+
+
+def test_list_dir_and_glob_results_can_be_paged(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (data_dir / name).write_text(name, encoding="utf-8")
+
+    list_first = executor.list_dir("data", max_entries=2)
+    list_second = executor.list_dir("data", max_entries=2, offset=list_first["next_offset"])
+    glob_first = executor.glob_file_search("*.txt", path="data", max_results=2)
+    glob_second = executor.glob_file_search(
+        "*.txt", path="data", max_results=2, offset=glob_first["next_offset"]
+    )
+
+    assert [item["name"] for item in list_first["entries"] + list_second["entries"]] == [
+        "a.txt", "b.txt", "c.txt"
+    ]
+    assert glob_first["matches"] + glob_second["matches"] == [
+        "data/a.txt", "data/b.txt", "data/c.txt"
+    ]
+    assert list_first["has_more"] is True
+    assert list_second["source_complete"] is True
+    assert glob_first["has_more"] is True
+    assert glob_second["source_complete"] is True
+
+
+def test_sessions_list_and_history_return_continuation_offsets(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    for index in range(3):
+        path = config.sessions_dir / f"session-{index}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "id": f"session-{index}",
+                    "project_id": "project",
+                    "turns": [
+                        {"role": "user", "text": f"turn-{turn}"}
+                        for turn in range(5)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.utime(path, (index + 1, index + 1))
+    executor = LocalToolExecutor(config)
+    executor.set_runtime_context(project_id="project")
+
+    first = executor.sessions_list(limit=2)
+    second = executor.sessions_list(limit=2, offset=first["next_offset"])
+    history_first = executor.sessions_history("session-2", max_turns=2)
+    history_second = executor.sessions_history(
+        "session-2",
+        max_turns=3,
+        recent_offset=history_first["next_recent_offset"],
+    )
+
+    assert [item["session_id"] for item in first["sessions"] + second["sessions"]] == [
+        "session-2", "session-1", "session-0"
+    ]
+    assert history_first["has_more"] is True
+    assert history_first["turns"][0]["text"] == "turn-3"
+    assert history_second["turns"][0]["text"] == "turn-0"
+    assert history_second["source_complete"] is True
+
+
+def test_web_search_distinguishes_result_limit_from_response_truncation(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    config.web_allow_all_domains = True
+    html = "".join(
+        f'<a class="result__a" href="https://example.com/{index}">Result {index}</a>'
+        for index in range(8)
+    ).encode("utf-8")
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "text/html"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return html
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("app.local_tools.urllib.request.build_opener", lambda *_args, **_kwargs: Opener())
+    executor = LocalToolExecutor(config)
+
+    result = executor.web_search("completeness", max_results=5)
+
+    assert result["ok"] is True
+    assert result["returned_count"] == 5
+    assert result["observed_count"] == 6
+    assert result["results_truncated"] is True
+    assert result["response_truncated"] is False
+    assert result["search_complete"] is False
+
+
+def test_web_fetch_reports_pdf_text_extraction_truncation(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    config.web_allow_all_domains = True
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "application/pdf", "Content-Disposition": ""}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b"%PDF-test"
+
+    class Opener:
+        def open(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr("app.local_tools.urllib.request.build_opener", lambda *_args, **_kwargs: Opener())
+    monkeypatch.setattr(
+        "app.local_tools.extract_pdf_text_from_bytes",
+        lambda _raw, max_chars: "P" * max_chars,
+    )
+    executor = LocalToolExecutor(config)
+
+    result = executor.web_fetch("https://example.com/spec.pdf", max_chars=1000)
+
+    assert result["ok"] is True
+    assert result["length"] == 1000
+    assert result["content_truncated"] is True
+    assert result["response_truncated"] is False
+    assert result["truncated"] is True
+    assert result["source_complete"] is False
+    assert "web_download" in result["continuation"]
 
 
 def test_broad_glob_in_large_directory_returns_guidance(tmp_path: Path) -> None:

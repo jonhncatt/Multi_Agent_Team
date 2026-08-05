@@ -140,7 +140,8 @@ def extract_heading_entries_from_pages(
 ) -> list[dict[str, object]]:
     headings: list[dict[str, object]] = []
     seen: set[tuple[int, str]] = set()
-    limit = max(1, min(2000, int(max_headings)))
+    requested_limit = int(max_headings)
+    limit = None if requested_limit <= 0 else max(1, min(100_000, requested_limit))
     for page_num, body in pages:
         for line_idx, line in enumerate(body.splitlines(), start=1):
             raw = re.sub(r"\s+", " ", (line or "").strip())
@@ -163,7 +164,7 @@ def extract_heading_entries_from_pages(
                 "title": section_match.group(2).strip() if section_match else raw,
             }
             headings.append(entry)
-            if len(headings) >= limit:
+            if limit is not None and len(headings) >= limit:
                 return headings
     return headings
 
@@ -323,6 +324,10 @@ def extract_pdf_tables_from_path(
     import pdfplumber  # lazy import
 
     page_filter = set(page_numbers or [])
+    requested_table_limit = int(max_tables)
+    table_limit = None if requested_table_limit <= 0 else max(1, min(100_000, requested_table_limit))
+    requested_row_limit = int(max_rows)
+    row_limit = None if requested_row_limit <= 0 else max(1, min(100_000, requested_row_limit))
     tables: list[dict[str, object]] = []
     with pdfplumber.open(path) as pdf:
         for idx, page in enumerate(pdf.pages, start=1):
@@ -336,9 +341,9 @@ def extract_pdf_tables_from_path(
                 tables.append(
                     {
                         "page": idx,
-                        "rows": rows[: max(1, min(500, int(max_rows)))],
+                        "rows": rows if row_limit is None else rows[:row_limit],
                     }
                 )
-                if len(tables) >= max(1, min(100, int(max_tables))):
+                if table_limit is not None and len(tables) >= table_limit:
                     return tables
     return tables

@@ -1876,8 +1876,9 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     _write_specs(agent_dir)
     _write_builtin_subagent_spec(agent_dir.parent)
     child_tools = _BoundaryCapturingTools()
+    child_summary = "Found the entry point in app/main.py.\n" + ("detail " * 2500) + "TAIL_MARKER"
     child_backend = _FakeBackendWithTools(
-        [_FakeMessage(content="Found the entry point in app/main.py.")],
+        [_FakeMessage(content=child_summary)],
         child_tools,
     )
     monkeypatch.setattr(runtime_module, "create_vp_runtime_backend", lambda _config: child_backend)
@@ -1940,10 +1941,14 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     assert "running" in str(subagent_event["result_preview"])
     wait_event = next(item for item in result["tool_events"] if item["name"] == "wait_subagents")
     assert "app/main.py" in str(wait_event["result_preview"])
+    wait_tool_message = parent_backend.invocations[2]["messages"][-1]
+    assert "TAIL_MARKER" in str(wait_tool_message.content)
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 1
     assert subagent_items[0]["status"] == "completed"
     assert "app/main.py" in subagent_items[0]["summary"]
+    assert subagent_items[0]["summary_truncated"] is True
+    assert subagent_items[0]["summary_total_chars"] == len(child_summary)
     assert child_tools.runtime_boundaries
     assert child_tools.runtime_boundaries[-1]["workspace_write_allowed"] is False
     assert child_tools.runtime_boundaries[-1]["writable_roots"] == []

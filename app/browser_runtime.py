@@ -439,33 +439,84 @@ class BrowserToolManager:
         except Exception as exc:
             return {"ok": False, "error": f"browser_scroll failed: {exc}"}
 
-    def snapshot(self, *, session_id: str, max_chars: int = 12000) -> dict[str, Any]:
-        return self._run_async(lambda: self._snapshot_impl(session_id=session_id, max_chars=max_chars))
+    def snapshot(
+        self,
+        *,
+        session_id: str,
+        max_chars: int = 12000,
+        start_char: int = 0,
+        link_offset: int = 0,
+        max_links: int = 12,
+    ) -> dict[str, Any]:
+        return self._run_async(
+            lambda: self._snapshot_impl(
+                session_id=session_id,
+                max_chars=max_chars,
+                start_char=start_char,
+                link_offset=link_offset,
+                max_links=max_links,
+            )
+        )
 
-    async def _snapshot_impl(self, *, session_id: str, max_chars: int = 12000) -> dict[str, Any]:
+    async def _snapshot_impl(
+        self,
+        *,
+        session_id: str,
+        max_chars: int = 12000,
+        start_char: int = 0,
+        link_offset: int = 0,
+        max_links: int = 12,
+    ) -> dict[str, Any]:
         session = await self._ensure_session(session_id)
         try:
             page = session.page
             title = await page.title()
             url = page.url
             body_text = await page.locator("body").inner_text(timeout=4000)
-            links = await page.locator("a").evaluate_all(
-                """els => els.slice(0, 12).map(el => ({
+            link_start = max(0, int(link_offset or 0))
+            link_limit = max(1, min(100, int(max_links or 12)))
+            link_locator = page.locator("a")
+            links = await link_locator.evaluate_all(
+                f"""els => els.slice({link_start}, {link_start + link_limit}).map(el => ({{
                     text: (el.innerText || "").trim(),
                     href: el.href || ""
-                }))"""
+                }}))"""
             )
-            text = str(body_text or "").strip()
-            if len(text) > max(400, int(max_chars)):
-                text = text[: max(400, int(max_chars))].rstrip() + "…"
+            try:
+                links_total = int(await _maybe_await(link_locator.count()))
+            except Exception:
+                links_total = link_start + len(links if isinstance(links, list) else [])
+            full_text = str(body_text or "").strip()
+            text_limit = max(400, int(max_chars))
+            text_start = max(0, min(len(full_text), int(start_char or 0)))
+            text_end = min(len(full_text), text_start + text_limit)
+            text = full_text[text_start:text_end]
+            visible_links = links if isinstance(links, list) else []
+            links_end = link_start + len(visible_links)
+            text_has_more = text_end < len(full_text)
+            links_have_more = links_end < links_total
+            has_more = bool(text_has_more or links_have_more)
             session.touched_at = time.time()
             return {
                 "ok": True,
                 "url": url,
                 "title": title,
                 "text": text,
-                "links": links if isinstance(links, list) else [],
-                "summary": f"{title or url} · {len(text)} chars",
+                "text_start_char": text_start,
+                "text_end_char": text_end,
+                "text_total_chars": len(full_text),
+                "text_truncated": text_has_more,
+                "next_text_start_char": text_end if text_has_more else None,
+                "links": visible_links,
+                "link_offset": link_start,
+                "links_returned": len(visible_links),
+                "links_total": links_total,
+                "links_truncated": links_have_more,
+                "next_link_offset": links_end if links_have_more else None,
+                "truncated": has_more,
+                "has_more": has_more,
+                "source_complete": not has_more,
+                "summary": f"{title or url} · {len(text)} of {len(full_text)} chars",
             }
         except Exception as exc:
             return {"ok": False, "error": f"browser_snapshot failed: {exc}"}

@@ -4996,7 +4996,12 @@ class VintageProgrammerRuntime:
                         "role": str(role_spec.get("name") or "explorer"),
                         "label": str(started_item.get("label") or ""),
                         "status": child_status,
-                        "summary": summary[:12000],
+                        # Keep the complete child result here. The generic tool-result
+                        # store can page a large wait_subagents response without losing
+                        # the portion that follows the UI preview.
+                        "summary": summary,
+                        "summary_total_chars": len(summary),
+                        "summary_truncated": False,
                         "tool_count": len(list(child_result.get("tool_events") or [])),
                         "progress_event_count": child_progress_count,
                         "token_usage": dict(child_result.get("token_usage") or {}),
@@ -5019,6 +5024,8 @@ class VintageProgrammerRuntime:
                 **started_item,
                 "status": "completed" if bool(result.get("ok")) else str(result.get("status") or "failed"),
                 "summary": str(result.get("summary") or "")[:12000],
+                "summary_total_chars": len(str(result.get("summary") or "")),
+                "summary_truncated": len(str(result.get("summary") or "")) > 12000,
                 "completed_at": time.time(),
                 "tool_count": int(result.get("tool_count") or 0),
             }

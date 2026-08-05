@@ -206,6 +206,41 @@ def test_cancelled_agent_run_terminates_its_running_command_session(
     assert proc.poll() is not None
 
 
+def test_completed_command_output_can_be_fully_drained_with_write_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    payload = "".join(str(index % 10) for index in range(70000))
+    script = tmp_path / "large_output.py"
+    script.write_text(f"print({payload!r}, end='')\n", encoding="utf-8")
+
+    current = manager.exec_command(
+        cmd=f"python {shlex.quote(str(script))}",
+        cwd=str(tmp_path),
+        yield_time_ms=2000,
+        max_output_chars=7000,
+    )
+    chunks = [str(current.get("output") or "")]
+    seen_starts = [int(current.get("output_start") or 0)]
+
+    for _ in range(20):
+        if not bool(current.get("has_more")) and not bool(current.get("running")):
+            break
+        current = manager.write_stdin(
+            session_id=int(current["session_id"]),
+            yield_time_ms=100,
+            max_output_chars=7000,
+        )
+        chunks.append(str(current.get("output") or ""))
+        seen_starts.append(int(current.get("output_start") or 0))
+
+    assert "".join(chunks) == payload
+    assert seen_starts == list(range(0, len(payload), 7000))
+    assert current["has_more"] is False
+    assert current["output_end"] == len(payload)
+
+
 def test_read_only_subagent_gets_safe_alternative_instead_of_inline_python_approval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1267,6 +1302,93 @@ def test_archive_extract_marks_children_of_tainted_zip(
     assert child.exists()
     assert blocked["ok"] is False
     assert blocked["error_kind"] == "tainted_code_approval_required"
+
+
+def test_archive_extract_tracks_every_child_beyond_display_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "many.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for index in range(1005):
+            zf.writestr(f"files/{index:04d}.txt", str(index))
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
+    manager._register_tainted_file(
+        archive,
+        source_url="https://example.com/many.zip",
+        source_tool="web_download",
+        content_type="application/zip",
+    )
+    marked_paths: list[str] = []
+
+    def record_child(path: Path, **kwargs):
+        marked_paths.append(str(path))
+        return {
+            "path": str(path),
+            "sha256": "test",
+            "source_url": kwargs.get("source_url"),
+            "source_domain": "example.com",
+            "entry_name": kwargs.get("entry_name"),
+        }
+
+    monkeypatch.setattr(manager, "_register_tainted_file", record_child)
+
+    result = manager.archive_extract(zip_path="many.zip", dst_dir="many")
+
+    assert result["ok"] is True
+    assert result["entries_total"] == 1005
+    assert result["returned_entries"] == 1005
+    assert result["tainted_files_count"] == 1005
+    assert result["tainted_files_truncated"] is True
+    assert len(result["tainted_files"]) == 1000
+    assert len(marked_paths) == 1005
+
+
+def test_mail_attachment_wrapper_propagates_parent_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    saved_path = tmp_path / "mail" / "attachment.txt"
+    saved_path.parent.mkdir()
+    saved_path.write_text("payload", encoding="utf-8")
+    monkeypatch.setattr(
+        manager,
+        "_mail_extract_attachments_impl",
+        lambda **_kwargs: {
+            "ok": True,
+            "status": "partial_success",
+            "partial": True,
+            "failed_count": 1,
+            "entries": [
+                {
+                    "name": "attachment.txt",
+                    "status": "saved",
+                    "saved": [{"path": str(saved_path), "bytes": 7}],
+                },
+                {"name": "broken.bin", "status": "error", "error": "broken"},
+            ],
+        },
+    )
+    seen: list[dict[str, object]] = []
+
+    def mark(**kwargs):
+        seen.append(dict(kwargs))
+        return [{"path": str(saved_path), "source_url": "https://example.com/mail.msg"}]
+
+    monkeypatch.setattr(manager, "_mark_extracted_files_tainted_from_parent", mark)
+
+    result = manager.mail_extract_attachments(msg_path="mail.msg")
+
+    assert result["ok"] is True
+    assert result["partial"] is True
+    assert result["failed_count"] == 1
+    assert result["tainted_files_count"] == 1
+    assert seen[0]["source_tool"] == "mail_extract_attachments"
+    assert seen[0]["extracted_files"] == [
+        {"path": str(saved_path), "bytes": 7, "entry_name": "attachment.txt"}
+    ]
 
 
 def test_exec_command_compound_cd_and_pwd_runs_raw_command(

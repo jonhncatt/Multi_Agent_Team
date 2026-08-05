@@ -329,7 +329,10 @@ def _resolve_source_path(
                                 return candidate_path
         meta_dir = config.uploads_dir / ".meta"
         if meta_dir.exists():
-            meta_files = sorted(meta_dir.glob("*.json"), key=lambda m: m.stat().st_mtime, reverse=True)[:500]
+            # The upload index is the fast path. If it is missing or stale, scan
+            # every metadata record so older attachments do not become
+            # undiscoverable merely because more than 500 newer uploads exist.
+            meta_files = sorted(meta_dir.glob("*.json"), key=lambda m: m.stat().st_mtime, reverse=True)
             for meta_file in meta_files:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
                 if not isinstance(meta, dict) or not _meta_matches_upload_key(meta, raw, raw_basename):
@@ -370,6 +373,20 @@ def _truncate_output(text: str, max_chars: int = 12000) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars]}\n\n[output truncated: {len(text)} chars]"
+
+
+def _text_indicates_source_truncation(text: str) -> bool:
+    tail = str(text or "")[-512:].casefold()
+    return any(
+        marker in tail
+        for marker in (
+            "[内容已截断",
+            "[content truncated",
+            "[output truncated",
+            "[内容を切り詰め",
+            "[text truncated",
+        )
+    )
 
 
 def _looks_like_html(content_type: str, text: str) -> bool:
@@ -644,7 +661,7 @@ def _decode_ddg_redirect(raw_url: str) -> str:
 
 def _extract_ddg_results(raw_html: str, max_results: int) -> list[dict[str, str]]:
     html = raw_html or ""
-    limit = max(1, min(20, int(max_results)))
+    limit = max(1, min(100, int(max_results)))
     patterns = [
         re.compile(
             r'(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>'
@@ -879,6 +896,7 @@ def _extract_section_from_pdf_pages(
     headings: list[dict[str, object]],
     heading_query: str,
     max_chars: int,
+    start_char: int = 0,
 ) -> dict[str, Any]:
     match = _find_best_heading(headings, heading_query)
     if not match:
@@ -890,7 +908,6 @@ def _extract_section_from_pdf_pages(
 
     collecting = False
     chunks: list[str] = []
-    total = 0
     page_start = int(match.get("page") or 0)
     page_end = page_start
 
@@ -918,15 +935,16 @@ def _extract_section_from_pdf_pages(
             if not line_text:
                 continue
             chunks.append(line_text)
-            total += len(line_text) + 1
             page_end = page_num
-            if total >= max_chars:
-                collecting = False
-                break
         if not collecting and chunks:
             break
 
-    content = truncate_text("\n".join(chunks).strip(), max(512, int(max_chars)))
+    full_content = "\n".join(chunks).strip()
+    limit = max(512, int(max_chars))
+    start = max(0, min(len(full_content), int(start_char or 0)))
+    end = min(len(full_content), start + limit)
+    content = full_content[start:end]
+    has_more = end < len(full_content)
     return {
         "ok": True,
         "matched_heading": str(match.get("heading") or heading_query),
@@ -934,6 +952,14 @@ def _extract_section_from_pdf_pages(
         "page_start": page_start,
         "page_end": page_end,
         "content": content,
+        "start_char": start,
+        "end_char": end,
+        "total_length": len(full_content),
+        "returned_chars": len(content),
+        "truncated": has_more,
+        "has_more": has_more,
+        "next_start_char": end if has_more else None,
+        "complete": not has_more,
     }
 
 
@@ -1365,8 +1391,9 @@ class LocalToolExecutor:
         lines = [line.rstrip() for line in raw.split("\n")]
         cleaned = "\n".join(line for line in lines if line.strip())
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-        if len(cleaned) > max_output_chars:
-            cleaned = cleaned[:max_output_chars]
+        # Do not discard OCR text here. Large tool payloads are stored once by
+        # ToolResultStore and exposed to the model through read_tool_result.
+        # Cutting here would make the omitted text impossible to recover.
         return cleaned
 
     @staticmethod
@@ -2845,6 +2872,7 @@ class LocalToolExecutor:
         *,
         source_path: str,
         extracted_files: list[Any],
+        source_tool: str = "archive_extract",
     ) -> list[dict[str, Any]]:
         try:
             parent_path = self._resolve_source_path(source_path)
@@ -2870,7 +2898,7 @@ class LocalToolExecutor:
                 record = self._register_tainted_file(
                     Path(raw_path),
                     source_url=source_url,
-                    source_tool="archive_extract",
+                    source_tool=str(source_tool or "archive_extract"),
                     content_type=str(parent_taint.get("content_type") or ""),
                     parent_path=str(parent_path),
                     parent_sha256=parent_sha256,
@@ -3410,7 +3438,12 @@ class LocalToolExecutor:
             if cursor > len(buffer_text):
                 cursor = len(buffer_text)
             new_output = buffer_text[cursor:]
-            session["cursor"] = len(buffer_text)
+            output_limit = max(256, min(60000, int(max_output_chars or 12000)))
+            output = new_output[:output_limit]
+            next_cursor = cursor + len(output)
+            session["cursor"] = next_cursor
+            buffered_chars = len(buffer_text)
+            has_more = next_cursor < buffered_chars
             cwd = str(session.get("cwd") or "")
             command = str(session.get("command") or "")
             execution_mode = str(session.get("execution_mode") or self._current_execution_mode())
@@ -3432,12 +3465,26 @@ class LocalToolExecutor:
             "status": status,
             "running": returncode is None,
             "returncode": None if returncode is None else int(returncode),
-            "output": _truncate_output(new_output, max_output_chars),
+            "output": output,
+            "output_start": cursor,
+            "output_end": next_cursor,
+            "buffered_chars": buffered_chars,
+            "returned_chars": len(output),
+            "truncated": has_more,
+            "has_more": has_more,
+            "next_cursor": next_cursor if has_more else None,
+            "source_complete": returncode is not None and not has_more,
+            "complete": returncode is not None and not has_more,
             "cwd": cwd,
             "command": command,
             "execution_mode": execution_mode,
             "tty": tty,
         }
+        if has_more:
+            payload["next_action"] = (
+                f"Continue reading this command with write_stdin session_id={session_id}; "
+                "the unread output remains buffered and the command must not be rerun."
+            )
         if compound_shell:
             payload["compound_shell"] = True
             payload["compound_validation"] = compound_validation
@@ -3696,6 +3743,7 @@ class LocalToolExecutor:
                     "properties": {
                         "path": {"type": "string", "default": "."},
                         "max_entries": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
                     },
                     "additionalProperties": False,
                 },
@@ -3710,6 +3758,7 @@ class LocalToolExecutor:
                         "pattern": {"type": "string"},
                         "path": {"type": "string", "default": "."},
                         "max_results": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
                     },
                     "required": ["pattern"],
                     "additionalProperties": False,
@@ -3741,6 +3790,8 @@ class LocalToolExecutor:
                         "path": {"type": "string"},
                         "queries": {
                             "type": "array",
+                            "minItems": 1,
+                            "maxItems": 20,
                             "items": {"type": "string"},
                         },
                         "per_query_max_matches": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
@@ -3760,6 +3811,12 @@ class LocalToolExecutor:
                         "path": {"type": "string"},
                         "heading": {"type": "string"},
                         "max_chars": {"type": "integer", "minimum": 512, "maximum": 50000, "default": 12000},
+                        "start_char": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": "Character offset within the matched section for continuation reads.",
+                        },
                     },
                     "required": ["path", "heading"],
                     "additionalProperties": False,
@@ -3871,11 +3928,12 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "sessions_list",
-                "description": "List recent local chat sessions for the current project so the agent can locate past context.",
+                "description": "List pageable recent local chat sessions for the current project so the agent can locate past context.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "offset": {"type": "integer", "minimum": 0, "default": 0},
                     },
                     "additionalProperties": False,
                 },
@@ -3889,6 +3947,12 @@ class LocalToolExecutor:
                     "properties": {
                         "session_id": {"type": "string"},
                         "max_turns": {"type": "integer", "minimum": 1, "maximum": 800, "default": 80},
+                        "recent_offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 0,
+                            "description": "Number of newer turns to skip when continuing into older history.",
+                        },
                     },
                     "required": ["session_id"],
                     "additionalProperties": False,
@@ -4166,48 +4230,60 @@ class LocalToolExecutor:
                     "properties": {
                         "task_id": {
                             "type": "string",
+                            "maxLength": 160,
                             "description": "Existing Task id to update. Leave empty only when creating a new Task.",
                             "default": "",
                         },
                         "title": {
                             "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120,
                             "description": "Short, recognizable Task title for the Tasks list.",
                         },
                         "goal": {
                             "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000,
                             "description": "The concrete outcome that defines what this Task is trying to achieve.",
                         },
                         "summary": {
                             "type": "string",
+                            "minLength": 1,
+                            "maxLength": 12000,
                             "description": "Self-contained continuation summary with enough context to resume without opening the source Thread.",
                         },
                         "progress": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 32,
+                            "items": {"type": "string", "maxLength": 800},
                             "description": "Important work already completed or verified.",
                             "default": [],
                         },
                         "next_steps": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 24,
+                            "items": {"type": "string", "maxLength": 800},
                             "description": "Ordered concrete actions that should happen next.",
                             "default": [],
                         },
                         "decisions": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 24,
+                            "items": {"type": "string", "maxLength": 800},
                             "description": "Key decisions and constraints that future work must preserve.",
                             "default": [],
                         },
                         "blockers": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 16,
+                            "items": {"type": "string", "maxLength": 800},
                             "description": "Known blockers, missing inputs, or unresolved risks.",
                             "default": [],
                         },
                         "artifacts": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "maxItems": 32,
+                            "items": {"type": "string", "maxLength": 2000},
                             "description": "Relevant files, branches, commits, pull requests, or other durable artifacts.",
                             "default": [],
                         },
@@ -4312,11 +4388,14 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "browser_snapshot",
-                "description": "Capture the current browser page title, URL, text excerpt, and top links.",
+                "description": "Capture a pageable browser page text and link snapshot with explicit completeness metadata.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "max_chars": {"type": "integer", "minimum": 400, "maximum": 50000, "default": 12000},
+                        "start_char": {"type": "integer", "minimum": 0, "default": 0},
+                        "link_offset": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_links": {"type": "integer", "minimum": 1, "maximum": 100, "default": 12},
                     },
                     "additionalProperties": False,
                 },
@@ -5274,7 +5353,9 @@ class LocalToolExecutor:
             raw_payload = lister(
                 project_id=current_project_id if normalized_scope == "current_project" else None,
                 include_archived=bool(include_archived) or normalized_status == "archived",
-                limit=500,
+                # Filtering and the user-visible limit are applied below. Asking the
+                # store for every matching project Task keeps matched_count accurate.
+                limit=None,
             )
         except Exception as exc:
             message = safe_error_message(exc)
@@ -5331,27 +5412,59 @@ class LocalToolExecutor:
             ]
 
         effective_limit = min(normalized_limit, 5) if normalized_detail_level == "full" else normalized_limit
-        summary_tasks = [
-            {
-                "task_id": _short_text(task.get("task_id"), 160),
-                "project_id": _short_text(task.get("project_id"), 160),
-                "project_title": _short_text(task.get("project_title"), 240),
-                "title": _short_text(task.get("title"), 120),
-                "status": _short_text(task.get("status") or "active", 32),
-                "goal": _short_text(task.get("goal"), 600),
-                "summary": _short_text(task.get("summary"), 1200),
-                "progress": _short_list(task.get("progress")),
-                "next_steps": _short_list(task.get("next_steps")),
-                "blockers": _short_list(task.get("blockers"), max_items=3),
-                "artifacts": _short_list(task.get("artifacts"), max_chars=800),
-                "updated_at": _short_text(task.get("updated_at"), 80),
-            }
-            for task in matches[:effective_limit]
-        ]
+        summary_tasks: list[dict[str, Any]] = []
+        for task in matches[:effective_limit]:
+            compacted = bool(
+                len(str(task.get("goal") or "").strip()) > 600
+                or len(str(task.get("summary") or "").strip()) > 1200
+                or bool(list(task.get("decisions") or []))
+                or any(
+                    len(list(task.get(field) or [])) > max_items
+                    for field, max_items in (
+                        ("progress", 5),
+                        ("next_steps", 5),
+                        ("blockers", 3),
+                        ("artifacts", 5),
+                    )
+                )
+                or any(
+                    len(str(item or "").strip()) > max_chars
+                    for field, max_chars in (
+                        ("progress", 500),
+                        ("next_steps", 500),
+                        ("blockers", 500),
+                        ("artifacts", 800),
+                    )
+                    for item in list(task.get(field) or [])
+                )
+            )
+            summary_tasks.append(
+                {
+                    "task_id": _short_text(task.get("task_id"), 160),
+                    "project_id": _short_text(task.get("project_id"), 160),
+                    "project_title": _short_text(task.get("project_title"), 240),
+                    "title": _short_text(task.get("title"), 120),
+                    "status": _short_text(task.get("status") or "active", 32),
+                    "goal": _short_text(task.get("goal"), 600),
+                    "summary": _short_text(task.get("summary"), 1200),
+                    "progress": _short_list(task.get("progress")),
+                    "next_steps": _short_list(task.get("next_steps")),
+                    "blockers": _short_list(task.get("blockers"), max_items=3),
+                    "artifacts": _short_list(task.get("artifacts"), max_chars=800),
+                    "updated_at": _short_text(task.get("updated_at"), 80),
+                    "details_compacted": compacted,
+                    "full_detail_available": True,
+                }
+            )
         visible_tasks = (
             [self._task_approval_snapshot(task) for task in matches[:effective_limit]]
             if normalized_detail_level == "full"
             else summary_tasks
+        )
+        results_truncated = len(matches) > len(visible_tasks)
+        details_compacted = bool(
+            normalized_detail_level == "summary"
+            and any(bool(task.get("details_compacted")) for task in summary_tasks)
         )
         return {
             "ok": True,
@@ -5363,7 +5476,22 @@ class LocalToolExecutor:
             "detail_level": normalized_detail_level,
             "matched_count": len(matches),
             "returned_count": len(visible_tasks),
-            "truncated": len(matches) > len(visible_tasks),
+            "truncated": bool(results_truncated or details_compacted),
+            "results_truncated": results_truncated,
+            "details_compacted": details_compacted,
+            "has_more": results_truncated,
+            "source_complete": True,
+            "results_complete": not results_truncated,
+            "detail_complete": not details_compacted,
+            "continuation": (
+                "Call list_tasks with detail_level='full' after narrowing to the relevant task_id."
+                if details_compacted
+                else (
+                    "Narrow the query/status/project scope or increase limit to retrieve omitted Tasks."
+                    if results_truncated
+                    else ""
+                )
+            ),
             "tasks": visible_tasks,
             "summary": f"Found {len(matches)} matching Task(s).",
         }
@@ -5406,6 +5534,54 @@ class LocalToolExecutor:
             "artifacts": [str(item) for item in list(artifacts or [])],
             "status": str(status or "active").strip() or "active",
         }
+        scalar_limits = {
+            "task_id": 160,
+            "title": 120,
+            "goal": 4000,
+            "summary": 12000,
+        }
+        list_limits = {
+            "progress": (32, 800),
+            "next_steps": (24, 800),
+            "decisions": (24, 800),
+            "blockers": (16, 800),
+            "artifacts": (32, 2000),
+        }
+        violations: list[dict[str, Any]] = []
+        for field, max_chars in scalar_limits.items():
+            actual_chars = len(str(candidate.get(field) or ""))
+            if actual_chars > max_chars:
+                violations.append(
+                    {"field": field, "actual_chars": actual_chars, "max_chars": max_chars}
+                )
+        for field, (max_items, max_chars) in list_limits.items():
+            values = list(candidate.get(field) or [])
+            if len(values) > max_items:
+                violations.append(
+                    {"field": field, "actual_items": len(values), "max_items": max_items}
+                )
+            for index, value in enumerate(values):
+                actual_chars = len(str(value or ""))
+                if actual_chars > max_chars:
+                    violations.append(
+                        {
+                            "field": f"{field}[{index}]",
+                            "actual_chars": actual_chars,
+                            "max_chars": max_chars,
+                        }
+                    )
+        if violations:
+            message = "Task payload exceeds one or more durable storage limits; shorten it and retry."
+            return {
+                "ok": False,
+                "error": {
+                    "kind": "invalid_task_payload",
+                    "tool": "save_task",
+                    "message": message,
+                    "violations": violations,
+                },
+                "summary": message,
+            }
         if normalized_task_id:
             reader = getattr(self._runtime_ctx, "task_reader", None)
             if not callable(reader):
@@ -5577,8 +5753,9 @@ class LocalToolExecutor:
         self,
         path: str = ".",
         max_entries: int = 200,
+        offset: int = 0,
     ) -> dict[str, Any]:
-        result = self._list_dir_impl(path=path, max_entries=max_entries)
+        result = self._list_dir_impl(path=path, max_entries=max_entries, offset=offset)
         if not isinstance(result, dict):
             return {"ok": False, "error": "list_dir failed: invalid result"}
         payload = dict(result)
@@ -5590,6 +5767,7 @@ class LocalToolExecutor:
         pattern: str,
         path: str = ".",
         max_results: int = 200,
+        offset: int = 0,
     ) -> dict[str, Any]:
         try:
             normalized_pattern = str(pattern or "").strip()
@@ -5601,6 +5779,7 @@ class LocalToolExecutor:
             if not real_root.is_dir():
                 return {"ok": False, "error": f"Not a directory: {path}"}
             limit = max(1, min(500, int(max_results)))
+            start = max(0, int(offset or 0))
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             all_matches = [candidate for candidate in sorted(real_root.glob(normalized_pattern)) if candidate.is_file()]
             if _is_broad_glob_pattern(normalized_pattern) and len(all_matches) > _BROAD_GLOB_GUIDANCE_THRESHOLD:
@@ -5619,6 +5798,8 @@ class LocalToolExecutor:
                     "total_matches": len(all_matches),
                     "max_results": limit,
                     "truncated": True,
+                    "has_more": True,
+                    "source_complete": False,
                     "suggested_next_steps": [
                         "Use list_dir on the current root to identify likely subdirectories.",
                         "Use a narrower glob such as '*runner*', '*.py', or '*target_name*'.",
@@ -5627,9 +5808,10 @@ class LocalToolExecutor:
                     "summary": "glob pattern too broad for large directory",
                 }
             matches: list[str] = []
-            for candidate in all_matches[:limit]:
+            for candidate in all_matches[start : start + limit]:
                 matches.append(_display_model_path(candidate, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint())))
-            truncated = len(all_matches) > limit
+            next_offset = start + len(matches)
+            truncated = next_offset < len(all_matches)
             return {
                 "ok": True,
                 "tool_name": "glob_file_search",
@@ -5642,7 +5824,16 @@ class LocalToolExecutor:
                 "matches": matches,
                 "total_matches": len(all_matches),
                 "max_results": limit,
+                "offset": start,
                 "truncated": truncated,
+                "has_more": truncated,
+                "next_offset": next_offset if truncated else None,
+                "source_complete": not truncated,
+                "continuation": (
+                    {"offset": next_offset, "message": "Call glob_file_search again with this offset."}
+                    if truncated
+                    else None
+                ),
                 "summary": f"matched {len(matches)} files",
             }
         except Exception as exc:
@@ -5686,8 +5877,19 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "search_contents_in_file_multi")
         return payload
 
-    def read_section(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
-        result = self._read_section_impl(path=path, heading=heading, max_chars=max_chars)
+    def read_section(
+        self,
+        path: str,
+        heading: str,
+        max_chars: int = 12000,
+        start_char: int = 0,
+    ) -> dict[str, Any]:
+        result = self._read_section_impl(
+            path=path,
+            heading=heading,
+            max_chars=max_chars,
+            start_char=start_char,
+        )
         if not isinstance(result, dict):
             return {"ok": False, "error": "read_section failed: invalid result"}
         payload = dict(result)
@@ -5743,16 +5945,25 @@ class LocalToolExecutor:
         payload.setdefault("tool_name", "web_download")
         return payload
 
-    def sessions_list(self, limit: int = 20) -> dict[str, Any]:
-        result = self._sessions_list_impl(max_sessions=limit)
+    def sessions_list(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        result = self._sessions_list_impl(max_sessions=limit, offset=offset)
         if not isinstance(result, dict):
             return {"ok": False, "error": "sessions_list failed: invalid result"}
         payload = dict(result)
         payload.setdefault("tool_name", "sessions_list")
         return payload
 
-    def sessions_history(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
-        result = self._sessions_history_impl(session_id=session_id, max_turns=max_turns)
+    def sessions_history(
+        self,
+        session_id: str,
+        max_turns: int = 80,
+        recent_offset: int = 0,
+    ) -> dict[str, Any]:
+        result = self._sessions_history_impl(
+            session_id=session_id,
+            max_turns=max_turns,
+            recent_offset=recent_offset,
+        )
         if not isinstance(result, dict):
             return {"ok": False, "error": "sessions_history failed: invalid result"}
         payload = dict(result)
@@ -5840,6 +6051,20 @@ class LocalToolExecutor:
         payload["preprocess_notes"] = list(ocr_payload.get("preprocess_notes") or [])
         payload["effective_model"] = str(multimodal_payload.get("effective_model") or "").strip() or None
 
+        def _complete_image_payload(result: dict[str, Any]) -> dict[str, Any]:
+            visible = str(result.get("visible_text") or "")
+            analysis = str(result.get("analysis") or "")
+            result.update(
+                {
+                    "visible_text_total_chars": len(visible),
+                    "analysis_total_chars": len(analysis),
+                    "truncated": False,
+                    "has_more": False,
+                    "source_complete": True,
+                }
+            )
+            return result
+
         if ocr_text and multimodal_ok:
             payload.update(
                 {
@@ -5864,7 +6089,7 @@ class LocalToolExecutor:
                 "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
                 "warning": payload.get("warning"),
             }
-            return payload
+            return _complete_image_payload(payload)
 
         if ocr_text:
             fallback_reason = ""
@@ -5896,7 +6121,7 @@ class LocalToolExecutor:
                 "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
                 "warning": payload.get("warning"),
             }
-            return payload
+            return _complete_image_payload(payload)
 
         if multimodal_ok:
             payload.update(
@@ -5922,7 +6147,7 @@ class LocalToolExecutor:
                 "analysis_preview": self._short_preview(payload.get("analysis"), limit=240),
                 "warning": payload.get("warning"),
             }
-            return payload
+            return _complete_image_payload(payload)
 
         if not bool(ocr_payload.get("ocr_available")):
             ocr_reason = str(ocr_payload.get("warning") or ocr_payload.get("error") or "").strip()
@@ -6005,11 +6230,15 @@ class LocalToolExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "archive_extract failed: invalid result"}
         payload = dict(result)
-        if bool(payload.get("ok")):
-            payload["tainted_files"] = self._mark_extracted_files_tainted_from_parent(
+        if list(payload.get("entries") or []):
+            marked_files = self._mark_extracted_files_tainted_from_parent(
                 source_path=zip_path,
                 extracted_files=list(payload.get("entries") or []),
+                source_tool="archive_extract",
             )
+            payload["tainted_files"] = marked_files[:1000]
+            payload["tainted_files_count"] = len(marked_files)
+            payload["tainted_files_truncated"] = len(marked_files) > 1000
         payload.setdefault("tool_name", "archive_extract")
         return payload
 
@@ -6033,10 +6262,28 @@ class LocalToolExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "mail_extract_attachments failed: invalid result"}
         payload = dict(result)
+        saved_files: list[dict[str, Any]] = []
+        for entry in list(payload.get("entries") or []):
+            if not isinstance(entry, dict):
+                continue
+            entry_name = str(entry.get("name") or "")
+            for saved in list(entry.get("saved") or []):
+                if not isinstance(saved, dict) or not str(saved.get("path") or "").strip():
+                    continue
+                saved_files.append({**saved, "entry_name": entry_name})
+        if saved_files:
+            marked_files = self._mark_extracted_files_tainted_from_parent(
+                source_path=msg_path,
+                extracted_files=saved_files,
+                source_tool="mail_extract_attachments",
+            )
+            payload["tainted_files"] = marked_files[:1000]
+            payload["tainted_files_count"] = len(marked_files)
+            payload["tainted_files_truncated"] = len(marked_files) > 1000
         payload.setdefault("tool_name", "mail_extract_attachments")
         return payload
 
-    def _list_dir_impl(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
+    def _list_dir_impl(self, path: str = ".", max_entries: int = 200, offset: int = 0) -> dict[str, Any]:
         try:
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
@@ -6046,8 +6293,9 @@ class LocalToolExecutor:
 
             limit = max(1, min(500, int(max_entries)))
             ordered = sorted(real_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            start = max(0, min(len(ordered), int(offset or 0)))
             entries = []
-            for child in ordered[:limit]:
+            for child in ordered[start : start + limit]:
                 child_path = _display_model_path(child, project_root=self._current_project_root(), cwd=real_path)
                 entries.append(
                     {
@@ -6059,7 +6307,8 @@ class LocalToolExecutor:
                         "size": child.stat().st_size if child.is_file() else None,
                     }
                 )
-            truncated = len(ordered) > limit
+            next_offset = start + len(entries)
+            truncated = next_offset < len(ordered)
             path_payload = _path_payload(real_path, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             return {
                 "ok": True,
@@ -6070,15 +6319,23 @@ class LocalToolExecutor:
                 "entry_count": len(entries),
                 "total_entries": len(ordered),
                 "max_entries": limit,
+                "offset": start,
                 "truncated": truncated,
                 "has_more": truncated,
+                "next_offset": next_offset if truncated else None,
+                "source_complete": not truncated,
+                "continuation": (
+                    {"offset": next_offset, "message": "Call list_dir again with this offset."}
+                    if truncated
+                    else None
+                ),
                 "source_format": "directory_listing",
                 "summary": f"listed {len(entries)} entries",
             }
         except Exception as exc:
             return {"ok": False, "error": f"list_dir failed: {exc}"}
 
-    def _sessions_list_impl(self, max_sessions: int = 20) -> dict[str, Any]:
+    def _sessions_list_impl(self, max_sessions: int = 20, offset: int = 0) -> dict[str, Any]:
         try:
             limit = max(1, min(200, int(max_sessions)))
             current_project_id = self._current_project_id()
@@ -6128,13 +6385,32 @@ class LocalToolExecutor:
                         "created_at": str(payload.get("created_at") or ""),
                     }
                 )
-                if len(rows) >= limit:
-                    break
-            return {"ok": True, "count": len(rows), "sessions": rows}
+            start = max(0, min(len(rows), int(offset or 0)))
+            visible_rows = rows[start : start + limit]
+            next_offset = start + len(visible_rows)
+            has_more = next_offset < len(rows)
+            return {
+                "ok": True,
+                "count": len(visible_rows),
+                "returned_count": len(visible_rows),
+                "total_sessions": len(rows),
+                "limit": limit,
+                "offset": start,
+                "sessions": visible_rows,
+                "truncated": has_more,
+                "has_more": has_more,
+                "next_offset": next_offset if has_more else None,
+                "source_complete": not has_more,
+            }
         except Exception as exc:
             return {"ok": False, "error": f"sessions_list failed: {exc}"}
 
-    def _sessions_history_impl(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
+    def _sessions_history_impl(
+        self,
+        session_id: str,
+        max_turns: int = 80,
+        recent_offset: int = 0,
+    ) -> dict[str, Any]:
         sid = str(session_id or "").strip()
         if not sid:
             return {"ok": False, "error": "session_id cannot be empty"}
@@ -6151,7 +6427,10 @@ class LocalToolExecutor:
             if not isinstance(turns, list):
                 turns = []
             keep = max(1, min(800, int(max_turns)))
-            sliced = turns[-keep:]
+            offset = max(0, min(len(turns), int(recent_offset or 0)))
+            end_index = max(0, len(turns) - offset)
+            start_index = max(0, end_index - keep)
+            sliced = turns[start_index:end_index]
             trimmed_turns: list[dict[str, str]] = []
             for turn in sliced:
                 if not isinstance(turn, dict):
@@ -6163,6 +6442,7 @@ class LocalToolExecutor:
                         "created_at": str(turn.get("created_at") or ""),
                     }
                 )
+            has_more = start_index > 0
             return {
                 "ok": True,
                 "session_id": sid,
@@ -6172,7 +6452,15 @@ class LocalToolExecutor:
                 "cwd": str(payload.get("cwd") or ""),
                 "summary": str(payload.get("summary") or ""),
                 "turn_count": len(turns),
+                "returned_count": len(trimmed_turns),
+                "recent_offset": offset,
+                "start_turn_index": start_index,
+                "end_turn_index": end_index,
                 "turns": trimmed_turns,
+                "truncated": has_more,
+                "has_more": has_more,
+                "next_recent_offset": offset + len(trimmed_turns) if has_more else None,
+                "source_complete": not has_more,
             }
         except Exception as exc:
             return {"ok": False, "error": f"sessions_history failed: {exc}"}
@@ -6234,10 +6522,19 @@ class LocalToolExecutor:
             timeout_ms=timeout_ms,
         )
 
-    def browser_snapshot(self, max_chars: int = 12000) -> dict[str, Any]:
+    def browser_snapshot(
+        self,
+        max_chars: int = 12000,
+        start_char: int = 0,
+        link_offset: int = 0,
+        max_links: int = 12,
+    ) -> dict[str, Any]:
         return self._browser_manager.snapshot(
             session_id=self._browser_session_id(),
             max_chars=max_chars,
+            start_char=start_char,
+            link_offset=link_offset,
+            max_links=max_links,
         )
 
     def browser_screenshot(self, path: str = "", full_page: bool = True) -> dict[str, Any]:
@@ -6535,6 +6832,10 @@ class LocalToolExecutor:
                     full_text = real_path.read_text(encoding="utf-8", errors="ignore")
 
             total_length = len(full_text)
+            source_truncated = (
+                source_format != "text_utf8"
+                and _text_indicates_source_truncation(full_text)
+            )
             limit = max(128, min(1_000_000, int(max_chars)))
             line_start = max(0, int(start_line))
             line_limit = max(0, int(max_lines))
@@ -6553,9 +6854,9 @@ class LocalToolExecutor:
 
                 if len(text) > limit:
                     text = text[:limit]
-                    truncated = True
+                    chunk_truncated = True
                 else:
-                    truncated = end_idx < total_lines
+                    chunk_truncated = end_idx < total_lines
 
                 start_char_calc = sum(len(line) + 1 for line in lines[:start_idx])
                 end_char_calc = start_char_calc + len(text)
@@ -6567,8 +6868,11 @@ class LocalToolExecutor:
                     "start_char": start_char_calc,
                     "end_char": end_char_calc,
                     "total_length": total_length,
-                    "truncated": truncated,
-                    "has_more": truncated,
+                    "truncated": bool(chunk_truncated or source_truncated),
+                    "has_more": chunk_truncated,
+                    "source_truncated": source_truncated,
+                    "source_complete": not source_truncated,
+                    "complete": not chunk_truncated and not source_truncated,
                     "line_mode": True,
                     "start_line": first_line if total_lines else 0,
                     "end_line": min(total_lines, end_idx),
@@ -6585,7 +6889,7 @@ class LocalToolExecutor:
                 start = total_length
             end = min(total_length, start + limit)
             text = full_text[start:end]
-            truncated = end < total_length
+            chunk_truncated = end < total_length
             payload = {
                 "ok": True,
                 "path": str(real_path),
@@ -6594,8 +6898,11 @@ class LocalToolExecutor:
                 "start_char": start,
                 "end_char": end,
                 "total_length": total_length,
-                "truncated": truncated,
-                "has_more": truncated,
+                "truncated": bool(chunk_truncated or source_truncated),
+                "has_more": chunk_truncated,
+                "source_truncated": source_truncated,
+                "source_complete": not source_truncated,
+                "complete": not chunk_truncated and not source_truncated,
                 "source_format": source_format,
             }
             if source_format == "msg_text_extracted" and isinstance(msg_payload, dict):
@@ -6604,6 +6911,36 @@ class LocalToolExecutor:
             return payload
         except Exception as exc:
             return {"ok": False, "error": f"read_file failed: {exc}"}
+
+    def _read_searchable_text(self, *, path: str, real_path: Path) -> dict[str, Any]:
+        base = self._read_file_impl(path=path, start_char=0, max_chars=1_000_000)
+        if not bool(base.get("ok")):
+            return base
+        source_format = str(base.get("source_format") or "text_utf8")
+        if source_format == "text_utf8":
+            text = real_path.read_text(encoding="utf-8", errors="ignore")
+            return {
+                "ok": True,
+                "path": str(base.get("path") or real_path),
+                "source_format": source_format,
+                "content": text,
+                "searched_chars": len(text),
+                "total_length": len(text),
+                "source_complete": True,
+                "source_truncated": False,
+            }
+        text = str(base.get("content") or "")
+        source_complete = bool(base.get("source_complete", not base.get("source_truncated")))
+        return {
+            "ok": True,
+            "path": str(base.get("path") or real_path),
+            "source_format": source_format,
+            "content": text,
+            "searched_chars": len(text),
+            "total_length": int(base.get("total_length") or len(text)),
+            "source_complete": source_complete,
+            "source_truncated": not source_complete,
+        }
 
     def _search_contents_in_file_impl(
         self,
@@ -6621,6 +6958,7 @@ class LocalToolExecutor:
             limit = max(1, min(20, int(max_matches)))
             window = max(40, min(2000, int(context_chars)))
             matches: list[dict[str, Any]] = []
+            collection_limit = limit + 1
 
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
@@ -6654,32 +6992,48 @@ class LocalToolExecutor:
                                     },
                                 }
                             )
-                            if len(matches) >= limit:
+                            if len(matches) >= collection_limit:
                                 break
-                        if len(matches) >= limit:
+                        if len(matches) >= collection_limit:
                             break
-                    if len(matches) >= limit:
+                    if len(matches) >= collection_limit:
                         break
 
+                matches_truncated = len(matches) > limit
+                visible_matches = matches[:limit]
                 return {
                     "ok": True,
                     "path": str(real_path),
                     "source_format": "pdf_text_extracted",
                     "query": normalized_query,
                     "searched_variants": variants,
-                    "match_count": len(matches),
-                    "matches": matches,
+                    "match_count": len(visible_matches),
+                    "returned_count": len(visible_matches),
+                    "total_matches": None if matches_truncated else len(visible_matches),
+                    "max_matches": limit,
+                    "matches": visible_matches,
+                    "truncated": matches_truncated,
+                    "has_more": matches_truncated,
+                    "source_complete": True,
+                    "source_truncated": False,
+                    "search_complete": not matches_truncated,
+                    "continuation": (
+                        {"strategy": "refine_query", "message": "Narrow the query or search a more specific document section."}
+                        if matches_truncated
+                        else None
+                    ),
                     "note": (
                         "Search was run page-by-page over extracted PDF text. "
                         "If match_count=0, only conclude that the current extracted PDF text did not show a hit."
                     ),
                 }
 
-            base = self._read_file_impl(path=path, start_char=0, max_chars=1_000_000)
+            base = self._read_searchable_text(path=path, real_path=real_path)
             if not bool(base.get("ok")):
                 return base
 
             text = str(base.get("content") or "")
+            source_complete = bool(base.get("source_complete", True))
             seen_spans: list[tuple[int, int]] = []
             for variant in variants:
                 pattern = _build_search_pattern(variant)
@@ -6708,19 +7062,42 @@ class LocalToolExecutor:
                             },
                         }
                     )
-                    if len(matches) >= limit:
+                    if len(matches) >= collection_limit:
                         break
-                if len(matches) >= limit:
+                if len(matches) >= collection_limit:
                     break
 
+            matches_truncated = len(matches) > limit
+            visible_matches = matches[:limit]
+            truncated = bool(matches_truncated or not source_complete)
+            continuation_reasons: list[str] = []
+            if matches_truncated:
+                continuation_reasons.append("Narrow the query or search a more specific path or section.")
+            if not source_complete:
+                continuation_reasons.append("The document extractor reached its source limit; do not treat zero matches as proof of absence.")
             return {
                 "ok": True,
                 "path": str(base.get("path") or real_path),
                 "source_format": base.get("source_format") or "text_utf8",
                 "query": normalized_query,
                 "searched_variants": variants,
-                "match_count": len(matches),
-                "matches": matches,
+                "match_count": len(visible_matches),
+                "returned_count": len(visible_matches),
+                "total_matches": None if truncated else len(visible_matches),
+                "max_matches": limit,
+                "matches": visible_matches,
+                "searched_chars": int(base.get("searched_chars") or len(text)),
+                "total_length": int(base.get("total_length") or len(text)),
+                "truncated": truncated,
+                "has_more": truncated,
+                "source_complete": source_complete,
+                "source_truncated": not source_complete,
+                "search_complete": not truncated,
+                "continuation": (
+                    {"strategy": "refine_or_convert", "message": " ".join(continuation_reasons)}
+                    if continuation_reasons
+                    else None
+                ),
                 "note": (
                     "Search was run over extracted document text. "
                     "If match_count=0, only conclude that the current extracted text did not show a hit."
@@ -6741,9 +7118,13 @@ class LocalToolExecutor:
             if not cleaned_queries:
                 return {"ok": False, "error": "queries is empty"}
 
+            requested_query_count = len(cleaned_queries)
+            visible_queries = cleaned_queries[:20]
+            queries_truncated = requested_query_count > len(visible_queries)
             merged: list[dict[str, Any]] = []
             seen: set[tuple[Any, ...]] = set()
-            for query in cleaned_queries[:20]:
+            query_results: list[dict[str, Any]] = []
+            for query in visible_queries:
                 result = self._search_contents_in_file_impl(
                     path=path,
                     query=query,
@@ -6752,6 +7133,16 @@ class LocalToolExecutor:
                 )
                 if not bool(result.get("ok")):
                     return result
+                query_results.append(
+                    {
+                        "query": query,
+                        "returned_count": int(result.get("returned_count") or result.get("match_count") or 0),
+                        "total_matches": result.get("total_matches"),
+                        "truncated": bool(result.get("truncated")),
+                        "has_more": bool(result.get("has_more")),
+                        "source_complete": bool(result.get("source_complete", True)),
+                    }
+                )
                 for match in result.get("matches") or []:
                     if not isinstance(match, dict):
                         continue
@@ -6766,17 +7157,46 @@ class LocalToolExecutor:
                     seen.add(key)
                     merged.append(match)
 
+            truncated = bool(
+                queries_truncated
+                or any(bool(item.get("truncated")) for item in query_results)
+            )
+            source_complete = all(bool(item.get("source_complete", True)) for item in query_results)
             return {
                 "ok": True,
                 "path": str(self._resolve_source_path(path)),
-                "queries": cleaned_queries[:20],
+                "queries": visible_queries,
+                "requested_query_count": requested_query_count,
+                "searched_query_count": len(visible_queries),
+                "queries_truncated": queries_truncated,
+                "query_results": query_results,
                 "match_count": len(merged),
+                "returned_count": len(merged),
                 "matches": merged,
+                "truncated": truncated,
+                "has_more": truncated,
+                "source_complete": source_complete,
+                "source_truncated": not source_complete,
+                "search_complete": not truncated,
+                "continuation": (
+                    {
+                        "strategy": "split_queries_or_refine",
+                        "message": "Retry omitted queries separately or narrow queries whose result reports has_more=true.",
+                    }
+                    if truncated
+                    else None
+                ),
             }
         except Exception as exc:
             return {"ok": False, "error": f"search_contents_in_file_multi failed: {exc}"}
 
-    def _read_section_impl(self, path: str, heading: str, max_chars: int = 12000) -> dict[str, Any]:
+    def _read_section_impl(
+        self,
+        path: str,
+        heading: str,
+        max_chars: int = 12000,
+        start_char: int = 0,
+    ) -> dict[str, Any]:
         try:
             real_path = self._resolve_source_path(path)
             if not real_path.exists():
@@ -6787,8 +7207,14 @@ class LocalToolExecutor:
             limit = max(512, min(50000, int(max_chars)))
             if _looks_like_pdf_path(real_path):
                 pages = extract_pdf_page_texts_from_path(real_path)
-                headings = extract_heading_entries_from_pages(pages, max_headings=1000)
-                section = _extract_section_from_pdf_pages(pages, headings, heading, limit)
+                headings = extract_heading_entries_from_pages(pages, max_headings=0)
+                section = _extract_section_from_pdf_pages(
+                    pages,
+                    headings,
+                    heading,
+                    limit,
+                    start_char=start_char,
+                )
                 if not bool(section.get("ok")):
                     return section
                 return {
@@ -6799,17 +7225,34 @@ class LocalToolExecutor:
                     "page_start": section.get("page_start"),
                     "page_end": section.get("page_end"),
                     "content": section.get("content"),
+                    "start_char": section.get("start_char"),
+                    "end_char": section.get("end_char"),
+                    "total_length": section.get("total_length"),
+                    "returned_chars": section.get("returned_chars"),
+                    "truncated": bool(section.get("truncated")),
+                    "has_more": bool(section.get("has_more")),
+                    "next_start_char": section.get("next_start_char"),
+                    "source_complete": True,
+                    "complete": bool(section.get("complete")),
                 }
 
-            base = self._read_file_impl(path=path, start_char=0, max_chars=1_000_000)
+            base = self._read_searchable_text(path=path, real_path=real_path)
             if not bool(base.get("ok")):
                 return base
             text = str(base.get("content") or "")
+            source_complete = bool(base.get("source_complete", True))
             lines = text.splitlines()
             pages = [(1, text)]
-            headings = extract_heading_entries_from_pages(pages, max_headings=1000)
-            section = _extract_section_from_pdf_pages([(1, text)], headings, heading, limit)
+            headings = extract_heading_entries_from_pages(pages, max_headings=0)
+            section = _extract_section_from_pdf_pages(
+                [(1, text)],
+                headings,
+                heading,
+                limit,
+                start_char=start_char,
+            )
             if bool(section.get("ok")):
+                has_more = bool(section.get("has_more"))
                 return {
                     "ok": True,
                     "path": str(real_path),
@@ -6818,8 +7261,26 @@ class LocalToolExecutor:
                     "page_start": 1,
                     "page_end": 1,
                     "content": section.get("content"),
+                    "start_char": section.get("start_char"),
+                    "end_char": section.get("end_char"),
+                    "total_length": section.get("total_length"),
+                    "returned_chars": section.get("returned_chars"),
+                    "truncated": bool(has_more or not source_complete),
+                    "has_more": has_more,
+                    "next_start_char": section.get("next_start_char"),
+                    "source_complete": source_complete,
+                    "source_truncated": not source_complete,
+                    "complete": bool(section.get("complete")) and source_complete,
                 }
-            return {"ok": False, "error": f"Heading not found: {heading}", "path": str(real_path), "line_count": len(lines)}
+            return {
+                "ok": False,
+                "error": f"Heading not found: {heading}",
+                "path": str(real_path),
+                "line_count": len(lines),
+                "source_complete": source_complete,
+                "source_truncated": not source_complete,
+                "search_complete": source_complete,
+            }
         except Exception as exc:
             return {"ok": False, "error": f"read_section failed: {exc}"}
 
@@ -6846,20 +7307,12 @@ class LocalToolExecutor:
                 candidate_pages: list[int] = []
                 if page_hint > 0:
                     candidate_pages.append(int(page_hint))
-                if query_norm:
-                    search = self._search_contents_in_file_impl(path=path, query=query_norm, max_matches=8, context_chars=120)
-                    if bool(search.get("ok")):
-                        candidate_pages.extend(
-                            int(item.get("page_hint") or 0)
-                            for item in (search.get("matches") or [])
-                            if int(item.get("page_hint") or 0) > 0
-                        )
                 page_numbers = sorted(set(page for page in candidate_pages if page > 0)) or None
                 tables = extract_pdf_tables_from_path(
                     real_path,
                     page_numbers=page_numbers,
-                    max_tables=limit_tables,
-                    max_rows=limit_rows,
+                    max_tables=0,
+                    max_rows=0,
                 )
                 if query_norm:
                     query_tokens = [normalize_lookup_text(query_norm)]
@@ -6870,11 +7323,47 @@ class LocalToolExecutor:
                         if any(token in joined for token in query_tokens):
                             filtered.append(table)
                     tables = filtered
+                total_tables = len(tables)
+                visible_tables: list[dict[str, Any]] = []
+                rows_truncated = False
+                for table in tables[:limit_tables]:
+                    row_payload = list(table.get("rows") or [])
+                    row_has_more = len(row_payload) > limit_rows
+                    rows_truncated = rows_truncated or row_has_more
+                    visible_tables.append(
+                        {
+                            **dict(table),
+                            "rows": row_payload[:limit_rows],
+                            "returned_row_count": min(len(row_payload), limit_rows),
+                            "total_row_count": len(row_payload),
+                            "rows_truncated": row_has_more,
+                            "has_more_rows": row_has_more,
+                        }
+                    )
+                tables_truncated = total_tables > len(visible_tables)
+                truncated = bool(tables_truncated or rows_truncated)
                 return {
                     "ok": True,
                     "path": str(real_path),
-                    "table_count": len(tables),
-                    "tables": tables[:limit_tables],
+                    "table_count": len(visible_tables),
+                    "returned_count": len(visible_tables),
+                    "total_tables": total_tables,
+                    "max_tables": limit_tables,
+                    "max_rows": limit_rows,
+                    "tables": visible_tables,
+                    "tables_truncated": tables_truncated,
+                    "rows_truncated": rows_truncated,
+                    "truncated": truncated,
+                    "has_more": truncated,
+                    "source_complete": True,
+                    "continuation": (
+                        {
+                            "strategy": "refine_query_or_page",
+                            "message": "Narrow query/page_hint or increase max_tables/max_rows within the tool limits.",
+                        }
+                        if truncated
+                        else None
+                    ),
                 }
 
             if real_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
@@ -6887,6 +7376,7 @@ class LocalToolExecutor:
                     tables: list[dict[str, Any]] = []
                     for sheet in wb.worksheets:
                         rows: list[str] = []
+                        total_matching_rows = 0
                         for row in sheet.iter_rows(values_only=True):
                             cells = [_xlsx_cell_to_text(cell) for cell in row]
                             if not any(cells):
@@ -6894,14 +7384,48 @@ class LocalToolExecutor:
                             row_line = " | ".join(cells)
                             if query_norm and normalize_lookup_text(query_norm) not in normalize_lookup_text(row_line):
                                 continue
-                            rows.append(row_line)
-                            if len(rows) >= limit_rows:
-                                break
+                            total_matching_rows += 1
+                            if len(rows) < limit_rows:
+                                rows.append(row_line)
                         if rows:
-                            tables.append({"sheet": sheet.title or "Sheet", "rows": rows})
-                        if len(tables) >= limit_tables:
-                            break
-                    return {"ok": True, "path": str(real_path), "table_count": len(tables), "tables": tables}
+                            tables.append(
+                                {
+                                    "sheet": sheet.title or "Sheet",
+                                    "rows": rows,
+                                    "returned_row_count": len(rows),
+                                    "total_row_count": total_matching_rows,
+                                    "rows_truncated": total_matching_rows > len(rows),
+                                    "has_more_rows": total_matching_rows > len(rows),
+                                }
+                            )
+                    total_tables = len(tables)
+                    visible_tables = tables[:limit_tables]
+                    tables_truncated = total_tables > len(visible_tables)
+                    rows_truncated = any(bool(item.get("rows_truncated")) for item in visible_tables)
+                    truncated = bool(tables_truncated or rows_truncated)
+                    return {
+                        "ok": True,
+                        "path": str(real_path),
+                        "table_count": len(visible_tables),
+                        "returned_count": len(visible_tables),
+                        "total_tables": total_tables,
+                        "max_tables": limit_tables,
+                        "max_rows": limit_rows,
+                        "tables": visible_tables,
+                        "tables_truncated": tables_truncated,
+                        "rows_truncated": rows_truncated,
+                        "truncated": truncated,
+                        "has_more": truncated,
+                        "source_complete": True,
+                        "continuation": (
+                            {
+                                "strategy": "refine_query",
+                                "message": "Narrow the query or increase max_tables/max_rows within the tool limits.",
+                            }
+                            if truncated
+                            else None
+                        ),
+                    }
                 finally:
                     try:
                         wb.close()
@@ -6935,8 +7459,15 @@ class LocalToolExecutor:
             if not bool(search.get("ok")):
                 return search
 
-            evidence = list(search.get("matches") or [])[: max(1, min(12, int(max_evidence)))]
-            verdict = "insufficient_evidence"
+            evidence_limit = max(1, min(12, int(max_evidence)))
+            all_evidence = list(search.get("matches") or [])
+            evidence = all_evidence[:evidence_limit]
+            evidence_truncated = len(all_evidence) > len(evidence)
+            search_complete = bool(
+                search.get("search_complete", not search.get("truncated"))
+                and not evidence_truncated
+            )
+            verdict = "insufficient_evidence" if search_complete else "incomplete_search"
             if evidence:
                 verdict = "conflicted" if _is_negative_claim(cleaned_claim) else "supported"
             return {
@@ -6946,10 +7477,23 @@ class LocalToolExecutor:
                 "queries_used": query_list,
                 "verdict": verdict,
                 "evidence_count": len(evidence),
+                "observed_evidence_count": len(all_evidence),
+                "max_evidence": evidence_limit,
                 "evidence": evidence,
+                "evidence_truncated": evidence_truncated,
+                "search_complete": search_complete,
+                "source_complete": bool(search.get("source_complete", True)),
+                "truncated": bool(search.get("truncated") or evidence_truncated),
+                "has_more": bool(search.get("has_more") or evidence_truncated),
+                "continuation": (
+                    "Increase max_evidence or narrow the queries before drawing a conclusion."
+                    if evidence_truncated
+                    else search.get("continuation")
+                ),
                 "note": (
                     "This tool checks whether the current extracted file text contains evidence related to the claim. "
-                    "A 'supported' result still requires agent judgment about relevance and exact wording."
+                    "A 'supported' result still requires agent judgment about relevance and exact wording. "
+                    "An 'incomplete_search' result must never be treated as evidence that the claim is absent."
                 ),
             }
         except Exception as exc:
@@ -6975,10 +7519,11 @@ class LocalToolExecutor:
                 return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
 
             limit = max(1, min(100, int(max_matches)))
+            collection_limit = limit + 1
             matches: list[dict[str, Any]] = []
             parser_mode = "json"
             if shutil.which("rg"):
-                argv_core = ["-n", "--color", "never", "--max-count", str(limit)]
+                argv_core = ["-n", "--color", "never", "--max-count", str(collection_limit)]
                 if not use_regex:
                     argv_core.append("-F")
                 if case_sensitive:
@@ -7033,7 +7578,7 @@ class LocalToolExecutor:
                                 "text": text_line.strip(),
                             }
                         )
-                        if len(matches) >= limit:
+                        if len(matches) >= collection_limit:
                             break
                 else:
                     for line in (proc.stdout or "").splitlines():
@@ -7056,7 +7601,7 @@ class LocalToolExecutor:
                                 "text": text_line.strip(),
                             }
                         )
-                        if len(matches) >= limit:
+                        if len(matches) >= collection_limit:
                             break
             else:
                 parser_mode = "python_fallback"
@@ -7093,9 +7638,9 @@ class LocalToolExecutor:
                                 "text": line.strip(),
                             }
                         )
-                        if len(matches) >= limit:
+                        if len(matches) >= collection_limit:
                             break
-                    if len(matches) >= limit:
+                    if len(matches) >= collection_limit:
                         break
 
             existing_paths = {
@@ -7104,7 +7649,9 @@ class LocalToolExecutor:
                 if str(item.get("resolved_path") or item.get("path") or "").strip()
             }
             path_match_count = 0
-            if len(matches) < limit:
+            # Filename matches are evaluated independently so abundant content
+            # matches cannot starve a directly relevant path from the result.
+            if cleaned_query:
                 query_for_path = cleaned_query if case_sensitive else cleaned_query.lower()
                 query_for_stem = query_for_path.rsplit(".", 1)[0] if "." in query_for_path else query_for_path
                 path_pattern: re.Pattern[str] | None = None
@@ -7137,7 +7684,7 @@ class LocalToolExecutor:
                     file_candidates = [item for item in real_root.rglob("*") if item.is_file()]
 
                 for candidate in file_candidates:
-                    if len(matches) >= limit:
+                    if path_match_count >= collection_limit:
                         break
                     try:
                         rel = candidate.relative_to(real_root).as_posix()
@@ -7162,6 +7709,11 @@ class LocalToolExecutor:
 
                     candidate_path = str(candidate)
                     if candidate_path in existing_paths:
+                        for existing in matches:
+                            if str(existing.get("resolved_path") or "") == candidate_path:
+                                existing["match_type"] = "path_and_content"
+                                path_match_count += 1
+                                break
                         continue
                     existing_paths.add(candidate_path)
                     path_match_count += 1
@@ -7174,6 +7726,23 @@ class LocalToolExecutor:
                             "match_type": "path",
                         }
                     )
+            path_matches = [
+                item
+                for item in matches
+                if str(item.get("match_type") or "") in {"path", "path_and_content"}
+            ]
+            content_matches = [
+                item
+                for item in matches
+                if str(item.get("match_type") or "") not in {"path", "path_and_content"}
+            ]
+            combined_matches = [*path_matches, *content_matches]
+            visible_matches = combined_matches[:limit]
+            truncated = bool(
+                len(path_matches) > limit
+                or len(content_matches) > limit
+                or len(combined_matches) > limit
+            )
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
             return {
                 "ok": True,
@@ -7181,10 +7750,36 @@ class LocalToolExecutor:
                 "root_ref": root_payload["root_ref"],
                 "resolved_root": str(real_root.resolve()),
                 "query": cleaned_query,
-                "match_count": len(matches),
-                "matches": matches,
-                "path_match_count": path_match_count,
+                "match_count": len(visible_matches),
+                "returned_count": len(visible_matches),
+                "total_matches": None if truncated else len(visible_matches),
+                "max_matches": limit,
+                "matches": visible_matches,
+                "path_match_count": len(path_matches),
+                "content_match_count": len(content_matches),
+                "returned_path_match_count": sum(
+                    1
+                    for item in visible_matches
+                    if str(item.get("match_type") or "") in {"path", "path_and_content"}
+                ),
+                "returned_content_match_count": sum(
+                    1
+                    for item in visible_matches
+                    if str(item.get("match_type") or "") not in {"path", "path_and_content"}
+                ),
                 "parser_mode": parser_mode,
+                "truncated": truncated,
+                "has_more": truncated,
+                "source_complete": not truncated,
+                "search_complete": not truncated,
+                "continuation": (
+                    {
+                        "strategy": "refine_query_or_scope",
+                        "message": "More matches exist. Narrow query, root, or file_glob before concluding the remaining codebase has no matches.",
+                    }
+                    if truncated
+                    else None
+                ),
             }
         except FileNotFoundError:
             return {"ok": False, "error": "rg not found"}
@@ -7200,6 +7795,12 @@ class LocalToolExecutor:
         max_entries: int = 20000,
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
+        zip_real: Path | None = None
+        dst_real: Path | None = None
+        extracted_files = 0
+        skipped_files = 0
+        extracted_bytes = 0
+        entries: list[dict[str, Any]] = []
         try:
             zip_real = self._resolve_source_path(zip_path)
             if not zip_real.exists():
@@ -7222,11 +7823,6 @@ class LocalToolExecutor:
             entry_limit = max(1, min(100000, int(max_entries)))
             total_limit = max(1024, min(2147483648, int(max_total_bytes)))
 
-            extracted_files = 0
-            skipped_files = 0
-            extracted_bytes = 0
-            entries: list[dict[str, Any]] = []
-
             with zipfile.ZipFile(zip_real, "r") as zf:
                 infos = zf.infolist()
                 if len(infos) > entry_limit:
@@ -7244,6 +7840,15 @@ class LocalToolExecutor:
                             f"({total_uncompressed} > {total_limit})."
                         ),
                     }
+
+                for info in infos:
+                    name = (info.filename or "").replace("\\", "/")
+                    if not name:
+                        continue
+                    rel = Path(name)
+                    target = (dst_real / rel).resolve()
+                    if rel.is_absolute() or ".." in rel.parts or not _is_within(target, dst_real):
+                        return {"ok": False, "error": f"Unsafe zip entry path detected: {name}"}
 
                 for info in infos:
                     name = (info.filename or "").replace("\\", "/")
@@ -7272,14 +7877,13 @@ class LocalToolExecutor:
                     extracted_files += 1
                     size = int(target.stat().st_size)
                     extracted_bytes += size
-                    if len(entries) < 1000:
-                        entries.append(
-                            {
-                                "entry_name": name,
-                                "path": str(target),
-                                "size": size,
-                            }
-                        )
+                    entries.append(
+                        {
+                            "entry_name": name,
+                            "path": str(target),
+                            "size": size,
+                        }
+                    )
 
             return {
                 "ok": True,
@@ -7288,13 +7892,33 @@ class LocalToolExecutor:
                 "files_extracted": extracted_files,
                 "files_skipped": skipped_files,
                 "bytes_extracted": extracted_bytes,
+                "entries_total": len(entries),
+                "returned_entries": len(entries),
                 "entries": entries,
+                "entries_truncated": False,
+                "truncated": False,
+                "has_more": False,
+                "source_complete": True,
                 "overwrite": bool(overwrite),
             }
         except zipfile.BadZipFile:
             return {"ok": False, "error": f"Invalid zip archive: {zip_path}"}
         except Exception as exc:
-            return {"ok": False, "error": f"archive_extract failed: {exc}"}
+            return {
+                "ok": False,
+                "status": "partial_failure" if extracted_files else "failed",
+                "partial": bool(extracted_files or skipped_files),
+                "error": f"archive_extract failed: {exc}",
+                "zip_path": str(zip_real or zip_path),
+                "dst_dir": str(dst_real or dst_dir),
+                "files_extracted": extracted_files,
+                "files_skipped": skipped_files,
+                "bytes_extracted": extracted_bytes,
+                "entries_total": len(entries),
+                "returned_entries": len(entries),
+                "entries": entries,
+                "modified_files_present": bool(extracted_files),
+            }
 
     def _mail_extract_attachments_impl(
         self,
@@ -7305,6 +7929,13 @@ class LocalToolExecutor:
         max_attachments: int = 500,
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
+        msg_real: Path | None = None
+        dst_real: Path | None = None
+        attachments_total = 0
+        entries: list[dict[str, Any]] = []
+        files_saved = 0
+        files_skipped = 0
+        bytes_extracted = 0
         try:
             msg_real = self._resolve_source_path(msg_path)
             if not msg_real.exists():
@@ -7348,6 +7979,7 @@ class LocalToolExecutor:
             msg = extract_msg.openMsg(str(msg_real), strict=False, delayAttachments=False)
             try:
                 attachments = list(getattr(msg, "attachments", []) or [])
+                attachments_total = len(attachments)
                 if len(attachments) > attachment_limit:
                     return {
                         "ok": False,
@@ -7358,11 +7990,6 @@ class LocalToolExecutor:
                         "msg_path": str(msg_real),
                         "dst_dir": str(dst_real),
                     }
-
-                entries: list[dict[str, Any]] = []
-                files_saved = 0
-                files_skipped = 0
-                bytes_extracted = 0
 
                 for idx, att in enumerate(attachments, start=1):
                     raw_name = (
@@ -7453,22 +8080,6 @@ class LocalToolExecutor:
                             }
                         )
 
-                    if bytes_extracted > total_limit:
-                        return {
-                            "ok": False,
-                            "error": (
-                                f"Extracted bytes exceed max_total_bytes limit "
-                                f"({bytes_extracted} > {total_limit})."
-                            ),
-                            "msg_path": str(msg_real),
-                            "dst_dir": str(dst_real),
-                            "attachments_total": len(attachments),
-                            "files_saved": files_saved,
-                            "files_skipped": files_skipped,
-                            "bytes_extracted": bytes_extracted,
-                            "entries": entries,
-                        }
-
                     if saved_payload:
                         files_saved += 1
                         entries.append(
@@ -7488,15 +8099,54 @@ class LocalToolExecutor:
                             }
                         )
 
+                    if bytes_extracted > total_limit:
+                        failed_count = sum(
+                            1 for entry in entries if str(entry.get("status") or "") in {"error", "no_output"}
+                        )
+                        return {
+                            "ok": False,
+                            "status": "partial_failure",
+                            "partial": True,
+                            "error": (
+                                f"Extracted bytes exceed max_total_bytes limit "
+                                f"({bytes_extracted} > {total_limit})."
+                            ),
+                            "msg_path": str(msg_real),
+                            "dst_dir": str(dst_real),
+                            "attachments_total": len(attachments),
+                            "files_saved": files_saved,
+                            "files_skipped": files_skipped,
+                            "bytes_extracted": bytes_extracted,
+                            "entries": entries,
+                            "failed_count": failed_count,
+                            "modified_files_present": bool(files_saved),
+                            "entries_total": len(entries),
+                            "returned_entries": len(entries),
+                        }
+
+                failed_count = sum(
+                    1 for entry in entries if str(entry.get("status") or "") in {"error", "no_output"}
+                )
+                partial = bool(failed_count and (files_saved or files_skipped))
                 return {
-                    "ok": True,
+                    "ok": not bool(failed_count and files_saved == 0 and files_skipped == 0),
+                    "status": "partial_success" if partial else ("failed" if failed_count else "completed"),
+                    "partial": partial,
                     "msg_path": str(msg_real),
                     "dst_dir": str(dst_real),
                     "attachments_total": len(attachments),
                     "files_saved": files_saved,
                     "files_skipped": files_skipped,
+                    "failed_count": failed_count,
                     "bytes_extracted": bytes_extracted,
                     "entries": entries,
+                    "entries_total": len(entries),
+                    "returned_entries": len(entries),
+                    "entries_truncated": False,
+                    "truncated": False,
+                    "has_more": False,
+                    "source_complete": True,
+                    "modified_files_present": bool(files_saved),
                     "overwrite": bool(overwrite),
                 }
             finally:
@@ -7507,7 +8157,22 @@ class LocalToolExecutor:
                     except Exception:
                         pass
         except Exception as exc:
-            return {"ok": False, "error": f"mail_extract_attachments failed: {exc}"}
+            return {
+                "ok": False,
+                "status": "partial_failure" if files_saved else "failed",
+                "partial": bool(files_saved or files_skipped),
+                "error": f"mail_extract_attachments failed: {exc}",
+                "msg_path": str(msg_real or msg_path),
+                "dst_dir": str(dst_real or dst_dir),
+                "attachments_total": attachments_total,
+                "files_saved": files_saved,
+                "files_skipped": files_skipped,
+                "bytes_extracted": bytes_extracted,
+                "entries_total": len(entries),
+                "returned_entries": len(entries),
+                "entries": entries,
+                "modified_files_present": bool(files_saved),
+            }
 
     def _domain_allowed(self, host: str) -> bool:
         if self.config.web_allow_all_domains:
@@ -7527,7 +8192,7 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
-        cache_key = {"query": q, "max_results": limit, "algo_version": 4}
+        cache_key = {"query": q, "max_results": limit, "algo_version": 5}
         cached = self._load_web_cache("web_search", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
@@ -7608,7 +8273,7 @@ class LocalToolExecutor:
             source = "unknown"
             status = 200
             content_type = "text/html"
-            truncated = False
+            response_truncated = False
             warning_parts: list[str] = []
             seen_result_keys: set[str] = set()
 
@@ -7630,14 +8295,14 @@ class LocalToolExecutor:
                     row.setdefault("source", source_name)
                     results.append(row)
                     added += 1
-                    if len(results) >= limit:
+                    if len(results) >= limit + 1:
                         break
                 return added
 
             if not results:
                 try:
-                    status, content_type, text, truncated = _fetch_page_with_retry(search_url)
-                    ddg_results = _extract_ddg_results(text, max_results=limit)
+                    status, content_type, text, response_truncated = _fetch_page_with_retry(search_url)
+                    ddg_results = _extract_ddg_results(text, max_results=limit + 1)
                     if _append_results(ddg_results, "duckduckgo_html") > 0:
                         source = "duckduckgo_html"
                 except Exception as exc:
@@ -7645,8 +8310,8 @@ class LocalToolExecutor:
 
             if not results:
                 try:
-                    status, content_type, text, truncated = _fetch_page_with_retry(lite_url)
-                    ddg_results = _extract_ddg_results(text, max_results=limit)
+                    status, content_type, text, response_truncated = _fetch_page_with_retry(lite_url)
+                    ddg_results = _extract_ddg_results(text, max_results=limit + 1)
                     if _append_results(ddg_results, "duckduckgo_lite") > 0:
                         source = "duckduckgo_lite"
                 except Exception as exc:
@@ -7682,6 +8347,10 @@ class LocalToolExecutor:
                 ),
                 reverse=True,
             )
+            observed_count = len(normalized_results)
+            results_truncated = observed_count > limit
+            visible_results = normalized_results[:limit]
+            truncated = bool(response_truncated or results_truncated)
 
             payload = {
                 "ok": True,
@@ -7689,9 +8358,22 @@ class LocalToolExecutor:
                 "engine": source,
                 "status": status,
                 "content_type": content_type,
-                "count": len(normalized_results),
-                "results": normalized_results,
+                "count": len(visible_results),
+                "returned_count": len(visible_results),
+                "observed_count": observed_count,
+                "max_results": limit,
+                "results": visible_results,
                 "truncated": truncated,
+                "response_truncated": bool(response_truncated),
+                "results_truncated": results_truncated,
+                "has_more": truncated,
+                "source_complete": not truncated,
+                "search_complete": not truncated,
+                "continuation": (
+                    "Refine the query or request a larger max_results value; do not assume omitted results are absent."
+                    if truncated
+                    else ""
+                ),
                 "warning": warning,
                 "cached": False,
             }
@@ -7853,7 +8535,7 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(512, min(500000, max_chars, self.config.web_fetch_max_chars))
-        cache_key = {"url": request_url, "max_chars": limit}
+        cache_key = {"url": request_url, "max_chars": limit, "algo_version": 2}
         cached = self._load_web_cache("web_fetch", cache_key, max_age_sec=900)
         if cached:
             return {**cached, "cached": True}
@@ -7922,14 +8604,17 @@ class LocalToolExecutor:
                 raw_limit = pdf_byte_limit if pdf_like else limit
 
                 raw = resp.read(raw_limit + 1)
-                truncated = len(raw) > raw_limit
+                response_truncated = len(raw) > raw_limit
                 raw = raw[:raw_limit]
 
                 if pdf_like:
                     try:
-                        pdf_text = _extract_pdf_text_from_bytes(raw, max_chars=limit)
+                        extracted_pdf_text = extract_pdf_text_from_bytes(raw, max_chars=limit + 1)
+                        content_truncated = len(extracted_pdf_text) > limit
+                        pdf_text = extracted_pdf_text[:limit]
+                        truncated = bool(response_truncated or content_truncated)
                         warning = tls_warning
-                        if truncated:
+                        if response_truncated:
                             warning = (
                                 f"{warning} PDF 文件较大，已按 {raw_limit} bytes 截断读取。"
                                 if warning
@@ -7949,6 +8634,15 @@ class LocalToolExecutor:
                             "domain": host,
                             "binary": False,
                             "truncated": truncated,
+                            "response_truncated": response_truncated,
+                            "content_truncated": content_truncated,
+                            "has_more": truncated,
+                            "source_complete": not truncated,
+                            "continuation": (
+                                "Use web_download to save the complete PDF, then read_file/read_section to continue."
+                                if truncated
+                                else ""
+                            ),
                             "content": pdf_text,
                             "length": len(pdf_text),
                             "source_format": "pdf_text_extracted",
@@ -7970,7 +8664,12 @@ class LocalToolExecutor:
                             "content_type": content_type,
                             "binary": True,
                             "size_preview_bytes": len(raw),
-                            "truncated": truncated,
+                            "truncated": response_truncated,
+                            "response_truncated": response_truncated,
+                            "content_truncated": False,
+                            "has_more": response_truncated,
+                            "source_complete": not response_truncated,
+                            "continuation": "Use web_download to save the complete file." if response_truncated else "",
                             "warning": warning,
                         }
 
@@ -7982,14 +8681,21 @@ class LocalToolExecutor:
                         "content_type": content_type,
                         "binary": True,
                         "size_preview_bytes": len(raw),
-                        "truncated": truncated,
+                        "truncated": response_truncated,
+                        "response_truncated": response_truncated,
+                        "content_truncated": False,
+                        "has_more": response_truncated,
+                        "source_complete": not response_truncated,
+                        "continuation": "Use web_download to save the complete file." if response_truncated else "",
                         "warning": tls_warning,
                     }
 
                 text = raw.decode("utf-8", errors="ignore")
                 if _looks_like_html(content_type, text):
                     metadata = _extract_html_metadata(text, base_url=url)
-                    extracted = _extract_html_text(text, max_chars=limit)
+                    extracted_with_probe = _extract_html_text(text, max_chars=limit + 1)
+                    content_truncated = len(extracted_with_probe) > limit
+                    extracted = extracted_with_probe[:limit]
                     warning = None
                     if len(extracted.strip()) < 80:
                         warning = (
@@ -8018,7 +8724,9 @@ class LocalToolExecutor:
                                     fb_truncated = len(fb_raw) > limit
                                     fb_raw = fb_raw[:limit]
                                     fb_text = fb_raw.decode("utf-8", errors="ignore")
-                                    fb_extracted = _extract_html_text(fb_text, max_chars=limit)
+                                    fb_extracted_with_probe = _extract_html_text(fb_text, max_chars=limit + 1)
+                                    fb_content_truncated = len(fb_extracted_with_probe) > limit
+                                    fb_extracted = fb_extracted_with_probe[:limit]
 
                                 if fb_extracted.strip() and not _looks_like_script_payload(fb_extracted):
                                     if tls_warning:
@@ -8035,7 +8743,16 @@ class LocalToolExecutor:
                                         "content_type": fb_ct,
                                         "domain": host,
                                         "binary": False,
-                                        "truncated": fb_truncated,
+                                        "truncated": bool(fb_truncated or fb_content_truncated),
+                                        "response_truncated": fb_truncated,
+                                        "content_truncated": fb_content_truncated,
+                                        "has_more": bool(fb_truncated or fb_content_truncated),
+                                        "source_complete": not bool(fb_truncated or fb_content_truncated),
+                                        "continuation": (
+                                            "Use browser tools or web_download to retrieve more of this page."
+                                            if fb_truncated or fb_content_truncated
+                                            else ""
+                                        ),
                                         "content": fb_extracted,
                                         "length": len(fb_extracted),
                                         "source_format": "search_fallback_duckduckgo_html",
@@ -8068,7 +8785,16 @@ class LocalToolExecutor:
                         "content_type": content_type,
                         "domain": host,
                         "binary": False,
-                        "truncated": truncated,
+                        "truncated": bool(response_truncated or content_truncated),
+                        "response_truncated": response_truncated,
+                        "content_truncated": content_truncated,
+                        "has_more": bool(response_truncated or content_truncated),
+                        "source_complete": not bool(response_truncated or content_truncated),
+                        "continuation": (
+                            "Use browser tools or web_download to retrieve more of this page."
+                            if response_truncated or content_truncated
+                            else ""
+                        ),
                         "content": extracted,
                         "length": len(extracted),
                         "source_format": "html_text_extracted",
@@ -8088,7 +8814,12 @@ class LocalToolExecutor:
                     "content_type": content_type,
                     "domain": host,
                     "binary": False,
-                    "truncated": truncated,
+                    "truncated": response_truncated,
+                    "response_truncated": response_truncated,
+                    "content_truncated": False,
+                    "has_more": response_truncated,
+                    "source_complete": not response_truncated,
+                    "continuation": "Use web_download to save the complete response." if response_truncated else "",
                     "content": text,
                     "length": len(text),
                     "warning": tls_warning,

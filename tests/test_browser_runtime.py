@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import threading
 
 from app.browser_runtime import BrowserToolManager
@@ -29,8 +30,16 @@ class _FakeLocator:
     async def inner_text(self, timeout: int = 4000) -> str:
         return self._page.body_text if self._selector == "body" else ""
 
-    async def evaluate_all(self, _script: str) -> list[dict[str, str]]:
-        return self._page.links if self._selector == "a" else []
+    async def evaluate_all(self, script: str) -> list[dict[str, str]]:
+        if self._selector != "a":
+            return []
+        match = re.search(r"slice\((\d+),\s*(\d+)\)", script)
+        if not match:
+            return self._page.links
+        return self._page.links[int(match.group(1)) : int(match.group(2))]
+
+    async def count(self) -> int:
+        return len(self._page.links) if self._selector == "a" else 0
 
     async def scroll_into_view_if_needed(self, timeout: int = 5000) -> None:
         self._page.scroll_into_view_calls.append((self._selector, timeout))
@@ -219,6 +228,42 @@ def test_browser_scroll_can_scroll_selector_into_view(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert page.scroll_into_view_calls == [("#target", 1600)]
     assert page.mouse.wheel_calls == []
+
+
+def test_browser_snapshot_pages_text_and_links_without_silent_loss(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        user_data_dir=tmp_path / "profile",
+    )
+    manager._import_playwright = lambda: (_FakeAsyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+    session = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+    session.page.body_text = "A" * 600 + "B" * 600
+    session.page.links = [
+        {"text": f"link-{index}", "href": f"https://example.test/{index}"}
+        for index in range(5)
+    ]
+
+    first = manager.snapshot(session_id="session-a", max_chars=600, max_links=2)
+    second = manager.snapshot(
+        session_id="session-a",
+        max_chars=600,
+        start_char=first["next_text_start_char"],
+        link_offset=first["next_link_offset"],
+        max_links=3,
+    )
+
+    assert first["truncated"] is True
+    assert first["text_total_chars"] == 1200
+    assert first["links_total"] == 5
+    assert first["next_text_start_char"] == 600
+    assert first["next_link_offset"] == 2
+    assert first["text"] + second["text"] == session.page.body_text
+    assert [item["text"] for item in first["links"] + second["links"]] == [
+        f"link-{index}" for index in range(5)
+    ]
+    assert second["source_complete"] is True
 
 
 def test_browser_operations_are_dispatched_to_one_worker_thread(tmp_path: Path) -> None:

@@ -85,3 +85,19 @@ def test_task_store_rejects_cross_project_update(tmp_path: Path) -> None:
             goal="Finish it",
             summary="Wrong project",
         )
+
+
+def test_task_store_rejects_oversized_fields_instead_of_truncating(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path / "tasks")
+
+    with pytest.raises(ValueError, match="title exceeds 120 characters"):
+        store.save(
+            project_id="project-1",
+            project_title="Demo",
+            project_root="/workspace/demo",
+            title="t" * 121,
+            goal="goal",
+            summary="summary",
+        )
+
+    assert store.list(limit=None) == []

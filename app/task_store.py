@@ -38,6 +38,30 @@ def _string_list(value: Any, *, limit: int = 24, item_limit: int = 800) -> list[
     return items
 
 
+def _validate_writable_task_fields(payload: dict[str, Any]) -> None:
+    scalar_limits = {"title": 120, "goal": 4000, "summary": 12000}
+    list_limits = {
+        "progress": (32, 800),
+        "next_steps": (24, 800),
+        "decisions": (24, 800),
+        "blockers": (16, 800),
+        "artifacts": (32, 2000),
+    }
+    violations: list[str] = []
+    for field, max_chars in scalar_limits.items():
+        if len(str(payload.get(field) or "").strip()) > max_chars:
+            violations.append(f"{field} exceeds {max_chars} characters")
+    for field, (max_items, max_chars) in list_limits.items():
+        values = list(payload.get(field) or [])
+        if len(values) > max_items:
+            violations.append(f"{field} exceeds {max_items} items")
+        for index, value in enumerate(values):
+            if len(str(value or "").strip()) > max_chars:
+                violations.append(f"{field}[{index}] exceeds {max_chars} characters")
+    if violations:
+        raise ValueError("Task payload exceeds storage limits: " + "; ".join(violations))
+
+
 def normalize_task(raw: Any) -> dict[str, Any]:
     payload = dict(raw or {}) if isinstance(raw, dict) else {}
     status = _text(payload.get("status"), limit=32).lower()
@@ -123,7 +147,13 @@ class TaskStore:
         normalized = normalize_task(payload)
         return normalized if normalized.get("task_id") else None
 
-    def list(self, *, project_id: str | None = None, include_archived: bool = False, limit: int = 100) -> list[dict[str, Any]]:
+    def list(
+        self,
+        *,
+        project_id: str | None = None,
+        include_archived: bool = False,
+        limit: int | None = 100,
+    ) -> list[dict[str, Any]]:
         wanted_project_id = str(project_id or "").strip()
         tasks: list[dict[str, Any]] = []
         for path in self.tasks_dir.glob("*.json"):
@@ -140,7 +170,9 @@ class TaskStore:
             status_tasks = [item for item in tasks if str(item.get("status") or "") == status]
             status_tasks.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
             grouped.extend(status_tasks)
-        return grouped[: max(1, min(500, int(limit)))]
+        if limit is None:
+            return grouped
+        return grouped[: max(1, int(limit))]
 
     def save(
         self,
@@ -160,6 +192,18 @@ class TaskStore:
         task_id: str = "",
         source_thread_id: str = "",
     ) -> dict[str, Any]:
+        _validate_writable_task_fields(
+            {
+                "title": title,
+                "goal": goal,
+                "summary": summary,
+                "progress": progress or [],
+                "next_steps": next_steps or [],
+                "decisions": decisions or [],
+                "blockers": blockers or [],
+                "artifacts": artifacts or [],
+            }
+        )
         normalized_project_id = _text(project_id, limit=160)
         normalized_title = _text(title, limit=120)
         normalized_goal = _text(goal, limit=4000)

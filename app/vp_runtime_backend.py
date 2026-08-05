@@ -95,6 +95,7 @@ class ReadFileArgs(BaseModel):
 class ListDirArgs(BaseModel):
     path: str = Field(default=".", description="Existing directory under an allowed read root.")
     max_entries: int = Field(default=200, ge=1, le=500, description="Maximum entries to return.")
+    offset: int = Field(default=0, ge=0, description="Zero-based directory-entry offset.")
 
 
 class SearchContentsInFileArgs(BaseModel):
@@ -106,7 +107,11 @@ class SearchContentsInFileArgs(BaseModel):
 
 class SearchContentsInFileMultiArgs(BaseModel):
     path: str = Field(description="Known local file or document path.")
-    queries: list[str] = Field(description="Distinct text queries to run against the same extracted contents.")
+    queries: list[str] = Field(
+        min_length=1,
+        max_length=20,
+        description="One to twenty distinct text queries to run against the same extracted contents.",
+    )
     per_query_max_matches: int = Field(default=3, ge=1, le=10, description="Maximum snippets contributed by each query.")
     context_chars: int = Field(default=280, ge=40, le=2000, description="Context characters around each match.")
 
@@ -115,12 +120,14 @@ class GlobFileSearchArgs(BaseModel):
     pattern: str = Field(description="Glob pattern such as `**/*.cpp`; use a narrower pattern on large trees.")
     path: str = Field(default=".", description="Directory root under an allowed read root.")
     max_results: int = Field(default=200, ge=1, le=500, description="Maximum matching file paths.")
+    offset: int = Field(default=0, ge=0, description="Zero-based matching-path offset.")
 
 
 class ReadSectionArgs(BaseModel):
     path: str = Field(description="Local document path.")
     heading: str = Field(description="Heading text or section number to match.")
     max_chars: int = Field(default=12000, ge=512, le=50000, description="Maximum section characters returned.")
+    start_char: int = Field(default=0, ge=0, description="Character offset within the matched section for continuation reads.")
 
 
 class TableExtractArgs(BaseModel):
@@ -241,6 +248,9 @@ class BrowserScrollArgs(BaseModel):
 
 class BrowserSnapshotArgs(BaseModel):
     max_chars: int = Field(default=12000, ge=400, le=50000, description="Maximum visible page-text characters.")
+    start_char: int = Field(default=0, ge=0, description="Character offset for continuing page text.")
+    link_offset: int = Field(default=0, ge=0, description="Link offset for continuing the link list.")
+    max_links: int = Field(default=12, ge=1, le=100, description="Maximum links returned in this snapshot.")
 
 
 class BrowserScreenshotArgs(BaseModel):
@@ -344,15 +354,15 @@ class ListTasksArgs(BaseModel):
 
 
 class SaveTaskArgs(BaseModel):
-    task_id: str = Field(default="", description="Existing Task id to update; leave empty only when creating a new Task.")
-    title: str = Field(description="Short, recognizable title shown in the Tasks list.")
-    goal: str = Field(description="Concrete outcome that defines what the Task is trying to achieve.")
-    summary: str = Field(description="Self-contained continuation summary that does not require opening the source Thread.")
-    progress: list[str] = Field(default_factory=list, description="Important work already completed or verified.")
-    next_steps: list[str] = Field(default_factory=list, description="Ordered concrete actions that should happen next.")
-    decisions: list[str] = Field(default_factory=list, description="Key decisions and constraints future work must preserve.")
-    blockers: list[str] = Field(default_factory=list, description="Known blockers, missing inputs, or unresolved risks.")
-    artifacts: list[str] = Field(default_factory=list, description="Relevant files, branches, commits, pull requests, or other durable artifacts.")
+    task_id: str = Field(default="", max_length=160, description="Existing Task id to update; leave empty only when creating a new Task.")
+    title: str = Field(min_length=1, max_length=120, description="Short, recognizable title shown in the Tasks list.")
+    goal: str = Field(min_length=1, max_length=4000, description="Concrete outcome that defines what the Task is trying to achieve.")
+    summary: str = Field(min_length=1, max_length=12000, description="Self-contained continuation summary that does not require opening the source Thread.")
+    progress: list[str] = Field(default_factory=list, max_length=32, description="Important work already completed or verified.")
+    next_steps: list[str] = Field(default_factory=list, max_length=24, description="Ordered concrete actions that should happen next.")
+    decisions: list[str] = Field(default_factory=list, max_length=24, description="Key decisions and constraints future work must preserve.")
+    blockers: list[str] = Field(default_factory=list, max_length=16, description="Known blockers, missing inputs, or unresolved risks.")
+    artifacts: list[str] = Field(default_factory=list, max_length=32, description="Relevant files, branches, commits, pull requests, or other durable artifacts.")
     status: Literal["active", "blocked", "completed", "archived"] = Field(
         default="active",
         description="Current lifecycle status of the Task.",
@@ -361,11 +371,17 @@ class SaveTaskArgs(BaseModel):
 
 class SessionsListArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=200, description="Maximum recent sessions from the current project.")
+    offset: int = Field(default=0, ge=0, description="Zero-based offset into matching recent sessions.")
 
 
 class SessionsHistoryArgs(BaseModel):
     session_id: str = Field(description="Session id returned by sessions_list.")
     max_turns: int = Field(default=80, ge=1, le=800, description="Maximum most-recent turns returned.")
+    recent_offset: int = Field(
+        default=0,
+        ge=0,
+        description="How many of the newest turns to skip when reading older history pages.",
+    )
 
 
 class VPRuntimeBackend:
@@ -883,7 +899,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="browser_snapshot",
-                description="Capture the current browser page title, URL, text excerpt, and top links.",
+                description="Capture a pageable browser page text and link snapshot with explicit completeness metadata.",
                 args_schema=BrowserSnapshotArgs,
                 func=self._browser_snapshot_tool,
             ),
@@ -1027,8 +1043,22 @@ class VPRuntimeBackend:
     def _apply_patch_tool(self, patch: str, cwd: str = ".", check: bool = False) -> str:
         return json.dumps(self.tools.apply_patch(patch=patch, cwd=cwd, check=check), ensure_ascii=False)
 
-    def _read_section_tool(self, path: str, heading: str, max_chars: int = 12000) -> str:
-        return json.dumps(self.tools.read_section(path=path, heading=heading, max_chars=max_chars), ensure_ascii=False)
+    def _read_section_tool(
+        self,
+        path: str,
+        heading: str,
+        max_chars: int = 12000,
+        start_char: int = 0,
+    ) -> str:
+        return json.dumps(
+            self.tools.read_section(
+                path=path,
+                heading=heading,
+                max_chars=max_chars,
+                start_char=start_char,
+            ),
+            ensure_ascii=False,
+        )
 
     def _table_extract_tool(
         self, path: str, query: str = "", page_hint: int = 0, max_tables: int = 5, max_rows: int = 25
@@ -1079,11 +1109,18 @@ class VPRuntimeBackend:
             ensure_ascii=False,
         )
 
-    def _sessions_list_tool(self, limit: int = 20) -> str:
-        return json.dumps(self.tools.sessions_list(limit=limit), ensure_ascii=False)
+    def _sessions_list_tool(self, limit: int = 20, offset: int = 0) -> str:
+        return json.dumps(self.tools.sessions_list(limit=limit, offset=offset), ensure_ascii=False)
 
-    def _sessions_history_tool(self, session_id: str, max_turns: int = 80) -> str:
-        return json.dumps(self.tools.sessions_history(session_id=session_id, max_turns=max_turns), ensure_ascii=False)
+    def _sessions_history_tool(self, session_id: str, max_turns: int = 80, recent_offset: int = 0) -> str:
+        return json.dumps(
+            self.tools.sessions_history(
+                session_id=session_id,
+                max_turns=max_turns,
+                recent_offset=recent_offset,
+            ),
+            ensure_ascii=False,
+        )
 
     def _save_skill_tool(
         self,
@@ -1294,8 +1331,15 @@ class VPRuntimeBackend:
             "width": width,
             "height": height,
             "warning": warning_text,
-            "visible_text": visible_text[:max_output_chars],
-            "analysis": analysis[:max_output_chars],
+            # Preserve the complete model response. The shared tool-result store
+            # handles model-context paging without rerunning image analysis.
+            "visible_text": visible_text,
+            "analysis": analysis,
+            "visible_text_total_chars": len(visible_text),
+            "analysis_total_chars": len(analysis),
+            "truncated": False,
+            "has_more": False,
+            "source_complete": True,
             "model_capability_status": "ok",
             "effective_model": effective_model,
         }
@@ -1429,17 +1473,34 @@ class VPRuntimeBackend:
             ensure_ascii=False,
         )
 
-    def _browser_snapshot_tool(self, max_chars: int = 12000) -> str:
-        return json.dumps(self.tools.browser_snapshot(max_chars=max_chars), ensure_ascii=False)
+    def _browser_snapshot_tool(
+        self,
+        max_chars: int = 12000,
+        start_char: int = 0,
+        link_offset: int = 0,
+        max_links: int = 12,
+    ) -> str:
+        return json.dumps(
+            self.tools.browser_snapshot(
+                max_chars=max_chars,
+                start_char=start_char,
+                link_offset=link_offset,
+                max_links=max_links,
+            ),
+            ensure_ascii=False,
+        )
 
     def _browser_screenshot_tool(self, path: str = "", full_page: bool = True) -> str:
         return json.dumps(self.tools.browser_screenshot(path=path, full_page=full_page), ensure_ascii=False)
 
-    def _list_dir_tool(self, path: str = ".", max_entries: int = 200) -> str:
-        return json.dumps(self.tools.list_dir(path=path, max_entries=max_entries), ensure_ascii=False)
+    def _list_dir_tool(self, path: str = ".", max_entries: int = 200, offset: int = 0) -> str:
+        return json.dumps(self.tools.list_dir(path=path, max_entries=max_entries, offset=offset), ensure_ascii=False)
 
-    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200) -> str:
-        return json.dumps(self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results), ensure_ascii=False)
+    def _glob_file_search_tool(self, pattern: str, path: str = ".", max_results: int = 200, offset: int = 0) -> str:
+        return json.dumps(
+            self.tools.glob_file_search(pattern=pattern, path=path, max_results=max_results, offset=offset),
+            ensure_ascii=False,
+        )
 
     def _read_file_tool(
         self,
