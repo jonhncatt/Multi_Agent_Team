@@ -31,6 +31,26 @@ def _portable_path_text(value: object) -> str:
     return str(value or "").replace("\\", "/").casefold()
 
 
+def _wait_for_command_completion(
+    manager: LocalToolExecutor,
+    result: dict[str, object],
+    *,
+    attempts: int = 20,
+) -> dict[str, object]:
+    current = dict(result)
+    output_chunks = [str(current.get("output") or "")]
+    for _ in range(attempts):
+        if not bool(current.get("running")):
+            break
+        current = manager.write_stdin(
+            session_id=int(current["session_id"]),
+            yield_time_ms=1000,
+        )
+        output_chunks.append(str(current.get("output") or ""))
+    current["output"] = "".join(output_chunks)
+    return current
+
+
 def _runtime_boundary(
     tmp_path: Path,
     *,
@@ -1459,8 +1479,11 @@ def test_exec_command_compound_cd_and_python_runs_raw_command(
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
     result = manager.exec_command(cmd=f"cd app && {manager.config.python_command} show_cwd.py", cwd=".", yield_time_ms=300)
+    result = _wait_for_command_completion(manager, result)
 
     assert result["ok"] is True, result
+    assert result["running"] is False, result
+    assert result["returncode"] == 0, result
     assert result["compound_shell"] is True
     assert result["compound_validation"]["ok"] is True
     assert result["compound_validation"]["parsed_subcommands"] == [
@@ -1478,8 +1501,11 @@ def test_exec_command_compound_pipe_with_tee_writes_inside_workspace(
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
     result = manager.exec_command(cmd="echo ok | tee test.log", cwd=".", yield_time_ms=300)
+    result = _wait_for_command_completion(manager, result)
 
     assert result["ok"] is True, result
+    assert result["running"] is False, result
+    assert result["returncode"] == 0, result
     assert result["compound_shell"] is True
     assert result["compound_validation"]["parsed_subcommands"] == ["echo ok", "tee test.log"]
     raw_log = (tmp_path / "test.log").read_bytes()
@@ -1504,8 +1530,11 @@ def test_exec_command_compound_mkdir_and_redirect_inside_workspace(
         cwd=".",
         yield_time_ms=300,
     )
+    result = _wait_for_command_completion(manager, result)
 
     assert result["ok"] is True, result
+    assert result["running"] is False, result
+    assert result["returncode"] == 0, result
     assert result["compound_shell"] is True
     assert "mkdir logs" in result["compound_validation"]["parsed_subcommands"]
     assert "echo ok > logs/result.txt" in result["compound_validation"]["parsed_subcommands"]

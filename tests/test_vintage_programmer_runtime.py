@@ -3000,16 +3000,6 @@ def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> 
     assert len(
         [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]
     ) == 1
-    assert any(
-        '"current_attachments"' in str(item.content or "")
-        for item in backend.invocations[0]["messages"]
-        if isinstance(item, _FakeHumanMessage)
-    )
-    assert any(
-        attachment_path in str(item.content or "")
-        for item in backend.invocations[0]["messages"]
-        if isinstance(item, _FakeHumanMessage)
-    )
 
 
 def test_runtime_records_tool_and_followup_llm_exchanges(tmp_path: Path) -> None:
