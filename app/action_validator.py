@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import ntpath
+import platform
 import re
 import shlex
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -153,12 +155,25 @@ def _contains_redaction_placeholder(value: Any) -> bool:
     return False
 
 
-def split_command_safely(command: str) -> tuple[list[str], str | None]:
+def _uses_windows_command_syntax(platform_name: str = "") -> bool:
+    resolved = str(platform_name or platform.system() or "").strip().lower()
+    return resolved.startswith("win")
+
+
+def _strip_balanced_shell_quotes(token: str) -> str:
+    text = str(token or "")
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    return text
+
+
+def split_command_safely(command: str, *, platform_name: str = "") -> tuple[list[str], str | None]:
     raw = str(command or "").strip()
     if not raw:
         return [], "Empty command"
     try:
-        return shlex.split(raw), None
+        argv = shlex.split(raw, posix=not _uses_windows_command_syntax(platform_name))
+        return [_strip_balanced_shell_quotes(token) for token in argv], None
     except Exception as exc:
         return [], f"Command parse failed: {safe_error_message(exc)}"
 
@@ -326,11 +341,15 @@ def _unsupported_shell_structure(command: str) -> str:
     return ""
 
 
-def _tokenize_shell_command(command: str) -> list[str]:
-    lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars="|&;<>()")
+def _tokenize_shell_command(command: str, *, platform_name: str = "") -> list[str]:
+    lexer = shlex.shlex(
+        str(command or ""),
+        posix=not _uses_windows_command_syntax(platform_name),
+        punctuation_chars="|&;<>()",
+    )
     lexer.whitespace_split = True
     lexer.commenters = ""
-    return list(lexer)
+    return [_strip_balanced_shell_quotes(token) for token in lexer]
 
 
 def _build_parsed_shell_subcommand(tokens: list[str]) -> dict[str, Any]:
@@ -391,7 +410,7 @@ def _build_parsed_shell_subcommand(tokens: list[str]) -> dict[str, Any]:
     }
 
 
-def parse_compound_shell_command(command: str) -> dict[str, Any]:
+def parse_compound_shell_command(command: str, *, platform_name: str = "") -> dict[str, Any]:
     raw = str(command or "").strip()
     if not raw:
         return _shell_parse_error("Empty command", error_kind="invalid_arguments")
@@ -403,7 +422,7 @@ def parse_compound_shell_command(command: str) -> dict[str, Any]:
             unsupported_structure=unsupported,
         )
     try:
-        tokens = _tokenize_shell_command(raw)
+        tokens = _tokenize_shell_command(raw, platform_name=platform_name)
     except Exception as exc:
         return _shell_parse_error(f"Command parse failed: {safe_error_message(exc)}", error_kind="compound_shell_parse_failed")
     if not tokens:
@@ -521,6 +540,23 @@ def _resolve_command_arg_path(raw: str, *, cwd: Path) -> Path:
         return candidate.absolute()
 
 
+def _windows_absolute_path(raw: str) -> PureWindowsPath | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    candidate = PureWindowsPath(ntpath.normpath(text))
+    return candidate if candidate.is_absolute() else None
+
+
+def _windows_roots(values: list[Path]) -> list[PureWindowsPath]:
+    roots: list[PureWindowsPath] = []
+    for value in values:
+        candidate = _windows_absolute_path(str(value or ""))
+        if candidate is not None:
+            roots.append(candidate)
+    return roots
+
+
 def _parent_for_boundary(path: Path) -> Path:
     if path.exists():
         return path
@@ -538,6 +574,31 @@ def _validate_command_path_item(
 ) -> tuple[bool, dict[str, Any]]:
     command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
     write_roots = [root.expanduser().resolve() for root in writable_roots if str(root or "").strip()]
+    windows_path = _windows_absolute_path(raw_arg)
+    if windows_path is not None:
+        if allow_any_path:
+            return True, {}
+        windows_command_roots = _windows_roots(command_allowed_roots)
+        if not any(_is_within(windows_path, root) for root in windows_command_roots):
+            return False, {
+                "kind": "command_path_outside_allowed_roots",
+                "message": "Command path argument is outside command allowed roots.",
+                "argument": raw_arg,
+                "resolved_path": str(windows_path),
+                "command_allowed_roots": [str(root) for root in command_roots],
+            }
+        if access == "write":
+            windows_write_roots = _windows_roots(writable_roots)
+            if not any(_is_within(windows_path, root) for root in windows_write_roots):
+                return False, {
+                    "kind": "command_path_outside_allowed_roots",
+                    "message": "Command write path argument is outside writable command roots.",
+                    "argument": raw_arg,
+                    "resolved_path": str(windows_path),
+                    "command_allowed_roots": [str(root) for root in command_roots],
+                    "writable_roots": [str(root) for root in write_roots],
+                }
+        return True, {}
     resolved = _resolve_command_arg_path(raw_arg, cwd=cwd)
     boundary_path = _parent_for_boundary(resolved)
     if allow_any_path:
@@ -659,8 +720,9 @@ def validate_compound_shell_command(
     allowed_commands: list[str] | set[str] | tuple[str, ...] | None = None,
     allow_supply_chain_commands: bool = False,
     allow_any_path: bool = False,
+    platform_name: str = "",
 ) -> tuple[bool, dict[str, Any]]:
-    parsed = parse_compound_shell_command(command)
+    parsed = parse_compound_shell_command(command, platform_name=platform_name)
     if not parsed.get("ok"):
         return False, dict(parsed)
     subcommands = [dict(item) for item in list(parsed.get("subcommands") or []) if isinstance(item, dict)]
@@ -781,6 +843,7 @@ class ActionValidator:
         locale: str = "en",
         normalize_tool_name: Callable[[str], str] | None = None,
         argument_rewriter: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        platform_name: str = "",
     ) -> None:
         self._tool_specs_by_name = {
             str(item.get("name") or "").strip(): dict(item)
@@ -793,6 +856,7 @@ class ActionValidator:
         self._locale = str(locale or "en")
         self._normalize_tool_name = normalize_tool_name or (lambda value: str(value or "").strip())
         self._argument_rewriter = argument_rewriter
+        self._platform_name = str(platform_name or platform.system() or "")
 
     def _supply_chain_approval_allowed(self) -> bool:
         profile = normalize_permission_profile(getattr(self._boundary, "permission_profile", "auto"))
@@ -1130,6 +1194,7 @@ class ActionValidator:
                         allowed_commands=self._allowed_commands,
                         allow_supply_chain_commands=self._supply_chain_approval_allowed(),
                         allow_any_path=self._unrestricted_path_access(),
+                        platform_name=self._platform_name,
                     )
                     if not ok:
                         error_kind = str(detail.get("error_kind") or detail.get("kind") or "invalid_arguments")
@@ -1146,7 +1211,7 @@ class ActionValidator:
                             return "invalid_arguments", str(detail.get("reason") or detail.get("message") or "Compound shell command could not be validated safely.")
                         return "invalid_arguments", str(detail.get("message") or "Compound shell command could not be validated safely.")
                 else:
-                    argv, split_error = split_command_safely(command)
+                    argv, split_error = split_command_safely(command, platform_name=self._platform_name)
                     if split_error:
                         return "invalid_arguments", split_error
                     raw_executable = str(argv[0] if argv else "").strip()

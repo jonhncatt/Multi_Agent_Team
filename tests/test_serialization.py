@@ -42,7 +42,8 @@ def test_dump_model_handles_dicts_and_sequences() -> None:
 
 
 def test_dump_model_handles_path_and_temporal_values() -> None:
-    assert dump_model(Path("/tmp/example")) == "/tmp/example"
+    path = Path("/tmp/example")
+    assert dump_model(path) == str(path)
     assert dump_model(date(2026, 5, 14)) == "2026-05-14"
     assert dump_model(datetime(2026, 5, 14, 12, 30, 0)) == "2026-05-14T12:30:00"
 
@@ -79,7 +80,7 @@ def test_dump_model_handles_nested_mixed_values() -> None:
 
     assert dump_model(payload) == {
         "none": None,
-        "path": "/tmp/a",
+        "path": str(Path("/tmp/a")),
         "items": [None, {"x": 1}, {"name": "x", "value": 2}],
         "legacy": {"legacy": True},
         "data": {"name": "d", "value": 3},

@@ -6,8 +6,8 @@ APP_JS = REPO_ROOT / "app" / "static" / "app.js"
 
 
 def test_workstation_shell_mounts_exist() -> None:
-    html = INDEX_HTML.read_text()
-    script = APP_JS.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
 
     assert 'data-app="vintage-programmer"' in html
     assert "/static/vendor/marked.umd.js" in html
@@ -34,7 +34,7 @@ def test_workstation_shell_mounts_exist() -> None:
 
 
 def test_workstation_shell_behaviors_are_wired() -> None:
-    script = APP_JS.read_text()
+    script = APP_JS.read_text(encoding="utf-8")
     required_tokens = [
         "SESSION_STORAGE_KEY",
         "PROJECT_STORAGE_KEY",

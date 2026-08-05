@@ -1279,6 +1279,7 @@ def _patch_runtime_state(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main_app.config, "uploads_dir", tmp_path / "uploads")
     monkeypatch.setattr(main_app.config, "token_stats_path", tmp_path / "token_stats.json")
     monkeypatch.setattr(main_app.config, "allowed_roots", [tmp_path])
+    monkeypatch.setattr(main_app.config, "permission_profile", "auto")
     monkeypatch.setattr(main_app, "session_store", SessionStore(tmp_path / "sessions"))
     monkeypatch.setattr(main_app, "upload_store", UploadStore(tmp_path / "uploads"))
     monkeypatch.setattr(main_app, "token_stats_store", TokenStatsStore(tmp_path / "token_stats.json"))

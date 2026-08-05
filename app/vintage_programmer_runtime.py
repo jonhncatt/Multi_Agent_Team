@@ -2239,6 +2239,7 @@ class VintageProgrammerRuntime:
             allowed_commands=self._config.allowed_commands,
             boundary=runtime_boundary,
             locale=locale,
+            platform_name=self._config.platform_name,
             normalize_tool_name=normalize_tool_name,
             argument_rewriter=lambda tool_name, arguments: rewrite_attachment_tool_arguments(
                 name=tool_name,

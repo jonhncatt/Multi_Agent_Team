@@ -14,6 +14,7 @@ from app.local_tools import LocalToolExecutor
 def _make_manager(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> LocalToolExecutor:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_PERMISSION_PROFILE", "auto")
     config = load_config()
     manager = LocalToolExecutor(config)
     manager.set_runtime_context(
@@ -73,6 +74,53 @@ def test_exec_command_allows_where(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     assert error is None
     assert argv == ["where", "g++"]
+
+
+def test_windows_compound_commands_use_powershell(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.config.platform_name = "Windows"
+    monkeypatch.setattr(
+        "app.local_tools.shutil.which",
+        lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if name == "powershell"
+        else None,
+    )
+
+    argv = manager._shell_argv_for_compound_command("echo ok | tee test.log")
+
+    assert argv == [
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "echo ok | tee test.log",
+    ]
+
+
+def test_windows_command_chains_fall_back_to_cmd_for_powershell_5(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.config.platform_name = "Windows"
+    monkeypatch.setattr(
+        "app.local_tools.shutil.which",
+        lambda name: r"C:\Windows\System32\cmd.exe" if name == "cmd.exe" else None,
+    )
+
+    argv = manager._shell_argv_for_compound_command("mkdir logs && echo ok > logs/result.txt")
+
+    assert argv == [
+        r"C:\Windows\System32\cmd.exe",
+        "/d",
+        "/s",
+        "/c",
+        "mkdir logs && echo ok > logs/result.txt",
+    ]
 
 
 @pytest.mark.parametrize("command", ["where missing-tool", "where.exe missing-tool", "rg missing .", "rg.exe missing ."])
@@ -1391,20 +1439,27 @@ def test_mail_attachment_wrapper_propagates_parent_provenance(
     ]
 
 
-def test_exec_command_compound_cd_and_pwd_runs_raw_command(
+def test_exec_command_compound_cd_and_python_runs_raw_command(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "show_cwd.py").write_text(
+        "from pathlib import Path\nprint(Path.cwd())\n",
+        encoding="utf-8",
+    )
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
-    result = manager.exec_command(cmd="cd app && pwd", cwd=".", yield_time_ms=300)
+    result = manager.exec_command(cmd=f"cd app && {manager.config.python_command} show_cwd.py", cwd=".", yield_time_ms=300)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["compound_shell"] is True
     assert result["compound_validation"]["ok"] is True
-    assert result["compound_validation"]["parsed_subcommands"] == ["cd app", "pwd"]
+    assert result["compound_validation"]["parsed_subcommands"] == [
+        "cd app",
+        f"{manager.config.python_command} show_cwd.py",
+    ]
     assert str((tmp_path / "app").resolve()) in str(result["output"])
 
 
@@ -1415,12 +1470,19 @@ def test_exec_command_compound_pipe_with_tee_writes_inside_workspace(
     manager = _make_manager(monkeypatch, tmp_path)
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
-    result = manager.exec_command(cmd="printf 'ok\\n' | tee test.log", cwd=".", yield_time_ms=300)
+    result = manager.exec_command(cmd="echo ok | tee test.log", cwd=".", yield_time_ms=300)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["compound_shell"] is True
-    assert result["compound_validation"]["parsed_subcommands"] == ["printf ok\\n", "tee test.log"]
-    assert (tmp_path / "test.log").read_text(encoding="utf-8") == "ok\n"
+    assert result["compound_validation"]["parsed_subcommands"] == ["echo ok", "tee test.log"]
+    raw_log = (tmp_path / "test.log").read_bytes()
+    decoded_candidates = []
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            decoded_candidates.append(raw_log.decode(encoding))
+        except UnicodeError:
+            continue
+    assert any(text.strip() == "ok" for text in decoded_candidates)
 
 
 def test_exec_command_compound_mkdir_and_redirect_inside_workspace(
@@ -1431,16 +1493,16 @@ def test_exec_command_compound_mkdir_and_redirect_inside_workspace(
     manager.set_runtime_context(project_root=str(tmp_path), cwd=str(tmp_path), runtime_boundary=_runtime_boundary(tmp_path))
 
     result = manager.exec_command(
-        cmd="mkdir -p logs && printf 'ok\\n' > logs/result.txt",
+        cmd="mkdir logs && echo ok > logs/result.txt",
         cwd=".",
         yield_time_ms=300,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["compound_shell"] is True
-    assert "mkdir -p logs" in result["compound_validation"]["parsed_subcommands"]
-    assert "printf ok\\n > logs/result.txt" in result["compound_validation"]["parsed_subcommands"]
-    assert (tmp_path / "logs" / "result.txt").read_text(encoding="utf-8") == "ok\n"
+    assert "mkdir logs" in result["compound_validation"]["parsed_subcommands"]
+    assert "echo ok > logs/result.txt" in result["compound_validation"]["parsed_subcommands"]
+    assert (tmp_path / "logs" / "result.txt").read_text(encoding="utf-8").strip() == "ok"
 
 
 def test_compound_shell_validation_allows_simple_dev_chains(

@@ -31,6 +31,7 @@ from app.action_validator import (
     missing_supply_chain_allowed_commands,
     parse_compound_shell_command,
     shell_command_uses_compound_syntax,
+    split_command_safely,
     validate_compound_shell_command as validate_compound_shell_command_shared,
     validate_command_path_args,
 )
@@ -3011,10 +3012,9 @@ class LocalToolExecutor:
             return [], "Empty command"
         if self._is_compound_shell_command(raw):
             return [], "Command requires compound shell validation."
-        try:
-            argv = shlex.split(raw)
-        except Exception as exc:
-            return [], f"Command parse failed: {exc}"
+        argv, split_error = split_command_safely(raw, platform_name=self.config.platform_name)
+        if split_error:
+            return [], split_error
         if not argv:
             return [], "Empty command"
         execution_mode = self._current_execution_mode()
@@ -3036,7 +3036,7 @@ class LocalToolExecutor:
         return shell_command_uses_compound_syntax(raw)
 
     def _parse_compound_shell_for_validation(self, raw: str) -> dict[str, Any]:
-        return parse_compound_shell_command(raw)
+        return parse_compound_shell_command(raw, platform_name=self.config.platform_name)
 
     def _validate_compound_shell_command(self, raw: str, cwd: Path) -> tuple[bool, dict[str, Any]]:
         unrestricted_paths = self._unrestricted_path_access()
@@ -3048,6 +3048,7 @@ class LocalToolExecutor:
             allowed_commands=self.config.allowed_commands,
             allow_supply_chain_commands=self._supply_chain_approval_allowed(),
             allow_any_path=unrestricted_paths,
+            platform_name=self.config.platform_name,
         )
         if not ok:
             return False, dict(detail)
@@ -3113,6 +3114,17 @@ class LocalToolExecutor:
         }
 
     def _shell_argv_for_compound_command(self, raw: str) -> list[str]:
+        if str(self.config.platform_name or "").strip().lower().startswith("win"):
+            command = str(raw or "").strip()
+            pwsh_bin = shutil.which("pwsh")
+            if pwsh_bin:
+                return [pwsh_bin, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+            if "&&" not in command and "||" not in command:
+                powershell_bin = shutil.which("powershell")
+                if powershell_bin:
+                    return [powershell_bin, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+            cmd_bin = shutil.which("cmd.exe") or shutil.which("cmd") or "cmd.exe"
+            return [cmd_bin, "/d", "/s", "/c", command]
         shell_bin = shutil.which("bash") or shutil.which("zsh") or shutil.which("sh") or "/bin/sh"
         return [shell_bin, "-lc", str(raw or "").strip()]
 
@@ -3275,9 +3287,11 @@ class LocalToolExecutor:
         if not known_mutator:
             return ""
 
-        try:
-            argv = shlex.split(str(command or ""))
-        except Exception:
+        argv, split_error = split_command_safely(
+            str(command or ""),
+            platform_name=self.config.platform_name,
+        )
+        if split_error:
             argv = []
         for token in argv[1:]:
             value = str(token or "").strip().strip("<>")
@@ -3296,9 +3310,11 @@ class LocalToolExecutor:
 
         if self._is_compound_shell_command(command):
             return {}
-        try:
-            argv = shlex.split(str(command or "").strip())
-        except Exception:
+        argv, split_error = split_command_safely(
+            str(command or "").strip(),
+            platform_name=self.config.platform_name,
+        )
+        if split_error:
             return {}
         if len(argv) < 2:
             return {}
@@ -4674,9 +4690,11 @@ class LocalToolExecutor:
             argv = self._shell_argv_for_compound_command(cmd)
         else:
             raw_argv: list[str] = []
-            try:
-                raw_argv = shlex.split(str(cmd or "").strip())
-            except Exception:
+            raw_argv, raw_split_error = split_command_safely(
+                str(cmd or "").strip(),
+                platform_name=self.config.platform_name,
+            )
+            if raw_split_error:
                 raw_argv = []
             raw_tainted_matches = self._tainted_execution_matches_for_argv(raw_argv, cwd=real_cwd) if raw_argv else []
             argv, error = self._safe_split_command(

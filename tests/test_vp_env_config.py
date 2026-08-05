@@ -104,6 +104,23 @@ def test_provider_profiles_only_list_env_configured_providers(monkeypatch, tmp_p
     monkeypatch.setenv("VP_LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("VP_OPENROUTER_API_KEY", "router-key")
     monkeypatch.setenv("VP_DEEPSEEK_API_KEY", "deepseek-key")
+    for key in (
+        "VP_OPENAI_COMPAT_API_KEY",
+        "VP_OPENAI_COMPAT_BASE_URL",
+        "VP_OPENAI_COMPAT_CA_CERT_PATH",
+        "VP_OPENAI_COMPAT_TEMPERATURE",
+        "VP_OPENAI_COMPAT_USE_RESPONSES_API",
+        "VP_OPENAI_COMPAT_DEFAULT_MODEL",
+        "VP_OPENAI_COMPAT_MODEL_FALLBACKS",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_API_KEY",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_BASE_URL",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_CA_CERT_PATH",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_TEMPERATURE",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_USE_RESPONSES_API",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_DEFAULT_MODEL",
+        "VP_PROVIDER_OPENAI_COMPATIBLE_MODEL_FALLBACKS",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     config = load_config()
     profiles = list_provider_profiles(config)
@@ -248,6 +265,7 @@ def test_vp_allowed_commands_env_is_full_override(monkeypatch, tmp_path) -> None
 def test_permission_safe_defaults_do_not_add_user_folders(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("VP_PERMISSION_PROFILE", raising=False)
 
     config = load_config()
 

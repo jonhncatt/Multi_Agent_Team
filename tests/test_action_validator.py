@@ -8,6 +8,7 @@ from app.action_validator import (
     ActionValidator,
     ValidationResult,
     shell_command_uses_compound_syntax,
+    split_command_safely,
     validation_observation,
 )
 from app.runtime_boundary import RuntimeBoundary
@@ -133,7 +134,13 @@ def _tool_specs() -> list[dict]:
     ]
 
 
-def _validator(tmp_path: Path, allowed_commands: list[str] | None = None, **boundary_overrides) -> ActionValidator:
+def _validator(
+    tmp_path: Path,
+    allowed_commands: list[str] | None = None,
+    *,
+    platform_name: str = "",
+    **boundary_overrides,
+) -> ActionValidator:
     boundary = RuntimeBoundary(
         allowed_roots=[str(tmp_path)],
         writable_roots=[str(tmp_path / "writable")],
@@ -149,6 +156,7 @@ def _validator(tmp_path: Path, allowed_commands: list[str] | None = None, **boun
         allowed_commands=allowed_commands or _ALLOWED_COMMANDS,
         boundary=boundary,
         locale="en",
+        platform_name=platform_name,
     )
 
 
@@ -485,6 +493,40 @@ def test_git_dash_c_outside_project_rejected(tmp_path: Path) -> None:
 
     result = _validator(tmp_path).validate_tool_call(
         {"name": "exec_command", "args": {"cmd": f"git -C {outside} status", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_windows_command_split_preserves_drive_path_backslashes() -> None:
+    argv, error = split_command_safely(
+        r'git -C "C:\Users\example\outside git" status',
+        platform_name="Windows",
+    )
+
+    assert error is None
+    assert argv == ["git", "-C", r"C:\Users\example\outside git", "status"]
+
+
+def test_git_dash_c_windows_path_outside_project_rejected(tmp_path: Path) -> None:
+    result = _validator(tmp_path, platform_name="Windows").validate_tool_call(
+        {
+            "name": "exec_command",
+            "args": {"cmd": r"git -C C:\Users\example\outside-git status", "cwd": "."},
+        }
+    )
+
+    assert not result.allowed
+    assert result.code == "command_path_outside_allowed_roots"
+
+
+def test_windows_compound_write_path_outside_project_rejected(tmp_path: Path) -> None:
+    result = _validator(tmp_path, platform_name="Windows").validate_tool_call(
+        {
+            "name": "exec_command",
+            "args": {"cmd": r"echo ok | tee C:\Users\example\outside.log", "cwd": "."},
+        }
     )
 
     assert not result.allowed

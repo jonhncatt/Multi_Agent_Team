@@ -6,7 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_readme_and_docs_have_no_workspace_absolute_links() -> None:
     targets = [REPO_ROOT / 'README.md', REPO_ROOT / 'README.en.md', *(REPO_ROOT / 'docs').rglob('*.md')]
     for path in targets:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         assert '/Users/dalizhou/Desktop/new_validation_agent/' not in text, str(path)
 
 

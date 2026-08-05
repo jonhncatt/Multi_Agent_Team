@@ -6261,8 +6261,13 @@ def test_runtime_initial_prompt_lists_skills_without_full_skill_body(tmp_path: P
     assert "Use for repository triage." in system_prompt
     assert "Full secret instruction body." not in system_prompt
     available_section = system_prompt.split("[available_skills]", 1)[1].split("\n\n", 1)[0]
+    skill_metadata = [
+        json.loads(line)
+        for line in available_section.splitlines()
+        if line.strip().startswith("{")
+    ]
     assert '"path"' in available_section
-    assert str((skill_dir / "SKILL.md").resolve()) in available_section
+    assert skill_metadata[0]["path"] == str((skill_dir / "SKILL.md").resolve())
     assert "read_file" in available_section
     assert "exec_command" in available_section
     assert "VP_SKILL_ROOT" in available_section
@@ -6303,11 +6308,17 @@ def test_runtime_initial_prompt_never_omits_later_enabled_skills(tmp_path: Path)
     )
 
     prompt = runtime._render_available_skills_prompt(available_skills)
+    rendered_metadata = [
+        json.loads(line)
+        for line in prompt.splitlines()
+        if line.strip().startswith("{")
+    ]
 
     assert len(prompt) > 8000
     assert "team:work-summary" in prompt
     assert "根据 Redmine 最新进展，把工作总结成一句话。" in prompt
-    assert str(tmp_path / "skills" / "team" / "work-summary" / "SKILL.md") in prompt
+    work_summary = next(item for item in rendered_metadata if item["key"] == "team:work-summary")
+    assert work_summary["path"] == str(tmp_path / "skills" / "team" / "work-summary" / "SKILL.md")
     assert "because the available skill list exceeded the prompt budget" not in prompt
     assert all(item["key"] in prompt for item in available_skills)
 
