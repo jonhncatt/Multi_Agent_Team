@@ -3401,6 +3401,11 @@ class LocalToolExecutor:
         def reader() -> None:
             stream = proc.stdout
             if stream is None:
+                with self._command_sessions_lock:
+                    session = self._command_sessions.get(session_id)
+                    reader_done = session.get("reader_done") if isinstance(session, dict) else None
+                if isinstance(reader_done, threading.Event):
+                    reader_done.set()
                 return
             try:
                 while True:
@@ -3418,8 +3423,36 @@ class LocalToolExecutor:
                     stream.close()
                 except Exception:
                     pass
+                with self._command_sessions_lock:
+                    session = self._command_sessions.get(session_id)
+                    reader_done = session.get("reader_done") if isinstance(session, dict) else None
+                if isinstance(reader_done, threading.Event):
+                    reader_done.set()
 
         threading.Thread(target=reader, daemon=True).start()
+
+    def _wait_for_command_session(self, session_id: int, *, yield_time_ms: int) -> None:
+        """Wait up to the yield deadline, returning early when output is complete."""
+
+        timeout_seconds = max(0.0, min(float(yield_time_ms) / 1000.0, 10.0))
+        if timeout_seconds <= 0:
+            return
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            with self._command_sessions_lock:
+                session = self._command_sessions.get(session_id)
+                proc = session.get("proc") if isinstance(session, dict) else None
+                reader_done = session.get("reader_done") if isinstance(session, dict) else None
+            if not isinstance(proc, subprocess.Popen):
+                return
+            remaining = deadline - time.monotonic()
+            if proc.poll() is not None:
+                if isinstance(reader_done, threading.Event) and remaining > 0:
+                    reader_done.wait(timeout=remaining)
+                return
+            if remaining <= 0:
+                return
+            time.sleep(min(0.01, remaining))
 
     def _reusable_approved_command_session_id(self, *, command: str, cwd: Path) -> int | None:
         requested_command = str(command or "").strip()
@@ -4642,7 +4675,7 @@ class LocalToolExecutor:
             cwd=real_cwd,
         )
         if reusable_session_id is not None:
-            time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+            self._wait_for_command_session(reusable_session_id, yield_time_ms=yield_time_ms)
             payload = self._command_session_snapshot(
                 reusable_session_id,
                 max_output_chars=max_output_chars,
@@ -4955,6 +4988,7 @@ class LocalToolExecutor:
                 "execution_mode": execution_mode,
                 "tty": bool(tty),
                 "repeat_poll_allowed": bool(command_execution_approval_payload),
+                "reader_done": threading.Event(),
             }
             if command_execution_approval_payload:
                 self._command_sessions[session_id]["command_execution_approved"] = dict(command_execution_approval_payload)
@@ -4974,7 +5008,7 @@ class LocalToolExecutor:
                 error_kind="tool_cancelled",
                 error_detail={"message": "The owning Agent run was cancelled."},
             )
-        time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+        self._wait_for_command_session(session_id, yield_time_ms=yield_time_ms)
         payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)
         if command_execution_approval_payload:
             payload["command_execution_approved"] = dict(command_execution_approval_payload)
@@ -5018,7 +5052,7 @@ class LocalToolExecutor:
                     stdin.flush()
                 except Exception as exc:
                     return {"ok": False, "error": f"write_stdin failed: {exc}"}
-        time.sleep(max(0.0, min(float(yield_time_ms) / 1000.0, 10.0)))
+        self._wait_for_command_session(normalized_session_id, yield_time_ms=yield_time_ms)
         return self._command_session_snapshot(normalized_session_id, max_output_chars=max_output_chars)
 
     def update_plan(

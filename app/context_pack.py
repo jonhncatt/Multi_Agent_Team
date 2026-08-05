@@ -94,6 +94,12 @@ def _rebase_text_paths_for_model(
     for root in sorted(set(roots), key=len, reverse=True):
         if value == root:
             return "."
+        for separator in ("/", "\\"):
+            prefix = root + separator
+            if value.startswith(prefix):
+                # Whole path values become stable model-facing paths on every
+                # host. Embedded prose keeps its original punctuation below.
+                return value[len(prefix) :].replace("\\", "/")
         value = value.replace(root + "/", "")
         value = value.replace(root + "\\", "")
     return value

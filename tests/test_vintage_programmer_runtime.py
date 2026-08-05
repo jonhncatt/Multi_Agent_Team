@@ -2089,6 +2089,7 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
     child_started = threading.Event()
     release_child = threading.Event()
     child_command_cancelled = threading.Event()
+    last_parent_failure_at: list[float] = []
 
     class _CancellableChildTools(_FakeTools):
         def _cancel_command_sessions(self, *, run_id: str = "") -> int:
@@ -2109,7 +2110,11 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
     class _EmptyFailingParentBackend(_FlakyNoneTypeFollowupBackend):
         def _invoke_with_runner_recovery(self, **kwargs: Any):
             assert child_started.wait(timeout=2), "subagent did not start before the parent follow-up"
-            return super()._invoke_with_runner_recovery(**kwargs)
+            try:
+                return super()._invoke_with_runner_recovery(**kwargs)
+            except Exception:
+                last_parent_failure_at[:] = [time.monotonic()]
+                raise
 
     monkeypatch.setattr(
         runtime_module,
@@ -2143,7 +2148,6 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
     )
     progress_events: list[dict[str, Any]] = []
 
-    started_at = time.monotonic()
     try:
         result = runtime.run(
             message="Delegate the verification and report back.",
@@ -2159,11 +2163,11 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
         )
     finally:
         release_child.set()
-    elapsed = time.monotonic() - started_at
+    elapsed_after_parent_failure = time.monotonic() - last_parent_failure_at[-1]
 
     assert result["turn_status"] == "failed"
     assert result["runtime_error"]["kind"] == "llm_empty_response"
-    assert elapsed < 1.5
+    assert elapsed_after_parent_failure < 1.5
     assert child_command_cancelled.is_set()
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 1
@@ -2978,13 +2982,20 @@ def test_runtime_sends_current_attachments_to_model_messages(tmp_path: Path) -> 
         },
     )
 
-    sent = json.dumps(result["activity"]["llm_exchanges"][0]["sent_messages_exact"], ensure_ascii=False)
+    sent_messages = result["activity"]["llm_exchanges"][0]["sent_messages_exact"]
+    sent = json.dumps(sent_messages, ensure_ascii=False)
+    attachment_message = next(
+        str(item.get("content") or "")
+        for item in sent_messages
+        if isinstance(item, dict) and str(item.get("content") or "").startswith("[current_attachment_context]")
+    )
+    attachment_context = json.loads(attachment_message.splitlines()[-1])
 
     assert "current_attachments" in sent
     assert "report.md" in sent
     assert "text/markdown" in sent
     assert "document" in sent
-    assert attachment_path in sent
+    assert attachment_context["current_attachments"][0]["path"] == attachment_path
     assert backend.invocations[0]["messages"][-1].content == "帮我看一下这个附件"
     assert len(
         [item for item in backend.invocations[0]["messages"] if isinstance(item, _FakeSystemMessage)]

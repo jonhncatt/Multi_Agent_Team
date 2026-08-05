@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.config import load_config
@@ -174,7 +175,8 @@ def test_runtime_context_uses_supplied_runtime_boundary(tmp_path: Path) -> None:
         {"project_root": str(tmp_path), "cwd": str(tmp_path)},
     )
 
-    assert dump_model(boundary.to_model_view())["cwd"] in payload_text
+    runtime_context = json.loads(payload_text.splitlines()[-1])
+    assert runtime_context["cwd"] == dump_model(boundary.to_model_view())["cwd"]
     assert '"permission_profile"' in payload_text
     assert '"network_allowed":false' in payload_text
     assert '"allowed_roots"' not in payload_text

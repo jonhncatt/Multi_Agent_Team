@@ -541,6 +541,10 @@ def test_full_access_reads_writes_and_runs_outside_project_without_environment_f
     outside_file = outside_root / "note.txt"
     outside_file.write_text("before\n", encoding="utf-8")
     config = _config(tmp_path)
+    (outside_root / "show_cwd.py").write_text(
+        "from pathlib import Path\nprint(Path.cwd())\n",
+        encoding="utf-8",
+    )
     executor = LocalToolExecutor(config)
     executor.set_runtime_context(
         execution_mode="host",
@@ -572,7 +576,11 @@ def test_full_access_reads_writes_and_runs_outside_project_without_environment_f
             "*** End Patch\n"
         )
     )
-    command_result = executor.exec_command(cmd="pwd", cwd=str(outside_root), yield_time_ms=1000)
+    command_result = executor.exec_command(
+        cmd=f"{config.python_command} show_cwd.py",
+        cwd=str(outside_root),
+        yield_time_ms=1000,
+    )
 
     assert read_result["ok"] is True
     assert patch_result["ok"] is True

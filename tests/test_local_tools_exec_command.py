@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
 import threading
@@ -24,6 +25,10 @@ def _make_manager(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> LocalToolE
         cwd=str(tmp_path),
     )
     return manager
+
+
+def _portable_path_text(value: object) -> str:
+    return str(value or "").replace("\\", "/").casefold()
 
 
 def _runtime_boundary(
@@ -1246,6 +1251,7 @@ def test_exec_command_blocks_common_tainted_runners(
     assert blocked["approval_request"]["files"][0]["source_url"] == f"https://example.com/{filename}"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang executables are not a Windows command surface")
 def test_tainted_direct_executable_runs_once_after_approval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1271,6 +1277,7 @@ def test_tainted_direct_executable_runs_once_after_approval(
     assert approved["tainted_execution_approved"]["approved"] is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="source is a POSIX shell builtin")
 def test_tainted_source_command_runs_once_after_approval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1460,7 +1467,7 @@ def test_exec_command_compound_cd_and_python_runs_raw_command(
         "cd app",
         f"{manager.config.python_command} show_cwd.py",
     ]
-    assert str((tmp_path / "app").resolve()) in str(result["output"])
+    assert _portable_path_text((tmp_path / "app").resolve()) in _portable_path_text(result["output"])
 
 
 def test_exec_command_compound_pipe_with_tee_writes_inside_workspace(

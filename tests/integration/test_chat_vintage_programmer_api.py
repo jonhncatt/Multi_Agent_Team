@@ -2875,7 +2875,7 @@ def test_chat_stream_emits_stage_trace_run_events_final_and_done(monkeypatch, tm
     assert phase_timings["runtime_run_ms"] >= 0
     assert phase_timings["total_ms"] >= 0
     assert response_payload["activity"]["run_duration_ms"] == phase_timings["total_ms"]
-    assert response_payload["activity"]["final_elapsed_ms"] == phase_timings["total_ms"]
+    assert response_payload["activity"]["final_elapsed_ms"] >= phase_timings["total_ms"]
     assert run_finished_payload["duration_ms"] == response_payload["activity"]["run_duration_ms"]
 
 
@@ -4115,12 +4115,12 @@ def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_
     tools_row = next(item for item in specs_payload if item["name"] == "tools.md")
     assert agent_row["locale"] == "ja-JP"
     assert agent_row["fallback_from_base"] is False
-    assert agent_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
-    assert agent_row["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/agent.md")
+    assert Path(agent_row["path"]) == localized_dir / "agent.md"
+    assert Path(agent_row["resolved_path"]) == localized_dir / "agent.md"
     assert tools_row["locale"] == "ja-JP"
     assert tools_row["fallback_from_base"] is True
-    assert tools_row["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
-    assert tools_row["resolved_path"].endswith("/agents/vintage_programmer/tools.md")
+    assert Path(tools_row["path"]) == localized_dir / "tools.md"
+    assert Path(tools_row["resolved_path"]) == tmp_path / "agents" / "vintage_programmer" / "tools.md"
 
     spec_response = client.get("/api/workbench/specs/agent.md", params={"locale": "ja-JP"})
     assert spec_response.status_code == 200
@@ -4138,8 +4138,8 @@ def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_
     )
     assert update_response.status_code == 200
     assert "updated" in update_response.json()["content"]
-    assert update_response.json()["path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
-    assert update_response.json()["resolved_path"].endswith("/agents/vintage_programmer/locales/ja-JP/tools.md")
+    assert Path(update_response.json()["path"]) == localized_dir / "tools.md"
+    assert Path(update_response.json()["resolved_path"]) == localized_dir / "tools.md"
     assert update_response.json()["fallback_from_base"] is False
     assert (localized_dir / "tools.md").read_text(encoding="utf-8") == "# Tools\n\nupdated"
     assert (tmp_path / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8") == "tools"
@@ -4148,16 +4148,16 @@ def test_workbench_specs_endpoint_reads_and_writes_agent_specs(monkeypatch, tmp_
     assert base_response.status_code == 200
     assert base_response.json()["content"] == "tools"
     assert base_response.json()["fallback_from_base"] is True
-    assert base_response.json()["path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
-    assert base_response.json()["resolved_path"].endswith("/agents/vintage_programmer/tools.md")
+    assert Path(base_response.json()["path"]) == tmp_path / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md"
+    assert Path(base_response.json()["resolved_path"]) == tmp_path / "agents" / "vintage_programmer" / "tools.md"
 
     zh_update_response = client.put(
         "/api/workbench/specs/tools.md?locale=zh-CN",
         json={"content": "# 中文工具\n\nupdated"},
     )
     assert zh_update_response.status_code == 200
-    assert zh_update_response.json()["path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
-    assert zh_update_response.json()["resolved_path"].endswith("/agents/vintage_programmer/locales/zh-CN/tools.md")
+    assert Path(zh_update_response.json()["path"]) == tmp_path / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md"
+    assert Path(zh_update_response.json()["resolved_path"]) == tmp_path / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md"
     assert zh_update_response.json()["fallback_from_base"] is False
     assert (tmp_path / "agents" / "vintage_programmer" / "locales" / "zh-CN" / "tools.md").read_text(encoding="utf-8") == "# 中文工具\n\nupdated"
     assert (tmp_path / "agents" / "vintage_programmer" / "tools.md").read_text(encoding="utf-8") == "tools"

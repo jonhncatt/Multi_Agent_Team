@@ -151,6 +151,25 @@ def test_session_migration_extracts_active_files_without_copying_focus_objects(t
     assert "active_task_focus" not in encoded
 
 
+def test_session_migration_normalizes_windows_files_for_model_context() -> None:
+    migrated, changed = migrate_legacy_session_to_context_manager(
+        {
+            "project_root": r"C:\work\repo",
+            "cwd": r"C:\work\repo",
+            "history_turns": [{"role": "user", "text": "Inspect the repository."}],
+            "current_task_focus": {
+                "cwd": r"C:\work\repo",
+                "active_files": [r"C:\work\repo\app\main.py"],
+            },
+        }
+    )
+
+    manager = ContextManager.from_payload(migrated["context_manager"])
+
+    assert changed is True
+    assert manager.relevant_files == ["app/main.py"]
+
+
 def test_session_migration_normalizes_legacy_plan_items(tmp_path: Path) -> None:
     migrated, changed = migrate_legacy_session_to_context_manager(
         {
