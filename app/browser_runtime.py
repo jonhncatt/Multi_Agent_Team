@@ -19,6 +19,14 @@ class _BrowserSession:
     touched_at: float
 
 
+@dataclass
+class _PersistentBrowser:
+    playwright: Any
+    browser: Any
+    context: Any
+    initial_page: Any | None
+
+
 def _merge_nested_dict(target: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     for key, value in patch.items():
         if isinstance(value, dict):
@@ -66,6 +74,7 @@ class BrowserToolManager:
         self._chromium_sandbox = bool(chromium_sandbox)
         self._disable_password_manager = bool(disable_password_manager)
         self._sessions: dict[str, _BrowserSession] = {}
+        self._persistent_browser: _PersistentBrowser | None = None
         self._worker_lock = threading.Lock()
         self._worker_ready = threading.Event()
         self._worker_loop: asyncio.AbstractEventLoop | None = None
@@ -130,6 +139,13 @@ class BrowserToolManager:
         item = self._sessions.pop(session_id, None)
         if item is None:
             return
+        shared = self._persistent_browser
+        if self._mode == "chrome_profile" and shared is not None and item.context is shared.context:
+            try:
+                await _maybe_await(item.page.close())
+            except Exception:
+                pass
+            return
         for resource in (item.page, item.context, item.browser, item.playwright):
             if resource is None:
                 continue
@@ -162,6 +178,22 @@ class BrowserToolManager:
             except Exception:
                 return False
 
+        return True
+
+    @staticmethod
+    def _persistent_browser_alive(item: _PersistentBrowser) -> bool:
+        browser = item.browser
+        if browser is not None:
+            try:
+                is_connected = getattr(browser, "is_connected", None)
+                if callable(is_connected) and not bool(is_connected()):
+                    return False
+            except Exception:
+                return False
+        try:
+            list(getattr(item.context, "pages", []) or [])
+        except Exception:
+            return False
         return True
 
     def _context_options(self) -> dict[str, Any]:
@@ -227,6 +259,75 @@ class BrowserToolManager:
         page = await context.new_page()
         return browser, context, page
 
+    async def _close_persistent_browser(self) -> None:
+        shared = self._persistent_browser
+        self._persistent_browser = None
+        if shared is None:
+            return
+        self._sessions = {
+            session_id: item
+            for session_id, item in self._sessions.items()
+            if item.context is not shared.context
+        }
+        for resource in (shared.context, shared.browser, shared.playwright):
+            if resource is None:
+                continue
+            for method_name in ("close", "stop"):
+                method = getattr(resource, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    await _maybe_await(method())
+                    break
+                except Exception:
+                    continue
+
+    async def _ensure_persistent_browser(self) -> _PersistentBrowser:
+        existing = self._persistent_browser
+        if existing is not None:
+            if self._persistent_browser_alive(existing):
+                return existing
+            await self._close_persistent_browser()
+
+        async_playwright, _ = self._import_playwright()
+        playwright = await async_playwright().start()
+        try:
+            browser, context, page = await self._launch_playwright_context(playwright)
+        except Exception:
+            try:
+                await _maybe_await(playwright.stop())
+            except Exception:
+                pass
+            raise
+        created = _PersistentBrowser(
+            playwright=playwright,
+            browser=browser,
+            context=context,
+            initial_page=page,
+        )
+        self._persistent_browser = created
+        return created
+
+    async def _ensure_chrome_profile_session(self, session_id: str) -> _BrowserSession:
+        shared = await self._ensure_persistent_browser()
+        page = shared.initial_page
+        shared.initial_page = None
+        try:
+            page_closed = page is None or bool(page.is_closed())
+        except Exception:
+            page_closed = True
+        if page_closed:
+            page = await shared.context.new_page()
+        created = _BrowserSession(
+            playwright=shared.playwright,
+            browser=shared.browser,
+            context=shared.context,
+            page=page,
+            touched_at=time.time(),
+        )
+        self._sessions[session_id] = created
+        return created
+
     async def _ensure_session(self, session_id: str) -> _BrowserSession:
         sid = str(session_id or "__anon__").strip() or "__anon__"
         await self._cleanup_stale()
@@ -236,6 +337,9 @@ class BrowserToolManager:
                 existing.touched_at = time.time()
                 return existing
             await self._close_session(sid)
+
+        if self._mode == "chrome_profile":
+            return await self._ensure_chrome_profile_session(sid)
 
         async_playwright, _ = self._import_playwright()
         playwright = await async_playwright().start()
@@ -262,15 +366,36 @@ class BrowserToolManager:
 
     async def _open_impl(self, *, session_id: str, url: str, timeout_ms: int = 20000) -> dict[str, Any]:
         _, PlaywrightTimeoutError = self._import_playwright()
-        session = await self._ensure_session(session_id)
+        session: _BrowserSession | None = None
         try:
+            session = await self._ensure_session(session_id)
             await session.page.goto(str(url), wait_until="domcontentloaded", timeout=max(1000, int(timeout_ms)))
             session.touched_at = time.time()
             return await self._snapshot_impl(session_id=session_id, max_chars=6000)
         except PlaywrightTimeoutError as exc:
+            await self._discard_blank_session(session_id=session_id, session=session)
             return {"ok": False, "error": f"browser_open timed out: {exc}"}
         except Exception as exc:
+            await self._discard_blank_session(session_id=session_id, session=session)
             return {"ok": False, "error": f"browser_open failed: {exc}"}
+
+    async def _discard_blank_session(
+        self,
+        *,
+        session_id: str,
+        session: _BrowserSession | None,
+    ) -> None:
+        if session is None:
+            return
+        try:
+            current_url = str(session.page.url or "").strip().lower()
+        except Exception:
+            current_url = ""
+        if current_url not in {"", "about:blank"}:
+            return
+        sid = str(session_id or "__anon__").strip() or "__anon__"
+        if self._sessions.get(sid) is session:
+            await self._close_session(sid)
 
     def click(self, *, session_id: str, selector: str, timeout_ms: int = 12000) -> dict[str, Any]:
         return self._run_async(lambda: self._click_impl(session_id=session_id, selector=selector, timeout_ms=timeout_ms))

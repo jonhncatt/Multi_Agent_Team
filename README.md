@@ -85,7 +85,7 @@ VP_BROWSER_CHROMIUM_SANDBOX=true
 VP_BROWSER_DISABLE_PASSWORD_MANAGER=true
 ```
 
-首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。`app/data/browser_profile` 是 VP 专用目录；不要把个人主 Chrome profile 直接作为 `VP_BROWSER_USER_DATA_DIR`。`VP_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VP profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VP_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
+首次打开 Redmine、内部 wiki 等需要登录的站点时，Chrome 会以可见窗口打开。用户自己输入账号密码完成登录；后续 agent 可以在这个已登录 profile 里点击页面、读取当前页面文本和截图。VP 后台只启动一个使用该 profile 的 persistent Chrome context，每个 Thread 最多复用其中一个独立 tab；这样不同 Thread 共享登录态，但不会互相覆盖页面或争抢 Chrome profile 锁。`app/data/browser_profile` 是 VP 专用目录；不要把个人主 Chrome profile 直接作为 `VP_BROWSER_USER_DATA_DIR`。`VP_BROWSER_DISABLE_PASSWORD_MANAGER=true` 会禁止 Chrome 在 VP profile 里提示保存密码，但不会阻止站点 cookie/session 保留登录态。`VP_BROWSER_CHROMIUM_SANDBOX=true` 会避免 Chrome 显示 `--no-sandbox` 安全警告；如果某台机器的策略导致 Chrome 无法启动，再临时改成 `false` 排查。
 
 ## 这是什么
 

@@ -55,6 +55,8 @@ class _FakePage:
         self.scroll_events: list[tuple[int, int]] = []
         self.scroll_into_view_calls: list[tuple[str, int]] = []
         self.wait_calls: list[int] = []
+        self.goto_calls: list[str] = []
+        self.goto_error: Exception | None = None
 
     def is_closed(self) -> bool:
         return self.closed
@@ -65,6 +67,12 @@ class _FakePage:
     async def title(self) -> str:
         return "Example page"
 
+    async def goto(self, url: str, **kwargs: object) -> None:
+        self.goto_calls.append(url)
+        if self.goto_error is not None:
+            raise self.goto_error
+        self.url = url
+
     def locator(self, selector: str) -> _FakeLocator:
         return _FakeLocator(self, selector)
 
@@ -72,8 +80,20 @@ class _FakePage:
         self.wait_calls.append(timeout)
 
 
-class _FakeContext:
+class _FakeBrowser:
     def __init__(self) -> None:
+        self.connected = True
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def close(self) -> None:
+        self.connected = False
+
+
+class _FakeContext:
+    def __init__(self, browser: _FakeBrowser) -> None:
+        self.browser = browser
         self.pages = []
 
     async def new_page(self) -> _FakePage:
@@ -82,7 +102,9 @@ class _FakeContext:
         return page
 
     async def close(self) -> None:
-        pass
+        self.browser.connected = False
+        for page in self.pages:
+            page.closed = True
 
 
 class _FakeChromium:
@@ -92,7 +114,7 @@ class _FakeChromium:
 
     async def launch_persistent_context(self, user_data_dir: str, **kwargs: object) -> _FakeContext:
         self.persistent_calls.append({"user_data_dir": user_data_dir, **kwargs})
-        context = _FakeContext()
+        context = _FakeContext(_FakeBrowser())
         self.contexts.append(context)
         return context
 
@@ -186,11 +208,93 @@ def test_closed_browser_page_reopens_with_same_profile(tmp_path: Path) -> None:
     second = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
 
     assert second is not first
-    assert len(fake_playwright.chromium.persistent_calls) == 2
+    assert second.page is not first.page
+    assert len(fake_playwright.chromium.persistent_calls) == 1
     assert {
         str(item["user_data_dir"])
         for item in fake_playwright.chromium.persistent_calls
     } == {str(profile_dir.resolve())}
+
+
+def test_chrome_profile_uses_one_context_and_one_tab_per_thread(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        user_data_dir=tmp_path / "profile",
+    )
+    manager._import_playwright = lambda: (_FakeAsyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+
+    session_a = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+    session_b = manager._run_async(lambda: manager._ensure_session("session-b"))  # noqa: SLF001
+    session_a_again = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+
+    assert len(fake_playwright.chromium.persistent_calls) == 1
+    assert len(fake_playwright.chromium.contexts) == 1
+    assert len(fake_playwright.chromium.contexts[0].pages) == 2
+    assert session_a_again is session_a
+    assert session_a.page is not session_b.page
+    assert session_a.context is session_b.context
+
+
+def test_browser_open_keeps_thread_navigation_in_separate_tabs(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        user_data_dir=tmp_path / "profile",
+    )
+    manager._import_playwright = lambda: (_FakeAsyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+
+    first_a = manager.open(session_id="session-a", url="https://example.test/a")
+    first_b = manager.open(session_id="session-b", url="https://example.test/b")
+    second_a = manager.open(session_id="session-a", url="https://example.test/a-later")
+
+    assert first_a["ok"] is True
+    assert first_b["ok"] is True
+    assert second_a["ok"] is True
+    assert len(fake_playwright.chromium.persistent_calls) == 1
+    assert len(fake_playwright.chromium.contexts[0].pages) == 2
+    assert manager._sessions["session-a"].page.url == "https://example.test/a-later"  # noqa: SLF001
+    assert manager._sessions["session-b"].page.url == "https://example.test/b"  # noqa: SLF001
+
+
+def test_closed_persistent_browser_restarts_once_and_invalidates_all_thread_tabs(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        user_data_dir=tmp_path / "profile",
+    )
+    manager._import_playwright = lambda: (_FakeAsyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+
+    first_a = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+    manager._run_async(lambda: manager._ensure_session("session-b"))  # noqa: SLF001
+    manager._run_async(first_a.context.close)
+    second_a = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+
+    assert len(fake_playwright.chromium.persistent_calls) == 2
+    assert second_a.context is not first_a.context
+    assert set(manager._sessions) == {"session-a"}  # noqa: SLF001
+
+
+def test_failed_initial_navigation_discards_blank_thread_tab(tmp_path: Path) -> None:
+    fake_playwright = _FakePlaywright()
+    manager = BrowserToolManager(
+        artifacts_dir=tmp_path / "artifacts",
+        mode="chrome_profile",
+        user_data_dir=tmp_path / "profile",
+    )
+    manager._import_playwright = lambda: (_FakeAsyncPlaywright(fake_playwright), TimeoutError)  # type: ignore[method-assign]
+    session = manager._run_async(lambda: manager._ensure_session("session-a"))  # noqa: SLF001
+    session.page.url = "about:blank"
+    session.page.goto_error = RuntimeError("navigation failed")
+
+    result = manager.open(session_id="session-a", url="https://example.test/failure")
+
+    assert result == {"ok": False, "error": "browser_open failed: navigation failed"}
+    assert session.page.closed is True
+    assert "session-a" not in manager._sessions  # noqa: SLF001
 
 
 def test_browser_scroll_uses_mouse_wheel_and_returns_snapshot(tmp_path: Path) -> None:
