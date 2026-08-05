@@ -45,7 +45,9 @@ def test_large_tool_result_is_token_bounded_and_resumable_without_rerun(monkeypa
     result: dict[str, Any] = {
         "ok": True,
         "summary": "large test output",
-        "output": "\n".join(f"line-{index}: {'x' * 80}" for index in range(500)),
+        # Large enough to require several continuation reads without making
+        # Windows security scanners repeatedly inspect dozens of sidecar reads.
+        "output": "\n".join(f"line-{index}: {'x' * 80}" for index in range(100)),
     }
 
     message = runtime._tool_message_for_result(
@@ -63,7 +65,7 @@ def test_large_tool_result_is_token_bounded_and_resumable_without_rerun(monkeypa
 
     chunks: list[str] = []
     cursor = 0
-    while True:
+    for _ in range(20):
         continuation = tools.read_tool_result(result_ref=result_ref, cursor=cursor, max_tokens=512)
         assert continuation["ok"] is True
         continuation_message = runtime._tool_message_for_result(
@@ -77,7 +79,10 @@ def test_large_tool_result_is_token_bounded_and_resumable_without_rerun(monkeypa
         if continuation["complete"]:
             break
         cursor = int(continuation["next_cursor"])
+    else:
+        raise AssertionError("tool result continuation did not complete within 20 reads")
 
+    assert len(chunks) > 1
     assert "".join(chunks) == json.dumps(result, ensure_ascii=False)
 
 
