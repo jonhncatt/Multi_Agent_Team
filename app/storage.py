@@ -775,32 +775,42 @@ class SessionStore:
                         for item in trace_steps
                         if str(item.get("type") or "").startswith("tool_")
                     ]
-                    projected_tool_items = [
-                        {
-                            **step,
-                            **(
-                                dict(step.get("audit") or {})
-                                if isinstance(step.get("audit"), dict)
-                                else {}
-                            ),
-                            "type": "toolCall",
-                            "name": str(step.get("tool_name") or ""),
-                            "raw_tool_call": {
-                                "id": str(step.get("tool_call_id") or ""),
+                    projected_tool_items = []
+                    for step_index, step in enumerate(tool_steps, start=1):
+                        tool_call_id = str(step.get("tool_call_id") or "")
+                        sequence = max(0, int(step.get("sequence") or step_index))
+                        transaction_id = (
+                            f"{str(artifact.get('turn_id') or payload.get('id') or 'turn')}:"
+                            f"tool:{sequence}:{tool_call_id or str(step.get('item_id') or step_index)}"
+                        )
+                        projected_tool_items.append(
+                            {
+                                **step,
+                                **(
+                                    dict(step.get("audit") or {})
+                                    if isinstance(step.get("audit"), dict)
+                                    else {}
+                                ),
+                                "id": transaction_id,
+                                "transaction_id": transaction_id,
+                                "tool_call_id": tool_call_id,
+                                "type": "toolCall",
                                 "name": str(step.get("tool_name") or ""),
-                            },
-                            "validation_result": (
-                                dict(
-                                    (step.get("audit") or {}).get("validation_result")
-                                    or step.get("validation")
-                                    or {}
+                                "raw_tool_call": {
+                                    "id": str(step.get("tool_call_id") or ""),
+                                    "name": str(step.get("tool_name") or ""),
+                                },
+                                "validation_result": (
+                                    dict(
+                                        (step.get("audit") or {}).get("validation_result")
+                                        or step.get("validation")
+                                        or {}
+                                    )
+                                    if isinstance(step.get("audit"), dict)
+                                    else dict(step.get("validation") or {})
                                 )
-                                if isinstance(step.get("audit"), dict)
-                                else dict(step.get("validation") or {})
-                            ),
-                        }
-                        for step in tool_steps
-                    ]
+                            }
+                        )
                     activity_view = {
                         "trace_ref": str(artifact.get("trace_ref") or trace_ref or ""),
                         "status": str(artifact.get("status") or "completed"),

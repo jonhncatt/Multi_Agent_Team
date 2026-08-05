@@ -736,6 +736,39 @@ def test_tool_execution_ui_coalesces_one_call_into_one_indented_transaction() ->
     assert "padding-left: 16px" in styles
 
 
+def test_tool_execution_audit_keeps_all_calls_and_authoritative_order() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    merge_block = script.split("function mergeActivityToolItems", 1)[1].split(
+        "function reconcileAuthoritativeActivityToolItems", 1
+    )[0]
+    reconcile_block = script.split("function reconcileAuthoritativeActivityToolItems", 1)[1].split(
+        "function normalizeLiveRunItem", 1
+    )[0]
+    grouping_block = script.split("function buildToolProgressGroups", 1)[1].split(
+        "function latestTraceTimestampByTypes", 1
+    )[0]
+    identity_block = script.split("function toolCallIdentityFromSource", 1)[1].split(
+        "function toolCallTargetFromSource", 1
+    )[0]
+    tool_details = script.split("const renderActivityToolDetails", 1)[1].split(
+        "const renderActivityDebugDetails", 1
+    )[0]
+
+    assert ".slice(-24)" not in merge_block
+    assert "return authoritative.map" in reconcile_block
+    assert grouping_block.index("item.tool_items.forEach") < grouping_block.index("item.trace_events.forEach")
+    assert "representedProtocolCallIds.has(protocolCallId)" in grouping_block
+    assert identity_block.index("item.transaction_id") < identity_block.index("item.tool_call_id")
+    assert "tool_call_id_collision" in grouping_block
+    assert "toolItem.tool_call_id || toolItem.id" in tool_details
+    assert 't("activity.debug.tool_batch"' in tool_details
+    assert 't("activity.debug.tool_call_id_collision"' in tool_details
+    # The low-cost Runtime recent list and the compact three-card preview remain bounded.
+    assert ".slice(0, RECENT_TOOL_TIMELINE_LIMIT)" in script
+    assert "const MAIN_LIVE_CARD_LIMIT = 3;" in script
+    assert "const RECENT_TOOL_TIMELINE_LIMIT = 24;" in script
+
+
 def test_early_activity_copy_and_visibility_are_updated() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
@@ -2254,7 +2287,9 @@ def test_main_activity_projection_bounds_main_card_trace_work() -> None:
 
     assert "const MAIN_CARD_TRACE_EVENT_LIMIT = 50;" in script
     assert "item.trace_events.length > MAIN_CARD_TRACE_EVENT_LIMIT" in script
-    assert "trace_events: item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT)" in script
+    assert "item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT)" in script
+    assert "item.tool_items.slice(-RECENT_TOOL_TIMELINE_LIMIT)" in script
+    assert "const expanded = Boolean(options.expanded);" in script
     assert "trace_events: item.trace_events," in script
 
 

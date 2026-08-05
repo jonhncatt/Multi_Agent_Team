@@ -85,6 +85,27 @@ REQUIRED_RUNTIME_ACTIVITY_KEYS = (
 )
 
 
+def test_stream_transaction_id_is_unique_when_provider_reuses_call_id() -> None:
+    first = VintageProgrammerRuntime._typed_tool_item_id(
+        run_id="run-1",
+        raw_tool_call={"id": "duplicate-call"},
+        tool_name="read_file",
+        round_idx=1,
+        call_idx=1,
+    )
+    second = VintageProgrammerRuntime._typed_tool_item_id(
+        run_id="run-1",
+        raw_tool_call={"id": "duplicate-call"},
+        tool_name="read_file",
+        round_idx=2,
+        call_idx=1,
+    )
+
+    assert first != second
+    assert first.endswith(":duplicate-call")
+    assert second.endswith(":duplicate-call")
+
+
 class _FakeMessage:
     def __init__(self, *, content: str = "", tool_calls: list[dict[str, Any]] | None = None, **kwargs: Any) -> None:
         self.content = content

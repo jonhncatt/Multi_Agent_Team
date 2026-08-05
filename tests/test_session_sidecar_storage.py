@@ -326,6 +326,74 @@ def test_turn_trace_reload_is_idempotent(tmp_path: Path) -> None:
     assert dict(_assistant_item(raw_session).get("trace") or {})["status"] == "completed"
 
 
+def test_activity_view_returns_all_33_tool_calls_in_trace_sequence(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(_project(tmp_path))
+    logical_turn_id = "turn-many-tools"
+    store.append_turn(session, role="user", text="inspect everything", logical_turn_id=logical_turn_id)
+    tool_calls = [
+        {"id": f"call-{index:02d}", "name": "read_file", "args": {"path": f"file-{index:02d}.md"}}
+        for index in range(33)
+    ]
+    transcript_items: list[dict[str, object]] = [
+        {
+            "id": "assistant-many-tools",
+            "turn_id": logical_turn_id,
+            "role": "assistant",
+            "content": "",
+            "tool_calls": tool_calls,
+        }
+    ]
+    transcript_items.extend(
+        {
+            "id": f"tool-result-{index:02d}",
+            "turn_id": logical_turn_id,
+            "role": "tool",
+            "tool_call_id": f"call-{index:02d}",
+            "name": "read_file",
+            "content": '{"ok": true}',
+        }
+        for index in range(33)
+    )
+    store.append_thread_items(session, transcript_items)
+    assistant_turn = store.append_turn(
+        session,
+        role="assistant",
+        text="done",
+        logical_turn_id=logical_turn_id,
+        activity={"run_id": "run-many-tools", "status": "completed"},
+    )
+    tool_events = [
+        {
+            "name": "read_file",
+            "status": "ok",
+            "raw_tool_call": {"id": f"call-{index:02d}", "name": "read_file"},
+            "normalized_arguments": {"path": f"file-{index:02d}.md"},
+            "result_preview": {"ok": True},
+        }
+        for index in range(33)
+    ]
+    store.persist_turn_artifact(
+        session,
+        turn_id=str(assistant_turn["id"]),
+        run_id="run-many-tools",
+        logical_turn_id=logical_turn_id,
+        activity=assistant_turn["activity"],
+        tool_events=tool_events,
+    )
+    store.save(session)
+
+    projected_turn = _projected_assistant_turn(store, str(session["id"]))
+    expanded = store.expand_turn_for_view(str(session["id"]), projected_turn, view="activity")
+    items = list(expanded["activity"]["tool_items"])
+
+    assert expanded["activity"]["tool_count"] == 33
+    assert len(items) == 33
+    assert [item["tool_call_id"] for item in items] == [f"call-{index:02d}" for index in range(33)]
+    assert len({item["transaction_id"] for item in items}) == 33
+    assert all(item["requested_by_item_id"] == "assistant-many-tools" for item in items)
+
+
 def test_session_list_reads_metadata_without_parsing_session_file(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))

@@ -51,6 +51,7 @@ const TEMP_THREAD_PREFIX = "temp-thread-";
 const MAIN_LIVE_CARD_LIMIT = 3;
 const COMPACT_PLAN_ITEM_LIMIT = 6;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
+const RECENT_TOOL_TIMELINE_LIMIT = 24;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
 const STREAM_UI_FLUSH_INTERVAL_MS = 100;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
@@ -922,15 +923,22 @@ function mergeActivityToolItems(previousItems, nextItems) {
     if (!map.has(item.id)) order.push(item.id);
     map.set(item.id, { ...(map.get(item.id) || {}), ...item });
   });
-  return order.map((id) => map.get(id)).filter(Boolean).slice(-24);
+  // Message activity is the durable per-Turn audit view.  Do not apply the
+  // Runtime drawer's recent-item limit here: a completed Turn may legitimately
+  // contain dozens of calls and the expanded Tool Execution menu must retain
+  // every transaction.
+  return order.map((id) => map.get(id)).filter(Boolean);
 }
 
 function reconcileAuthoritativeActivityToolItems(previousItems, nextItems) {
   const authoritative = normalizeActivityToolItems(nextItems);
   if (!authoritative.length) return [];
-  const authoritativeIds = new Set(authoritative.map((item) => item.id));
-  return mergeActivityToolItems(previousItems, authoritative)
-    .filter((item) => authoritativeIds.has(item.id));
+  const previousById = new Map(
+    normalizeActivityToolItems(previousItems).map((item) => [item.id, item]),
+  );
+  // The Turn Trace order is authoritative.  Reusing the optimistic/live order
+  // here made old calls jump around when historical details finished loading.
+  return authoritative.map((item) => ({ ...(previousById.get(item.id) || {}), ...item }));
 }
 
 function normalizeLiveRunItem(raw) {
@@ -1781,7 +1789,7 @@ function skillTargetFromPath(value) {
   return match && match[1] ? `Skill · ${match[1]}` : "";
 }
 
-function toolCallIdentityFromSource(source, fallback = "") {
+function protocolToolCallIdFromSource(source) {
   const item = source && typeof source === "object" ? source : {};
   const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
   const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
@@ -1791,7 +1799,27 @@ function toolCallIdentityFromSource(source, fallback = "") {
     validationResult.call_id,
     validationResult.tool_call_id,
     rawToolCall.id,
+  ];
+  for (const candidate of candidates) {
+    const resolved = String(candidate || "").trim();
+    if (resolved && resolved !== "***") return resolved;
+  }
+  return "";
+}
+
+function toolCallIdentityFromSource(source, fallback = "") {
+  const item = source && typeof source === "object" ? source : {};
+  const rawToolCall = item.raw_tool_call && typeof item.raw_tool_call === "object" ? item.raw_tool_call : {};
+  const validationResult = item.validation_result && typeof item.validation_result === "object" ? item.validation_result : {};
+  const candidates = [
+    item.transaction_id,
+    item.transactionId,
     item.id,
+    item.tool_call_id,
+    item.call_id,
+    validationResult.call_id,
+    validationResult.tool_call_id,
+    rawToolCall.id,
     fallback,
   ];
   for (const candidate of candidates) {
@@ -1966,13 +1994,18 @@ function buildPlanChecklistItems(plan) {
 function buildToolProgressGroups(activity) {
   const item = normalizeMessageActivity(activity || {});
   const groups = new Map();
+  const representedProtocolCallIds = new Set();
   const ensureGroup = (source, fallbackId, fallbackName, orderIndex) => {
     const sourceItem = source && typeof source === "object" ? source : {};
     const id = toolCallIdentityFromSource(sourceItem, fallbackId || fallbackName || `tool-${orderIndex}`);
+    const protocolCallId = protocolToolCallIdFromSource(sourceItem);
     if (!groups.has(id)) {
       groups.set(id, {
         id,
         order_index: orderIndex,
+        sequence: Math.max(0, Number(sourceItem.sequence || 0) || 0),
+        tool_round: Math.max(0, Number(sourceItem.tool_round || sourceItem.toolRound || 0) || 0),
+        tool_index: Math.max(0, Number(sourceItem.tool_index || sourceItem.toolIndex || 0) || 0),
         tool_name: String(
           sourceItem.tool_name
           || sourceItem.tool
@@ -1996,61 +2029,39 @@ function buildToolProgressGroups(activity) {
         detail: "",
         duration_ms: Math.max(0, Number(sourceItem.duration_ms || 0) || 0),
         requested_by_item_id: String(sourceItem.requested_by_item_id || "").trim(),
-        tool_call_id: String(sourceItem.tool_call_id || id || "").trim(),
+        tool_call_id: protocolCallId,
         item_id: String(sourceItem.item_id || "").trim(),
         error_kind: String(sourceItem.error_kind || "").trim(),
         retry_count: Math.max(0, Number(sourceItem.retry_count || 0) || 0),
         recovery_result: String(sourceItem.recovery_result || "").trim(),
+        tool_call_id_collision: Boolean(sourceItem.tool_call_id_collision),
+        tool_call_id_occurrence: Math.max(0, Number(sourceItem.tool_call_id_occurrence || 0) || 0),
+        tool_call_id_collision_count: Math.max(0, Number(sourceItem.tool_call_id_collision_count || 0) || 0),
       });
     }
     return groups.get(id);
   };
 
-  item.trace_events.forEach((trace, index) => {
-    const type = String((trace && trace.type) || "").trim();
-    if (!type.startsWith("tool.")) return;
-    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
-    const group = ensureGroup(payload, `trace-${index}`, String(payload.tool_name || "").trim(), index);
-    group.trace_types.push(type);
-    if (!group.raw_tool_call || !Object.keys(group.raw_tool_call).length) {
-      group.raw_tool_call = payload.raw_tool_call && typeof payload.raw_tool_call === "object" ? payload.raw_tool_call : group.raw_tool_call;
-    }
-    if (!group.raw_arguments && Object.prototype.hasOwnProperty.call(payload, "raw_arguments")) {
-      group.raw_arguments = payload.raw_arguments;
-    }
-    if (!Object.keys(group.normalized_arguments).length && payload.normalized_arguments && typeof payload.normalized_arguments === "object") {
-      group.normalized_arguments = payload.normalized_arguments;
-    }
-    if (!Object.keys(group.validation_result).length && payload.validation_result && typeof payload.validation_result === "object") {
-      group.validation_result = payload.validation_result;
-    }
-    if (!Object.keys(group.schema_validation).length && payload.schema_validation && typeof payload.schema_validation === "object") {
-      group.schema_validation = payload.schema_validation;
-    }
-    if (!group.arguments_preview) group.arguments_preview = String(payload.arguments_preview || "").trim();
-    if (!hasDisplayValue(group.result_preview) && Object.prototype.hasOwnProperty.call(payload, "result_preview")) {
-      group.result_preview = payload.result_preview;
-    }
-    if (!group.summary) group.summary = String(payload.summary || trace.detail || "").trim();
-    if (!group.detail) group.detail = String(trace.detail || "").trim();
-    if (!group.duration_ms) group.duration_ms = Math.max(0, Number(trace.duration_ms || payload.duration_ms || 0) || 0);
-    if (type === "tool.failed") {
-      group.status = "failed";
-    } else if (type === "tool.finished" && group.status !== "failed") {
-      group.status = "completed";
-    } else if (type === "action.blocked") {
-      if (payload.validation_result && payload.validation_result.allowed === false) {
-        group.status = "blocked";
-      } else if (group.status !== "completed" && group.status !== "failed") {
-        group.status = "running";
-      }
-    } else if (group.status === "pending") {
-      group.status = "running";
-    }
+  const protocolCallCounts = new Map();
+  item.tool_items.forEach((toolItem) => {
+    const callId = protocolToolCallIdFromSource(toolItem);
+    if (callId) protocolCallCounts.set(callId, (protocolCallCounts.get(callId) || 0) + 1);
   });
-
+  const protocolCallOccurrences = new Map();
   item.tool_items.forEach((toolItem, index) => {
-    const group = ensureGroup(toolItem, `item-${index}`, String(toolItem.tool || toolItem.name || "").trim(), item.trace_events.length + index);
+    const group = ensureGroup(toolItem, `item-${index}`, String(toolItem.tool || toolItem.name || "").trim(), index);
+    const protocolCallId = protocolToolCallIdFromSource(toolItem);
+    if (protocolCallId) {
+      representedProtocolCallIds.add(protocolCallId);
+      const occurrence = (protocolCallOccurrences.get(protocolCallId) || 0) + 1;
+      protocolCallOccurrences.set(protocolCallId, occurrence);
+      const collisionCount = protocolCallCounts.get(protocolCallId) || 0;
+      if (collisionCount > 1) {
+        group.tool_call_id_collision = true;
+        group.tool_call_id_occurrence = group.tool_call_id_occurrence || occurrence;
+        group.tool_call_id_collision_count = group.tool_call_id_collision_count || collisionCount;
+      }
+    }
     if (!group.tool_name) group.tool_name = String(toolItem.tool || toolItem.name || "").trim();
     if (!Object.keys(group.raw_tool_call).length) group.raw_tool_call = toolItem.raw_tool_call || {};
     if (!group.raw_arguments && Object.prototype.hasOwnProperty.call(toolItem, "raw_arguments")) {
@@ -2066,7 +2077,7 @@ function buildToolProgressGroups(activity) {
     if (!group.summary) group.summary = String(toolItem.summary || "").trim();
     if (!group.duration_ms) group.duration_ms = Math.max(0, Number(toolItem.duration_ms || 0) || 0);
     if (!group.requested_by_item_id) group.requested_by_item_id = String(toolItem.requested_by_item_id || "").trim();
-    if (!group.tool_call_id) group.tool_call_id = String(toolItem.tool_call_id || group.id || "").trim();
+    if (!group.tool_call_id) group.tool_call_id = protocolCallId;
     if (!group.item_id) group.item_id = String(toolItem.item_id || "").trim();
     if (!group.error_kind) group.error_kind = String(toolItem.error_kind || "").trim();
     if (!group.retry_count) group.retry_count = Math.max(0, Number(toolItem.retry_count || 0) || 0);
@@ -2079,6 +2090,47 @@ function buildToolProgressGroups(activity) {
     } else if (["running", "waiting_tool", "validating"].includes(toolStatus) && group.status === "pending") {
       group.status = "running";
     }
+  });
+
+  // Completed and started stream items are the stable transaction source. Use
+  // trace events only as a fallback for legacy or very-early live calls. This
+  // prevents the rolling 50-event projection from moving an old transaction
+  // behind newer calls when its first trace event ages out.
+  item.trace_events.forEach((trace, index) => {
+    const type = String((trace && trace.type) || "").trim();
+    if (!type.startsWith("tool.")) return;
+    const payload = trace && trace.payload && typeof trace.payload === "object" ? trace.payload : {};
+    const protocolCallId = protocolToolCallIdFromSource(payload);
+    if (protocolCallId && representedProtocolCallIds.has(protocolCallId)) return;
+    const group = ensureGroup(
+      payload,
+      `trace-${index}`,
+      String(payload.tool_name || "").trim(),
+      item.tool_items.length + index,
+    );
+    group.trace_types.push(type);
+    if (!group.raw_tool_call || !Object.keys(group.raw_tool_call).length) {
+      group.raw_tool_call = payload.raw_tool_call && typeof payload.raw_tool_call === "object" ? payload.raw_tool_call : group.raw_tool_call;
+    }
+    if (!group.raw_arguments && Object.prototype.hasOwnProperty.call(payload, "raw_arguments")) group.raw_arguments = payload.raw_arguments;
+    if (!Object.keys(group.normalized_arguments).length && payload.normalized_arguments && typeof payload.normalized_arguments === "object") {
+      group.normalized_arguments = payload.normalized_arguments;
+    }
+    if (!Object.keys(group.validation_result).length && payload.validation_result && typeof payload.validation_result === "object") {
+      group.validation_result = payload.validation_result;
+    }
+    if (!Object.keys(group.schema_validation).length && payload.schema_validation && typeof payload.schema_validation === "object") {
+      group.schema_validation = payload.schema_validation;
+    }
+    if (!group.arguments_preview) group.arguments_preview = String(payload.arguments_preview || "").trim();
+    if (!hasDisplayValue(group.result_preview) && Object.prototype.hasOwnProperty.call(payload, "result_preview")) group.result_preview = payload.result_preview;
+    if (!group.summary) group.summary = String(payload.summary || trace.detail || "").trim();
+    if (!group.detail) group.detail = String(trace.detail || "").trim();
+    if (!group.duration_ms) group.duration_ms = Math.max(0, Number(trace.duration_ms || payload.duration_ms || 0) || 0);
+    if (["tool.failed", "tool.rejected"].includes(type)) group.status = "failed";
+    else if (type === "tool.finished" && group.status !== "failed") group.status = "completed";
+    else if (["tool.skipped", "tool.cancelled"].includes(type)) group.status = "cancelled";
+    else if (group.status === "pending") group.status = "running";
   });
 
   return Array.from(groups.values()).sort((left, right) => left.order_index - right.order_index);
@@ -2616,11 +2668,20 @@ function buildMainCompletionSummary(activity, liveCards = [], toolEvents = [], l
   };
 }
 
-function buildActivityProjection(activity, locale, nowMs = Date.now()) {
+function buildActivityProjection(activity, locale, nowMs = Date.now(), options = {}) {
   const item = normalizeMessageActivity(activity || {});
-  const projectionItem = item.trace_events.length > MAIN_CARD_TRACE_EVENT_LIMIT
-    ? normalizeMessageActivity({ ...item, trace_events: item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT) })
-    : item;
+  const expanded = Boolean(options.expanded);
+  const projectedTraceEvents = item.trace_events.length > MAIN_CARD_TRACE_EVENT_LIMIT
+    ? item.trace_events.slice(-MAIN_CARD_TRACE_EVENT_LIMIT)
+    : item.trace_events;
+  const projectedToolItems = expanded
+    ? item.tool_items
+    : item.tool_items.slice(-RECENT_TOOL_TIMELINE_LIMIT);
+  const projectionItem = normalizeMessageActivity({
+    ...item,
+    trace_events: projectedTraceEvents,
+    tool_items: projectedToolItems,
+  });
   const revisionSummary = latestRevisionSummary(item);
   const planItems = buildPlanChecklistItems(projectionItem.plan);
   const executionItems = buildFallbackProgressItems(projectionItem, locale, nowMs);
@@ -8024,11 +8085,11 @@ function App() {
       };
       const recordToolItem = (item) => {
         if (!item || typeof item !== "object") return;
-        latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24);
+        latestToolEvents = [item, ...latestToolEvents.filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT);
         updateOwnerActiveTurn((prev) => ({
           ...prev,
-          toolTimeline: [item, ...(Array.isArray(prev.toolTimeline) ? prev.toolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24),
-          liveToolTimeline: [item, ...(Array.isArray(prev.liveToolTimeline) ? prev.liveToolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, 24),
+          toolTimeline: [item, ...(Array.isArray(prev.toolTimeline) ? prev.toolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
+          liveToolTimeline: [item, ...(Array.isArray(prev.liveToolTimeline) ? prev.liveToolTimeline : []).filter((entry) => String(entry.id || "") !== String(item.id || ""))].slice(0, RECENT_TOOL_TIMELINE_LIMIT),
         }));
         patchPendingActivity((activity) => mergeActivityState(activity, {
           tool_items: [item],
@@ -8333,6 +8394,9 @@ function App() {
               if (item.id) {
                 patchPendingActivity((activity) => mergeActivityState(activity, {
                   live_items: [liveRunItemFromStreamItem(item, event)],
+                  ...(["toolCall", "commandExecution", "fileChange", "imageView"].includes(String(item.type || ""))
+                    ? { tool_items: [item] }
+                    : {}),
                 }));
               }
               syncHeartbeatFromStreamItem(item, event);
@@ -9883,6 +9947,12 @@ function App() {
       ["assistant_item_id", String(step.requested_by_item_id || "-")],
       ["tool_call_id", String(step.tool_call_id || step.id || "-")],
       ["tool_result_item_id", String(step.item_id || "-")],
+      ...(step.tool_call_id_collision
+        ? [[
+            "tool_call_id_collision",
+            `${Math.max(1, Number(step.tool_call_id_occurrence || 1))}/${Math.max(2, Number(step.tool_call_id_collision_count || 2))}`,
+          ]]
+        : []),
     ];
     return html`
       <div className="thread-trace-grid">
@@ -9900,6 +9970,18 @@ function App() {
     const messageId = String((message && message.id) || "");
     const toolGroups = Array.isArray(projection && projection.tool_groups) ? projection.tool_groups : [];
     if (!toolGroups.length) return null;
+    const batchKeys = [];
+    const batchCounts = new Map();
+    toolGroups.forEach((toolItem) => {
+      const batchKey = String(
+        toolItem.requested_by_item_id
+        || (toolItem.tool_round ? `round:${toolItem.tool_round}` : ""),
+      ).trim();
+      if (batchKey) {
+        if (!batchKeys.includes(batchKey)) batchKeys.push(batchKey);
+        batchCounts.set(batchKey, (batchCounts.get(batchKey) || 0) + 1);
+      }
+    });
     return html`
       <details className="activity-tool-transactions">
         <summary>${t("activity.debug.tool_execution")} · ${toolGroups.length}</summary>
@@ -9921,6 +10003,20 @@ function App() {
             const resultSummary = String(toolItem.summary || toolItem.detail || "").trim();
             const durationLabel = traceDurationLabel(toolItem.duration_ms);
             const statusLabel = formatRunEnum(uiLocale, "turn_status", status, status || "-");
+            const batchKey = String(
+              toolItem.requested_by_item_id
+              || (toolItem.tool_round ? `round:${toolItem.tool_round}` : ""),
+            ).trim();
+            const batchIndex = batchKey ? batchKeys.indexOf(batchKey) + 1 : 0;
+            const batchLabel = batchIndex && (batchCounts.get(batchKey) || 0) > 1
+              ? t("activity.debug.tool_batch", { index: batchIndex })
+              : "";
+            const collisionLabel = toolItem.tool_call_id_collision
+              ? t("activity.debug.tool_call_id_collision", {
+                  occurrence: Math.max(1, Number(toolItem.tool_call_id_occurrence || 1)),
+                  count: Math.max(2, Number(toolItem.tool_call_id_collision_count || 2)),
+                })
+              : "";
             return html`
               <details
                 key=${toolItem.id || `${messageId}-tool-${index}`}
@@ -9933,7 +10029,9 @@ function App() {
                 <div className="activity-tool-transaction-body">
                   <div className="activity-tool-transaction-summary">
                     <span>${statusLabel}</span>
+                    ${batchLabel ? html`<span>${batchLabel}</span>` : null}
                     ${durationLabel !== "-" ? html`<span>${durationLabel}</span>` : null}
+                    ${collisionLabel ? html`<span className="status-error">${collisionLabel}</span>` : null}
                   </div>
                   ${resultSummary ? html`<div className="activity-tool-result-summary">${resultSummary}</div>` : null}
                   ${renderDetailBlock(t("activity.parameters"), effectiveArguments)}
@@ -9945,7 +10043,7 @@ function App() {
                     <div className="activity-tool-trace-body">
                       <div className="activity-tool-call-id">
                         <span>${t("activity.debug.tool_call_id")}</span>
-                        <code>${toolItem.id || "-"}</code>
+                        <code>${toolItem.tool_call_id || toolItem.id || "-"}</code>
                       </div>
                       ${argumentsChanged ? renderDetailBlock(t("activity.raw_arguments"), rawArguments) : null}
                       ${argumentsChanged ? renderDetailBlock(t("activity.normalized_arguments"), normalizedArguments) : null}
@@ -10232,7 +10330,13 @@ function App() {
           liveHeartbeat: activeLiveHeartbeat,
         })
       : activity;
-    const projection = buildActivityProjection(displayActivity, uiLocale, activityClockMs || Date.now());
+    const isOpen = Boolean(activityOpenByMessageId[item.id]);
+    const projection = buildActivityProjection(
+      displayActivity,
+      uiLocale,
+      activityClockMs || Date.now(),
+      { expanded: isOpen },
+    );
     const hasActivity = Boolean(
       projection.progress_items.length
       || projection.trace_events.length
@@ -10244,7 +10348,6 @@ function App() {
       || displayActivity.activity_summary,
     );
     if (!hasActivity) return null;
-    const isOpen = Boolean(activityOpenByMessageId[item.id]);
     const tone = activityToneClass(displayActivity.status);
     const pillLabel = activityPillLabel(uiLocale, displayActivity, activityClockMs || Date.now());
     const pendingFallback = pendingAssistantFallbackState({ ...item, activity: displayActivity }, uiLocale, activityClockMs || Date.now());

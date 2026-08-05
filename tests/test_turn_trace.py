@@ -166,6 +166,85 @@ def test_turn_trace_preserves_skipped_as_non_failure_step_type() -> None:
     assert tool_step["status"] == "skipped"
 
 
+def test_turn_trace_keeps_duplicate_provider_call_ids_as_separate_transactions() -> None:
+    items = [
+        {
+            "id": "assistant-1",
+            "turn_id": "t1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "duplicate-call", "name": "read_file", "args": {"path": "one.md"}}],
+        },
+        {
+            "id": "tool-1",
+            "turn_id": "t1",
+            "role": "tool",
+            "tool_call_id": "duplicate-call",
+            "name": "read_file",
+            "content": '{"ok": true, "path": "one.md"}',
+        },
+        {
+            "id": "assistant-2",
+            "turn_id": "t1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "duplicate-call", "name": "read_file", "args": {"path": "two.md"}}],
+        },
+        {
+            "id": "tool-2",
+            "turn_id": "t1",
+            "role": "tool",
+            "tool_call_id": "duplicate-call",
+            "name": "read_file",
+            "content": '{"ok": true, "path": "two.md"}',
+        },
+    ]
+    tool_events = [
+        {
+            "name": "read_file",
+            "status": "ok",
+            "raw_tool_call": {"id": "duplicate-call", "name": "read_file"},
+            "normalized_arguments": {"path": path},
+            "result_preview": {"ok": True, "path": path},
+        }
+        for path in ("one.md", "two.md")
+    ]
+    trace_events = [
+        {
+            "type": event_type,
+            "timestamp": timestamp,
+            "duration_ms": duration_ms,
+            "payload": {"raw_tool_call": {"id": "duplicate-call"}},
+        }
+        for event_type, timestamp, duration_ms in (
+            ("tool.failed", 10.01, 10),
+            ("tool.started", 20.0, 0),
+            ("tool.finished", 20.02, 20),
+        )
+    ]
+
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "t1",
+            "status": "completed",
+            "activity": {"trace_events": trace_events},
+            "tool_events": tool_events,
+        },
+        thread_items=items,
+        turn_id="t1",
+    )
+
+    tool_steps = [step for step in trace["steps"] if str(step.get("type") or "").startswith("tool_")]
+    assert len(tool_steps) == 2
+    assert [step["requested_by_item_id"] for step in tool_steps] == ["assistant-1", "assistant-2"]
+    assert [step["audit"]["normalized_arguments"]["path"] for step in tool_steps] == ["one.md", "two.md"]
+    assert [step["duration_ms"] for step in tool_steps] == [10, 20]
+    assert [step["tool_call_id_occurrence"] for step in tool_steps] == [1, 2]
+    assert all(step["tool_call_id_collision"] is True for step in tool_steps)
+    assert all(step["tool_call_id_collision_count"] == 2 for step in tool_steps)
+
+
 def test_turn_trace_matches_repeated_history_to_the_latest_item() -> None:
     items = [
         {"id": "old-user", "turn_id": "old", "role": "user", "content": "hi"},

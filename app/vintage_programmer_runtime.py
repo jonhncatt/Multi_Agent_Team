@@ -1001,10 +1001,14 @@ class VintageProgrammerRuntime:
     ) -> str:
         raw = dict(raw_tool_call or {})
         call_id = str(raw.get("id") or raw.get("tool_call_id") or "").strip()
+        position = f"{max(0, int(round_idx))}:{max(0, int(call_idx))}"
         if call_id:
-            return f"{str(run_id or 'turn')}:tool:{call_id}"
+            # Provider call IDs correlate the Assistant tool request with its
+            # ToolMessage.  They are not guaranteed to be unique enough to use
+            # as a UI transaction key, so retain the model round/call position.
+            return f"{str(run_id or 'turn')}:tool:{position}:{call_id}"
         safe_name = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(tool_name or "tool")).strip("_") or "tool"
-        return f"{str(run_id or 'turn')}:tool:{max(0, int(round_idx))}:{max(0, int(call_idx))}:{safe_name}"
+        return f"{str(run_id or 'turn')}:tool:{position}:{safe_name}"
 
     @staticmethod
     def _typed_tool_item_type(tool_name: str) -> str:
@@ -1046,17 +1050,21 @@ class VintageProgrammerRuntime:
     ) -> dict[str, Any]:
         payload = dump_model(event)
         raw_tool_call = dict(payload.get("raw_tool_call") or {})
+        tool_call_id = str(raw_tool_call.get("id") or raw_tool_call.get("tool_call_id") or "").strip()
         tool_name = str(payload.get("name") or raw_tool_call.get("name") or "").strip()
         result_preview = payload.get("result_preview")
         item_type = self._typed_tool_item_type(tool_name)
+        transaction_id = self._typed_tool_item_id(
+            run_id=run_id,
+            raw_tool_call=raw_tool_call,
+            tool_name=tool_name,
+            round_idx=round_idx,
+            call_idx=call_idx,
+        )
         item = {
-            "id": self._typed_tool_item_id(
-                run_id=run_id,
-                raw_tool_call=raw_tool_call,
-                tool_name=tool_name,
-                round_idx=round_idx,
-                call_idx=call_idx,
-            ),
+            "id": transaction_id,
+            "transaction_id": transaction_id,
+            "tool_call_id": tool_call_id,
             "type": item_type,
             "status": self._typed_tool_status(str(payload.get("status") or "")),
             "tool": tool_name,
@@ -1107,14 +1115,18 @@ class VintageProgrammerRuntime:
         agent_id: str,
     ) -> dict[str, Any]:
         raw = dict(raw_tool_call or {})
+        tool_call_id = str(raw.get("id") or raw.get("tool_call_id") or "").strip()
+        transaction_id = self._typed_tool_item_id(
+            run_id=run_id,
+            raw_tool_call=raw,
+            tool_name=tool_name,
+            round_idx=round_idx,
+            call_idx=call_idx,
+        )
         item = {
-            "id": self._typed_tool_item_id(
-                run_id=run_id,
-                raw_tool_call=raw,
-                tool_name=tool_name,
-                round_idx=round_idx,
-                call_idx=call_idx,
-            ),
+            "id": transaction_id,
+            "transaction_id": transaction_id,
+            "tool_call_id": tool_call_id,
             "type": self._typed_tool_item_type(tool_name),
             "status": "inProgress",
             "tool": str(tool_name or ""),

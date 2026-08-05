@@ -239,17 +239,33 @@ def _trace_event_call_id(event: dict[str, Any]) -> str:
     )
 
 
-def _tool_timing(call_id: str, trace_events: list[dict[str, Any]]) -> dict[str, Any]:
+def _tool_timing(
+    call_id: str,
+    trace_events: list[dict[str, Any]],
+    *,
+    occurrence: int = 1,
+) -> dict[str, Any]:
     related = [event for event in trace_events if _trace_event_call_id(event) == call_id]
-    starts = [event for event in related if _text(event.get("type")) in {"tool.started", "command.started"}]
-    finishes = [
-        event
-        for event in related
-        if _text(event.get("type")) in {"tool.finished", "tool.failed", "command.finished", "command.failed"}
-    ]
-    started_at = _float(starts[0].get("timestamp")) if starts else 0.0
-    finished_at = _float(finishes[-1].get("timestamp")) if finishes else 0.0
-    duration_ms = _int(finishes[-1].get("duration_ms")) if finishes else 0
+    start_types = {"tool.started", "command.started"}
+    finish_types = {"tool.finished", "tool.failed", "command.finished", "command.failed"}
+    transactions: list[tuple[dict[str, Any] | None, dict[str, Any] | None]] = []
+    active_start: dict[str, Any] | None = None
+    for event in related:
+        event_type = _text(event.get("type"))
+        if event_type in start_types:
+            if active_start is not None:
+                transactions.append((active_start, None))
+            active_start = event
+        elif event_type in finish_types:
+            transactions.append((active_start, event))
+            active_start = None
+    if active_start is not None:
+        transactions.append((active_start, None))
+    occurrence_index = max(0, int(occurrence or 1) - 1)
+    start, finish = transactions[occurrence_index] if occurrence_index < len(transactions) else (None, None)
+    started_at = _float(start.get("timestamp")) if start else 0.0
+    finished_at = _float(finish.get("timestamp")) if finish else 0.0
+    duration_ms = _int(finish.get("duration_ms")) if finish else 0
     if not duration_ms and started_at and finished_at:
         duration_ms = max(0, int((finished_at - started_at) * 1000))
     return {
@@ -366,22 +382,29 @@ def build_turn_trace(
             context_keys.append(key)
         return context_id, input_item_ids
 
-    tool_events_by_call: dict[str, dict[str, Any]] = {}
+    tool_events_by_call: dict[str, list[dict[str, Any]]] = {}
     for event in tool_events:
         call_id = _tool_call_id_from_event(event)
         if call_id:
-            tool_events_by_call[call_id] = event
+            tool_events_by_call.setdefault(call_id, []).append(event)
 
-    requested_by: dict[str, str] = {}
-    tool_names: dict[str, str] = {}
+    pending_calls: dict[str, list[dict[str, str]]] = {}
+    tool_call_id_counts: dict[str, int] = {}
     for item in current_items:
         if _text(item.get("role")) != "assistant":
             continue
         for call in _list_of_dicts(item.get("tool_calls")):
             call_id = _text(call.get("id"))
             if call_id:
-                requested_by[call_id] = _text(item.get("id"))
-                tool_names[call_id] = _text(call.get("name"))
+                pending_calls.setdefault(call_id, []).append(
+                    {
+                        "requested_by_item_id": _text(item.get("id")),
+                        "tool_name": _text(call.get("name")),
+                    }
+                )
+                tool_call_id_counts[call_id] = tool_call_id_counts.get(call_id, 0) + 1
+
+    call_occurrences: dict[str, int] = {}
 
     steps: list[dict[str, Any]] = []
     for item in current_items:
@@ -412,7 +435,12 @@ def build_turn_trace(
             continue
         if role == "tool":
             call_id = _text(item.get("tool_call_id"))
-            event = tool_events_by_call.get(call_id, {})
+            call_occurrences[call_id] = call_occurrences.get(call_id, 0) + 1
+            occurrence = call_occurrences[call_id]
+            event_queue = tool_events_by_call.get(call_id, [])
+            event = event_queue.pop(0) if event_queue else {}
+            owner_queue = pending_calls.get(call_id, [])
+            owner = owner_queue.pop(0) if owner_queue else {}
             event_status = _text(event.get("status"))
             result_status = "completed" if event_status in {"", "ok", "success", "completed"} else _status(event_status)
             step_type = {
@@ -425,15 +453,20 @@ def build_turn_trace(
             step = {
                 "type": step_type,
                 "item_id": item_id,
-                "requested_by_item_id": requested_by.get(call_id, ""),
+                "requested_by_item_id": _text(owner.get("requested_by_item_id")),
                 "tool_call_id": call_id,
-                "tool_name": _text(item.get("name")) or tool_names.get(call_id, "") or _text(event.get("name")),
+                "tool_name": _text(item.get("name")) or _text(owner.get("tool_name")) or _text(event.get("name")),
                 "status": result_status,
                 "error_kind": _error_kind_from_tool_event(event),
                 "validation": _validation_summary(event),
                 "audit": _tool_audit_summary(event),
-                **_tool_timing(call_id, trace_events),
+                **_tool_timing(call_id, trace_events, occurrence=occurrence),
             }
+            collision_count = tool_call_id_counts.get(call_id, 0)
+            if call_id and collision_count > 1:
+                step["tool_call_id_collision"] = True
+                step["tool_call_id_occurrence"] = occurrence
+                step["tool_call_id_collision_count"] = collision_count
             diagnostics = _dict(event.get("diagnostics"))
             retry_count = _int(diagnostics.get("repeat_count") or diagnostics.get("retry_count"))
             recovery_result = _text(diagnostics.get("recovery_result") or diagnostics.get("recovery_status"))
