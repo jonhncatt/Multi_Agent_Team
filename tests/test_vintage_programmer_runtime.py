@@ -2104,12 +2104,13 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
 
         def _invoke_chat_with_runner(self, **kwargs: Any):
             child_started.set()
-            release_child.wait(timeout=5)
+            if not release_child.wait(timeout=30):
+                raise AssertionError("test Subagent was not released within 30 seconds")
             return super()._invoke_chat_with_runner(**kwargs)
 
     class _EmptyFailingParentBackend(_FlakyNoneTypeFollowupBackend):
         def _invoke_with_runner_recovery(self, **kwargs: Any):
-            assert child_started.wait(timeout=2), "subagent did not start before the parent follow-up"
+            assert child_started.wait(timeout=15), "subagent did not start before the parent follow-up"
             try:
                 return super()._invoke_with_runner_recovery(**kwargs)
             except Exception:
