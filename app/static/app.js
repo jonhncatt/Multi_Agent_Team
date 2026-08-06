@@ -2213,6 +2213,8 @@ function buildLiveAgentTimelineItems(activity, locale) {
 
 function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   const item = normalizeMessageActivity(activity || {});
+  const activityStatus = normalizeProgressStatus(item.status);
+  const runQueued = activityStatus === "queued";
   const traces = item.trace_events.filter(Boolean);
   const progressItems = [];
   const toolGroups = buildToolProgressGroups(item);
@@ -2260,7 +2262,14 @@ function buildFallbackProgressItems(activity, locale, nowMs = Date.now()) {
   visibleLiveItems.forEach((entry) => {
     progressItems.push(entry);
   });
-  if (!hasLiveItems && !toolGroups.length && !modelStarted && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
+  if (runQueued && !hasLiveItems && !toolGroups.length && !modelStarted && !hasAnswerStarted && !hasAnswerReady) {
+    progressItems.push({
+      id: "run-queued",
+      label: translateUi(locale, "activity.status.queued"),
+      status: "queued",
+      source: "runtime",
+    });
+  } else if (!hasLiveItems && !toolGroups.length && !modelStarted && !hasAnswerStarted && !hasAnswerReady && !turnTerminalError) {
     progressItems.push({
       id: "request-preparing",
       label: translateUi(locale, "activity.status.preparing_request"),
@@ -3450,7 +3459,7 @@ function buildRunExecutionProgress({
     ? ((liveToolTimeline[0] && typeof liveToolTimeline[0] === "object") ? liveToolTimeline[0] : {})
     : {};
   const reversedLiveItems = liveItems.slice().reverse();
-  const priorityStatuses = new Set(["validating", "running", "waiting_tool", "waiting_model", "failed", "blocked", "completed"]);
+  const priorityStatuses = new Set(["queued", "validating", "running", "waiting_tool", "waiting_model", "failed", "blocked", "completed"]);
   const currentItem = reversedLiveItems.find((item) => priorityStatuses.has(normalizeProgressStatus(item.status))) || reversedLiveItems[0] || null;
   const lastTrace = traces.length ? traces[traces.length - 1] : null;
   const lastTracePayload = lastTrace && lastTrace.payload && typeof lastTrace.payload === "object" ? lastTrace.payload : {};
@@ -3526,6 +3535,7 @@ function buildRunExecutionProgress({
   }
   const progressIsStale = Boolean(
     isCurrentThreadActiveRun
+    && status !== "queued"
     && lastProgressAtMs
     && (nowMs - lastProgressAtMs) >= LIVE_PROGRESS_STALE_AFTER_MS,
   );
@@ -3545,7 +3555,10 @@ function buildRunExecutionProgress({
   if (status === "waiting_model" && !modelStarted && !toolName && String(heartbeat.source || "") !== "tool") {
     status = "background_running";
   }
-  if (status === "waiting_model" && modelStarted) {
+  if (status === "queued") {
+    currentAction = currentAction || translateUi(locale, "activity.status.queued");
+    recentEvent = recentEvent || translateUi(locale, "run.live_agent.queued_waiting");
+  } else if (status === "waiting_model" && modelStarted) {
     currentAction = translateUi(locale, "activity.status.waiting_model");
     recentEvent = modelName
       ? translateUi(locale, "run.live_agent.model_detail", { detail: modelName })
@@ -3557,6 +3570,8 @@ function buildRunExecutionProgress({
   if (!currentAction) {
     if (status === "waiting_model") {
       currentAction = translateUi(locale, "run.progress.waiting_model");
+    } else if (status === "queued") {
+      currentAction = translateUi(locale, "activity.status.queued");
     } else if (status === "waiting_tool" || status === "validating") {
       currentAction = translateUi(locale, "run.progress.waiting_tool");
     } else if (status === "background_running") {
@@ -3568,6 +3583,8 @@ function buildRunExecutionProgress({
   if (!recentEvent) {
     if (status === "waiting_model") {
       recentEvent = translateUi(locale, "run.progress.recent_event_waiting_model");
+    } else if (status === "queued") {
+      recentEvent = translateUi(locale, "run.live_agent.queued_waiting");
     } else if (status === "waiting_tool" || status === "validating") {
       recentEvent = translateUi(locale, "run.progress.recent_event_waiting_tool");
     } else if (status === "background_running") {

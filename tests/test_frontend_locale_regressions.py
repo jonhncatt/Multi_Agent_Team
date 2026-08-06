@@ -99,6 +99,8 @@ REQUIRED_CORE_KEYS = (
     "activity.cancelled",
     "activity.status.queued",
     "run.live_agent.queued",
+    "run.live_agent.queued_waiting",
+    "run.progress.status.queued",
     "subagent.queued",
     "subagent.waiting_slot",
     "activity.raw_arguments",
@@ -2448,6 +2450,10 @@ def test_frontend_renders_runtime_and_subagent_queue_lifecycle() -> None:
     assert 'event === "run_dequeued"' in script
     assert 'status: "queued"' in script
     assert 'event === "item/started" || event === "item/updated"' in script
+    assert 'id: "run-queued"' in script
+    assert 'const runQueued = activityStatus === "queued"' in script
+    assert '&& status !== "queued"' in script
+    assert 'recentEvent = recentEvent || translateUi(locale, "run.live_agent.queued_waiting")' in script
     assert 'status === "queued" ? "subagent.queued"' in script
     assert 't(queued ? "subagent.waiting_slot" : "subagent.waiting_result")' in script
     assert ".subagent-card.queued" in styles
