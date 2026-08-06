@@ -489,6 +489,67 @@ def test_python_commands_prefer_project_venv_when_available(
     assert argv[0] == str(venv_python.resolve())
 
 
+def test_windows_project_venv_python_inline_command_reaches_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    venv_python.write_text("", encoding="utf-8")
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.config.platform_name = "Windows"
+    manager.set_runtime_context(
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        runtime_boundary=_runtime_boundary(
+            tmp_path,
+            permission_profile="full_access",
+            network_allowed=True,
+        ),
+    )
+
+    result = manager.exec_command(
+        cmd='python -c "print(\'approval expected\')"',
+        cwd=".",
+        yield_time_ms=100,
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "command_execution_approval_required"
+    assert result["approval_required"] is True
+    assert result["approval_request"]["risks"][0]["base_command"] == "python"
+    assert "python.exe" not in str(result.get("error") or "")
+
+
+@pytest.mark.parametrize("command", ["python.exe --version", "git.exe status", "rg.exe needle ."])
+def test_bare_windows_executable_aliases_share_allowlist_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.config.platform_name = "Windows"
+
+    argv, error = manager._safe_split_command(command)
+
+    assert error is None
+    assert argv
+
+
+def test_executable_suffix_is_not_an_allowlist_alias_off_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    manager.config.platform_name = "Linux"
+
+    argv, error = manager._safe_split_command("git.exe status")
+
+    assert argv == []
+    assert error is not None
+    assert "Command not allowed: git.exe" in error
+
+
 def test_project_venv_python_path_is_allowed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

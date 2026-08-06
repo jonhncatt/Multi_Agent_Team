@@ -27,6 +27,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 from app.action_validator import (
     blocked_supply_chain_command,
+    canonical_command_name,
     is_dangerous_command,
     missing_supply_chain_allowed_commands,
     parse_compound_shell_command,
@@ -2344,13 +2345,11 @@ class LocalToolExecutor:
     def _is_source_builtin_command(cls, raw: str) -> bool:
         return cls._command_base_name(raw) in {"source", "."}
 
-    @staticmethod
-    def _is_python_command(argv0: str) -> bool:
-        return LocalToolExecutor._command_base_name(argv0) in {"python", "python3", "py", "python.exe"}
+    def _is_python_command(self, argv0: str) -> bool:
+        return canonical_command_name(argv0, platform_name=self.config.platform_name) in {"python", "python3", "py"}
 
-    @staticmethod
-    def _is_node_command(argv0: str) -> bool:
-        return LocalToolExecutor._command_base_name(argv0) in {"node", "node.exe"}
+    def _is_node_command(self, argv0: str) -> bool:
+        return canonical_command_name(argv0, platform_name=self.config.platform_name) == "node"
 
     @staticmethod
     def _is_shell_command(argv0: str) -> bool:
@@ -2517,7 +2516,7 @@ class LocalToolExecutor:
                 if not isinstance(item, dict):
                     continue
                 sub_argv = [str(token) for token in list(item.get("argv") or []) if str(token or "").strip()]
-                block = blocked_supply_chain_command(sub_argv)
+                block = blocked_supply_chain_command(sub_argv, platform_name=self.config.platform_name)
                 if block is None:
                     continue
                 risks.append(
@@ -2528,7 +2527,7 @@ class LocalToolExecutor:
                     )
                 )
         else:
-            block = blocked_supply_chain_command(argv)
+            block = blocked_supply_chain_command(argv, platform_name=self.config.platform_name)
             if block is not None:
                 risks.append(self._supply_chain_risk_from_block(block, cwd=str(cwd)))
 
@@ -2953,7 +2952,16 @@ class LocalToolExecutor:
         raw = str(base_cmd or "").strip()
         if not raw:
             return False
-        return raw in self.config.allowed_commands or self._is_project_python_command(raw)
+        allowed = {
+            canonical_command_name(item, platform_name=self.config.platform_name)
+            for item in self.config.allowed_commands
+            if str(item or "").strip()
+        }
+        bare_command = not self._is_direct_path_command(raw)
+        return (
+            (bare_command and canonical_command_name(raw, platform_name=self.config.platform_name) in allowed)
+            or self._is_project_python_command(raw)
+        )
 
     def _command_failure_result(
         self,
@@ -2993,7 +3001,10 @@ class LocalToolExecutor:
     def _normalize_python_command_argv(self, argv: list[str], *, execution_mode: str) -> list[str]:
         if not argv:
             return argv
-        base = str(argv[0] or "").strip().lower()
+        raw_base = str(argv[0] or "").strip()
+        if self._is_direct_path_command(raw_base):
+            return argv
+        base = canonical_command_name(raw_base, platform_name=self.config.platform_name)
         if base not in {"python", "python3", "py"}:
             return argv
         normalized = list(argv)
@@ -3020,10 +3031,14 @@ class LocalToolExecutor:
         execution_mode = self._current_execution_mode()
         argv = self._normalize_python_command_argv(argv, execution_mode=execution_mode)
         base_cmd = argv[0]
-        supply_chain_block = blocked_supply_chain_command(argv)
+        supply_chain_block = blocked_supply_chain_command(argv, platform_name=self.config.platform_name)
         if not self._is_allowed_command(base_cmd):
             return [], f"Command not allowed: {base_cmd}. Allowed: {', '.join(self.config.allowed_commands)}"
-        missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, set(self.config.allowed_commands))
+        missing_supply_chain_commands = missing_supply_chain_allowed_commands(
+            supply_chain_block,
+            set(self.config.allowed_commands),
+            platform_name=self.config.platform_name,
+        )
         if missing_supply_chain_commands:
             return [], f"Command not allowed: {', '.join(missing_supply_chain_commands)}. Allowed: {', '.join(self.config.allowed_commands)}"
         if supply_chain_block is not None and not allow_supply_chain_commands:
@@ -3045,10 +3060,10 @@ class LocalToolExecutor:
             cwd=cwd.resolve(),
             command_allowed_roots=self._current_command_roots(),
             writable_roots=[Path(item) for item in self._current_writable_roots()],
+            platform_name=self.config.platform_name,
             allowed_commands=self.config.allowed_commands,
             allow_supply_chain_commands=self._supply_chain_approval_allowed(),
             allow_any_path=unrestricted_paths,
-            platform_name=self.config.platform_name,
         )
         if not ok:
             return False, dict(detail)
@@ -3136,6 +3151,7 @@ class LocalToolExecutor:
             cwd=cwd.resolve(),
             command_allowed_roots=self._current_command_roots(),
             writable_roots=[Path(item) for item in self._current_writable_roots()],
+            platform_name=self.config.platform_name,
         )
         if ok:
             return None
@@ -4749,7 +4765,10 @@ class LocalToolExecutor:
                         error_kind=error_kind,
                         error_detail={"message": error},
                     )
-                supply_chain_block = blocked_supply_chain_command(raw_argv)
+                supply_chain_block = blocked_supply_chain_command(
+                    raw_argv,
+                    platform_name=self.config.platform_name,
+                )
                 if supply_chain_block is not None:
                     message = str(supply_chain_block.get("message") or "Command is blocked by supply-chain policy.")
                     return self._command_failure_result(

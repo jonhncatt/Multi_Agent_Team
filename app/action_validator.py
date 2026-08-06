@@ -245,11 +245,19 @@ def _command_base(argv0: str) -> str:
     return text.rsplit("/", 1)[-1].lower()
 
 
-def blocked_supply_chain_command(argv: list[str]) -> dict[str, Any] | None:
+def canonical_command_name(argv0: str, *, platform_name: str = "") -> str:
+    """Return the policy identity for a command without changing execution argv."""
+    base = _command_base(argv0)
+    if _uses_windows_command_syntax(platform_name) and base.endswith(".exe") and len(base) > 4:
+        return base[:-4]
+    return base
+
+
+def blocked_supply_chain_command(argv: list[str], *, platform_name: str = "") -> dict[str, Any] | None:
     """Return a policy violation for host-network/supply-chain command flows."""
     if not argv:
         return None
-    base = _command_base(str(argv[0] or ""))
+    base = canonical_command_name(str(argv[0] or ""), platform_name=platform_name)
     args = [str(item or "").strip() for item in list(argv[1:] or []) if str(item or "").strip()]
 
     def block(reason: str, argument: str = "", required_allowed_commands: list[str] | None = None) -> dict[str, Any]:
@@ -267,7 +275,7 @@ def blocked_supply_chain_command(argv: list[str]) -> dict[str, Any] | None:
         return block("Command is blocked because npx can execute remote package code.")
     if base in {"pip", "pip3"} and any(arg == "install" for arg in args):
         return block("Command is blocked because pip install can execute package setup code.", "install")
-    if base in {"python", "python3", "py", "python.exe"}:
+    if base in {"python", "python3", "py"}:
         for index, arg in enumerate(args):
             if arg in {"-c", "--command"}:
                 return block("Command is blocked because inline Python execution bypasses file provenance checks.", arg)
@@ -279,7 +287,7 @@ def blocked_supply_chain_command(argv: list[str]) -> dict[str, Any] | None:
                         "-m pip install",
                         [base, pip_command],
                     )
-    if base in {"node", "node.exe"}:
+    if base == "node":
         for arg in args:
             if arg in {"-e", "--eval", "--print", "-p"}:
                 return block("Command is blocked because inline Node.js execution bypasses file provenance checks.", arg)
@@ -299,14 +307,20 @@ def blocked_supply_chain_command(argv: list[str]) -> dict[str, Any] | None:
 def missing_supply_chain_allowed_commands(
     block: dict[str, Any] | None,
     allowed_commands: set[str] | list[str] | tuple[str, ...],
+    *,
+    platform_name: str = "",
 ) -> list[str]:
     if not block:
         return []
-    allowed = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
+    allowed = {
+        canonical_command_name(str(item or ""), platform_name=platform_name)
+        for item in list(allowed_commands or [])
+        if str(item or "").strip()
+    }
     if not allowed:
         return []
     required = [
-        _command_base(str(item or ""))
+        canonical_command_name(str(item or ""), platform_name=platform_name)
         for item in list(block.get("required_allowed_commands") or [block.get("base_command")])
         if str(item or "").strip()
     ]
@@ -473,10 +487,10 @@ def parse_compound_shell_command(command: str, *, platform_name: str = "") -> di
     }
 
 
-def extract_command_path_args(argv: list[str]) -> list[dict[str, Any]]:
+def extract_command_path_args(argv: list[str], *, platform_name: str = "") -> list[dict[str, Any]]:
     if not argv:
         return []
-    base = _command_base(argv[0])
+    base = canonical_command_name(argv[0], platform_name=platform_name)
     items: list[dict[str, Any]] = []
     skip_next = False
     positional_count = 0
@@ -630,8 +644,9 @@ def validate_command_path_args(
     command_allowed_roots: list[Path],
     writable_roots: list[Path],
     allow_any_path: bool = False,
+    platform_name: str = "",
 ) -> tuple[bool, dict[str, Any]]:
-    for item in extract_command_path_args(argv):
+    for item in extract_command_path_args(argv, platform_name=platform_name):
         raw_arg = str(item.get("argument") or "").strip()
         if not raw_arg:
             continue
@@ -656,6 +671,7 @@ def validate_single_command_for_compound_shell(
     writable_roots: list[Path],
     redirects: list[dict[str, Any]] | None = None,
     allow_any_path: bool = False,
+    platform_name: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     if not argv:
         return False, {
@@ -668,6 +684,7 @@ def validate_single_command_for_compound_shell(
         command_allowed_roots=command_allowed_roots,
         writable_roots=writable_roots,
         allow_any_path=allow_any_path,
+        platform_name=platform_name,
     )
     if not ok:
         return False, detail
@@ -729,7 +746,11 @@ def validate_compound_shell_command(
     parsed_subcommands = [str(item) for item in list(parsed.get("parsed_subcommands") or []) if str(item or "").strip()]
     effective_cwd = cwd.resolve()
     command_roots = [root.expanduser().resolve() for root in command_allowed_roots if str(root or "").strip()]
-    allowed_base_commands = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
+    allowed_base_commands = {
+        canonical_command_name(str(item or ""), platform_name=platform_name)
+        for item in list(allowed_commands or [])
+        if str(item or "").strip()
+    }
     for index, subcommand in enumerate(subcommands, start=1):
         argv = [str(item) for item in list(subcommand.get("argv") or []) if str(item or "").strip()]
         text = str(subcommand.get("text") or "").strip()
@@ -740,7 +761,7 @@ def validate_compound_shell_command(
                 reason="Subcommand is empty.",
                 parsed_subcommands=parsed_subcommands,
             )
-        base = _command_base(argv[0])
+        base = canonical_command_name(argv[0], platform_name=platform_name)
         if base == "cd":
             if len(argv) != 2:
                 return False, _compound_subcommand_rejection(
@@ -768,7 +789,7 @@ def validate_compound_shell_command(
                 )
             effective_cwd = resolved
             continue
-        supply_chain_block = blocked_supply_chain_command(argv)
+        supply_chain_block = blocked_supply_chain_command(argv, platform_name=platform_name)
         if allowed_base_commands and base not in allowed_base_commands:
             return False, _compound_subcommand_rejection(
                 index=index,
@@ -782,7 +803,11 @@ def validate_compound_shell_command(
                     "allowed_commands": sorted(allowed_base_commands),
                 },
             )
-        missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, allowed_base_commands)
+        missing_supply_chain_commands = missing_supply_chain_allowed_commands(
+            supply_chain_block,
+            allowed_base_commands,
+            platform_name=platform_name,
+        )
         if missing_supply_chain_commands:
             missing_label = ", ".join(missing_supply_chain_commands)
             return False, _compound_subcommand_rejection(
@@ -813,6 +838,7 @@ def validate_compound_shell_command(
             writable_roots=writable_roots,
             redirects=list(subcommand.get("redirects") or []),
             allow_any_path=allow_any_path,
+            platform_name=platform_name,
         )
         if not ok:
             return False, _compound_subcommand_rejection(
@@ -851,7 +877,11 @@ class ActionValidator:
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         }
         self._allowed_tools = {str(item or "").strip() for item in list(allowed_tools or []) if str(item or "").strip()}
-        self._allowed_commands = {_command_base(str(item or "")) for item in list(allowed_commands or []) if str(item or "").strip()}
+        self._allowed_commands = {
+            canonical_command_name(str(item or ""), platform_name=platform_name)
+            for item in list(allowed_commands or [])
+            if str(item or "").strip()
+        }
         self._boundary = boundary or RuntimeBoundary()
         self._locale = str(locale or "en")
         self._normalize_tool_name = normalize_tool_name or (lambda value: str(value or "").strip())
@@ -1215,7 +1245,7 @@ class ActionValidator:
                     if split_error:
                         return "invalid_arguments", split_error
                     raw_executable = str(argv[0] if argv else "").strip()
-                    base_command = _command_base(raw_executable)
+                    base_command = canonical_command_name(raw_executable, platform_name=self._platform_name)
                     direct_executable_path = bool(
                         raw_executable.startswith(("./", "../", "/", ".\\", "..\\"))
                         or re.match(r"^[a-zA-Z]:[\\/]", raw_executable)
@@ -1225,8 +1255,12 @@ class ActionValidator:
                             f"Command not allowed: {base_command or '(empty)'}. "
                             f"Allowed: {', '.join(sorted(self._allowed_commands))}"
                         )
-                    supply_chain_block = blocked_supply_chain_command(argv)
-                    missing_supply_chain_commands = missing_supply_chain_allowed_commands(supply_chain_block, self._allowed_commands)
+                    supply_chain_block = blocked_supply_chain_command(argv, platform_name=self._platform_name)
+                    missing_supply_chain_commands = missing_supply_chain_allowed_commands(
+                        supply_chain_block,
+                        self._allowed_commands,
+                        platform_name=self._platform_name,
+                    )
                     if missing_supply_chain_commands:
                         missing_label = ", ".join(missing_supply_chain_commands)
                         return "command_not_allowed", f"Command not allowed: {missing_label}. Allowed: {', '.join(sorted(self._allowed_commands))}"
@@ -1238,6 +1272,7 @@ class ActionValidator:
                         command_allowed_roots=command_roots,
                         writable_roots=self._writable_roots(),
                         allow_any_path=self._unrestricted_path_access(),
+                        platform_name=self._platform_name,
                     )
                 if not ok:
                     return "command_path_outside_allowed_roots", str(detail.get("message") or "Command path argument is outside command allowed roots.")

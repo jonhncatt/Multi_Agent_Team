@@ -283,6 +283,50 @@ def test_exec_command_safe_command_allowed_when_shell_enabled(tmp_path: Path) ->
     assert result.allowed
 
 
+@pytest.mark.parametrize("command", ["python.exe -m pytest", "git.exe status", "rg.exe needle ."])
+def test_exec_command_windows_executable_aliases_use_allowlist_identity(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    result = _validator(tmp_path, platform_name="Windows").validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": command, "cwd": "."}}
+    )
+
+    assert result.allowed
+
+
+def test_exec_command_windows_python_executable_alias_keeps_supply_chain_policy(tmp_path: Path) -> None:
+    rejected = _validator(
+        tmp_path,
+        platform_name="Windows",
+        permission_profile="auto",
+        network_allowed=False,
+    ).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "python.exe -c \"print('x')\"", "cwd": "."}}
+    )
+    approval_candidate = _validator(
+        tmp_path,
+        platform_name="Windows",
+        permission_profile="full_access",
+        network_allowed=True,
+    ).validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "python.exe -c \"print('x')\"", "cwd": "."}}
+    )
+
+    assert not rejected.allowed
+    assert rejected.code == "command_not_allowed"
+    assert approval_candidate.allowed
+
+
+def test_exec_command_does_not_treat_exe_suffix_as_an_alias_off_windows(tmp_path: Path) -> None:
+    result = _validator(tmp_path, platform_name="Linux").validate_tool_call(
+        {"name": "exec_command", "args": {"cmd": "git.exe status", "cwd": "."}}
+    )
+
+    assert not result.allowed
+    assert result.code == "command_not_allowed"
+
+
 def test_exec_command_rejects_command_missing_from_allowlist_before_execution(tmp_path: Path) -> None:
     result = _validator(tmp_path).validate_tool_call(
         {"name": "exec_command", "args": {"cmd": "select-string -Pattern PLP PLP_10.cpp", "cwd": "."}}
