@@ -3015,6 +3015,72 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
             main_app._active_chat_runs.pop(run_id, None)
 
 
+def test_queued_chat_run_is_visible_and_cancellable_before_model_start(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    bounded_queue = main_app.AgentRunQueue(max_concurrent_runs=1)
+    monkeypatch.setattr(main_app, "run_queue", bounded_queue)
+    occupied_ticket = bounded_queue.run_slot("occupied-thread")
+    queued = threading.Event()
+    finished = threading.Event()
+    events: list[dict[str, object]] = []
+    result: dict[str, object] = {}
+
+    def progress(payload: dict[str, object]) -> None:
+        events.append(dict(payload))
+        if payload.get("event") == "run_queued":
+            queued.set()
+
+    request = main_app.ChatRequest(
+        message="This should be cancelled while queued.",
+        client_message_id="queued-user-message",
+        settings=main_app.ChatSettings(
+            model="gpt-test",
+            max_output_tokens=1024,
+            max_context_turns=20,
+            enable_tools=True,
+            response_style="short",
+        ),
+    )
+
+    def worker() -> None:
+        try:
+            result["response"] = main_app._process_chat_request(request, progress_cb=progress)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        assert queued.wait(timeout=2)
+        queued_payload = next(item for item in events if item.get("event") == "run_queued")
+        run_id = str(queued_payload.get("run_id") or "")
+        assert run_id
+        assert queued_payload["active_count"] == 1
+        assert queued_payload["max_concurrent_runs"] == 1
+        with main_app._active_chat_runs_lock:
+            assert main_app._active_chat_runs[run_id]["status"] == "queued"
+
+        cancelled = main_app.cancel_chat_run(run_id)
+        assert cancelled["cancelled"] is True
+        assert finished.wait(timeout=2), "queued cancellation should not wait for the occupied slot"
+
+        response = result["response"]
+        assert response.turn_status == "cancelled"
+        assert response.queue_wait_ms >= 0
+        event_names = [str(item.get("event") or "") for item in events]
+        assert "run_queued" in event_names
+        assert "run_started" not in event_names
+        assert "run_finished" in event_names
+        assert next(item for item in events if item.get("event") == "run_finished")["turn_status"] == "cancelled"
+        loaded = main_app.session_store.load(response.session_id)
+        assert loaded is not None
+        assert [str(item.get("role") or "") for item in loaded.get("turns") or []][-2:] == ["user", "assistant"]
+        assert str((loaded.get("turns") or [])[-1].get("activity", {}).get("status") or "") == "cancelled"
+    finally:
+        occupied_ticket.release()
+        thread.join(timeout=2)
+
+
 def test_desktop_lifecycle_reports_active_agent_and_eval_work(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
 

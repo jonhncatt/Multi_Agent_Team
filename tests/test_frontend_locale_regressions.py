@@ -93,9 +93,14 @@ REQUIRED_CORE_KEYS = (
     "eval.status.running",
     "activity.title",
     "activity.running",
+    "activity.queued",
     "activity.failed",
     "activity.blocked",
     "activity.cancelled",
+    "activity.status.queued",
+    "run.live_agent.queued",
+    "subagent.queued",
+    "subagent.waiting_slot",
     "activity.raw_arguments",
     "activity.parameters",
     "activity.arguments_preview",
@@ -1558,7 +1563,7 @@ def test_prefinal_run_events_do_not_terminalize_pending_activity() -> None:
     assert 'status: hasVisibleAnswer ? "completed"' not in run_finished_body.split("} else {", 1)[1]
 
     turn_completed_match = re.search(
-        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
+        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started" \|\| event === "item/updated"\)',
         script,
         re.S,
     )
@@ -1608,7 +1613,7 @@ def test_stream_runtime_finished_does_not_cleanup_ui_before_final_payload() -> N
     assert "activeRunId: \"\"" not in run_finished_body
 
     turn_completed_match = re.search(
-        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started"\)',
+        r'else if \(event === "turn/completed"\) \{(?P<body>.*?)\n            \} else if \(event === "item/started" \|\| event === "item/updated"\)',
         body,
         re.S,
     )
@@ -2361,9 +2366,10 @@ def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None
 
     assert 'itemType === "subagent"' in script
     assert 'String(liveItem.type || "") === "subagent"' in script
-    assert 'className=${`subagent-card ${running ? "running" : "completed"}`}' in script
+    assert 'className=${`subagent-card ${queued ? "queued" : (running ? "running" : "completed")}`}' in script
+    assert '<span>${queued ? t("subagent.queued") : (running ? t("subagent.running") : t("subagent.completed"))}</span>' in script
     assert 'open=${running}' in script
-    assert 't("subagent.waiting_result")' in script
+    assert 't(queued ? "subagent.waiting_slot" : "subagent.waiting_result")' in script
     assert ".subagent-card-list" in styles
     assert ".subagent-card > summary" in styles
 
@@ -2432,6 +2438,20 @@ def test_frontend_next_turn_queue_runs_in_order_after_active_turn_completes() ->
     assert 'filter((item) => String(item.delivery || "") === "next_turn")' in handle_send
     assert 't("queue.pending_waiting")' in script
     assert "removeQueuedTurn(sessionId, item.id)" in script
+
+
+def test_frontend_renders_runtime_and_subagent_queue_lifecycle() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'event === "run_queued"' in script
+    assert 'event === "run_dequeued"' in script
+    assert 'status: "queued"' in script
+    assert 'event === "item/started" || event === "item/updated"' in script
+    assert 'status === "queued" ? "subagent.queued"' in script
+    assert 't(queued ? "subagent.waiting_slot" : "subagent.waiting_result")' in script
+    assert ".subagent-card.queued" in styles
+    assert ".activity-pill.tone-queued" in styles
 
 
 def test_live_execution_card_renders_after_queued_guidance_before_acceptance() -> None:

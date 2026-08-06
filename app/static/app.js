@@ -999,7 +999,8 @@ function liveRunItemFromStreamItem(streamItem, eventName = "") {
   } else if (itemType === "contextCompaction") {
     labelKey = isCompleted ? "activity.live.context_compacted" : "activity.live.context_compacting";
   } else if (itemType === "subagent") {
-    labelKey = isCompleted ? "subagent.completed" : "subagent.running";
+    const status = normalizeProgressStatus(item.status || "");
+    labelKey = isCompleted ? "subagent.completed" : (status === "queued" ? "subagent.queued" : "subagent.running");
   } else if (itemType === "toolCall" || tool) {
     labelKey = isCompleted ? "activity.live.tool_finished" : "activity.live.tool_running";
   }
@@ -1725,6 +1726,7 @@ function normalizeProgressStatus(value) {
   if (["waiting_model", "waiting-model", "model_wait", "thinking"].includes(normalized)) return "waiting_model";
   if (["waiting_tool", "waiting-tool", "tool_wait", "waiting_result"].includes(normalized)) return "waiting_tool";
   if (["background_running", "background-running"].includes(normalized)) return "background_running";
+  if (["queued", "queue", "waiting_queue", "waiting-queue"].includes(normalized)) return "queued";
   if (["failed", "error"].includes(normalized)) return "failed";
   if (["blocked", "needs_user_input"].includes(normalized)) return "blocked";
   if (["cancelled", "canceled", "interrupted"].includes(normalized)) return "cancelled";
@@ -3878,6 +3880,7 @@ function activityPillLabel(locale, activity, nowMs = Date.now()) {
   if (status === "failed") return `${translateUi(locale, "activity.failed")}${duration ? ` ${duration}` : ""}`;
   if (status === "blocked") return translateUi(locale, "activity.blocked");
   if (status === "cancelled") return `${translateUi(locale, "activity.cancelled")}${duration ? ` ${duration}` : ""}`;
+  if (status === "queued") return `${translateUi(locale, "activity.queued")}${duration ? ` ${duration}` : ""}`;
   if (status === "completed") return `${translateUi(locale, "activity.title")}${duration ? ` ${duration}` : ""}`;
   return `${translateUi(locale, "activity.running")}${duration ? ` ${duration}` : ""}`;
 }
@@ -3887,6 +3890,7 @@ function activityToneClass(status) {
   if (normalized === "failed") return "failed";
   if (normalized === "blocked") return "blocked";
   if (normalized === "cancelled") return "cancelled";
+  if (normalized === "queued") return "queued";
   if (normalized === "completed") return "completed";
   return "running";
 }
@@ -7698,10 +7702,12 @@ function App() {
           return;
         }
         if (itemType === "subagent") {
+          const subagentStatus = normalizeProgressStatus(entry.status || "");
+          const subagentQueued = !isCompleted && subagentStatus === "queued";
           updateOwnerLiveHeartbeat({
-            status: isCompleted ? "background_running" : "running",
-            action: detail || t(isCompleted ? "subagent.completed" : "subagent.running"),
-            recentEvent: detail || t(isCompleted ? "subagent.completed" : "subagent.running"),
+            status: isCompleted ? "background_running" : (subagentQueued ? "queued" : "running"),
+            action: detail || t(isCompleted ? "subagent.completed" : (subagentQueued ? "subagent.queued" : "subagent.running")),
+            recentEvent: detail || t(isCompleted ? "subagent.completed" : (subagentQueued ? "subagent.waiting_slot" : "subagent.running")),
             source: "subagent",
           });
           return;
@@ -8199,6 +8205,41 @@ function App() {
               // Transport liveness is deliberately separate from semantic
               // progress, so an idle connection does not reset "last progress".
               markOwnerConnectionHeartbeat(payload.ts || Date.now());
+            } else if (event === "run_queued") {
+              const activeCount = Math.max(0, Number(payload.active_count || 0) || 0);
+              const runLimit = Math.max(1, Number(payload.max_concurrent_runs || 1) || 1);
+              const queueDetail = t("run.live_agent.queued", { active: activeCount, limit: runLimit });
+              applySnapshot({ turn_status: "queued" });
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                run_id: String(payload.run_id || ""),
+                status: "queued",
+              }));
+              replacePendingText(t("activity.status.queued"), { onlyWhileWaiting: true });
+              updateOwnerActiveTurn((prev) => ({
+                ...prev,
+                activeRunId: String(payload.run_id || prev.activeRunId || ""),
+                lastLiveProgressAt: Date.now(),
+              }));
+              updateOwnerLiveHeartbeat({
+                status: "queued",
+                action: t("activity.status.queued"),
+                recentEvent: queueDetail,
+                source: "runtime",
+              });
+            } else if (event === "run_dequeued") {
+              applySnapshot({ turn_status: "running" });
+              patchPendingActivity((activity) => mergeActivityState(activity, {
+                run_id: String(payload.run_id || ""),
+                status: "background_running",
+              }));
+              replacePendingText(t("activity.status.preparing_request"), { onlyWhileWaiting: true });
+              updateOwnerActiveTurn((prev) => ({ ...prev, lastLiveProgressAt: Date.now() }));
+              updateOwnerLiveHeartbeat({
+                status: "background_running",
+                action: t("activity.status.preparing_request"),
+                recentEvent: t("run.live_agent.preparing"),
+                source: "runtime",
+              });
             } else if (event === "run_started") {
               modelRequestStarted = true;
               patchPendingActivity((activity) => mergeActivityState(activity, {
@@ -8406,7 +8447,7 @@ function App() {
                   source: "model",
                 });
               }
-            } else if (event === "item/started") {
+            } else if (event === "item/started" || event === "item/updated") {
               const item = payload.item && typeof payload.item === "object" ? payload.item : {};
               if (item.id) {
                 patchPendingActivity((activity) => mergeActivityState(activity, {
@@ -10379,23 +10420,24 @@ function App() {
       .map((liveItem, index) => {
         const raw = liveItem.raw && typeof liveItem.raw === "object" ? liveItem.raw : {};
         const running = !isActivityTerminalStatus(liveItem.status);
+        const queued = normalizeProgressStatus(liveItem.status) === "queued";
         const role = String(raw.role || "explorer");
         const title = String(raw.label || liveItem.label || raw.task || t("subagent.title"));
         const summary = String(raw.summary || liveItem.detail || "");
         return html`
           <details
             key=${liveItem.id || `${item.id}-subagent-${index}`}
-            className=${`subagent-card ${running ? "running" : "completed"}`}
+            className=${`subagent-card ${queued ? "queued" : (running ? "running" : "completed")}`}
             open=${running}
           >
             <summary>
               <span>${t("subagent.title")} · ${role}</span>
-              <span>${running ? t("subagent.running") : t("subagent.completed")}</span>
+              <span>${queued ? t("subagent.queued") : (running ? t("subagent.running") : t("subagent.completed"))}</span>
             </summary>
             <div className="subagent-card-task">${title}</div>
             ${summary
               ? html`<div className="subagent-card-result message-markdown" dangerouslySetInnerHTML=${{ __html: renderMessageHtml(summary, `${item.id}-subagent-${index}`) }}></div>`
-              : html`<div className="subagent-card-result muted">${t("subagent.waiting_result")}</div>`}
+              : html`<div className="subagent-card-result muted">${t(queued ? "subagent.waiting_slot" : "subagent.waiting_result")}</div>`}
           </details>
         `;
       });

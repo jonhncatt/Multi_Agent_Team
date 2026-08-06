@@ -194,7 +194,7 @@ def _desktop_exit_worker(run_ids: list[str]) -> None:
         with _active_chat_runs_lock:
             still_active = any(
                 str((_active_chat_runs.get(run_id) or {}).get("status") or "")
-                in {"running", "cancel_requested"}
+                in {"queued", "running", "cancel_requested"}
                 for run_id in run_ids
             )
         if not still_active:
@@ -347,6 +347,12 @@ def _resolve_build_version() -> str:
 BUILD_VERSION = _resolve_build_version()
 
 
+class AgentRunQueueCancelled(RuntimeError):
+    def __init__(self, wait_ms: int) -> None:
+        super().__init__("Agent run was cancelled while queued.")
+        self.wait_ms = max(0, int(wait_ms))
+
+
 class AgentRunQueue:
     """
     Session-aware lane queue:
@@ -355,9 +361,13 @@ class AgentRunQueue:
     """
 
     def __init__(self, max_concurrent_runs: int) -> None:
-        self._global_sem = threading.BoundedSemaphore(max(1, int(max_concurrent_runs)))
+        self.max_concurrent_runs = max(1, int(max_concurrent_runs))
+        self._global_sem = threading.BoundedSemaphore(self.max_concurrent_runs)
         self._locks_guard = threading.Lock()
         self._session_locks: dict[str, threading.Lock] = {}
+        self._state_lock = threading.Lock()
+        self._active_count = 0
+        self._waiting_count = 0
 
     def _get_session_lock(self, session_id: str) -> threading.Lock:
         sid = str(session_id or "").strip() or "__anon__"
@@ -368,19 +378,96 @@ class AgentRunQueue:
                 self._session_locks[sid] = lock
             return lock
 
-    def run_slot(self, session_id: str):
+    def run_slot(
+        self,
+        session_id: str,
+        *,
+        cancel_event: threading.Event | None = None,
+        on_queued: Callable[[dict[str, Any]], None] | None = None,
+    ):
         sid = str(session_id or "").strip() or "__anon__"
         started = time.monotonic()
         session_lock = self._get_session_lock(sid)
         waited = False
-        if not session_lock.acquire(blocking=False):
+        queued = False
+        session_acquired = False
+        global_acquired = False
+
+        def cancelled() -> bool:
+            return bool(cancel_event is not None and cancel_event.is_set())
+
+        def mark_queued(reason: str) -> None:
+            nonlocal waited, queued
             waited = True
-            session_lock.acquire()
-        if not self._global_sem.acquire(blocking=False):
-            waited = True
-            self._global_sem.acquire()
-        wait_ms = int((time.monotonic() - started) * 1000)
-        return _AgentRunQueueTicket(self._global_sem, session_lock, wait_ms, waited=waited)
+            if queued:
+                return
+            queued = True
+            with self._state_lock:
+                self._waiting_count += 1
+                payload = {
+                    "reason": str(reason or "capacity"),
+                    "active_count": self._active_count,
+                    "waiting_count": self._waiting_count,
+                    "max_concurrent_runs": self.max_concurrent_runs,
+                    "queued_at": time.time(),
+                }
+            if callable(on_queued):
+                on_queued(payload)
+
+        def finish_waiting() -> None:
+            nonlocal queued
+            if not queued:
+                return
+            with self._state_lock:
+                self._waiting_count = max(0, self._waiting_count - 1)
+            queued = False
+
+        def raise_if_cancelled() -> None:
+            if not cancelled():
+                return
+            finish_waiting()
+            raise AgentRunQueueCancelled(int((time.monotonic() - started) * 1000))
+
+        try:
+            raise_if_cancelled()
+            session_acquired = session_lock.acquire(blocking=False)
+            if not session_acquired:
+                mark_queued("session_busy")
+                while not session_acquired:
+                    raise_if_cancelled()
+                    session_acquired = session_lock.acquire(timeout=0.05)
+
+            raise_if_cancelled()
+            global_acquired = self._global_sem.acquire(blocking=False)
+            if not global_acquired:
+                mark_queued("capacity")
+                while not global_acquired:
+                    raise_if_cancelled()
+                    global_acquired = self._global_sem.acquire(timeout=0.05)
+
+            raise_if_cancelled()
+            finish_waiting()
+            with self._state_lock:
+                self._active_count += 1
+            wait_ms = int((time.monotonic() - started) * 1000)
+            return _AgentRunQueueTicket(
+                self._global_sem,
+                session_lock,
+                wait_ms,
+                waited=waited,
+                on_release=self._release_active,
+            )
+        except BaseException:
+            finish_waiting()
+            if global_acquired:
+                self._global_sem.release()
+            if session_acquired:
+                session_lock.release()
+            raise
+
+    def _release_active(self) -> None:
+        with self._state_lock:
+            self._active_count = max(0, self._active_count - 1)
 
 
 class _AgentRunQueueTicket:
@@ -390,11 +477,13 @@ class _AgentRunQueueTicket:
         session_lock: threading.Lock,
         wait_ms: int,
         waited: bool = False,
+        on_release: Callable[[], None] | None = None,
     ) -> None:
         self._global_sem = global_sem
         self._session_lock = session_lock
         self.wait_ms = max(0, int(wait_ms))
         self.waited = bool(waited)
+        self._on_release = on_release
         self._released = False
         self._held_until_released = False
 
@@ -408,7 +497,11 @@ class _AgentRunQueueTicket:
         try:
             self._global_sem.release()
         finally:
-            self._session_lock.release()
+            try:
+                self._session_lock.release()
+            finally:
+                if callable(self._on_release):
+                    self._on_release()
 
     def __enter__(self):
         return self
@@ -942,7 +1035,7 @@ def desktop_lifecycle() -> dict[str, Any]:
             }
             for key, item in _active_chat_runs.items()
             if isinstance(item, dict)
-            and str(item.get("status") or "") in {"running", "cancel_requested"}
+            and str(item.get("status") or "") in {"queued", "running", "cancel_requested"}
         ]
     with _eval_job_manager_lock:
         eval_manager = _eval_job_manager
@@ -1481,7 +1574,7 @@ def _active_thread_ids() -> set[str]:
             str(item.get("session_id") or "").strip()
             for item in _active_chat_runs.values()
             if isinstance(item, dict)
-            and str(item.get("status") or "") in {"running", "cancel_requested"}
+            and str(item.get("status") or "") in {"queued", "running", "cancel_requested"}
             and str(item.get("session_id") or "").strip()
         }
 
@@ -2468,6 +2561,169 @@ def _emit_agent_message_events(
     )
 
 
+def _queued_cancelled_chat_response(
+    *,
+    req: ChatRequest,
+    locale: str,
+    provider: str,
+    requested_model: str,
+    requested_project: dict[str, Any],
+    requested_task: dict[str, Any],
+    seed_session: dict[str, Any],
+    run_id: str,
+    queue_wait_ms: int,
+    progress_cb: Callable[[dict[str, Any]], None] | None,
+) -> ChatResponse:
+    """Persist a queued cancellation without invoking the model runtime."""
+    session_id = str(seed_session.get("id") or "")
+    task_context = task_context_snapshot(requested_task) if requested_task else {}
+    user_turn = session_store.append_turn(
+        seed_session,
+        role="user",
+        text=req.message,
+        turn_id=req.client_message_id,
+        task_context=task_context,
+        logical_turn_id=run_id,
+    )
+    cancelled_text = translate(locale, "runtime.cancelled.text")
+    now = time.time()
+    activity = {
+        "run_id": run_id,
+        "status": "cancelled",
+        "summary": cancelled_text,
+        "started_at": now - (max(0, int(queue_wait_ms)) / 1000.0),
+        "turn_started_at": now - (max(0, int(queue_wait_ms)) / 1000.0),
+        "finished_at": now,
+        "run_duration_ms": max(0, int(queue_wait_ms)),
+        "final_elapsed_ms": max(0, int(queue_wait_ms)),
+        "triggering_user_message": str(req.message or "").strip(),
+        "triggering_user_turn_id": str(user_turn.get("id") or ""),
+        "session_id": session_id,
+        "thread_id": session_id,
+    }
+    answer_bundle = {
+        "summary": cancelled_text,
+        "claims": [],
+        "citations": [],
+        "warnings": ["cancelled_while_queued"],
+    }
+    response_turn = session_store.append_turn(
+        seed_session,
+        role="assistant",
+        text=cancelled_text,
+        answer_bundle=answer_bundle,
+        activity=activity,
+        logical_turn_id=run_id,
+    )
+    session_store.persist_turn_artifact(
+        seed_session,
+        turn_id=str(response_turn.get("id") or ""),
+        run_id=run_id,
+        logical_turn_id=run_id,
+        activity=activity,
+        answer_bundle=answer_bundle,
+        tool_events=[],
+        inspector={"notes": ["cancelled_while_queued"]},
+    )
+    session_store.mark_activity(seed_session, kind="turn_cancelled")
+    context_meter = _build_context_meter_for_session(
+        session=seed_session,
+        model=requested_model,
+        max_output_tokens=req.settings.max_output_tokens,
+        provider=provider,
+    )
+    session_store.save(seed_session)
+
+    response_turn_id = str(response_turn.get("id") or "")
+    snapshot = _build_run_snapshot(
+        goal=str(req.message or ""),
+        turn_id=response_turn_id,
+        turn_started_at=float(activity["turn_started_at"]),
+        turn_status="cancelled",
+        cwd=str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+        context_meter=context_meter,
+    )
+    _emit_agent_message_events(
+        progress_cb,
+        thread_id=session_id,
+        turn_id=run_id,
+        text=cancelled_text,
+    )
+    _emit_progress(
+        progress_cb,
+        "turn/completed",
+        turn={
+            "id": run_id,
+            "threadId": session_id,
+            "status": "cancelled",
+            "items": [],
+            "tokenUsage": {},
+        },
+        run_snapshot=snapshot,
+    )
+    _emit_progress(
+        progress_cb,
+        "run_finished",
+        run_id=run_id,
+        session_id=session_id,
+        thread_id=session_id,
+        turn_status="cancelled",
+        duration_ms=max(0, int(queue_wait_ms)),
+        run_snapshot=snapshot,
+    )
+    updated_thread = _thread_list_item_for_session_id(session_id)
+    if updated_thread is not None:
+        _emit_progress(progress_cb, "thread/updated", thread=dump_model(updated_thread))
+    _emit_thread_status_changed(progress_cb, thread_id=session_id, status="idle")
+
+    return ChatResponse(
+        session_id=session_id,
+        thread_id=session_id,
+        turn_id=response_turn_id,
+        run_id=run_id,
+        selected_business_module="llm_router_core",
+        effective_model=requested_model,
+        queue_wait_ms=max(0, int(queue_wait_ms)),
+        text=cancelled_text,
+        permission_profile=str(req.settings.permission_profile or "auto"),
+        turn_status="cancelled",
+        work_cursor={
+            "project_root": str(seed_session.get("project_root") or requested_project.get("root_path") or ""),
+            "cwd": str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+        },
+        activity=MessageActivity(**activity),
+        context_meter=context_meter,
+        inspector={
+            "agent": get_vintage_programmer_runtime().descriptor(),
+            "notes": ["cancelled_while_queued"],
+            "run_state": {
+                "phase": "queue",
+                "goal": str(req.message or ""),
+                "permission_profile": str(req.settings.permission_profile or "auto"),
+                "turn_status": "cancelled",
+                "plan": [],
+                "pending_user_input": {},
+                "context_meter": dict(context_meter),
+            },
+            "tool_timeline": [],
+            "session": {
+                "session_id": session_id,
+                "project_id": str(seed_session.get("project_id") or requested_project.get("project_id") or ""),
+                "project_title": str(seed_session.get("project_title") or requested_project.get("title") or ""),
+                "project_root": str(seed_session.get("project_root") or requested_project.get("root_path") or ""),
+                "cwd": str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+                "history_turn_count": len(seed_session.get("turns") or []),
+                "attachment_count": 0,
+                "context_meter": dict(context_meter),
+            },
+            "token_usage": {"total_tokens": 0},
+            "loaded_skills": [],
+        },
+        turn_count=len(seed_session.get("turns") or []),
+        summarized=False,
+    )
+
+
 def _build_run_snapshot(
     *,
     goal: str,
@@ -2912,11 +3168,89 @@ def _process_chat_request(
         _update_active_chat_run(run_id, session_id=session_id, project_id=str(requested_project.get("project_id") or ""))
 
         queue_wait_ms = 0
-        with run_queue.run_slot(session_id) as ticket:
+
+        def handle_run_queued(queue_state: dict[str, Any]) -> None:
+            queued_at = float(queue_state.get("queued_at") or time.time())
+            queue_snapshot = _build_run_snapshot(
+                goal=str(req.message or ""),
+                turn_started_at=logical_turn_started_at,
+                turn_status="queued",
+                cwd=str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+            )
+            _update_active_chat_run(
+                run_id,
+                status="queued",
+                accepting_steers=False,
+                queued_at=queued_at,
+                queue_reason=str(queue_state.get("reason") or "capacity"),
+            )
+            _emit_thread_started(progress_cb, session_id, session=seed_session)
+            _emit_thread_status_changed(progress_cb, thread_id=session_id, status="active")
+            _emit_progress(
+                progress_cb,
+                "run_queued",
+                run_id=run_id,
+                session_id=session_id,
+                thread_id=session_id,
+                reason=str(queue_state.get("reason") or "capacity"),
+                active_count=int(queue_state.get("active_count") or 0),
+                waiting_count=int(queue_state.get("waiting_count") or 0),
+                max_concurrent_runs=int(queue_state.get("max_concurrent_runs") or run_queue.max_concurrent_runs),
+                queued_at=queued_at,
+                turn_status="queued",
+                run_snapshot=queue_snapshot,
+            )
+
+        try:
+            ticket_context = run_queue.run_slot(
+                session_id,
+                cancel_event=cancel_event,
+                on_queued=handle_run_queued,
+            )
+        except AgentRunQueueCancelled as exc:
+            terminal_run_status = "interrupted"
+            request_phase_timer.record_duration_ms("queue_wait_ms", exc.wait_ms)
+            return _queued_cancelled_chat_response(
+                req=req,
+                locale=locale,
+                provider=requested_provider,
+                requested_model=requested_model,
+                requested_project=requested_project,
+                requested_task=requested_task,
+                seed_session=seed_session,
+                run_id=run_id,
+                queue_wait_ms=exc.wait_ms,
+                progress_cb=progress_cb,
+            )
+
+        with ticket_context as ticket:
             turn_ticket = ticket
             ticket.hold_until_released()
             queue_wait_ms = int(ticket.wait_ms)
             request_phase_timer.record_duration_ms("queue_wait_ms", queue_wait_ms)
+            _update_active_chat_run(
+                run_id,
+                status="running",
+                accepting_steers=True,
+                queue_wait_ms=queue_wait_ms,
+                dequeued_at=time.time(),
+            )
+            if bool(ticket.waited):
+                _emit_progress(
+                    progress_cb,
+                    "run_dequeued",
+                    run_id=run_id,
+                    session_id=session_id,
+                    thread_id=session_id,
+                    queue_wait_ms=queue_wait_ms,
+                    turn_status="running",
+                    run_snapshot=_build_run_snapshot(
+                        goal=str(req.message or ""),
+                        turn_started_at=logical_turn_started_at,
+                        turn_status="running",
+                        cwd=str(seed_session.get("cwd") or requested_project.get("root_path") or ""),
+                    ),
+                )
             if queue_wait_ms >= config.run_queue_wait_notice_ms:
                 _emit_progress(
                     progress_cb,

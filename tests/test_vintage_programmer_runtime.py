@@ -1959,7 +1959,7 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
         "wait_subagents",
     ]
     subagent_event = next(item for item in result["tool_events"] if item["name"] == "spawn_subagent")
-    assert "running" in str(subagent_event["result_preview"])
+    assert "queued" in str(subagent_event["result_preview"])
     wait_event = next(item for item in result["tool_events"] if item["name"] == "wait_subagents")
     assert "app/main.py" in str(wait_event["result_preview"])
     wait_tool_message = parent_backend.invocations[2]["messages"][-1]
@@ -1977,10 +1977,15 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     assert isinstance(child_tools.runtime_contexts[-1]["cancel_event"], threading.Event)
     stream_events = [
         item for item in progress_events
-        if item.get("event") in {"item/started", "item/completed"}
+        if item.get("event") in {"item/started", "item/updated", "item/completed"}
         and str((item.get("item") or {}).get("type") or "") == "subagent"
     ]
-    assert [item["event"] for item in stream_events] == ["item/started", "item/completed"]
+    assert [item["event"] for item in stream_events] == ["item/started", "item/updated", "item/completed"]
+    assert [str((item.get("item") or {}).get("status") or "") for item in stream_events] == [
+        "queued",
+        "inProgress",
+        "completed",
+    ]
 
 
 def test_runtime_runs_independent_subagents_in_parallel_and_waits_for_both(
@@ -2077,6 +2082,116 @@ def test_runtime_runs_independent_subagents_in_parallel_and_waits_for_both(
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 2
     assert all(item.get("status") == "completed" for item in subagent_items)
+
+
+def test_runtime_reports_subagents_as_queued_until_a_worker_actually_starts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    active_lock = threading.Lock()
+    activity = {"active": 0, "peak": 0, "created": 0}
+
+    class _SequentialChildBackend(_FakeBackend):
+        def _invoke_chat_with_runner(self, **kwargs: Any):
+            with active_lock:
+                activity["active"] += 1
+                activity["peak"] = max(activity["peak"], activity["active"])
+            try:
+                time.sleep(0.05)
+                return super()._invoke_chat_with_runner(**kwargs)
+            finally:
+                with active_lock:
+                    activity["active"] -= 1
+
+    def create_child_backend(_config):
+        with active_lock:
+            activity["created"] += 1
+            index = activity["created"]
+        return _SequentialChildBackend([_FakeMessage(content=f"Queued child result {index}.")])
+
+    monkeypatch.setattr(runtime_module, "create_vp_runtime_backend", create_child_backend)
+    parent_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-queued-subagent-a",
+                        "name": "spawn_subagent",
+                        "args": {"task": "Inspect path A.", "role": "explorer", "label": "Path A"},
+                    },
+                    {
+                        "id": "tc-queued-subagent-b",
+                        "name": "spawn_subagent",
+                        "args": {"task": "Inspect path B.", "role": "explorer", "label": "Path B"},
+                    },
+                ],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-wait-queued-subagents",
+                        "name": "wait_subagents",
+                        "args": {"timeout_seconds": 30},
+                    }
+                ],
+            ),
+            _FakeMessage(content="Combined queued results."),
+        ]
+    )
+    isolated_config = _isolated_config(tmp_path)
+    isolated_config.max_concurrent_subagents = 1
+    runtime = VintageProgrammerRuntime(
+        config=isolated_config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=parent_backend,
+    )
+    progress_events: list[dict[str, Any]] = []
+
+    result = runtime.run(
+        message="Queue two independent investigations.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-queued-subagents",
+            "run_id": "run-queued-subagents",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+        progress_cb=progress_events.append,
+    )
+
+    assert result["text"] == "Combined queued results."
+    assert activity["created"] == 2
+    assert activity["peak"] == 1
+    lifecycle = [
+        item
+        for item in progress_events
+        if item.get("event") in {"item/started", "item/updated", "item/completed"}
+        and str((item.get("item") or {}).get("type") or "") == "subagent"
+    ]
+    started = [item for item in lifecycle if item.get("event") == "item/started"]
+    updated = [item for item in lifecycle if item.get("event") == "item/updated"]
+    completed = [item for item in lifecycle if item.get("event") == "item/completed"]
+    assert len(started) == len(updated) == len(completed) == 2
+    assert all(str((item.get("item") or {}).get("status") or "") == "queued" for item in started)
+    assert all(str((item.get("item") or {}).get("status") or "") == "inProgress" for item in updated)
+    event_positions = {
+        (str(item.get("event") or ""), str((item.get("item") or {}).get("id") or "")): index
+        for index, item in enumerate(lifecycle)
+    }
+    for item in started:
+        subagent_id = str((item.get("item") or {}).get("id") or "")
+        assert event_positions[("item/started", subagent_id)] < event_positions[("item/updated", subagent_id)]
+        assert event_positions[("item/updated", subagent_id)] < event_positions[("item/completed", subagent_id)]
+    first_running_id = str((updated[0].get("item") or {}).get("id") or "")
+    second_running_id = str((updated[1].get("item") or {}).get("id") or "")
+    assert event_positions[("item/completed", first_running_id)] < event_positions[("item/updated", second_running_id)]
 
 
 def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(

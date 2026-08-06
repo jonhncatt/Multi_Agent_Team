@@ -4948,6 +4948,7 @@ class VintageProgrammerRuntime:
             child_cancel_event: threading.Event,
         ) -> dict[str, Any]:
             child_progress_count = 0
+            active_item = dict(started_item)
 
             def record_child_progress(_payload: dict[str, Any]) -> None:
                 nonlocal child_progress_count
@@ -4967,6 +4968,18 @@ class VintageProgrammerRuntime:
                     "token_usage": {},
                 }
             else:
+                active_item = {
+                    **started_item,
+                    "status": "inProgress",
+                    "started_at": time.time(),
+                }
+                with subagent_lock:
+                    record = subagent_records.get(subagent_id)
+                    should_emit_started = isinstance(record, dict) and not bool(record.get("detached"))
+                    if should_emit_started:
+                        record["item"] = dict(active_item)
+                if should_emit_started:
+                    emit_subagent_item("item/updated", active_item)
                 try:
                     child_runtime = VintageProgrammerRuntime(
                         config=self._config,
@@ -5034,7 +5047,7 @@ class VintageProgrammerRuntime:
                         "token_usage": {},
                     }
             completed_item = {
-                **started_item,
+                **active_item,
                 "status": "completed" if bool(result.get("ok")) else str(result.get("status") or "failed"),
                 "summary": str(result.get("summary") or "")[:12000],
                 "summary_total_chars": len(str(result.get("summary") or "")),
@@ -5070,12 +5083,12 @@ class VintageProgrammerRuntime:
             started_item = {
                 "id": subagent_id,
                 "type": "subagent",
-                "status": "inProgress",
+                "status": "queued",
                 "role": normalized_role,
                 "label": display_label,
                 "task": task_text,
                 "summary": "",
-                "started_at": time.time(),
+                "queued_at": time.time(),
             }
             child_cancel_event = threading.Event()
             with subagent_lock:
@@ -5139,8 +5152,8 @@ class VintageProgrammerRuntime:
                 "subagent_id": subagent_id,
                 "role": normalized_role,
                 "label": display_label,
-                "status": "running",
-                "summary": "Subagent started. Call wait_subagents to collect its result.",
+                "status": "queued",
+                "summary": "Subagent queued. Call wait_subagents to collect its result.",
             }
 
         def subagent_waiter(
@@ -5180,7 +5193,11 @@ class VintageProgrammerRuntime:
                             {
                                 "subagent_id": subagent_id,
                                 "role": str(record.get("role") or ""),
-                                "status": "running",
+                                "status": (
+                                    "queued"
+                                    if str(item.get("status") or "").strip().lower() == "queued"
+                                    else "running"
+                                ),
                                 "label": str(item.get("label") or ""),
                             }
                         )

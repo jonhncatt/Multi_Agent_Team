@@ -1015,6 +1015,11 @@ img.brand-mark {
   border-color: rgba(37, 99, 235, 0.32);
 }
 
+.subagent-card.queued {
+  border-color: rgba(217, 119, 6, 0.34);
+  background: rgba(255, 247, 237, 0.76);
+}
+
 .subagent-card > summary {
   display: flex;
   justify-content: space-between;
@@ -1062,6 +1067,7 @@ img.brand-mark {
 }
 
 .activity-pill.tone-running,
+.activity-pill.tone-queued,
 .activity-pill.tone-completed {
   color: var(--ink);
 }
@@ -1107,6 +1113,7 @@ img.brand-mark {
 }
 
 .activity-flow-stage.tone-running,
+.activity-flow-stage.tone-queued,
 .activity-flow-stage.tone-completed {
   color: var(--ink);
 }
@@ -3676,6 +3683,7 @@ img.brand-mark {
 }
 
 .run-progress-state.status-running,
+.run-progress-state.status-queued,
 .run-progress-state.status-waiting_tool,
 .run-progress-state.status-background_running {
   background: rgba(17, 24, 39, 0.08);
