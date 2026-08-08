@@ -133,6 +133,30 @@ def _normalize_trace_summary(raw: Any) -> dict[str, Any]:
     turn_changes = normalize_turn_changes_summary(payload.get("turn_changes"))
     if turn_changes:
         summary["turn_changes"] = turn_changes
+    subagents: list[dict[str, Any]] = []
+    for raw_item in list(payload.get("subagents") or []):
+        if not isinstance(raw_item, dict):
+            continue
+        subagent_id = str(raw_item.get("id") or raw_item.get("subagent_id") or "").strip()
+        if not subagent_id:
+            continue
+        item = {
+            "id": subagent_id,
+            "type": "subagent",
+            "status": str(raw_item.get("status") or "queued").strip() or "queued",
+            "role": str(raw_item.get("role") or "explorer").strip() or "explorer",
+            "label": str(raw_item.get("label") or "").strip()[:240],
+            "task": str(raw_item.get("task") or "").strip()[:1000],
+            "summary": str(raw_item.get("summary") or "").strip()[:2000],
+        }
+        for key in ("queued_at", "started_at", "completed_at", "tool_count"):
+            if raw_item.get(key) not in (None, ""):
+                item[key] = raw_item.get(key)
+        subagents.append(item)
+        if len(subagents) >= 16:
+            break
+    if subagents:
+        summary["subagents"] = subagents
     return summary
 
 
@@ -184,6 +208,8 @@ def normalize_transcript_item(raw: Any) -> dict[str, Any] | None:
     task_context = raw.get("task_context")
     if role == "user" and isinstance(task_context, dict) and task_context:
         item["task_context"] = dict(task_context)
+    if bool(raw.get("model_only")):
+        item["model_only"] = True
     return item
 
 

@@ -4911,8 +4911,42 @@ class VintageProgrammerRuntime:
                     )
 
         subagent_lock = threading.RLock()
+        subagent_condition = threading.Condition(subagent_lock)
+        subagent_parent_closed = threading.Event()
+        subagent_publish_late_results = threading.Event()
         subagent_records: dict[str, dict[str, Any]] = {}
         subagent_executor: ThreadPoolExecutor | None = None
+        publish_subagent_result = context_payload.get("publish_subagent_result")
+
+        def publish_subagent_record(record: dict[str, Any]) -> None:
+            if not callable(publish_subagent_result):
+                return
+            with subagent_condition:
+                result = record.get("result")
+                if (
+                    not isinstance(result, dict)
+                    or not subagent_publish_late_results.is_set()
+                    or bool(record.get("collected"))
+                    or bool(record.get("published"))
+                    or bool(record.get("detached"))
+                ):
+                    return
+                record["published"] = True
+                item = dict(record.get("item") or {})
+                result_payload = dict(result)
+
+            def deliver() -> None:
+                try:
+                    publish_subagent_result(item=item, result=result_payload)
+                except Exception:
+                    with subagent_condition:
+                        record["published"] = False
+
+            threading.Thread(
+                target=deliver,
+                name=f"vp-subagent-publish-{str(record.get('id') or '')[-12:]}",
+                daemon=True,
+            ).start()
 
         def emit_subagent_item(event: str, item: dict[str, Any]) -> None:
             normalized = dict(item or {})
@@ -4929,7 +4963,13 @@ class VintageProgrammerRuntime:
                     stream_items[existing_index] = normalized
                 else:
                     stream_items.append(normalized)
-            if progress_cb is not None:
+            should_emit_after_parent_close = (
+                event == "item/completed"
+                and str(normalized.get("status") or "").strip().lower() == "cancelled"
+            )
+            if progress_cb is not None and (
+                not subagent_parent_closed.is_set() or should_emit_after_parent_close
+            ):
                 progress_cb(
                     {
                         "event": event,
@@ -4973,9 +5013,13 @@ class VintageProgrammerRuntime:
                     "status": "inProgress",
                     "started_at": time.time(),
                 }
-                with subagent_lock:
+                with subagent_condition:
                     record = subagent_records.get(subagent_id)
-                    should_emit_started = isinstance(record, dict) and not bool(record.get("detached"))
+                    should_emit_started = (
+                        isinstance(record, dict)
+                        and not bool(record.get("detached"))
+                        and not subagent_parent_closed.is_set()
+                    )
                     if should_emit_started:
                         record["item"] = dict(active_item)
                 if should_emit_started:
@@ -5055,14 +5099,21 @@ class VintageProgrammerRuntime:
                 "completed_at": time.time(),
                 "tool_count": int(result.get("tool_count") or 0),
             }
-            with subagent_lock:
+            with subagent_condition:
                 record = subagent_records.get(subagent_id)
-                should_emit = isinstance(record, dict) and not bool(record.get("detached"))
-                if should_emit:
+                should_emit = (
+                    isinstance(record, dict)
+                    and not bool(record.get("detached"))
+                    and not subagent_parent_closed.is_set()
+                )
+                if isinstance(record, dict) and not bool(record.get("detached")):
                     record["result"] = dict(result)
                     record["item"] = dict(completed_item)
+                subagent_condition.notify_all()
             if should_emit:
                 emit_subagent_item("item/completed", completed_item)
+            if isinstance(record, dict) and subagent_parent_closed.is_set():
+                publish_subagent_record(record)
             return result
 
         def subagent_runner(*, task: str, role: str = "explorer", label: str = "") -> dict[str, Any]:
@@ -5091,7 +5142,7 @@ class VintageProgrammerRuntime:
                 "queued_at": time.time(),
             }
             child_cancel_event = threading.Event()
-            with subagent_lock:
+            with subagent_condition:
                 if subagent_executor is None:
                     subagent_executor = ThreadPoolExecutor(
                         max_workers=int(self._config.max_concurrent_subagents),
@@ -5107,6 +5158,8 @@ class VintageProgrammerRuntime:
                     "cancel_commands": None,
                     "detached": False,
                     "usage_reported": False,
+                    "collected": False,
+                    "published": False,
                 }
                 executor = subagent_executor
             emit_subagent_item("item/started", started_item)
@@ -5132,8 +5185,15 @@ class VintageProgrammerRuntime:
                     "summary": error_text,
                     "token_usage": {},
                 }
-                with subagent_lock:
+                with subagent_condition:
                     subagent_records[subagent_id]["result"] = dict(failed_result)
+                    subagent_records[subagent_id]["item"] = {
+                        **started_item,
+                        "status": "failed",
+                        "summary": error_text,
+                        "completed_at": time.time(),
+                    }
+                    subagent_condition.notify_all()
                 emit_subagent_item(
                     "item/completed",
                     {
@@ -5144,8 +5204,9 @@ class VintageProgrammerRuntime:
                     },
                 )
                 return failed_result
-            with subagent_lock:
+            with subagent_condition:
                 subagent_records[subagent_id]["future"] = future
+                subagent_condition.notify_all()
             return {
                 "ok": True,
                 "accepted": True,
@@ -5153,7 +5214,7 @@ class VintageProgrammerRuntime:
                 "role": normalized_role,
                 "label": display_label,
                 "status": "queued",
-                "summary": "Subagent queued. Call wait_subagents to collect its result.",
+                "summary": "Subagent queued. Wait only if this turn needs its result; otherwise it will finish in the background and publish to the parent Thread.",
             }
 
         def subagent_waiter(
@@ -5162,7 +5223,9 @@ class VintageProgrammerRuntime:
             timeout_seconds: float = 30,
         ) -> dict[str, Any]:
             requested_ids = [str(item).strip() for item in list(subagent_ids or []) if str(item or "").strip()]
-            with subagent_lock:
+            timeout = max(0.0, min(300.0, float(timeout_seconds or 0.0)))
+            deadline = time.monotonic() + timeout
+            with subagent_condition:
                 selected_ids = requested_ids or list(subagent_records)
                 unknown_ids = [item for item in selected_ids if item not in subagent_records]
                 if unknown_ids:
@@ -5172,17 +5235,18 @@ class VintageProgrammerRuntime:
                         "error": "Unknown Subagent id(s).",
                         "unknown_ids": unknown_ids,
                     }
-                futures: list[Future[Any]] = [
-                    subagent_records[item]["future"]
+                while selected_ids and any(
+                    not isinstance(subagent_records[item].get("result"), dict)
                     for item in selected_ids
-                    if isinstance(subagent_records[item].get("future"), Future)
-                ]
-            if futures:
-                wait(futures, timeout=max(0.0, min(300.0, float(timeout_seconds or 0.0))))
+                ):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    subagent_condition.wait(timeout=remaining)
             results: list[dict[str, Any]] = []
             pending_ids: list[str] = []
             new_usage: dict[str, Any] = {}
-            with subagent_lock:
+            with subagent_condition:
                 for subagent_id in selected_ids:
                     record = subagent_records[subagent_id]
                     result = record.get("result")
@@ -5203,6 +5267,7 @@ class VintageProgrammerRuntime:
                         )
                         continue
                     results.append({key: value for key, value in result.items() if key != "token_usage"})
+                    record["collected"] = True
                     if not bool(record.get("usage_reported")):
                         new_usage = self._backend._merge_usage(
                             new_usage,
@@ -5224,6 +5289,9 @@ class VintageProgrammerRuntime:
 
         def shutdown_subagents(*, cancel_running: bool = False) -> None:
             nonlocal subagent_executor, usage_total
+            if not cancel_running:
+                subagent_publish_late_results.set()
+            subagent_parent_closed.set()
             executor = subagent_executor
             subagent_executor = None
             if executor is not None:
@@ -5280,7 +5348,10 @@ class VintageProgrammerRuntime:
                     for item in cancelled_items:
                         emit_subagent_item("item/completed", item)
                 else:
-                    executor.shutdown(wait=True, cancel_futures=False)
+                    # A successful parent turn must not silently join independent
+                    # Subagents. They finish in the background and publish their
+                    # result into the parent Thread for the next model turn.
+                    executor.shutdown(wait=False, cancel_futures=False)
             unreported_usage: dict[str, Any] = {}
             with subagent_lock:
                 for record in subagent_records.values():
@@ -5293,6 +5364,15 @@ class VintageProgrammerRuntime:
                     )
                     record["usage_reported"] = True
             usage_total = self._backend._merge_usage(usage_total, unreported_usage)
+            if not cancel_running:
+                with subagent_condition:
+                    ready_records = [
+                        record
+                        for record in subagent_records.values()
+                        if isinstance(record.get("result"), dict)
+                    ]
+                for record in ready_records:
+                    publish_subagent_record(record)
 
         def emit_runtime_activity(
             activity_type: str,
@@ -6674,6 +6754,7 @@ class VintageProgrammerRuntime:
                         "tool_drain_mode": "all_calls",
                         "tool_boundary_clean": self._messages_at_tool_boundary(messages),
                     },
+                    visible=False,
                     trace_events=trace_events,
                 )
                 for call_idx, call in enumerate(tool_calls, start=1):
@@ -7492,6 +7573,7 @@ class VintageProgrammerRuntime:
                         "tool_drain_mode": "all_calls",
                         "tool_boundary_clean": tool_boundary_clean,
                     },
+                    visible=False,
                     trace_events=trace_events,
                 )
                 if not expected_pause:

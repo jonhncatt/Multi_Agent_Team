@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.run_record import encode_run_record
 from app.storage import SessionStore
-from app.thread_record import encode_thread_record
+from app.thread_record import encode_thread_record, project_turns_from_thread
 
 
 THREAD_KEYS = {
@@ -169,3 +169,26 @@ def test_run_encoder_keeps_one_status_and_no_thread_semantic_state() -> None:
     for key in ("turn_status", "activity", "task_state", "work_cursor", "current_task_focus", "trace_events", "live_items"):
         assert key not in encoded
     assert encoded["debug"]["inspector"]["run_state"] == {"phase": "execute"}
+
+
+def test_model_only_subagent_mailbox_item_is_persisted_but_hidden_from_ui_turns() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 1,
+            "items": [
+                {"id": "u1", "role": "user", "content": "start"},
+                {"id": "a1", "role": "assistant", "content": "parent done"},
+                {
+                    "id": "subagent-result-1",
+                    "role": "user",
+                    "content": "[background_subagent_result]late finding[/background_subagent_result]",
+                    "model_only": True,
+                },
+            ],
+        }
+    }
+
+    encoded = encode_thread_record(session)
+
+    assert encoded["thread_transcript"]["items"][-1]["model_only"] is True
+    assert [turn["text"] for turn in project_turns_from_thread(encoded)] == ["start", "parent done"]

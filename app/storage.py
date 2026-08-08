@@ -78,6 +78,10 @@ def _coerce_turns(raw: Any) -> list[dict[str, Any]]:
     return [item for item in list(raw or []) if isinstance(item, dict)]
 
 
+def _list_of_dicts(raw: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in list(raw or []) if isinstance(item, dict)]
+
+
 def _new_repair_stats() -> dict[str, Any]:
     return {
         "scanned_sessions": 0,
@@ -230,6 +234,63 @@ class TurnTraceStore:
         if len(parts) < 3 or parts[-3] != "turn_traces":
             return None
         return self.load(thread_id=parts[-2], turn_id=parts[-1])
+
+    def upsert_subagent_item(self, trace_ref: str, item: dict[str, Any]) -> bool:
+        """Persist a late Subagent result without rebuilding the parent Turn Trace."""
+        parts = [part for part in str(trace_ref or "").strip().split("/") if part]
+        if len(parts) < 3 or parts[-3] != "turn_traces":
+            return False
+        subagent_id = str(item.get("id") or item.get("subagent_id") or "").strip()
+        if not subagent_id:
+            return False
+        target = self._path(parts[-2], parts[-1])
+        if not target.exists():
+            return False
+        try:
+            with self._lock:
+                payload = json.loads(target.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    return False
+                steps = [dict(step) for step in list(payload.get("steps") or []) if isinstance(step, dict)]
+                replacement = {
+                    "type": "subagent",
+                    "item_id": subagent_id,
+                    "subagent_id": subagent_id,
+                    "role": str(item.get("role") or "explorer").strip() or "explorer",
+                    "label": str(item.get("label") or "").strip(),
+                    "task": str(item.get("task") or "").strip(),
+                    "status": str(item.get("status") or "completed").strip() or "completed",
+                    "summary": str(item.get("summary") or "").strip(),
+                    "queued_at": max(0.0, float(item.get("queued_at") or 0.0)),
+                    "started_at": max(0.0, float(item.get("started_at") or 0.0)),
+                    "completed_at": max(0.0, float(item.get("completed_at") or 0.0)),
+                    "tool_count": max(0, int(item.get("tool_count") or 0)),
+                }
+                existing_index = next(
+                    (
+                        index
+                        for index, step in enumerate(steps)
+                        if str(step.get("type") or "") == "subagent"
+                        and str(step.get("subagent_id") or step.get("item_id") or "") == subagent_id
+                    ),
+                    -1,
+                )
+                if existing_index >= 0:
+                    replacement["sequence"] = max(1, int(steps[existing_index].get("sequence") or existing_index + 1))
+                    steps[existing_index] = replacement
+                else:
+                    replacement["sequence"] = max(
+                        [max(0, int(step.get("sequence") or 0)) for step in steps] or [0]
+                    ) + 1
+                    steps.append(replacement)
+                payload["steps"] = steps
+                payload["updated_at"] = now_iso()
+                tmp_path = target.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp_path.replace(target)
+            return True
+        except Exception:
+            return False
 
     def delete_thread(self, thread_id: str) -> None:
         target = self._thread_dir(thread_id)
@@ -453,6 +514,13 @@ class SessionStore:
         turn_changes = normalize_turn_changes_summary(source.get("turn_changes"))
         if turn_changes:
             summary["turn_changes"] = turn_changes
+        subagents = [
+            dict(item)
+            for item in _list_of_dicts(source.get("live_items"))
+            if str(item.get("type") or "").strip() == "subagent"
+        ]
+        if subagents:
+            summary["subagents"] = subagents[:16]
         return summary
 
     def _run_id_for_turn(self, turn: dict[str, Any]) -> str:
@@ -623,6 +691,9 @@ class SessionStore:
             turn_changes = normalize_turn_changes_summary(linked_summary.get("turn_changes"))
             if turn_changes:
                 item_trace["turn_changes"] = turn_changes
+            subagents = _list_of_dicts(linked_summary.get("subagents"))
+            if subagents:
+                item_trace["subagents"] = subagents[:16]
             item["trace"] = item_trace
         session["thread_transcript"] = normalize_thread_transcript(transcript)
         return turn_trace
@@ -775,6 +846,11 @@ class SessionStore:
                         for item in trace_steps
                         if str(item.get("type") or "").startswith("tool_")
                     ]
+                    subagent_steps = [
+                        item
+                        for item in trace_steps
+                        if str(item.get("type") or "") == "subagent"
+                    ]
                     projected_tool_items = []
                     for step_index, step in enumerate(tool_steps, start=1):
                         tool_call_id = str(step.get("tool_call_id") or "")
@@ -825,7 +901,23 @@ class SessionStore:
                         "full_loaded": requested_view == "full",
                         "trace_events": [],
                         "tool_items": projected_tool_items,
-                        "live_items": [],
+                        "live_items": [
+                            {
+                                "id": str(step.get("subagent_id") or step.get("item_id") or ""),
+                                "type": "subagent",
+                                "status": str(step.get("status") or "completed"),
+                                "role": str(step.get("role") or "explorer"),
+                                "label": str(step.get("label") or ""),
+                                "task": str(step.get("task") or ""),
+                                "summary": str(step.get("summary") or ""),
+                                "queued_at": step.get("queued_at") or 0.0,
+                                "started_at": step.get("started_at") or 0.0,
+                                "completed_at": step.get("completed_at") or 0.0,
+                                "tool_count": max(0, int(step.get("tool_count") or 0)),
+                            }
+                            for step in subagent_steps
+                            if str(step.get("subagent_id") or step.get("item_id") or "").strip()
+                        ],
                         "runtime_outcome": {
                             key: value
                             for key, value in dict(artifact.get("terminal") or {}).items()

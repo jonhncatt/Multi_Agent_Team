@@ -985,7 +985,17 @@ function mergeLiveRunItems(previousItems, nextItems) {
     if (!map.has(item.id)) order.push(item.id);
     map.set(item.id, { ...(map.get(item.id) || {}), ...item });
   });
-  return order.map((id) => map.get(id)).filter(Boolean).slice(-32);
+  const merged = order.map((id) => map.get(id)).filter(Boolean);
+  const retainedNonSubagentIds = new Set(
+    merged
+      .filter((item) => String((item && item.type) || "") !== "subagent")
+      .slice(-32)
+      .map((item) => item.id),
+  );
+  return merged.filter((item) => (
+    String((item && item.type) || "") === "subagent"
+    || retainedNonSubagentIds.has(item.id)
+  ));
 }
 
 function liveRunItemFromStreamItem(streamItem, eventName = "") {
@@ -1020,6 +1030,7 @@ function liveRunItemFromStreamItem(streamItem, eventName = "") {
 
 function liveRunItemFromTrace(trace) {
   const item = trace && typeof trace === "object" ? trace : {};
+  if (item.visible === false) return null;
   const type = String(item.type || "").trim();
   const payload = item.payload && typeof item.payload === "object" ? item.payload : {};
   const toolName = String(payload.tool_name || payload.tool || payload.name || ((payload.raw_tool_call || {}).name) || "").trim();
@@ -3207,6 +3218,14 @@ function runtimeApprovalIdentity(value) {
   ].join(":");
 }
 
+function runtimeApprovalSubmissionIdentity(threadId, value) {
+  const approvalIdentity = runtimeApprovalIdentity(value);
+  const normalizedThreadId = String(threadId || "").trim();
+  return normalizedThreadId && approvalIdentity
+    ? `${normalizedThreadId}::${approvalIdentity}`
+    : "";
+}
+
 function clearCommandExecutionApprovalState(value) {
   const state = value && typeof value === "object" ? value : {};
   const next = { ...state };
@@ -4291,8 +4310,7 @@ function App() {
   const [evalError, setEvalError] = useState("");
   const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
-  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
-  const [approvalSubmittingKey, setApprovalSubmittingKey] = useState("");
+  const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -4392,12 +4410,30 @@ function App() {
   );
   const anyThreadBusy = (() => {
     if (currentThreadBusy) return true;
+    if (sessions.some((item) => String((item && item.status) || "") === "active")) return true;
     for (const [threadId, snapshot] of threadDetailCacheRef.current.entries()) {
       if (String(threadId || "").trim() === String(sessionId || "").trim()) continue;
       if (isThreadSnapshotBusy(threadId, snapshot)) return true;
     }
     return false;
   })();
+  const activeThreadPollingKey = sessions
+    .filter((item) => String((item && item.status) || "") === "active")
+    .map((item) => threadListItemId(item))
+    .filter(Boolean)
+    .sort()
+    .join("|");
+  const backgroundSubagentPollingKey = messages
+    .filter((message) => {
+      if (!message || message.role !== "assistant" || message.pending) return false;
+      return normalizeMessageActivity(message.activity || {}).live_items.some((item) => (
+        String((item && item.type) || "") === "subagent"
+        && !isActivityTerminalStatus(item.status)
+      ));
+    })
+    .map((message) => String(message.id || "").trim())
+    .filter(Boolean)
+    .join("|");
   const setLastResponse = (value) => dispatch({ type: "update", path: ["activeTurn", "lastResponse"], value });
   const setToolTimeline = (value) => dispatch({ type: "update", path: ["activeTurn", "toolTimeline"], value });
   const setLiveTurnState = (value) => dispatch({ type: "update", path: ["activeTurn", "liveTurnState"], value });
@@ -4450,7 +4486,11 @@ function App() {
   function finishThreadRunIndicator(targetThreadId) {
     const key = String(targetThreadId || "").trim();
     if (!key) return;
-    if (String(activeSessionIdRef.current || "").trim() === key) {
+    const pageHasAttention = Boolean(
+      document.visibilityState === "visible"
+      && (typeof document.hasFocus !== "function" || document.hasFocus())
+    );
+    if (String(activeSessionIdRef.current || "").trim() === key && pageHasAttention) {
       markThreadRunIndicator(key, "");
       return;
     }
@@ -4461,11 +4501,11 @@ function App() {
     const key = String(targetThreadId || "").trim();
     if (!key) return "";
     const cachedSnapshot = threadDetailCacheRef.current.get(key) || {};
+    const serverRow = sessions.find((item) => threadListItemId(item) === key) || {};
     const rowBusy = key === String(sessionId || "").trim()
       ? currentThreadBusy
       : isThreadSnapshotBusy(key, cachedSnapshot);
-    if (rowBusy) return "running";
-    if (key === String(activeSessionIdRef.current || "").trim()) return "";
+    if (rowBusy || String(serverRow.status || "") === "active") return "running";
     const indicator = threadRunIndicators[key];
     return indicator && indicator.status === "completed_unread" ? "completed_unread" : "";
   }
@@ -4579,10 +4619,22 @@ function App() {
     ));
   }, [health, supportedLocales, defaultLocale, chatSettings.locale]);
 
+  const unreadThreadCompletionCount = Object.values(threadRunIndicators).filter(
+    (item) => item && item.status === "completed_unread",
+  ).length;
+
   useEffect(() => {
     document.documentElement.lang = uiLocale;
-    document.title = translateUi(uiLocale, "app.title");
-  }, [uiLocale]);
+    const baseTitle = translateUi(uiLocale, "app.title");
+    document.title = unreadThreadCompletionCount > 0
+      ? `(${unreadThreadCompletionCount}) ${baseTitle}`
+      : baseTitle;
+    if (unreadThreadCompletionCount > 0 && typeof navigator.setAppBadge === "function") {
+      Promise.resolve(navigator.setAppBadge(unreadThreadCompletionCount)).catch(() => {});
+    } else if (unreadThreadCompletionCount === 0 && typeof navigator.clearAppBadge === "function") {
+      Promise.resolve(navigator.clearAppBadge()).catch(() => {});
+    }
+  }, [uiLocale, unreadThreadCompletionCount]);
 
   useEffect(() => {
     const option = applyThemeColor(themeColor);
@@ -4894,10 +4946,14 @@ function App() {
     };
 
     const handleWindowFocus = () => {
+      clearThreadRunIndicator(activeSessionIdRef.current);
       refreshVisibleState();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        if (typeof document.hasFocus !== "function" || document.hasFocus()) {
+          clearThreadRunIndicator(activeSessionIdRef.current);
+        }
         refreshVisibleState();
       }
     };
@@ -4910,6 +4966,69 @@ function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [projectId, chatSettings.model, chatSettings.max_output_tokens]);
+
+  useEffect(() => {
+    if (!bootReadyRef.current || !projectId || !activeThreadPollingKey) return undefined;
+    let disposed = false;
+    let polling = false;
+    const watchedThreadIds = new Set(activeThreadPollingKey.split("|").filter(Boolean));
+    const pollActiveThreads = async () => {
+      if (disposed || polling || document.visibilityState === "hidden") return;
+      polling = true;
+      try {
+        const nextRows = await refreshSessions(projectId, { background: true });
+        if (disposed) return;
+        const nextActiveIds = new Set(
+          (Array.isArray(nextRows) ? nextRows : [])
+            .filter((item) => String((item && item.status) || "") === "active")
+            .map((item) => threadListItemId(item))
+            .filter(Boolean),
+        );
+        for (const threadId of watchedThreadIds) {
+          if (nextActiveIds.has(threadId) || activeSendThreadIdsRef.current.has(threadId)) continue;
+          finishThreadRunIndicator(threadId);
+          if (String(activeSessionIdRef.current || "").trim() === threadId) {
+            await loadSession(threadId, {
+              silentLog: true,
+              projectIdOverride: projectId,
+            });
+          }
+        }
+      } finally {
+        polling = false;
+      }
+    };
+    const intervalId = window.setInterval(pollActiveThreads, 2500);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [projectId, activeThreadPollingKey]);
+
+  useEffect(() => {
+    if (!bootReadyRef.current || !sessionId || !backgroundSubagentPollingKey) return undefined;
+    let disposed = false;
+    let polling = false;
+    const turnIds = backgroundSubagentPollingKey.split("|").filter(Boolean);
+    const pollBackgroundSubagents = async () => {
+      if (disposed || polling || document.visibilityState === "hidden") return;
+      polling = true;
+      try {
+        await Promise.all(turnIds.map((turnId) => ensureRunDetail(
+          turnId,
+          "activity",
+          { force: true, background: true },
+        )));
+      } finally {
+        polling = false;
+      }
+    };
+    const intervalId = window.setInterval(pollBackgroundSubagents, 5000);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [sessionId, backgroundSubagentPollingKey]);
 
   useEffect(() => {
     if (!bootReadyRef.current || document.visibilityState === "hidden") return undefined;
@@ -9176,14 +9295,17 @@ function App() {
       if (!candidate || typeof candidate !== "object") continue;
       if (!isRuntimeApproval(candidate)) continue;
       if (
-        approvalSubmitting
-        && approvalSubmittingKey
-        && runtimeApprovalIdentity(candidate) === approvalSubmittingKey
+        approvalSubmittingKeys[
+          runtimeApprovalSubmissionIdentity(sessionId, candidate)
+        ]
       ) continue;
       return candidate;
     }
     return {};
   })();
+  const approvalSubmitting = Object.keys(approvalSubmittingKeys).some(
+    (key) => key.startsWith(`${String(sessionId || "").trim()}::`),
+  );
   const hasCommandApproval = Boolean(
     activePendingApproval
     && typeof activePendingApproval === "object"
@@ -9246,8 +9368,8 @@ function App() {
       : (normalizedAction === "approve_once"
         ? t("approval_modal.approve_message", { command })
         : t("approval_modal.cancel_message", { command }));
-    setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));
-    setApprovalSubmitting(true);
+    const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
+    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
     try {
       await handleSend(message, {
         type: "command_execution",
@@ -9264,8 +9386,12 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmitting(false);
-      setApprovalSubmittingKey("");
+      setApprovalSubmittingKeys((prev) => {
+        if (!prev[submissionKey]) return prev;
+        const next = { ...prev };
+        delete next[submissionKey];
+        return next;
+      });
     }
   };
   const handleTaskUpdateApproval = async (action) => {
@@ -9280,8 +9406,8 @@ function App() {
     const message = normalizedAction === "approve_once"
       ? t("task_approval.approve_message", { title })
       : t("task_approval.cancel_message", { title });
-    setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));
-    setApprovalSubmitting(true);
+    const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
+    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
     try {
       await handleSend(message, {
         type: "task_update",
@@ -9297,8 +9423,12 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmitting(false);
-      setApprovalSubmittingKey("");
+      setApprovalSubmittingKeys((prev) => {
+        if (!prev[submissionKey]) return prev;
+        const next = { ...prev };
+        delete next[submissionKey];
+        return next;
+      });
     }
   };
   const renderTaskApprovalSnapshot = (label, task) => {
@@ -9590,7 +9720,7 @@ function App() {
     liveTurnState,
   ]);
 
-  async function ensureRunDetail(messageId, view) {
+  async function ensureRunDetail(messageId, view, options = {}) {
     const sid = String(sessionId || "").trim();
     const turnId = String(messageId || "").trim();
     const detailView = view === "debug" ? "debug" : "activity";
@@ -9602,24 +9732,26 @@ function App() {
     const alreadyLoaded = detailView === "debug"
       ? Boolean(currentActivity.debug_loaded)
       : Boolean(currentActivity.activity_loaded);
-    if (alreadyLoaded || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
+    if ((alreadyLoaded && !options.force) || (!currentActivity.trace_ref && !currentActivity.run_id)) return;
     const requestKey = `${sid}:${turnId}:${detailView}`;
     if (runDetailRequestRef.current.has(requestKey)) return;
     runDetailRequestRef.current.add(requestKey);
-    setMessages((prev) => {
-      const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
-        String(entry.id || "") === turnId
-          ? {
-              ...entry,
-              ...(detailView === "debug"
-                ? { runDebugLoading: true, runDebugError: "" }
-                : { runActivityLoading: true, runActivityError: "" }),
-            }
-          : entry
-      ));
-      updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
-      return nextMessages;
-    });
+    if (!options.background) {
+      setMessages((prev) => {
+        const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
+          String(entry.id || "") === turnId
+            ? {
+                ...entry,
+                ...(detailView === "debug"
+                  ? { runDebugLoading: true, runDebugError: "" }
+                  : { runActivityLoading: true, runActivityError: "" }),
+              }
+            : entry
+        ));
+        updateThreadSnapshot(sid, (existing) => ({ ...existing, messages: nextMessages }));
+        return nextMessages;
+      });
+    }
     try {
       const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=${detailView}`);
       const loadedActivity = normalizeMessageActivity({
@@ -9653,6 +9785,7 @@ function App() {
         return nextMessages;
       });
     } catch (err) {
+      if (options.background) return;
       const nextError = normalizeUiError(uiLocale, err, t("errors.load_thread_failed"));
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
@@ -10724,7 +10857,7 @@ function App() {
                             <span className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</span>
                           </span>
                           ${indicatorStatus
-                            ? html`<span className=${`thread-run-indicator status-${indicatorStatus}`} aria-hidden="true"></span>`
+                            ? html`<span className=${`thread-run-indicator status-${indicatorStatus}`} aria-hidden="true">${indicatorStatus === "completed_unread" ? "1" : ""}</span>`
                             : null}
                         </button>
                       `;

@@ -165,6 +165,15 @@ def _run_summary_from_activity(activity: Any) -> dict[str, Any]:
     turn_changes = normalize_turn_changes_summary(payload.get("turn_changes"))
     if turn_changes:
         summary["turn_changes"] = turn_changes
+    subagents = _list_of_dicts(payload.get("subagents"))
+    if not subagents:
+        subagents = [
+            dict(item)
+            for item in _list_of_dicts(payload.get("live_items"))
+            if _text(item.get("type")) == "subagent"
+        ]
+    if subagents:
+        summary["subagents"] = subagents[:16]
     return summary
 
 
@@ -199,6 +208,8 @@ def project_turns_from_thread(session: dict[str, Any]) -> list[dict[str, Any]]:
     transcript = normalize_thread_transcript(session.get("thread_transcript"))
     turns: list[dict[str, Any]] = []
     for item in list(transcript.get("items") or []):
+        if bool(item.get("model_only")):
+            continue
         role = str(item.get("role") or "")
         content = str(item.get("content") or "")
         if role == "assistant" and not content.strip():
@@ -220,6 +231,11 @@ def project_turns_from_thread(session: dict[str, Any]) -> list[dict[str, Any]]:
             **({"tool_count": max(0, int(run.get("tool_count") or 0))} if run else {}),
             **({"run_duration_ms": max(0, int(run.get("duration_ms") or 0))} if run else {}),
             **({"turn_changes": turn_changes} if turn_changes else {}),
+            **(
+                {"live_items": _list_of_dicts(run.get("subagents"))}
+                if _list_of_dicts(run.get("subagents"))
+                else {}
+            ),
         }
         turns.append(
             {

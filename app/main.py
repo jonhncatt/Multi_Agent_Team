@@ -138,7 +138,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5Y"
+APP_VERSION = "3.1.5Z"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
@@ -469,6 +469,15 @@ class AgentRunQueue:
         with self._state_lock:
             self._active_count = max(0, self._active_count - 1)
 
+    def run_with_session_lock(self, session_id: str, callback: Callable[[], Any]) -> Any:
+        """Serialize a small background Thread update with foreground turns."""
+        session_lock = self._get_session_lock(session_id)
+        session_lock.acquire()
+        try:
+            return callback()
+        finally:
+            session_lock.release()
+
 
 class _AgentRunQueueTicket:
     def __init__(
@@ -513,6 +522,116 @@ class _AgentRunQueueTicket:
 
 
 run_queue = AgentRunQueue(config.max_concurrent_runs)
+
+
+def _background_subagent_summary_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("id") or item.get("subagent_id") or "").strip(),
+        "type": "subagent",
+        "status": str(item.get("status") or "completed").strip() or "completed",
+        "role": str(item.get("role") or "explorer").strip() or "explorer",
+        "label": str(item.get("label") or "").strip()[:240],
+        "task": str(item.get("task") or "").strip()[:1000],
+        "summary": str(item.get("summary") or "").strip()[:2000],
+        "queued_at": item.get("queued_at") or 0.0,
+        "started_at": item.get("started_at") or 0.0,
+        "completed_at": item.get("completed_at") or 0.0,
+        "tool_count": max(0, int(item.get("tool_count") or 0)),
+    }
+
+
+def _persist_background_subagent_result(
+    *,
+    session_id: str,
+    logical_turn_id: str,
+    item: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    """Publish an uncollected child result into its parent Thread mailbox."""
+    sid = str(session_id or "").strip()
+    subagent_id = str(item.get("id") or result.get("subagent_id") or "").strip()
+    if not sid or not subagent_id:
+        return False
+
+    def persist() -> bool:
+        session = session_store.load(sid)
+        if not session:
+            return False
+        transcript = session.setdefault("thread_transcript", {"schema_version": 1, "items": []})
+        transcript_items = [
+            entry
+            for entry in list(transcript.get("items") or [])
+            if isinstance(entry, dict)
+        ]
+        summary_item = _background_subagent_summary_item(item)
+        parent_item: dict[str, Any] | None = None
+        for entry in reversed(transcript_items):
+            if (
+                str(entry.get("role") or "") == "assistant"
+                and str(entry.get("turn_id") or "") == str(logical_turn_id or "")
+            ):
+                parent_item = entry
+                break
+        trace_ref = ""
+        if parent_item is not None:
+            trace = dict(parent_item.get("trace") or {})
+            trace_ref = str(trace.get("trace_ref") or "").strip()
+            subagents = [
+                dict(entry)
+                for entry in list(trace.get("subagents") or [])
+                if isinstance(entry, dict)
+            ]
+            existing_index = next(
+                (
+                    index
+                    for index, entry in enumerate(subagents)
+                    if str(entry.get("id") or entry.get("subagent_id") or "") == subagent_id
+                ),
+                -1,
+            )
+            if existing_index >= 0:
+                subagents[existing_index] = summary_item
+            else:
+                subagents.append(summary_item)
+            trace["subagents"] = subagents[:16]
+            parent_item["trace"] = trace
+
+        mailbox_item_id = f"subagent-result-{hashlib.sha1(subagent_id.encode('utf-8')).hexdigest()[:20]}"
+        if not any(str(entry.get("id") or "") == mailbox_item_id for entry in transcript_items):
+            full_summary = str(result.get("summary") or item.get("summary") or "")
+            model_summary_limit = 24000
+            mailbox_payload = {
+                "subagent_id": subagent_id,
+                "role": str(result.get("role") or item.get("role") or "explorer"),
+                "label": str(result.get("label") or item.get("label") or ""),
+                "status": str(result.get("status") or item.get("status") or "completed"),
+                "summary": full_summary[:model_summary_limit],
+                "summary_total_chars": len(full_summary),
+                "summary_truncated": len(full_summary) > model_summary_limit,
+            }
+            session_store.append_thread_items(
+                session,
+                [
+                    {
+                        "id": mailbox_item_id,
+                        "turn_id": str(logical_turn_id or ""),
+                        "role": "user",
+                        "model_only": True,
+                        "content": (
+                            "[background_subagent_result]\n"
+                            + json.dumps(mailbox_payload, ensure_ascii=False, separators=(",", ":"))
+                            + "\n[/background_subagent_result]"
+                        ),
+                    }
+                ],
+            )
+        if trace_ref:
+            session_store.turn_trace_store.upsert_subagent_item(trace_ref, item)
+        session_store.mark_activity(session, kind="subagent_completed")
+        session_store.save(session)
+        return True
+
+    return bool(run_queue.run_with_session_lock(sid, persist))
 
 
 def get_project_store() -> ProjectStore:
@@ -3680,6 +3799,14 @@ def _process_chat_request(
                     "logical_turn_started_at": logical_turn_started_at,
                     "triggering_user_turn_id": user_turn_id,
                     "cancel_event": cancel_event,
+                    "publish_subagent_result": (
+                        lambda *, item, result: _persist_background_subagent_result(
+                            session_id=session_id,
+                            logical_turn_id=logical_turn_id,
+                            item=dict(item or {}),
+                            result=dict(result or {}),
+                        )
+                    ),
                     "drain_pending_steers": lambda final=False: _drain_active_chat_run_steers(
                         run_id,
                         final=bool(final),

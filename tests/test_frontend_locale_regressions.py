@@ -398,7 +398,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     app_version = version_match.group(1)
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
 
-    assert app_version == "3.1.5Y"
+    assert app_version == "3.1.5Z"
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
@@ -690,6 +690,19 @@ def test_live_agent_timeline_items_are_wired_into_activity_projection() -> None:
         assert token in script, token
 
 
+def test_subagent_cards_are_not_evicted_and_poll_only_while_background_work_is_pending() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const retainedNonSubagentIds = new Set(" in script
+    assert 'String((item && item.type) || "") === "subagent"' in script
+    assert "const backgroundSubagentPollingKey = messages" in script
+    assert "const pollBackgroundSubagents = async () => {" in script
+    assert '{ force: true, background: true }' in script
+    assert "window.setInterval(pollBackgroundSubagents, 5000)" in script
+    assert "if (options.background) return;" in script
+    assert "if (item.visible === false) return null;" in script
+
+
 def test_developer_debug_view_is_thread_first_and_trace_on_demand() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
@@ -879,13 +892,14 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert '["user", "assistant", "runtime", "system"].includes(storedRole)' in script
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
-    assert "const [approvalSubmitting, setApprovalSubmitting] = useState(false);" in script
-    assert "const [approvalSubmittingKey, setApprovalSubmittingKey] = useState(\"\");" in script
+    assert "const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});" in script
     assert "function runtimeApprovalIdentity(value)" in script
+    assert "function runtimeApprovalSubmissionIdentity(threadId, value)" in script
     assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
     assert "if (approvalSubmitting) return {};" not in script
-    assert "runtimeApprovalIdentity(candidate) === approvalSubmittingKey" in script
-    assert "setApprovalSubmittingKey(runtimeApprovalIdentity(activePendingApproval));" in script
+    assert "runtimeApprovalSubmissionIdentity(sessionId, candidate)" in script
+    assert "setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));" in script
+    assert "delete next[submissionKey];" in script
     assert 'const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount' in script
     assert "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn)" in script
     assert "if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;" in script
@@ -1943,7 +1957,7 @@ def test_message_copy_button_is_rendered_below_message_and_revealed_on_hover() -
 def test_run_activity_and_debug_loading_are_separate_and_lazy() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     match = re.search(
-        r"async function ensureRunDetail\(messageId, view\) \{(?P<body>.*?)\n  \}",
+        r"async function ensureRunDetail\(messageId, view, options = \{\}\) \{(?P<body>.*?)\n  \}",
         script,
         re.S,
     )
@@ -1969,7 +1983,7 @@ def test_run_activity_and_debug_loading_are_separate_and_lazy() -> None:
 def test_debug_loading_merges_only_slim_activity_debug_payload() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     ensure_body = re.search(
-        r"async function ensureRunDetail\(messageId, view\) \{(?P<body>.*?)\n  \}",
+        r"async function ensureRunDetail\(messageId, view, options = \{\}\) \{(?P<body>.*?)\n  \}",
         script,
         re.S,
     )
@@ -2601,11 +2615,20 @@ def test_thread_run_indicators_show_running_and_completed_attention() -> None:
     assert "finishThreadRunIndicator(lockedRunOwnerThreadId);" in body
     assert 'markThreadRunIndicator(key, "");' in script
     assert 'markThreadRunIndicator(key, "completed_unread");' in script
-    assert 'if (key === String(activeSessionIdRef.current || "").trim()) return "";' in script
+    assert 'String(serverRow.status || "") === "active"' in script
+    assert "document.hasFocus()" in script
     assert "clearThreadRunIndicator(sid);" in thread_click_body.group("body")
     assert "const indicatorStatus = threadRunIndicatorStatus(itemId);" in script
     assert "thread-run-indicator status-${indicatorStatus}" in script
     assert "indicator-${indicatorStatus}" in script
+    assert 'indicatorStatus === "completed_unread" ? "1" : ""' in script
+    assert "navigator.setAppBadge(unreadThreadCompletionCount)" in script
+    assert "navigator.clearAppBadge()" in script
+    assert "const activeThreadPollingKey = sessions" in script
+    assert "const pollActiveThreads = async () => {" in script
+    assert "refreshSessions(projectId, { background: true })" in script
+    assert "activeSendThreadIdsRef.current.has(threadId)" in script
+    assert "silentLog: true" in script
 
     for token in (
         ".thread-run-indicator",

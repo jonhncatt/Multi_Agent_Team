@@ -104,6 +104,14 @@
       "max_tool_calls": 0
     },
     {
+      "name": "uncollected_subagent_finishes_through_background_mailbox",
+      "test_node": "tests/test_vintage_programmer_runtime.py::test_runtime_successful_parent_does_not_join_uncollected_subagent_and_publishes_late_result",
+      "failure_category": "subagent_lifecycle",
+      "expected_turn_status": "completed",
+      "expected_continuation_policy": "background_mailbox",
+      "max_tool_calls": 1
+    },
+    {
       "name": "tool_output_truncation_is_resumable_without_rerun",
       "test_node": "tests/test_tool_result_continuation.py::test_large_tool_result_is_token_bounded_and_resumable_without_rerun",
       "failure_category": "context_management",

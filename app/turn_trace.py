@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -315,6 +316,26 @@ def _tool_audit_summary(event: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _tool_result_from_transcript_item(item: dict[str, Any]) -> Any:
+    """Recover a bounded tool result when the ephemeral ToolEvent is absent.
+
+    The typed transcript is durable and still contains the provider-facing tool
+    result. Some adapters do not populate every optional ToolEvent audit field,
+    so the persisted Trace must not become an empty ``tool_completed`` shell.
+    """
+
+    content = item.get("content")
+    if isinstance(content, (dict, list, tuple, bool, int, float)):
+        return content
+    raw = str(content or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
 def build_turn_trace(
     raw: dict[str, Any],
     *,
@@ -331,6 +352,7 @@ def build_turn_trace(
     )
     tool_events = _list_of_dicts(payload.get("tool_events") or activity.get("tool_events"))
     trace_events = _list_of_dicts(payload.get("trace_events") or activity.get("trace_events") or payload.get("events"))
+    live_items = _list_of_dicts(payload.get("live_items") or activity.get("live_items"))
     all_items = _list_of_dicts(thread_items)
     logical_turn_id = _text(
         turn_id
@@ -388,7 +410,7 @@ def build_turn_trace(
         if call_id:
             tool_events_by_call.setdefault(call_id, []).append(event)
 
-    pending_calls: dict[str, list[dict[str, str]]] = {}
+    pending_calls: dict[str, list[dict[str, Any]]] = {}
     tool_call_id_counts: dict[str, int] = {}
     for item in current_items:
         if _text(item.get("role")) != "assistant":
@@ -400,6 +422,11 @@ def build_turn_trace(
                     {
                         "requested_by_item_id": _text(item.get("id")),
                         "tool_name": _text(call.get("name")),
+                        "raw_arguments": (
+                            dict(call.get("args") or {})
+                            if isinstance(call.get("args"), dict)
+                            else call.get("args")
+                        ),
                     }
                 )
                 tool_call_id_counts[call_id] = tool_call_id_counts.get(call_id, 0) + 1
@@ -450,6 +477,17 @@ def build_turn_trace(
                 "canceled": "tool_cancelled",
                 "rejected": "tool_rejected",
             }.get(result_status, "tool_failed")
+            audit = _tool_audit_summary(event)
+            owner_arguments = owner.get("raw_arguments")
+            if "raw_arguments" not in audit and owner_arguments not in (None, "", [], {}):
+                audit["raw_arguments"] = safe_preview(owner_arguments, limit=4000)
+            transcript_result = _tool_result_from_transcript_item(item)
+            if "result_preview" not in audit and transcript_result is not None:
+                audit["result_preview"] = safe_preview(transcript_result, limit=4000)
+            if "summary" not in audit and isinstance(transcript_result, dict):
+                transcript_summary = _text(transcript_result.get("summary"))
+                if transcript_summary:
+                    audit["summary"] = _text(safe_preview(transcript_summary, limit=500))
             step = {
                 "type": step_type,
                 "item_id": item_id,
@@ -459,7 +497,7 @@ def build_turn_trace(
                 "status": result_status,
                 "error_kind": _error_kind_from_tool_event(event),
                 "validation": _validation_summary(event),
-                "audit": _tool_audit_summary(event),
+                "audit": audit,
                 **_tool_timing(call_id, trace_events, occurrence=occurrence),
             }
             collision_count = tool_call_id_counts.get(call_id, 0)
@@ -491,6 +529,29 @@ def build_turn_trace(
                 "error_kind": _text(error.get("kind")),
                 "error_message": _text(error.get("message")),
                 "invalid_tool_calls": _invalid_tool_call_facts(exchange),
+            }
+        )
+
+    for item in live_items:
+        if _text(item.get("type")) != "subagent":
+            continue
+        subagent_id = _text(item.get("id") or item.get("subagent_id"))
+        if not subagent_id:
+            continue
+        steps.append(
+            {
+                "type": "subagent",
+                "item_id": subagent_id,
+                "subagent_id": subagent_id,
+                "role": _text(item.get("role")) or "explorer",
+                "label": _text(item.get("label")),
+                "task": str(item.get("task") or "").strip(),
+                "status": _text(item.get("status")) or "queued",
+                "summary": str(item.get("summary") or "").strip(),
+                "queued_at": _float(item.get("queued_at")),
+                "started_at": _float(item.get("started_at")),
+                "completed_at": _float(item.get("completed_at")),
+                "tool_count": _int(item.get("tool_count")),
             }
         )
 

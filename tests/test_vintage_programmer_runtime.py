@@ -1103,6 +1103,42 @@ def test_thread_messages_replay_history_without_task_relation_classifier(tmp_pat
     assert backend.invocations == []
 
 
+def test_thread_messages_include_hidden_background_subagent_mailbox_item(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    _, messages = runtime._thread_messages(
+        {
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"id": "u1", "role": "user", "content": "start"},
+                    {"id": "a1", "role": "assistant", "content": "parent done"},
+                    {
+                        "id": "subagent-result-1",
+                        "role": "user",
+                        "content": "[background_subagent_result]late finding[/background_subagent_result]",
+                        "model_only": True,
+                    },
+                ],
+            }
+        }
+    )
+
+    assert [message.content for message in messages] == [
+        "start",
+        "parent done",
+        "[background_subagent_result]late finding[/background_subagent_result]",
+    ]
+
+
 def test_thread_messages_apply_compaction_summary(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -2082,6 +2118,90 @@ def test_runtime_runs_independent_subagents_in_parallel_and_waits_for_both(
     subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
     assert len(subagent_items) == 2
     assert all(item.get("status") == "completed" for item in subagent_items)
+
+
+def test_runtime_successful_parent_does_not_join_uncollected_subagent_and_publishes_late_result(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    child_started = threading.Event()
+    release_child = threading.Event()
+    published = threading.Event()
+    published_payloads: list[dict[str, Any]] = []
+
+    class _BlockingChildBackend(_FakeBackend):
+        def _invoke_chat_with_runner(self, **kwargs: Any):
+            child_started.set()
+            if not release_child.wait(timeout=15):
+                raise AssertionError("test Subagent was not released")
+            return super()._invoke_chat_with_runner(**kwargs)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_vp_runtime_backend",
+        lambda _config: _BlockingChildBackend([_FakeMessage(content="Late independent finding.")]),
+    )
+    parent_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-background-subagent",
+                        "name": "spawn_subagent",
+                        "args": {
+                            "task": "Investigate independently.",
+                            "role": "explorer",
+                            "label": "Independent investigation",
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="The parent can finish without this optional result."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=parent_backend,
+    )
+
+    def publish_subagent_result(*, item: dict[str, Any], result: dict[str, Any]) -> None:
+        published_payloads.append({"item": dict(item), "result": dict(result)})
+        published.set()
+
+    started_at = time.monotonic()
+    result = runtime.run(
+        message="Start an optional independent investigation.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-background-subagent",
+            "run_id": "run-background-subagent",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "publish_subagent_result": publish_subagent_result,
+        },
+    )
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 1.5
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "The parent can finish without this optional result."
+    subagent_items = [item for item in result["activity"]["live_items"] if item.get("type") == "subagent"]
+    assert len(subagent_items) == 1
+    assert subagent_items[0]["status"] in {"queued", "inProgress"}
+    assert not published.is_set()
+
+    release_child.set()
+    assert child_started.wait(timeout=5)
+    assert published.wait(timeout=5)
+    assert published_payloads[0]["item"]["status"] == "completed"
+    assert published_payloads[0]["result"]["summary"] == "Late independent finding."
 
 
 def test_runtime_reports_subagents_as_queued_until_a_worker_actually_starts(

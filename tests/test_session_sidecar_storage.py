@@ -152,6 +152,71 @@ def _projected_assistant_turn(store: SessionStore, session_id: str) -> dict[str,
     return dict(loaded["turns"][-1])
 
 
+def test_subagent_state_survives_thread_reload_and_late_result_updates_trace(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    session = store.create(_project(tmp_path))
+    logical_turn_id = "turn-background"
+    store.append_turn(session, role="user", text="delegate", logical_turn_id=logical_turn_id)
+    subagent_id = "run-background:subagent:1"
+    assistant_turn = store.append_turn(
+        session,
+        role="assistant",
+        text="Parent finished.",
+        logical_turn_id=logical_turn_id,
+        activity={
+            "run_id": "run-background",
+            "status": "completed",
+            "live_items": [
+                {
+                    "id": subagent_id,
+                    "type": "subagent",
+                    "status": "inProgress",
+                    "role": "explorer",
+                    "label": "Inspect protocol",
+                    "task": "Inspect the protocol independently.",
+                    "started_at": 10.0,
+                }
+            ],
+        },
+    )
+    store.persist_turn_artifact(
+        session,
+        turn_id=str(assistant_turn["id"]),
+        run_id="run-background",
+        logical_turn_id=logical_turn_id,
+        activity=dict(assistant_turn["activity"]),
+        tool_events=[],
+    )
+    store.save(session)
+
+    loaded = store.load(str(session["id"]))
+    assert loaded is not None
+    [summary_subagent] = loaded["turns"][-1]["activity"]["live_items"]
+    assert summary_subagent["id"] == subagent_id
+    assert summary_subagent["status"] == "inProgress"
+
+    trace_ref = str(loaded["turns"][-1]["activity"]["trace_ref"])
+    assert store.turn_trace_store.upsert_subagent_item(
+        trace_ref,
+        {
+            **summary_subagent,
+            "status": "completed",
+            "summary": "Verified late result.",
+            "completed_at": 20.0,
+            "tool_count": 3,
+        },
+    )
+    expanded = store.expand_turn_for_view(
+        str(session["id"]),
+        dict(loaded["turns"][-1]),
+        view="activity",
+    )
+    [expanded_subagent] = expanded["activity"]["live_items"]
+    assert expanded_subagent["status"] == "completed"
+    assert expanded_subagent["summary"] == "Verified late result."
+    assert expanded_subagent["tool_count"] == 3
+
+
 def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     store, session, raw_session = _build_sidecar_session(tmp_path)
     raw_trace = dict(_assistant_item(raw_session).get("trace") or {})

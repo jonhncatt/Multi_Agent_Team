@@ -2187,6 +2187,95 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert "run_artifact" not in full_turn
 
 
+def test_late_subagent_result_is_hidden_from_ui_and_available_to_next_model_turn(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    logical_turn_id = "turn-parent"
+    main_app.session_store.append_turn(
+        session,
+        role="user",
+        text="start investigation",
+        logical_turn_id=logical_turn_id,
+    )
+    subagent_id = "run-parent:subagent:late"
+    assistant_turn = main_app.session_store.append_turn(
+        session,
+        role="assistant",
+        text="Parent finished first.",
+        logical_turn_id=logical_turn_id,
+        activity={
+            "run_id": "run-parent",
+            "status": "completed",
+            "live_items": [
+                {
+                    "id": subagent_id,
+                    "type": "subagent",
+                    "status": "inProgress",
+                    "role": "explorer",
+                    "label": "Late investigation",
+                    "task": "Investigate independently.",
+                }
+            ],
+        },
+    )
+    main_app.session_store.persist_turn_artifact(
+        session,
+        turn_id=str(assistant_turn["id"]),
+        run_id="run-parent",
+        logical_turn_id=logical_turn_id,
+        activity=dict(assistant_turn["activity"]),
+        tool_events=[],
+    )
+    main_app.session_store.save(session)
+
+    assert main_app._persist_background_subagent_result(
+        session_id=str(session["id"]),
+        logical_turn_id=logical_turn_id,
+        item={
+            "id": subagent_id,
+            "type": "subagent",
+            "status": "completed",
+            "role": "explorer",
+            "label": "Late investigation",
+            "task": "Investigate independently.",
+            "summary": "The late finding is ready.",
+            "completed_at": time.time(),
+            "tool_count": 2,
+        },
+        result={
+            "subagent_id": subagent_id,
+            "status": "completed",
+            "role": "explorer",
+            "label": "Late investigation",
+            "summary": "The late finding is ready.",
+        },
+    )
+
+    loaded = main_app.session_store.load(str(session["id"]))
+    assert loaded is not None
+    assert [turn["text"] for turn in loaded["turns"]] == [
+        "start investigation",
+        "Parent finished first.",
+    ]
+    mailbox_items = [
+        item
+        for item in list((loaded.get("thread_transcript") or {}).get("items") or [])
+        if bool(item.get("model_only"))
+    ]
+    assert len(mailbox_items) == 1
+    assert "The late finding is ready." in mailbox_items[0]["content"]
+    [summary_subagent] = loaded["turns"][-1]["activity"]["live_items"]
+    assert summary_subagent["status"] == "completed"
+
+    expanded = main_app.session_store.expand_turn_for_view(
+        str(session["id"]),
+        dict(loaded["turns"][-1]),
+        view="activity",
+    )
+    [expanded_subagent] = expanded["activity"]["live_items"]
+    assert expanded_subagent["summary"] == "The late finding is ready."
+
+
 def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
     client = TestClient(main_app.app)

@@ -552,8 +552,18 @@ img.brand-mark {
 }
 
 .thread-run-indicator.status-completed_unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
   background: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .thread-empty {

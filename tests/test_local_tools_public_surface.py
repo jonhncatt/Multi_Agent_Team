@@ -362,6 +362,53 @@ def test_save_task_update_requires_exact_single_use_human_approval(tmp_path: Pat
     assert writes == [proposed]
 
 
+def test_save_task_unchanged_update_is_idempotent_without_approval_or_write(tmp_path: Path) -> None:
+    executor = LocalToolExecutor(_config(tmp_path))
+    current_task = {
+        "task_id": "task-unchanged",
+        "project_id": "source-project",
+        "project_title": "Source Project",
+        "title": "Investigate firmware",
+        "goal": "Identify the failing layer",
+        "summary": "The durable snapshot is current.",
+        "progress": ["Collected logs"],
+        "next_steps": ["Inspect driver"],
+        "decisions": [],
+        "blockers": [],
+        "artifacts": ["failure.log"],
+        "status": "active",
+        "updated_at": "2026-08-08T01:00:00Z",
+    }
+    writes: list[dict[str, object]] = []
+    executor.set_runtime_context(
+        session_id="thread-unchanged",
+        project_id="selected-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        task_reader=lambda task_id: dict(current_task) if task_id == "task-unchanged" else None,
+        task_writer=lambda **kwargs: writes.append(dict(kwargs)) or {"ok": True},
+    )
+
+    result = executor.save_task(
+        task_id="task-unchanged",
+        title=str(current_task["title"]),
+        goal=str(current_task["goal"]),
+        summary=str(current_task["summary"]),
+        progress=list(current_task["progress"]),
+        next_steps=list(current_task["next_steps"]),
+        decisions=list(current_task["decisions"]),
+        blockers=list(current_task["blockers"]),
+        artifacts=list(current_task["artifacts"]),
+        status=str(current_task["status"]),
+    )
+
+    assert result["ok"] is True
+    assert result["task_update_unchanged"] is True
+    assert result["changed_fields"] == []
+    assert "approval_required" not in result
+    assert writes == []
+
+
 def test_save_task_approval_cannot_authorize_changed_content(tmp_path: Path) -> None:
     executor = LocalToolExecutor(_config(tmp_path))
     current_task = {

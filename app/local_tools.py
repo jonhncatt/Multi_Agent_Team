@@ -4090,7 +4090,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "spawn_subagent",
-                "description": "Start one bounded Subagent task in an isolated context and immediately return its id. Independent Subagents can run in parallel; call wait_subagents to collect their results before using them.",
+                "description": "Start one bounded Subagent task in an isolated context and immediately return its id. Independent Subagents can run in parallel. Call wait_subagents only when the result is required in the current turn; otherwise a late result is published to the parent Thread for a later turn.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -5695,6 +5695,14 @@ class LocalToolExecutor:
                 field for field in reviewed_fields if current_task.get(field) != proposed_task.get(field)
             ]
             if not str(approval_token or "").strip():
+                if not changed_fields:
+                    return {
+                        "ok": True,
+                        "task_id": normalized_task_id,
+                        "task_update_unchanged": True,
+                        "changed_fields": [],
+                        "summary": "Task already matches the proposed snapshot; no approval or write was needed.",
+                    }
                 token = self._create_task_update_approval(
                     current_task=current_task,
                     proposed_task=proposed_task,

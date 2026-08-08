@@ -132,6 +132,7 @@ Agent 阅读包含部署命令的 `SKILL.md`，把它整理成风险审查文档
 | `verification_failure_can_be_recovered_by_model` | 验证先失败、模型随后修改并重试 | 允许模型自行恢复并完成 |
 | `turn_changes_are_independent_from_tool_failure_history` | Turn 结束时既有文件修改，也有先失败后通过的验证 | 独立报告保留的改动和最后一次验证，不用失败次数推导终态 |
 | `cancel_then_immediate_retry_is_isolated` | 执行中取消后立即在同一 Thread 提交新 Prompt | 旧 Turn 先确认 `interrupted` 并清理状态，新 Turn 才能启动 |
+| `uncollected_subagent_finishes_through_background_mailbox` | 父 Turn 未等待仍在运行的 Subagent | 父 Turn 立即完成；迟到结果写入父 Thread mailbox，供后续模型 Turn 使用 |
 
 这些案例主要通过对应 pytest 节点运行，确保审批、取消和技术边界之外的续行判断归模型所有。
 

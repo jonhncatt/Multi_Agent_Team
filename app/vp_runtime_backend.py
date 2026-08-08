@@ -827,7 +827,7 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="spawn_subagent",
-                description="Start one bounded Subagent task in an isolated context and immediately return its id. Independent tasks can run in parallel; call wait_subagents to collect results.",
+                description="Start one bounded Subagent task in an isolated context and immediately return its id. Independent tasks can run in parallel. Wait only when the result is required in this turn; late results are published to the parent Thread.",
                 args_schema=SpawnSubagentArgs,
                 func=self._spawn_subagent_tool,
             ),

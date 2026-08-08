@@ -166,6 +166,56 @@ def test_turn_trace_preserves_skipped_as_non_failure_step_type() -> None:
     assert tool_step["status"] == "skipped"
 
 
+def test_turn_trace_recovers_tool_details_from_typed_transcript_without_tool_event() -> None:
+    items = [
+        {
+            "id": "assistant-1",
+            "turn_id": "t1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "name": "web_search",
+                    "args": {"query": "today's news", "api_key": "must-not-leak"},
+                }
+            ],
+        },
+        {
+            "id": "tool-1",
+            "turn_id": "t1",
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "web_search",
+            "content": '{"ok": true, "summary": "Found 3 results", "results": [1, 2, 3]}',
+        },
+    ]
+
+    trace = build_turn_trace(
+        {
+            "thread_id": "thread-1",
+            "turn_id": "t1",
+            "status": "completed",
+            "tool_events": [],
+        },
+        thread_items=items,
+        turn_id="t1",
+    )
+
+    tool_step = next(step for step in trace["steps"] if step.get("type") == "tool_completed")
+    assert tool_step["requested_by_item_id"] == "assistant-1"
+    assert tool_step["audit"]["raw_arguments"] == {
+        "query": "today's news",
+        "api_key": "***",
+    }
+    assert tool_step["audit"]["result_preview"] == {
+        "ok": True,
+        "summary": "Found 3 results",
+        "results": [1, 2, 3],
+    }
+    assert tool_step["audit"]["summary"] == "Found 3 results"
+
+
 def test_turn_trace_keeps_duplicate_provider_call_ids_as_separate_transactions() -> None:
     items = [
         {
