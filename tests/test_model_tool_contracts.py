@@ -95,6 +95,20 @@ def test_every_runtime_tool_has_one_model_visible_contract(tmp_path: Path) -> No
         assert set(tool.args_schema.model_fields) <= callable_fields, tool.name
 
 
+def test_command_session_wait_contract_matches_codex_style_long_polling(tmp_path: Path) -> None:
+    _, model_specs, runtime_specs = _tool_surfaces(tmp_path)
+    wait_field = "yield" + "_time_ms"
+
+    for specs in (model_specs, runtime_specs):
+        exec_wait = specs["exec_command"]["parameters"]["properties"][wait_field]
+        poll_wait = specs["write_stdin"]["parameters"]["properties"][wait_field]
+
+        assert exec_wait["default"] == 10_000
+        assert exec_wait["maximum"] == 30_000
+        assert poll_wait["default"] == 30_000
+        assert poll_wait["maximum"] == 300_000
+
+
 def test_apply_patch_contract_exposes_operation_selection_and_grammar(tmp_path: Path) -> None:
     _, model_specs, runtime_specs = _tool_surfaces(tmp_path)
     model_spec = model_specs["apply_patch"]

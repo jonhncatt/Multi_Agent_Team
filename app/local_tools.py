@@ -68,6 +68,12 @@ def _is_within(path: Path, root: Path) -> bool:
 
 _BROAD_GLOB_GUIDANCE_THRESHOLD = 300
 
+EXEC_COMMAND_DEFAULT_YIELD_MS = 10_000
+EXEC_COMMAND_MAX_YIELD_MS = 30_000
+WRITE_STDIN_DEFAULT_YIELD_MS = 30_000
+WRITE_STDIN_MAX_YIELD_MS = 300_000
+_COMMAND_WAIT_POLL_SECONDS = 0.05
+
 APPLY_PATCH_TOOL_DESCRIPTION = (
     "Apply one atomic file-oriented patch under allowed writable roots. "
     "Use `*** Add File:` only for a target known not to exist, `*** Update File:` for every "
@@ -3447,14 +3453,25 @@ class LocalToolExecutor:
 
         threading.Thread(target=reader, daemon=True).start()
 
-    def _wait_for_command_session(self, session_id: int, *, yield_time_ms: int) -> None:
-        """Wait up to the yield deadline, returning early when output is complete."""
+    def _wait_for_command_session(
+        self,
+        session_id: int,
+        *,
+        yield_time_ms: int,
+        max_yield_time_ms: int,
+    ) -> None:
+        """Wait up to one yield deadline, returning on completion or run cancellation."""
 
-        timeout_seconds = max(0.0, min(float(yield_time_ms) / 1000.0, 10.0))
+        timeout_seconds = max(
+            0.0,
+            min(float(yield_time_ms), float(max_yield_time_ms)) / 1000.0,
+        )
         if timeout_seconds <= 0:
             return
         deadline = time.monotonic() + timeout_seconds
         while True:
+            if self._current_cancel_requested():
+                return
             with self._command_sessions_lock:
                 session = self._command_sessions.get(session_id)
                 proc = session.get("proc") if isinstance(session, dict) else None
@@ -3463,12 +3480,16 @@ class LocalToolExecutor:
                 return
             remaining = deadline - time.monotonic()
             if proc.poll() is not None:
-                if isinstance(reader_done, threading.Event) and remaining > 0:
-                    reader_done.wait(timeout=remaining)
+                while isinstance(reader_done, threading.Event) and remaining > 0:
+                    if reader_done.wait(timeout=min(remaining, _COMMAND_WAIT_POLL_SECONDS)):
+                        break
+                    if self._current_cancel_requested():
+                        return
+                    remaining = deadline - time.monotonic()
                 return
             if remaining <= 0:
                 return
-            time.sleep(min(0.01, remaining))
+            time.sleep(min(_COMMAND_WAIT_POLL_SECONDS, remaining))
 
     def _reusable_approved_command_session_id(self, *, command: str, cwd: Path) -> int | None:
         requested_command = str(command or "").strip()
@@ -3549,6 +3570,12 @@ class LocalToolExecutor:
             payload["next_action"] = (
                 f"Continue reading this command with write_stdin session_id={session_id}; "
                 "the unread output remains buffered and the command must not be rerun."
+            )
+        elif returncode is None:
+            payload["summary"] = "command is still running"
+            payload["next_action"] = (
+                f"Continue waiting for this command with write_stdin session_id={session_id}; "
+                "do not start the command again."
             )
         if compound_shell:
             payload["compound_shell"] = True
@@ -3685,7 +3712,13 @@ class LocalToolExecutor:
                             "description": "One concise, user-facing sentence explaining why this command is needed. This is display-only and never grants permission.",
                         },
                         "cwd": {"type": "string", "description": "Working directory relative to workspace", "default": "."},
-                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
+                        "yield_time_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": EXEC_COMMAND_MAX_YIELD_MS,
+                            "default": EXEC_COMMAND_DEFAULT_YIELD_MS,
+                            "description": "Maximum time to wait for this initial command result; returns earlier when the command completes.",
+                        },
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
                         "tty": {
                             "type": "boolean",
@@ -3716,7 +3749,13 @@ class LocalToolExecutor:
                     "properties": {
                         "session_id": {"type": "integer", "minimum": 1},
                         "chars": {"type": "string", "default": ""},
-                        "yield_time_ms": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 1000},
+                        "yield_time_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": WRITE_STDIN_MAX_YIELD_MS,
+                            "default": WRITE_STDIN_DEFAULT_YIELD_MS,
+                            "description": "Maximum time to wait for fresh output; returns earlier when the command completes.",
+                        },
                         "max_output_chars": {"type": "integer", "minimum": 256, "maximum": 60000, "default": 12000},
                     },
                     "required": ["session_id"],
@@ -4632,7 +4671,7 @@ class LocalToolExecutor:
         cmd: str,
         purpose: str = "",
         cwd: str = ".",
-        yield_time_ms: int = 1000,
+        yield_time_ms: int = EXEC_COMMAND_DEFAULT_YIELD_MS,
         max_output_chars: int = 12000,
         tty: bool = False,
         approval_token: str = "",
@@ -4691,7 +4730,21 @@ class LocalToolExecutor:
             cwd=real_cwd,
         )
         if reusable_session_id is not None:
-            self._wait_for_command_session(reusable_session_id, yield_time_ms=yield_time_ms)
+            self._wait_for_command_session(
+                reusable_session_id,
+                yield_time_ms=yield_time_ms,
+                max_yield_time_ms=EXEC_COMMAND_MAX_YIELD_MS,
+            )
+            if self._current_cancel_requested():
+                self._cancel_command_sessions(run_id=self._current_run_id())
+                return self._command_failure_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    error="Command session was cancelled with its owning Agent run.",
+                    returncode=130,
+                    error_kind="tool_cancelled",
+                    error_detail={"session_id": reusable_session_id},
+                )
             payload = self._command_session_snapshot(
                 reusable_session_id,
                 max_output_chars=max_output_chars,
@@ -5027,7 +5080,21 @@ class LocalToolExecutor:
                 error_kind="tool_cancelled",
                 error_detail={"message": "The owning Agent run was cancelled."},
             )
-        self._wait_for_command_session(session_id, yield_time_ms=yield_time_ms)
+        self._wait_for_command_session(
+            session_id,
+            yield_time_ms=yield_time_ms,
+            max_yield_time_ms=EXEC_COMMAND_MAX_YIELD_MS,
+        )
+        if self._current_cancel_requested():
+            self._cancel_command_sessions(run_id=self._current_run_id())
+            return self._command_failure_result(
+                command=cmd,
+                cwd=str(real_cwd),
+                error="Command session was cancelled with its owning Agent run.",
+                returncode=130,
+                error_kind="tool_cancelled",
+                error_detail={"session_id": session_id},
+            )
         payload = self._command_session_snapshot(session_id, max_output_chars=max_output_chars)
         if command_execution_approval_payload:
             payload["command_execution_approved"] = dict(command_execution_approval_payload)
@@ -5040,7 +5107,7 @@ class LocalToolExecutor:
         self,
         session_id: int,
         chars: str = "",
-        yield_time_ms: int = 1000,
+        yield_time_ms: int = WRITE_STDIN_DEFAULT_YIELD_MS,
         max_output_chars: int = 12000,
     ) -> dict[str, Any]:
         try:
@@ -5071,7 +5138,21 @@ class LocalToolExecutor:
                     stdin.flush()
                 except Exception as exc:
                     return {"ok": False, "error": f"write_stdin failed: {exc}"}
-        self._wait_for_command_session(normalized_session_id, yield_time_ms=yield_time_ms)
+        self._wait_for_command_session(
+            normalized_session_id,
+            yield_time_ms=yield_time_ms,
+            max_yield_time_ms=WRITE_STDIN_MAX_YIELD_MS,
+        )
+        if self._current_cancel_requested():
+            self._cancel_command_sessions(run_id=self._current_run_id())
+            return self._command_failure_result(
+                command="write_stdin",
+                cwd=self._current_cwd_hint(),
+                error="Command session was cancelled with its owning Agent run.",
+                returncode=130,
+                error_kind="tool_cancelled",
+                error_detail={"session_id": normalized_session_id},
+            )
         return self._command_session_snapshot(normalized_session_id, max_output_chars=max_output_chars)
 
     def update_plan(

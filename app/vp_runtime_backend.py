@@ -14,7 +14,11 @@ from app.config import AppConfig, get_access_roots, normalize_openai_base_url
 from app.local_tools import (
     APPLY_PATCH_ARGUMENT_DESCRIPTION,
     APPLY_PATCH_TOOL_DESCRIPTION,
+    EXEC_COMMAND_DEFAULT_YIELD_MS,
+    EXEC_COMMAND_MAX_YIELD_MS,
     LocalToolExecutor,
+    WRITE_STDIN_DEFAULT_YIELD_MS,
+    WRITE_STDIN_MAX_YIELD_MS,
 )
 from app.openai_auth import OpenAIAuthManager, normalize_model_for_auth_mode
 from app.runtime_errors import classify_llm_exception as classify_runtime_llm_exception
@@ -30,10 +34,10 @@ class ExecCommandArgs(BaseModel):
     )
     cwd: str = Field(default=".", description="Working directory under the active command roots.")
     yield_time_ms: int = Field(
-        default=1000,
+        default=EXEC_COMMAND_DEFAULT_YIELD_MS,
         ge=0,
-        le=10000,
-        description="Milliseconds to wait before returning output or a resumable session id.",
+        le=EXEC_COMMAND_MAX_YIELD_MS,
+        description="Maximum milliseconds to wait before returning output or a resumable session id; returns earlier on completion.",
     )
     max_output_chars: int = Field(
         default=12000,
@@ -51,10 +55,10 @@ class WriteStdinArgs(BaseModel):
     session_id: int = Field(ge=1, description="Session id returned by a still-running exec_command call.")
     chars: str = Field(default="", description="Characters to write; leave empty to poll without writing.")
     yield_time_ms: int = Field(
-        default=1000,
+        default=WRITE_STDIN_DEFAULT_YIELD_MS,
         ge=0,
-        le=10000,
-        description="Milliseconds to wait for fresh output after the optional write.",
+        le=WRITE_STDIN_MAX_YIELD_MS,
+        description="Maximum milliseconds to wait for fresh output after the optional write; returns earlier on completion.",
     )
     max_output_chars: int = Field(
         default=12000,
@@ -992,7 +996,7 @@ class VPRuntimeBackend:
         cmd: str,
         purpose: str,
         cwd: str = ".",
-        yield_time_ms: int = 1000,
+        yield_time_ms: int = EXEC_COMMAND_DEFAULT_YIELD_MS,
         max_output_chars: int = 12000,
         tty: bool = False,
     ) -> str:
@@ -1012,7 +1016,7 @@ class VPRuntimeBackend:
         self,
         session_id: int,
         chars: str = "",
-        yield_time_ms: int = 1000,
+        yield_time_ms: int = WRITE_STDIN_DEFAULT_YIELD_MS,
         max_output_chars: int = 12000,
     ) -> str:
         return json.dumps(

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shlex
 import threading
+import time
 import zipfile
 
 import pytest
@@ -277,6 +278,93 @@ def test_cancelled_agent_run_terminates_its_running_command_session(
     proc = manager._command_sessions[started["session_id"]]["proc"]
     proc.wait(timeout=1)
     assert proc.poll() is not None
+
+
+def test_long_write_stdin_wait_returns_promptly_when_run_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    cancel_event = threading.Event()
+    sleeper = tmp_path / "long_poll.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    manager.set_runtime_context(
+        execution_mode="host",
+        session_id="long-poll-session",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        run_id="long-poll-run",
+        cancel_event=cancel_event,
+    )
+    started = manager.exec_command(
+        cmd=f"python {shlex.quote(str(sleeper))}",
+        cwd=str(tmp_path),
+        yield_time_ms=0,
+    )
+    assert started["running"] is True
+
+    timer = threading.Timer(0.1, cancel_event.set)
+    timer.start()
+    started_at = time.monotonic()
+    try:
+        cancelled = manager.write_stdin(
+            session_id=int(started["session_id"]),
+            yield_time_ms=300_000,
+        )
+    finally:
+        timer.cancel()
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 1.5
+    assert cancelled["ok"] is False
+    assert cancelled["error_kind"] == "tool_cancelled"
+    proc = manager._command_sessions[int(started["session_id"])]["proc"]
+    proc.wait(timeout=1)
+    assert proc.poll() is not None
+
+
+def test_exec_command_returns_early_when_process_finishes_before_long_yield(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    script = tmp_path / "quick_finish.py"
+    script.write_text("import time\ntime.sleep(0.1)\nprint('finished')\n", encoding="utf-8")
+
+    started_at = time.monotonic()
+    result = manager.exec_command(
+        cmd=f"python {shlex.quote(str(script))}",
+        cwd=str(tmp_path),
+        yield_time_ms=30_000,
+    )
+    elapsed = time.monotonic() - started_at
+
+    assert elapsed < 5
+    assert result["running"] is False
+    assert result["returncode"] == 0
+    assert "finished" in str(result["output"])
+
+
+def test_running_command_result_tells_model_to_poll_existing_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    sleeper = tmp_path / "pending.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+
+    result = manager.exec_command(
+        cmd=f"python {shlex.quote(str(sleeper))}",
+        cwd=str(tmp_path),
+        yield_time_ms=0,
+    )
+    try:
+        assert result["running"] is True
+        assert result["status"] == "running"
+        assert f"session_id={result['session_id']}" in str(result["next_action"])
+        assert "do not start the command again" in str(result["next_action"])
+    finally:
+        manager._cancel_command_sessions()
 
 
 def test_completed_command_output_can_be_fully_drained_with_write_stdin(
