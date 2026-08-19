@@ -2694,6 +2694,16 @@ img.brand-mark {
   padding: 22px;
 }
 
+.project-modal.app-restart-modal {
+  width: min(460px, 100%);
+}
+
+.app-restart-message {
+  margin-top: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
 .eval-nav-btn.is-running {
   border-color: rgba(37, 99, 235, 0.38);
   background: rgba(239, 246, 255, 0.96);

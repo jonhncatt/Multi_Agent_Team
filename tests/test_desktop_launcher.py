@@ -16,12 +16,14 @@ from desktop.launcher import (
     parse_window_size,
     parse_ui_scale,
     read_dotenv,
+    restart_server_only,
     resolve_browser_path,
     resolve_project_root,
     resolve_python_command,
     run_desktop,
     start_browser,
     validate_chrome_shell_mode,
+    wait_until_stopped,
     write_chrome_preparation_page,
 )
 
@@ -431,6 +433,55 @@ def test_chrome_reuses_existing_window_when_backend_is_healthy(
     run_desktop(config)
 
     assert focused == [True]
+
+
+def test_wait_until_stopped_returns_after_backend_becomes_unreachable() -> None:
+    probes = iter([True, True, False])
+
+    assert wait_until_stopped(
+        "http://127.0.0.1:8080/api/health",
+        timeout_sec=1,
+        probe=lambda _url: next(probes),
+    ) is True
+
+
+def test_restart_server_only_waits_for_shutdown_then_starts_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    events: list[str] = []
+
+    class _Log:
+        def close(self) -> None:
+            events.append("log_closed")
+
+    monkeypatch.setattr(
+        "desktop.launcher.wait_until_stopped",
+        lambda *_args, **_kwargs: events.append("stopped") or True,
+    )
+    monkeypatch.setattr("desktop.launcher.health_check", lambda _url: False)
+    monkeypatch.setattr(
+        "desktop.launcher.start_server",
+        lambda _config: (events.append("started") or object(), _Log()),
+    )
+    monkeypatch.setattr(
+        "desktop.launcher.wait_until_healthy",
+        lambda *_args, **_kwargs: events.append("healthy") or True,
+    )
+
+    restart_server_only(config)
+
+    assert events == ["stopped", "started", "healthy", "log_closed"]
 
 
 def test_browser_process_is_detached_and_initial_size_is_recorded(

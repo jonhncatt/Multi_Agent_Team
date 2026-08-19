@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -1344,9 +1345,11 @@ def test_health_endpoint_is_lightweight(monkeypatch, tmp_path: Path) -> None:
         "app_version": main_app.APP_VERSION,
         "build_version": main_app.BUILD_VERSION,
         "uptime_sec": payload["uptime_sec"],
+        "process_id": payload["process_id"],
     }
     assert isinstance(payload["uptime_sec"], int)
     assert payload["uptime_sec"] >= 0
+    assert payload["process_id"] == os.getpid()
 
 
 def test_tasks_api_loads_snapshot_into_current_thread_as_hidden_context(monkeypatch, tmp_path: Path) -> None:
@@ -3259,6 +3262,38 @@ def test_chrome_desktop_exit_requires_local_token_and_cancels_active_runs(
     finally:
         with main_app._active_chat_runs_lock:
             main_app._active_chat_runs.pop(run_id, None)
+
+
+def test_chrome_desktop_restart_requires_local_token_and_schedules_helper(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "desktop-control-token"
+    token_path.write_text("desktop-secret-token-abcdefghijklmnopqrstuvwxyz\n", encoding="utf-8")
+    monkeypatch.setattr(main_app, "DESKTOP_CONTROL_TOKEN_PATH", token_path)
+    scheduled: list[list[str]] = []
+    monkeypatch.setattr(
+        main_app,
+        "_schedule_desktop_restart",
+        lambda run_ids: scheduled.append(list(run_ids)) or True,
+    )
+
+    with TestClient(main_app.app) as client:
+        assert client.post("/api/desktop/restart").status_code == 403
+        response = client.post(
+            "/api/desktop/restart",
+            headers={"X-VP-Desktop-Token": "desktop-secret-token-abcdefghijklmnopqrstuvwxyz"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "restart_scheduled": True,
+        "process_id": os.getpid(),
+        "active_count": 0,
+        "cancelled_run_count": 0,
+    }
+    assert scheduled == [[]]
 
 
 def test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts(

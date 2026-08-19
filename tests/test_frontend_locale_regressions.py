@@ -2753,6 +2753,7 @@ def test_activity_tool_target_surfaces_skill_name_instead_of_long_absolute_path(
 
 def test_manual_update_button_is_click_only_and_reports_results() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert 'fetchJson("/api/app/update", { method: "POST" })' in script
@@ -2766,6 +2767,19 @@ def test_manual_update_button_is_click_only_and_reports_results() -> None:
     assert "update check" not in script.lower()
     assert ".rail-update-result" in styles
     assert ".rail-update-details" in styles
+    assert "if (data && data.ok && IS_CHROME_DESKTOP_APP) {" in script
+    assert 'id="appRestartPromptModal"' in script
+    assert 'fetchJson("/api/desktop/restart"' in script
+    assert '"X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN' in script
+    assert "nextProcessId !== previousProcessId" in script
+    assert "window.location.reload();" in script
+    assert "onClick=${closeAppRestartPrompt}" in script
+    assert "onClick=${handleAppRestart}" in script
+    assert '"update.restart_required_title": "需要重启 VP"' in locales
+    assert '"update.restart_now": "立即重启 VP"' in locales
+    assert '"update.restarting_message": "VP 正在重启。新后台准备好后，页面会自动刷新。"' in locales
+    assert ".app-restart-modal" in styles
+    assert ".app-restart-message" in styles
 
 
 def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:

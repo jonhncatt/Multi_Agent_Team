@@ -10,6 +10,7 @@ import queue
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -207,6 +208,38 @@ def _desktop_exit_worker(run_ids: list[str]) -> None:
     os._exit(0)
 
 
+def _desktop_restart_helper_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "desktop.launcher",
+        "--project-root",
+        str(REPOSITORY_ROOT),
+        "--restart-server-only",
+    ]
+
+
+def _desktop_restart_creation_kwargs() -> dict[str, object]:
+    if os.name == "nt":
+        flags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        return {"creationflags": flags}
+    return {"start_new_session": True}
+
+
+def _start_desktop_restart_helper() -> None:
+    subprocess.Popen(
+        _desktop_restart_helper_command(),
+        cwd=str(REPOSITORY_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        **_desktop_restart_creation_kwargs(),
+    )
+
+
 def _schedule_desktop_exit(run_ids: list[str]) -> bool:
     global _desktop_exit_scheduled
     with _desktop_exit_lock:
@@ -217,6 +250,27 @@ def _schedule_desktop_exit(run_ids: list[str]) -> bool:
         target=_desktop_exit_worker,
         args=(list(run_ids),),
         name="vp-desktop-exit",
+        daemon=True,
+    ).start()
+    return True
+
+
+def _schedule_desktop_restart(run_ids: list[str]) -> bool:
+    global _desktop_exit_scheduled
+    with _desktop_exit_lock:
+        if _desktop_exit_scheduled:
+            return False
+        _desktop_exit_scheduled = True
+    try:
+        _start_desktop_restart_helper()
+    except BaseException:
+        with _desktop_exit_lock:
+            _desktop_exit_scheduled = False
+        raise
+    threading.Thread(
+        target=_desktop_exit_worker,
+        args=(list(run_ids),),
+        name="vp-desktop-restart",
         daemon=True,
     ).start()
     return True
@@ -1139,6 +1193,7 @@ def health() -> HealthResponse:
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         uptime_sec=max(0, int(time.monotonic() - APP_STARTED_AT)),
+        process_id=os.getpid(),
     )
 
 
@@ -1207,6 +1262,49 @@ def desktop_exit(
     return {
         "ok": True,
         "shutdown_scheduled": scheduled,
+        "active_count": len(active_runs) + len(active_evals),
+        "cancelled_run_count": len(run_ids),
+    }
+
+
+@app.post("/api/desktop/restart")
+def desktop_restart(
+    x_vp_desktop_token: str = Header(default="", alias="X-VP-Desktop-Token"),
+) -> dict[str, Any]:
+    expected_token = _read_desktop_control_token()
+    supplied_token = str(x_vp_desktop_token or "").strip()
+    if not expected_token or not supplied_token or not secrets.compare_digest(
+        supplied_token,
+        expected_token,
+    ):
+        raise HTTPException(status_code=403, detail="Desktop control token is invalid.")
+
+    lifecycle = desktop_lifecycle()
+    active_runs = [
+        dict(item)
+        for item in list(lifecycle.get("active_runs") or [])
+        if isinstance(item, dict)
+    ]
+    active_evals = [
+        dict(item)
+        for item in list(lifecycle.get("active_evals") or [])
+        if isinstance(item, dict)
+    ]
+    run_ids = [str(item.get("run_id") or "").strip() for item in active_runs]
+    run_ids = [run_id for run_id in run_ids if run_id]
+    for run_id in run_ids:
+        _cancel_active_chat_run(run_id)
+
+    try:
+        scheduled = _schedule_desktop_restart(run_ids)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail=f"Could not start the desktop restart helper: {exc}") from exc
+    if not scheduled:
+        raise HTTPException(status_code=409, detail="Desktop shutdown is already scheduled.")
+    return {
+        "ok": True,
+        "restart_scheduled": True,
+        "process_id": os.getpid(),
         "active_count": len(active_runs) + len(active_evals),
         "cancelled_run_count": len(run_ids),
     }

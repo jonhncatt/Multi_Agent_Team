@@ -4323,6 +4323,8 @@ function App() {
   });
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
+  const [appRestartPromptOpen, setAppRestartPromptOpen] = useState(false);
+  const [appRestartState, setAppRestartState] = useState({ status: "idle", error: null });
   const [desktopExitState, setDesktopExitState] = useState("idle");
   const [bootState, setBootState] = useState({ active: true, phase: "workspace" });
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
@@ -5555,6 +5557,10 @@ function App() {
     try {
       const data = await fetchJson("/api/app/update", { method: "POST" });
       setAppUpdateState({ status: data && data.ok ? "success" : "failed", result: data, error: null });
+      if (data && data.ok && IS_CHROME_DESKTOP_APP) {
+        setAppRestartState({ status: "idle", error: null });
+        setAppRestartPromptOpen(true);
+      }
       pushLogWithLimit(
         setLogs,
         data && data.ok ? "system" : "error",
@@ -5566,6 +5572,47 @@ function App() {
       setAppUpdateState({ status: "failed", result: null, error: nextError });
       pushLogWithLimit(setLogs, "error", `${t("update.failed")}: ${nextError.summary}`);
     }
+  }
+
+  async function waitForRestartedDesktop(previousProcessId, timeoutMs = 60000) {
+    const deadline = Date.now() + Math.max(10000, Number(timeoutMs || 0) || 60000);
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`/api/health?restart=${Date.now()}`, { cache: "no-store" });
+        if (response.ok) {
+          const health = await response.json();
+          const nextProcessId = Number((health && health.process_id) || 0);
+          if (nextProcessId > 0 && nextProcessId !== previousProcessId) return health;
+        }
+      } catch (_err) {
+        // The old backend is expected to be temporarily unreachable during restart.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    }
+    throw new Error(t("update.restart_timeout"));
+  }
+
+  async function handleAppRestart() {
+    if (!IS_CHROME_DESKTOP_APP || appRestartState.status === "restarting") return;
+    setAppRestartState({ status: "restarting", error: null });
+    try {
+      const data = await fetchJson("/api/desktop/restart", {
+        method: "POST",
+        headers: { "X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN },
+      });
+      const previousProcessId = Number((data && data.process_id) || 0);
+      await waitForRestartedDesktop(previousProcessId);
+      window.location.reload();
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("update.restart_failed"));
+      setAppRestartState({ status: "failed", error: nextError });
+    }
+  }
+
+  function closeAppRestartPrompt() {
+    if (appRestartState.status === "restarting") return;
+    setAppRestartPromptOpen(false);
+    setAppRestartState({ status: "idle", error: null });
   }
 
   function setSkillSelectionState(skillId, content, options = {}) {
@@ -11476,6 +11523,34 @@ function App() {
 	            </div>
 	          `
 	        : null}
+
+      ${appRestartPromptOpen
+        ? html`
+            <div className="project-modal-backdrop" id="appRestartPromptModal" role="presentation">
+              <div
+                className="project-modal app-restart-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="appRestartPromptTitle"
+                aria-describedby="appRestartPromptMessage"
+              >
+                <div className="panel-title" id="appRestartPromptTitle">${t("update.restart_required_title")}</div>
+                <div className="app-restart-message" id="appRestartPromptMessage">
+                  ${appRestartState.status === "restarting" ? t("update.restarting_message") : t("update.restart_required_message")}
+                </div>
+                ${appRestartState.error
+                  ? html`<div className="status-error">${String(appRestartState.error.detail || appRestartState.error.summary || t("update.restart_failed"))}</div>`
+                  : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${closeAppRestartPrompt} disabled=${appRestartState.status === "restarting"}>${t("buttons.close")}</button>
+                  <button className="solid-btn" type="button" onClick=${handleAppRestart} disabled=${appRestartState.status === "restarting"}>
+                    ${appRestartState.status === "restarting" ? t("update.restarting_button") : t("update.restart_now")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
 
       ${projectDialogOpen
 	        ? html`
