@@ -2773,6 +2773,8 @@ def test_manual_update_button_is_click_only_and_reports_results() -> None:
     assert '"X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN' in script
     assert "nextProcessId !== previousProcessId" in script
     assert "window.location.reload();" in script
+    assert 'className="app-boot-screen app-boot-screen-overlay app-restart-screen"' in script
+    assert 'aria-label=${t("update.restarting_message")}' in script
     assert "onClick=${closeAppRestartPrompt}" in script
     assert "onClick=${handleAppRestart}" in script
     assert '"update.restart_required_title": "需要重启 VP"' in locales

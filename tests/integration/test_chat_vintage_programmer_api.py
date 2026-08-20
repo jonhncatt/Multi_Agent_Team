@@ -3296,6 +3296,19 @@ def test_chrome_desktop_restart_requires_local_token_and_schedules_helper(
     assert scheduled == [[]]
 
 
+def test_windows_desktop_restart_helper_uses_no_window_creation_flag(monkeypatch) -> None:
+    monkeypatch.setattr(main_app.os, "name", "nt")
+    monkeypatch.setattr(main_app.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(main_app.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(main_app.subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
+
+    flags = int(main_app._desktop_restart_creation_kwargs()["creationflags"])
+
+    assert flags & 0x08000000
+    assert flags & 0x00000200
+    assert not flags & 0x00000008
+
+
 def test_cancelled_turn_reaches_terminal_state_before_same_thread_retry_starts(
     monkeypatch,
     tmp_path: Path,

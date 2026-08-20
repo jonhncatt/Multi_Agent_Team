@@ -66,7 +66,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Manual Update
 
-侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VP”两个选项；选择重启时，受桌面令牌保护的本地接口会停止旧后台、启动新后台，并在当前窗口检测到新进程后自动刷新。
+侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VP”两个选项；选择重启时，受桌面令牌保护的本地接口会用无控制台窗口的助手停止旧后台、启动新后台，当前窗口显示 Preparing 风格的等待界面，并在检测到新进程后自动刷新。
 
 ## Permission Profiles
 

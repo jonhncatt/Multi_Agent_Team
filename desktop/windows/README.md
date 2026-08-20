@@ -36,7 +36,8 @@ running. Starting the executable again reopens the window in that case.
 
 After a manual repository update succeeds, the desktop window offers **Close**
 and **Restart VP now**. Restarting keeps the current window open, replaces the
-local backend, and reloads the page automatically when the new process is ready.
+local backend without opening a console window, shows a Preparing-style waiting
+screen, and reloads the page automatically when the new process is ready.
 
 ## Build on Windows
 

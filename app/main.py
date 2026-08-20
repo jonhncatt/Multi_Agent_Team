@@ -221,7 +221,7 @@ def _desktop_restart_helper_command() -> list[str]:
 
 def _desktop_restart_creation_kwargs() -> dict[str, object]:
     if os.name == "nt":
-        flags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
         return {"creationflags": flags}

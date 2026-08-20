@@ -12560,6 +12560,27 @@ function App() {
           </main>
         `
       : null}
+    ${appRestartState.status === "restarting"
+      ? html`
+          <main
+            className="app-boot-screen app-boot-screen-overlay app-restart-screen"
+            role="status"
+            aria-live="assertive"
+            aria-label=${t("update.restarting_message")}
+          >
+            <div className="app-boot-card">
+              <img className="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <div className="app-boot-copy">
+                <div className="app-boot-title">Vintage Programmer</div>
+                <div className="app-boot-status">
+                  <span className="app-boot-ring" aria-hidden="true"></span>
+                  <span>${t("update.restarting_message")}</span>
+                </div>
+              </div>
+            </div>
+          </main>
+        `
+      : null}
     ${desktopExitState === "stopped"
       ? html`
           <div className="desktop-exit-overlay" role="status" aria-live="polite">
