@@ -837,6 +837,16 @@ class SessionStore:
         if requested_view in {"activity", "debug", "full"}:
             artifact = self._load_turn_artifact(session_id=session_id, run_id=run_id, trace_ref=trace_ref)
             if artifact:
+                artifact_activity = (
+                    dict(artifact.get("activity") or {})
+                    if isinstance(artifact.get("activity"), dict)
+                    else {}
+                )
+                turn_changes = normalize_turn_changes_summary(
+                    artifact.get("turn_changes")
+                    or artifact_activity.get("turn_changes")
+                    or activity.get("turn_changes")
+                )
                 if int(artifact.get("turn_trace_schema_version") or 0) > 0:
                     trace_steps = [
                         dict(item)
@@ -928,6 +938,8 @@ class SessionStore:
                     }
                     if requested_view in {"debug", "full"}:
                         activity_view["turn_trace"] = dict(artifact)
+                    if turn_changes:
+                        activity_view["turn_changes"] = turn_changes
                     payload["activity"] = activity_view
                     payload["answer_bundle"] = {}
                     payload["run_artifact"] = {}
@@ -1015,6 +1027,8 @@ class SessionStore:
                 else:
                     payload["answer_bundle"] = {}
                     payload["run_artifact"] = {}
+                if turn_changes:
+                    activity_view["turn_changes"] = turn_changes
                 payload["activity"] = activity_view
             else:
                 payload["activity"] = dict(activity)

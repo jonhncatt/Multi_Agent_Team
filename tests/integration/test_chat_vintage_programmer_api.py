@@ -2199,6 +2199,7 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert calls == {"load": 0, "load_by_ref": 1}
     activity_turn = activity_response.json()
     assert activity_turn["activity"]["activity_loaded"] is True
+    assert activity_turn["activity"]["turn_changes"] == summary_turn["activity"]["turn_changes"]
     assert "llm_exchanges" not in activity_turn["activity"]
     assert "run_artifact" not in activity_turn
     assert "answer_bundle" not in activity_turn
@@ -2209,6 +2210,7 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert calls == {"load": 0, "load_by_ref": 2}
     debug_turn = debug_response.json()
     assert debug_turn["activity"]["debug_loaded"] is True
+    assert debug_turn["activity"]["turn_changes"] == summary_turn["activity"]["turn_changes"]
     assert debug_turn["activity"]["turn_trace"]["turn_trace_schema_version"] == 1
     assert [item["role"] for item in debug_turn["activity"]["thread_items"]] == ["user", "assistant"]
     assert "answer_bundle" not in debug_turn
@@ -2220,6 +2222,7 @@ def test_thread_summary_view_skips_run_artifact_load_until_full_turn_request(mon
     assert calls["load_by_ref"] == 3
     assert calls["load"] == 0
     full_turn = full_response.json()
+    assert full_turn["activity"]["turn_changes"] == summary_turn["activity"]["turn_changes"]
     assert full_turn["activity"]["turn_trace"]["turn_trace_schema_version"] == 1
     assert "answer_bundle" not in full_turn
     assert "run_artifact" not in full_turn

@@ -2911,6 +2911,18 @@ def test_retained_turn_changes_are_visible_without_opening_developer_details() -
     assert '"activity.changes.view": "View changes"' in locales
 
 
+def test_loading_run_details_preserves_summary_turn_changes_when_detail_omits_them() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    detail_loader = script.split("async function ensureRunDetail", 1)[1].split(
+        "const ensureRunActivity", 1
+    )[0]
+
+    assert "const rawLoadedActivity =" in detail_loader
+    assert 'Object.prototype.hasOwnProperty.call(rawLoadedActivity, "turn_changes")' in detail_loader
+    assert "delete loadedActivityPatch.turn_changes;" in detail_loader
+    assert "...loadedActivityPatch," in detail_loader
+
+
 def test_cancelled_stream_waits_for_authoritative_terminal_ack_before_releasing_turn() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

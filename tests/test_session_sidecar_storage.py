@@ -300,6 +300,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert activity_turn["activity"]["activity_loaded"] is True
     assert activity_turn["activity"]["debug_loaded"] is False
     assert activity_turn["activity"]["full_loaded"] is False
+    assert activity_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert activity_turn["activity"]["trace_events"] == []
     assert activity_turn["activity"]["tool_items"][0]["raw_tool_call"]["id"] == "call-1"
     assert activity_turn["activity"]["tool_items"][0]["raw_arguments"] == {"path": "README.md"}
@@ -326,6 +327,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert debug_turn["activity"]["activity_loaded"] is True
     assert debug_turn["activity"]["debug_loaded"] is True
     assert debug_turn["activity"]["full_loaded"] is False
+    assert debug_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert debug_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
     assert "llm_exchanges" not in debug_turn["activity"]
     assert "triggering_user_message" not in debug_turn["activity"]
@@ -336,6 +338,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     full_turn = store.expand_turn_for_view(session["id"], projected_turn, view="full")
     assert full_turn["answer_bundle"] == {}
     assert full_turn["activity"]["full_loaded"] is True
+    assert full_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert full_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
     assert full_turn["run_artifact"] == {}
 

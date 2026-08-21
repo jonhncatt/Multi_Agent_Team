@@ -9865,18 +9865,27 @@ function App() {
     }
     try {
       const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=${detailView}`);
+      const rawLoadedActivity = (payload && payload.activity && typeof payload.activity === "object")
+        ? payload.activity
+        : {};
       const loadedActivity = normalizeMessageActivity({
-        ...((payload && payload.activity) || {}),
+        ...rawLoadedActivity,
         activity_loaded: true,
         debug_loaded: detailView === "debug",
       });
+      const loadedActivityPatch = { ...loadedActivity };
+      if (!Object.prototype.hasOwnProperty.call(rawLoadedActivity, "turn_changes")) {
+        // Older detail payloads did not include summary-only change metadata.
+        // Treat absence as "not provided" instead of erasing the summary value.
+        delete loadedActivityPatch.turn_changes;
+      }
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
             ? {
                 ...entry,
                 activity: mergeActivityState(entry.activity || {}, {
-                  ...loadedActivity,
+                  ...loadedActivityPatch,
                   replace_execution_details: true,
                 }),
                 ...(detailView === "debug"
