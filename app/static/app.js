@@ -45,6 +45,7 @@ const PROJECTS_REFRESH_STALE_MS = 60_000;
 const MODEL_WAIT_SLOW_HINT_MS = 8_000;
 const UPLOAD_CONCURRENCY = 3;
 const THREAD_DETAIL_PAGE_SIZE = 40;
+const THREAD_RECONCILE_TIMEOUT_MS = 5_000;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
@@ -4314,6 +4315,7 @@ function App() {
   const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
   const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});
+  const approvalSubmittingKeysRef = useRef({});
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -7694,9 +7696,15 @@ function App() {
       const reconcileCompletedThreadMessages = async (threadId) => {
         const ownerId = String(threadId || runOwnerThreadId || "").trim();
         if (!ownerId || isTempThreadId(ownerId)) return false;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(
+          () => controller.abort(),
+          THREAD_RECONCILE_TIMEOUT_MS,
+        );
         try {
           const detail = normalizeThreadDetailPayload(await fetchJson(
             `/api/thread/${encodeURIComponent(ownerId)}?view=summary&max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
+            { signal: controller.signal },
           ));
           const authoritativeMessages = extractSessionMessages(detail);
           if (!authoritativeMessages.length) return false;
@@ -7709,6 +7717,8 @@ function App() {
           return true;
         } catch {
           return false;
+        } finally {
+          window.clearTimeout(timeoutId);
         }
       };
       const updateOwnerLiveHeartbeat = (value) => {
@@ -9398,7 +9408,7 @@ function App() {
     }
     return {};
   })();
-  const approvalSubmitting = Object.keys(approvalSubmittingKeys).some(
+  const threadApprovalSubmitting = Object.keys(approvalSubmittingKeys).some(
     (key) => key.startsWith(`${String(sessionId || "").trim()}::`),
   );
   const hasCommandApproval = Boolean(
@@ -9448,8 +9458,24 @@ function App() {
   const taskApprovalChangedFields = hasTaskUpdateApproval && Array.isArray(activePendingApproval.changed_fields)
     ? activePendingApproval.changed_fields.map((item) => String(item || "")).filter(Boolean)
     : [];
+  const claimApprovalSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || approvalSubmittingKeysRef.current[key]) return false;
+    const next = { ...approvalSubmittingKeysRef.current, [key]: true };
+    approvalSubmittingKeysRef.current = next;
+    setApprovalSubmittingKeys(next);
+    return true;
+  };
+  const releaseApprovalSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || !approvalSubmittingKeysRef.current[key]) return;
+    const next = { ...approvalSubmittingKeysRef.current };
+    delete next[key];
+    approvalSubmittingKeysRef.current = next;
+    setApprovalSubmittingKeys(next);
+  };
   const handleCommandApproval = async (action) => {
-    if (!hasCommandApproval || approvalSubmitting) return;
+    if (!hasCommandApproval) return;
     const normalizedAction = ["approve_once", "approve_thread"].includes(action) ? action : "cancel";
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
@@ -9464,7 +9490,7 @@ function App() {
         ? t("approval_modal.approve_message", { command })
         : t("approval_modal.cancel_message", { command }));
     const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
-    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
+    if (!claimApprovalSubmission(submissionKey)) return;
     try {
       await handleSend(message, {
         type: "command_execution",
@@ -9481,16 +9507,11 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmittingKeys((prev) => {
-        if (!prev[submissionKey]) return prev;
-        const next = { ...prev };
-        delete next[submissionKey];
-        return next;
-      });
+      releaseApprovalSubmission(submissionKey);
     }
   };
   const handleTaskUpdateApproval = async (action) => {
-    if (!hasTaskUpdateApproval || approvalSubmitting) return;
+    if (!hasTaskUpdateApproval) return;
     const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
     const taskId = String(activePendingApproval.task_id || "").trim();
     const approvalToken = String(activePendingApproval.approval_token || "").trim();
@@ -9502,7 +9523,7 @@ function App() {
       ? t("task_approval.approve_message", { title })
       : t("task_approval.cancel_message", { title });
     const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
-    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
+    if (!claimApprovalSubmission(submissionKey)) return;
     try {
       await handleSend(message, {
         type: "task_update",
@@ -9518,12 +9539,7 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmittingKeys((prev) => {
-        if (!prev[submissionKey]) return prev;
-        const next = { ...prev };
-        delete next[submissionKey];
-        return next;
-      });
+      releaseApprovalSubmission(submissionKey);
     }
   };
   const renderTaskApprovalSnapshot = (label, task) => {
@@ -9601,7 +9617,7 @@ function App() {
       || ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(runtimeActivity.status))
     )
   );
-  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount || approvalSubmitting);
+  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount || threadApprovalSubmitting);
   useEffect(() => {
     if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;
     const messageId = String((runtimeActivityMessage && runtimeActivityMessage.id) || "").trim();
@@ -9656,7 +9672,7 @@ function App() {
     liveTurnState,
     nowMs: activityClockMs || Date.now(),
   });
-  const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount
+  const runExecutionProgress = threadApprovalSubmitting && !runtimeAttentionCount
     ? {
         ...baseRunExecutionProgress,
         status: "approval_submitting",
@@ -12031,15 +12047,15 @@ function App() {
                                     `
                                   : null}
                                 <div className="runtime-control-actions">
-                                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${approvalSubmitting}>
+                                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")}>
                                     ${t("approval_modal.cancel")}
                                   </button>
-                                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("approval_modal.approve_once")}
                                   </button>
                                   ${commandThreadApprovalEligible
                                     ? html`
-                                        <button className="solid-btn approval-thread-btn" type="button" onClick=${() => handleCommandApproval("approve_thread")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                        <button className="solid-btn approval-thread-btn" type="button" onClick=${() => handleCommandApproval("approve_thread")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                           ${t("approval_modal.approve_thread")}
                                         </button>
                                       `
@@ -12081,10 +12097,10 @@ function App() {
                                 </div>
                                 <div className="task-approval-warning">${t("task_approval.warning")}</div>
                                 <div className="runtime-control-actions">
-                                  <button className="ghost-btn" type="button" onClick=${() => handleTaskUpdateApproval("cancel")} disabled=${approvalSubmitting}>
+                                  <button className="ghost-btn" type="button" onClick=${() => handleTaskUpdateApproval("cancel")}>
                                     ${t("task_approval.cancel")}
                                   </button>
-                                  <button className="solid-btn" type="button" onClick=${() => handleTaskUpdateApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                  <button className="solid-btn" type="button" onClick=${() => handleTaskUpdateApproval("approve_once")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("task_approval.approve")}
                                   </button>
                                 </div>

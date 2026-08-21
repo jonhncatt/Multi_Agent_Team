@@ -893,22 +893,27 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});" in script
+    assert "const approvalSubmittingKeysRef = useRef({});" in script
     assert "function runtimeApprovalIdentity(value)" in script
     assert "function runtimeApprovalSubmissionIdentity(threadId, value)" in script
-    assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
+    assert "if (!hasCommandApproval) return;" in script
+    assert "if (!hasCommandApproval || approvalSubmitting) return;" not in script
+    assert "if (!hasTaskUpdateApproval || approvalSubmitting) return;" not in script
     assert "if (approvalSubmitting) return {};" not in script
     assert "runtimeApprovalSubmissionIdentity(sessionId, candidate)" in script
-    assert "setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));" in script
-    assert "delete next[submissionKey];" in script
-    assert 'const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount' in script
+    assert "if (!claimApprovalSubmission(submissionKey)) return;" in script
+    assert "approvalSubmittingKeysRef.current[key]" in script
+    assert "const threadApprovalSubmitting = Object.keys(approvalSubmittingKeys).some(" in script
+    assert "delete next[key];" in script
+    assert 'const runExecutionProgress = threadApprovalSubmitting && !runtimeAttentionCount' in script
     assert "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn)" in script
     assert "if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;" in script
     assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
     assert "const unlockDeadline = Date.now() + 30000;" in script
     assert "while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline)" in script
     assert 'throw new Error(t("errors.pending_turn_resume_timeout"));' in script
-    assert 'disabled=${approvalSubmitting}' in script
-    assert 'disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}' in script
+    assert 'disabled=${activeApprovalSubmitting}' not in script
+    assert 'disabled=${!String(activePendingApproval.approval_token || "").trim()}' in script
     approval_handler = script.split("const handleCommandApproval = async", 1)[1].split("const activeToolTimeline", 1)[0]
     assert "currentThreadBusy" not in approval_handler
     assert "pendingResumeState" in approval_handler
@@ -965,6 +970,42 @@ def test_task_update_approval_shows_complete_snapshot_and_resumes_runtime() -> N
     assert '"task_approval.title": "等待确认 Task 更新"' in locales
     assert '"task_approval.approve": "确认更新"' in locales
     assert '"task_approval.cancel": "取消更新"' in locales
+
+
+def test_consecutive_runtime_approvals_do_not_share_a_thread_wide_button_lock() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    active_approval_block = script.split("const activePendingApproval = (() => {", 1)[1].split(
+        "const hasCommandApproval = Boolean(", 1
+    )[0]
+    command_handler = script.split("const handleCommandApproval = async", 1)[1].split(
+        "const handleTaskUpdateApproval = async", 1
+    )[0]
+    task_handler = script.split("const handleTaskUpdateApproval = async", 1)[1].split(
+        "const renderTaskApprovalSnapshot", 1
+    )[0]
+
+    assert "runtimeApprovalSubmissionIdentity(sessionId, candidate)" in active_approval_block
+    assert "const threadApprovalSubmitting" in active_approval_block
+    assert "threadApprovalSubmitting" not in command_handler
+    assert "threadApprovalSubmitting" not in task_handler
+    assert "claimApprovalSubmission(submissionKey)" in command_handler
+    assert "claimApprovalSubmission(submissionKey)" in task_handler
+    assert "releaseApprovalSubmission(submissionKey)" in command_handler
+    assert "releaseApprovalSubmission(submissionKey)" in task_handler
+
+
+def test_completed_thread_reconciliation_cannot_hold_an_approval_lock_forever() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const THREAD_RECONCILE_TIMEOUT_MS = 5_000;" in script
+    reconcile_block = script.split("const reconcileCompletedThreadMessages = async", 1)[1].split(
+        "const updateOwnerLiveHeartbeat", 1
+    )[0]
+    assert "const controller = new AbortController();" in reconcile_block
+    assert "THREAD_RECONCILE_TIMEOUT_MS" in reconcile_block
+    assert "{ signal: controller.signal }" in reconcile_block
+    assert "window.clearTimeout(timeoutId);" in reconcile_block
 
 
 def test_llm_and_tool_failure_traces_remain_nonterminal_until_run_failure() -> None:
