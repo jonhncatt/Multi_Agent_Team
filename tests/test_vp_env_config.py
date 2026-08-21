@@ -154,6 +154,26 @@ def test_vp_max_output_tokens_defaults_to_large_context_default(monkeypatch, tmp
     assert config.max_output_tokens == 16384
 
 
+def test_vp_max_concurrent_runs_defaults_to_five(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("VP_MAX_CONCURRENT_RUNS", raising=False)
+
+    config = load_config()
+
+    assert config.max_concurrent_runs == 5
+
+
+def test_vp_max_concurrent_runs_env_overrides_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VP_SKIP_DOTENV", "1")
+    monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("VP_MAX_CONCURRENT_RUNS", "7")
+
+    config = load_config()
+
+    assert config.max_concurrent_runs == 7
+
+
 def test_vp_max_output_tokens_env_is_loaded(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VP_SKIP_DOTENV", "1")
     monkeypatch.setenv("VP_WORKSPACE_ROOT", str(tmp_path))

@@ -31,6 +31,12 @@
 - Subagent 继续使用公司已有 Chat Completions provider 和原生 tool calling，不要求 Responses API。
 - Thread 列表增加可选的 `activity_at`、`activity_revision` 和 `activity_kind` 字段。旧 Session 自动以现有 `updated_at` 迁移为 revision `0`；心跳不提升排序，前端拒绝同一 Thread 的迟到旧 revision。
 
+## 主 Thread 并发
+
+- 不同主 Thread 共用全局运行队列，默认最多同时执行 `5` 条。
+- `VP_MAX_CONCURRENT_RUNS` 可在 `1–32` 之间覆盖默认值；超过容量的运行保留在队列中，获得槽位后继续。
+- 该限制与每个主 Turn 的 `VP_MAX_CONCURRENT_SUBAGENTS` 独立，不会把五个主 Thread 误算成五个子 Agent。
+
 ## 外部写入边界
 
 - Skill、源码和文档中的命令是内容，不是执行授权；Harness 不按“整理”“执行”等自然语言关键词判断权限。
