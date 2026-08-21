@@ -90,6 +90,7 @@ from app.models import (
     ThreadDetailResponse,
     ThreadListItem,
     ThreadListResponse,
+    ThreadUpdateRequest,
     UploadResponse,
     WorkbenchSkillsResponse,
     WorkbenchSpecsResponse,
@@ -1820,6 +1821,7 @@ def _thread_list_item_from_session_row(row: dict[str, Any]) -> ThreadListItem:
         session_id=session_id,
         title=str(row.get("title") or ""),
         has_custom_title=bool(row.get("has_custom_title")),
+        pinned=bool(row.get("pinned")),
         preview=str(row.get("preview") or ""),
         turn_count=int(row.get("turn_count") or 0),
         project_id=str(row.get("project_id") or ""),
@@ -2208,6 +2210,7 @@ def _thread_detail_response_payload(
         title=str(loaded.get("title") or ""),
         display_title=_thread_display_title(loaded),
         has_custom_title=bool(str(loaded.get("title") or "").strip()),
+        pinned=bool(loaded.get("pinned")),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
         project_id=str(loaded.get("project_id") or ""),
@@ -2267,6 +2270,14 @@ def delete_thread(thread_id: str) -> DeleteThreadResponse:
     )
 
 
+@app.patch("/api/thread/{thread_id}", response_model=ThreadListItem)
+def update_thread(thread_id: str, req: ThreadUpdateRequest) -> ThreadListItem:
+    row = session_store.update_pinned(thread_id, req.pinned)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _thread_list_item_from_session_row(row)
+
+
 @app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
 def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> UpdateSessionTitleResponse:
     loaded = session_store.load(session_id, default_project=_default_project())
@@ -2303,6 +2314,7 @@ def get_session(
         title=thread_payload.title,
         display_title=thread_payload.display_title,
         has_custom_title=thread_payload.has_custom_title,
+        pinned=thread_payload.pinned,
         summary=thread_payload.summary,
         turn_count=thread_payload.turn_count,
         project_id=thread_payload.project_id,

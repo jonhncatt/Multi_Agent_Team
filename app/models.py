@@ -448,6 +448,7 @@ class SessionDetailResponse(BaseModel):
     title: str | None = None
     display_title: str | None = None
     has_custom_title: bool | None = None
+    pinned: bool = False
     summary: str = ""
     turn_count: int = 0
     project_id: str = ""
@@ -471,6 +472,7 @@ class SessionListItem(BaseModel):
     session_id: str
     title: str = ""
     has_custom_title: bool = False
+    pinned: bool = False
     preview: str = ""
     turn_count: int = 0
     project_id: str = ""
@@ -495,6 +497,7 @@ class ThreadDetailResponse(BaseModel):
     title: str | None = None
     display_title: str | None = None
     has_custom_title: bool | None = None
+    pinned: bool = False
     summary: str = ""
     turn_count: int = 0
     project_id: str = ""
@@ -523,6 +526,7 @@ class ThreadListItem(BaseModel):
     session_id: str = ""
     title: str = ""
     has_custom_title: bool = False
+    pinned: bool = False
     preview: str = ""
     turn_count: int = 0
     project_id: str = ""
@@ -599,6 +603,10 @@ class NewThreadResponse(BaseModel):
     thread_id: str
     session_id: str = ""
     project_id: str = ""
+
+
+class ThreadUpdateRequest(BaseModel):
+    pinned: bool
 
 
 class DeleteThreadResponse(BaseModel):

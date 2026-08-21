@@ -1683,6 +1683,41 @@ def test_bootstrap_runtime_status_and_thread_alias_endpoints(monkeypatch, tmp_pa
     assert detail_after_delete.status_code == 404
 
 
+def test_thread_pin_endpoint_persists_and_orders_pinned_threads_first(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    project_id = main_app.project_store.ensure_default_project()["project_id"]
+
+    first_id = client.post("/api/thread/new", json={"project_id": project_id}).json()["thread_id"]
+    second_id = client.post("/api/thread/new", json={"project_id": project_id}).json()["thread_id"]
+    first = main_app.session_store.load(first_id)
+    second = main_app.session_store.load(second_id)
+    assert first is not None and second is not None
+    main_app.session_store.mark_activity(first, kind="user_message", at="2026-08-20T08:00:00+00:00")
+    main_app.session_store.save(first)
+    main_app.session_store.mark_activity(second, kind="user_message", at="2026-08-21T08:00:00+00:00")
+    main_app.session_store.save(second)
+
+    pin_response = client.patch(f"/api/thread/{first_id}", json={"pinned": True})
+
+    assert pin_response.status_code == 200
+    assert pin_response.json()["pinned"] is True
+    persisted_first = main_app.session_store.load(first_id)
+    assert persisted_first is not None and persisted_first["pinned"] is True
+    detail = client.get(f"/api/thread/{first_id}").json()
+    assert detail["pinned"] is True
+    listed = client.get(f"/api/threads?project_id={project_id}").json()["threads"]
+    assert [item["thread_id"] for item in listed[:2]] == [first_id, second_id]
+
+    unpin_response = client.patch(f"/api/thread/{first_id}", json={"pinned": False})
+
+    assert unpin_response.status_code == 200
+    assert unpin_response.json()["pinned"] is False
+    listed_after_unpin = client.get(f"/api/threads?project_id={project_id}").json()["threads"]
+    assert [item["thread_id"] for item in listed_after_unpin[:2]] == [second_id, first_id]
+    assert client.patch("/api/thread/missing-thread", json={"pinned": True}).status_code == 404
+
+
 def test_provider_models_refresh_is_manual_and_updates_cached_presets(monkeypatch, tmp_path: Path) -> None:
     _patch_runtime_state(monkeypatch, tmp_path)
 
@@ -2324,7 +2359,7 @@ def test_thread_detail_uses_fast_view_without_runtime_prechecks(monkeypatch, tmp
     assert [item["text"] for item in detail_response.json()["turns"]] == ["hello", "hi"]
     assert full_turn_response.json()["text"] == "hi"
     migrated = json.loads(session_path.read_text(encoding="utf-8"))
-    assert migrated["thread_record_schema_version"] == 5
+    assert migrated["thread_record_schema_version"] == 6
     assert "turns" not in migrated
     assert (tmp_path / "session_backups" / f"{session_id}.v2.json").exists()
 

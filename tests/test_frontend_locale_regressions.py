@@ -2101,6 +2101,24 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
+def test_thread_context_menu_can_pin_and_unpin_persistently() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "async function handleToggleThreadPinned()" in script
+    assert 'method: "PATCH"' in script
+    assert 'body: JSON.stringify({ pinned: nextPinned })' in script
+    assert "sessionsRequestSeqRef.current += 1;" in script
+    assert 't(threadMenu.pinned ? "buttons.unpin_thread" : "buttons.pin_thread")' in script
+    assert 'item.pinned ? "pinned"' in script
+    assert 'className="thread-pin-icon"' in script
+    assert "const pinDelta = Number(Boolean(right && right.pinned))" in script
+    assert '"buttons.pin_thread": "置顶线程"' in locales
+    assert '"buttons.unpin_thread": "取消置顶"' in locales
+    assert ".thread-pin-icon" in styles
+
+
 def test_tasks_entry_queries_globally_and_confirms_before_loading_across_projects() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")

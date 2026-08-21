@@ -19,6 +19,8 @@ THREAD_KEYS = {
     "title",
     "auto_title",
     "title_generation",
+    "pinned",
+    "pin_updated_at",
     "project_id",
     "project_title",
     "project_root",
@@ -129,7 +131,7 @@ def test_old_session_auto_migrates_once_with_backup_and_keeps_chat(tmp_path: Pat
     persisted_once = session_path.read_bytes()
     persisted = json.loads(persisted_once)
     assert set(persisted) == THREAD_KEYS
-    assert persisted["thread_record_schema_version"] == 5
+    assert persisted["thread_record_schema_version"] == 6
     assert [item["content"] for item in persisted["thread_transcript"]["items"]] == [
         "old question",
         "old answer",

@@ -4089,6 +4089,7 @@ function normalizeThreadListPayload(data) {
     thread_id: String(item.thread_id || item.session_id || ""),
     session_id: String(item.session_id || item.thread_id || ""),
     status: String(item.status || "idle"),
+    pinned: Boolean(item.pinned),
     activity_at: String(item.activity_at || item.updated_at || item.created_at || ""),
     activity_revision: Math.max(0, Number(item.activity_revision || 0) || 0),
     activity_kind: String(item.activity_kind || ""),
@@ -4124,6 +4125,8 @@ function mergeThreadRow(existing, incoming) {
 
 function sortThreadRows(rows) {
   return (Array.isArray(rows) ? [...rows] : []).sort((left, right) => {
+    const pinDelta = Number(Boolean(right && right.pinned)) - Number(Boolean(left && left.pinned));
+    if (pinDelta) return pinDelta;
     const activityDelta = threadActivityTimestamp(right) - threadActivityTimestamp(left);
     if (activityDelta) return activityDelta;
     const leftId = String((left && (left.thread_id || left.session_id)) || "");
@@ -4337,6 +4340,7 @@ function App() {
   const [renameDraft, setRenameDraft] = useState("");
   const [renameError, setRenameError] = useState("");
   const [renamingThread, setRenamingThread] = useState(false);
+  const [pinningThreadId, setPinningThreadId] = useState("");
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [debugOpenByMessageId, setDebugOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
@@ -6165,6 +6169,7 @@ function App() {
     setThreadMenu({
       sessionId: String(item.session_id || ""),
       title: String(item.title || t("labels.new_thread")),
+      pinned: Boolean(item.pinned),
       x: Math.max(12, Number((position && position.x) || 0) || 0),
       y: Math.max(12, Number((position && position.y) || 0) || 0),
     });
@@ -6877,6 +6882,49 @@ function App() {
       setRenameError(nextError.summary);
     } finally {
       setRenamingThread(false);
+    }
+  }
+
+  async function handleToggleThreadPinned() {
+    const sid = String((threadMenu && threadMenu.sessionId) || "").trim();
+    if (!sid || pinningThreadId) return;
+    const nextPinned = !Boolean(threadMenu && threadMenu.pinned);
+    setPinningThreadId(sid);
+    // A list refresh started before this mutation must not overwrite the new pin state.
+    sessionsRequestSeqRef.current += 1;
+    try {
+      const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      const normalized = normalizeSingleThread(payload);
+      setSessions((prev) => sortThreadRows((Array.isArray(prev) ? prev : []).map((entry) => (
+        threadListItemId(entry) === sid
+          ? { ...entry, ...(normalized || {}), pinned: Boolean(payload.pinned) }
+          : entry
+      ))));
+      updateThreadSnapshot(sid, (existing) => ({
+        ...existing,
+        detail: {
+          ...((existing && existing.detail) || {}),
+          pinned: Boolean(payload.pinned),
+        },
+      }));
+      closeThreadMenu();
+      clearUiError();
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        t(Boolean(payload.pinned) ? "log.thread_pinned" : "log.thread_unpinned", {
+          title: String(payload.title || threadMenu.title || t("labels.new_thread")),
+        }),
+      );
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.pin_thread_failed"));
+      pushLogWithLimit(setLogs, "error", nextError.summary || t("errors.pin_thread_failed"));
+    } finally {
+      setPinningThreadId("");
     }
   }
 
@@ -10886,7 +10934,7 @@ function App() {
                         return html`
                         <button
                           key=${itemId || item.session_id}
-                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""} ${indicatorStatus ? `has-run-indicator indicator-${indicatorStatus}` : ""}`}
+                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${item.pinned ? "pinned" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""} ${indicatorStatus ? `has-run-indicator indicator-${indicatorStatus}` : ""}`}
                           type="button"
                           onClick=${(event) => handleThreadClick(event, itemId)}
                           onContextMenu=${(event) => handleThreadContextMenu(event, item)}
@@ -10900,7 +10948,10 @@ function App() {
                             ? html`<span className="thread-select-box" role="checkbox" aria-checked=${itemSelected}>${itemSelected ? "✓" : ""}</span>`
                             : null}
                           <span className="thread-row-body">
-                            <span className="thread-row-title">${item.title || t("labels.new_thread")}</span>
+                            <span className="thread-row-title">
+                              ${item.pinned ? html`<span className="thread-pin-icon" title=${t("threads.pinned")} aria-label=${t("threads.pinned")}>📌</span>` : null}
+                              <span>${item.title || t("labels.new_thread")}</span>
+                            </span>
                             <span className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</span>
                           </span>
                           ${indicatorStatus
@@ -10920,6 +10971,9 @@ function App() {
                 ref=${threadMenuRef}
                 style=${{ left: `${threadMenu.x}px`, top: `${threadMenu.y}px` }}
               >
+                <button className="thread-context-item" type="button" onClick=${handleToggleThreadPinned} disabled=${pinningThreadId === threadMenu.sessionId}>
+                  ${t(threadMenu.pinned ? "buttons.unpin_thread" : "buttons.pin_thread")}
+                </button>
                 <button className="thread-context-item" type="button" onClick=${() => openRenameThreadDialog(threadMenu.sessionId)}>
                   ${t("buttons.rename_thread")}
                 </button>
