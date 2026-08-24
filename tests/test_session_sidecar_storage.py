@@ -300,6 +300,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert activity_turn["activity"]["activity_loaded"] is True
     assert activity_turn["activity"]["debug_loaded"] is False
     assert activity_turn["activity"]["full_loaded"] is False
+    assert activity_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert activity_turn["activity"]["trace_events"] == []
     assert activity_turn["activity"]["tool_items"][0]["raw_tool_call"]["id"] == "call-1"
     assert activity_turn["activity"]["tool_items"][0]["raw_arguments"] == {"path": "README.md"}
@@ -326,6 +327,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     assert debug_turn["activity"]["activity_loaded"] is True
     assert debug_turn["activity"]["debug_loaded"] is True
     assert debug_turn["activity"]["full_loaded"] is False
+    assert debug_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert debug_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
     assert "llm_exchanges" not in debug_turn["activity"]
     assert "triggering_user_message" not in debug_turn["activity"]
@@ -336,6 +338,7 @@ def test_assistant_activity_is_slimmed_to_turn_trace(tmp_path: Path) -> None:
     full_turn = store.expand_turn_for_view(session["id"], projected_turn, view="full")
     assert full_turn["answer_bundle"] == {}
     assert full_turn["activity"]["full_loaded"] is True
+    assert full_turn["activity"]["turn_changes"] == raw_trace["turn_changes"]
     assert full_turn["activity"]["turn_trace"]["turn_id"] == "turn-1"
     assert full_turn["run_artifact"] == {}
 
@@ -508,6 +511,32 @@ def test_thread_activity_clock_controls_listing_without_following_unrelated_save
     assert [row["session_id"] for row in rows] == [first["id"], second["id"]]
     assert rows[0]["activity_revision"] == 1
     assert rows[0]["activity_kind"] == "user_message"
+
+
+def test_pinned_threads_sort_first_and_survive_stale_session_save(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    first = store.create(_project(tmp_path))
+    second = store.create(_project(tmp_path))
+    store.mark_activity(first, kind="user_message", at="2026-08-20T08:00:00+00:00")
+    store.save(first)
+    store.mark_activity(second, kind="user_message", at="2026-08-21T08:00:00+00:00")
+    store.save(second)
+    stale_first = store.load(first["id"])
+    assert stale_first is not None
+
+    pinned_meta = store.update_pinned(first["id"], True)
+    assert pinned_meta is not None and pinned_meta["pinned"] is True
+    store.save(stale_first)
+
+    persisted = store.load(first["id"])
+    assert persisted is not None and persisted["pinned"] is True
+    rows = store.list_recent_sessions(limit=10, project_id="project-test")
+    assert [row["session_id"] for row in rows] == [first["id"], second["id"]]
+
+    unpinned_meta = store.update_pinned(first["id"], False)
+    assert unpinned_meta is not None and unpinned_meta["pinned"] is False
+    rows_after_unpin = store.list_recent_sessions(limit=10, project_id="project-test")
+    assert [row["session_id"] for row in rows_after_unpin] == [second["id"], first["id"]]
 
 
 def test_legacy_session_activity_fields_migrate_idempotently(tmp_path: Path) -> None:

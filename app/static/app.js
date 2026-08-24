@@ -45,6 +45,7 @@ const PROJECTS_REFRESH_STALE_MS = 60_000;
 const MODEL_WAIT_SLOW_HINT_MS = 8_000;
 const UPLOAD_CONCURRENCY = 3;
 const THREAD_DETAIL_PAGE_SIZE = 40;
+const THREAD_RECONCILE_TIMEOUT_MS = 5_000;
 const THREAD_DETAIL_CACHE_LIMIT = 60;
 const MESSAGE_HTML_CACHE_LIMIT = 300;
 const TEMP_THREAD_PREFIX = "temp-thread-";
@@ -957,14 +958,18 @@ function normalizeLiveRunItem(raw) {
     id,
     type,
     status: normalizeProgressStatus(item.status || rawItem.status || "running"),
-    label: String(item.label || rawItem.label || rawItem.summary || rawItem.title || "").trim(),
+    label: String(item.label || rawItem.label || item.summary || rawItem.summary || rawItem.title || "").trim(),
     label_key: String(item.label_key || item.labelKey || "").trim(),
-    detail: String(item.detail || rawItem.detail || rawItem.summary || "").trim(),
+    detail: String(item.detail || rawItem.detail || item.summary || rawItem.summary || "").trim(),
     tool,
     call_id: callId,
+    role: String(item.role || rawItem.role || "").trim(),
+    task: String(item.task || rawItem.task || "").trim(),
+    summary: String(item.summary || rawItem.summary || item.detail || rawItem.detail || "").trim(),
+    tool_count: Math.max(0, Number(item.tool_count ?? item.toolCount ?? rawItem.tool_count ?? rawItem.toolCount ?? 0) || 0),
     started_at: normalizeActivityTimestamp(item.started_at || item.startedAt || rawItem.started_at || rawItem.startedAt || 0),
     completed_at: normalizeActivityTimestamp(item.completed_at || item.completedAt || rawItem.completed_at || rawItem.completedAt || 0),
-    raw: item.raw || rawItem || {},
+    raw: Object.keys(rawItem).length ? rawItem : item,
   };
 }
 
@@ -4089,6 +4094,7 @@ function normalizeThreadListPayload(data) {
     thread_id: String(item.thread_id || item.session_id || ""),
     session_id: String(item.session_id || item.thread_id || ""),
     status: String(item.status || "idle"),
+    pinned: Boolean(item.pinned),
     activity_at: String(item.activity_at || item.updated_at || item.created_at || ""),
     activity_revision: Math.max(0, Number(item.activity_revision || 0) || 0),
     activity_kind: String(item.activity_kind || ""),
@@ -4124,6 +4130,8 @@ function mergeThreadRow(existing, incoming) {
 
 function sortThreadRows(rows) {
   return (Array.isArray(rows) ? [...rows] : []).sort((left, right) => {
+    const pinDelta = Number(Boolean(right && right.pinned)) - Number(Boolean(left && left.pinned));
+    if (pinDelta) return pinDelta;
     const activityDelta = threadActivityTimestamp(right) - threadActivityTimestamp(left);
     if (activityDelta) return activityDelta;
     const leftId = String((left && (left.thread_id || left.session_id)) || "");
@@ -4311,6 +4319,7 @@ function App() {
   const [modelPresetRefreshing, setModelPresetRefreshing] = useState(false);
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
   const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});
+  const approvalSubmittingKeysRef = useRef({});
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -4323,6 +4332,8 @@ function App() {
   });
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
+  const [appRestartPromptOpen, setAppRestartPromptOpen] = useState(false);
+  const [appRestartState, setAppRestartState] = useState({ status: "idle", error: null });
   const [desktopExitState, setDesktopExitState] = useState("idle");
   const [bootState, setBootState] = useState({ active: true, phase: "workspace" });
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
@@ -4335,6 +4346,7 @@ function App() {
   const [renameDraft, setRenameDraft] = useState("");
   const [renameError, setRenameError] = useState("");
   const [renamingThread, setRenamingThread] = useState(false);
+  const [pinningThreadId, setPinningThreadId] = useState("");
   const [activityOpenByMessageId, setActivityOpenByMessageId] = useState({});
   const [debugOpenByMessageId, setDebugOpenByMessageId] = useState({});
   const [activityClockMs, setActivityClockMs] = useState(Date.now());
@@ -5555,6 +5567,10 @@ function App() {
     try {
       const data = await fetchJson("/api/app/update", { method: "POST" });
       setAppUpdateState({ status: data && data.ok ? "success" : "failed", result: data, error: null });
+      if (data && data.ok && IS_CHROME_DESKTOP_APP) {
+        setAppRestartState({ status: "idle", error: null });
+        setAppRestartPromptOpen(true);
+      }
       pushLogWithLimit(
         setLogs,
         data && data.ok ? "system" : "error",
@@ -5566,6 +5582,47 @@ function App() {
       setAppUpdateState({ status: "failed", result: null, error: nextError });
       pushLogWithLimit(setLogs, "error", `${t("update.failed")}: ${nextError.summary}`);
     }
+  }
+
+  async function waitForRestartedDesktop(previousProcessId, timeoutMs = 60000) {
+    const deadline = Date.now() + Math.max(10000, Number(timeoutMs || 0) || 60000);
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`/api/health?restart=${Date.now()}`, { cache: "no-store" });
+        if (response.ok) {
+          const health = await response.json();
+          const nextProcessId = Number((health && health.process_id) || 0);
+          if (nextProcessId > 0 && nextProcessId !== previousProcessId) return health;
+        }
+      } catch (_err) {
+        // The old backend is expected to be temporarily unreachable during restart.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    }
+    throw new Error(t("update.restart_timeout"));
+  }
+
+  async function handleAppRestart() {
+    if (!IS_CHROME_DESKTOP_APP || appRestartState.status === "restarting") return;
+    setAppRestartState({ status: "restarting", error: null });
+    try {
+      const data = await fetchJson("/api/desktop/restart", {
+        method: "POST",
+        headers: { "X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN },
+      });
+      const previousProcessId = Number((data && data.process_id) || 0);
+      await waitForRestartedDesktop(previousProcessId);
+      window.location.reload();
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("update.restart_failed"));
+      setAppRestartState({ status: "failed", error: nextError });
+    }
+  }
+
+  function closeAppRestartPrompt() {
+    if (appRestartState.status === "restarting") return;
+    setAppRestartPromptOpen(false);
+    setAppRestartState({ status: "idle", error: null });
   }
 
   function setSkillSelectionState(skillId, content, options = {}) {
@@ -6118,6 +6175,7 @@ function App() {
     setThreadMenu({
       sessionId: String(item.session_id || ""),
       title: String(item.title || t("labels.new_thread")),
+      pinned: Boolean(item.pinned),
       x: Math.max(12, Number((position && position.x) || 0) || 0),
       y: Math.max(12, Number((position && position.y) || 0) || 0),
     });
@@ -6830,6 +6888,49 @@ function App() {
       setRenameError(nextError.summary);
     } finally {
       setRenamingThread(false);
+    }
+  }
+
+  async function handleToggleThreadPinned() {
+    const sid = String((threadMenu && threadMenu.sessionId) || "").trim();
+    if (!sid || pinningThreadId) return;
+    const nextPinned = !Boolean(threadMenu && threadMenu.pinned);
+    setPinningThreadId(sid);
+    // A list refresh started before this mutation must not overwrite the new pin state.
+    sessionsRequestSeqRef.current += 1;
+    try {
+      const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: nextPinned }),
+      });
+      const normalized = normalizeSingleThread(payload);
+      setSessions((prev) => sortThreadRows((Array.isArray(prev) ? prev : []).map((entry) => (
+        threadListItemId(entry) === sid
+          ? { ...entry, ...(normalized || {}), pinned: Boolean(payload.pinned) }
+          : entry
+      ))));
+      updateThreadSnapshot(sid, (existing) => ({
+        ...existing,
+        detail: {
+          ...((existing && existing.detail) || {}),
+          pinned: Boolean(payload.pinned),
+        },
+      }));
+      closeThreadMenu();
+      clearUiError();
+      pushLogWithLimit(
+        setLogs,
+        "system",
+        t(Boolean(payload.pinned) ? "log.thread_pinned" : "log.thread_unpinned", {
+          title: String(payload.title || threadMenu.title || t("labels.new_thread")),
+        }),
+      );
+    } catch (err) {
+      const nextError = applyUiError(err, t("errors.pin_thread_failed"));
+      pushLogWithLimit(setLogs, "error", nextError.summary || t("errors.pin_thread_failed"));
+    } finally {
+      setPinningThreadId("");
     }
   }
 
@@ -7599,9 +7700,15 @@ function App() {
       const reconcileCompletedThreadMessages = async (threadId) => {
         const ownerId = String(threadId || runOwnerThreadId || "").trim();
         if (!ownerId || isTempThreadId(ownerId)) return false;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(
+          () => controller.abort(),
+          THREAD_RECONCILE_TIMEOUT_MS,
+        );
         try {
           const detail = normalizeThreadDetailPayload(await fetchJson(
             `/api/thread/${encodeURIComponent(ownerId)}?view=summary&max_turns=${THREAD_DETAIL_PAGE_SIZE}`,
+            { signal: controller.signal },
           ));
           const authoritativeMessages = extractSessionMessages(detail);
           if (!authoritativeMessages.length) return false;
@@ -7614,6 +7721,8 @@ function App() {
           return true;
         } catch {
           return false;
+        } finally {
+          window.clearTimeout(timeoutId);
         }
       };
       const updateOwnerLiveHeartbeat = (value) => {
@@ -9303,7 +9412,7 @@ function App() {
     }
     return {};
   })();
-  const approvalSubmitting = Object.keys(approvalSubmittingKeys).some(
+  const threadApprovalSubmitting = Object.keys(approvalSubmittingKeys).some(
     (key) => key.startsWith(`${String(sessionId || "").trim()}::`),
   );
   const hasCommandApproval = Boolean(
@@ -9353,8 +9462,24 @@ function App() {
   const taskApprovalChangedFields = hasTaskUpdateApproval && Array.isArray(activePendingApproval.changed_fields)
     ? activePendingApproval.changed_fields.map((item) => String(item || "")).filter(Boolean)
     : [];
+  const claimApprovalSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || approvalSubmittingKeysRef.current[key]) return false;
+    const next = { ...approvalSubmittingKeysRef.current, [key]: true };
+    approvalSubmittingKeysRef.current = next;
+    setApprovalSubmittingKeys(next);
+    return true;
+  };
+  const releaseApprovalSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || !approvalSubmittingKeysRef.current[key]) return;
+    const next = { ...approvalSubmittingKeysRef.current };
+    delete next[key];
+    approvalSubmittingKeysRef.current = next;
+    setApprovalSubmittingKeys(next);
+  };
   const handleCommandApproval = async (action) => {
-    if (!hasCommandApproval || approvalSubmitting) return;
+    if (!hasCommandApproval) return;
     const normalizedAction = ["approve_once", "approve_thread"].includes(action) ? action : "cancel";
     const command = String(activePendingApproval.command || "").trim();
     const cwd = String(activePendingApproval.cwd || "").trim();
@@ -9369,7 +9494,7 @@ function App() {
         ? t("approval_modal.approve_message", { command })
         : t("approval_modal.cancel_message", { command }));
     const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
-    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
+    if (!claimApprovalSubmission(submissionKey)) return;
     try {
       await handleSend(message, {
         type: "command_execution",
@@ -9386,16 +9511,11 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmittingKeys((prev) => {
-        if (!prev[submissionKey]) return prev;
-        const next = { ...prev };
-        delete next[submissionKey];
-        return next;
-      });
+      releaseApprovalSubmission(submissionKey);
     }
   };
   const handleTaskUpdateApproval = async (action) => {
-    if (!hasTaskUpdateApproval || approvalSubmitting) return;
+    if (!hasTaskUpdateApproval) return;
     const normalizedAction = action === "approve_once" ? "approve_once" : "cancel";
     const taskId = String(activePendingApproval.task_id || "").trim();
     const approvalToken = String(activePendingApproval.approval_token || "").trim();
@@ -9407,7 +9527,7 @@ function App() {
       ? t("task_approval.approve_message", { title })
       : t("task_approval.cancel_message", { title });
     const submissionKey = runtimeApprovalSubmissionIdentity(sessionId, activePendingApproval);
-    setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));
+    if (!claimApprovalSubmission(submissionKey)) return;
     try {
       await handleSend(message, {
         type: "task_update",
@@ -9423,12 +9543,7 @@ function App() {
         },
       });
     } finally {
-      setApprovalSubmittingKeys((prev) => {
-        if (!prev[submissionKey]) return prev;
-        const next = { ...prev };
-        delete next[submissionKey];
-        return next;
-      });
+      releaseApprovalSubmission(submissionKey);
     }
   };
   const renderTaskApprovalSnapshot = (label, task) => {
@@ -9506,7 +9621,7 @@ function App() {
       || ["failed", "blocked", "cancelled"].includes(normalizeProgressStatus(runtimeActivity.status))
     )
   );
-  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount || approvalSubmitting);
+  const runtimeOperational = Boolean(hasLiveRuntimeState || currentThreadBusy || runtimeAttentionCount || threadApprovalSubmitting);
   useEffect(() => {
     if (drawerView !== "run" || hasLiveRuntimeState || !runtimeOutcomeNeedsLoad) return;
     const messageId = String((runtimeActivityMessage && runtimeActivityMessage.id) || "").trim();
@@ -9561,7 +9676,7 @@ function App() {
     liveTurnState,
     nowMs: activityClockMs || Date.now(),
   });
-  const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount
+  const runExecutionProgress = threadApprovalSubmitting && !runtimeAttentionCount
     ? {
         ...baseRunExecutionProgress,
         status: "approval_submitting",
@@ -9754,18 +9869,27 @@ function App() {
     }
     try {
       const payload = await fetchJson(`/api/thread/${encodeURIComponent(sid)}/turn/${encodeURIComponent(turnId)}?view=${detailView}`);
+      const rawLoadedActivity = (payload && payload.activity && typeof payload.activity === "object")
+        ? payload.activity
+        : {};
       const loadedActivity = normalizeMessageActivity({
-        ...((payload && payload.activity) || {}),
+        ...rawLoadedActivity,
         activity_loaded: true,
         debug_loaded: detailView === "debug",
       });
+      const loadedActivityPatch = { ...loadedActivity };
+      if (!Object.prototype.hasOwnProperty.call(rawLoadedActivity, "turn_changes")) {
+        // Older detail payloads did not include summary-only change metadata.
+        // Treat absence as "not provided" instead of erasing the summary value.
+        delete loadedActivityPatch.turn_changes;
+      }
       setMessages((prev) => {
         const nextMessages = (Array.isArray(prev) ? prev : []).map((entry) => (
           String(entry.id || "") === turnId
             ? {
                 ...entry,
                 activity: mergeActivityState(entry.activity || {}, {
-                  ...loadedActivity,
+                  ...loadedActivityPatch,
                   replace_execution_details: true,
                 }),
                 ...(detailView === "debug"
@@ -10571,9 +10695,9 @@ function App() {
         const raw = liveItem.raw && typeof liveItem.raw === "object" ? liveItem.raw : {};
         const running = !isActivityTerminalStatus(liveItem.status);
         const queued = normalizeProgressStatus(liveItem.status) === "queued";
-        const role = String(raw.role || "explorer");
-        const title = String(raw.label || liveItem.label || raw.task || t("subagent.title"));
-        const summary = String(raw.summary || liveItem.detail || "");
+        const role = String(liveItem.role || raw.role || "explorer");
+        const title = String(liveItem.label || liveItem.task || raw.label || raw.task || t("subagent.title"));
+        const summary = String(liveItem.summary || liveItem.detail || raw.summary || "");
         return html`
           <details
             key=${liveItem.id || `${item.id}-subagent-${index}`}
@@ -10839,7 +10963,7 @@ function App() {
                         return html`
                         <button
                           key=${itemId || item.session_id}
-                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""} ${indicatorStatus ? `has-run-indicator indicator-${indicatorStatus}` : ""}`}
+                          className=${`thread-row ${item.session_id === sessionId ? "active" : ""} ${item.pinned ? "pinned" : ""} ${selectedThreadCount ? "selectable" : ""} ${itemSelected ? "selected" : ""} ${indicatorStatus ? `has-run-indicator indicator-${indicatorStatus}` : ""}`}
                           type="button"
                           onClick=${(event) => handleThreadClick(event, itemId)}
                           onContextMenu=${(event) => handleThreadContextMenu(event, item)}
@@ -10853,7 +10977,10 @@ function App() {
                             ? html`<span className="thread-select-box" role="checkbox" aria-checked=${itemSelected}>${itemSelected ? "✓" : ""}</span>`
                             : null}
                           <span className="thread-row-body">
-                            <span className="thread-row-title">${item.title || t("labels.new_thread")}</span>
+                            <span className="thread-row-title">
+                              ${item.pinned ? html`<span className="thread-pin-icon" title=${t("threads.pinned")} aria-label=${t("threads.pinned")}>📌</span>` : null}
+                              <span>${item.title || t("labels.new_thread")}</span>
+                            </span>
                             <span className="thread-row-meta">${formatTime(item.updated_at, uiLocale)} · ${item.turn_count || 0}</span>
                           </span>
                           ${indicatorStatus
@@ -10873,6 +11000,9 @@ function App() {
                 ref=${threadMenuRef}
                 style=${{ left: `${threadMenu.x}px`, top: `${threadMenu.y}px` }}
               >
+                <button className="thread-context-item" type="button" onClick=${handleToggleThreadPinned} disabled=${pinningThreadId === threadMenu.sessionId}>
+                  ${t(threadMenu.pinned ? "buttons.unpin_thread" : "buttons.pin_thread")}
+                </button>
                 <button className="thread-context-item" type="button" onClick=${() => openRenameThreadDialog(threadMenu.sessionId)}>
                   ${t("buttons.rename_thread")}
                 </button>
@@ -11477,6 +11607,34 @@ function App() {
 	          `
 	        : null}
 
+      ${appRestartPromptOpen
+        ? html`
+            <div className="project-modal-backdrop" id="appRestartPromptModal" role="presentation">
+              <div
+                className="project-modal app-restart-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="appRestartPromptTitle"
+                aria-describedby="appRestartPromptMessage"
+              >
+                <div className="panel-title" id="appRestartPromptTitle">${t("update.restart_required_title")}</div>
+                <div className="app-restart-message" id="appRestartPromptMessage">
+                  ${appRestartState.status === "restarting" ? t("update.restarting_message") : t("update.restart_required_message")}
+                </div>
+                ${appRestartState.error
+                  ? html`<div className="status-error">${String(appRestartState.error.detail || appRestartState.error.summary || t("update.restart_failed"))}</div>`
+                  : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn" type="button" onClick=${closeAppRestartPrompt} disabled=${appRestartState.status === "restarting"}>${t("buttons.close")}</button>
+                  <button className="solid-btn" type="button" onClick=${handleAppRestart} disabled=${appRestartState.status === "restarting"}>
+                    ${appRestartState.status === "restarting" ? t("update.restarting_button") : t("update.restart_now")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          `
+        : null}
+
       ${projectDialogOpen
 	        ? html`
 	            <div className="project-modal-backdrop" id="projectModal">
@@ -11902,15 +12060,15 @@ function App() {
                                     `
                                   : null}
                                 <div className="runtime-control-actions">
-                                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")} disabled=${approvalSubmitting}>
+                                  <button className="ghost-btn" type="button" onClick=${() => handleCommandApproval("cancel")}>
                                     ${t("approval_modal.cancel")}
                                   </button>
-                                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                  <button className="solid-btn" type="button" onClick=${() => handleCommandApproval("approve_once")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("approval_modal.approve_once")}
                                   </button>
                                   ${commandThreadApprovalEligible
                                     ? html`
-                                        <button className="solid-btn approval-thread-btn" type="button" onClick=${() => handleCommandApproval("approve_thread")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                        <button className="solid-btn approval-thread-btn" type="button" onClick=${() => handleCommandApproval("approve_thread")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                           ${t("approval_modal.approve_thread")}
                                         </button>
                                       `
@@ -11952,10 +12110,10 @@ function App() {
                                 </div>
                                 <div className="task-approval-warning">${t("task_approval.warning")}</div>
                                 <div className="runtime-control-actions">
-                                  <button className="ghost-btn" type="button" onClick=${() => handleTaskUpdateApproval("cancel")} disabled=${approvalSubmitting}>
+                                  <button className="ghost-btn" type="button" onClick=${() => handleTaskUpdateApproval("cancel")}>
                                     ${t("task_approval.cancel")}
                                   </button>
-                                  <button className="solid-btn" type="button" onClick=${() => handleTaskUpdateApproval("approve_once")} disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}>
+                                  <button className="solid-btn" type="button" onClick=${() => handleTaskUpdateApproval("approve_once")} disabled=${!String(activePendingApproval.approval_token || "").trim()}>
                                     ${t("task_approval.approve")}
                                   </button>
                                 </div>
@@ -12479,6 +12637,27 @@ function App() {
                 <div className="app-boot-status">
                   <span className="app-boot-ring" aria-hidden="true"></span>
                   <span>${bootLoadingText}</span>
+                </div>
+              </div>
+            </div>
+          </main>
+        `
+      : null}
+    ${appRestartState.status === "restarting"
+      ? html`
+          <main
+            className="app-boot-screen app-boot-screen-overlay app-restart-screen"
+            role="status"
+            aria-live="assertive"
+            aria-label=${t("update.restarting_message")}
+          >
+            <div className="app-boot-card">
+              <img className="app-boot-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
+              <div className="app-boot-copy">
+                <div className="app-boot-title">Vintage Programmer</div>
+                <div className="app-boot-status">
+                  <span className="app-boot-ring" aria-hidden="true"></span>
+                  <span>${t("update.restarting_message")}</span>
                 </div>
               </div>
             </div>

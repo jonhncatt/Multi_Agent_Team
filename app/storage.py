@@ -339,6 +339,7 @@ class SessionMetaStore:
             "activity_at": str(payload.get("activity_at") or payload.get("updated_at") or ""),
             "activity_revision": max(0, int(payload.get("activity_revision") or 0)),
             "activity_kind": str(payload.get("activity_kind") or ""),
+            "pinned": bool(payload.get("pinned")),
             "status": str(agent_state.get("turn_status") or "idle"),
         }
 
@@ -397,6 +398,7 @@ class SessionMetaStore:
         return sorted(
             rows,
             key=lambda item: (
+                1 if bool(item.get("pinned")) else 0,
                 str(item.get("activity_at") or item.get("updated_at") or ""),
                 str(item.get("session_id") or ""),
             ),
@@ -835,6 +837,16 @@ class SessionStore:
         if requested_view in {"activity", "debug", "full"}:
             artifact = self._load_turn_artifact(session_id=session_id, run_id=run_id, trace_ref=trace_ref)
             if artifact:
+                artifact_activity = (
+                    dict(artifact.get("activity") or {})
+                    if isinstance(artifact.get("activity"), dict)
+                    else {}
+                )
+                turn_changes = normalize_turn_changes_summary(
+                    artifact.get("turn_changes")
+                    or artifact_activity.get("turn_changes")
+                    or activity.get("turn_changes")
+                )
                 if int(artifact.get("turn_trace_schema_version") or 0) > 0:
                     trace_steps = [
                         dict(item)
@@ -926,6 +938,8 @@ class SessionStore:
                     }
                     if requested_view in {"debug", "full"}:
                         activity_view["turn_trace"] = dict(artifact)
+                    if turn_changes:
+                        activity_view["turn_changes"] = turn_changes
                     payload["activity"] = activity_view
                     payload["answer_bundle"] = {}
                     payload["run_artifact"] = {}
@@ -1013,6 +1027,8 @@ class SessionStore:
                 else:
                     payload["answer_bundle"] = {}
                     payload["run_artifact"] = {}
+                if turn_changes:
+                    activity_view["turn_changes"] = turn_changes
                 payload["activity"] = activity_view
             else:
                 payload["activity"] = dict(activity)
@@ -1057,6 +1073,8 @@ class SessionStore:
         payload["activity_revision"] = activity_revision
         if not isinstance(payload.get("activity_kind"), str):
             payload["activity_kind"] = ""
+        payload["pinned"] = bool(payload.get("pinned"))
+        payload["pin_updated_at"] = str(payload.get("pin_updated_at") or "").strip()
         payload["turns"] = legacy_turns
         payload, thread_migrated = migrate_session_to_thread_transcript(payload)
         if not isinstance(payload.get("active_attachment_ids"), list):
@@ -1151,6 +1169,8 @@ class SessionStore:
             "title": "",
             "auto_title": "",
             "title_generation": {},
+            "pinned": False,
+            "pin_updated_at": "",
             "project_id": project_id,
             "project_title": project_title,
             "project_root": project_root,
@@ -1211,22 +1231,50 @@ class SessionStore:
         path = self._path(session["id"])
         encoded = encode_thread_record(session)
         session["pending_interaction"] = dict(encoded.get("pending_interaction") or {})
-        if path.exists():
-            try:
-                with self._lock:
-                    previous = json.loads(path.read_text(encoding="utf-8"))
-                if int((previous or {}).get("thread_record_schema_version") or 0) < THREAD_RECORD_SCHEMA_VERSION:
-                    self.migration_backup_dir.mkdir(parents=True, exist_ok=True)
-                    backup = self.migration_backup_dir / f"{_safe_name(str(session['id']))}.v2.json"
-                    if not backup.exists():
-                        shutil.copy2(path, backup)
-            except Exception:
-                pass
-        tmp_path = path.with_suffix(".json.tmp")
         with self._lock:
+            previous: dict[str, Any] = {}
+            if path.exists():
+                try:
+                    previous = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    previous = {}
+            persisted_pin_at = str(previous.get("pin_updated_at") or "").strip()
+            incoming_pin_at = str(encoded.get("pin_updated_at") or "").strip()
+            if persisted_pin_at and persisted_pin_at >= incoming_pin_at:
+                encoded["pinned"] = bool(previous.get("pinned"))
+                encoded["pin_updated_at"] = persisted_pin_at
+            session["pinned"] = bool(encoded.get("pinned"))
+            session["pin_updated_at"] = str(encoded.get("pin_updated_at") or "")
+            if path.exists() and int(previous.get("thread_record_schema_version") or 0) < THREAD_RECORD_SCHEMA_VERSION:
+                self.migration_backup_dir.mkdir(parents=True, exist_ok=True)
+                backup = self.migration_backup_dir / f"{_safe_name(str(session['id']))}.v2.json"
+                if not backup.exists():
+                    shutil.copy2(path, backup)
+            tmp_path = path.with_suffix(".json.tmp")
             tmp_path.write_text(json.dumps(encoded, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp_path.replace(path)
-        self.session_meta_store.save_session(session)
+            self.session_meta_store.save_session(encoded)
+
+    def update_pinned(self, session_id: str, pinned: bool) -> dict[str, Any] | None:
+        """Atomically update a Thread's pin preference without moving its activity clock."""
+
+        path = self._path(session_id)
+        if not path.exists():
+            return None
+        with self._lock:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+            if not isinstance(payload, dict):
+                return None
+            payload["pinned"] = bool(pinned)
+            payload["pin_updated_at"] = now_iso()
+            encoded = encode_thread_record(payload)
+            tmp_path = path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(encoded, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+            return self.session_meta_store.save_session(encoded)
 
     def mark_activity(self, session: dict[str, Any], *, kind: str, at: str = "") -> dict[str, Any]:
         """Advance the stable Thread ordering clock for one meaningful event."""

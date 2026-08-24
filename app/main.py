@@ -10,6 +10,7 @@ import queue
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -89,6 +90,7 @@ from app.models import (
     ThreadDetailResponse,
     ThreadListItem,
     ThreadListResponse,
+    ThreadUpdateRequest,
     UploadResponse,
     WorkbenchSkillsResponse,
     WorkbenchSpecsResponse,
@@ -138,7 +140,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5Z"
+APP_VERSION = "3.1.6A"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
@@ -207,6 +209,38 @@ def _desktop_exit_worker(run_ids: list[str]) -> None:
     os._exit(0)
 
 
+def _desktop_restart_helper_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "desktop.launcher",
+        "--project-root",
+        str(REPOSITORY_ROOT),
+        "--restart-server-only",
+    ]
+
+
+def _desktop_restart_creation_kwargs() -> dict[str, object]:
+    if os.name == "nt":
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        return {"creationflags": flags}
+    return {"start_new_session": True}
+
+
+def _start_desktop_restart_helper() -> None:
+    subprocess.Popen(
+        _desktop_restart_helper_command(),
+        cwd=str(REPOSITORY_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        **_desktop_restart_creation_kwargs(),
+    )
+
+
 def _schedule_desktop_exit(run_ids: list[str]) -> bool:
     global _desktop_exit_scheduled
     with _desktop_exit_lock:
@@ -217,6 +251,27 @@ def _schedule_desktop_exit(run_ids: list[str]) -> bool:
         target=_desktop_exit_worker,
         args=(list(run_ids),),
         name="vp-desktop-exit",
+        daemon=True,
+    ).start()
+    return True
+
+
+def _schedule_desktop_restart(run_ids: list[str]) -> bool:
+    global _desktop_exit_scheduled
+    with _desktop_exit_lock:
+        if _desktop_exit_scheduled:
+            return False
+        _desktop_exit_scheduled = True
+    try:
+        _start_desktop_restart_helper()
+    except BaseException:
+        with _desktop_exit_lock:
+            _desktop_exit_scheduled = False
+        raise
+    threading.Thread(
+        target=_desktop_exit_worker,
+        args=(list(run_ids),),
+        name="vp-desktop-restart",
         daemon=True,
     ).start()
     return True
@@ -1139,6 +1194,7 @@ def health() -> HealthResponse:
         app_version=APP_VERSION,
         build_version=BUILD_VERSION,
         uptime_sec=max(0, int(time.monotonic() - APP_STARTED_AT)),
+        process_id=os.getpid(),
     )
 
 
@@ -1207,6 +1263,49 @@ def desktop_exit(
     return {
         "ok": True,
         "shutdown_scheduled": scheduled,
+        "active_count": len(active_runs) + len(active_evals),
+        "cancelled_run_count": len(run_ids),
+    }
+
+
+@app.post("/api/desktop/restart")
+def desktop_restart(
+    x_vp_desktop_token: str = Header(default="", alias="X-VP-Desktop-Token"),
+) -> dict[str, Any]:
+    expected_token = _read_desktop_control_token()
+    supplied_token = str(x_vp_desktop_token or "").strip()
+    if not expected_token or not supplied_token or not secrets.compare_digest(
+        supplied_token,
+        expected_token,
+    ):
+        raise HTTPException(status_code=403, detail="Desktop control token is invalid.")
+
+    lifecycle = desktop_lifecycle()
+    active_runs = [
+        dict(item)
+        for item in list(lifecycle.get("active_runs") or [])
+        if isinstance(item, dict)
+    ]
+    active_evals = [
+        dict(item)
+        for item in list(lifecycle.get("active_evals") or [])
+        if isinstance(item, dict)
+    ]
+    run_ids = [str(item.get("run_id") or "").strip() for item in active_runs]
+    run_ids = [run_id for run_id in run_ids if run_id]
+    for run_id in run_ids:
+        _cancel_active_chat_run(run_id)
+
+    try:
+        scheduled = _schedule_desktop_restart(run_ids)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(status_code=500, detail=f"Could not start the desktop restart helper: {exc}") from exc
+    if not scheduled:
+        raise HTTPException(status_code=409, detail="Desktop shutdown is already scheduled.")
+    return {
+        "ok": True,
+        "restart_scheduled": True,
+        "process_id": os.getpid(),
         "active_count": len(active_runs) + len(active_evals),
         "cancelled_run_count": len(run_ids),
     }
@@ -1722,6 +1821,7 @@ def _thread_list_item_from_session_row(row: dict[str, Any]) -> ThreadListItem:
         session_id=session_id,
         title=str(row.get("title") or ""),
         has_custom_title=bool(row.get("has_custom_title")),
+        pinned=bool(row.get("pinned")),
         preview=str(row.get("preview") or ""),
         turn_count=int(row.get("turn_count") or 0),
         project_id=str(row.get("project_id") or ""),
@@ -2110,6 +2210,7 @@ def _thread_detail_response_payload(
         title=str(loaded.get("title") or ""),
         display_title=_thread_display_title(loaded),
         has_custom_title=bool(str(loaded.get("title") or "").strip()),
+        pinned=bool(loaded.get("pinned")),
         summary=str(loaded.get("summary") or ""),
         turn_count=len(turns_raw),
         project_id=str(loaded.get("project_id") or ""),
@@ -2169,6 +2270,14 @@ def delete_thread(thread_id: str) -> DeleteThreadResponse:
     )
 
 
+@app.patch("/api/thread/{thread_id}", response_model=ThreadListItem)
+def update_thread(thread_id: str, req: ThreadUpdateRequest) -> ThreadListItem:
+    row = session_store.update_pinned(thread_id, req.pinned)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _thread_list_item_from_session_row(row)
+
+
 @app.patch("/api/session/{session_id}/title", response_model=UpdateSessionTitleResponse)
 def update_session_title(session_id: str, req: UpdateSessionTitleRequest) -> UpdateSessionTitleResponse:
     loaded = session_store.load(session_id, default_project=_default_project())
@@ -2205,6 +2314,7 @@ def get_session(
         title=thread_payload.title,
         display_title=thread_payload.display_title,
         has_custom_title=thread_payload.has_custom_title,
+        pinned=thread_payload.pinned,
         summary=thread_payload.summary,
         turn_count=thread_payload.turn_count,
         project_id=thread_payload.project_id,

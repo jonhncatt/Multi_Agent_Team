@@ -504,6 +504,20 @@ def wait_until_healthy(
     return False
 
 
+def wait_until_stopped(
+    url: str,
+    *,
+    timeout_sec: float,
+    probe: Callable[[str], bool] = health_check,
+) -> bool:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if not probe(url):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def _server_creation_kwargs() -> dict[str, object]:
     if os.name == "nt":
         flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
@@ -851,6 +865,38 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                 close()
 
 
+def restart_server_only(config: DesktopLaunchConfig) -> None:
+    shutdown_timeout_sec = max(10.0, min(60.0, config.startup_timeout_sec))
+    if not wait_until_stopped(config.health_url, timeout_sec=shutdown_timeout_sec):
+        raise LauncherError("Vintage Programmer did not stop in time for restart.")
+
+    lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
+    process: subprocess.Popen[bytes] | None = None
+    log_handle: object | None = None
+    try:
+        with startup_lock(lock_path):
+            if health_check(config.health_url):
+                return
+            process, log_handle = start_server(config)
+            if not wait_until_healthy(
+                config.health_url,
+                timeout_sec=config.startup_timeout_sec,
+                process=process,
+            ):
+                raise LauncherError(
+                    f"Vintage Programmer did not restart. See the launcher log: {config.log_path}"
+                )
+    except BaseException:
+        if process is not None:
+            stop_owned_server(process)
+        raise
+    finally:
+        if log_handle is not None:
+            close = getattr(log_handle, "close", None)
+            if callable(close):
+                close()
+
+
 def _show_error(message: str) -> None:
     if os.name == "nt":
         import ctypes
@@ -877,6 +923,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--browser-path", default="", help="Google Chrome executable path")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print configuration without launching")
     parser.add_argument("--diagnostics-file", default="", help="Write dry-run diagnostics to a JSON file")
+    parser.add_argument(
+        "--restart-server-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -892,6 +943,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_diagnostics(diagnostics, args.diagnostics_file)
             return 0
         config = ensure_desktop_control_token(config)
+        if args.restart_server_only:
+            restart_server_only(config)
+            return 0
         with desktop_instance_guard() as is_primary_instance:
             if not is_primary_instance:
                 return 0

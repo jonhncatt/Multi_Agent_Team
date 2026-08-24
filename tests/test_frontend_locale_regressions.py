@@ -398,7 +398,7 @@ def test_index_cache_busts_frontend_static_bundle_with_app_version() -> None:
     app_version = version_match.group(1)
     index = INDEX_HTML_PATH.read_text(encoding="utf-8")
 
-    assert app_version == "3.1.5Z"
+    assert app_version == "3.1.6A"
     assert f'/static/app.js?v={app_version}' in index
     assert f'/static/locales.js?v={app_version}' in index
     assert f'/static/styles.css?v={app_version}' in index
@@ -893,22 +893,27 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "function clearCommandExecutionApprovalState" in script
     assert "function clearCommandExecutionApprovalResponse" in script
     assert "const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});" in script
+    assert "const approvalSubmittingKeysRef = useRef({});" in script
     assert "function runtimeApprovalIdentity(value)" in script
     assert "function runtimeApprovalSubmissionIdentity(threadId, value)" in script
-    assert "if (!hasCommandApproval || approvalSubmitting) return;" in script
+    assert "if (!hasCommandApproval) return;" in script
+    assert "if (!hasCommandApproval || approvalSubmitting) return;" not in script
+    assert "if (!hasTaskUpdateApproval || approvalSubmitting) return;" not in script
     assert "if (approvalSubmitting) return {};" not in script
     assert "runtimeApprovalSubmissionIdentity(sessionId, candidate)" in script
-    assert "setApprovalSubmittingKeys((prev) => ({ ...prev, [submissionKey]: true }));" in script
-    assert "delete next[submissionKey];" in script
-    assert 'const runExecutionProgress = approvalSubmitting && !runtimeAttentionCount' in script
+    assert "if (!claimApprovalSubmission(submissionKey)) return;" in script
+    assert "approvalSubmittingKeysRef.current[key]" in script
+    assert "const threadApprovalSubmitting = Object.keys(approvalSubmittingKeys).some(" in script
+    assert "delete next[key];" in script
+    assert 'const runExecutionProgress = threadApprovalSubmitting && !runtimeAttentionCount' in script
     assert "if (currentThreadBusy && !isTurnResume && !fromQueuedTurn)" in script
     assert "if (ownerBusy && !isTurnResume && !fromQueuedTurn) return;" in script
     assert "if (isTurnResume && activeSendThreadIdsRef.current.has(runOwnerThreadId))" in script
     assert "const unlockDeadline = Date.now() + 30000;" in script
     assert "while (activeSendThreadIdsRef.current.has(runOwnerThreadId) && Date.now() < unlockDeadline)" in script
     assert 'throw new Error(t("errors.pending_turn_resume_timeout"));' in script
-    assert 'disabled=${approvalSubmitting}' in script
-    assert 'disabled=${approvalSubmitting || !String(activePendingApproval.approval_token || "").trim()}' in script
+    assert 'disabled=${activeApprovalSubmitting}' not in script
+    assert 'disabled=${!String(activePendingApproval.approval_token || "").trim()}' in script
     approval_handler = script.split("const handleCommandApproval = async", 1)[1].split("const activeToolTimeline", 1)[0]
     assert "currentThreadBusy" not in approval_handler
     assert "pendingResumeState" in approval_handler
@@ -965,6 +970,42 @@ def test_task_update_approval_shows_complete_snapshot_and_resumes_runtime() -> N
     assert '"task_approval.title": "等待确认 Task 更新"' in locales
     assert '"task_approval.approve": "确认更新"' in locales
     assert '"task_approval.cancel": "取消更新"' in locales
+
+
+def test_consecutive_runtime_approvals_do_not_share_a_thread_wide_button_lock() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    active_approval_block = script.split("const activePendingApproval = (() => {", 1)[1].split(
+        "const hasCommandApproval = Boolean(", 1
+    )[0]
+    command_handler = script.split("const handleCommandApproval = async", 1)[1].split(
+        "const handleTaskUpdateApproval = async", 1
+    )[0]
+    task_handler = script.split("const handleTaskUpdateApproval = async", 1)[1].split(
+        "const renderTaskApprovalSnapshot", 1
+    )[0]
+
+    assert "runtimeApprovalSubmissionIdentity(sessionId, candidate)" in active_approval_block
+    assert "const threadApprovalSubmitting" in active_approval_block
+    assert "threadApprovalSubmitting" not in command_handler
+    assert "threadApprovalSubmitting" not in task_handler
+    assert "claimApprovalSubmission(submissionKey)" in command_handler
+    assert "claimApprovalSubmission(submissionKey)" in task_handler
+    assert "releaseApprovalSubmission(submissionKey)" in command_handler
+    assert "releaseApprovalSubmission(submissionKey)" in task_handler
+
+
+def test_completed_thread_reconciliation_cannot_hold_an_approval_lock_forever() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const THREAD_RECONCILE_TIMEOUT_MS = 5_000;" in script
+    reconcile_block = script.split("const reconcileCompletedThreadMessages = async", 1)[1].split(
+        "const updateOwnerLiveHeartbeat", 1
+    )[0]
+    assert "const controller = new AbortController();" in reconcile_block
+    assert "THREAD_RECONCILE_TIMEOUT_MS" in reconcile_block
+    assert "{ signal: controller.signal }" in reconcile_block
+    assert "window.clearTimeout(timeoutId);" in reconcile_block
 
 
 def test_llm_and_tool_failure_traces_remain_nonterminal_until_run_failure() -> None:
@@ -2101,6 +2142,24 @@ def test_thread_rename_uses_modal_and_patch_endpoint() -> None:
     assert '"thread_modal.rename_title": "重命名线程"' in locales
 
 
+def test_thread_context_menu_can_pin_and_unpin_persistently() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "async function handleToggleThreadPinned()" in script
+    assert 'method: "PATCH"' in script
+    assert 'body: JSON.stringify({ pinned: nextPinned })' in script
+    assert "sessionsRequestSeqRef.current += 1;" in script
+    assert 't(threadMenu.pinned ? "buttons.unpin_thread" : "buttons.pin_thread")' in script
+    assert 'item.pinned ? "pinned"' in script
+    assert 'className="thread-pin-icon"' in script
+    assert "const pinDelta = Number(Boolean(right && right.pinned))" in script
+    assert '"buttons.pin_thread": "置顶线程"' in locales
+    assert '"buttons.unpin_thread": "取消置顶"' in locales
+    assert ".thread-pin-icon" in styles
+
+
 def test_tasks_entry_queries_globally_and_confirms_before_loading_across_projects() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
@@ -2388,6 +2447,27 @@ def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None
     assert 't(queued ? "subagent.waiting_slot" : "subagent.waiting_result")' in script
     assert ".subagent-card-list" in styles
     assert ".subagent-card > summary" in styles
+
+
+def test_reloaded_subagent_cards_keep_persisted_work_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    normalize_block = script.split("function normalizeLiveRunItem(raw) {", 1)[1].split(
+        "\n}\n\nfunction normalizeLiveRunItems",
+        1,
+    )[0]
+    render_block = script.split("const subagentCards = displayActivity.live_items", 1)[1].split(
+        "return html`",
+        1,
+    )[0]
+
+    assert 'role: String(item.role || rawItem.role || "").trim()' in normalize_block
+    assert 'task: String(item.task || rawItem.task || "").trim()' in normalize_block
+    assert "summary: String(item.summary || rawItem.summary" in normalize_block
+    assert "item.tool_count ?? item.toolCount ?? rawItem.tool_count" in normalize_block
+    assert "raw: Object.keys(rawItem).length ? rawItem : item" in normalize_block
+    assert 'String(liveItem.role || raw.role || "explorer")' in render_block
+    assert "String(liveItem.label || liveItem.task || raw.label || raw.task" in render_block
+    assert 'String(liveItem.summary || liveItem.detail || raw.summary || "")' in render_block
 
 
 def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
@@ -2753,6 +2833,7 @@ def test_activity_tool_target_surfaces_skill_name_instead_of_long_absolute_path(
 
 def test_manual_update_button_is_click_only_and_reports_results() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert 'fetchJson("/api/app/update", { method: "POST" })' in script
@@ -2766,6 +2847,21 @@ def test_manual_update_button_is_click_only_and_reports_results() -> None:
     assert "update check" not in script.lower()
     assert ".rail-update-result" in styles
     assert ".rail-update-details" in styles
+    assert "if (data && data.ok && IS_CHROME_DESKTOP_APP) {" in script
+    assert 'id="appRestartPromptModal"' in script
+    assert 'fetchJson("/api/desktop/restart"' in script
+    assert '"X-VP-Desktop-Token": DESKTOP_CONTROL_TOKEN' in script
+    assert "nextProcessId !== previousProcessId" in script
+    assert "window.location.reload();" in script
+    assert 'className="app-boot-screen app-boot-screen-overlay app-restart-screen"' in script
+    assert 'aria-label=${t("update.restarting_message")}' in script
+    assert "onClick=${closeAppRestartPrompt}" in script
+    assert "onClick=${handleAppRestart}" in script
+    assert '"update.restart_required_title": "需要重启 VP"' in locales
+    assert '"update.restart_now": "立即重启 VP"' in locales
+    assert '"update.restarting_message": "VP 正在重启。新后台准备好后，页面会自动刷新。"' in locales
+    assert ".app-restart-modal" in styles
+    assert ".app-restart-message" in styles
 
 
 def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:
@@ -2834,6 +2930,18 @@ def test_retained_turn_changes_are_visible_without_opening_developer_details() -
     assert ".turn-changes-summary.is-retained" in styles
     assert '"activity.changes.retained": "更改仍然保留"' in locales
     assert '"activity.changes.view": "View changes"' in locales
+
+
+def test_loading_run_details_preserves_summary_turn_changes_when_detail_omits_them() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    detail_loader = script.split("async function ensureRunDetail", 1)[1].split(
+        "const ensureRunActivity", 1
+    )[0]
+
+    assert "const rawLoadedActivity =" in detail_loader
+    assert 'Object.prototype.hasOwnProperty.call(rawLoadedActivity, "turn_changes")' in detail_loader
+    assert "delete loadedActivityPatch.turn_changes;" in detail_loader
+    assert "...loadedActivityPatch," in detail_loader
 
 
 def test_cancelled_stream_waits_for_authoritative_terminal_ack_before_releasing_turn() -> None:

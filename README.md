@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5Z-blue)
+![Version](https://img.shields.io/badge/version-3.1.6A-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
-当前稳定版本：`3.1.5Z`
+当前稳定版本：`3.1.6A`
 
 ## Stable Runtime
 
-3.1.5Z 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
+3.1.6A 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
 `save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
@@ -44,6 +44,8 @@ VP_TOOL_OUTPUT_TOKEN_LIMIT=10000
 这个值是单次模型调用的输出上限，不是整个任务的总上限。默认 16384 适合 GPT-5.4 这类大上下文模型的长材料问答；长任务仍应通过多轮 model/tool loop 完成，而不是依赖一次 128K 级别的超大回复。
 `VP_MAX_USER_REQUEST_CHARS` 是当前用户输入的安全字符上限；实际进入模型的内容还会按当前模型 context window 和输出预留做 token 预算裁剪。
 
+主 Thread 的全局并发运行上限默认是 `5`，因此最多可同时执行五条不同 Thread；超过上限的运行会进入队列。可用 `VP_MAX_CONCURRENT_RUNS` 在 `1–32` 之间覆盖此值。它与单个主 Turn 内的 `VP_MAX_CONCURRENT_SUBAGENTS` 子 Agent 并发上限相互独立。
+
 Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使用缓存或 quick 估算，只在接近阈值时做精确 tokenizer 复核。轮前与轮中共用同一个 `ContextWindowStatus`；历史和实时工具事务都按 token 预算保留，不再按固定 turn/message 数裁剪。provider 若降级到更小窗口模型，会在下一次请求前重算并用本地确定性摘要压缩旧 replay，不额外调用模型。`/status` 会读取当前 thread 的 context 状态并打开详情；`/compact` 会手动整理旧历史并在运行记录中显示 context compaction 事件。GPT-5.4 和 GPT-5.6 默认按 272K 运行窗口、90% 自动整理线和 95% 硬保护线处理；GPT-5.6 的模型最大窗口会单独显示，不会自动成为运行窗口。真实 provider `input_tokens` 可用时优先于本地估算。只有在公司部署的可用窗口已经确认时，才设置 `VP_CONTEXT_WINDOW_TOKENS` 或绝对阈值 `VP_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT`；值为 `0` 表示使用内置默认值。`VP_CONTEXT_HISTORY_SOFT_LIMIT_TOKENS` 仅保留为历史噪音诊断，不再单独触发全文压缩。单个工具结果进入模型前受 `VP_TOOL_OUTPUT_TOKEN_LIMIT` 限制；被省略的完整结果只在实际截断时写入 Thread 侧存储，并可通过 `read_tool_result` 续读，不会重跑原工具。当前 Chat Completions Runtime 不调用 `/responses/compact`，该能力留到以后迁移 Responses API 时接入。
 
 ## Python Commands
@@ -66,7 +68,7 @@ Context 状态采用 Codex 风格的轻量常驻显示：聊天主路径先使�
 
 ## Manual Update
 
-侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改，成功后需要重启应用或刷新页面以使用最新代码。
+侧边栏“更新”按钮现在是手动应用仓库更新入口。只有用户点击时才会调用 `/api/app/update`，不会后台检查、轮询或自动 fetch。后端固定执行 `git fetch --tags origin`、`git reset --hard origin/<branch>`、`git pull --ff-only`，目标是 Vintage Programmer 应用仓库，不是当前 project root。更新会丢弃 tracked 文件的未提交修改。桌面 EXE 模式更新成功后会显示“关闭”和“立即重启 VP”两个选项；选择重启时，受桌面令牌保护的本地接口会用无控制台窗口的助手停止旧后台、启动新后台，当前窗口显示 Preparing 风格的等待界面，并在检测到新进程后自动刷新。
 
 ## Permission Profiles
 

@@ -511,10 +511,25 @@ img.brand-mark {
 }
 
 .thread-row-title {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 13px;
   font-weight: 600;
   line-height: 1.35;
+}
+
+.thread-row-title > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-pin-icon {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .thread-row-meta,
@@ -2692,6 +2707,16 @@ img.brand-mark {
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   padding: 22px;
+}
+
+.project-modal.app-restart-modal {
+  width: min(460px, 100%);
+}
+
+.app-restart-message {
+  margin-top: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
 }
 
 .eval-nav-btn.is-running {

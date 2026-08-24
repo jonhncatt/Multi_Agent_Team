@@ -1015,8 +1015,8 @@ def load_config() -> AppConfig:
     )
     max_concurrent_runs = int(
         (
-            _env("VP_MAX_CONCURRENT_RUNS", default="2")
-            or "2"
+            _env("VP_MAX_CONCURRENT_RUNS", default="5")
+            or "5"
         ).strip()
     )
     max_concurrent_subagents = int(
