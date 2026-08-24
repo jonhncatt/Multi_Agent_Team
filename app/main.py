@@ -140,7 +140,7 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-APP_VERSION = "3.1.5Z"
+APP_VERSION = "3.1.6A"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)

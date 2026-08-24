@@ -1,6 +1,6 @@
 # Vintage Programmer
 
-![Version](https://img.shields.io/badge/version-3.1.5Z-blue)
+![Version](https://img.shields.io/badge/version-3.1.6A-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Backend](https://img.shields.io/badge/backend-FastAPI-green)
 ![Browser](https://img.shields.io/badge/browser-Playwright-green)
@@ -15,11 +15,11 @@
 
 [English README](README.en.md) · [日本語 README](README.ja.md) · [中文镜像](README.zh-CN.md) · [Windows 指南](README.windows.md) · [文档索引](docs/README.md) · [发布流程](RELEASING.md)
 
-当前稳定版本：`3.1.5Z`
+当前稳定版本：`3.1.6A`
 
 ## Stable Runtime
 
-3.1.5Z 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
+3.1.6A 当前分支使用独立的全局 Skill Registry：支持只读 Built-in Skills 和通过 Vintage Programmer Git 仓库共享的 Team Skills。runtime 只注入带路径的轻量 `[available_skills]`；模型命中后用普通 `read_file` 按需读取完整 `SKILL.md`。
 
 `save_skill` 只把可复用流程写入 `skills/team/<name>/SKILL.md`；保存位置由 VP 安装仓库决定，与当前选择的业务项目无关。内置 `create-team-skill` 指导 Agent 生成 Team Skill，Built-in Skills 保持只读。
 
