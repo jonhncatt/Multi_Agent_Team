@@ -958,14 +958,18 @@ function normalizeLiveRunItem(raw) {
     id,
     type,
     status: normalizeProgressStatus(item.status || rawItem.status || "running"),
-    label: String(item.label || rawItem.label || rawItem.summary || rawItem.title || "").trim(),
+    label: String(item.label || rawItem.label || item.summary || rawItem.summary || rawItem.title || "").trim(),
     label_key: String(item.label_key || item.labelKey || "").trim(),
-    detail: String(item.detail || rawItem.detail || rawItem.summary || "").trim(),
+    detail: String(item.detail || rawItem.detail || item.summary || rawItem.summary || "").trim(),
     tool,
     call_id: callId,
+    role: String(item.role || rawItem.role || "").trim(),
+    task: String(item.task || rawItem.task || "").trim(),
+    summary: String(item.summary || rawItem.summary || item.detail || rawItem.detail || "").trim(),
+    tool_count: Math.max(0, Number(item.tool_count ?? item.toolCount ?? rawItem.tool_count ?? rawItem.toolCount ?? 0) || 0),
     started_at: normalizeActivityTimestamp(item.started_at || item.startedAt || rawItem.started_at || rawItem.startedAt || 0),
     completed_at: normalizeActivityTimestamp(item.completed_at || item.completedAt || rawItem.completed_at || rawItem.completedAt || 0),
-    raw: item.raw || rawItem || {},
+    raw: Object.keys(rawItem).length ? rawItem : item,
   };
 }
 
@@ -10691,9 +10695,9 @@ function App() {
         const raw = liveItem.raw && typeof liveItem.raw === "object" ? liveItem.raw : {};
         const running = !isActivityTerminalStatus(liveItem.status);
         const queued = normalizeProgressStatus(liveItem.status) === "queued";
-        const role = String(raw.role || "explorer");
-        const title = String(raw.label || liveItem.label || raw.task || t("subagent.title"));
-        const summary = String(raw.summary || liveItem.detail || "");
+        const role = String(liveItem.role || raw.role || "explorer");
+        const title = String(liveItem.label || liveItem.task || raw.label || raw.task || t("subagent.title"));
+        const summary = String(liveItem.summary || liveItem.detail || raw.summary || "");
         return html`
           <details
             key=${liveItem.id || `${item.id}-subagent-${index}`}

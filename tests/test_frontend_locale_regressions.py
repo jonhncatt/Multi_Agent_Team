@@ -2449,6 +2449,27 @@ def test_subagent_stream_items_render_as_collapsible_main_thread_cards() -> None
     assert ".subagent-card > summary" in styles
 
 
+def test_reloaded_subagent_cards_keep_persisted_work_details() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    normalize_block = script.split("function normalizeLiveRunItem(raw) {", 1)[1].split(
+        "\n}\n\nfunction normalizeLiveRunItems",
+        1,
+    )[0]
+    render_block = script.split("const subagentCards = displayActivity.live_items", 1)[1].split(
+        "return html`",
+        1,
+    )[0]
+
+    assert 'role: String(item.role || rawItem.role || "").trim()' in normalize_block
+    assert 'task: String(item.task || rawItem.task || "").trim()' in normalize_block
+    assert "summary: String(item.summary || rawItem.summary" in normalize_block
+    assert "item.tool_count ?? item.toolCount ?? rawItem.tool_count" in normalize_block
+    assert "raw: Object.keys(rawItem).length ? rawItem : item" in normalize_block
+    assert 'String(liveItem.role || raw.role || "explorer")' in render_block
+    assert "String(liveItem.label || liveItem.task || raw.label || raw.task" in render_block
+    assert 'String(liveItem.summary || liveItem.detail || raw.summary || "")' in render_block
+
+
 def test_frontend_eval_center_runs_background_jobs_from_header_modal() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
