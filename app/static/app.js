@@ -38,6 +38,7 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
+const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
 const DESKTOP_CONTROL_TOKEN = String(window.__VP_DESKTOP_CONTROL_TOKEN__ || "").trim();
 const IS_CHROME_DESKTOP_APP = DESKTOP_HOST === "chrome" && Boolean(DESKTOP_CONTROL_TOKEN);
@@ -4305,6 +4306,7 @@ function App() {
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
+  const [choosingProjectFolder, setChoosingProjectFolder] = useState(false);
   const [projectProfiles, setProjectProfiles] = useState([]);
   const [projectProfileDialog, setProjectProfileDialog] = useState(null);
   const [projectProfileDraft, setProjectProfileDraft] = useState("");
@@ -4332,6 +4334,7 @@ function App() {
   });
   const [creatingThread, setCreatingThread] = useState(false);
   const [appUpdateState, setAppUpdateState] = useState({ status: "idle", result: null, error: null });
+  const [appUpdateCheck, setAppUpdateCheck] = useState({ status: "idle", result: null });
   const [appRestartPromptOpen, setAppRestartPromptOpen] = useState(false);
   const [appRestartState, setAppRestartState] = useState({ status: "idle", error: null });
   const [desktopExitState, setDesktopExitState] = useState("idle");
@@ -4386,6 +4389,7 @@ function App() {
   const runtimeStatusAbortRef = useRef(null);
   const runtimeStatusInFlightRef = useRef({ key: "", promise: null });
   const runtimeStatusLastFetchedAtRef = useRef(0);
+  const appUpdateCheckInFlightRef = useRef(null);
   const selectedSkillIdRef = useRef("");
   const skillDraftModeRef = useRef(false);
   const copiedMessageTimerRef = useRef(0);
@@ -4935,6 +4939,29 @@ function App() {
     boot();
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let lastCheckAt = 0;
+    const runUpdateCheck = async (force = false) => {
+      if (disposed || document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (!force && lastCheckAt && now - lastCheckAt < APP_UPDATE_CHECK_INTERVAL_MS) return;
+      lastCheckAt = now;
+      await checkAppUpdateAvailability();
+    };
+    runUpdateCheck(true);
+    const intervalId = window.setInterval(() => runUpdateCheck(true), APP_UPDATE_CHECK_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") runUpdateCheck(false);
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -5561,12 +5588,49 @@ function App() {
     return mergeHealthSlices(null, bootstrapData, runtimeData);
   }
 
+  async function checkAppUpdateAvailability() {
+    if (appUpdateCheckInFlightRef.current) return appUpdateCheckInFlightRef.current;
+    const requestPromise = (async () => {
+      setAppUpdateCheck((prev) => ({ status: "checking", result: prev.result || null }));
+      try {
+        const data = await fetchJson("/api/app/update-check");
+        setAppUpdateCheck({ status: data && data.ok ? "success" : "failed", result: data || null });
+        return data;
+      } catch (_err) {
+        setAppUpdateCheck((prev) => ({ status: "failed", result: prev.result || null }));
+        return null;
+      } finally {
+        if (appUpdateCheckInFlightRef.current === requestPromise) {
+          appUpdateCheckInFlightRef.current = null;
+        }
+      }
+    })();
+    appUpdateCheckInFlightRef.current = requestPromise;
+    return requestPromise;
+  }
+
   async function handleAppUpdate() {
     if (appUpdateState.status === "running" || anyThreadBusy) return;
     setAppUpdateState({ status: "running", result: null, error: null });
     try {
       const data = await fetchJson("/api/app/update", { method: "POST" });
       setAppUpdateState({ status: data && data.ok ? "success" : "failed", result: data, error: null });
+      if (data && data.ok) {
+        setAppUpdateCheck((prev) => ({
+          status: "success",
+          result: {
+            ...((prev && prev.result) || {}),
+            ok: true,
+            branch: String(data.branch || ""),
+            remote: String(data.remote || ""),
+            remote_branch: String(data.remote_branch || ""),
+            upstream: String(data.upstream || ""),
+            local_commit: String(data.after || ""),
+            update_available: false,
+            behind_count: 0,
+          },
+        }));
+      }
       if (data && data.ok && IS_CHROME_DESKTOP_APP) {
         setAppRestartState({ status: "idle", error: null });
         setAppRestartPromptOpen(true);
@@ -6439,6 +6503,30 @@ function App() {
       const nextError = applyUiError(err, t("errors.refresh_specs_failed"));
       pushLogWithLimit(setLogs, "error", t("log.refresh_specs_failed", { summary: nextError.summary }));
       return [];
+    }
+  }
+
+  async function chooseProjectFolder() {
+    if (choosingProjectFolder || savingProject) return;
+    setChoosingProjectFolder(true);
+    setProjectFormError("");
+    try {
+      const data = await fetchJson("/api/system/folder-picker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initial_path: String(projectPathDraft || "").trim() }),
+      });
+      if (data && data.cancelled) return;
+      if (!data || !data.ok || !String(data.path || "").trim()) {
+        setProjectFormError(String((data && data.message) || t("project_modal.picker_failed")));
+        return;
+      }
+      setProjectPathDraft(String(data.path || ""));
+    } catch (err) {
+      const nextError = normalizeUiError(uiLocale, err, t("project_modal.picker_failed"));
+      setProjectFormError(nextError.summary);
+    } finally {
+      setChoosingProjectFolder(false);
     }
   }
 
@@ -9751,6 +9839,12 @@ function App() {
   const appUpdateResult = appUpdateState.result && typeof appUpdateState.result === "object" ? appUpdateState.result : null;
   const appUpdateCommands = Array.isArray(appUpdateResult && appUpdateResult.commands) ? appUpdateResult.commands : [];
   const appUpdateErrorText = appUpdateState.error ? String(appUpdateState.error.detail || appUpdateState.error.summary || "") : "";
+  const appUpdateCheckResult = appUpdateCheck.result && typeof appUpdateCheck.result === "object" ? appUpdateCheck.result : null;
+  const appUpdateAvailable = Boolean(appUpdateCheckResult && appUpdateCheckResult.update_available);
+  const appUpdateBehindCount = Math.max(0, Number((appUpdateCheckResult && appUpdateCheckResult.behind_count) || 0) || 0);
+  const appUpdateBranchLabel = String(
+    (appUpdateCheckResult && (appUpdateCheckResult.upstream || appUpdateCheckResult.branch)) || "",
+  ).trim();
   const currentThread = sessions.find((item) => String(item.session_id || item.thread_id || "") === String(sessionId || "")) || null;
   const selectableThreadIds = sessions.map(threadListItemId).filter((id) => id && !isTempThreadId(id));
   const selectedThreadIdList = [...selectedThreadIds].filter((id) => selectableThreadIds.includes(id));
@@ -10821,13 +10915,21 @@ function App() {
         <div className="rail-actions">
           <button className="solid-btn" type="button" onClick=${handleNewSession} disabled=${creatingThread}>${t("buttons.new_thread")}</button>
           <button
-            className="ghost-btn"
+            className=${`ghost-btn app-update-btn ${appUpdateAvailable ? "has-update" : ""}`}
             type="button"
             onClick=${handleAppUpdate}
             disabled=${anyThreadBusy || appUpdateRunning}
-            title=${t("update.discards_local_changes")}
+            title=${appUpdateAvailable
+              ? `${t("update.available_title", {
+                  branch: appUpdateBranchLabel || "-",
+                  count: appUpdateBehindCount,
+                })} ${t("update.discards_local_changes")}`
+              : t("update.discards_local_changes")}
           >
-            ${appUpdateRunning ? t("update.running") : t("update.button")}
+            <span>${appUpdateRunning ? t("update.running") : t("update.button")}</span>
+            ${appUpdateAvailable
+              ? html`<span className="app-update-badge" aria-label=${t("update.available")}>!</span>`
+              : null}
           </button>
         </div>
 
@@ -11640,17 +11742,28 @@ function App() {
 	            <div className="project-modal-backdrop" id="projectModal">
               <div className="project-modal">
                 <div className="panel-title">${t("project_modal.title")}</div>
-                <label className="form-field">
-                  <span>${t("project_modal.root_path")}</span>
-                  <input
-                    className="drawer-input"
-                    type="text"
-                    value=${projectPathDraft}
-                    placeholder="/Users/name/Desktop/my-repo"
-                    onInput=${(event) => setProjectPathDraft(event.currentTarget.value)}
-                    disabled=${savingProject}
-                  />
-                </label>
+                <div className="form-field">
+                  <label htmlFor="projectRootPathInput">${t("project_modal.root_path")}</label>
+                  <div className="project-path-picker-row">
+                    <input
+                      id="projectRootPathInput"
+                      className="drawer-input"
+                      type="text"
+                      value=${projectPathDraft}
+                      placeholder="/Users/name/Desktop/my-repo"
+                      onInput=${(event) => setProjectPathDraft(event.currentTarget.value)}
+                      disabled=${savingProject || choosingProjectFolder}
+                    />
+                    <button
+                      className="ghost-btn project-folder-picker-btn"
+                      type="button"
+                      onClick=${chooseProjectFolder}
+                      disabled=${savingProject || choosingProjectFolder}
+                    >
+                      ${choosingProjectFolder ? t("project_modal.browsing") : t("project_modal.browse")}
+                    </button>
+                  </div>
+                </div>
                 <label className="form-field">
                   <span>${t("project_modal.display_name")}</span>
                   <input
@@ -11659,14 +11772,14 @@ function App() {
                     value=${projectTitleDraft}
                     placeholder=${t("project_modal.display_name_placeholder")}
                     onInput=${(event) => setProjectTitleDraft(event.currentTarget.value)}
-                    disabled=${savingProject}
+                    disabled=${savingProject || choosingProjectFolder}
                   />
                 </label>
                 <div className="path-hint">${t("project_modal.hint")}</div>
                 ${projectFormError ? html`<div className="status-error">${projectFormError}</div>` : null}
                 <div className="modal-actions">
-                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject}>${t("buttons.cancel")}</button>
-                  <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
+                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject || choosingProjectFolder}>${t("buttons.cancel")}</button>
+                  <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject || choosingProjectFolder}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
                 </div>
               </div>
             </div>

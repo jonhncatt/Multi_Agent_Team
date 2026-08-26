@@ -365,6 +365,35 @@ img.brand-mark {
   font-size: 12px;
 }
 
+.app-update-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-update-btn.has-update {
+  border-color: rgba(220, 38, 38, 0.42);
+}
+
+.app-update-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(127, 29, 29, 0.26);
+}
+
 .rail-update-result {
   margin: 0 12px 10px;
   padding: 10px;
@@ -3775,6 +3804,17 @@ img.brand-mark {
   display: grid;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.project-path-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.project-folder-picker-btn {
+  white-space: nowrap;
 }
 
 .empty-inline {

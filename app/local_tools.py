@@ -73,6 +73,8 @@ EXEC_COMMAND_MAX_YIELD_MS = 30_000
 WRITE_STDIN_DEFAULT_YIELD_MS = 30_000
 WRITE_STDIN_MAX_YIELD_MS = 300_000
 _COMMAND_WAIT_POLL_SECONDS = 0.05
+_WINDOWS_CREATEPROCESS_MAX_COMMAND_LINE_CHARS = 32_767
+_WINDOWS_CMD_MAX_COMMAND_LINE_CHARS = 8_191
 
 APPLY_PATCH_TOOL_DESCRIPTION = (
     "Apply one atomic file-oriented patch under allowed writable roots. "
@@ -2150,6 +2152,89 @@ class LocalToolExecutor:
             }
         return material
 
+    def _matching_consumed_command_approval_in_current_run(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        risks: list[dict[str, Any]],
+        tainted_files: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Find an exact one-time approval already consumed by this Agent run."""
+        run_id = self._current_run_id()
+        if not run_id:
+            return {}
+        current_files = self._sorted_approval_file_signature(tainted_files)
+        current_risks = self._sorted_approval_risk_signature(risks)
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            approvals = list(dict(registry.get("approvals") or {}).values())
+        for raw_approval in reversed(approvals):
+            approval = dict(raw_approval or {})
+            if not bool(approval.get("used")) or str(approval.get("used_run_id") or "") != run_id:
+                continue
+            if str(approval.get("type") or "tainted_code_execution") not in {
+                "command_execution",
+                "tainted_code_execution",
+            }:
+                continue
+            if str(approval.get("session_id") or "").strip() not in {"", self._current_session_id()}:
+                continue
+            if str(approval.get("project_id") or "").strip() not in {"", self._current_project_id()}:
+                continue
+            if str(approval.get("command") or "").strip() != str(command or "").strip():
+                continue
+            if str(approval.get("cwd") or "").strip() not in {"", str(cwd or "").strip()}:
+                continue
+            approved_files = sorted(
+                (
+                    str(item.get("path") or ""),
+                    str(item.get("sha256") or ""),
+                )
+                for item in list(approval.get("files") or [])
+                if isinstance(item, dict)
+            )
+            approved_risks = sorted(
+                json.dumps(dict(item), ensure_ascii=False, sort_keys=True)
+                for item in list(approval.get("risks") or [])
+                if isinstance(item, dict)
+            )
+            if approved_files == current_files and approved_risks == current_risks:
+                return {
+                    "approval_token": str(approval.get("token") or ""),
+                    "used_at": str(approval.get("used_at") or ""),
+                    "used_run_id": run_id,
+                }
+        return {}
+
+    def _thread_command_approval_rule_for_kind(
+        self,
+        *,
+        kind: str,
+        cwd: str,
+    ) -> dict[str, Any]:
+        normalized_kind = str(kind or "").strip()
+        normalized_cwd = str(Path(cwd).expanduser().resolve())
+        if not normalized_kind:
+            return {}
+        with self._taint_registry_lock:
+            registry = self._load_taint_registry_unlocked()
+            rules = list(dict(registry.get("command_approval_rules") or {}).values())
+        for raw_rule in reversed(rules):
+            rule = dict(raw_rule or {})
+            if not bool(rule.get("enabled", True)):
+                continue
+            if str(rule.get("scope") or "") != "thread" or str(rule.get("kind") or "") != normalized_kind:
+                continue
+            if str(rule.get("session_id") or "") != self._current_session_id():
+                continue
+            if str(rule.get("project_id") or "") != self._current_project_id():
+                continue
+            if str(rule.get("cwd") or "") != normalized_cwd:
+                continue
+            return self._public_command_approval_rule(rule)
+        return {}
+
     @staticmethod
     def _command_approval_rule_id(material: dict[str, Any]) -> str:
         encoded = json.dumps(
@@ -3148,6 +3233,52 @@ class LocalToolExecutor:
             return [cmd_bin, "/d", "/s", "/c", command]
         shell_bin = shutil.which("bash") or shutil.which("zsh") or shutil.which("sh") or "/bin/sh"
         return [shell_bin, "-lc", str(raw or "").strip()]
+
+    def _windows_command_line_too_long_result(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        argv: list[str],
+        force: bool = False,
+        cause: str = "",
+    ) -> dict[str, Any] | None:
+        if not str(self.config.platform_name or "").strip().lower().startswith("win"):
+            return None
+        rendered = subprocess.list2cmdline([str(item) for item in list(argv or [])])
+        executable = self._command_base_name(str(argv[0] or "")) if argv else ""
+        limit = (
+            _WINDOWS_CMD_MAX_COMMAND_LINE_CHARS
+            if executable in {"cmd", "cmd.exe"}
+            else _WINDOWS_CREATEPROCESS_MAX_COMMAND_LINE_CHARS
+        )
+        actual = len(rendered)
+        if not force and actual < limit:
+            return None
+        message = (
+            f"Windows cannot start this command because its rendered command line is {actual:,} characters "
+            f"(limit: {limit - 1:,}). Do not retry the same inline command."
+        )
+        recovery = (
+            "For Python, use apply_patch to place the code in a workspace .py file, then run "
+            "`python <file>.py`. For large data, pass a workspace file path instead of embedding the data "
+            "in `python -c`."
+        )
+        return self._command_failure_result(
+            command=command,
+            cwd=cwd,
+            error=message,
+            stderr=message,
+            error_kind="command_line_too_long",
+            error_detail={
+                "platform": "Windows",
+                "actual_chars": actual,
+                "limit_chars": limit - 1,
+                "retryability": "change_tool_or_arguments",
+                "recovery": recovery,
+                "cause": str(cause or "").strip()[:500],
+            },
+        )
 
     def _command_path_validation_error(self, argv: list[str], *, cwd: Path) -> dict[str, Any] | None:
         if self._unrestricted_path_access():
@@ -4870,6 +5001,14 @@ class LocalToolExecutor:
                         error_detail=path_error,
                     )
 
+        command_line_too_long = self._windows_command_line_too_long_result(
+            command=cmd,
+            cwd=str(real_cwd),
+            argv=argv,
+        )
+        if command_line_too_long is not None:
+            return command_line_too_long
+
         if not tainted_matches:
             tainted_matches = self._tainted_execution_matches(
                 argv=argv,
@@ -4948,6 +5087,70 @@ class LocalToolExecutor:
                     "thread_rule": thread_rule,
                 }
             else:
+                if not approval_token_value:
+                    thread_rule_eligible, _thread_rule_reason, thread_rule_kind = (
+                        self._thread_command_approval_eligibility(
+                            risks=approval_risks,
+                            tainted_files=tainted_matches,
+                            compound_shell=compound_shell,
+                        )
+                    )
+                    existing_python_rule = (
+                        self._thread_command_approval_rule_for_kind(
+                            kind="python_inline",
+                            cwd=str(real_cwd),
+                        )
+                        if thread_rule_eligible and thread_rule_kind == "python_inline"
+                        else {}
+                    )
+                    if existing_python_rule:
+                        message = (
+                            "This Thread already approved a different inline Python command. "
+                            "A new approval prompt was suppressed because reusable approval for arbitrary "
+                            "Python code would be too broad."
+                        )
+                        return self._command_failure_result(
+                            command=cmd,
+                            cwd=str(real_cwd),
+                            error=message,
+                            stderr=message,
+                            error_kind="python_inline_file_required",
+                            error_detail={
+                                "retryability": "change_tool_or_arguments",
+                                "recovery": (
+                                    "Use apply_patch to place the new Python code in a reviewable workspace .py "
+                                    "file, then run `python <file>.py`. Do not request another inline Python approval."
+                                ),
+                                "existing_thread_rule": existing_python_rule,
+                            },
+                        )
+                    consumed_approval = self._matching_consumed_command_approval_in_current_run(
+                        command=str(cmd or "").strip(),
+                        cwd=str(real_cwd),
+                        risks=approval_risks,
+                        tainted_files=tainted_matches,
+                    )
+                    if consumed_approval:
+                        message = (
+                            "The same command already consumed a one-time approval in this Agent run. "
+                            "A second approval prompt was blocked to prevent an approval retry loop."
+                        )
+                        return self._command_failure_result(
+                            command=cmd,
+                            cwd=str(real_cwd),
+                            error=message,
+                            stderr=message,
+                            error_kind="repeated_command_approval_blocked",
+                            error_detail={
+                                "retryability": "change_tool_or_arguments",
+                                "recovery": (
+                                    "Do not retry the same approved command. Inspect its previous result and use "
+                                    "a materially different tool or argument strategy. For long inline Python, "
+                                    "write a workspace .py file and execute that file."
+                                ),
+                                "prior_approval": consumed_approval,
+                            },
+                        )
                 if normalized_approval_scope == "thread":
                     thread_rule_eligible, thread_rule_reason, _thread_rule_kind = (
                         self._thread_command_approval_eligibility(
@@ -5043,6 +5246,16 @@ class LocalToolExecutor:
                 bufsize=0,
             )
         except Exception as exc:
+            if int(getattr(exc, "winerror", 0) or 0) == 206:
+                command_line_too_long = self._windows_command_line_too_long_result(
+                    command=cmd,
+                    cwd=str(real_cwd),
+                    argv=argv,
+                    force=True,
+                    cause=str(exc),
+                )
+                if command_line_too_long is not None:
+                    return command_line_too_long
             return self._command_failure_result(command=cmd, cwd=str(real_cwd), error=f"exec_command failed: {exc}", returncode=1)
 
         session_id = next(self._command_session_ids)

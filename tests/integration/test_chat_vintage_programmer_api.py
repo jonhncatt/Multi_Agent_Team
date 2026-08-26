@@ -1777,19 +1777,51 @@ def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: P
                 "is_git_repo": True,
             }
 
+        def check_for_updates(self) -> dict[str, object]:
+            calls.append("check")
+            return {
+                "ok": True,
+                "version": "v2.9.19-test",
+                "commit": "abc1234",
+                "local_commit": "abc1234-full",
+                "remote_commit": "def5678-full",
+                "branch": "company-release",
+                "remote": "gitlab",
+                "remote_branch": "vp-release",
+                "upstream": "gitlab/vp-release",
+                "repo_root": str(tmp_path),
+                "is_git_repo": True,
+                "update_available": True,
+                "behind_count": 2,
+                "ahead_count": 0,
+                "checked_at": "2026-08-27T00:00:00+00:00",
+            }
+
         def update(self) -> dict[str, object]:
             calls.append("update")
             return {
                 "ok": True,
                 "repo_root": str(tmp_path),
                 "branch": "main",
+                "remote": "gitlab",
+                "remote_branch": "main",
+                "upstream": "gitlab/main",
                 "before": "abc1234",
                 "after": "def5678",
                 "dirty_before_update": True,
                 "commands": [
-                    {"command": "git fetch --tags origin", "exit_code": 0, "stdout": "ok", "stderr": ""},
-                    {"command": "git reset --hard origin/main", "exit_code": 0, "stdout": "ok", "stderr": ""},
-                    {"command": "git pull --ff-only", "exit_code": 0, "stdout": "ok", "stderr": ""},
+                    {
+                        "command": "git fetch --no-tags gitlab +refs/heads/main:refs/remotes/gitlab/main",
+                        "exit_code": 0,
+                        "stdout": "ok",
+                        "stderr": "",
+                    },
+                    {
+                        "command": "git reset --hard refs/remotes/gitlab/main",
+                        "exit_code": 0,
+                        "stdout": "ok",
+                        "stderr": "",
+                    },
                 ],
                 "message": "Update completed. Restart the app to use the latest code.",
             }
@@ -1800,6 +1832,11 @@ def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: P
     assert status_response.status_code == 200
     assert status_response.json()["commit"] == "def5678"
 
+    check_response = client.get("/api/app/update-check")
+    assert check_response.status_code == 200
+    assert check_response.json()["update_available"] is True
+    assert check_response.json()["upstream"] == "gitlab/vp-release"
+
     update_response = client.post("/api/app/update", json={"command": "rm -rf /"})
     assert update_response.status_code == 200
     payload = update_response.json()
@@ -1807,11 +1844,41 @@ def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: P
     assert payload["before"] == "abc1234"
     assert payload["after"] == "def5678"
     assert [item["command"] for item in payload["commands"]] == [
-        "git fetch --tags origin",
-        "git reset --hard origin/main",
-        "git pull --ff-only",
+        "git fetch --no-tags gitlab +refs/heads/main:refs/remotes/gitlab/main",
+        "git reset --hard refs/remotes/gitlab/main",
     ]
-    assert calls == ["status", "update"]
+    assert calls == ["status", "check", "update"]
+
+
+def test_system_folder_picker_endpoint_returns_native_selection(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    client = TestClient(main_app.app)
+    selected = tmp_path / "company-project"
+    selected.mkdir()
+    captured: dict[str, str] = {}
+
+    def fake_choose_system_folder(initial_path: str, *, platform_name: str):
+        captured["initial_path"] = initial_path
+        captured["platform_name"] = platform_name
+        return {
+            "ok": True,
+            "path": str(selected),
+            "cancelled": False,
+            "supported": True,
+            "message": "Folder selected.",
+        }
+
+    monkeypatch.setattr(main_app, "choose_system_folder", fake_choose_system_folder)
+
+    response = client.post("/api/system/folder-picker", json={"initial_path": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json()["path"] == str(selected)
+    assert response.json()["cancelled"] is False
+    assert captured == {
+        "initial_path": str(tmp_path),
+        "platform_name": main_app.config.platform_name,
+    }
 
 
 def test_app_update_endpoint_returns_failure_detail(monkeypatch, tmp_path: Path) -> None:

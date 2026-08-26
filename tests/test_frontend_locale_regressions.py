@@ -2831,7 +2831,7 @@ def test_activity_tool_target_surfaces_skill_name_instead_of_long_absolute_path(
     assert "if (skillTarget) return shortenActivityTarget(skillTarget, 96);" in script
 
 
-def test_manual_update_button_is_click_only_and_reports_results() -> None:
+def test_update_button_checks_hourly_but_only_updates_on_click() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
@@ -2839,12 +2839,20 @@ def test_manual_update_button_is_click_only_and_reports_results() -> None:
     assert 'fetchJson("/api/app/update", { method: "POST" })' in script
     assert 'onClick=${handleAppUpdate}' in script
     assert 'appUpdateRunning ? t("update.running") : t("update.button")' in script
-    assert 'title=${t("update.discards_local_changes")}' in script
+    assert 'fetchJson("/api/app/update-check")' in script
+    assert "const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;" in script
+    assert "window.setInterval(() => runUpdateCheck(true), APP_UPDATE_CHECK_INTERVAL_MS)" in script
+    assert 't("update.available_title", {' in script
+    assert '})} ${t("update.discards_local_changes")}`' in script
+    assert 'className="app-update-badge"' in script
     assert 'className=${`rail-update-result status-${appUpdateState.status}`}' in script
     assert 'setInterval' in script
-    assert "/api/app/update" not in script.split("function handleAppUpdate", 1)[0]
+    assert 'fetchJson("/api/app/update", { method: "POST" })' not in script.split("function handleAppUpdate", 1)[0]
     assert "autoUpdate" not in script
-    assert "update check" not in script.lower()
+    assert '"update.available": "有更新"' in locales
+    assert '"update.available_title": "{branch} 有 {count} 个新提交可更新。"' in locales
+    assert ".app-update-btn.has-update" in styles
+    assert ".app-update-badge" in styles
     assert ".rail-update-result" in styles
     assert ".rail-update-details" in styles
     assert "if (data && data.ok && IS_CHROME_DESKTOP_APP) {" in script
@@ -2862,6 +2870,23 @@ def test_manual_update_button_is_click_only_and_reports_results() -> None:
     assert '"update.restarting_message": "VP 正在重启。新后台准备好后，页面会自动刷新。"' in locales
     assert ".app-restart-modal" in styles
     assert ".app-restart-message" in styles
+
+
+def test_add_project_dialog_can_open_the_system_folder_picker() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'fetchJson("/api/system/folder-picker", {' in script
+    assert 'body: JSON.stringify({ initial_path: String(projectPathDraft || "").trim() })' in script
+    assert "setProjectPathDraft(String(data.path || \"\"));" in script
+    assert "if (data && data.cancelled) return;" in script
+    assert 'onClick=${chooseProjectFolder}' in script
+    assert 't("project_modal.browsing") : t("project_modal.browse")' in script
+    assert '"project_modal.browse": "选择文件夹"' in locales
+    assert '"project_modal.hint": "可以手动输入绝对路径，也可以使用系统文件夹选择器。"' in locales
+    assert ".project-path-picker-row" in styles
+    assert ".project-folder-picker-btn" in styles
 
 
 def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:

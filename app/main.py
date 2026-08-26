@@ -33,6 +33,7 @@ from app.context_meter import (
     resolve_context_window,
 )
 from app.eval_jobs import EvalJobError, EvalJobManager
+from app.folder_picker import choose_system_folder
 from app.i18n import normalize_locale, supported_locales, translate
 from app.models import (
     AppStatusResponse,
@@ -48,6 +49,8 @@ from app.models import (
     EvalRunRequest,
     DeleteThreadResponse,
     DeleteSessionResponse,
+    FolderPickerRequest,
+    FolderPickerResponse,
     HealthResponse,
     MessageActivity,
     NewSessionResponse,
@@ -1369,9 +1372,29 @@ def app_status() -> AppStatusResponse:
     return AppStatusResponse(**app_update_manager.status())
 
 
+@app.get("/api/app/update-check", response_model=AppStatusResponse)
+def app_update_check() -> AppStatusResponse:
+    return AppStatusResponse(**app_update_manager.check_for_updates())
+
+
 @app.post("/api/app/update", response_model=AppUpdateResponse)
 def app_update() -> AppUpdateResponse:
     return AppUpdateResponse(**app_update_manager.update())
+
+
+@app.post("/api/system/folder-picker", response_model=FolderPickerResponse)
+def system_folder_picker(req: FolderPickerRequest) -> FolderPickerResponse:
+    try:
+        payload = choose_system_folder(req.initial_path, platform_name=config.platform_name)
+    except OSError as exc:
+        payload = {
+            "ok": False,
+            "path": "",
+            "cancelled": False,
+            "supported": True,
+            "message": f"The system folder picker could not be opened: {exc}",
+        }
+    return FolderPickerResponse(**payload)
 
 
 @app.get("/api/workbench/tools", response_model=WorkbenchToolsResponse)

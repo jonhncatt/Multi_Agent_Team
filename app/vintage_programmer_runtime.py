@@ -129,6 +129,9 @@ def default_loop_safeguards() -> dict[str, Any]:
         "tool_output_truncation": True,
         "supports_user_cancel": True,
         "context_compaction": True,
+        "blocks_repeated_command_approval": True,
+        "command_line_too_long_retry_limit": 1,
+        "python_inline_file_retry_limit": 1,
     }
 
 _WRITE_TOOL_NAMES = {
@@ -7205,6 +7208,32 @@ class VintageProgrammerRuntime:
                         tracker=failure_tracker,
                         is_verification=is_verification,
                     )
+                    failure_error_kind = str(
+                        result.get("error_kind")
+                        or (failure or {}).get("error_kind")
+                        or ""
+                    ).strip()
+                    if failure_error_kind == "repeated_command_approval_blocked":
+                        stop_after_tools = True
+                        turn_status = "blocked"
+                        blocked_reason = "repeated_command_approval_blocked"
+                        notes.append("loop_safeguard:repeated_command_approval_blocked")
+                    elif (
+                        failure_error_kind == "command_line_too_long"
+                        and int((failure or {}).get("occurrence") or 0) >= 2
+                    ):
+                        stop_after_tools = True
+                        turn_status = "blocked"
+                        blocked_reason = "repeated_command_line_too_long"
+                        notes.append("loop_safeguard:repeated_command_line_too_long")
+                    elif (
+                        failure_error_kind == "python_inline_file_required"
+                        and int((failure or {}).get("occurrence") or 0) >= 2
+                    ):
+                        stop_after_tools = True
+                        turn_status = "blocked"
+                        blocked_reason = "repeated_python_inline_file_required"
+                        notes.append("loop_safeguard:repeated_python_inline_file_required")
                     successful_tool_result = bool(
                         failure is None
                         and str(event.status or "").strip().lower() in {"ok", "success", "completed"}

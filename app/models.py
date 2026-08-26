@@ -787,6 +787,9 @@ class AppUpdateResponse(BaseModel):
     ok: bool
     repo_root: str = ""
     branch: str = ""
+    remote: str = ""
+    remote_branch: str = ""
+    upstream: str = ""
     before: str = ""
     after: str = ""
     dirty_before_update: bool = False
@@ -802,11 +805,34 @@ class AppStatusResponse(BaseModel):
     ok: bool
     version: str = ""
     commit: str = ""
+    local_commit: str = ""
+    remote_commit: str = ""
     branch: str = ""
+    remote: str = ""
+    remote_branch: str = ""
+    remote_url: str = ""
+    upstream: str = ""
+    upstream_ref: str = ""
     repo_root: str = ""
     is_git_repo: bool = False
+    update_available: bool = False
+    behind_count: int = 0
+    ahead_count: int = 0
+    checked_at: str = ""
     message: str = ""
     diagnostic: dict[str, Any] = Field(default_factory=dict)
+
+
+class FolderPickerRequest(BaseModel):
+    initial_path: str = ""
+
+
+class FolderPickerResponse(BaseModel):
+    ok: bool
+    path: str = ""
+    cancelled: bool = False
+    supported: bool = True
+    message: str = ""
 
 
 class KernelManifestUpdateRequest(BaseModel):

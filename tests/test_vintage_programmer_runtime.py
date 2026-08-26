@@ -494,6 +494,62 @@ class _ApprovedCommandTools(_FakeTools):
         }
 
 
+class _RepeatedApprovalBlockedTools(_ApprovedCommandTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if str(arguments.get("approval_token") or ""):
+            return super().execute(name, arguments)
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": False,
+            "command": str(arguments.get("cmd") or ""),
+            "cwd": str(arguments.get("cwd") or ""),
+            "returncode": 126,
+            "error": "A second approval prompt was blocked to prevent an approval retry loop.",
+            "error_kind": "repeated_command_approval_blocked",
+            "error_detail": {
+                "retryability": "change_tool_or_arguments",
+                "recovery": "Do not retry the same approved command.",
+            },
+            "summary": "Repeated command approval blocked.",
+        }
+
+
+class _CommandLineTooLongTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": False,
+            "command": str(arguments.get("cmd") or ""),
+            "cwd": str(arguments.get("cwd") or ""),
+            "returncode": 126,
+            "error": "Windows command line is too long.",
+            "error_kind": "command_line_too_long",
+            "error_detail": {
+                "retryability": "change_tool_or_arguments",
+                "recovery": "Write a workspace .py file instead.",
+            },
+            "summary": "Windows command line is too long.",
+        }
+
+
+class _PythonInlineFileRequiredTools(_FakeTools):
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, dict(arguments)))
+        return {
+            "ok": False,
+            "command": str(arguments.get("cmd") or ""),
+            "cwd": str(arguments.get("cwd") or ""),
+            "returncode": 126,
+            "error": "New inline Python must be placed in a workspace file.",
+            "error_kind": "python_inline_file_required",
+            "error_detail": {
+                "retryability": "change_tool_or_arguments",
+                "recovery": "Use apply_patch to write a workspace .py file.",
+            },
+            "summary": "Use a workspace Python file.",
+        }
+
+
 class _TaskApprovalRequiredTools(_FakeTools):
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((name, dict(arguments)))
@@ -2812,6 +2868,195 @@ def test_runtime_approve_thread_creates_narrow_command_rule(tmp_path: Path) -> N
     )
     assert approved_trace["payload"]["approval_scope"] == "thread"
     assert approved_trace["payload"]["thread_rule"]["rule_id"] == "thread-rule-1"
+    assert result["pending_approval"] == {}
+
+
+def test_runtime_stops_when_approved_command_requests_same_approval_again(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    command = "python -c \"print('x')\""
+    tools = _RepeatedApprovalBlockedTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-repeated-approval",
+                        "name": "exec_command",
+                        "args": {"cmd": command, "cwd": str(tmp_path)},
+                    }
+                ],
+            ),
+            _FakeMessage(content="should not be reached"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="approve and continue",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-repeated-command-approval",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+            "thread_transcript": {
+                "schema_version": 1,
+                "items": [
+                    {"role": "user", "content": "run risky command"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "tc-original-approval",
+                                "name": "exec_command",
+                                "args": {"cmd": command, "cwd": str(tmp_path)},
+                            }
+                        ],
+                    },
+                ],
+            },
+            "pending_turn": {
+                "schema_version": 1,
+                "type": "command_execution",
+                "turn_id": "turn-repeated-approval",
+                "request_message": "run risky command",
+                "tool_call_id": "tc-original-approval",
+                "tool_call": {
+                    "id": "tc-original-approval",
+                    "name": "exec_command",
+                    "args": {"cmd": command, "cwd": str(tmp_path)},
+                },
+            },
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "approve_once",
+                "approval_token": "approval-token-once",
+                "command": command,
+                "cwd": str(tmp_path),
+            },
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert len(tools.calls) == 2
+    assert (
+        result["tool_events"][-1]["diagnostics"]["failure"]["error_kind"]
+        == "repeated_command_approval_blocked"
+    )
+    assert result["pending_approval"] == {}
+    assert "loop_safeguard:repeated_command_approval_blocked" in result["inspector"]["notes"]
+    assert len(backend.invocations) == 1
+
+
+def test_runtime_stops_after_model_repeats_oversized_command_once(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    command = "python -c \"print('oversized')\""
+    tools = _CommandLineTooLongTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-long-1", "name": "exec_command", "args": {"cmd": command, "cwd": str(tmp_path)}}],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-long-2", "name": "exec_command", "args": {"cmd": command, "cwd": str(tmp_path)}}],
+            ),
+            _FakeMessage(content="should not be reached"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="run the generated Python command",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-command-line-too-long",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert len(tools.calls) == 2
+    assert len(backend.invocations) == 2
+    assert "loop_safeguard:repeated_command_line_too_long" in result["inspector"]["notes"]
+    assert result["pending_approval"] == {}
+
+
+def test_runtime_stops_if_model_ignores_python_file_recovery_twice(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    command = "python -c \"print('new inline body')\""
+    tools = _PythonInlineFileRequiredTools()
+    backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-python-file-1", "name": "exec_command", "args": {"cmd": command, "cwd": str(tmp_path)}}],
+            ),
+            _FakeMessage(
+                content="",
+                tool_calls=[{"id": "tc-python-file-2", "name": "exec_command", "args": {"cmd": command, "cwd": str(tmp_path)}}],
+            ),
+            _FakeMessage(content="should not be reached"),
+        ],
+        tools,
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="continue after the Thread approval",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context={
+            "session_id": "s-python-file-recovery",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["turn_status"] == "blocked"
+    assert len(tools.calls) == 2
+    assert len(backend.invocations) == 2
+    assert "loop_safeguard:repeated_python_inline_file_required" in result["inspector"]["notes"]
     assert result["pending_approval"] == {}
 
 
