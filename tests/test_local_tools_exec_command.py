@@ -889,7 +889,7 @@ def test_approval_token_does_not_bypass_destructive_hard_blocks(
     assert not result.get("approval_required")
 
 
-def test_full_access_supply_chain_approval_runs_once_and_blocks_reuse(
+def test_full_access_supply_chain_approval_token_is_single_use(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1014,7 +1014,7 @@ def test_thread_command_approval_rule_reuses_normalized_python_command_only_in_s
     assert changed_cwd["approval_required"] is True
 
 
-def test_same_command_cannot_request_a_second_one_time_approval_in_one_run(
+def test_same_command_reuses_consumed_approval_in_one_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1045,10 +1045,35 @@ def test_same_command_cannot_request_a_second_one_time_approval_in_one_run(
 
     repeated = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
 
-    assert repeated["ok"] is False
-    assert repeated["error_kind"] == "repeated_command_approval_blocked"
+    assert repeated["ok"] is True
+    assert repeated["command_execution_approved"]["approval_source"] == "run_cache"
+    assert repeated["command_execution_approved"]["approval_scope"] == "run"
+    assert repeated["command_execution_approved"]["prior_approval"]["approval_id"]
+    assert "run once" in str(repeated["output"])
     assert repeated.get("approval_required") is not True
-    assert repeated["error_detail"]["retryability"] == "change_tool_or_arguments"
+
+    changed_command = manager.exec_command(
+        cmd="python -c \"print('different command')\"",
+        cwd=".",
+        yield_time_ms=100,
+    )
+    assert changed_command["approval_required"] is True
+
+    manager.set_runtime_context(
+        execution_mode="host",
+        session_id="approval-loop-thread",
+        project_id="approval-loop-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        run_id="a-different-run",
+        runtime_boundary=_runtime_boundary(
+            tmp_path,
+            permission_profile="full_access",
+            network_allowed=True,
+        ),
+    )
+    next_run = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
+    assert next_run["approval_required"] is True
 
 
 @pytest.mark.parametrize(
@@ -1265,6 +1290,49 @@ def test_running_approved_command_reuse_is_isolated_by_thread(
         "identical_approved_command_result_pending"
     )
     assert resumed_original.get("approval_required") is not True
+
+
+def test_running_approved_command_reuse_is_isolated_by_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = _make_manager(monkeypatch, tmp_path)
+    boundary = _runtime_boundary(tmp_path, permission_profile="full_access", network_allowed=True)
+    command = "python -c \"import time; time.sleep(0.3); print('run scoped')\""
+
+    manager.set_runtime_context(
+        session_id="same-thread",
+        project_id="same-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        run_id="run-a",
+        runtime_boundary=boundary,
+    )
+    blocked = manager.exec_command(cmd=command, purpose="run scoped command", cwd=".", yield_time_ms=10)
+    approved = manager.exec_command(
+        cmd=command,
+        purpose="run scoped command",
+        cwd=".",
+        yield_time_ms=10,
+        approval_token=blocked["approval_request"]["approval_token"],
+    )
+    assert approved["running"] is True
+
+    manager.set_runtime_context(
+        session_id="same-thread",
+        project_id="same-project",
+        project_root=str(tmp_path),
+        cwd=str(tmp_path),
+        run_id="run-b",
+        runtime_boundary=boundary,
+    )
+    other_run = manager.exec_command(
+        cmd=command,
+        purpose="same command in another Agent run",
+        cwd=".",
+        yield_time_ms=10,
+    )
+    assert other_run["approval_required"] is True
 
 
 def test_full_access_supply_chain_approval_rejects_command_or_cwd_change(

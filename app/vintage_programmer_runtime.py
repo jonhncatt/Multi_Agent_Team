@@ -129,7 +129,7 @@ def default_loop_safeguards() -> dict[str, Any]:
         "tool_output_truncation": True,
         "supports_user_cancel": True,
         "context_compaction": True,
-        "blocks_repeated_command_approval": True,
+        "reuses_exact_command_approval_in_run": True,
     }
 
 _WRITE_TOOL_NAMES = {
@@ -5806,6 +5806,7 @@ class VintageProgrammerRuntime:
                     "cwd": approval_cwd,
                     "approval_token": approval_token,
                     "tainted_approval_token": approval_token,
+                    "approval_scope": "run",
                 }
                 if approval_action == "approve_thread":
                     approval_arguments["approval_scope"] = "thread"
@@ -5816,7 +5817,7 @@ class VintageProgrammerRuntime:
                     title=(
                         "Thread command approval accepted"
                         if approval_action == "approve_thread"
-                        else "Command approval accepted"
+                        else "Command approval accepted for this Agent run"
                     ),
                     detail=approval_command,
                     status="running",
@@ -5826,7 +5827,7 @@ class VintageProgrammerRuntime:
                         "cwd": approval_cwd,
                         "approval_token": approval_token,
                         "approval_scope": (
-                            "thread" if approval_action == "approve_thread" else "once"
+                            "thread" if approval_action == "approve_thread" else "run"
                         ),
                     },
                     trace_events=trace_events,
@@ -5854,7 +5855,10 @@ class VintageProgrammerRuntime:
                         "message": (
                             "User approved this normalized command for the current Thread."
                             if approval_action == "approve_thread"
-                            else "User approved this exact command once."
+                            else (
+                                "User approved this exact command for the current Agent run; "
+                                "identical retries may reuse the decision."
+                            )
                         ),
                         "normalized_arguments": approval_arguments,
                     },
@@ -5879,7 +5883,7 @@ class VintageProgrammerRuntime:
                     "command": approval_command,
                     "cwd": approval_cwd,
                     "approval_scope": (
-                        "thread" if approval_action == "approve_thread" else "once"
+                        "thread" if approval_action == "approve_thread" else "run"
                     ),
                     "thread_rule": safe_preview(
                         dict(
@@ -7206,16 +7210,6 @@ class VintageProgrammerRuntime:
                         tracker=failure_tracker,
                         is_verification=is_verification,
                     )
-                    failure_error_kind = str(
-                        result.get("error_kind")
-                        or (failure or {}).get("error_kind")
-                        or ""
-                    ).strip()
-                    if failure_error_kind == "repeated_command_approval_blocked":
-                        stop_after_tools = True
-                        turn_status = "blocked"
-                        blocked_reason = "repeated_command_approval_blocked"
-                        notes.append("loop_safeguard:repeated_command_approval_blocked")
                     successful_tool_result = bool(
                         failure is None
                         and str(event.status or "").strip().lower() in {"ok", "success", "completed"}
@@ -7324,6 +7318,26 @@ class VintageProgrammerRuntime:
                                 },
                                 trace_events=trace_events,
                             )
+                        elif str(command_approval.get("approval_source") or "") == "run_cache":
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="approval.rule_applied",
+                                title="Agent run approval reused",
+                                detail=str(
+                                    command_approval.get("command")
+                                    or arguments.get("cmd")
+                                    or ""
+                                ),
+                                status="success",
+                                payload={
+                                    "approval_scope": "run",
+                                    "prior_approval": safe_preview(
+                                        dict(command_approval.get("prior_approval") or {})
+                                    ),
+                                },
+                                trace_events=trace_events,
+                            )
                     if name == "exec_command" and bool(result.get("approval_required")):
                         approval_request = dict(result.get("approval_request") or {})
                         approval_request["tool_call_id"] = call_id
@@ -7384,8 +7398,11 @@ class VintageProgrammerRuntime:
                                             "description": "Do not run this command.",
                                         },
                                         {
-                                            "label": "Approve once",
-                                            "description": "Allow exactly this command once if the approval details still match.",
+                                            "label": "Approve for this run",
+                                            "description": (
+                                                "Allow this exact command now and reuse the decision only for "
+                                                "identical retries in the current Agent run."
+                                            ),
                                         },
                                     ],
                                 }

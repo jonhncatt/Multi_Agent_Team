@@ -494,23 +494,26 @@ class _ApprovedCommandTools(_FakeTools):
         }
 
 
-class _RepeatedApprovalBlockedTools(_ApprovedCommandTools):
+class _RunCachedApprovalTools(_ApprovedCommandTools):
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if str(arguments.get("approval_token") or ""):
             return super().execute(name, arguments)
         self.calls.append((name, dict(arguments)))
         return {
-            "ok": False,
+            "ok": True,
             "command": str(arguments.get("cmd") or ""),
             "cwd": str(arguments.get("cwd") or ""),
-            "returncode": 126,
-            "error": "A second approval prompt was blocked to prevent an approval retry loop.",
-            "error_kind": "repeated_command_approval_blocked",
-            "error_detail": {
-                "retryability": "change_tool_or_arguments",
-                "recovery": "Do not retry the same approved command.",
+            "returncode": 0,
+            "output": "x\n",
+            "command_execution_approved": {
+                "approved": True,
+                "approval_source": "run_cache",
+                "approval_scope": "run",
+                "command": str(arguments.get("cmd") or ""),
+                "cwd": str(arguments.get("cwd") or ""),
+                "prior_approval": {"approval_id": "approval-id-once"},
             },
-            "summary": "Repeated command approval blocked.",
+            "summary": "command exited with 0",
         }
 
 
@@ -2730,6 +2733,7 @@ def test_runtime_approve_once_executes_original_command_with_token(tmp_path: Pat
             "cwd": str(tmp_path),
             "approval_token": "approval-token-1",
             "tainted_approval_token": "approval-token-1",
+            "approval_scope": "run",
         },
     )
     assert result["text"].startswith("approved summary")
@@ -2835,7 +2839,7 @@ def test_runtime_approve_thread_creates_narrow_command_rule(tmp_path: Path) -> N
     assert result["pending_approval"] == {}
 
 
-def test_runtime_stops_when_approved_command_requests_same_approval_again(tmp_path: Path) -> None:
+def test_runtime_continues_when_approved_command_is_reused_in_same_run(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     agent_spec = agent_dir / "agent.md"
@@ -2844,7 +2848,7 @@ def test_runtime_stops_when_approved_command_requests_same_approval_again(tmp_pa
         encoding="utf-8",
     )
     command = "python -c \"print('x')\""
-    tools = _RepeatedApprovalBlockedTools()
+    tools = _RunCachedApprovalTools()
     backend = _FakeBackendWithTools(
         [
             _FakeMessage(
@@ -2857,7 +2861,7 @@ def test_runtime_stops_when_approved_command_requests_same_approval_again(tmp_pa
                     }
                 ],
             ),
-            _FakeMessage(content="should not be reached"),
+            _FakeMessage(content="continued after cached approval"),
         ],
         tools,
     )
@@ -2915,15 +2919,18 @@ def test_runtime_stops_when_approved_command_requests_same_approval_again(tmp_pa
         },
     )
 
-    assert result["turn_status"] == "blocked"
+    assert result["turn_status"] == "completed"
+    assert result["text"] == "continued after cached approval"
     assert len(tools.calls) == 2
-    assert (
-        result["tool_events"][-1]["diagnostics"]["failure"]["error_kind"]
-        == "repeated_command_approval_blocked"
-    )
+    assert tools.calls[-1][1].get("approval_token") in {None, ""}
     assert result["pending_approval"] == {}
-    assert "loop_safeguard:repeated_command_approval_blocked" in result["inspector"]["notes"]
-    assert len(backend.invocations) == 1
+    assert "loop_safeguard:repeated_command_approval_blocked" not in result["inspector"]["notes"]
+    assert any(
+        item["type"] == "approval.rule_applied"
+        and item["payload"]["approval_scope"] == "run"
+        for item in result["inspector"]["trace_events"]
+    )
+    assert len(backend.invocations) == 2
 
 
 def test_runtime_declined_command_resumes_with_one_tool_result_and_no_human_message(tmp_path: Path) -> None:

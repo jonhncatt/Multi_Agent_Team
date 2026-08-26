@@ -932,7 +932,7 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert '"approval_modal.purpose": "执行目的"' in locales
     assert '"approval_modal.repository": "仓库"' in locales
     assert '"approval_modal.remote_url": "Remote 地址"' in locales
-    assert '"approval_modal.approve_once": "批准一次"' in locales
+    assert '"approval_modal.approve_once": "本次运行允许"' in locales
     assert '"approval_modal.approve_thread": "本 Thread 内不再询问此命令"' in locales
     assert '"approval_modal.default_cancel": "默认操作是取消。批准后命令会在本机 host 环境实际执行，不是沙箱；只有明确显示 Thread 选项的低风险命令才能保存窄范围授权。"' in locales
     assert '"runtime_panel.approval_required": "等待用户审批"' in locales
