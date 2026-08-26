@@ -1822,6 +1822,12 @@ def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: P
                         "stdout": "ok",
                         "stderr": "",
                     },
+                    {
+                        "command": "git pull --ff-only",
+                        "exit_code": 0,
+                        "stdout": "Already up to date.",
+                        "stderr": "",
+                    },
                 ],
                 "message": "Update completed. Restart the app to use the latest code.",
             }
@@ -1846,6 +1852,7 @@ def test_app_update_endpoint_runs_manual_update_manager(monkeypatch, tmp_path: P
     assert [item["command"] for item in payload["commands"]] == [
         "git fetch --no-tags gitlab +refs/heads/main:refs/remotes/gitlab/main",
         "git reset --hard refs/remotes/gitlab/main",
+        "git pull --ff-only",
     ]
     assert calls == ["status", "check", "update"]
 

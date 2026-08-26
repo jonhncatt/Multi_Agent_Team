@@ -78,15 +78,27 @@ def choose_system_folder(initial_path: str = "", *, platform_name: str = "") -> 
             return _unsupported_payload("Windows PowerShell is unavailable, so the folder picker cannot open.")
         script = (
             "Add-Type -AssemblyName System.Windows.Forms; "
+            "$owner = New-Object System.Windows.Forms.Form; "
+            "$owner.ShowInTaskbar = $false; "
+            "$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow; "
+            "$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual; "
+            "$owner.Location = [System.Drawing.Point]::new(-32000, -32000); "
+            "$owner.Size = [System.Drawing.Size]::new(1, 1); "
+            "$owner.Opacity = 0; "
+            "$owner.TopMost = $true; "
             "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
             "$dialog.Description = 'Select a project folder'; "
             "$dialog.ShowNewFolderButton = $true; "
             "if (Test-Path -LiteralPath $env:VP_FOLDER_PICKER_INITIAL -PathType Container) "
             "{ $dialog.SelectedPath = $env:VP_FOLDER_PICKER_INITIAL }; "
-            "$result = $dialog.ShowDialog(); "
+            "$exitCode = 2; "
+            "try { "
+            "$owner.Show(); $owner.Activate(); $owner.BringToFront(); "
+            "$result = $dialog.ShowDialog($owner); "
             "if ($result -eq [System.Windows.Forms.DialogResult]::OK) "
-            "{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath; exit 0 }; "
-            "exit 2"
+            "{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath; $exitCode = 0 } "
+            "} finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }; "
+            "exit $exitCode"
         )
         completed = subprocess.run(
             [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-Command", script],

@@ -66,6 +66,8 @@ class FakeGitRunner:
         if args[:3] == ["git", "reset", "--hard"]:
             self.head = self.remote_head
             return UpdateCommandResult(command=command, exit_code=0, stdout=f"HEAD is now {self.remote_head}\n")
+        if args[:3] == ["git", "pull", "--ff-only"]:
+            return UpdateCommandResult(command=command, exit_code=0, stdout="Already up to date.\n")
         if args == ["git", "rev-list", "--count", f"HEAD..{self.upstream_ref}"]:
             return UpdateCommandResult(command=command, exit_code=0, stdout=f"{0 if self.head == self.remote_head else 2}\n")
         if args == ["git", "rev-list", "--count", f"{self.upstream_ref}..HEAD"]:
@@ -104,6 +106,7 @@ def test_update_manager_updates_active_branch_from_configured_upstream_without_t
     assert [item["command"] for item in payload["commands"]] == [
         "git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
         "git reset --hard refs/remotes/origin/main",
+        "git pull --ff-only",
     ]
     assert payload["upstream"] == "origin/main"
     assert all("--tags" not in " ".join(call[0]) for call in runner.calls)

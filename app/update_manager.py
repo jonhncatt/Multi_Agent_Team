@@ -302,6 +302,7 @@ class AppUpdateManager:
         fixed_sequence: list[tuple[Sequence[str], UpdateCommandResult | None]] = [
             ([], fetch_result),
             (["reset", "--hard", str(tracking.get("upstream_ref") or "")], None),
+            (["pull", "--ff-only"], None),
         ]
         for args, prepared_result in fixed_sequence:
             if prepared_result is None and not args:

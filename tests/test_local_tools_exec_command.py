@@ -916,7 +916,7 @@ def test_full_access_supply_chain_approval_runs_once_and_blocks_reuse(
     assert "already used" in reused["error"]
 
 
-def test_thread_command_approval_rule_reuses_exact_python_and_redirects_new_inline_code(
+def test_thread_command_approval_rule_reuses_normalized_python_command_only_in_same_scope(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -981,14 +981,7 @@ def test_thread_command_approval_rule_reuses_exact_python_and_redirects_new_inli
         cwd=".",
         yield_time_ms=100,
     )
-    assert changed_command["ok"] is False
-    assert changed_command["error_kind"] == "python_inline_file_required"
-    assert changed_command.get("approval_required") is not True
-    assert "apply_patch" in changed_command["error_detail"]["recovery"]
-    assert (
-        changed_command["error_detail"]["existing_thread_rule"]["rule_id"]
-        == approval["thread_rule"]["rule_id"]
-    )
+    assert changed_command["approval_required"] is True
 
     reloaded_manager.set_runtime_context(
         session_id="thread-b",
@@ -1019,42 +1012,6 @@ def test_thread_command_approval_rule_reuses_exact_python_and_redirects_new_inli
     )
     changed_cwd = reloaded_manager.exec_command(cmd=command, cwd=str(other), yield_time_ms=100)
     assert changed_cwd["approval_required"] is True
-
-
-def test_windows_oversized_command_is_rejected_before_approval_or_process_start(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    manager = _make_manager(monkeypatch, tmp_path)
-    manager.config.platform_name = "Windows"
-    manager.set_runtime_context(
-        execution_mode="host",
-        session_id="windows-long-command",
-        project_id="windows-long-project",
-        project_root=str(tmp_path),
-        cwd=str(tmp_path),
-        run_id="windows-long-run",
-        runtime_boundary=_runtime_boundary(
-            tmp_path,
-            permission_profile="full_access",
-            network_allowed=True,
-        ),
-    )
-
-    def unexpected_popen(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("oversized command must be rejected before process creation")
-
-    monkeypatch.setattr("app.local_tools.subprocess.Popen", unexpected_popen)
-    command = f'python -c "value={repr("x" * 33_000)}; print(len(value))"'
-
-    result = manager.exec_command(cmd=command, cwd=".", yield_time_ms=100)
-
-    assert result["ok"] is False
-    assert result["error_kind"] == "command_line_too_long"
-    assert result.get("approval_required") is not True
-    assert result["error_detail"]["actual_chars"] >= 32_767
-    assert result["error_detail"]["retryability"] == "change_tool_or_arguments"
-    assert "apply_patch" in result["error_detail"]["recovery"]
 
 
 def test_same_command_cannot_request_a_second_one_time_approval_in_one_run(

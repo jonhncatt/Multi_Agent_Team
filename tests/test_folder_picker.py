@@ -32,6 +32,9 @@ def test_windows_folder_picker_returns_selected_directory_without_console(monkey
     }
     assert captured["argv"][0].endswith("powershell.exe")
     assert "-STA" in captured["argv"]
+    script = captured["argv"][-1]
+    assert "$owner.TopMost = $true" in script
+    assert "$dialog.ShowDialog($owner)" in script
     assert captured["creationflags"] == 0x08000000
     assert captured["env"]["VP_FOLDER_PICKER_INITIAL"] == str(tmp_path.resolve())
 
