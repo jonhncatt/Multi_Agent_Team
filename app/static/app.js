@@ -4332,6 +4332,7 @@ function App() {
   const [projectPathDraft, setProjectPathDraft] = useState("");
   const [projectTitleDraft, setProjectTitleDraft] = useState("");
   const [projectFormError, setProjectFormError] = useState("");
+  const [projectBrowserPickerNotice, setProjectBrowserPickerNotice] = useState("");
   const [savingProject, setSavingProject] = useState(false);
   const [choosingProjectFolder, setChoosingProjectFolder] = useState(false);
   const [projectListHeight, setProjectListHeight] = useState(readStoredProjectListHeight);
@@ -4385,6 +4386,7 @@ function App() {
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [threadRunIndicators, setThreadRunIndicators] = useState({});
   const fileInputRef = useRef(null);
+  const projectBrowserFolderInputRef = useRef(null);
   const threadRailRef = useRef(null);
   const projectListRef = useRef(null);
   const projectListHeightRef = useRef(projectListHeight);
@@ -6580,6 +6582,7 @@ function App() {
     if (choosingProjectFolder || savingProject) return;
     setChoosingProjectFolder(true);
     setProjectFormError("");
+    setProjectBrowserPickerNotice("");
     try {
       const data = await fetchJson("/api/system/folder-picker", {
         method: "POST",
@@ -6597,6 +6600,30 @@ function App() {
       setProjectFormError(nextError.summary);
     } finally {
       setChoosingProjectFolder(false);
+    }
+  }
+
+  function chooseProjectFolderLikeAttachment() {
+    if (choosingProjectFolder || savingProject) return;
+    const input = projectBrowserFolderInputRef.current;
+    if (!input) return;
+    setProjectFormError("");
+    setProjectBrowserPickerNotice("");
+    input.value = "";
+    input.click();
+  }
+
+  function handleBrowserProjectFolderSelection(event) {
+    const input = event.currentTarget;
+    const files = Array.from(input.files || []);
+    try {
+      if (!files.length) return;
+      const firstRelativePath = String(files[0].webkitRelativePath || files[0].name || "")
+        .replace(/\\/g, "/");
+      const folderName = String(firstRelativePath.split("/")[0] || files[0].name || "").trim();
+      setProjectBrowserPickerNotice(t("project_modal.browser_picker_result", { folder: folderName }));
+    } finally {
+      input.value = "";
     }
   }
 
@@ -6695,6 +6722,7 @@ function App() {
       setProjectDialogOpen(false);
       setProjectPathDraft("");
       setProjectTitleDraft("");
+      setProjectBrowserPickerNotice("");
       closeProjectMenu();
       await selectProject(String(payload.project_id || ""));
       pushLogWithLimit(setLogs, "system", t("log.project_added", { title: payload.title || payload.project_id }));
@@ -11118,7 +11146,15 @@ function App() {
         <section className="rail-section project-rail-section" id="projectSection">
           <div className="section-head">
             <span>Projects</span>
-            <button className="ghost-btn compact-btn" type="button" onClick=${() => setProjectDialogOpen(true)}>${t("buttons.add")}</button>
+            <button
+              className="ghost-btn compact-btn"
+              type="button"
+              onClick=${() => {
+                setProjectFormError("");
+                setProjectBrowserPickerNotice("");
+                setProjectDialogOpen(true);
+              }}
+            >${t("buttons.add")}</button>
           </div>
           <div
             className="project-list"
@@ -11918,17 +11954,38 @@ function App() {
                       type="text"
                       value=${projectPathDraft}
                       placeholder="/Users/name/Desktop/my-repo"
-                      onInput=${(event) => setProjectPathDraft(event.currentTarget.value)}
+                      onInput=${(event) => {
+                        setProjectPathDraft(event.currentTarget.value);
+                        setProjectBrowserPickerNotice("");
+                      }}
                       disabled=${savingProject || choosingProjectFolder}
                     />
-                    <button
-                      className="ghost-btn project-folder-picker-btn"
-                      type="button"
-                      onClick=${chooseProjectFolder}
-                      disabled=${savingProject || choosingProjectFolder}
-                    >
-                      ${choosingProjectFolder ? t("project_modal.browsing") : t("project_modal.browse")}
-                    </button>
+                    <div className="project-path-picker-actions">
+                      <button
+                        className="ghost-btn project-folder-picker-btn"
+                        type="button"
+                        onClick=${chooseProjectFolderLikeAttachment}
+                        disabled=${savingProject || choosingProjectFolder}
+                      >
+                        ${t("project_modal.browser_browse")}
+                      </button>
+                      <input
+                        ref=${projectBrowserFolderInputRef}
+                        type="file"
+                        webkitdirectory=""
+                        multiple
+                        hidden
+                        onChange=${handleBrowserProjectFolderSelection}
+                      />
+                      <button
+                        className="ghost-btn project-folder-picker-btn"
+                        type="button"
+                        onClick=${chooseProjectFolder}
+                        disabled=${savingProject || choosingProjectFolder}
+                      >
+                        ${choosingProjectFolder ? t("project_modal.browsing") : t("project_modal.browse")}
+                      </button>
+                    </div>
                   </div>
                 </div>
                 <label className="form-field">
@@ -11943,9 +12000,20 @@ function App() {
                   />
                 </label>
                 <div className="path-hint">${t("project_modal.hint")}</div>
+                ${projectBrowserPickerNotice
+                  ? html`<div className="project-browser-picker-notice" role="status">${projectBrowserPickerNotice}</div>`
+                  : null}
                 ${projectFormError ? html`<div className="status-error">${projectFormError}</div>` : null}
                 <div className="modal-actions">
-                  <button className="ghost-btn" type="button" onClick=${() => setProjectDialogOpen(false)} disabled=${savingProject || choosingProjectFolder}>${t("buttons.cancel")}</button>
+                  <button
+                    className="ghost-btn"
+                    type="button"
+                    onClick=${() => {
+                      setProjectDialogOpen(false);
+                      setProjectBrowserPickerNotice("");
+                    }}
+                    disabled=${savingProject || choosingProjectFolder}
+                  >${t("buttons.cancel")}</button>
                   <button className="solid-btn" type="button" onClick=${createProjectFromDraft} disabled=${savingProject || choosingProjectFolder}>${savingProject ? t("buttons.adding") : t("buttons.add_project")}</button>
                 </div>
               </div>

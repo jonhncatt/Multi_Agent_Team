@@ -2893,6 +2893,24 @@ def test_add_project_dialog_can_open_the_system_folder_picker() -> None:
     assert ".project-folder-picker-btn" in styles
 
 
+def test_add_project_dialog_can_try_the_attachment_style_folder_picker() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "const projectBrowserFolderInputRef = useRef(null);" in script
+    assert "projectBrowserFolderInputRef.current" in script
+    assert 'type="file"' in script
+    assert 'webkitdirectory=""' in script
+    assert "files[0].webkitRelativePath" in script
+    assert "onClick=${chooseProjectFolderLikeAttachment}" in script
+    assert "onChange=${handleBrowserProjectFolderSelection}" in script
+    assert 't("project_modal.browser_picker_result", { folder: folderName })' in script
+    assert '"project_modal.browser_browse": "附件式选择器（试用）"' in locales
+    assert ".project-path-picker-actions" in styles
+    assert ".project-browser-picker-notice" in styles
+
+
 def test_project_sidebar_height_is_resizable_and_persisted() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
