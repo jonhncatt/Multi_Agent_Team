@@ -28,6 +28,7 @@ DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
 DEFAULT_LAUNCHER_LOG_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_TASKBAR_IDENTITY_TIMEOUT_SEC = 20.0
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
@@ -631,41 +632,73 @@ def _guid_from_text(value: str) -> _GUID:
     return _GUID.from_buffer_copy(UUID(str(value)).bytes_le)
 
 
+def _hresult_hex(value: int) -> str:
+    return f"0x{int(value) & 0xFFFFFFFF:08X}"
+
+
+def _update_taskbar_diagnostics(
+    diagnostics: dict[str, object] | None,
+    stage: str,
+    **fields: object,
+) -> None:
+    if diagnostics is None:
+        return
+    diagnostics["stage"] = stage
+    diagnostics.update(fields)
+
+
 def _set_windows_taskbar_window_properties(
     window_handle: int,
     metadata: Mapping[str, str],
+    *,
+    diagnostics: dict[str, object] | None = None,
 ) -> bool:
     """Set relaunch metadata and AppUserModelID on a Chrome-owned VP HWND."""
 
     if sys.platform != "win32" or not int(window_handle or 0):
+        _update_taskbar_diagnostics(diagnostics, "invalid_window")
         return False
 
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    propsys = ctypes.WinDLL("propsys", use_last_error=True)
-    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
-    iid_property_store = _guid_from_text(_IID_IPROPERTY_STORE)
-    property_set_guid = _guid_from_text(_APP_USER_MODEL_PROPERTY_SET)
-    property_store = ctypes.c_void_p()
-    variant_size = 24 if ctypes.sizeof(ctypes.c_void_p) == 8 else 16
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        propsys = ctypes.WinDLL("propsys", use_last_error=True)
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+        iid_property_store = _guid_from_text(_IID_IPROPERTY_STORE)
+        property_set_guid = _guid_from_text(_APP_USER_MODEL_PROPERTY_SET)
+        property_store = ctypes.c_void_p()
+        variant_size = 24 if ctypes.sizeof(ctypes.c_void_p) == 8 else 16
 
-    shell32.SHGetPropertyStoreForWindow.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    shell32.SHGetPropertyStoreForWindow.restype = ctypes.c_int32
-    propsys.InitPropVariantFromString.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
-    propsys.InitPropVariantFromString.restype = ctypes.c_int32
-    ole32.PropVariantClear.argtypes = [ctypes.c_void_p]
-    ole32.PropVariantClear.restype = ctypes.c_int32
-    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    ole32.CoInitializeEx.restype = ctypes.c_int32
-    ole32.CoUninitialize.argtypes = []
-    ole32.CoUninitialize.restype = None
+        shell32.SHGetPropertyStoreForWindow.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        shell32.SHGetPropertyStoreForWindow.restype = ctypes.c_int32
+        propsys.InitPropVariantFromString.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+        propsys.InitPropVariantFromString.restype = ctypes.c_int32
+        ole32.PropVariantClear.argtypes = [ctypes.c_void_p]
+        ole32.PropVariantClear.restype = ctypes.c_int32
+        ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        ole32.CoInitializeEx.restype = ctypes.c_int32
+        ole32.CoUninitialize.argtypes = []
+        ole32.CoUninitialize.restype = None
+    except Exception as exc:
+        _update_taskbar_diagnostics(
+            diagnostics,
+            "native_api_unavailable",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False
 
     coinit_result = int(ole32.CoInitializeEx(None, 0x2))  # COINIT_APARTMENTTHREADED
     should_uninitialize = coinit_result in {0, 1}
     if coinit_result < 0 and coinit_result != -2147417850:  # RPC_E_CHANGED_MODE
+        _update_taskbar_diagnostics(
+            diagnostics,
+            "com_initialization_failed",
+            hresult=_hresult_hex(coinit_result),
+        )
         return False
     try:
         result = int(
@@ -676,6 +709,11 @@ def _set_windows_taskbar_window_properties(
             )
         )
         if result < 0 or not property_store.value:
+            _update_taskbar_diagnostics(
+                diagnostics,
+                "property_store_unavailable",
+                hresult=_hresult_hex(result),
+            )
             return False
 
         vtable = ctypes.cast(
@@ -699,61 +737,203 @@ def _set_windows_taskbar_window_properties(
             for property_id, raw_value in values:
                 value = str(raw_value or "").strip()
                 if not value:
+                    _update_taskbar_diagnostics(
+                        diagnostics,
+                        "metadata_missing",
+                        property_id=property_id,
+                    )
                     return False
                 variant = ctypes.create_string_buffer(variant_size)
-                if int(propsys.InitPropVariantFromString(value, ctypes.byref(variant))) < 0:
+                variant_result = int(
+                    propsys.InitPropVariantFromString(value, ctypes.byref(variant))
+                )
+                if variant_result < 0:
+                    _update_taskbar_diagnostics(
+                        diagnostics,
+                        "property_value_initialization_failed",
+                        property_id=property_id,
+                        hresult=_hresult_hex(variant_result),
+                    )
                     return False
                 try:
                     key = _PROPERTYKEY(property_set_guid, property_id)
-                    if int(set_value(property_store, ctypes.byref(key), ctypes.byref(variant))) < 0:
+                    set_result = int(
+                        set_value(property_store, ctypes.byref(key), ctypes.byref(variant))
+                    )
+                    if set_result < 0:
+                        _update_taskbar_diagnostics(
+                            diagnostics,
+                            "property_write_failed",
+                            property_id=property_id,
+                            hresult=_hresult_hex(set_result),
+                        )
                         return False
                 finally:
                     ole32.PropVariantClear(ctypes.byref(variant))
+            _update_taskbar_diagnostics(diagnostics, "bound")
             return True
         finally:
             release(property_store)
-    except Exception:
+    except Exception as exc:
+        _update_taskbar_diagnostics(
+            diagnostics,
+            "property_write_exception",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return False
     finally:
         if should_uninitialize:
             ole32.CoUninitialize()
 
 
+def _enumerate_windows_top_level_windows(user32: object) -> list[tuple[int, str, str]]:
+    """Return visible top-level HWNDs with their current title and class name."""
+
+    windows: list[tuple[int, str, str]] = []
+    callback_type = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+
+    def visit(raw_handle: object, _parameter: object) -> int:
+        handle = int(raw_handle or 0)
+        if not handle or not bool(user32.IsWindowVisible(ctypes.c_void_p(handle))):
+            return 1
+        title_buffer = ctypes.create_unicode_buffer(512)
+        class_buffer = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(ctypes.c_void_p(handle), title_buffer, len(title_buffer))
+        user32.GetClassNameW(ctypes.c_void_p(handle), class_buffer, len(class_buffer))
+        title = str(title_buffer.value or "").strip()
+        if title:
+            windows.append((handle, title, str(class_buffer.value or "").strip()))
+        return 1
+
+    callback = callback_type(visit)
+    user32.EnumWindows(callback, None)
+    return windows
+
+
+def find_windows_vp_window(
+    title: str = APP_TITLE,
+    *,
+    platform_name: str | None = None,
+    exact_finder: Callable[[str], int] | None = None,
+    candidates_provider: Callable[[], Sequence[tuple[int, str, str]]] | None = None,
+) -> int:
+    """Find the VP Chrome App window even when its unread badge changes the title."""
+
+    if (platform_name or sys.platform) != "win32":
+        return 0
+    try:
+        if exact_finder is None or candidates_provider is None:
+            user32 = ctypes.windll.user32
+            if exact_finder is None:
+                native_find_window = user32.FindWindowW
+                native_find_window.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+                native_find_window.restype = ctypes.c_void_p
+                exact_finder = lambda expected: int(native_find_window(None, expected) or 0)
+            if candidates_provider is None:
+                candidates_provider = lambda: _enumerate_windows_top_level_windows(user32)
+
+        exact_handle = int(exact_finder(title) or 0)
+        if exact_handle:
+            return exact_handle
+
+        expected = str(title or "").casefold()
+        candidates = []
+        for handle, window_title, class_name in candidates_provider():
+            normalized_title = str(window_title or "").casefold()
+            if expected and expected not in normalized_title:
+                continue
+            chrome_window = str(class_name or "").casefold().startswith("chrome_widgetwin_")
+            score = (2 if chrome_window else 0) + (1 if normalized_title == expected else 0)
+            candidates.append((score, int(handle or 0)))
+        return max(candidates, default=(0, 0))[1]
+    except Exception:
+        return 0
+
+
 def bind_windows_taskbar_identity(
     config: DesktopLaunchConfig,
     *,
     platform_name: str | None = None,
-    timeout_sec: float = 5.0,
+    timeout_sec: float = DEFAULT_TASKBAR_IDENTITY_TIMEOUT_SEC,
     window_finder: Callable[[str], int] | None = None,
     property_setter: Callable[[int, Mapping[str, str]], bool] | None = None,
     sleeper: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    diagnostics: dict[str, object] | None = None,
 ) -> bool:
     """Bind the Chrome App HWND to the launcher identity used by the taskbar."""
 
     if (platform_name or sys.platform) != "win32":
+        _update_taskbar_diagnostics(diagnostics, "unsupported_platform")
         return False
     try:
         if window_finder is None:
-            user32 = ctypes.windll.user32
-            native_find_window = user32.FindWindowW
-            native_find_window.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
-            native_find_window.restype = ctypes.c_void_p
-            window_finder = lambda title: int(native_find_window(None, title) or 0)
-        apply_properties = property_setter or _set_windows_taskbar_window_properties
-        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+            window_finder = lambda title: find_windows_vp_window(
+                title,
+                platform_name="win32",
+            )
+        deadline = clock() + max(0.0, float(timeout_sec))
+        attempts = 0
+        property_attempts = 0
+        last_window_handle = 0
         while True:
+            attempts += 1
             window_handle = int(window_finder(APP_TITLE) or 0)
             if window_handle:
-                return bool(
-                    apply_properties(
+                last_window_handle = window_handle
+                property_attempts += 1
+                if property_setter is None:
+                    bound = _set_windows_taskbar_window_properties(
                         window_handle,
                         windows_taskbar_relaunch_metadata(config),
+                        diagnostics=diagnostics,
                     )
-                )
-            if time.monotonic() >= deadline:
+                else:
+                    bound = bool(
+                        property_setter(
+                            window_handle,
+                            windows_taskbar_relaunch_metadata(config),
+                        )
+                    )
+                if bound:
+                    _update_taskbar_diagnostics(
+                        diagnostics,
+                        "bound",
+                        attempts=attempts,
+                        property_attempts=property_attempts,
+                        window_handle=window_handle,
+                    )
+                    return True
+            if clock() >= deadline:
+                if not last_window_handle:
+                    _update_taskbar_diagnostics(
+                        diagnostics,
+                        "window_not_found",
+                        attempts=attempts,
+                        property_attempts=property_attempts,
+                    )
+                else:
+                    diagnostics_fields = {
+                        "attempts": attempts,
+                        "property_attempts": property_attempts,
+                        "window_handle": last_window_handle,
+                    }
+                    if diagnostics is not None:
+                        diagnostics.update(diagnostics_fields)
                 return False
-            sleeper(0.05)
-    except Exception:
+            sleeper(0.1)
+    except Exception as exc:
+        _update_taskbar_diagnostics(
+            diagnostics,
+            "binding_exception",
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
         return False
 
 
@@ -768,11 +948,19 @@ def start_windows_taskbar_identity_binding(
         return None
 
     def worker() -> None:
-        bound = bind_windows_taskbar_identity(config, platform_name="win32")
+        started_at = time.monotonic()
+        diagnostics: dict[str, object] = {}
+        bound = bind_windows_taskbar_identity(
+            config,
+            platform_name="win32",
+            diagnostics=diagnostics,
+        )
         write_launcher_log_event(
             config,
             "taskbar_identity_bound" if bound else "taskbar_identity_unavailable",
             app_user_model_id=WINDOWS_APP_USER_MODEL_ID,
+            elapsed_ms=_elapsed_ms(started_at),
+            **diagnostics,
         )
 
     thread = threading.Thread(
@@ -1025,7 +1213,10 @@ def focus_existing_desktop_window(
     if (platform_name or sys.platform) != "win32":
         return False
     api = user32 or ctypes.windll.user32
-    window_handle = int(api.FindWindowW(None, APP_TITLE) or 0)
+    if user32 is None:
+        window_handle = find_windows_vp_window(APP_TITLE, platform_name="win32")
+    else:
+        window_handle = int(api.FindWindowW(None, APP_TITLE) or 0)
     if not window_handle:
         return False
     api.ShowWindow(window_handle, 9)  # SW_RESTORE
@@ -1221,7 +1412,9 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
         raise
     finally:
         if taskbar_identity_thread is not None:
-            taskbar_identity_thread.join(timeout=5.25)
+            taskbar_identity_thread.join(
+                timeout=DEFAULT_TASKBAR_IDENTITY_TIMEOUT_SEC + 0.5
+            )
         if log_handle is not None:
             close = getattr(log_handle, "close", None)
             if callable(close):

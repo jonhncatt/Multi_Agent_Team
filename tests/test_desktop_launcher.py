@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ctypes
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -9,6 +11,7 @@ from desktop.launcher import (
     WINDOWS_APP_USER_MODEL_ID,
     DesktopLaunchConfig,
     LauncherError,
+    _set_windows_taskbar_window_properties,
     build_browser_command,
     build_launch_config,
     build_server_command,
@@ -16,6 +19,7 @@ from desktop.launcher import (
     chrome_preparation_url,
     desktop_instance_guard,
     ensure_desktop_control_token,
+    find_windows_vp_window,
     parse_window_size,
     parse_ui_scale,
     read_dotenv,
@@ -296,6 +300,157 @@ def test_windows_taskbar_identity_binds_the_chrome_window_to_the_launcher(tmp_pa
     assert applied[0][0] == 4242
     assert applied[0][1]["app_id"] == WINDOWS_APP_USER_MODEL_ID
     assert applied[0][1]["display_name"] == APP_TITLE
+
+
+def test_windows_taskbar_window_finder_accepts_unread_badge_title() -> None:
+    handle = find_windows_vp_window(
+        APP_TITLE,
+        platform_name="win32",
+        exact_finder=lambda _title: 0,
+        candidates_provider=lambda: [
+            (101, "Vintage Programmer documentation", "Notepad"),
+            (202, "(3) Vintage Programmer", "Chrome_WidgetWin_1"),
+        ],
+    )
+
+    assert handle == 202
+
+
+def test_windows_taskbar_identity_retries_slow_window_and_property_store(
+    tmp_path: Path,
+) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    now = [0.0]
+    find_attempts = [0]
+    property_attempts = [0]
+    diagnostics: dict[str, object] = {}
+
+    def find_window(_title: str) -> int:
+        find_attempts[0] += 1
+        return 0 if find_attempts[0] < 4 else 4242
+
+    def set_properties(_handle: int, _metadata: object) -> bool:
+        property_attempts[0] += 1
+        return property_attempts[0] >= 2
+
+    def advance(seconds: float) -> None:
+        now[0] += seconds
+
+    bound = bind_windows_taskbar_identity(
+        config,
+        platform_name="win32",
+        timeout_sec=2,
+        window_finder=find_window,
+        property_setter=set_properties,
+        sleeper=advance,
+        clock=lambda: now[0],
+        diagnostics=diagnostics,
+    )
+
+    assert bound is True
+    assert find_attempts[0] == 5
+    assert property_attempts[0] == 2
+    assert diagnostics == {
+        "stage": "bound",
+        "attempts": 5,
+        "property_attempts": 2,
+        "window_handle": 4242,
+    }
+
+
+def test_windows_taskbar_identity_reports_window_timeout(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    now = [0.0]
+    diagnostics: dict[str, object] = {}
+
+    bound = bind_windows_taskbar_identity(
+        config,
+        platform_name="win32",
+        timeout_sec=0.2,
+        window_finder=lambda _title: 0,
+        property_setter=lambda _handle, _metadata: True,
+        sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        clock=lambda: now[0],
+        diagnostics=diagnostics,
+    )
+
+    assert bound is False
+    assert diagnostics["stage"] == "window_not_found"
+    assert diagnostics["property_attempts"] == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows Shell")
+def test_windows_shell_accepts_taskbar_properties_on_a_real_window() -> None:
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.CreateWindowExW.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    user32.CreateWindowExW.restype = ctypes.c_void_p
+    kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+    handle = int(
+        user32.CreateWindowExW(
+            0,
+            "STATIC",
+            APP_TITLE,
+            0x00CF0000,  # WS_OVERLAPPEDWINDOW
+            0,
+            0,
+            320,
+            200,
+            None,
+            None,
+            kernel32.GetModuleHandleW(None),
+            None,
+        )
+        or 0
+    )
+    assert handle
+    diagnostics: dict[str, object] = {}
+    try:
+        assert _set_windows_taskbar_window_properties(
+            handle,
+            {
+                "app_id": WINDOWS_APP_USER_MODEL_ID,
+                "relaunch_command": r"C:\VP\VintageProgrammer.exe",
+                "display_name": APP_TITLE,
+                "icon_resource": r"C:\VP\VintageProgrammer.exe,0",
+            },
+            diagnostics=diagnostics,
+        ), diagnostics
+        assert diagnostics["stage"] == "bound"
+    finally:
+        user32.DestroyWindow(ctypes.c_void_p(handle))
 
 
 def test_windows_process_app_id_uses_the_same_stable_identity() -> None:
