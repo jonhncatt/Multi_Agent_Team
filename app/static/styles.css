@@ -164,6 +164,7 @@ html[data-vp-desktop-shell="true"] .workspace-main {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 64px;
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--line);
 }
@@ -486,18 +487,15 @@ img.brand-mark {
   top: 5px;
   right: 4px;
   left: 4px;
-  height: 2px;
-  border-radius: 999px;
+  height: 1px;
   background: var(--line);
-  transition: height 0.14s ease, background 0.14s ease, transform 0.14s ease;
+  transition: background 0.14s ease;
 }
 
 .project-thread-resizer:hover::before,
 .project-thread-resizer:focus-visible::before,
 body.project-list-resizing .project-thread-resizer::before {
-  height: 3px;
   background: var(--accent);
-  transform: translateY(-1px);
 }
 
 body.project-list-resizing,
@@ -697,6 +695,7 @@ body.project-list-resizing * {
 .workspace-head {
   display: flex;
   min-width: 0;
+  min-height: 64px;
   width: 100%;
   max-width: 100%;
   justify-content: space-between;
