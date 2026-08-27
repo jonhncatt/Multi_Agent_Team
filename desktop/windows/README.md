@@ -31,6 +31,13 @@ Launching the executable again first restores an existing Vintage Programmer
 window. If the Chrome window was closed while the backend remained active, a new
 window is opened against that same backend instead.
 
+The launcher assigns the Chrome App window and the launcher a shared Windows
+AppUserModelID. On the first build containing this support, unpin the old direct
+EXE taskbar item, launch the new `VintageProgrammer.exe`, then pin the running VP
+window. That one-time re-pin stores the VP relaunch command and high-resolution
+icon; later launches still go through the EXE so the backend is prepared before
+Chrome App Mode opens.
+
 Use the **Exit** button in the top-right navigation to stop active work and the
 local backend before closing. Chrome's ordinary window close cannot reliably
 report its lifecycle to the launcher, so closing with `X` leaves the backend

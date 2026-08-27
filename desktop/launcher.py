@@ -12,13 +12,16 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Callable, Iterator, Mapping, Sequence
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 APP_TITLE = "Vintage Programmer"
+WINDOWS_APP_USER_MODEL_ID = "VintageProgrammer.Desktop"
 DEFAULT_APP_MODULE = "app.main:app"
 DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
@@ -34,6 +37,29 @@ PROJECT_ROOT_MARKERS = (
     Path("requirements.txt"),
     Path("desktop/launcher.py"),
 )
+
+_PKEY_APP_USER_MODEL_RELAUNCH_COMMAND_PID = 2
+_PKEY_APP_USER_MODEL_RELAUNCH_ICON_RESOURCE_PID = 3
+_PKEY_APP_USER_MODEL_RELAUNCH_DISPLAY_NAME_PID = 4
+_PKEY_APP_USER_MODEL_ID_PID = 5
+_APP_USER_MODEL_PROPERTY_SET = "9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3"
+_IID_IPROPERTY_STORE = "886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("data1", ctypes.c_uint32),
+        ("data2", ctypes.c_uint16),
+        ("data3", ctypes.c_uint16),
+        ("data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _PROPERTYKEY(ctypes.Structure):
+    _fields_ = [
+        ("fmtid", _GUID),
+        ("pid", ctypes.c_uint32),
+    ]
 
 
 class LauncherError(RuntimeError):
@@ -540,6 +566,224 @@ def _browser_creation_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
+def windows_taskbar_relaunch_metadata(
+    config: DesktopLaunchConfig,
+    *,
+    executable: str | Path | None = None,
+    frozen: bool | None = None,
+) -> dict[str, str]:
+    """Return the stable Windows taskbar identity and launcher-owned relaunch data."""
+
+    is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else bool(frozen)
+    if is_frozen:
+        launcher_path = Path(executable or sys.executable).expanduser().resolve()
+        relaunch_parts = [str(launcher_path)]
+    else:
+        relaunch_parts = [
+            *config.python_command,
+            "-m",
+            "desktop.launcher",
+            "--project-root",
+            str(config.project_root),
+        ]
+    web_icon_path = (
+        config.project_root / "app" / "static" / "assets" / "vintage_programmer.ico"
+    ).resolve()
+    build_icon_path = (
+        config.project_root
+        / "desktop"
+        / "windows"
+        / "assets"
+        / "vintage_programmer.ico"
+    ).resolve()
+    icon_path = web_icon_path if web_icon_path.is_file() else build_icon_path
+    if not icon_path.is_file() and is_frozen:
+        icon_path = launcher_path
+    return {
+        "app_id": WINDOWS_APP_USER_MODEL_ID,
+        "relaunch_command": subprocess.list2cmdline([str(item) for item in relaunch_parts]),
+        "display_name": APP_TITLE,
+        "icon_resource": f"{icon_path},0",
+    }
+
+
+def set_windows_process_app_id(
+    *,
+    platform_name: str | None = None,
+    setter: Callable[[str], int] | None = None,
+) -> bool:
+    """Give the short launcher process the same explicit identity as the VP window."""
+
+    if (platform_name or sys.platform) != "win32":
+        return False
+    try:
+        if setter is None:
+            native_setter = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+            native_setter.argtypes = [ctypes.c_wchar_p]
+            native_setter.restype = ctypes.c_int32
+            setter = native_setter
+        return int(setter(WINDOWS_APP_USER_MODEL_ID)) >= 0
+    except Exception:
+        return False
+
+
+def _guid_from_text(value: str) -> _GUID:
+    return _GUID.from_buffer_copy(UUID(str(value)).bytes_le)
+
+
+def _set_windows_taskbar_window_properties(
+    window_handle: int,
+    metadata: Mapping[str, str],
+) -> bool:
+    """Set relaunch metadata and AppUserModelID on a Chrome-owned VP HWND."""
+
+    if sys.platform != "win32" or not int(window_handle or 0):
+        return False
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    propsys = ctypes.WinDLL("propsys", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    iid_property_store = _guid_from_text(_IID_IPROPERTY_STORE)
+    property_set_guid = _guid_from_text(_APP_USER_MODEL_PROPERTY_SET)
+    property_store = ctypes.c_void_p()
+    variant_size = 24 if ctypes.sizeof(ctypes.c_void_p) == 8 else 16
+
+    shell32.SHGetPropertyStoreForWindow.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetPropertyStoreForWindow.restype = ctypes.c_int32
+    propsys.InitPropVariantFromString.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+    propsys.InitPropVariantFromString.restype = ctypes.c_int32
+    ole32.PropVariantClear.argtypes = [ctypes.c_void_p]
+    ole32.PropVariantClear.restype = ctypes.c_int32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole32.CoInitializeEx.restype = ctypes.c_int32
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+
+    coinit_result = int(ole32.CoInitializeEx(None, 0x2))  # COINIT_APARTMENTTHREADED
+    should_uninitialize = coinit_result in {0, 1}
+    if coinit_result < 0 and coinit_result != -2147417850:  # RPC_E_CHANGED_MODE
+        return False
+    try:
+        result = int(
+            shell32.SHGetPropertyStoreForWindow(
+                ctypes.c_void_p(int(window_handle)),
+                ctypes.byref(iid_property_store),
+                ctypes.byref(property_store),
+            )
+        )
+        if result < 0 or not property_store.value:
+            return False
+
+        vtable = ctypes.cast(
+            property_store,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
+        ).contents
+        set_value = ctypes.WINFUNCTYPE(
+            ctypes.c_int32,
+            ctypes.c_void_p,
+            ctypes.POINTER(_PROPERTYKEY),
+            ctypes.c_void_p,
+        )(vtable[6])
+        release = ctypes.WINFUNCTYPE(ctypes.c_uint32, ctypes.c_void_p)(vtable[2])
+        values = (
+            (_PKEY_APP_USER_MODEL_RELAUNCH_COMMAND_PID, metadata.get("relaunch_command", "")),
+            (_PKEY_APP_USER_MODEL_RELAUNCH_DISPLAY_NAME_PID, metadata.get("display_name", "")),
+            (_PKEY_APP_USER_MODEL_RELAUNCH_ICON_RESOURCE_PID, metadata.get("icon_resource", "")),
+            (_PKEY_APP_USER_MODEL_ID_PID, metadata.get("app_id", "")),
+        )
+        try:
+            for property_id, raw_value in values:
+                value = str(raw_value or "").strip()
+                if not value:
+                    return False
+                variant = ctypes.create_string_buffer(variant_size)
+                if int(propsys.InitPropVariantFromString(value, ctypes.byref(variant))) < 0:
+                    return False
+                try:
+                    key = _PROPERTYKEY(property_set_guid, property_id)
+                    if int(set_value(property_store, ctypes.byref(key), ctypes.byref(variant))) < 0:
+                        return False
+                finally:
+                    ole32.PropVariantClear(ctypes.byref(variant))
+            return True
+        finally:
+            release(property_store)
+    except Exception:
+        return False
+    finally:
+        if should_uninitialize:
+            ole32.CoUninitialize()
+
+
+def bind_windows_taskbar_identity(
+    config: DesktopLaunchConfig,
+    *,
+    platform_name: str | None = None,
+    timeout_sec: float = 5.0,
+    window_finder: Callable[[str], int] | None = None,
+    property_setter: Callable[[int, Mapping[str, str]], bool] | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Bind the Chrome App HWND to the launcher identity used by the taskbar."""
+
+    if (platform_name or sys.platform) != "win32":
+        return False
+    try:
+        if window_finder is None:
+            user32 = ctypes.windll.user32
+            native_find_window = user32.FindWindowW
+            native_find_window.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            native_find_window.restype = ctypes.c_void_p
+            window_finder = lambda title: int(native_find_window(None, title) or 0)
+        apply_properties = property_setter or _set_windows_taskbar_window_properties
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        while True:
+            window_handle = int(window_finder(APP_TITLE) or 0)
+            if window_handle:
+                return bool(
+                    apply_properties(
+                        window_handle,
+                        windows_taskbar_relaunch_metadata(config),
+                    )
+                )
+            if time.monotonic() >= deadline:
+                return False
+            sleeper(0.05)
+    except Exception:
+        return False
+
+
+def start_windows_taskbar_identity_binding(
+    config: DesktopLaunchConfig,
+    *,
+    platform_name: str | None = None,
+) -> threading.Thread | None:
+    """Bind a newly created Chrome window without delaying backend startup."""
+
+    if (platform_name or sys.platform) != "win32":
+        return None
+
+    def worker() -> None:
+        bound = bind_windows_taskbar_identity(config, platform_name="win32")
+        write_launcher_log_event(
+            config,
+            "taskbar_identity_bound" if bound else "taskbar_identity_unavailable",
+            app_user_model_id=WINDOWS_APP_USER_MODEL_ID,
+        )
+
+    thread = threading.Thread(
+        target=worker,
+        name="vp-taskbar-identity",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def reset_launcher_log_if_oversized(
     log_path: Path,
     *,
@@ -872,6 +1116,7 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
     launch_started_at = time.monotonic()
     owned_server: subprocess.Popen[bytes] | None = None
     log_handle: object | None = None
+    taskbar_identity_thread: threading.Thread | None = None
     chrome_window_started = False
     chrome_preparation_ready = False
     cold_launch_started = False
@@ -893,6 +1138,7 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                 write_chrome_preparation_page(config, state="preparing")
                 start_browser(config, app_url=chrome_preparation_url(config))
                 chrome_window_started = True
+                taskbar_identity_thread = start_windows_taskbar_identity_binding(config)
                 write_launcher_log_event(
                     config,
                     "preparing_window_started",
@@ -931,6 +1177,16 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                     write_chrome_preparation_page(config, state="ready")
                     chrome_preparation_ready = True
             elif focus_existing_desktop_window():
+                if sys.platform == "win32":
+                    taskbar_identity_bound = bind_windows_taskbar_identity(
+                        config,
+                        timeout_sec=0.25,
+                    )
+                    write_launcher_log_event(
+                        config,
+                        "taskbar_identity_bound" if taskbar_identity_bound else "taskbar_identity_unavailable",
+                        app_user_model_id=WINDOWS_APP_USER_MODEL_ID,
+                    )
                 write_launcher_log_event(
                     config,
                     "existing_window_focused",
@@ -939,6 +1195,13 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                 return
         if not chrome_window_started:
             start_browser(config)
+            if sys.platform == "win32":
+                taskbar_identity_bound = bind_windows_taskbar_identity(config)
+                write_launcher_log_event(
+                    config,
+                    "taskbar_identity_bound" if taskbar_identity_bound else "taskbar_identity_unavailable",
+                    app_user_model_id=WINDOWS_APP_USER_MODEL_ID,
+                )
             write_launcher_log_event(
                 config,
                 "existing_backend_window_started",
@@ -957,6 +1220,8 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
             stop_owned_server(owned_server)
         raise
     finally:
+        if taskbar_identity_thread is not None:
+            taskbar_identity_thread.join(timeout=5.25)
         if log_handle is not None:
             close = getattr(log_handle, "close", None)
             if callable(close):
@@ -1071,6 +1336,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        set_windows_process_app_id()
         config = build_launch_config(
             project_root=args.project_root or None,
             browser_path=args.browser_path,

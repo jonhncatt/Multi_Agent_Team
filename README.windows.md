@@ -83,6 +83,12 @@ Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健
 随后出现的 `Loading workspace…` 只表示正在加载项目、Thread 和本地设置。如果后台已经运行，
 则直接进入 VP，不显示准备页。
 
+新版 launcher 会把 Chrome App 窗口和 `VintageProgrammer.exe` 绑定到同一个 Windows
+`AppUserModelID`，并把任务栏重新启动命令和高清图标指向 VP launcher。第一次升级到这个版本时，
+请先取消旧的 EXE 任务栏固定项，启动新版 VP，再右键正在运行的 VP 图标并选择固定到任务栏。
+这是一次性迁移；之后从该图标启动仍会先运行 `VintageProgrammer.exe`，由它准备后台并打开
+`chrome.exe --app=...`，运行窗口应继续停留在同一个任务栏图标下。
+
 Chrome 桌面窗口使用 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
 `VP_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。
 

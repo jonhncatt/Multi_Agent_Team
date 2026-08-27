@@ -5,11 +5,14 @@ from pathlib import Path
 import pytest
 
 from desktop.launcher import (
+    APP_TITLE,
+    WINDOWS_APP_USER_MODEL_ID,
     DesktopLaunchConfig,
     LauncherError,
     build_browser_command,
     build_launch_config,
     build_server_command,
+    bind_windows_taskbar_identity,
     chrome_preparation_url,
     desktop_instance_guard,
     ensure_desktop_control_token,
@@ -22,10 +25,12 @@ from desktop.launcher import (
     resolve_project_root,
     resolve_python_command,
     run_desktop,
+    set_windows_process_app_id,
     start_browser,
     validate_chrome_shell_mode,
     wait_until_stopped,
     write_chrome_preparation_page,
+    windows_taskbar_relaunch_metadata,
 )
 
 
@@ -233,6 +238,75 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
     assert "--window-size=1360,840" in initial_command
     preparing_command = build_browser_command(config, app_url="file:///C:/vp/preparing.html")
     assert "--app=file:///C:/vp/preparing.html" in preparing_command
+
+
+def test_windows_taskbar_identity_relaunches_the_packaged_vp_launcher(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    icon = root / "app" / "static" / "assets" / "vintage_programmer.ico"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"ico")
+    launcher = root / "VintageProgrammer.exe"
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+
+    metadata = windows_taskbar_relaunch_metadata(
+        config,
+        executable=launcher,
+        frozen=True,
+    )
+
+    assert metadata == {
+        "app_id": WINDOWS_APP_USER_MODEL_ID,
+        "relaunch_command": str(launcher.resolve()),
+        "display_name": APP_TITLE,
+        "icon_resource": f"{icon.resolve()},0",
+    }
+
+
+def test_windows_taskbar_identity_binds_the_chrome_window_to_the_launcher(tmp_path: Path) -> None:
+    root = _project_root(tmp_path)
+    config = DesktopLaunchConfig(
+        project_root=root,
+        python_command=("python",),
+        browser_path=tmp_path / "chrome.exe",
+        browser_profile_dir=root / "browser",
+        app_module="app.main:app",
+        port=8080,
+        startup_timeout_sec=45,
+    )
+    applied: list[tuple[int, dict[str, str]]] = []
+
+    bound = bind_windows_taskbar_identity(
+        config,
+        platform_name="win32",
+        timeout_sec=0,
+        window_finder=lambda title: 4242 if title == APP_TITLE else 0,
+        property_setter=lambda hwnd, metadata: applied.append((hwnd, dict(metadata))) or True,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert bound is True
+    assert applied[0][0] == 4242
+    assert applied[0][1]["app_id"] == WINDOWS_APP_USER_MODEL_ID
+    assert applied[0][1]["display_name"] == APP_TITLE
+
+
+def test_windows_process_app_id_uses_the_same_stable_identity() -> None:
+    assigned: list[str] = []
+
+    assert set_windows_process_app_id(
+        platform_name="win32",
+        setter=lambda app_id: assigned.append(app_id) or 0,
+    ) is True
+    assert assigned == [WINDOWS_APP_USER_MODEL_ID]
+    assert set_windows_process_app_id(platform_name="darwin", setter=lambda _app_id: 0) is False
 
 
 def test_desktop_control_token_is_stable_and_never_exposed_in_diagnostics(tmp_path: Path) -> None:
