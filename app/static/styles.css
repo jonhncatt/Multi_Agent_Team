@@ -3840,20 +3840,6 @@ body.project-list-resizing * {
   white-space: nowrap;
 }
 
-.project-path-picker-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.project-browser-picker-notice {
-  margin-top: 8px;
-  color: var(--ink-soft);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .empty-inline {
   font-size: 13px;
   color: var(--ink-soft);
