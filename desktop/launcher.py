@@ -63,6 +63,24 @@ class _PROPERTYKEY(ctypes.Structure):
     ]
 
 
+class _PROPVARIANT_VALUE(ctypes.Union):
+    _fields_ = [
+        ("pwsz_value", ctypes.c_wchar_p),
+        ("raw", ctypes.c_ubyte * (2 * ctypes.sizeof(ctypes.c_void_p))),
+    ]
+
+
+class _PROPVARIANT(ctypes.Structure):
+    _anonymous_ = ("value",)
+    _fields_ = [
+        ("vt", ctypes.c_uint16),
+        ("reserved1", ctypes.c_uint16),
+        ("reserved2", ctypes.c_uint16),
+        ("reserved3", ctypes.c_uint16),
+        ("value", _PROPVARIANT_VALUE),
+    ]
+
+
 class LauncherError(RuntimeError):
     """A user-facing desktop launcher error."""
 
@@ -661,12 +679,10 @@ def _set_windows_taskbar_window_properties(
 
     try:
         shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-        propsys = ctypes.WinDLL("propsys", use_last_error=True)
         ole32 = ctypes.WinDLL("ole32", use_last_error=True)
         iid_property_store = _guid_from_text(_IID_IPROPERTY_STORE)
         property_set_guid = _guid_from_text(_APP_USER_MODEL_PROPERTY_SET)
         property_store = ctypes.c_void_p()
-        variant_size = 24 if ctypes.sizeof(ctypes.c_void_p) == 8 else 16
 
         shell32.SHGetPropertyStoreForWindow.argtypes = [
             ctypes.c_void_p,
@@ -674,10 +690,6 @@ def _set_windows_taskbar_window_properties(
             ctypes.POINTER(ctypes.c_void_p),
         ]
         shell32.SHGetPropertyStoreForWindow.restype = ctypes.c_int32
-        propsys.InitPropVariantFromString.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
-        propsys.InitPropVariantFromString.restype = ctypes.c_int32
-        ole32.PropVariantClear.argtypes = [ctypes.c_void_p]
-        ole32.PropVariantClear.restype = ctypes.c_int32
         ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         ole32.CoInitializeEx.restype = ctypes.c_int32
         ole32.CoUninitialize.argtypes = []
@@ -743,33 +755,25 @@ def _set_windows_taskbar_window_properties(
                         property_id=property_id,
                     )
                     return False
-                variant = ctypes.create_string_buffer(variant_size)
-                variant_result = int(
-                    propsys.InitPropVariantFromString(value, ctypes.byref(variant))
+                # InitPropVariantFromString is an inline Windows SDK helper and
+                # is not exported by propsys.dll. Build its VT_LPWSTR result
+                # directly and keep the backing buffer alive through SetValue.
+                string_buffer = ctypes.create_unicode_buffer(value)
+                variant = _PROPVARIANT()
+                variant.vt = 31  # VT_LPWSTR
+                variant.pwsz_value = ctypes.cast(string_buffer, ctypes.c_wchar_p)
+                key = _PROPERTYKEY(property_set_guid, property_id)
+                set_result = int(
+                    set_value(property_store, ctypes.byref(key), ctypes.byref(variant))
                 )
-                if variant_result < 0:
+                if set_result < 0:
                     _update_taskbar_diagnostics(
                         diagnostics,
-                        "property_value_initialization_failed",
+                        "property_write_failed",
                         property_id=property_id,
-                        hresult=_hresult_hex(variant_result),
+                        hresult=_hresult_hex(set_result),
                     )
                     return False
-                try:
-                    key = _PROPERTYKEY(property_set_guid, property_id)
-                    set_result = int(
-                        set_value(property_store, ctypes.byref(key), ctypes.byref(variant))
-                    )
-                    if set_result < 0:
-                        _update_taskbar_diagnostics(
-                            diagnostics,
-                            "property_write_failed",
-                            property_id=property_id,
-                            hresult=_hresult_hex(set_result),
-                        )
-                        return False
-                finally:
-                    ole32.PropVariantClear(ctypes.byref(variant))
             _update_taskbar_diagnostics(diagnostics, "bound")
             return True
         finally:
