@@ -16,7 +16,7 @@ normal address bar or tabs while leaving Agent Runtime behavior unchanged.
 The launcher has no console window. Startup failures are shown in a message box
 and written to `app/data/runtime/desktop-launcher.log`. Routine HTTP access
 lines are disabled; when the log exceeds 2 MiB on the next launch, it is
-rotated to `desktop-launcher.log.1` and the older backup is replaced.
+cleared before the new launch is recorded. Launcher log backups are not kept.
 
 The packaged launcher checks only the directory containing the executable. It
 does not search parent directories or other checkouts. That directory must also

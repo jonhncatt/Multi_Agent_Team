@@ -17,7 +17,7 @@ from desktop.launcher import (
     parse_ui_scale,
     read_dotenv,
     restart_server_only,
-    rotate_launcher_log,
+    reset_launcher_log_if_oversized,
     resolve_browser_path,
     resolve_project_root,
     resolve_python_command,
@@ -79,15 +79,17 @@ def test_read_dotenv_matches_repository_style_values(tmp_path: Path) -> None:
     }
 
 
-def test_launcher_log_rotates_when_size_limit_is_exceeded(tmp_path: Path) -> None:
+def test_launcher_log_is_cleared_without_backup_when_size_limit_is_exceeded(tmp_path: Path) -> None:
     log_path = tmp_path / "desktop-launcher.log"
     log_path.write_bytes(b"previous launcher output")
+    backup_path = tmp_path / "desktop-launcher.log.1"
+    backup_path.write_bytes(b"obsolete backup")
 
-    backup_path = rotate_launcher_log(log_path, max_bytes=8)
+    cleared = reset_launcher_log_if_oversized(log_path, max_bytes=8)
 
-    assert backup_path == tmp_path / "desktop-launcher.log.1"
-    assert backup_path.read_bytes() == b"previous launcher output"
+    assert cleared is True
     assert log_path.exists() is False
+    assert backup_path.exists() is False
 
 
 def test_parse_window_size_accepts_comma_or_x_and_rejects_tiny_windows() -> None:

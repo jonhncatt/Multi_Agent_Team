@@ -25,7 +25,6 @@ DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
 DEFAULT_LAUNCHER_LOG_MAX_BYTES = 2 * 1024 * 1024
-LAUNCHER_LOG_BACKUP_SUFFIX = ".1"
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
@@ -541,22 +540,25 @@ def _browser_creation_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
-def rotate_launcher_log(
+def reset_launcher_log_if_oversized(
     log_path: Path,
     *,
     max_bytes: int = DEFAULT_LAUNCHER_LOG_MAX_BYTES,
-) -> Path | None:
-    """Rotate an oversized launcher log while retaining the previous log for diagnostics."""
+) -> bool:
+    """Discard oversized launcher output and remove obsolete rotated backups."""
+    backup_path = log_path.with_name(f"{log_path.name}.1")
+    try:
+        backup_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         if not log_path.is_file() or log_path.stat().st_size <= max(1, int(max_bytes)):
-            return None
-        backup_path = log_path.with_name(f"{log_path.name}{LAUNCHER_LOG_BACKUP_SUFFIX}")
-        backup_path.unlink(missing_ok=True)
-        log_path.replace(backup_path)
-        return backup_path
+            return False
+        log_path.unlink()
+        return True
     except OSError:
         # Log maintenance must never prevent the desktop app from starting.
-        return None
+        return False
 
 
 def write_launcher_log_event(
@@ -582,7 +584,7 @@ def _elapsed_ms(started_at: float) -> int:
 
 def start_server(config: DesktopLaunchConfig) -> tuple[subprocess.Popen[bytes], object]:
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
-    rotate_launcher_log(config.log_path)
+    reset_launcher_log_if_oversized(config.log_path)
     log_handle = config.log_path.open("ab", buffering=0)
     process = subprocess.Popen(
         build_server_command(config),
@@ -878,14 +880,14 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
         with startup_lock(lock_path):
             if not health_check(config.health_url):
                 cold_launch_started = True
-                rotated_log = rotate_launcher_log(config.log_path)
+                previous_log_cleared = reset_launcher_log_if_oversized(config.log_path)
                 session_dir = config.project_root / "app" / "data" / "sessions"
                 session_count = sum(1 for _path in session_dir.glob("*.json")) if session_dir.is_dir() else 0
                 write_launcher_log_event(
                     config,
                     "cold_launch_started",
                     elapsed_ms=_elapsed_ms(launch_started_at),
-                    previous_log_rotated=bool(rotated_log),
+                    previous_log_cleared=previous_log_cleared,
                     session_count=session_count,
                 )
                 write_chrome_preparation_page(config, state="preparing")
@@ -986,12 +988,12 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
         with startup_lock(lock_path):
             if health_check(config.health_url):
                 return
-            rotated_log = rotate_launcher_log(config.log_path)
+            previous_log_cleared = reset_launcher_log_if_oversized(config.log_path)
             write_launcher_log_event(
                 config,
                 "restart_started",
                 elapsed_ms=_elapsed_ms(restart_started_at),
-                previous_log_rotated=bool(rotated_log),
+                previous_log_cleared=previous_log_cleared,
             )
             process, log_handle = start_server(config)
             health_wait_started_at = time.monotonic()
