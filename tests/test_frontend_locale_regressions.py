@@ -2841,6 +2841,10 @@ def test_update_button_checks_hourly_but_only_updates_on_click() -> None:
     assert 'appUpdateRunning ? t("update.running") : t("update.button")' in script
     assert 'fetchJson("/api/app/update-check")' in script
     assert "const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;" in script
+    assert "const APP_UPDATE_INITIAL_DELAY_MS = 30 * 1_000;" in script
+    assert "window.setTimeout(() => {" in script
+    assert "}, APP_UPDATE_INITIAL_DELAY_MS);" in script
+    assert "if (bootState.active) return undefined;" in script
     assert "window.setInterval(() => runUpdateCheck(true), APP_UPDATE_CHECK_INTERVAL_MS)" in script
     assert 't("update.available_title", {' in script
     assert '})} ${t("update.discards_local_changes")}`' in script

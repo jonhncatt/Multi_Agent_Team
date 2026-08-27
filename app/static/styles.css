@@ -167,6 +167,7 @@ html[data-vp-desktop-shell="true"] .workspace-main {
   gap: 10px;
   height: 64px;
   padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--line);
 }
 
 .rail-brand > div:not(.brand-mark) {

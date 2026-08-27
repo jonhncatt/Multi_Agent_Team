@@ -24,6 +24,8 @@ DEFAULT_APP_PORT = 8080
 DEFAULT_STARTUP_TIMEOUT_SEC = 45.0
 DEFAULT_INITIAL_WINDOW_SIZE = (1360, 840)
 DEFAULT_DESKTOP_UI_SCALE = 0.8
+DEFAULT_LAUNCHER_LOG_MAX_BYTES = 2 * 1024 * 1024
+LAUNCHER_LOG_BACKUP_SUFFIX = ".1"
 DESKTOP_INSTANCE_MUTEX = "Local\\VintageProgrammer.Desktop"
 DESKTOP_CONTROL_TOKEN_FILENAME = "desktop-control-token"
 DESKTOP_PREPARING_FILENAME = "desktop-preparing.html"
@@ -414,6 +416,7 @@ def build_server_command(config: DesktopLaunchConfig) -> list[str]:
         "127.0.0.1",
         "--port",
         str(config.port),
+        "--no-access-log",
     ]
 
 
@@ -538,8 +541,48 @@ def _browser_creation_kwargs() -> dict[str, object]:
     return {"start_new_session": True}
 
 
+def rotate_launcher_log(
+    log_path: Path,
+    *,
+    max_bytes: int = DEFAULT_LAUNCHER_LOG_MAX_BYTES,
+) -> Path | None:
+    """Rotate an oversized launcher log while retaining the previous log for diagnostics."""
+    try:
+        if not log_path.is_file() or log_path.stat().st_size <= max(1, int(max_bytes)):
+            return None
+        backup_path = log_path.with_name(f"{log_path.name}{LAUNCHER_LOG_BACKUP_SUFFIX}")
+        backup_path.unlink(missing_ok=True)
+        log_path.replace(backup_path)
+        return backup_path
+    except OSError:
+        # Log maintenance must never prevent the desktop app from starting.
+        return None
+
+
+def write_launcher_log_event(
+    config: DesktopLaunchConfig,
+    event: str,
+    **fields: object,
+) -> None:
+    payload = {"event": str(event or "launcher_event"), **fields}
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    line = f"{timestamp} [launcher] {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
+    try:
+        config.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with config.log_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line)
+    except OSError:
+        # Diagnostics are best effort and must not become a startup dependency.
+        return
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int(round((time.monotonic() - started_at) * 1000)))
+
+
 def start_server(config: DesktopLaunchConfig) -> tuple[subprocess.Popen[bytes], object]:
     config.log_path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_launcher_log(config.log_path)
     log_handle = config.log_path.open("ab", buffering=0)
     process = subprocess.Popen(
         build_server_command(config),
@@ -824,35 +867,88 @@ def startup_lock(path: Path, *, timeout_sec: float = 15.0) -> Iterator[None]:
 
 
 def run_desktop(config: DesktopLaunchConfig) -> None:
+    launch_started_at = time.monotonic()
     owned_server: subprocess.Popen[bytes] | None = None
     log_handle: object | None = None
     chrome_window_started = False
     chrome_preparation_ready = False
+    cold_launch_started = False
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
     try:
         with startup_lock(lock_path):
             if not health_check(config.health_url):
+                cold_launch_started = True
+                rotated_log = rotate_launcher_log(config.log_path)
+                session_dir = config.project_root / "app" / "data" / "sessions"
+                session_count = sum(1 for _path in session_dir.glob("*.json")) if session_dir.is_dir() else 0
+                write_launcher_log_event(
+                    config,
+                    "cold_launch_started",
+                    elapsed_ms=_elapsed_ms(launch_started_at),
+                    previous_log_rotated=bool(rotated_log),
+                    session_count=session_count,
+                )
                 write_chrome_preparation_page(config, state="preparing")
                 start_browser(config, app_url=chrome_preparation_url(config))
                 chrome_window_started = True
+                write_launcher_log_event(
+                    config,
+                    "preparing_window_started",
+                    elapsed_ms=_elapsed_ms(launch_started_at),
+                )
                 owned_server, log_handle = start_server(config)
+                write_launcher_log_event(
+                    config,
+                    "backend_process_started",
+                    elapsed_ms=_elapsed_ms(launch_started_at),
+                    pid=getattr(owned_server, "pid", None),
+                )
+                health_wait_started_at = time.monotonic()
                 if not wait_until_healthy(
                     config.health_url,
                     timeout_sec=config.startup_timeout_sec,
                     process=owned_server,
                 ):
+                    write_launcher_log_event(
+                        config,
+                        "backend_health_timeout",
+                        elapsed_ms=_elapsed_ms(launch_started_at),
+                        health_wait_ms=_elapsed_ms(health_wait_started_at),
+                    )
                     failure = f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
                     if chrome_window_started:
                         write_chrome_preparation_page(config, state="failed", error=failure)
                     raise LauncherError(failure)
+                write_launcher_log_event(
+                    config,
+                    "backend_healthy",
+                    elapsed_ms=_elapsed_ms(launch_started_at),
+                    health_wait_ms=_elapsed_ms(health_wait_started_at),
+                )
                 if chrome_window_started:
                     write_chrome_preparation_page(config, state="ready")
                     chrome_preparation_ready = True
             elif focus_existing_desktop_window():
+                write_launcher_log_event(
+                    config,
+                    "existing_window_focused",
+                    elapsed_ms=_elapsed_ms(launch_started_at),
+                )
                 return
         if not chrome_window_started:
             start_browser(config)
+            write_launcher_log_event(
+                config,
+                "existing_backend_window_started",
+                elapsed_ms=_elapsed_ms(launch_started_at),
+            )
     except BaseException as exc:
+        write_launcher_log_event(
+            config,
+            "launch_failed",
+            elapsed_ms=_elapsed_ms(launch_started_at),
+            error=str(exc),
+        )
         if chrome_window_started and not chrome_preparation_ready:
             write_chrome_preparation_page(config, state="failed", error=str(exc))
         if owned_server is not None:
@@ -863,11 +959,24 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
             close = getattr(log_handle, "close", None)
             if callable(close):
                 close()
+        if cold_launch_started:
+            write_launcher_log_event(
+                config,
+                "cold_launch_finished",
+                elapsed_ms=_elapsed_ms(launch_started_at),
+                ready=chrome_preparation_ready,
+            )
 
 
 def restart_server_only(config: DesktopLaunchConfig) -> None:
+    restart_started_at = time.monotonic()
     shutdown_timeout_sec = max(10.0, min(60.0, config.startup_timeout_sec))
     if not wait_until_stopped(config.health_url, timeout_sec=shutdown_timeout_sec):
+        write_launcher_log_event(
+            config,
+            "restart_shutdown_timeout",
+            elapsed_ms=_elapsed_ms(restart_started_at),
+        )
         raise LauncherError("Vintage Programmer did not stop in time for restart.")
 
     lock_path = config.project_root / "app" / "data" / "runtime" / "desktop-launcher.lock"
@@ -877,16 +986,42 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
         with startup_lock(lock_path):
             if health_check(config.health_url):
                 return
+            rotated_log = rotate_launcher_log(config.log_path)
+            write_launcher_log_event(
+                config,
+                "restart_started",
+                elapsed_ms=_elapsed_ms(restart_started_at),
+                previous_log_rotated=bool(rotated_log),
+            )
             process, log_handle = start_server(config)
+            health_wait_started_at = time.monotonic()
             if not wait_until_healthy(
                 config.health_url,
                 timeout_sec=config.startup_timeout_sec,
                 process=process,
             ):
+                write_launcher_log_event(
+                    config,
+                    "restart_health_timeout",
+                    elapsed_ms=_elapsed_ms(restart_started_at),
+                    health_wait_ms=_elapsed_ms(health_wait_started_at),
+                )
                 raise LauncherError(
                     f"Vintage Programmer did not restart. See the launcher log: {config.log_path}"
                 )
-    except BaseException:
+            write_launcher_log_event(
+                config,
+                "restart_backend_healthy",
+                elapsed_ms=_elapsed_ms(restart_started_at),
+                health_wait_ms=_elapsed_ms(health_wait_started_at),
+            )
+    except BaseException as exc:
+        write_launcher_log_event(
+            config,
+            "restart_failed",
+            elapsed_ms=_elapsed_ms(restart_started_at),
+            error=str(exc),
+        )
         if process is not None:
             stop_owned_server(process)
         raise

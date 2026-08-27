@@ -17,6 +17,7 @@ from desktop.launcher import (
     parse_ui_scale,
     read_dotenv,
     restart_server_only,
+    rotate_launcher_log,
     resolve_browser_path,
     resolve_project_root,
     resolve_python_command,
@@ -76,6 +77,17 @@ def test_read_dotenv_matches_repository_style_values(tmp_path: Path) -> None:
         "VP_APP_PORT": "8123",
         "VP_APP_MODULE": "sample.main:app",
     }
+
+
+def test_launcher_log_rotates_when_size_limit_is_exceeded(tmp_path: Path) -> None:
+    log_path = tmp_path / "desktop-launcher.log"
+    log_path.write_bytes(b"previous launcher output")
+
+    backup_path = rotate_launcher_log(log_path, max_bytes=8)
+
+    assert backup_path == tmp_path / "desktop-launcher.log.1"
+    assert backup_path.read_bytes() == b"previous launcher output"
+    assert log_path.exists() is False
 
 
 def test_parse_window_size_accepts_comma_or_x_and_rejects_tiny_windows() -> None:
@@ -206,6 +218,7 @@ def test_commands_keep_desktop_shell_outside_agent_runtime(tmp_path: Path) -> No
         "127.0.0.1",
         "--port",
         "8181",
+        "--no-access-log",
     ]
     browser_command = build_browser_command(config)
     assert "--app=http://127.0.0.1:8181/?vp_desktop=1&vp_scale=0.8&vp_host=chrome" in browser_command
@@ -295,6 +308,13 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     assert "window.location.replace" in preparation_state
     assert server.terminated is False
     assert log.closed is True
+    launcher_log = config.log_path.read_text(encoding="utf-8")
+    assert '"event": "cold_launch_started"' in launcher_log
+    assert '"event": "preparing_window_started"' in launcher_log
+    assert '"event": "backend_process_started"' in launcher_log
+    assert '"event": "backend_healthy"' in launcher_log
+    assert '"event": "cold_launch_finished"' in launcher_log
+    assert '"session_count": 0' in launcher_log
 
 
 def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_path: Path) -> None:

@@ -152,6 +152,20 @@ def _projected_assistant_turn(store: SessionStore, session_id: str) -> dict[str,
     return dict(loaded["turns"][-1])
 
 
+def test_startup_project_migration_also_rebuilds_missing_session_metadata(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    project = _project(tmp_path)
+    session = store.create(project)
+    store.save(session)
+    metadata_path = tmp_path / "session_meta" / f"{session['id']}.json"
+    metadata_path.unlink()
+
+    store.migrate_missing_project(project)
+
+    assert metadata_path.is_file()
+    assert [item["session_id"] for item in store.list_recent_sessions(default_project=project)] == [session["id"]]
+
+
 def test_subagent_state_survives_thread_reload_and_late_result_updates_trace(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions")
     session = store.create(_project(tmp_path))

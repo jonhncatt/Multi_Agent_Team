@@ -150,7 +150,6 @@ app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.pa
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 session_store.migrate_missing_project(default_project)
-session_store.rebuild_metadata_index(default_project=default_project)
 
 
 def _attachment_preview_chars_for_model(model: str | None, max_output_tokens: int | None) -> int:

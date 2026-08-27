@@ -44,6 +44,7 @@ const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
 const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
+const APP_UPDATE_INITIAL_DELAY_MS = 30 * 1_000;
 const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
 const DESKTOP_CONTROL_TOKEN = String(window.__VP_DESKTOP_CONTROL_TOKEN__ || "").trim();
 const IS_CHROME_DESKTOP_APP = DESKTOP_HOST === "chrome" && Boolean(DESKTOP_CONTROL_TOKEN);
@@ -5006,8 +5007,10 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (bootState.active) return undefined;
     let disposed = false;
     let lastCheckAt = 0;
+    let initialCheckStarted = false;
     const runUpdateCheck = async (force = false) => {
       if (disposed || document.visibilityState === "hidden") return;
       const now = Date.now();
@@ -5015,18 +5018,22 @@ function App() {
       lastCheckAt = now;
       await checkAppUpdateAvailability();
     };
-    runUpdateCheck(true);
+    const initialTimeoutId = window.setTimeout(() => {
+      initialCheckStarted = true;
+      runUpdateCheck(true);
+    }, APP_UPDATE_INITIAL_DELAY_MS);
     const intervalId = window.setInterval(() => runUpdateCheck(true), APP_UPDATE_CHECK_INTERVAL_MS);
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") runUpdateCheck(false);
+      if (initialCheckStarted && document.visibilityState === "visible") runUpdateCheck(false);
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       disposed = true;
+      window.clearTimeout(initialTimeoutId);
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [bootState.active]);
 
   useEffect(() => {
     if (drawerView === "tasks") refreshTasks();
