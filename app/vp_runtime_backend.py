@@ -315,7 +315,7 @@ class SpawnSubagentArgs(BaseModel):
 class WaitSubagentsArgs(BaseModel):
     subagent_ids: list[str] = Field(
         default_factory=list,
-        description="Subagent ids to collect; omit to collect all children from this turn.",
+        description="Subagent ids to collect from this parent Thread; omit to collect all relevant children.",
     )
     timeout_seconds: float = Field(
         default=30,
@@ -831,13 +831,13 @@ class VPRuntimeBackend:
             ),
             self._StructuredTool.from_function(
                 name="spawn_subagent",
-                description="Start one bounded Subagent task in an isolated context and immediately return its id. Independent tasks can run in parallel. Wait only when the result is required in this turn; late results are published to the parent Thread.",
+                description="Start one bounded Subagent task in an isolated context and immediately return its id. The id remains waitable across later Agent runs in the same parent Thread. Independent tasks can run in parallel.",
                 args_schema=SpawnSubagentArgs,
                 func=self._spawn_subagent_tool,
             ),
             self._StructuredTool.from_function(
                 name="wait_subagents",
-                description="Wait for selected parallel Subagents, or all current Subagents, and collect completed summaries.",
+                description="Wait for selected Subagents from the current or an earlier Agent run in this parent Thread, or all relevant Thread Subagents, and collect saved terminal results.",
                 args_schema=WaitSubagentsArgs,
                 func=self._wait_subagents_tool,
             ),

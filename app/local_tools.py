@@ -4194,7 +4194,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "spawn_subagent",
-                "description": "Start one bounded Subagent task in an isolated context and immediately return its id. Independent Subagents can run in parallel. Call wait_subagents only when the result is required in the current turn; otherwise a late result is published to the parent Thread for a later turn.",
+                "description": "Start one bounded Subagent task in an isolated context and immediately return its id. The id remains waitable across later Agent runs in the same parent Thread. Independent Subagents can run in parallel.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4220,7 +4220,7 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "wait_subagents",
-                "description": "Wait for selected running Subagents, or all current Subagents when ids are omitted, and return completed summaries plus any still-running ids.",
+                "description": "Wait for selected Subagents from the current or an earlier Agent run in this parent Thread, or all relevant Thread Subagents when ids are omitted. Return saved terminal results plus any still-running ids.",
                 "parameters": {
                     "type": "object",
                     "properties": {

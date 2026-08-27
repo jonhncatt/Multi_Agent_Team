@@ -15,6 +15,7 @@ from app.models import ChatSettings, ToolEvent
 from app.runtime_boundary import RuntimeBoundary
 from app.answer_stream_state import new_answer_stream_state
 from app import vintage_programmer_runtime as runtime_module
+from app.thread_subagents import ThreadSubagentManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime
 
 
@@ -1353,6 +1354,7 @@ def test_agent_specs_define_v2_contract_and_tool_guidance() -> None:
     assert "./.venv/bin/python" in tools_doc
     assert ".venv\\Scripts\\python.exe" in tools_doc
     assert "不要假定 `python3`" in tools_doc
+    assert "必须在最终回复前收集该结果" in tools_doc
     assert "update_plan" in agent_doc
     assert "网络信息先用 `web_search` 找来源，再按需用 `web_fetch` 读取正文" in tools_doc
     assert "优先一次 `web_search`，最多再读取一个权威来源" in tools_doc
@@ -2227,6 +2229,245 @@ def test_runtime_successful_parent_does_not_join_uncollected_subagent_and_publis
     assert published_payloads[0]["result"]["summary"] == "Late independent finding."
 
 
+def test_runtime_can_wait_for_and_recollect_subagent_from_an_earlier_agent_run(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    child_started = threading.Event()
+    release_child = threading.Event()
+    wait_called = threading.Event()
+
+    class _BlockingChildBackend(_FakeBackend):
+        def _invoke_chat_with_runner(self, **kwargs: Any):
+            child_started.set()
+            if not release_child.wait(timeout=15):
+                raise AssertionError("test Subagent was not released")
+            return super()._invoke_chat_with_runner(**kwargs)
+
+    class _WaitTrackingTools(_FakeTools):
+        def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if name == "wait_subagents":
+                wait_called.set()
+            return super().execute(name, arguments)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "create_vp_runtime_backend",
+        lambda _config: _BlockingChildBackend([_FakeMessage(content="Cross-run finding.")]),
+    )
+    config = _isolated_config(tmp_path)
+    first_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-cross-run-spawn",
+                        "name": "spawn_subagent",
+                        "args": {
+                            "task": "Investigate across an Agent run boundary.",
+                            "role": "explorer",
+                            "label": "Cross-run investigation",
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="I will continue after the investigation."),
+        ]
+    )
+    first_runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=first_backend,
+    )
+    first_result = first_runtime.run(
+        message="Start the investigation.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-cross-run-subagent",
+            "run_id": "run-before-continue",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+    subagent_item = next(
+        item for item in first_result["activity"]["live_items"] if item.get("type") == "subagent"
+    )
+    subagent_id = str(subagent_item["id"])
+    assert child_started.wait(timeout=5)
+
+    wait_tools = _WaitTrackingTools()
+    second_backend = _FakeBackendWithTools(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-cross-run-wait",
+                        "name": "wait_subagents",
+                        "args": {"subagent_ids": [subagent_id], "timeout_seconds": 30},
+                    }
+                ],
+            ),
+            _FakeMessage(content="Used the earlier Subagent result."),
+        ],
+        wait_tools,
+    )
+    second_runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=second_backend,
+    )
+    holder: dict[str, Any] = {}
+
+    def run_after_continue() -> None:
+        holder["result"] = second_runtime.run(
+            message="继续",
+            settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+            context={
+                "session_id": "s-cross-run-subagent",
+                "run_id": "run-after-continue",
+                "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+                "history_turns": [],
+                "attachments": [],
+            },
+        )
+
+    continuation = threading.Thread(target=run_after_continue)
+    continuation.start()
+    assert wait_called.wait(timeout=5)
+    assert continuation.is_alive()
+    release_child.set()
+    continuation.join(timeout=10)
+    assert not continuation.is_alive()
+    assert holder["result"]["text"] == "Used the earlier Subagent result."
+    wait_payload = json.loads(str(second_backend.invocations[1]["messages"][-1].content))
+    assert wait_payload["ok"] is True
+    assert wait_payload["completed"] is True
+    assert wait_payload["results"][0]["subagent_id"] == subagent_id
+    assert wait_payload["results"][0]["summary"] == "Cross-run finding."
+
+    third_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-cross-run-recollect",
+                        "name": "wait_subagents",
+                        "args": {"subagent_ids": [subagent_id], "timeout_seconds": 0},
+                    }
+                ],
+            ),
+            _FakeMessage(content="The saved result is still available."),
+        ]
+    )
+    third_runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=third_backend,
+    )
+    third_result = third_runtime.run(
+        message="Read the same saved result again.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-cross-run-subagent",
+            "run_id": "run-recollect",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+    assert third_result["text"] == "The saved result is still available."
+    recollected_payload = json.loads(str(third_backend.invocations[1]["messages"][-1].content))
+    assert recollected_payload["ok"] is True
+    assert recollected_payload["results"][0]["summary"] == "Cross-run finding."
+
+
+def test_runtime_returns_explicit_interrupted_status_for_pre_restart_subagent(
+    tmp_path: Path,
+) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    _write_builtin_subagent_spec(agent_dir.parent, "explorer")
+    config = _isolated_config(tmp_path)
+    state_root = config.sessions_dir.parent / "subagents"
+    subagent_id = "run-before-restart:subagent:pending"
+    before_restart = ThreadSubagentManager(state_root, runtime_id="runtime-before-restart")
+    queued_item = {
+        "id": subagent_id,
+        "type": "subagent",
+        "status": "queued",
+        "role": "explorer",
+        "label": "Pending before restart",
+        "task": "Inspect before restart.",
+        "summary": "",
+        "queued_at": 1.0,
+    }
+    before_restart.create(
+        thread_id="s-restarted-subagent",
+        subagent_id=subagent_id,
+        parent_run_id="run-before-restart",
+        role="explorer",
+        item=queued_item,
+        cancel_event=threading.Event(),
+    )
+    assert before_restart.mark_running(
+        thread_id="s-restarted-subagent",
+        subagent_id=subagent_id,
+        item={**queued_item, "status": "inProgress", "started_at": 2.0},
+    ) is True
+
+    after_restart = ThreadSubagentManager(state_root, runtime_id="runtime-after-restart")
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-wait-after-restart",
+                        "name": "wait_subagents",
+                        "args": {"subagent_ids": [subagent_id], "timeout_seconds": 0},
+                    }
+                ],
+            ),
+            _FakeMessage(content="The earlier Subagent was interrupted by restart."),
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=config,
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+        thread_subagent_manager=after_restart,
+    )
+    result = runtime.run(
+        message="继续等待之前的 Subagent。",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-restarted-subagent",
+            "run_id": "run-after-restart",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+
+    assert result["text"] == "The earlier Subagent was interrupted by restart."
+    wait_payload = json.loads(str(backend.invocations[1]["messages"][-1].content))
+    assert wait_payload["ok"] is True
+    assert wait_payload["completed"] is True
+    assert wait_payload["results"][0]["status"] == "interrupted_by_restart"
+    assert wait_payload["results"][0]["error_kind"] == "subagent_interrupted_by_restart"
+
+
 def test_runtime_reports_subagents_as_queued_until_a_worker_actually_starts(
     monkeypatch,
     tmp_path: Path,
@@ -2444,6 +2685,48 @@ def test_runtime_empty_parent_response_cancels_active_subagent_without_waiting(
     ]
     assert "llm.failed" in trace_types
     assert "run.failed" in trace_types
+
+    cancelled_subagent_id = str(subagent_items[0]["id"])
+    lookup_backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "tc-wait-cancelled-subagent",
+                        "name": "wait_subagents",
+                        "args": {
+                            "subagent_ids": [cancelled_subagent_id],
+                            "timeout_seconds": 0,
+                        },
+                    }
+                ],
+            ),
+            _FakeMessage(content="The earlier Subagent was cancelled."),
+        ]
+    )
+    lookup_runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=lookup_backend,
+    )
+    lookup_result = lookup_runtime.run(
+        message="Check the earlier Subagent status.",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        context={
+            "session_id": "s-empty-with-active-subagent",
+            "run_id": "run-after-cancelled-subagent",
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+            "history_turns": [],
+            "attachments": [],
+        },
+    )
+    assert lookup_result["text"] == "The earlier Subagent was cancelled."
+    cancelled_payload = json.loads(str(lookup_backend.invocations[1]["messages"][-1].content))
+    assert cancelled_payload["ok"] is True
+    assert cancelled_payload["results"][0]["status"] == "cancelled"
+    assert cancelled_payload["results"][0]["error_kind"] == "subagent_cancelled"
 
 
 def test_runtime_surfaces_command_execution_pending_approval(tmp_path: Path) -> None:

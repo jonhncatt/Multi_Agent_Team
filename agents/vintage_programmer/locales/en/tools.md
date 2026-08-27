@@ -55,7 +55,7 @@
 
 ## State And User Input Tools
 
-- Use `spawn_subagent` for independent, read-heavy work that benefits from a separate context. Start independent assignments before collecting them so they can run in parallel; then call `wait_subagents` and use the returned summaries. A successful spawn only means the child started, not that its work is complete.
+- Use `spawn_subagent` for independent, read-heavy work that benefits from a separate context. Start independent assignments before collecting them so they can run in parallel; then call `wait_subagents` and use the returned summaries. A successful spawn only means the child started, not that its work is complete. If the current user request depends on a Subagent result, collect it before giving the final response; only explicitly optional background work may remain uncollected.
 - Use `update_plan` only when multi-step task state needs to be maintained; the concrete planning rules live in `agent.md`.
 - Use `request_user_input` only when a key choice, permission, or user-only information is missing.
 - When a tool returns approval, permission, or safety blocking, use the structured channel; do not imply approval in ordinary prose.

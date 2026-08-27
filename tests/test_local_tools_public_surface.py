@@ -80,10 +80,16 @@ def test_public_tool_specs_expose_new_surface_only(tmp_path: Path) -> None:
     }.isdisjoint(tool_names)
     save_task = next(item for item in executor.tool_specs if item.get("name") == "save_task")
     list_tasks = next(item for item in executor.tool_specs if item.get("name") == "list_tasks")
+    spawn_subagent = next(item for item in executor.tool_specs if item.get("name") == "spawn_subagent")
+    wait_subagents = next(item for item in executor.tool_specs if item.get("name") == "wait_subagents")
     assert list_tasks["parameters"]["properties"]["project_scope"]["default"] == "all_projects"
     assert list_tasks["parameters"]["properties"]["detail_level"]["enum"] == ["summary", "full"]
     assert "approval_token" in save_task["parameters"]["properties"]
     assert "review and approve" in str(save_task.get("description") or "")
+    assert "across later Agent runs in the same parent Thread" in str(
+        spawn_subagent.get("description") or ""
+    )
+    assert "current or an earlier Agent run" in str(wait_subagents.get("description") or "")
 
 
 def test_spawn_subagent_delegates_to_runtime_injected_runner(tmp_path: Path) -> None:
