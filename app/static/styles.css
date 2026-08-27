@@ -463,7 +463,47 @@ img.brand-mark {
   display: grid;
   gap: 4px;
   padding: 0 0 4px;
-  max-height: 140px;
+  max-height: none;
+}
+
+.project-rail-section {
+  flex: 0 0 auto;
+  padding-bottom: 0;
+}
+
+.project-thread-resizer {
+  position: relative;
+  flex: 0 0 12px;
+  margin: 0 8px 2px;
+  cursor: row-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.project-thread-resizer::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  left: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--line);
+  transition: height 0.14s ease, background 0.14s ease, transform 0.14s ease;
+}
+
+.project-thread-resizer:hover::before,
+.project-thread-resizer:focus-visible::before,
+body.project-list-resizing .project-thread-resizer::before {
+  height: 3px;
+  background: var(--accent);
+  transform: translateY(-1px);
+}
+
+body.project-list-resizing,
+body.project-list-resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }
 
 .project-row {

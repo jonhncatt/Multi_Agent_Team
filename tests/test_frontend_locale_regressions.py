@@ -2889,6 +2889,22 @@ def test_add_project_dialog_can_open_the_system_folder_picker() -> None:
     assert ".project-folder-picker-btn" in styles
 
 
+def test_project_sidebar_height_is_resizable_and_persisted() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert 'const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";' in script
+    assert "useState(readStoredProjectListHeight)" in script
+    assert "onPointerDown=${startProjectListResize}" in script
+    assert "onKeyDown=${handleProjectListResizeKeyDown}" in script
+    assert "window.localStorage.setItem(PROJECT_LIST_HEIGHT_STORAGE_KEY" in script
+    assert 'role="separator"' in script
+    assert '"projects.resize_handle": "拖动以调整 Project 列表高度；双击恢复默认高度"' in locales
+    assert ".project-thread-resizer" in styles
+    assert "cursor: row-resize" in styles
+
+
 def test_activity_debug_drawer_does_not_surface_phase_timings_as_normal_section() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 

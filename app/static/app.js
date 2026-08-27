@@ -34,6 +34,11 @@ const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
+const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
+const DEFAULT_PROJECT_LIST_HEIGHT = 140;
+const MIN_PROJECT_LIST_HEIGHT = 72;
+const MAX_PROJECT_LIST_HEIGHT = 720;
+const MIN_THREAD_SECTION_HEIGHT = 180;
 const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
@@ -167,6 +172,27 @@ function readStoredThemeColor() {
     window.localStorage.removeItem(THEME_COLOR_STORAGE_KEY);
   }
   return option.id;
+}
+
+function clampProjectListHeight(value, maximum = MAX_PROJECT_LIST_HEIGHT) {
+  const upperBound = Math.max(
+    MIN_PROJECT_LIST_HEIGHT,
+    Math.min(MAX_PROJECT_LIST_HEIGHT, Number(maximum) || MAX_PROJECT_LIST_HEIGHT),
+  );
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_PROJECT_LIST_HEIGHT;
+  return Math.round(Math.max(MIN_PROJECT_LIST_HEIGHT, Math.min(upperBound, numeric)));
+}
+
+function readStoredProjectListHeight() {
+  const raw = window.localStorage.getItem(PROJECT_LIST_HEIGHT_STORAGE_KEY) || "";
+  if (!raw) return DEFAULT_PROJECT_LIST_HEIGHT;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    window.localStorage.removeItem(PROJECT_LIST_HEIGHT_STORAGE_KEY);
+    return DEFAULT_PROJECT_LIST_HEIGHT;
+  }
+  return clampProjectListHeight(value);
 }
 
 function applyThemeColor(value) {
@@ -4307,6 +4333,7 @@ function App() {
   const [projectFormError, setProjectFormError] = useState("");
   const [savingProject, setSavingProject] = useState(false);
   const [choosingProjectFolder, setChoosingProjectFolder] = useState(false);
+  const [projectListHeight, setProjectListHeight] = useState(readStoredProjectListHeight);
   const [projectProfiles, setProjectProfiles] = useState([]);
   const [projectProfileDialog, setProjectProfileDialog] = useState(null);
   const [projectProfileDraft, setProjectProfileDraft] = useState("");
@@ -4357,6 +4384,10 @@ function App() {
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [threadRunIndicators, setThreadRunIndicators] = useState({});
   const fileInputRef = useRef(null);
+  const threadRailRef = useRef(null);
+  const projectListRef = useRef(null);
+  const projectListHeightRef = useRef(projectListHeight);
+  const projectResizeCleanupRef = useRef(null);
   const chatListRef = useRef(null);
   const autoScrollEnabledRef = useRef(true);
   const chatScrollRafRef = useRef(0);
@@ -4663,6 +4694,38 @@ function App() {
 
   useEffect(() => () => {
     if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    projectListHeightRef.current = projectListHeight;
+  }, [projectListHeight]);
+
+  useEffect(() => {
+    const clampToAvailableSpace = () => {
+      const rail = threadRailRef.current;
+      const list = projectListRef.current;
+      if (!rail || !list) return;
+      const railRect = rail.getBoundingClientRect();
+      const listRect = list.getBoundingClientRect();
+      const available = Math.max(
+        MIN_PROJECT_LIST_HEIGHT,
+        railRect.bottom - listRect.top - MIN_THREAD_SECTION_HEIGHT,
+      );
+      const next = clampProjectListHeight(projectListHeightRef.current, available);
+      if (next === projectListHeightRef.current) return;
+      projectListHeightRef.current = next;
+      setProjectListHeight(next);
+      window.localStorage.setItem(PROJECT_LIST_HEIGHT_STORAGE_KEY, String(next));
+    };
+    clampToAvailableSpace();
+    window.addEventListener("resize", clampToAvailableSpace);
+    return () => window.removeEventListener("resize", clampToAvailableSpace);
+  }, []);
+
+  useEffect(() => () => {
+    if (typeof projectResizeCleanupRef.current === "function") {
+      projectResizeCleanupRef.current();
+    }
   }, []);
 
   useEffect(() => {
@@ -6528,6 +6591,81 @@ function App() {
     } finally {
       setChoosingProjectFolder(false);
     }
+  }
+
+  function availableProjectListHeight() {
+    const rail = threadRailRef.current;
+    const list = projectListRef.current;
+    if (!rail || !list) return MAX_PROJECT_LIST_HEIGHT;
+    const railRect = rail.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    return Math.max(
+      MIN_PROJECT_LIST_HEIGHT,
+      railRect.bottom - listRect.top - MIN_THREAD_SECTION_HEIGHT,
+    );
+  }
+
+  function applyProjectListHeight(value, options = {}) {
+    const next = clampProjectListHeight(value, availableProjectListHeight());
+    projectListHeightRef.current = next;
+    setProjectListHeight(next);
+    if (options.persist) {
+      window.localStorage.setItem(PROJECT_LIST_HEIGHT_STORAGE_KEY, String(next));
+    }
+    return next;
+  }
+
+  function startProjectListResize(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    const list = projectListRef.current;
+    if (!list) return;
+    event.preventDefault();
+    event.currentTarget.focus();
+    if (typeof projectResizeCleanupRef.current === "function") {
+      projectResizeCleanupRef.current();
+    }
+    const startY = Number(event.clientY || 0);
+    const startHeight = list.getBoundingClientRect().height || projectListHeightRef.current;
+    const maximum = availableProjectListHeight();
+    let latestHeight = clampProjectListHeight(startHeight, maximum);
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+      document.body.classList.remove("project-list-resizing");
+      if (projectResizeCleanupRef.current === cleanup) {
+        projectResizeCleanupRef.current = null;
+      }
+    };
+    const handlePointerMove = (moveEvent) => {
+      latestHeight = clampProjectListHeight(
+        startHeight + Number(moveEvent.clientY || 0) - startY,
+        maximum,
+      );
+      projectListHeightRef.current = latestHeight;
+      setProjectListHeight(latestHeight);
+    };
+    const finishResize = () => {
+      cleanup();
+      window.localStorage.setItem(PROJECT_LIST_HEIGHT_STORAGE_KEY, String(latestHeight));
+    };
+    projectResizeCleanupRef.current = cleanup;
+    document.body.classList.add("project-list-resizing");
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+  }
+
+  function handleProjectListResizeKeyDown(event) {
+    const step = event.shiftKey ? 64 : 24;
+    let next = null;
+    if (event.key === "ArrowUp") next = projectListHeightRef.current - step;
+    if (event.key === "ArrowDown") next = projectListHeightRef.current + step;
+    if (event.key === "Home") next = MIN_PROJECT_LIST_HEIGHT;
+    if (event.key === "End") next = availableProjectListHeight();
+    if (next === null) return;
+    event.preventDefault();
+    applyProjectListHeight(next, { persist: true });
   }
 
   async function createProjectFromDraft() {
@@ -10899,7 +11037,11 @@ function App() {
   return html`
     <div className="app-root-frame">
     <div className="workspace-shell" id="appShell" aria-hidden=${bootLoadingActive ? "true" : undefined}>
-      <aside className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`} id="threadSidebar">
+      <aside
+        className=${`thread-rail ${mobileThreadsOpen ? "mobile-open" : ""}`}
+        id="threadSidebar"
+        ref=${threadRailRef}
+      >
         <div className="rail-brand">
           <img className="brand-mark" src="/static/assets/vintage_programmer.png" alt="" aria-hidden="true" />
           <div>
@@ -10966,12 +11108,16 @@ function App() {
             `
           : null}
 
-        <section className="rail-section" id="projectSection">
+        <section className="rail-section project-rail-section" id="projectSection">
           <div className="section-head">
             <span>Projects</span>
             <button className="ghost-btn compact-btn" type="button" onClick=${() => setProjectDialogOpen(true)}>${t("buttons.add")}</button>
           </div>
-          <div className="project-list">
+          <div
+            className="project-list"
+            ref=${projectListRef}
+            style=${{ height: `${projectListHeight}px` }}
+          >
                 ${projects.length
                   ? projects.map(
                       (item) => html`
@@ -11002,6 +11148,20 @@ function App() {
               : html`<div className="thread-empty">${t("threads.none")}</div>`}
           </div>
         </section>
+        <div
+          className="project-thread-resizer"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label=${t("projects.resize_handle")}
+          aria-valuemin=${MIN_PROJECT_LIST_HEIGHT}
+          aria-valuemax=${MAX_PROJECT_LIST_HEIGHT}
+          aria-valuenow=${projectListHeight}
+          tabIndex="0"
+          title=${t("projects.resize_handle")}
+          onPointerDown=${startProjectListResize}
+          onKeyDown=${handleProjectListResizeKeyDown}
+          onDoubleClick=${() => applyProjectListHeight(DEFAULT_PROJECT_LIST_HEIGHT, { persist: true })}
+        ></div>
         ${projectMenu
           ? html`
               <div
