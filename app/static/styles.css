@@ -167,7 +167,6 @@ html[data-vp-desktop-shell="true"] .workspace-main {
   gap: 10px;
   height: 64px;
   padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--line);
 }
 
 .rail-brand > div:not(.brand-mark) {
@@ -480,23 +479,6 @@ img.brand-mark {
   cursor: row-resize;
   touch-action: none;
   outline: none;
-}
-
-.project-thread-resizer::before {
-  content: "";
-  position: absolute;
-  top: 5px;
-  right: 4px;
-  left: 4px;
-  height: 1px;
-  background: var(--line);
-  transition: background 0.14s ease;
-}
-
-.project-thread-resizer:hover::before,
-.project-thread-resizer:focus-visible::before,
-body.project-list-resizing .project-thread-resizer::before {
-  background: var(--accent);
 }
 
 body.project-list-resizing,

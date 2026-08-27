@@ -2903,10 +2903,9 @@ def test_project_sidebar_height_is_resizable_and_persisted() -> None:
     assert '"projects.resize_handle": "拖动以调整 Project 列表高度；双击恢复默认高度"' in locales
     assert ".project-thread-resizer" in styles
     assert "cursor: row-resize" in styles
-    resizer_line = styles.split(".project-thread-resizer::before", 1)[1].split("}", 1)[0]
     rail_brand = styles.split(".rail-brand {", 1)[1].split("}", 1)[0]
     workspace_head = styles.split(".workspace-head {", 1)[1].split("}", 1)[0]
-    assert "height: 1px;" in resizer_line
+    assert ".project-thread-resizer::before" not in styles
     assert "flex: 0 0 64px;" in rail_brand
     assert "height: 64px;" in rail_brand
     assert "height: 64px;" in workspace_head
