@@ -9,10 +9,10 @@ from typing import Any
 
 
 _WINDOWS_COMMON_FOLDER_PICKER_SCRIPT = r"""
-Add-Type -AssemblyName System.Windows.Forms
 $source = @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace VPFolderPicker
 {
@@ -35,6 +35,47 @@ namespace VPFolderPicker
     [Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
     internal class FileOpenDialogClass
     {
+    }
+
+    public static class NativeWindow
+    {
+        private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr FindWindow(string className, string windowName);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr window, StringBuilder title, int maxCount);
+
+        public static IntPtr FindVintageProgrammer()
+        {
+            IntPtr exact = FindWindow(null, "Vintage Programmer");
+            if (exact != IntPtr.Zero)
+            {
+                return exact;
+            }
+
+            IntPtr match = IntPtr.Zero;
+            EnumWindows(delegate (IntPtr window, IntPtr parameter)
+            {
+                if (!IsWindowVisible(window)) return true;
+                StringBuilder title = new StringBuilder(512);
+                GetWindowText(window, title, title.Capacity);
+                if (title.ToString().Contains("Vintage Programmer"))
+                {
+                    match = window;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+            return match;
+        }
     }
 
     [ComImport]
@@ -162,22 +203,12 @@ namespace VPFolderPicker
 '@
 
 $exitCode = 2
-$owner = New-Object System.Windows.Forms.Form
-$owner.ShowInTaskbar = $false
-$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
-$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
-$owner.Location = [System.Drawing.Point]::new(-32000, -32000)
-$owner.Size = [System.Drawing.Size]::new(1, 1)
-$owner.Opacity = 0
-$owner.TopMost = $true
 try {
     Add-Type -TypeDefinition $source -Language CSharp
-    $owner.Show()
-    $owner.Activate()
-    $owner.BringToFront()
+    $ownerHandle = [VPFolderPicker.NativeWindow]::FindVintageProgrammer()
     $selected = [VPFolderPicker.CommonFolderDialog]::Show(
         $env:VP_FOLDER_PICKER_INITIAL,
-        $owner.Handle
+        $ownerHandle
     )
     if (-not [String]::IsNullOrWhiteSpace($selected)) {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -187,9 +218,6 @@ try {
 } catch {
     [Console]::Error.WriteLine($_.Exception.ToString())
     $exitCode = 3
-} finally {
-    $owner.Close()
-    $owner.Dispose()
 }
 exit $exitCode
 """

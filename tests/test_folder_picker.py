@@ -33,12 +33,17 @@ def test_windows_folder_picker_returns_selected_directory_without_console(monkey
     assert captured["argv"][0].endswith("powershell.exe")
     assert "-STA" in captured["argv"]
     script = captured["argv"][-1]
-    assert "$owner.TopMost = $true" in script
     assert "FileOpenDialogClass" in script
     assert "PickFolders = 0x00000020" in script
     assert "ForceFileSystem = 0x00000040" in script
     assert "CommonFolderDialog]::Show" in script
-    assert "$owner.Handle" in script
+    assert "NativeWindow]::FindVintageProgrammer()" in script
+    assert "$ownerHandle" in script
+    assert "FindWindow(null, \"Vintage Programmer\")" in script
+    assert "EnumWindows" in script
+    assert "Contains(\"Vintage Programmer\")" in script
+    assert "System.Windows.Forms.Form" not in script
+    assert "TopMost" not in script
     assert "FolderBrowserDialog" not in script
     assert captured["creationflags"] == 0x08000000
     assert captured["env"]["VP_FOLDER_PICKER_INITIAL"] == str(tmp_path.resolve())
