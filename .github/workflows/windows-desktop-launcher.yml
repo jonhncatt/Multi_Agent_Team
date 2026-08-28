@@ -47,10 +47,13 @@ jobs:
           --clean
           --onefile
           --noconsole
-          --icon desktop/windows/assets/vintage_programmer.ico
+          --icon desktop/windows/assets/vintage_programmer_shell.ico
           --add-data "desktop/windows/assets/vintage_programmer.ico;desktop/windows/assets"
           --name VintageProgrammer
           desktop/launcher.py
+
+      - name: Verify Windows Shell can extract the executable icon
+        run: python desktop/windows/verify_executable_icon.py dist/VintageProgrammer.exe
 
       - name: Smoke-test executable configuration
         shell: pwsh

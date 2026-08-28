@@ -8,6 +8,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 CANVAS_SIZE = 1024
 MASTER_FILENAME = "vintage_programmer_master.png"
+SHELL_ICON_FILENAME = "vintage_programmer_shell.ico"
 ICON_PIXEL_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ICON_SIZES = tuple((size, size) for size in ICON_PIXEL_SIZES)
 WEB_ICON_SIZES = (16, 32, 48, 64)
@@ -121,6 +122,17 @@ def write_derived_icons(master: Image.Image, asset_dir: Path) -> None:
         format="ICO",
         append_images=icon_frames[:-1],
         sizes=ICON_SIZES,
+    )
+    # Keep a conservative DIB-encoded variant for the PE icon resource. Some
+    # Windows Shell extensions fail while inspecting PNG-compressed frames
+    # embedded in one-file executables, even though modern Windows supports
+    # those frames in standalone .ico files.
+    icon_frames[-1].save(
+        asset_dir / SHELL_ICON_FILENAME,
+        format="ICO",
+        append_images=icon_frames[:-1],
+        sizes=ICON_SIZES,
+        bitmap_format="bmp",
     )
 
     web_asset_dir = asset_dir.parents[2] / "app" / "static" / "assets"

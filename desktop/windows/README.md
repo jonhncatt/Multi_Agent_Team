@@ -38,6 +38,11 @@ window. That one-time re-pin stores the VP relaunch command and high-resolution
 icon; later launches still go through the EXE so the backend is prepared before
 Chrome App Mode opens.
 
+The executable embeds a conservative multi-size DIB icon for Windows Shell
+compatibility, while the running VP window continues to use the sharper PNG-based
+icon. The Windows build verifies that Shell can extract both large and small EXE
+icons before the launcher is published.
+
 Use the **Exit** button in the top-right navigation to stop active work and the
 local backend before closing. Chrome's ordinary window close cannot reliably
 report its lifecycle to the launcher, so closing with `X` leaves the backend

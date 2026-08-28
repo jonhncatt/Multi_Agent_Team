@@ -88,6 +88,8 @@ Chrome App 需要新启动后台时会先立即显示 `Preparing…`，后台健
 请先取消旧的 EXE 任务栏固定项，启动新版 VP，再右键正在运行的 VP 图标并选择固定到任务栏。
 这是一次性迁移；之后从该图标启动仍会先运行 `VintageProgrammer.exe`，由它准备后台并打开
 `chrome.exe --app=...`，运行窗口应继续停留在同一个任务栏图标下。
+EXE 内嵌图标使用兼容性更高的多尺寸 DIB 格式，运行中的 VP 窗口仍使用清晰的 PNG 图标；
+Windows 构建会在发布前调用 Shell API 验证 EXE 的大、小图标都能正常提取。
 
 Chrome 桌面窗口使用 `app/data/desktop_browser_profile`；Agent 打开 Redmine 等网站所用的
 `VP_BROWSER_USER_DATA_DIR` 保持不变，两个 profile 不能指向同一目录。

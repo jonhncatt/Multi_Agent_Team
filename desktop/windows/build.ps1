@@ -25,10 +25,12 @@ if (-not (Test-Path $Python)) {
     --clean `
     --onefile `
     --noconsole `
-    --icon desktop\windows\assets\vintage_programmer.ico `
+    --icon desktop\windows\assets\vintage_programmer_shell.ico `
     --add-data "desktop\windows\assets\vintage_programmer.ico;desktop\windows\assets" `
     --name VintageProgrammer `
     desktop\launcher.py
+
+& $Python desktop\windows\verify_executable_icon.py dist\VintageProgrammer.exe
 
 Write-Host "Built: $RepoRoot\dist\VintageProgrammer.exe"
 Write-Host "Copy VintageProgrammer.exe into $RepoRoot before double-clicking it."

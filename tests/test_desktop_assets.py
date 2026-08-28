@@ -7,10 +7,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _ico_sizes(payload: bytes) -> set[tuple[int, int]]:
+def _ico_frames(payload: bytes) -> dict[tuple[int, int], str]:
     assert payload[:4] == b"\x00\x00\x01\x00"
     count = int.from_bytes(payload[4:6], "little")
-    sizes: set[tuple[int, int]] = set()
+    frames: dict[tuple[int, int], str] = {}
     for index in range(count):
         entry = payload[6 + (index * 16) : 22 + (index * 16)]
         assert len(entry) == 16
@@ -18,10 +18,15 @@ def _ico_sizes(payload: bytes) -> set[tuple[int, int]]:
         height = entry[1] or 256
         image_size = int.from_bytes(entry[8:12], "little")
         image_offset = int.from_bytes(entry[12:16], "little")
-        assert payload[image_offset : image_offset + 8] == b"\x89PNG\r\n\x1a\n"
         assert image_offset + image_size <= len(payload)
-        sizes.add((width, height))
-    return sizes
+        signature = payload[image_offset : image_offset + 8]
+        if signature == b"\x89PNG\r\n\x1a\n":
+            encoding = "png"
+        else:
+            assert int.from_bytes(signature[:4], "little") >= 40
+            encoding = "dib"
+        frames[(width, height)] = encoding
+    return frames
 
 
 def _png_size(path: Path) -> tuple[int, int]:
@@ -34,6 +39,7 @@ def _png_size(path: Path) -> tuple[int, int]:
 def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     asset_dir = REPO_ROOT / "desktop" / "windows" / "assets"
     icon = (asset_dir / "vintage_programmer.ico").read_bytes()
+    shell_icon = (asset_dir / "vintage_programmer_shell.ico").read_bytes()
     png = (asset_dir / "vintage_programmer.png").read_bytes()
     master = (asset_dir / "vintage_programmer_master.png").read_bytes()
     web_png = (
@@ -66,8 +72,12 @@ def test_windows_build_embeds_multisize_vp_icon_without_webview2() -> None:
     )
     assert icon[:4] == b"\x00\x00\x01\x00"
     assert int.from_bytes(icon[4:6], "little") == 9
-    assert "--icon desktop\\windows\\assets\\vintage_programmer.ico" in build_script
-    assert "--icon desktop/windows/assets/vintage_programmer.ico" in workflow
+    assert shell_icon[:4] == b"\x00\x00\x01\x00"
+    assert int.from_bytes(shell_icon[4:6], "little") == 9
+    assert "--icon desktop\\windows\\assets\\vintage_programmer_shell.ico" in build_script
+    assert "--icon desktop/windows/assets/vintage_programmer_shell.ico" in workflow
+    assert "verify_executable_icon.py dist\\VintageProgrammer.exe" in build_script
+    assert "verify_executable_icon.py dist/VintageProgrammer.exe" in workflow
     assert "Start-Process" in workflow
     assert "-Wait" in workflow
     assert "if ($launcher.ExitCode -ne 0)" in workflow
@@ -80,7 +90,7 @@ def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
     web_asset_dir = REPO_ROOT / "app" / "static" / "assets"
     icon_payload = (asset_dir / "vintage_programmer.ico").read_bytes()
 
-    assert _ico_sizes(icon_payload) == {
+    assert set(_ico_frames(icon_payload)) == {
         (16, 16),
         (20, 20),
         (24, 24),
@@ -95,3 +105,24 @@ def test_windows_icon_contains_native_frames_for_small_taskbar_sizes() -> None:
         assert _png_size(
             web_asset_dir / f"vintage_programmer_{size}.png"
         ) == (size, size)
+
+
+def test_windows_shell_icon_uses_legacy_dib_frames_for_explorer_compatibility() -> None:
+    shell_icon = (
+        REPO_ROOT / "desktop" / "windows" / "assets" / "vintage_programmer_shell.ico"
+    ).read_bytes()
+
+    assert _ico_frames(shell_icon) == {
+        size: "dib"
+        for size in {
+            (16, 16),
+            (20, 20),
+            (24, 24),
+            (32, 32),
+            (40, 40),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        }
+    }
