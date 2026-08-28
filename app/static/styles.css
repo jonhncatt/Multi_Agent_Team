@@ -3585,6 +3585,47 @@ body.project-list-resizing * {
   margin-top: 10px;
 }
 
+.runtime-input-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.runtime-input-option {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  color: var(--ink);
+  text-align: left;
+  border: 1px solid rgba(234, 88, 12, 0.28);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+}
+
+.runtime-input-option:hover:not(:disabled),
+.runtime-input-option.is-selected {
+  border-color: #ea580c;
+  background: rgba(255, 237, 213, 0.88);
+  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.1);
+}
+
+.runtime-input-option:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.runtime-input-option strong {
+  font-size: 12px;
+}
+
+.runtime-input-option small {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .runtime-control-actions {
   display: flex;
   flex-wrap: wrap;

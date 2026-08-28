@@ -3259,6 +3259,21 @@ function runtimeApprovalSubmissionIdentity(threadId, value) {
     : "";
 }
 
+function runtimeInputSubmissionIdentity(threadId, value) {
+  const item = value && typeof value === "object" ? value : {};
+  if (String(item.type || "") !== "request_user_input") return "";
+  const normalizedThreadId = String(threadId || "").trim();
+  const toolCallId = String(item.tool_call_id || "").trim();
+  const questionIds = (Array.isArray(item.questions) ? item.questions : [])
+    .map((question) => String((question && (question.id || question.header || question.question)) || "").trim())
+    .filter(Boolean)
+    .join(":");
+  const inputIdentity = ["request_user_input", toolCallId, questionIds].join(":");
+  return normalizedThreadId && (toolCallId || questionIds)
+    ? `${normalizedThreadId}::${inputIdentity}`
+    : "";
+}
+
 function clearCommandExecutionApprovalState(value) {
   const state = value && typeof value === "object" ? value : {};
   const next = { ...state };
@@ -4350,6 +4365,10 @@ function App() {
   const [modelPresetRefreshMessage, setModelPresetRefreshMessage] = useState("");
   const [approvalSubmittingKeys, setApprovalSubmittingKeys] = useState({});
   const approvalSubmittingKeysRef = useRef({});
+  const [runtimeInputSelectionState, setRuntimeInputSelectionState] = useState({ key: "", answers: {} });
+  const runtimeInputSelectionStateRef = useRef({ key: "", answers: {} });
+  const [runtimeInputSubmittingKeys, setRuntimeInputSubmittingKeys] = useState({});
+  const runtimeInputSubmittingKeysRef = useRef({});
   const [evalForm, setEvalForm] = useState({
     cases: "evals/agent_workflow_cases.json",
     name: "",
@@ -9664,6 +9683,15 @@ function App() {
     && String(activePendingInput.type || "") === "request_user_input"
     && pendingRuntimeQuestions.length
   );
+  const runtimeInputSubmissionKey = hasPendingRuntimeInput
+    ? runtimeInputSubmissionIdentity(sessionId, activePendingInput)
+    : "";
+  const runtimeInputSelections = runtimeInputSelectionState.key === runtimeInputSubmissionKey
+    ? runtimeInputSelectionState.answers
+    : {};
+  const activeRuntimeInputSubmitting = Boolean(
+    runtimeInputSubmissionKey && runtimeInputSubmittingKeys[runtimeInputSubmissionKey],
+  );
   const runtimeAttentionCount = Number(hasCommandApproval) + Number(hasTaskUpdateApproval) + Number(hasPendingRuntimeInput);
   const runtimeInteractionKey = hasCommandApproval
     ? `approval:${String(activePendingApproval.tool_call_id || activePendingApproval.command || "")}`
@@ -9710,6 +9738,22 @@ function App() {
     delete next[key];
     approvalSubmittingKeysRef.current = next;
     setApprovalSubmittingKeys(next);
+  };
+  const claimRuntimeInputSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || runtimeInputSubmittingKeysRef.current[key]) return false;
+    const next = { ...runtimeInputSubmittingKeysRef.current, [key]: true };
+    runtimeInputSubmittingKeysRef.current = next;
+    setRuntimeInputSubmittingKeys(next);
+    return true;
+  };
+  const releaseRuntimeInputSubmission = (submissionKey) => {
+    const key = String(submissionKey || "").trim();
+    if (!key || !runtimeInputSubmittingKeysRef.current[key]) return;
+    const next = { ...runtimeInputSubmittingKeysRef.current };
+    delete next[key];
+    runtimeInputSubmittingKeysRef.current = next;
+    setRuntimeInputSubmittingKeys(next);
   };
   const handleCommandApproval = async (action) => {
     if (!hasCommandApproval) return;
@@ -9777,6 +9821,50 @@ function App() {
       });
     } finally {
       releaseApprovalSubmission(submissionKey);
+    }
+  };
+  const handleRuntimeInputOption = async (question, option) => {
+    if (!hasPendingRuntimeInput || activeRuntimeInputSubmitting) return;
+    const questionId = String(
+      (question && (question.id || question.header || question.question)) || "",
+    ).trim();
+    const optionLabel = String((option && option.label) || "").trim();
+    if (!questionId || !optionLabel) return;
+    const currentSelectionState = runtimeInputSelectionStateRef.current.key === runtimeInputSubmissionKey
+      ? runtimeInputSelectionStateRef.current
+      : { key: runtimeInputSubmissionKey, answers: {} };
+    const nextSelections = { ...currentSelectionState.answers, [questionId]: optionLabel };
+    const nextSelectionState = { key: runtimeInputSubmissionKey, answers: nextSelections };
+    runtimeInputSelectionStateRef.current = nextSelectionState;
+    setRuntimeInputSelectionState(nextSelectionState);
+    const allQuestionsAnswered = pendingRuntimeQuestions.every((item) => {
+      const itemId = String((item && (item.id || item.header || item.question)) || "").trim();
+      return itemId && String(nextSelections[itemId] || "").trim();
+    });
+    if (!allQuestionsAnswered) return;
+    const response = pendingRuntimeQuestions.length === 1
+      ? optionLabel
+      : pendingRuntimeQuestions.map((item) => {
+          const itemId = String((item && (item.id || item.header || item.question)) || "").trim();
+          const itemLabel = String((item && (item.header || item.question || item.id)) || itemId).trim();
+          return `${itemLabel}: ${String(nextSelections[itemId] || "").trim()}`;
+        }).join("\n");
+    const submissionKey = runtimeInputSubmissionKey;
+    if (!claimRuntimeInputSubmission(submissionKey)) return;
+    try {
+      await handleSend(response, {
+        type: "request_user_input",
+        tool_call_id: String(activePendingInput.tool_call_id || "").trim(),
+        response,
+      }, {
+        pendingResumeState: {
+          turn_status: "needs_user_input",
+          pending_user_input: activePendingInput,
+          pending_approval: activePendingApproval,
+        },
+      });
+    } finally {
+      releaseRuntimeInputSubmission(submissionKey);
     }
   };
   const renderTaskApprovalSnapshot = (label, task) => {
@@ -12415,13 +12503,34 @@ function App() {
                                       </div>
                                       <div className="timeline-detail">${item.question || ""}</div>
                                       ${Array.isArray(item.options) && item.options.length
-                                        ? html`<div className="timeline-detail">${item.options.map((option) => option.label).filter(Boolean).join(" / ")}</div>`
+                                        ? html`
+                                            <div className="runtime-input-options" role="group" aria-label=${item.question || item.header || t("runtime_panel.question")}>
+                                              ${item.options.map((option) => {
+                                                const questionId = String(item.id || item.header || item.question || "").trim();
+                                                const optionLabel = String((option && option.label) || "").trim();
+                                                const selected = String(runtimeInputSelections[questionId] || "") === optionLabel;
+                                                return html`
+                                                  <button
+                                                    key=${`${questionId}-${optionLabel}`}
+                                                    className=${`runtime-input-option ${selected ? "is-selected" : ""}`}
+                                                    type="button"
+                                                    aria-pressed=${selected ? "true" : "false"}
+                                                    disabled=${activeRuntimeInputSubmitting || !optionLabel}
+                                                    onClick=${() => handleRuntimeInputOption(item, option)}
+                                                  >
+                                                    <strong>${optionLabel}</strong>
+                                                    ${option.description ? html`<small>${String(option.description)}</small>` : null}
+                                                  </button>
+                                                `;
+                                              })}
+                                            </div>
+                                          `
                                         : null}
                                     </div>
                                   `)}
                                 </div>
                                 <div className="runtime-control-actions">
-                                  <button className="solid-btn" type="button" onClick=${focusRuntimeInput}>${t("runtime_panel.reply_in_composer")}</button>
+                                  <button className="ghost-btn" type="button" onClick=${focusRuntimeInput} disabled=${activeRuntimeInputSubmitting}>${t("runtime_panel.reply_in_composer")}</button>
                                 </div>
                               </div>
                             `

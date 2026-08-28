@@ -946,6 +946,22 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert "border: 2px solid rgba(234, 88, 12, 0.58);" in styles
 
 
+def test_runtime_input_options_can_resume_the_pending_turn_directly() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "function runtimeInputSubmissionIdentity(threadId, value)" in script
+    assert "const handleRuntimeInputOption = async (question, option)" in script
+    assert 'type: "request_user_input"' in script
+    assert "tool_call_id: String(activePendingInput.tool_call_id" in script
+    assert "const allQuestionsAnswered = pendingRuntimeQuestions.every" in script
+    assert 'onClick=${() => handleRuntimeInputOption(item, option)}' in script
+    assert 'className=${`runtime-input-option ${selected ? "is-selected" : ""}`}' in script
+    assert "option.description" in script
+    assert ".runtime-input-options" in styles
+    assert ".runtime-input-option.is-selected" in styles
+
+
 def test_task_update_approval_shows_complete_snapshot_and_resumes_runtime() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
