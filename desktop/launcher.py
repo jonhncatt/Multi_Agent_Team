@@ -518,13 +518,22 @@ def request_local_json(
     return dict(payload)
 
 
-def read_health_payload(url: str, *, timeout_sec: float = 1.0) -> dict[str, object]:
+def _inspect_health_payload(
+    url: str,
+    *,
+    timeout_sec: float = 1.0,
+) -> tuple[dict[str, object], str]:
     try:
         payload = request_local_json(url, timeout_sec=timeout_sec)
-    except LauncherError:
-        return {}
+    except LauncherError as exc:
+        return {}, str(exc)[:500]
     if payload.get("ok") is not True or not payload.get("app_version"):
-        return {}
+        return {}, "Local runtime health response was not ready."
+    return payload, ""
+
+
+def read_health_payload(url: str, *, timeout_sec: float = 1.0) -> dict[str, object]:
+    payload, _error = _inspect_health_payload(url, timeout_sec=timeout_sec)
     return payload
 
 
@@ -540,15 +549,53 @@ def wait_until_healthy(
     timeout_sec: float,
     process: subprocess.Popen[bytes] | None = None,
     probe: Callable[[str], bool] = health_check,
+    diagnostics: dict[str, object] | None = None,
 ) -> bool:
+    attempts = 0
+    failures = 0
+    probe_total_ms = 0
+    probe_max_ms = 0
+    last_error = ""
+    process_exit_code: int | None = None
+
+    def finish(result: bool) -> bool:
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "health_probe_attempts": attempts,
+                    "health_probe_failures": failures,
+                    "health_probe_total_ms": probe_total_ms,
+                    "health_probe_max_ms": probe_max_ms,
+                    "health_last_error": last_error,
+                    "health_process_exit_code": process_exit_code,
+                }
+            )
+        return result
+
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        if probe(url):
-            return True
-        if process is not None and process.poll() is not None:
-            return False
+        attempts += 1
+        probe_started_at = time.monotonic()
+        if probe is health_check:
+            payload, probe_error = _inspect_health_payload(url)
+            healthy = bool(payload)
+        else:
+            healthy = bool(probe(url))
+            probe_error = "" if healthy else "Health probe returned false."
+        probe_ms = _elapsed_ms(probe_started_at)
+        probe_total_ms += probe_ms
+        probe_max_ms = max(probe_max_ms, probe_ms)
+        if healthy:
+            return finish(True)
+        failures += 1
+        last_error = probe_error
+        if process is not None:
+            polled_exit_code = process.poll()
+            if polled_exit_code is not None:
+                process_exit_code = int(polled_exit_code)
+                return finish(False)
         time.sleep(0.25)
-    return False
+    return finish(False)
 
 
 def wait_until_stopped(
@@ -1347,16 +1394,20 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                     pid=getattr(owned_server, "pid", None),
                 )
                 health_wait_started_at = time.monotonic()
-                if not wait_until_healthy(
+                health_diagnostics: dict[str, object] = {}
+                backend_healthy = wait_until_healthy(
                     config.health_url,
                     timeout_sec=config.startup_timeout_sec,
                     process=owned_server,
-                ):
+                    diagnostics=health_diagnostics,
+                )
+                if not backend_healthy:
                     write_launcher_log_event(
                         config,
                         "backend_health_timeout",
                         elapsed_ms=_elapsed_ms(launch_started_at),
                         health_wait_ms=_elapsed_ms(health_wait_started_at),
+                        **health_diagnostics,
                     )
                     failure = f"Vintage Programmer did not start. See the launcher log: {config.log_path}"
                     if chrome_window_started:
@@ -1367,6 +1418,7 @@ def run_desktop(config: DesktopLaunchConfig) -> None:
                     "backend_healthy",
                     elapsed_ms=_elapsed_ms(launch_started_at),
                     health_wait_ms=_elapsed_ms(health_wait_started_at),
+                    **health_diagnostics,
                 )
                 if chrome_window_started:
                     write_chrome_preparation_page(config, state="ready")
@@ -1459,16 +1511,20 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
             )
             process, log_handle = start_server(config)
             health_wait_started_at = time.monotonic()
-            if not wait_until_healthy(
+            health_diagnostics: dict[str, object] = {}
+            backend_healthy = wait_until_healthy(
                 config.health_url,
                 timeout_sec=config.startup_timeout_sec,
                 process=process,
-            ):
+                diagnostics=health_diagnostics,
+            )
+            if not backend_healthy:
                 write_launcher_log_event(
                     config,
                     "restart_health_timeout",
                     elapsed_ms=_elapsed_ms(restart_started_at),
                     health_wait_ms=_elapsed_ms(health_wait_started_at),
+                    **health_diagnostics,
                 )
                 raise LauncherError(
                     f"Vintage Programmer did not restart. See the launcher log: {config.log_path}"
@@ -1478,6 +1534,7 @@ def restart_server_only(config: DesktopLaunchConfig) -> None:
                 "restart_backend_healthy",
                 elapsed_ms=_elapsed_ms(restart_started_at),
                 health_wait_ms=_elapsed_ms(health_wait_started_at),
+                **health_diagnostics,
             )
     except BaseException as exc:
         write_launcher_log_event(

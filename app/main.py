@@ -16,6 +16,10 @@ import time
 from typing import Any, Callable
 import uuid
 
+from app.startup_timing import StartupTimer
+
+_BACKEND_STARTUP_TIMER = StartupTimer()
+
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -117,8 +121,11 @@ from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
 from app.workbench import WorkbenchStore
 
+_BACKEND_STARTUP_TIMER.mark("dependencies_imported")
+
 APP_TITLE = "Vintage Programmer"
 config = load_config()
+_BACKEND_STARTUP_TIMER.mark("config_loaded")
 DEFAULT_CONTEXT_METER_MAX_OUTPUT_TOKENS = int(config.max_output_tokens)
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 AGENT_DIR = REPOSITORY_ROOT / "agents" / "vintage_programmer"
@@ -135,6 +142,7 @@ task_store = TaskStore(config.sessions_dir.parent / "tasks")
 provider_model_catalog = ProviderModelCatalog(
     Path(__file__).resolve().parent / "data" / "runtime" / "provider_models.json"
 )
+_BACKEND_STARTUP_TIMER.mark("stores_initialized")
 vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     agent_dir=AGENT_DIR,
@@ -143,13 +151,19 @@ workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
+_BACKEND_STARTUP_TIMER.mark("runtime_initialized")
 APP_VERSION = "3.1.6A"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
 app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.parent)
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
-session_store.migrate_missing_project(default_project)
+_BACKEND_STARTUP_TIMER.mark("default_project_ready")
+_migrated_session_count = session_store.migrate_missing_project(default_project)
+_BACKEND_STARTUP_TIMER.mark(
+    "session_migration_finished",
+    migrated_session_count=_migrated_session_count,
+)
 
 
 def _attachment_preview_chars_for_model(model: str | None, max_output_tokens: int | None) -> int:
@@ -401,7 +415,12 @@ def _resolve_build_version() -> str:
     return " · ".join(parts)
 
 
+_build_version_started_at = time.monotonic()
 BUILD_VERSION = _resolve_build_version()
+_BACKEND_STARTUP_TIMER.mark(
+    "build_version_resolved",
+    operation_ms=max(0, int(round((time.monotonic() - _build_version_started_at) * 1000))),
+)
 
 
 class AgentRunQueueCancelled(RuntimeError):
@@ -4775,3 +4794,6 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+_BACKEND_STARTUP_TIMER.mark("application_module_ready")

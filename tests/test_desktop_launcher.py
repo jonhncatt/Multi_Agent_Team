@@ -32,6 +32,7 @@ from desktop.launcher import (
     set_windows_process_app_id,
     start_browser,
     validate_chrome_shell_mode,
+    wait_until_healthy,
     wait_until_stopped,
     write_chrome_preparation_page,
     windows_taskbar_relaunch_metadata,
@@ -518,9 +519,25 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     server = _Process()
     log = _Log()
     browser_started: list[tuple[DesktopLaunchConfig, str]] = []
+
+    def _wait_until_healthy(*_args: object, **kwargs: object) -> bool:
+        diagnostics = kwargs.get("diagnostics")
+        assert isinstance(diagnostics, dict)
+        diagnostics.update(
+            {
+                "health_probe_attempts": 3,
+                "health_probe_failures": 2,
+                "health_probe_total_ms": 12,
+                "health_probe_max_ms": 8,
+                "health_last_error": "connection refused",
+                "health_process_exit_code": None,
+            }
+        )
+        return True
+
     monkeypatch.setattr("desktop.launcher.health_check", lambda _url: False)
     monkeypatch.setattr("desktop.launcher.start_server", lambda _config: (server, log))
-    monkeypatch.setattr("desktop.launcher.wait_until_healthy", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("desktop.launcher.wait_until_healthy", _wait_until_healthy)
     monkeypatch.setattr(
         "desktop.launcher.start_browser",
         lambda browser_config, **kwargs: browser_started.append(
@@ -546,6 +563,9 @@ def test_chrome_launch_opens_preparing_page_before_backend_is_ready(
     assert '"event": "backend_healthy"' in launcher_log
     assert '"event": "cold_launch_finished"' in launcher_log
     assert '"session_count": 0' in launcher_log
+    assert '"health_probe_attempts": 3' in launcher_log
+    assert '"health_probe_max_ms": 8' in launcher_log
+    assert '"health_last_error": "connection refused"' in launcher_log
 
 
 def test_chrome_preparing_page_uses_brand_icon_without_translation_prompt(tmp_path: Path) -> None:
@@ -694,6 +714,28 @@ def test_wait_until_stopped_returns_after_backend_becomes_unreachable() -> None:
         timeout_sec=1,
         probe=lambda _url: next(probes),
     ) is True
+
+
+def test_wait_until_healthy_collects_probe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes = iter([False, False, True])
+    diagnostics: dict[str, object] = {}
+    monkeypatch.setattr("desktop.launcher.time.sleep", lambda _seconds: None)
+
+    assert wait_until_healthy(
+        "http://127.0.0.1:8080/api/health",
+        timeout_sec=1,
+        probe=lambda _url: next(probes),
+        diagnostics=diagnostics,
+    ) is True
+
+    assert diagnostics["health_probe_attempts"] == 3
+    assert diagnostics["health_probe_failures"] == 2
+    assert diagnostics["health_last_error"] == "Health probe returned false."
+    assert isinstance(diagnostics["health_probe_total_ms"], int)
+    assert isinstance(diagnostics["health_probe_max_ms"], int)
+    assert diagnostics["health_process_exit_code"] is None
 
 
 def test_restart_server_only_waits_for_shutdown_then_starts_backend(
