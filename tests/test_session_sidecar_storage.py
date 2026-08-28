@@ -159,11 +159,107 @@ def test_startup_project_migration_also_rebuilds_missing_session_metadata(tmp_pa
     store.save(session)
     metadata_path = tmp_path / "session_meta" / f"{session['id']}.json"
     metadata_path.unlink()
+    diagnostics: dict[str, int] = {}
 
-    store.migrate_missing_project(project)
+    store.migrate_missing_project(project, diagnostics=diagnostics)
 
     assert metadata_path.is_file()
     assert [item["session_id"] for item in store.list_recent_sessions(default_project=project)] == [session["id"]]
+    assert diagnostics == {
+        "candidate_session_count": 1,
+        "scanned_session_count": 1,
+        "signature_skipped_session_count": 0,
+        "metadata_rebuilt_session_count": 1,
+        "migration_error_count": 0,
+    }
+
+
+def test_startup_project_migration_skips_current_session_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    project = _project(tmp_path)
+    session = store.create(project)
+    diagnostics: dict[str, int] = {}
+
+    def _unexpected_normalization(*_args, **_kwargs):
+        raise AssertionError("current session JSON must not be parsed during startup migration")
+
+    monkeypatch.setattr(store, "_normalize_session", _unexpected_normalization)
+
+    assert store.migrate_missing_project(project, diagnostics=diagnostics) == 0
+    assert diagnostics == {
+        "candidate_session_count": 1,
+        "scanned_session_count": 0,
+        "signature_skipped_session_count": 1,
+        "metadata_rebuilt_session_count": 0,
+        "migration_error_count": 0,
+    }
+    assert store.session_meta_store.is_current_for_source(
+        str(session["id"]),
+        tmp_path / "sessions" / f"{session['id']}.json",
+    ) is True
+
+
+def test_startup_project_migration_repairs_changed_legacy_session(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    project = _project(tmp_path)
+    session = store.create(project)
+    session_path = tmp_path / "sessions" / f"{session['id']}.json"
+    legacy = json.loads(session_path.read_text(encoding="utf-8"))
+    legacy.pop("project_id", None)
+    legacy.pop("project_title", None)
+    legacy.pop("project_root", None)
+    session_path.write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    diagnostics: dict[str, int] = {}
+
+    assert store.migrate_missing_project(project, diagnostics=diagnostics) == 1
+
+    repaired = json.loads(session_path.read_text(encoding="utf-8"))
+    assert repaired["project_id"] == project["project_id"]
+    assert repaired["project_title"] == project["title"]
+    assert repaired["project_root"] == project["root_path"]
+    assert diagnostics["scanned_session_count"] == 1
+    assert diagnostics["signature_skipped_session_count"] == 0
+    assert diagnostics["migration_error_count"] == 0
+    assert store.session_meta_store.is_current_for_source(str(session["id"]), session_path) is True
+
+
+def test_startup_project_migration_rescans_old_signature_version(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    project = _project(tmp_path)
+    session = store.create(project)
+    session_path = tmp_path / "sessions" / f"{session['id']}.json"
+    metadata_path = tmp_path / "session_meta" / f"{session['id']}.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["_storage"]["migration_version"] = 0
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    diagnostics: dict[str, int] = {}
+
+    assert store.migrate_missing_project(project, diagnostics=diagnostics) == 0
+
+    assert diagnostics["scanned_session_count"] == 1
+    assert diagnostics["metadata_rebuilt_session_count"] == 1
+    assert store.session_meta_store.is_current_for_source(str(session["id"]), session_path) is True
+
+
+def test_startup_project_migration_rescans_old_thread_schema_signature(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    project = _project(tmp_path)
+    session = store.create(project)
+    session_path = tmp_path / "sessions" / f"{session['id']}.json"
+    metadata_path = tmp_path / "session_meta" / f"{session['id']}.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["_storage"]["thread_record_schema_version"] = 0
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    diagnostics: dict[str, int] = {}
+
+    assert store.migrate_missing_project(project, diagnostics=diagnostics) == 0
+
+    assert diagnostics["scanned_session_count"] == 1
+    assert diagnostics["metadata_rebuilt_session_count"] == 1
+    assert store.session_meta_store.is_current_for_source(str(session["id"]), session_path) is True
 
 
 def test_subagent_state_survives_thread_reload_and_late_result_updates_trace(tmp_path: Path) -> None:

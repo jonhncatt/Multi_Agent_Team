@@ -38,6 +38,8 @@ from app.turn_trace import build_turn_trace, normalize_turn_trace
 
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
+# Increment when startup normalization changes outside the Thread schema versions.
+SESSION_STARTUP_MIGRATION_VERSION = 1
 _ACTIVITY_HEAVY_KEYS = {
     "llm_exchanges",
     "trace_events",
@@ -347,11 +349,65 @@ class SessionMetaStore:
     def display_title_for_session(session: dict[str, Any]) -> str:
         return str(SessionMetaStore.metadata_from_session(session).get("title") or "").strip()
 
-    def save_session(self, session: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _source_signature(source_path: Path) -> dict[str, int]:
+        try:
+            stat = source_path.stat()
+        except OSError:
+            return {}
+        return {
+            "mtime_ns": int(stat.st_mtime_ns),
+            "size": int(stat.st_size),
+        }
+
+    def is_current_for_source(
+        self,
+        session_id: str,
+        source_path: Path,
+        *,
+        migration_version: int = SESSION_STARTUP_MIGRATION_VERSION,
+    ) -> bool:
+        source_signature = self._source_signature(source_path)
+        if not source_signature:
+            return False
+        meta = self.load(session_id)
+        storage_state = meta.get("_storage") if isinstance(meta, dict) else None
+        if not isinstance(storage_state, dict):
+            return False
+        try:
+            return (
+                int(storage_state.get("migration_version") or 0) >= int(migration_version)
+                and int(storage_state.get("thread_record_schema_version") or 0)
+                >= THREAD_RECORD_SCHEMA_VERSION
+                and int(storage_state.get("thread_transcript_schema_version") or 0)
+                >= THREAD_TRANSCRIPT_SCHEMA_VERSION
+                and int(storage_state.get("source_mtime_ns") or -1) == source_signature["mtime_ns"]
+                and int(storage_state.get("source_size") or -1) == source_signature["size"]
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def save_session(
+        self,
+        session: dict[str, Any],
+        *,
+        source_path: Path | None = None,
+        migration_version: int = SESSION_STARTUP_MIGRATION_VERSION,
+    ) -> dict[str, Any]:
         meta = self.metadata_from_session(session)
         sid = str(meta.get("session_id") or "").strip()
         if not sid:
             return meta
+        if source_path is not None:
+            source_signature = self._source_signature(source_path)
+            if source_signature:
+                meta["_storage"] = {
+                    "migration_version": int(migration_version),
+                    "thread_record_schema_version": THREAD_RECORD_SCHEMA_VERSION,
+                    "thread_transcript_schema_version": THREAD_TRANSCRIPT_SCHEMA_VERSION,
+                    "source_mtime_ns": source_signature["mtime_ns"],
+                    "source_size": source_signature["size"],
+                }
         target = self._path(sid)
         tmp_path = target.with_suffix(".json.tmp")
         with self._lock:
@@ -1253,7 +1309,7 @@ class SessionStore:
             tmp_path = path.with_suffix(".json.tmp")
             tmp_path.write_text(json.dumps(encoded, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp_path.replace(path)
-            self.session_meta_store.save_session(encoded)
+            self.session_meta_store.save_session(encoded, source_path=path)
 
     def update_pinned(self, session_id: str, pinned: bool) -> dict[str, Any] | None:
         """Atomically update a Thread's pin preference without moving its activity clock."""
@@ -1274,7 +1330,7 @@ class SessionStore:
             tmp_path = path.with_suffix(".json.tmp")
             tmp_path.write_text(json.dumps(encoded, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp_path.replace(path)
-            return self.session_meta_store.save_session(encoded)
+            return self.session_meta_store.save_session(encoded, source_path=path)
 
     def mark_activity(self, session: dict[str, Any], *, kind: str, at: str = "") -> dict[str, Any]:
         """Advance the stable Thread ordering clock for one meaningful event."""
@@ -1415,7 +1471,7 @@ class SessionStore:
             if changed:
                 self.save(normalized, touch=False)
             else:
-                self.session_meta_store.save_session(normalized)
+                self.session_meta_store.save_session(normalized, source_path=path)
             rebuilt += 1
         return rebuilt
 
@@ -1436,7 +1492,7 @@ class SessionStore:
                     self.save(normalized, touch=False)
                     stats["migrated_sessions"] = int(stats.get("migrated_sessions") or 0) + 1
                 else:
-                    self.session_meta_store.save_session(normalized)
+                    self.session_meta_store.save_session(normalized, source_path=path)
                     stats["skipped"] = int(stats.get("skipped") or 0) + 1
                 stats["migrated_turns"] = int(stats.get("migrated_turns") or 0) + int(session_repair.get("migrated_turns") or 0)
                 stats["backfilled_turns"] = int(stats.get("backfilled_turns") or 0) + int(session_repair.get("backfilled_turns") or 0)
@@ -1451,20 +1507,46 @@ class SessionStore:
                 )
         return stats
 
-    def migrate_missing_project(self, default_project: dict[str, Any]) -> int:
+    def migrate_missing_project(
+        self,
+        default_project: dict[str, Any],
+        *,
+        diagnostics: dict[str, int] | None = None,
+    ) -> int:
         migrated = 0
-        for path in sorted(self.sessions_dir.glob("*.json")):
+        scanned = 0
+        signature_skipped = 0
+        metadata_rebuilt = 0
+        errors = 0
+        paths = sorted(self.sessions_dir.glob("*.json"))
+        for path in paths:
+            if self.session_meta_store.is_current_for_source(path.stem, path):
+                signature_skipped += 1
+                continue
+            scanned += 1
             try:
                 with self._lock:
                     payload = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
+                errors += 1
                 continue
             normalized, changed = self._normalize_session(payload, default_project=default_project)
             if not changed:
-                self.session_meta_store.save_session(normalized)
+                self.session_meta_store.save_session(normalized, source_path=path)
+                metadata_rebuilt += 1
                 continue
             self.save(normalized, touch=False)
             migrated += 1
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "candidate_session_count": len(paths),
+                    "scanned_session_count": scanned,
+                    "signature_skipped_session_count": signature_skipped,
+                    "metadata_rebuilt_session_count": metadata_rebuilt,
+                    "migration_error_count": errors,
+                }
+            )
         return migrated
 
 

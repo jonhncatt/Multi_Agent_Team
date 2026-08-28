@@ -147,11 +147,12 @@ vintage_programmer_runtime = VintageProgrammerRuntime(
     config=config,
     agent_dir=AGENT_DIR,
 )
+_BACKEND_STARTUP_TIMER.mark("agent_runtime_initialized")
 workbench_store = WorkbenchStore(
     config=config,
     agent_dir=AGENT_DIR,
 )
-_BACKEND_STARTUP_TIMER.mark("runtime_initialized")
+_BACKEND_STARTUP_TIMER.mark("workbench_initialized")
 APP_VERSION = "3.1.6A"
 DESKTOP_CONTROL_TOKEN_PATH = Path(__file__).resolve().parent / "data" / "runtime" / "desktop-control-token"
 DESKTOP_EXIT_GRACE_SEC = 5.0
@@ -159,10 +160,15 @@ app_update_manager = AppUpdateManager(app_dir=Path(__file__).resolve().parent.pa
 APP_STARTED_AT = time.monotonic()
 default_project = project_store.ensure_default_project()
 _BACKEND_STARTUP_TIMER.mark("default_project_ready")
-_migrated_session_count = session_store.migrate_missing_project(default_project)
+_session_migration_diagnostics: dict[str, int] = {}
+_migrated_session_count = session_store.migrate_missing_project(
+    default_project,
+    diagnostics=_session_migration_diagnostics,
+)
 _BACKEND_STARTUP_TIMER.mark(
     "session_migration_finished",
     migrated_session_count=_migrated_session_count,
+    **_session_migration_diagnostics,
 )
 
 
