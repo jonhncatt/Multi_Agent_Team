@@ -505,6 +505,35 @@ class _ResumableCommandApprovalRuntime(_PendingCommandApprovalRuntime):
         return result
 
 
+class _PersistThenFailApprovalRuntime(_PendingCommandApprovalRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        response = dict(context.get("user_input_response") or {})
+        if str(response.get("type") or "") != "command_execution":
+            return super().run(
+                message=message,
+                settings=settings,
+                context=context,
+                progress_cb=progress_cb,
+            )
+        persist = context.get("persist_resolved_pending_tool_result")
+        assert callable(persist)
+        assert persist(
+            item={
+                "role": "tool",
+                "content": json.dumps(
+                    {
+                        "ok": True,
+                        "command_execution_approved": {"approved": True},
+                        "summary": "Command completed before a later runtime failure.",
+                    }
+                ),
+                "tool_call_id": "approval-tool-call",
+                "name": "exec_command",
+            }
+        )
+        raise RuntimeError("simulated failure after resolved tool persistence")
+
+
 class _FailedResultVintageRuntime(_FakeVintageRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         _ = (message, settings)
@@ -2716,6 +2745,343 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     assert "user_declined" in transcript_items[2]["content"]
     assert not any("command_execution_cancelled" in str(item.get("content") or "") for item in transcript_items)
     assert session["pending_interaction"] == {}
+
+
+def test_late_subagent_result_waits_behind_pending_approval(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _ResumableCommandApprovalRuntime())
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "运行这条命令并等待后台调查",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    payload = first.json()
+    session_id = payload["session_id"]
+    pending = main_app.session_store.load(session_id)
+    assert pending is not None
+    logical_turn_id = str(pending["pending_interaction"]["turn"]["turn_id"])
+
+    assert main_app._persist_background_subagent_result(
+        session_id=session_id,
+        logical_turn_id=logical_turn_id,
+        item={
+            "id": "subagent-late-approval",
+            "status": "completed",
+            "role": "explorer",
+            "label": "Late result",
+            "summary": "Background evidence arrived while approval was pending.",
+        },
+        result={
+            "subagent_id": "subagent-late-approval",
+            "status": "completed",
+            "role": "explorer",
+            "label": "Late result",
+            "summary": "Background evidence arrived while approval was pending.",
+        },
+    )
+    waiting = main_app.session_store.load(session_id)
+    assert waiting is not None
+    assert len(waiting["thread_transcript"]["deferred_items"]) == 1
+    assert [item["role"] for item in waiting["thread_transcript"]["items"]] == [
+        "user",
+        "assistant",
+    ]
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "取消执行 Python",
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "cancel",
+                "tool_call_id": "approval-tool-call",
+            },
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert second.status_code == 200
+    resolved = main_app.session_store.load(session_id)
+    assert resolved is not None
+    assert resolved["thread_transcript"]["deferred_items"] == []
+    transcript_items = resolved["thread_transcript"]["items"]
+    assert [item["role"] for item in transcript_items] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    assert transcript_items[3]["model_only"] is True
+    assert "Background evidence" in transcript_items[3]["content"]
+    assert resolved["pending_interaction"] == {}
+
+
+def test_plain_message_cannot_interleave_pending_command_approval(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _PendingCommandApprovalRuntime())
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "运行这条命令",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+
+    blocked = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "停止",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["kind"] == "pending_interaction_requires_decision"
+    session = main_app.session_store.load(session_id)
+    assert session is not None
+    assert [item["role"] for item in session["thread_transcript"]["items"]] == [
+        "user",
+        "assistant",
+    ]
+    assert session["thread_transcript"]["deferred_items"] == []
+
+
+def test_resolved_approval_result_survives_later_runtime_failure(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _PersistThenFailApprovalRuntime())
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "运行这条命令",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+
+    failed_after_result = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "批准",
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "approve_once",
+                "tool_call_id": "approval-tool-call",
+                "approval_token": "approval-token",
+            },
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert failed_after_result.status_code == 500
+
+    session = main_app.session_store.load(session_id)
+    assert session is not None
+    assert session["pending_interaction"] == {}
+    tool_results = [
+        item
+        for item in session["thread_transcript"]["items"]
+        if item["role"] == "tool" and item.get("tool_call_id") == "approval-tool-call"
+    ]
+    assert len(tool_results) == 1
+    assert "Command completed" in tool_results[0]["content"]
+
+    repeated = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "再次批准",
+            "user_input_response": {
+                "type": "command_execution",
+                "action": "approve_once",
+                "tool_call_id": "approval-tool-call",
+                "approval_token": "approval-token",
+            },
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"]["kind"] == "pending_interaction_changed"
+
+
+def test_reported_interleaving_is_repaired_without_losing_messages(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["thread_transcript"] = {
+        "schema_version": 2,
+        "items": [
+            {
+                "id": "assistant-five-calls",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": f"call-{index}", "name": "read_file", "args": {}}
+                    for index in range(1, 5)
+                ]
+                + [
+                    {
+                        "id": "call-approval",
+                        "name": "exec_command",
+                        "args": {"cmd": "python -c \"print('x')\""},
+                    }
+                ],
+            },
+            *[
+                {
+                    "id": f"tool-{index}",
+                    "role": "tool",
+                    "content": "ok",
+                    "tool_call_id": f"call-{index}",
+                    "name": "read_file",
+                }
+                for index in range(1, 5)
+            ],
+            {
+                "id": "late-subagent",
+                "role": "user",
+                "content": "[background_subagent_result]late[/background_subagent_result]",
+                "model_only": True,
+            },
+            {"id": "stop-message", "role": "user", "content": "停止"},
+        ],
+    }
+    session["pending_interaction"] = {
+        "type": "command_execution",
+        "turn": {
+            "type": "command_execution",
+            "turn_id": "turn-reported",
+            "tool_call_id": "call-approval",
+            "tool_call": {
+                "id": "call-approval",
+                "name": "exec_command",
+                "args": {"cmd": "python -c \"print('x')\""},
+            },
+        },
+        "approval": {"type": "command_execution", "tool_call_id": "call-approval"},
+        "user_input": {},
+    }
+
+    repair = main_app._repair_thread_tool_transaction(session)
+
+    assert repair["retained_pending_tool_call_id"] == "call-approval"
+    assert repair["closed_tool_call_ids"] == []
+    assert [item["role"] for item in session["thread_transcript"]["items"]] == [
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+        "tool",
+    ]
+    assert [item["id"] for item in session["thread_transcript"]["deferred_items"]] == [
+        "late-subagent",
+        "stop-message",
+    ]
+
+    main_app.session_store.append_thread_items(
+        session,
+        [
+            {
+                "role": "tool",
+                "content": "cancelled",
+                "tool_call_id": "call-approval",
+                "name": "exec_command",
+            }
+        ],
+    )
+    assert session["thread_transcript"]["deferred_items"] == []
+    assert [item["id"] for item in session["thread_transcript"]["items"][-2:]] == [
+        "late-subagent",
+        "stop-message",
+    ]
+
+
+def test_orphaned_open_tool_batch_gets_explicit_interruption_result(monkeypatch, tmp_path: Path) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    session = main_app.session_store.create(main_app.project_store.ensure_default_project())
+    session["thread_transcript"] = {
+        "schema_version": 3,
+        "items": [
+            {
+                "id": "assistant-orphan",
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call-orphan", "name": "exec_command", "args": {}}
+                ],
+            }
+        ],
+        "deferred_items": [
+            {"id": "after-orphan", "role": "user", "content": "continue"}
+        ],
+    }
+    session["pending_interaction"] = {}
+
+    repair = main_app._repair_thread_tool_transaction(session)
+
+    assert repair["closed_tool_call_ids"] == ["call-orphan"]
+    assert session["thread_transcript"]["deferred_items"] == []
+    assert [item["role"] for item in session["thread_transcript"]["items"]] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert "may have executed" in session["thread_transcript"]["items"][1]["content"]
 
 
 def test_legacy_command_approval_placeholder_migrates_to_pending_turn() -> None:

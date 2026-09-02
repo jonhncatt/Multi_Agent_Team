@@ -3291,6 +3291,95 @@ def test_runtime_declined_command_resumes_with_one_tool_result_and_no_human_mess
     assert result["pending_turn"] == {}
 
 
+def test_runtime_releases_deferred_subagent_result_after_pending_tool_result(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    agent_spec = agent_dir / "agent.md"
+    agent_spec.write_text(
+        agent_spec.read_text(encoding="utf-8").replace("tool_scope: read_only", "tool_scope: all"),
+        encoding="utf-8",
+    )
+    tools = _ApprovedCommandTools()
+    backend = _FakeBackendWithTools([_FakeMessage(content="Used the late result.")], tools)
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+    persisted_items: list[dict[str, Any]] = []
+    context = {
+        "session_id": "s-command-deferred",
+        "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+        "thread_transcript": {
+            "schema_version": 3,
+            "items": [
+                {"role": "user", "content": "run risky command"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc-deferred",
+                            "name": "exec_command",
+                            "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+                        }
+                    ],
+                },
+            ],
+            "deferred_items": [
+                {
+                    "id": "late-subagent",
+                    "role": "user",
+                    "content": "[background_subagent_result]late evidence[/background_subagent_result]",
+                    "model_only": True,
+                }
+            ],
+        },
+        "pending_turn": {
+            "schema_version": 1,
+            "type": "command_execution",
+            "turn_id": "turn-original",
+            "request_message": "run risky command",
+            "tool_call_id": "tc-deferred",
+            "tool_call": {
+                "id": "tc-deferred",
+                "name": "exec_command",
+                "args": {"cmd": "python -c \"print('x')\"", "cwd": str(tmp_path)},
+            },
+        },
+        "user_input_response": {
+            "type": "command_execution",
+            "action": "cancel",
+            "tool_call_id": "tc-deferred",
+        },
+        "persist_resolved_pending_tool_result": lambda *, item: persisted_items.append(dict(item)) or True,
+        "attachments": [],
+    }
+
+    result = runtime.run(
+        message="run risky command",
+        settings=ChatSettings(model="gpt-test", enable_tools=True, permission_profile="full_dev"),
+        context=context,
+    )
+
+    sent_messages = backend.invocations[0]["messages"]
+    tool_index = next(
+        index
+        for index, item in enumerate(sent_messages)
+        if isinstance(item, _FakeToolMessage) and item.tool_call_id == "tc-deferred"
+    )
+    deferred_index = next(
+        index
+        for index, item in enumerate(sent_messages)
+        if isinstance(item, _FakeHumanMessage) and "late evidence" in item.content
+    )
+    assert tool_index < deferred_index
+    assert len(persisted_items) == 1
+    assert persisted_items[0]["tool_call_id"] == "tc-deferred"
+    assert result["turn_status"] == "completed"
+
+
 def test_runtime_request_user_input_pauses_and_resumes_the_same_turn(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

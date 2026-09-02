@@ -79,7 +79,11 @@ from app.tool_trace_summary import (
     summarize_tool_result,
     validate_tool_arguments,
 )
-from app.thread_transcript import normalize_transcript_item, transcript_items_after_compaction
+from app.thread_transcript import (
+    normalize_thread_transcript,
+    normalize_transcript_item,
+    transcript_items_after_compaction,
+)
 from app.thread_titles import build_thread_title_messages, sanitize_generated_thread_title
 from app.tool_failures import classify_tool_failure, failure_key
 from app.trace_events import make_activity_event, make_trace_event
@@ -695,6 +699,31 @@ class VintageProgrammerRuntime:
                     )
                 )
         return summary, messages
+
+    def _deferred_thread_messages(self, context: dict[str, Any]) -> list[Any]:
+        transcript = normalize_thread_transcript(
+            context.get("thread_transcript")
+            if isinstance(context.get("thread_transcript"), dict)
+            else {}
+        )
+        deferred_items = [
+            dict(item)
+            for item in list(transcript.get("deferred_items") or [])
+            if isinstance(item, dict)
+        ]
+        if not deferred_items:
+            return []
+        _, messages = self._thread_messages(
+            {
+                "thread_transcript": {
+                    "schema_version": transcript.get("schema_version"),
+                    "items": deferred_items,
+                    "deferred_items": [],
+                },
+                "compaction_status": {},
+            }
+        )
+        return messages
 
     @staticmethod
     def _transcript_delta(
@@ -4620,6 +4649,11 @@ class VintageProgrammerRuntime:
             project_contract_text = self._load_project_contract_text(project_context)
         with phase_timer.measure("runtime_thread_replay_ms"):
             thread_summary, replay_messages = self._thread_messages(context_payload)
+            deferred_replay_messages = (
+                self._deferred_thread_messages(context_payload)
+                if is_turn_resume
+                else []
+            )
         with phase_timer.measure("runtime_render_messages_ms"):
             runtime_context_text = self._render_runtime_context(
                 turn_runtime_boundary,
@@ -4725,6 +4759,30 @@ class VintageProgrammerRuntime:
             if not is_turn_resume:
                 messages.append(self._backend._HumanMessage(content=visible_request))
             turn_transcript_messages: list[Any] = []
+
+        def persist_and_release_pending_tool_result(tool_message: Any) -> None:
+            callback = context_payload.get("persist_resolved_pending_tool_result")
+            if callable(callback):
+                item = normalize_transcript_item(
+                    {
+                        "role": "tool",
+                        "content": getattr(tool_message, "content", ""),
+                        "turn_id": logical_turn_id,
+                        "tool_call_id": self._tool_message_call_id(tool_message),
+                        "name": str(getattr(tool_message, "name", "") or "unknown_tool"),
+                    }
+                )
+                if item is None:
+                    raise RuntimeError("resolved pending tool result could not be serialized")
+                try:
+                    persisted = callback(item=item)
+                except TypeError:
+                    persisted = callback(item)
+                if persisted is False:
+                    raise RuntimeError("resolved pending tool result could not be persisted")
+            if deferred_replay_messages:
+                messages.extend(deferred_replay_messages)
+                deferred_replay_messages.clear()
 
         usage_total = self._backend._empty_usage()
         latest_call_usage = self._backend._empty_usage()
@@ -5814,6 +5872,7 @@ class VintageProgrammerRuntime:
                 )
                 messages.append(approval_tool_message)
                 turn_transcript_messages.append(approval_tool_message)
+                persist_and_release_pending_tool_result(approval_tool_message)
             elif approval_action in {"approve_once", "approve_thread"}:
                 approval_arguments = {
                     **pending_arguments,
@@ -5881,18 +5940,11 @@ class VintageProgrammerRuntime:
                 )
                 tool_events.append(approval_event)
                 if bool(approval_result.get("approval_required")):
-                    pending_approval = dict(approval_result.get("approval_request") or {})
-                    pending_approval["tool_call_id"] = approval_call_id
-                    pending_user_input = {
-                        "summary": str(approval_result.get("summary") or "Command execution still requires approval."),
-                        "approval_request": pending_approval,
-                        "questions": [],
-                    }
-                    turn_status = "needs_user_input"
-                    pending_turn = {
-                        **pending_turn_context,
-                        "approval_request": dict(pending_approval),
-                    }
+                    # A decision resolves the original tool call exactly once.
+                    # Token rejection is returned to the model as that call's
+                    # terminal error; it must not reopen the same call id and
+                    # create another approval card.
+                    notes.append("approval.rejected:command_execution_token")
                 approval_trace_payload = {
                     "tool_name": "exec_command",
                     "command": approval_command,
@@ -5928,6 +5980,7 @@ class VintageProgrammerRuntime:
                 )
                 messages.append(approval_tool_message)
                 turn_transcript_messages.append(approval_tool_message)
+                persist_and_release_pending_tool_result(approval_tool_message)
             else:
                 raise RuntimeError(f"unsupported command approval action: {approval_action or '(empty)'}")
         elif str(user_input_response.get("type") or "").strip() == "task_update":
@@ -5997,18 +6050,7 @@ class VintageProgrammerRuntime:
                     approval_result = self._structured_tool_error_result("save_task", exc)
                 duration_ms = max(0, int((time.monotonic() - started_at) * 1000))
                 if bool(approval_result.get("approval_required")):
-                    pending_approval = dict(approval_result.get("approval_request") or {})
-                    pending_approval["tool_call_id"] = approval_call_id
-                    pending_user_input = {
-                        "summary": str(approval_result.get("summary") or "Task update still requires approval."),
-                        "approval_request": pending_approval,
-                        "questions": [],
-                    }
-                    turn_status = "needs_user_input"
-                    pending_turn = {
-                        **pending_turn_context,
-                        "approval_request": dict(pending_approval),
-                    }
+                    notes.append("approval.rejected:task_update_token")
                 approved = bool(approval_result.get("task_update_approved"))
                 trace_type = "approval.approved" if approved else "approval.rejected"
                 trace_title = "Task update approved" if approved else "Task update approval rejected"
@@ -6061,6 +6103,7 @@ class VintageProgrammerRuntime:
             )
             messages.append(approval_tool_message)
             turn_transcript_messages.append(approval_tool_message)
+            persist_and_release_pending_tool_result(approval_tool_message)
         elif str(user_input_response.get("type") or "").strip() == "request_user_input":
             pending_tool_call = (
                 dict(pending_turn_context.get("tool_call") or {})
@@ -6111,6 +6154,7 @@ class VintageProgrammerRuntime:
             )
             messages.append(input_tool_message)
             turn_transcript_messages.append(input_tool_message)
+            persist_and_release_pending_tool_result(input_tool_message)
             notes.append("user_input.supplied:request_user_input")
             self._emit_trace(
                 progress_cb,

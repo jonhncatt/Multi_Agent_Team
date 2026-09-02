@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 import json
 from typing import Any, Iterable
 import uuid
 
 
-THREAD_TRANSCRIPT_SCHEMA_VERSION = 2
+THREAD_TRANSCRIPT_SCHEMA_VERSION = 3
 _ROLES = {"user", "assistant", "tool"}
 _TURN_CHANGE_FILE_LIMIT = 64
 _TURN_CHANGE_PATH_LIMIT = 1000
@@ -241,7 +242,87 @@ def default_thread_transcript() -> dict[str, Any]:
     return {
         "schema_version": THREAD_TRANSCRIPT_SCHEMA_VERSION,
         "items": [],
+        "deferred_items": [],
     }
+
+
+def _pending_tool_calls_after(items: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return the open tool-call batch at the end of a canonical transcript."""
+    pending: dict[str, dict[str, Any]] = {}
+    for item in list(items or []):
+        role = str(item.get("role") or "")
+        if pending:
+            if role != "tool":
+                break
+            tool_call_id = str(item.get("tool_call_id") or "").strip()
+            if tool_call_id not in pending:
+                break
+            pending.pop(tool_call_id, None)
+            continue
+        if role != "assistant":
+            continue
+        for call in list(item.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            call_id = str(call.get("id") or "").strip()
+            if call_id:
+                pending[call_id] = dict(call)
+    return pending
+
+
+def _append_with_tool_barrier(
+    canonical: list[dict[str, Any]],
+    deferred: list[dict[str, Any]],
+    incoming: Iterable[dict[str, Any]],
+) -> None:
+    """Append transcript items without interleaving messages into a tool batch.
+
+    An Assistant message containing tool calls opens a protocol transaction.
+    Until every matching Tool message arrives, unrelated model-visible messages
+    are retained in a FIFO mailbox.  Closing the batch flushes that mailbox at
+    the first valid model boundary.
+    """
+    pending = _pending_tool_calls_after(canonical)
+    completed_tool_call_ids = {
+        str(item.get("tool_call_id") or "").strip()
+        for item in canonical
+        if str(item.get("role") or "") == "tool"
+        and str(item.get("tool_call_id") or "").strip()
+    }
+    queue = deque(dict(item) for item in list(incoming or []))
+    while queue:
+        item = queue.popleft()
+        role = str(item.get("role") or "")
+        tool_call_id = str(item.get("tool_call_id") or "").strip()
+        if role == "tool" and tool_call_id in completed_tool_call_ids:
+            # Approval retries and post-execution persistence may submit the
+            # same result twice. Tool call ids are unique within a Thread.
+            continue
+        if pending:
+            if role == "tool" and tool_call_id in pending:
+                canonical.append(item)
+                completed_tool_call_ids.add(tool_call_id)
+                pending.pop(tool_call_id, None)
+                if not pending and deferred:
+                    queued_before_current_input = list(deferred)
+                    deferred.clear()
+                    queue.extendleft(reversed(queued_before_current_input))
+                continue
+            deferred.append(item)
+            continue
+
+        canonical.append(item)
+        if role == "assistant":
+            pending = {
+                str(call.get("id") or "").strip(): dict(call)
+                for call in list(item.get("tool_calls") or [])
+                if isinstance(call, dict) and str(call.get("id") or "").strip()
+            }
+
+
+def pending_tool_calls(transcript: dict[str, Any] | None) -> list[dict[str, Any]]:
+    normalized = normalize_thread_transcript(transcript)
+    return list(_pending_tool_calls_after(normalized.get("items") or []).values())
 
 
 def normalize_thread_transcript(
@@ -252,11 +333,22 @@ def normalize_thread_transcript(
     payload = dict(raw or {}) if isinstance(raw, dict) else {}
     raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
     items = [item for item in (normalize_transcript_item(value) for value in raw_items) if item is not None]
+    raw_deferred = payload.get("deferred_items") if isinstance(payload.get("deferred_items"), list) else []
+    deferred_items = [
+        item
+        for item in (normalize_transcript_item(value) for value in raw_deferred)
+        if item is not None
+    ]
     if not items and legacy_turns:
         items = transcript_from_legacy_turns(legacy_turns)
+    canonical: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    _append_with_tool_barrier(canonical, deferred, items)
+    _append_with_tool_barrier(canonical, deferred, deferred_items)
     return {
         "schema_version": THREAD_TRANSCRIPT_SCHEMA_VERSION,
-        "items": items,
+        "items": canonical,
+        "deferred_items": deferred,
     }
 
 
@@ -328,19 +420,23 @@ def append_transcript_item(
     )
     if item is None:
         raise ValueError(f"Invalid transcript item role={role!r}")
-    transcript.setdefault("schema_version", THREAD_TRANSCRIPT_SCHEMA_VERSION)
-    transcript.setdefault("items", []).append(item)
+    append_transcript_items(transcript, [item])
     return item
 
 
 def append_transcript_items(transcript: dict[str, Any], items: Iterable[Any]) -> list[dict[str, Any]]:
+    normalized_transcript = normalize_thread_transcript(transcript)
+    transcript.clear()
+    transcript.update(normalized_transcript)
     appended: list[dict[str, Any]] = []
     for raw in list(items or []):
         item = normalize_transcript_item(raw)
         if item is None:
             continue
-        transcript.setdefault("items", []).append(item)
         appended.append(item)
+    canonical = transcript.setdefault("items", [])
+    deferred = transcript.setdefault("deferred_items", [])
+    _append_with_tool_barrier(canonical, deferred, appended)
     transcript["schema_version"] = THREAD_TRANSCRIPT_SCHEMA_VERSION
     return appended
 

@@ -116,6 +116,7 @@ from app.session_context import normalize_attachment_ids
 from app.storage import ProjectStore, SessionStore, TokenStatsStore, UploadStore
 from app.task_store import TaskStore, task_context_snapshot
 from app.thread_record import agent_state_compat, normalize_pending_interaction
+from app.thread_transcript import normalize_thread_transcript, pending_tool_calls
 from app.thread_titles import sanitize_generated_thread_title
 from app.update_manager import AppUpdateManager
 from app.vintage_programmer_runtime import VintageProgrammerRuntime, default_loop_safeguards
@@ -645,6 +646,11 @@ def _persist_background_subagent_result(
             for entry in list(transcript.get("items") or [])
             if isinstance(entry, dict)
         ]
+        deferred_transcript_items = [
+            entry
+            for entry in list(transcript.get("deferred_items") or [])
+            if isinstance(entry, dict)
+        ]
         summary_item = _background_subagent_summary_item(item)
         parent_item: dict[str, Any] | None = None
         for entry in reversed(transcript_items):
@@ -679,7 +685,10 @@ def _persist_background_subagent_result(
             parent_item["trace"] = trace
 
         mailbox_item_id = f"subagent-result-{hashlib.sha1(subagent_id.encode('utf-8')).hexdigest()[:20]}"
-        if not any(str(entry.get("id") or "") == mailbox_item_id for entry in transcript_items):
+        if not any(
+            str(entry.get("id") or "") == mailbox_item_id
+            for entry in [*transcript_items, *deferred_transcript_items]
+        ):
             full_summary = str(result.get("summary") or item.get("summary") or "")
             model_summary_limit = 24000
             mailbox_payload = {
@@ -714,6 +723,87 @@ def _persist_background_subagent_result(
         return True
 
     return bool(run_queue.run_with_session_lock(sid, persist))
+
+
+def _repair_thread_tool_transaction(session: dict[str, Any]) -> dict[str, Any]:
+    """Quarantine interleaved messages and close unrecoverable tool calls."""
+    original_transcript = dict(session.get("thread_transcript") or {})
+    transcript = normalize_thread_transcript(
+        original_transcript,
+        legacy_turns=session.get("turns") or [],
+    )
+    session["thread_transcript"] = transcript
+    changed = transcript != original_transcript
+    open_calls = pending_tool_calls(transcript)
+    open_ids = {
+        str(call.get("id") or "").strip()
+        for call in open_calls
+        if str(call.get("id") or "").strip()
+    }
+    pending_interaction = normalize_pending_interaction(session.get("pending_interaction"))
+    pending_turn = dict(pending_interaction.get("turn") or {})
+    pending_tool_call = (
+        dict(pending_turn.get("tool_call") or {})
+        if isinstance(pending_turn.get("tool_call"), dict)
+        else {}
+    )
+    pending_call_id = str(
+        pending_turn.get("tool_call_id")
+        or pending_tool_call.get("id")
+        or ""
+    ).strip()
+    retained_pending_call_id = pending_call_id if pending_call_id in open_ids else ""
+    if pending_interaction and not retained_pending_call_id:
+        # A persisted decision cannot be resumed after its Tool result already
+        # exists (or after the originating call disappeared). Keeping it would
+        # create an orphan result or show a stale approval card.
+        session["pending_interaction"] = {}
+        pending_interaction = {}
+        changed = True
+
+    interrupted_items: list[dict[str, Any]] = []
+    for call in open_calls:
+        call_id = str(call.get("id") or "").strip()
+        if not call_id or call_id == retained_pending_call_id:
+            continue
+        tool_name = str(call.get("name") or "unknown_tool").strip() or "unknown_tool"
+        result = {
+            "ok": False,
+            "error_kind": "prior_tool_result_unavailable",
+            "error": {
+                "kind": "prior_tool_result_unavailable",
+                "tool": tool_name,
+                "tool_call_id": call_id,
+                "message": (
+                    "The previous run ended before this tool result was persisted. "
+                    "The action may have executed; inspect current state before retrying it."
+                ),
+            },
+            "may_have_executed": True,
+            "summary": (
+                "Previous tool result was unavailable. Inspect current state before retrying."
+            ),
+        }
+        interrupted_items.append(
+            {
+                "role": "tool",
+                "content": json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                "tool_call_id": call_id,
+                "name": tool_name,
+            }
+        )
+    if interrupted_items:
+        session_store.append_thread_items(session, interrupted_items)
+        changed = True
+    return {
+        "changed": changed,
+        "open_tool_call_ids": sorted(open_ids),
+        "retained_pending_tool_call_id": retained_pending_call_id,
+        "closed_tool_call_ids": [str(item.get("tool_call_id") or "") for item in interrupted_items],
+        "deferred_item_count": len(
+            list((session.get("thread_transcript") or {}).get("deferred_items") or [])
+        ),
+    }
 
 
 def get_project_store() -> ProjectStore:
@@ -3556,10 +3646,41 @@ def _process_chat_request(
                 response_type = "request_user_input"
             if response_type == "command_execution":
                 _migrate_legacy_pending_command_turn(session)
+            tool_transaction_repair = _repair_thread_tool_transaction(session)
+            if bool(tool_transaction_repair.get("changed")):
+                session_store.save(session, touch=False)
             stored_pending_turn = dict((session.get("pending_interaction") or {}).get("turn") or {})
+            pending_type = str(stored_pending_turn.get("type") or "").strip()
+            if stored_pending_turn and not response_type:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "kind": "pending_interaction_requires_decision",
+                        "summary": translate(locale, "error.pending_interaction_requires_decision"),
+                        "detail": "The pending tool-call transaction must be closed before a new user turn starts.",
+                        "retryable": False,
+                        "provider": "",
+                        "pending_type": pending_type,
+                        "tool_call_id": str(stored_pending_turn.get("tool_call_id") or ""),
+                    },
+                )
+            if response_type and (
+                not stored_pending_turn or pending_type != response_type
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "kind": "pending_interaction_changed",
+                        "summary": translate(locale, "error.pending_interaction_changed"),
+                        "detail": "The submitted interaction identity does not match the current pending tool call.",
+                        "retryable": False,
+                        "provider": "",
+                        "pending_type": pending_type,
+                    },
+                )
             is_turn_resume = bool(
                 stored_pending_turn
-                and str(stored_pending_turn.get("type") or "").strip() == response_type
+                and pending_type == response_type
                 and response_type in {"command_execution", "task_update", "request_user_input"}
             )
             if is_turn_resume:
@@ -3945,6 +4066,41 @@ def _process_chat_request(
             if requested_task:
                 get_task_store().mark_loaded(requested_task_id, thread_id=session_id)
         session_store.save(session)
+
+        def persist_resolved_pending_tool_result(*, item: dict[str, Any]) -> bool:
+            if not is_turn_resume or not isinstance(item, dict):
+                return False
+            expected_tool_call = (
+                dict(pending_turn_for_resume.get("tool_call") or {})
+                if isinstance(pending_turn_for_resume.get("tool_call"), dict)
+                else {}
+            )
+            expected_call_id = str(
+                pending_turn_for_resume.get("tool_call_id")
+                or expected_tool_call.get("id")
+                or ""
+            ).strip()
+            resolved_call_id = str(item.get("tool_call_id") or "").strip()
+            if not expected_call_id or resolved_call_id != expected_call_id:
+                return False
+            session_store.append_thread_items(session, [item])
+            current_pending = dict((session.get("pending_interaction") or {}).get("turn") or {})
+            current_tool_call = (
+                dict(current_pending.get("tool_call") or {})
+                if isinstance(current_pending.get("tool_call"), dict)
+                else {}
+            )
+            current_call_id = str(
+                current_pending.get("tool_call_id")
+                or current_tool_call.get("id")
+                or ""
+            ).strip()
+            if current_call_id in {"", resolved_call_id}:
+                session["pending_interaction"] = {}
+            session_store.mark_activity(session, kind="pending_tool_resolved")
+            session_store.save(session)
+            return True
+
         with request_phase_timer.measure("runtime_run_ms"):
             runtime_result = provider_runtime.run(
                 message=runtime_request_message,
@@ -3970,6 +4126,7 @@ def _process_chat_request(
                     ),
                     "user_input_response": dict(req.user_input_response or {}),
                     "pending_turn": dict(pending_turn_for_resume),
+                    "persist_resolved_pending_tool_result": persist_resolved_pending_tool_result,
                     "phase_timing_base_ms": request_phase_timer.elapsed_ms(),
                     "project": {
                         "project_id": str(session_project.get("project_id") or ""),

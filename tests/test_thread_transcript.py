@@ -5,9 +5,11 @@ from pathlib import Path
 from app.storage import SessionStore
 from app.thread_transcript import (
     append_transcript_item,
+    append_transcript_items,
     default_thread_transcript,
     migrate_session_to_thread_transcript,
     normalize_thread_transcript,
+    pending_tool_calls,
     transcript_items_after_compaction,
 )
 
@@ -67,6 +69,116 @@ def test_transcript_preserves_assistant_tool_call_and_tool_result() -> None:
     assert [item["role"] for item in items] == ["user", "assistant", "tool"]
     assert items[1]["tool_calls"][0]["args"] == {"cmd": "pytest"}
     assert items[2]["tool_call_id"] == "call-1"
+
+
+def test_transcript_defers_background_message_until_parallel_tool_batch_closes() -> None:
+    transcript = default_thread_transcript()
+    calls = [
+        {"id": f"call-{index}", "name": "read_file", "args": {"path": f"{index}.txt"}}
+        for index in range(1, 6)
+    ]
+    append_transcript_item(
+        transcript,
+        role="assistant",
+        content="",
+        item_id="assistant-tools",
+        tool_calls=calls,
+    )
+    append_transcript_items(
+        transcript,
+        [
+            {
+                "role": "tool",
+                "content": "ok",
+                "tool_call_id": f"call-{index}",
+                "name": "read_file",
+            }
+            for index in range(1, 5)
+        ],
+    )
+    append_transcript_item(
+        transcript,
+        role="user",
+        content="[background_subagent_result]late[/background_subagent_result]",
+        item_id="late-subagent",
+    )
+
+    assert [call["id"] for call in pending_tool_calls(transcript)] == ["call-5"]
+    assert [item["id"] for item in transcript["deferred_items"]] == ["late-subagent"]
+    assert all(item["id"] != "late-subagent" for item in transcript["items"])
+
+    append_transcript_item(
+        transcript,
+        role="tool",
+        content="approved",
+        item_id="approved-tool",
+        tool_call_id="call-5",
+        name="read_file",
+    )
+
+    assert pending_tool_calls(transcript) == []
+    assert transcript["deferred_items"] == []
+    assert [item["role"] for item in transcript["items"]] == [
+        "assistant",
+        "tool",
+        "tool",
+        "tool",
+        "tool",
+        "tool",
+        "user",
+    ]
+    assert transcript["items"][-1]["id"] == "late-subagent"
+
+
+def test_normalization_repairs_interleaved_legacy_tool_transaction() -> None:
+    normalized = normalize_thread_transcript(
+        {
+            "schema_version": 2,
+            "items": [
+                {
+                    "id": "assistant-tools",
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-1", "name": "read_file", "args": {}},
+                        {"id": "call-2", "name": "exec_command", "args": {}},
+                    ],
+                },
+                {"id": "tool-1", "role": "tool", "content": "ok", "tool_call_id": "call-1"},
+                {"id": "late", "role": "user", "content": "late result", "model_only": True},
+                {"id": "tool-2", "role": "tool", "content": "ok", "tool_call_id": "call-2"},
+                {"id": "next", "role": "user", "content": "next message"},
+            ],
+        }
+    )
+
+    assert normalized["deferred_items"] == []
+    assert [item["id"] for item in normalized["items"]] == [
+        "assistant-tools",
+        "tool-1",
+        "tool-2",
+        "late",
+        "next",
+    ]
+
+
+def test_duplicate_tool_result_is_idempotent() -> None:
+    transcript = default_thread_transcript()
+    append_transcript_item(
+        transcript,
+        role="assistant",
+        content="",
+        tool_calls=[{"id": "call-1", "name": "exec_command", "args": {}}],
+    )
+    result = {
+        "role": "tool",
+        "content": "done",
+        "tool_call_id": "call-1",
+        "name": "exec_command",
+    }
+    append_transcript_items(transcript, [result, result])
+
+    assert len([item for item in transcript["items"] if item["role"] == "tool"]) == 1
 
 
 def test_transcript_preserves_bounded_turn_change_summary() -> None:

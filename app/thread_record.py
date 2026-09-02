@@ -201,6 +201,11 @@ def attach_legacy_turn_metadata(
     return {
         "schema_version": THREAD_TRANSCRIPT_SCHEMA_VERSION,
         "items": items,
+        "deferred_items": [
+            dict(item)
+            for item in list((transcript or {}).get("deferred_items") or [])
+            if isinstance(item, dict)
+        ],
     }
 
 
