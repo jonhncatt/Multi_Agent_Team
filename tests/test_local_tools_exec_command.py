@@ -3,12 +3,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shlex
+import subprocess
+import sys
 import threading
 import time
 import zipfile
 
 import pytest
 
+import app.local_tools as local_tools_module
 from app.config import load_config
 from app.local_tools import LocalToolExecutor
 
@@ -278,6 +281,58 @@ def test_cancelled_agent_run_terminates_its_running_command_session(
     proc = manager._command_sessions[started["session_id"]]["proc"]
     proc.wait(timeout=1)
     assert proc.poll() is not None
+
+
+def test_cancel_command_sessions_force_kills_only_processes_still_running() -> None:
+    manager = object.__new__(LocalToolExecutor)
+    manager._command_sessions_lock = threading.Lock()
+    first = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    second = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    manager._command_sessions = {
+        1: {"proc": first, "run_id": "run-1"},
+        2: {"proc": second, "run_id": "run-1"},
+    }
+    calls: list[tuple[int, bool]] = []
+
+    def terminate(proc: subprocess.Popen[bytes], *, force: bool) -> None:
+        calls.append((proc.pid, force))
+        if proc is first and not force:
+            proc.terminate()
+            proc.wait(timeout=2)
+        elif force:
+            proc.kill()
+
+    manager._terminate_command_process_tree = terminate
+    try:
+        assert manager._cancel_command_sessions(run_id="run-1") == 2
+        second.wait(timeout=2)
+    finally:
+        for proc in (first, second):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=2)
+
+    assert (first.pid, False) in calls
+    assert (second.pid, False) in calls
+    assert (first.pid, True) not in calls
+    assert (second.pid, True) in calls
+
+
+def test_terminate_process_tree_never_targets_an_exited_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FinishedProcess:
+        pid = 4242
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("an exited PID must not be passed to taskkill")
+
+    monkeypatch.setattr(local_tools_module.subprocess, "run", unexpected_run)
+    LocalToolExecutor._terminate_command_process_tree(_FinishedProcess(), force=True)  # type: ignore[arg-type]
 
 
 def test_long_write_stdin_wait_returns_promptly_when_run_is_cancelled(

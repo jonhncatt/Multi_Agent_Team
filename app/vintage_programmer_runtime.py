@@ -4489,6 +4489,13 @@ class VintageProgrammerRuntime:
     def cancel_run(self, *, run_id: str, thread_id: str) -> dict[str, Any]:
         normalized_run_id = str(run_id or "").strip()
         normalized_thread_id = str(thread_id or "").strip()
+        cancelled_model_clients = 0
+        release_model_run = getattr(self._backend, "release_model_run", None)
+        if normalized_run_id and callable(release_model_run):
+            try:
+                cancelled_model_clients = int(release_model_run(run_id=normalized_run_id) or 0)
+            except Exception:
+                cancelled_model_clients = 0
         cancelled_commands = 0
         cancel_commands = getattr(self._backend.tools, "_cancel_command_sessions", None)
         if normalized_run_id and callable(cancel_commands):
@@ -4503,6 +4510,7 @@ class VintageProgrammerRuntime:
         return {
             "run_id": normalized_run_id,
             "thread_id": normalized_thread_id,
+            "cancelled_model_client_count": cancelled_model_clients,
             "cancelled_command_count": cancelled_commands,
             "cancelled_subagent_ids": cancelled_subagents,
         }
@@ -8290,6 +8298,12 @@ class VintageProgrammerRuntime:
                     except Exception:
                         pass
             shutdown_subagents(cancel_running=turn_status in {"failed", "cancelled"})
+            release_model_run = getattr(self._backend, "release_model_run", None)
+            if callable(release_model_run):
+                try:
+                    release_model_run(run_id=run_id)
+                except Exception:
+                    pass
             if hasattr(self._backend.tools, "clear_runtime_context"):
                 self._backend.tools.clear_runtime_context()
 

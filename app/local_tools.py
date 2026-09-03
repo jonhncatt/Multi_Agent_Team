@@ -3671,7 +3671,10 @@ class LocalToolExecutor:
 
     @staticmethod
     def _terminate_command_process_tree(proc: subprocess.Popen[Any], *, force: bool) -> None:
-        if proc.poll() is not None and not force:
+        # Never target an exited process by its numeric PID. On Windows the PID
+        # can be reused, so a late taskkill could otherwise terminate an
+        # unrelated process that started after this command finished.
+        if proc.poll() is not None:
             return
         pid = int(getattr(proc, "pid", 0) or 0)
         if pid <= 0:
@@ -3733,7 +3736,7 @@ class LocalToolExecutor:
             remaining = [proc for proc in remaining if proc.poll() is None]
             if remaining:
                 time.sleep(0.01)
-        for _session_id, _session, proc in sessions:
+        for proc in remaining:
             self._terminate_command_process_tree(proc, force=True)
         return len(sessions)
 

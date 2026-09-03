@@ -435,6 +435,8 @@ class VPRuntimeBackend:
         self._lc_tool_map_casefold = {name.lower(): tool for name, tool in self._lc_tool_map.items()}
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
+        self._run_http_clients_lock = threading.Lock()
+        self._run_http_clients: dict[str, list[Any]] = {}
 
     def _current_cancel_event(self) -> Any | None:
         getter = getattr(self.tools, "_current_cancel_event", None)
@@ -445,48 +447,46 @@ class VPRuntimeBackend:
         except Exception:
             return None
 
+    def _current_run_id(self) -> str:
+        getter = getattr(self.tools, "_current_run_id", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "").strip()
+        except Exception:
+            return ""
+
+    def _new_owned_http_client(self) -> Any | None:
+        run_id = self._current_run_id()
+        if not run_id:
+            return None
+        from openai import DefaultHttpxClient
+
+        client = DefaultHttpxClient()
+        with self._run_http_clients_lock:
+            self._run_http_clients.setdefault(run_id, []).append(client)
+        return client
+
+    def release_model_run(self, *, run_id: str) -> int:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return 0
+        with self._run_http_clients_lock:
+            clients = list(self._run_http_clients.pop(normalized_run_id, []))
+        for client in clients:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        return len(clients)
+
     def _cancelled_model_response(self) -> Any:
         return self._AIMessage(
             content="",
             additional_kwargs={"vp_model_invocation_cancelled": True},
         )
-
-    @staticmethod
-    def _close_runner_clients(runner: Any) -> None:
-        """Best-effort close of the per-request OpenAI clients after cancellation."""
-
-        pending = [runner]
-        seen: set[int] = set()
-        while pending:
-            current = pending.pop()
-            if current is None or id(current) in seen:
-                continue
-            seen.add(id(current))
-            for name in ("bound", "client", "root_client"):
-                try:
-                    value = getattr(current, name, None)
-                except Exception:
-                    value = None
-                if value is None:
-                    continue
-                if name == "bound":
-                    pending.append(value)
-                    continue
-                close = getattr(value, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-
-    @classmethod
-    def _request_runner_close(cls, runner: Any) -> None:
-        threading.Thread(
-            target=cls._close_runner_clients,
-            args=(runner,),
-            name="vp-model-cancel",
-            daemon=True,
-        ).start()
 
     def resolve_auth(self, mode: str) -> Any:
         normalized_mode = str(mode or "").strip().lower()
@@ -559,6 +559,12 @@ class VPRuntimeBackend:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:
             self._ensure_openai_ca_env(self.config.openai_ca_cert_path)
+        owned_http_client = self._new_owned_http_client()
+        if owned_http_client is not None:
+            # LangChain caches its default HTTP transport across ChatOpenAI
+            # instances. Agent runs need an owned transport so cancelling one
+            # request cannot close the connection pool used by later Threads.
+            kwargs["http_client"] = owned_http_client
         return self._chat_openai_cls()(**kwargs)
 
     def _invoke_chat_with_runner(
@@ -724,10 +730,8 @@ class VPRuntimeBackend:
         worker.start()
         while not completed.wait(timeout=0.05):
             if cancel_event.is_set():
-                self._request_runner_close(runner)
                 return self._cancelled_model_response()
         if cancel_event.is_set():
-            self._request_runner_close(runner)
             return self._cancelled_model_response()
         kind, value = result_queue.get_nowait()
         if kind == "error":
