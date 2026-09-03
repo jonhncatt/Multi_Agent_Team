@@ -413,6 +413,85 @@ class ThreadSubagentManager:
                 if (normalized_thread_id, subagent_id) in self._handles
             ]
 
+    def cancel_parent_run(self, *, thread_id: str, parent_run_id: str) -> list[str]:
+        """Cancel and persist every active Subagent owned by one parent Agent run."""
+
+        normalized_thread_id = str(thread_id or "").strip()
+        normalized_parent_run_id = str(parent_run_id or "").strip()
+        if not normalized_thread_id or not normalized_parent_run_id:
+            return []
+        with self._condition:
+            records = self._load_thread_locked(normalized_thread_id)
+            target_ids = [
+                subagent_id
+                for subagent_id, record in records.items()
+                if _record_status(record) in _ACTIVE_STATUSES
+                and str(record.get("parent_run_id") or "").strip() == normalized_parent_run_id
+            ]
+            handles = [
+                (subagent_id, dict(self._handles.get((normalized_thread_id, subagent_id)) or {}))
+                for subagent_id in target_ids
+            ]
+
+        for subagent_id, handle in handles:
+            cancel_event = handle.get("cancel_event")
+            if cancel_event and hasattr(cancel_event, "set"):
+                cancel_event.set()
+            cancel_commands = handle.get("cancel_commands")
+            if callable(cancel_commands):
+                try:
+                    cancel_commands(run_id=subagent_id)
+                except Exception:
+                    pass
+            future = handle.get("future")
+            if future is not None and hasattr(future, "cancel"):
+                try:
+                    future.cancel()
+                except Exception:
+                    pass
+
+        cancelled_ids: list[str] = []
+        now = time.time()
+        with self._condition:
+            records = self._load_thread_locked(normalized_thread_id)
+            for subagent_id in target_ids:
+                record = records.get(subagent_id)
+                if not isinstance(record, dict) or _record_status(record) not in _ACTIVE_STATUSES:
+                    continue
+                item = dict(record.get("item") or {})
+                message = "Subagent was cancelled because its parent run was stopped by the user."
+                result = {
+                    "ok": False,
+                    "subagent_id": subagent_id,
+                    "role": str(record.get("role") or "explorer"),
+                    "label": str(item.get("label") or ""),
+                    "status": "cancelled",
+                    "error_kind": "subagent_cancelled",
+                    "error": message,
+                    "summary": message,
+                    "token_usage": {},
+                }
+                record.update(
+                    {
+                        "status": "cancelled",
+                        "result": result,
+                        "item": {
+                            **item,
+                            "status": "cancelled",
+                            "summary": message,
+                            "completed_at": now,
+                        },
+                        "detached": True,
+                        "updated_at": now,
+                    }
+                )
+                self._handles.pop((normalized_thread_id, subagent_id), None)
+                cancelled_ids.append(subagent_id)
+            if cancelled_ids:
+                self._save_thread_locked(normalized_thread_id)
+                self._condition.notify_all()
+        return cancelled_ids
+
     def delete_thread(self, thread_id: str) -> None:
         normalized_thread_id = str(thread_id or "").strip()
         if not normalized_thread_id:

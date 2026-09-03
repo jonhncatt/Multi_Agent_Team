@@ -10,6 +10,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import ssl
 import subprocess
 import tempfile
@@ -1367,6 +1368,9 @@ class LocalToolExecutor:
     def _current_cancel_requested(self) -> bool:
         event = getattr(self._runtime_ctx, "cancel_event", None)
         return bool(event and hasattr(event, "is_set") and event.is_set())
+
+    def _current_cancel_event(self) -> Any | None:
+        return getattr(self._runtime_ctx, "cancel_event", None)
 
     def _current_subagent_read_only(self) -> bool:
         return bool(getattr(self._runtime_ctx, "subagent_read_only", False))
@@ -3657,6 +3661,50 @@ class LocalToolExecutor:
                 payload["summary"] = f"command exited with {returncode}"
         return payload
 
+    @staticmethod
+    def _command_process_creation_kwargs() -> dict[str, Any]:
+        if os.name == "nt":
+            flags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) or 0)
+            flags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+            return {"creationflags": flags}
+        return {"start_new_session": True}
+
+    @staticmethod
+    def _terminate_command_process_tree(proc: subprocess.Popen[Any], *, force: bool) -> None:
+        if proc.poll() is not None and not force:
+            return
+        pid = int(getattr(proc, "pid", 0) or 0)
+        if pid <= 0:
+            return
+        if os.name == "nt":
+            # Windows has no safe Python equivalent of POSIX process groups.
+            # taskkill /T is intentionally forced so descendants cannot outlive
+            # a user-requested Agent stop after the direct process disappears.
+            command = ["taskkill", "/PID", str(pid), "/T", "/F"]
+            try:
+                subprocess.run(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.0,
+                    check=False,
+                    creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0),
+                )
+                return
+            except Exception:
+                pass
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        try:
+            proc.kill() if force else proc.terminate()
+        except Exception:
+            pass
+
     def _cancel_command_sessions(self, *, run_id: str = "") -> int:
         target_run_id = str(run_id or "").strip()
         with self._command_sessions_lock:
@@ -3678,21 +3726,15 @@ class LocalToolExecutor:
                     stdin.close()
             except Exception:
                 pass
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            self._terminate_command_process_tree(proc, force=False)
         deadline = time.monotonic() + 0.5
         remaining = [proc for _session_id, _session, proc in sessions]
         while remaining and time.monotonic() < deadline:
             remaining = [proc for proc in remaining if proc.poll() is None]
             if remaining:
                 time.sleep(0.01)
-        for proc in remaining:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        for _session_id, _session, proc in sessions:
+            self._terminate_command_process_tree(proc, force=True)
         return len(sessions)
 
     def _apply_update_hunks(self, path: Path, current_text: str, hunks: list[list[str]]) -> str:
@@ -5130,6 +5172,7 @@ class LocalToolExecutor:
                 stderr=subprocess.STDOUT,
                 text=False,
                 bufsize=0,
+                **self._command_process_creation_kwargs(),
             )
         except Exception as exc:
             return self._command_failure_result(command=cmd, cwd=str(real_cwd), error=f"exec_command failed: {exc}", returncode=1)

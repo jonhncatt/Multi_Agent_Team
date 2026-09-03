@@ -866,6 +866,8 @@ def _update_active_chat_run(run_id: str, **fields: Any) -> None:
 
 
 def _cancel_active_chat_run(run_id: str) -> dict[str, Any] | None:
+    cancel_event: Any | None = None
+    cancel_callback: Callable[[], Any] | None = None
     with _active_chat_runs_lock:
         record = _active_chat_runs.get(str(run_id or "").strip())
         if not isinstance(record, dict):
@@ -873,12 +875,21 @@ def _cancel_active_chat_run(run_id: str) -> dict[str, Any] | None:
         if str(record.get("status") or "") in {"completed", "interrupted", "failed"}:
             return dict(record)
         cancel_event = record.get("cancel_event")
-        if cancel_event and hasattr(cancel_event, "set"):
-            cancel_event.set()
+        raw_cancel_callback = record.get("cancel_callback")
+        if callable(raw_cancel_callback):
+            cancel_callback = raw_cancel_callback
         record["status"] = "cancel_requested"
         record["accepting_steers"] = False
         record["cancel_requested_at"] = time.time()
-        return dict(record)
+        snapshot = dict(record)
+    if cancel_event and hasattr(cancel_event, "set"):
+        cancel_event.set()
+    if cancel_callback is not None:
+        try:
+            cancel_callback()
+        except Exception:
+            pass
+    return snapshot
 
 
 def _enqueue_active_chat_run_steer(
@@ -953,6 +964,7 @@ def _finish_active_chat_run(run_id: str, *, status: str) -> None:
         record["status"] = normalized
         record["accepting_steers"] = False
         record["pending_steers"] = []
+        record.pop("cancel_callback", None)
         record["finished_at"] = time.time()
         terminal_event = record.get("terminal_event")
         if terminal_event and hasattr(terminal_event, "set"):
@@ -3531,7 +3543,17 @@ def _process_chat_request(
         session_id = str(seed_session.get("id") or "")
         if not session_id:
             raise HTTPException(status_code=500, detail="Session create failed")
-        _update_active_chat_run(run_id, session_id=session_id, project_id=str(requested_project.get("project_id") or ""))
+        def cancel_runtime_work() -> None:
+            cancel_run = getattr(provider_runtime, "cancel_run", None)
+            if callable(cancel_run):
+                cancel_run(run_id=run_id, thread_id=session_id)
+
+        _update_active_chat_run(
+            run_id,
+            session_id=session_id,
+            project_id=str(requested_project.get("project_id") or ""),
+            cancel_callback=cancel_runtime_work,
+        )
 
         queue_wait_ms = 0
 

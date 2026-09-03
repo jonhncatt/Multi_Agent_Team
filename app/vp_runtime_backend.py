@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -435,6 +436,58 @@ class VPRuntimeBackend:
         self._model_failover_lock = threading.Lock()
         self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
+    def _current_cancel_event(self) -> Any | None:
+        getter = getattr(self.tools, "_current_cancel_event", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _cancelled_model_response(self) -> Any:
+        return self._AIMessage(
+            content="",
+            additional_kwargs={"vp_model_invocation_cancelled": True},
+        )
+
+    @staticmethod
+    def _close_runner_clients(runner: Any) -> None:
+        """Best-effort close of the per-request OpenAI clients after cancellation."""
+
+        pending = [runner]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            for name in ("bound", "client", "root_client"):
+                try:
+                    value = getattr(current, name, None)
+                except Exception:
+                    value = None
+                if value is None:
+                    continue
+                if name == "bound":
+                    pending.append(value)
+                    continue
+                close = getattr(value, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+
+    @classmethod
+    def _request_runner_close(cls, runner: Any) -> None:
+        threading.Thread(
+            target=cls._close_runner_clients,
+            args=(runner,),
+            name="vp-model-cancel",
+            daemon=True,
+        ).start()
+
     def resolve_auth(self, mode: str) -> Any:
         normalized_mode = str(mode or "").strip().lower()
         if normalized_mode == "api_key":
@@ -626,16 +679,60 @@ class VPRuntimeBackend:
         runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
         return self._invoke_runner(runner_fb, messages, event_cb=event_cb), runner_fb, notes
 
-    @staticmethod
     def _invoke_runner(
+        self,
         runner: Any,
         messages: list[Any],
         *,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> Any:
-        if event_cb is not None and hasattr(runner, "invoke_with_events"):
-            return runner.invoke_with_events(messages, event_cb=event_cb)
-        return runner.invoke(messages)
+        cancel_event = self._current_cancel_event()
+        if cancel_event is None or not hasattr(cancel_event, "is_set"):
+            if event_cb is not None and hasattr(runner, "invoke_with_events"):
+                return runner.invoke_with_events(messages, event_cb=event_cb)
+            return runner.invoke(messages)
+        if cancel_event.is_set():
+            return self._cancelled_model_response()
+
+        completed = threading.Event()
+        result_queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def guarded_event_cb(payload: dict[str, Any]) -> None:
+            if not cancel_event.is_set() and event_cb is not None:
+                event_cb(payload)
+
+        def invoke() -> None:
+            try:
+                if event_cb is not None and hasattr(runner, "invoke_with_events"):
+                    result = runner.invoke_with_events(messages, event_cb=guarded_event_cb)
+                else:
+                    result = runner.invoke(messages)
+                result_queue.put_nowait(("result", result))
+            except BaseException as exc:
+                try:
+                    result_queue.put_nowait(("error", exc))
+                except queue.Full:
+                    pass
+            finally:
+                completed.set()
+
+        worker = threading.Thread(
+            target=invoke,
+            name="vp-model-invocation",
+            daemon=True,
+        )
+        worker.start()
+        while not completed.wait(timeout=0.05):
+            if cancel_event.is_set():
+                self._request_runner_close(runner)
+                return self._cancelled_model_response()
+        if cancel_event.is_set():
+            self._request_runner_close(runner)
+            return self._cancelled_model_response()
+        kind, value = result_queue.get_nowait()
+        if kind == "error":
+            raise value
+        return value
 
     def _build_model_candidates(self, primary_model: str) -> list[str]:
         candidates: list[str] = []

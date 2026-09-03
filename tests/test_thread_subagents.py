@@ -102,6 +102,52 @@ def test_thread_subagent_ids_are_isolated_by_thread(tmp_path: Path) -> None:
     assert unknown_ids == [subagent_id]
 
 
+def test_cancel_parent_run_stops_only_owned_active_subagents(tmp_path: Path) -> None:
+    manager = ThreadSubagentManager(tmp_path / "subagents", runtime_id="runtime-a")
+    first_id = "run-1:subagent:first"
+    second_id = "run-2:subagent:second"
+    first_cancel_event = threading.Event()
+    second_cancel_event = threading.Event()
+    cancelled_command_runs: list[str] = []
+
+    manager.create(
+        thread_id="thread-a",
+        subagent_id=first_id,
+        parent_run_id="run-1",
+        role="explorer",
+        item=_queued_item(first_id),
+        cancel_event=first_cancel_event,
+    )
+    manager.create(
+        thread_id="thread-a",
+        subagent_id=second_id,
+        parent_run_id="run-2",
+        role="explorer",
+        item=_queued_item(second_id),
+        cancel_event=second_cancel_event,
+    )
+    manager.attach_handles(
+        thread_id="thread-a",
+        subagent_id=first_id,
+        cancel_commands=lambda *, run_id: cancelled_command_runs.append(run_id),
+    )
+
+    assert manager.cancel_parent_run(thread_id="thread-a", parent_run_id="run-1") == [first_id]
+    assert first_cancel_event.is_set() is True
+    assert second_cancel_event.is_set() is False
+    assert cancelled_command_runs == [first_id]
+
+    records, unknown_ids = manager.records(
+        thread_id="thread-a",
+        subagent_ids=[first_id, second_id],
+    )
+    assert unknown_ids == []
+    assert records[0]["status"] == "cancelled"
+    assert records[0]["detached"] is True
+    assert records[0]["result"]["error_kind"] == "subagent_cancelled"
+    assert records[1]["status"] == "queued"
+
+
 def test_active_subagent_is_marked_interrupted_after_runtime_restart(tmp_path: Path) -> None:
     state_root = tmp_path / "subagents"
     first_runtime = ThreadSubagentManager(state_root, runtime_id="runtime-before-restart")

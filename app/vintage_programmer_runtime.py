@@ -3280,6 +3280,14 @@ class VintageProgrammerRuntime:
         }
 
     @staticmethod
+    def _model_invocation_was_cancelled(message: Any) -> bool:
+        payload = getattr(message, "additional_kwargs", None)
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("vp_model_invocation_cancelled")
+        )
+
+    @staticmethod
     def _callable_accepts_kwarg(fn: Callable[..., Any], name: str) -> bool:
         try:
             signature = inspect.signature(fn)
@@ -4478,6 +4486,27 @@ class VintageProgrammerRuntime:
                 kwargs["event_cb"] = event_cb
         return method(**kwargs)
 
+    def cancel_run(self, *, run_id: str, thread_id: str) -> dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        normalized_thread_id = str(thread_id or "").strip()
+        cancelled_commands = 0
+        cancel_commands = getattr(self._backend.tools, "_cancel_command_sessions", None)
+        if normalized_run_id and callable(cancel_commands):
+            try:
+                cancelled_commands = int(cancel_commands(run_id=normalized_run_id) or 0)
+            except Exception:
+                cancelled_commands = 0
+        cancelled_subagents = self._thread_subagents.cancel_parent_run(
+            thread_id=normalized_thread_id,
+            parent_run_id=normalized_run_id,
+        )
+        return {
+            "run_id": normalized_run_id,
+            "thread_id": normalized_thread_id,
+            "cancelled_command_count": cancelled_commands,
+            "cancelled_subagent_ids": cancelled_subagents,
+        }
+
     def run(
         self,
         *,
@@ -5402,7 +5431,14 @@ class VintageProgrammerRuntime:
                         subagent_ids=local_ids,
                     )
                     for record in records:
-                        if str(record.get("status") or "").strip().lower() not in {"queued", "running"}:
+                        record_status = str(record.get("status") or "").strip().lower()
+                        if (
+                            record_status == "cancelled"
+                            and bool(record.get("detached"))
+                        ):
+                            emit_subagent_item("item/completed", dict(record.get("item") or {}))
+                            continue
+                        if record_status not in {"queued", "running"}:
                             continue
                         subagent_id = str(record.get("id") or "")
                         item = dict(record.get("item") or {})
@@ -6241,7 +6277,15 @@ class VintageProgrammerRuntime:
                         phase_timer=phase_timer,
                     ),
                 )
-                initial_invoke_ok = True
+                if self._model_invocation_was_cancelled(ai_msg):
+                    turn_status = "cancelled"
+                    forced_text = translate(locale, "runtime.cancelled.text")
+                    notes.append("run_cancelled_by_user")
+                    initial_exchange["status"] = "cancelled"
+                    initial_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                    self._append_llm_exchange(llm_exchanges, initial_exchange)
+                else:
+                    initial_invoke_ok = True
             except Exception as exc:
                 failure_payload = self._llm_failure_payload(
                     exc,
@@ -6302,22 +6346,30 @@ class VintageProgrammerRuntime:
                                 phase_timer=phase_timer,
                             ),
                         )
-                        initial_invoke_ok = True
-                        request_too_large_recovery["recovered"] = True
-                        notes.append("request_too_large_retry_succeeded")
-                        self._emit_trace(
-                            progress_cb,
-                            run_id=run_id,
-                            type="llm.request_too_large.retry_succeeded",
-                            title="Oversized LLM request retry succeeded",
-                            detail=translate(locale, "runtime.request_too_large.compacted"),
-                            status="success",
-                            payload={
-                                "phase": "initial_request_too_large_retry",
-                                "retry_attempt": 1,
-                            },
-                            trace_events=trace_events,
-                        )
+                        if self._model_invocation_was_cancelled(ai_msg):
+                            turn_status = "cancelled"
+                            forced_text = translate(locale, "runtime.cancelled.text")
+                            notes.append("run_cancelled_by_user")
+                            initial_exchange["status"] = "cancelled"
+                            initial_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                            self._append_llm_exchange(llm_exchanges, initial_exchange)
+                        else:
+                            initial_invoke_ok = True
+                            request_too_large_recovery["recovered"] = True
+                            notes.append("request_too_large_retry_succeeded")
+                            self._emit_trace(
+                                progress_cb,
+                                run_id=run_id,
+                                type="llm.request_too_large.retry_succeeded",
+                                title="Oversized LLM request retry succeeded",
+                                detail=translate(locale, "runtime.request_too_large.compacted"),
+                                status="success",
+                                payload={
+                                    "phase": "initial_request_too_large_retry",
+                                    "retry_attempt": 1,
+                                },
+                                trace_events=trace_events,
+                            )
                     except Exception as retry_exc:
                         runtime_error = self._llm_failure_payload(
                             retry_exc,
@@ -6526,6 +6578,7 @@ class VintageProgrammerRuntime:
                 nonlocal latest_request_estimated_tokens
                 nonlocal runtime_error
                 nonlocal turn_status
+                nonlocal forced_text
 
                 if append_prompt:
                     messages.append(self._backend._HumanMessage(content=prompt))
@@ -6570,6 +6623,15 @@ class VintageProgrammerRuntime:
                             phase_timer=phase_timer,
                         ),
                     )
+                    if self._model_invocation_was_cancelled(ai_msg):
+                        turn_status = "cancelled"
+                        forced_text = translate(locale, "runtime.cancelled.text")
+                        if "run_cancelled_by_user" not in notes:
+                            notes.append("run_cancelled_by_user")
+                        recovery_exchange["status"] = "cancelled"
+                        recovery_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                        self._append_llm_exchange(llm_exchanges, recovery_exchange)
+                        return False
                 except Exception as exc:
                     runtime_error = self._llm_failure_payload(
                         exc,
@@ -7939,6 +8001,15 @@ class VintageProgrammerRuntime:
                             phase_timer=phase_timer,
                         ),
                     )
+                    if self._model_invocation_was_cancelled(ai_msg):
+                        turn_status = "cancelled"
+                        forced_text = translate(locale, "runtime.cancelled.text")
+                        if "run_cancelled_by_user" not in notes:
+                            notes.append("run_cancelled_by_user")
+                        completed_exchange["status"] = "cancelled"
+                        completed_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                        self._append_llm_exchange(llm_exchanges, completed_exchange)
+                        break
                     followup_response_ms = int((time.perf_counter() - followup_model_request_started_perf) * 1000)
                     phase_timer.record_duration_ms("model_followup_response_ms", followup_response_ms)
                     phase_timer.record_duration_ms("model_last_response_ms", followup_response_ms)
@@ -8046,6 +8117,15 @@ class VintageProgrammerRuntime:
                                     phase_timer=phase_timer,
                                 ),
                             )
+                            if self._model_invocation_was_cancelled(ai_msg):
+                                turn_status = "cancelled"
+                                forced_text = translate(locale, "runtime.cancelled.text")
+                                if "run_cancelled_by_user" not in notes:
+                                    notes.append("run_cancelled_by_user")
+                                retry_exchange["status"] = "cancelled"
+                                retry_exchange["model_returned_exact"] = snapshot_ai_message(ai_msg)
+                                self._append_llm_exchange(llm_exchanges, retry_exchange)
+                                break
                             retry_response_ms = int((time.perf_counter() - retry_model_request_started_perf) * 1000)
                             phase_timer.record_duration_ms("model_retry_response_ms", retry_response_ms)
                             phase_timer.record_duration_ms("model_last_response_ms", retry_response_ms)

@@ -3731,11 +3731,13 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
     client = TestClient(main_app.app)
     run_id = "run-cancel-test"
     cancel_event = threading.Event()
+    cancel_callback_called = threading.Event()
 
     with main_app._active_chat_runs_lock:
         main_app._active_chat_runs[run_id] = {
             "run_id": run_id,
             "cancel_event": cancel_event,
+            "cancel_callback": cancel_callback_called.set,
             "status": "running",
             "session_id": "s-1",
             "project_id": "project_demo",
@@ -3751,6 +3753,7 @@ def test_cancel_chat_run_endpoint_sets_active_run_flag(monkeypatch, tmp_path: Pa
         assert payload["cancelled"] is True
         assert payload["status"] == "cancel_requested"
         assert cancel_event.is_set() is True
+        assert cancel_callback_called.is_set() is True
         assert main_app._active_chat_runs[run_id]["accepting_steers"] is False
 
         status_response = client.get(f"/api/chat/runs/{run_id}")

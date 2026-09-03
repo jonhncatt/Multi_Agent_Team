@@ -935,6 +935,40 @@ def test_runtime_does_not_create_a_second_semantic_task_completion_state(tmp_pat
     assert "task_completion" not in result["inspector"]["run_state"]
 
 
+def test_runtime_finishes_as_cancelled_when_model_invocation_is_detached(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend(
+        [
+            _FakeMessage(
+                content="",
+                additional_kwargs={"vp_model_invocation_cancelled": True},
+            )
+        ]
+    )
+    runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    result = runtime.run(
+        message="start a long model request",
+        settings=ChatSettings(model="gpt-test", enable_tools=False, response_style="short"),
+        context={
+            "session_id": "thread-cancelled-model",
+            "run_id": "run-cancelled-model",
+            "cancel_event": threading.Event(),
+            "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+        },
+    )
+
+    assert result["turn_status"] == "cancelled"
+    assert "run_cancelled_by_user" in result["inspector"]["notes"]
+    assert result["activity"]["llm_exchanges"][0]["status"] == "cancelled"
+
+
 def test_runtime_requires_soul_and_agent_specs(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir, include_soul=False)
