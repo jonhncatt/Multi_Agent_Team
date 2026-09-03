@@ -3923,6 +3923,7 @@ def _process_chat_request(
                 item=compaction_item,
             )
         elif pre_compaction_started_item:
+            no_compaction_reason = str(compaction_result.get("reason") or "")
             _emit_progress(
                 progress_cb,
                 "item/completed",
@@ -3931,7 +3932,12 @@ def _process_chat_request(
                 item={
                     **pre_compaction_started_item,
                     "status": "completed",
-                    "summary": translate(locale, "chat.replacement_history_compaction_checked"),
+                    "summary": translate(
+                        locale,
+                        "chat.replacement_history_compaction_deferred"
+                        if no_compaction_reason == "pending_protocol_transaction"
+                        else "chat.replacement_history_compaction_checked",
+                    ),
                 },
             )
         with request_phase_timer.measure("attachment_context_ms"):
@@ -4239,34 +4245,6 @@ def _process_chat_request(
             if isinstance(runtime_result.get("request_too_large_recovery"), dict)
             else {}
         )
-        if bool(request_too_large_recovery.get("compacted")):
-            try:
-                with request_phase_timer.measure("request_too_large_compaction_persist_ms"):
-                    persisted_recovery = maybe_auto_compact_session(
-                        session=session,
-                        model=requested_model,
-                        max_output_tokens=req.settings.max_output_tokens,
-                        pending_message="",
-                        phase="request_too_large_recovery",
-                        llm_compactor=None,
-                        force=True,
-                        trigger="request_too_large_recovery",
-                        auto_compact_ratio=config.context_auto_compact_ratio,
-                        danger_compact_ratio=config.context_danger_compact_ratio,
-                        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
-                        **_context_profile_overrides(requested_provider, requested_model),
-                    )
-                request_too_large_recovery["persisted"] = bool(
-                    persisted_recovery.get("compacted")
-                )
-            except Exception as persist_exc:
-                request_too_large_recovery["persisted"] = False
-                request_too_large_recovery["persist_error"] = (
-                    f"{persist_exc.__class__.__name__}: {str(persist_exc)[:500]}"
-                )
-            runtime_result["request_too_large_recovery"] = dict(
-                request_too_large_recovery
-            )
         text = str(runtime_result.get("text") or "")
         final_answer = str(runtime_result.get("final_answer") or "")
         model_draft = str(runtime_result.get("model_draft") or "")
@@ -4441,6 +4419,54 @@ def _process_chat_request(
                 break
         session_store.append_thread_items(session, transcript_delta)
         persist_visible_user_input_response()
+        runtime_compaction_checkpoint_persisted = False
+        runtime_compaction_checkpoint = {}
+        if bool(runtime_result.get("compaction_checkpoint_required")) or bool(
+            request_too_large_recovery.get("compacted")
+        ):
+            try:
+                checkpoint_phase = (
+                    "request_too_large_recovery"
+                    if bool(request_too_large_recovery.get("compacted"))
+                    else "runtime_checkpoint"
+                )
+                checkpoint_compactor = None
+                checkpoint_can_call_model = (
+                    str(turn_status or "").strip().lower()
+                    not in {"cancelled", "interrupted", "needs_user_input", "waiting_user"}
+                    and not pending_turn
+                )
+                if checkpoint_can_call_model and hasattr(provider_runtime, "compact_context"):
+                    checkpoint_compactor = lambda payload: provider_runtime.compact_context(
+                        payload,
+                        model=selected_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                    )
+                with request_phase_timer.measure("runtime_compaction_checkpoint_ms"):
+                    runtime_compaction_checkpoint = maybe_auto_compact_session(
+                        session=session,
+                        model=selected_model,
+                        max_output_tokens=req.settings.max_output_tokens,
+                        pending_message="",
+                        phase=checkpoint_phase,
+                        llm_compactor=checkpoint_compactor,
+                        force=True,
+                        trigger=checkpoint_phase,
+                        auto_compact_ratio=config.context_auto_compact_ratio,
+                        danger_compact_ratio=config.context_danger_compact_ratio,
+                        history_soft_limit_tokens=config.context_history_soft_limit_tokens,
+                        **_context_profile_overrides(requested_provider, selected_model),
+                    )
+                runtime_compaction_checkpoint_persisted = bool(
+                    runtime_compaction_checkpoint.get("compacted")
+                )
+            except Exception as checkpoint_exc:
+                runtime_compaction_checkpoint = {
+                    "compacted": False,
+                    "reason": "checkpoint_exception",
+                    "error": f"{checkpoint_exc.__class__.__name__}: {str(checkpoint_exc)[:500]}",
+                }
+            runtime_result["compaction_checkpoint"] = dict(runtime_compaction_checkpoint)
         intermediate_turns = [
             dict(item)
             for item in list(runtime_result.get("intermediate_turns") or [])
@@ -4559,6 +4585,10 @@ def _process_chat_request(
             if isinstance(inspector_run_state.get("compaction_status"), dict)
             else {}
         )
+        if runtime_compaction_checkpoint_persisted:
+            # The checkpoint is the canonical persisted state. Do not let the
+            # earlier live-only estimate overwrite its generation or bounds.
+            runtime_compaction_status = {}
         for key, value in runtime_compaction_status.items():
             if value in (None, "", [], {}):
                 continue

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import app.context_meter as context_meter_module
+from app.context_pack import parse_compaction_summary_text
 from app.context_meter import (
     ContextWindowStatus,
     build_compaction_status,
@@ -296,6 +297,141 @@ def test_manual_compact_can_pack_short_history_with_smaller_retention() -> None:
     runtime_view = build_runtime_context_payload(session=session)
     assert [turn["id"] for turn in runtime_view["history_turns"]] == ["turn-3", "turn-4"]
     assert "hi" in runtime_view["summary"]
+
+
+def test_compaction_splits_completed_tool_batches_inside_one_agent_turn() -> None:
+    items: list[dict[str, object]] = [
+        {"id": "u1", "turn_id": "run-1", "role": "user", "content": "Investigate the repository."},
+    ]
+    for index in range(3):
+        call_id = f"call-{index}"
+        items.extend(
+            [
+                {
+                    "id": f"a-tool-{index}",
+                    "turn_id": "run-1",
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": call_id, "name": "read_file", "args": {"path": f"file-{index}.py"}}],
+                },
+                {
+                    "id": f"tool-{index}",
+                    "turn_id": "run-1",
+                    "role": "tool",
+                    "name": "read_file",
+                    "tool_call_id": call_id,
+                    "content": '{"ok":true,"summary":"inspected file"}',
+                },
+            ]
+        )
+    items.append(
+        {
+            "id": "a-final",
+            "turn_id": "run-1",
+            "role": "assistant",
+            "content": "Investigation complete.",
+        }
+    )
+    session = {"thread_transcript": {"schema_version": 3, "items": items}}
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=2048,
+        force=True,
+        trigger="manual",
+        retained_history_tokens=1,
+    )
+
+    assert result["compacted"] is True
+    assert session["compaction_state"]["compacted_until_item_id"] == "tool-2"
+    runtime_view = build_runtime_context_payload(session=session, retained_history_tokens=1)
+    assert [item["id"] for item in runtime_view["history_turns"]] == ["a-final"]
+
+
+def test_compaction_never_splits_an_unfinished_tool_batch() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 3,
+            "items": [
+                {"id": "u1", "role": "user", "content": "Start."},
+                {"id": "a1", "role": "assistant", "content": "Finished first step."},
+                {"id": "u2", "role": "user", "content": "Continue."},
+                {
+                    "id": "a-pending",
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "pending-call", "name": "exec_command", "args": {"cmd": "python task.py"}}],
+                },
+            ],
+        }
+    }
+
+    result = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=2048,
+        force=True,
+        trigger="manual",
+        retained_history_tokens=1,
+    )
+
+    assert result["compacted"] is True
+    assert session["compaction_state"]["compacted_until_item_id"] == "a1"
+    runtime_view = build_runtime_context_payload(session=session, retained_history_tokens=1)
+    assert [item["id"] for item in runtime_view["history_turns"]] == ["u2", "a-pending"]
+
+
+def test_second_compaction_generation_guarantees_previous_memory_is_merged() -> None:
+    session = {
+        "turns": [
+            {"id": "u1", "role": "user", "text": "You must preserve requirement ALPHA."},
+            {"id": "a1", "role": "assistant", "text": "ALPHA recorded."},
+            {"id": "u2", "role": "user", "text": "First checkpoint."},
+            {"id": "a2", "role": "assistant", "text": "Checkpoint complete."},
+        ]
+    }
+    first = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=2048,
+        force=True,
+        trigger="manual",
+        retained_history_tokens=1,
+    )
+    assert first["compacted"] is True
+
+    session["turns"].extend(
+        [
+            {"id": "u3", "role": "user", "text": "You must preserve requirement BETA."},
+            {"id": "a3", "role": "assistant", "text": "BETA recorded."},
+        ]
+    )
+
+    def llm_returns_only_new_memory(_payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "summary": {
+                "user_requirements": ["You must preserve requirement BETA."],
+                "current_state": "The latest checkpoint recorded BETA.",
+            },
+            "source": "llm",
+        }
+
+    second = maybe_auto_compact_session(
+        session=session,
+        model="gpt-5.4",
+        max_output_tokens=2048,
+        force=True,
+        trigger="manual",
+        retained_history_tokens=1,
+        llm_compactor=llm_returns_only_new_memory,
+    )
+
+    assert second["compacted"] is True
+    parsed = parse_compaction_summary_text(session["compaction_state"]["compacted_history"])
+    assert parsed is not None
+    assert any("ALPHA" in item for item in parsed.user_requirements)
+    assert any("BETA" in item for item in parsed.user_requirements)
 
 
 def test_current_long_user_input_does_not_trigger_history_noise_compaction() -> None:

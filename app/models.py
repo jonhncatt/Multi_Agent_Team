@@ -295,6 +295,7 @@ class CompactionStatus(BaseModel):
     generation: int = 0
     compacted_history_present: bool = False
     compacted_history_chars: int = 0
+    compacted_until_item_id: str = ""
     compacted_until_turn_id: str = ""
     retained_turn_ids: list[str] = Field(default_factory=list)
     retained_turn_count: int = 0
@@ -311,6 +312,7 @@ class CompactionStatus(BaseModel):
     danger_compact_token_limit: int = 0
     history_soft_limit_tokens: int = 0
     history_noise_tokens: int = 0
+    incomplete_protocol_transactions: int = 0
     threshold_source: str = ""
     auto_compact_limit_source: str = ""
     estimate_source: str = ""

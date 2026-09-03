@@ -554,12 +554,29 @@ def _tool_evidence_for_compaction(event: Any) -> dict[str, Any] | None:
 
 
 def _normalize_compaction_tool_evidence(raw_values: Any) -> list[dict[str, Any]]:
-    evidence: list[dict[str, Any]] = []
+    all_evidence: list[dict[str, Any]] = []
     for item in list(raw_values or []):
         normalized = _tool_evidence_for_compaction(item)
         if normalized:
-            evidence.append(normalized)
-        if len(evidence) >= 24:
+            all_evidence.append(normalized)
+    if len(all_evidence) <= 96:
+        return all_evidence
+    failures = [
+        item
+        for item in all_evidence
+        if str(item.get("status") or "").strip().lower()
+        not in {"", "ok", "success", "completed", "complete", "done"}
+    ][:32]
+    selected = [*all_evidence[:16], *failures, *all_evidence[-64:]]
+    evidence: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in selected:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(item)
+        if len(evidence) >= 96:
             break
     return evidence
 
@@ -568,6 +585,7 @@ def build_compaction_input(
     *,
     old_messages: Any = None,
     tool_evidence: Any = None,
+    previous_summary: Any = None,
     task_state: dict[str, Any] | None = None,
     work_cursor: dict[str, Any] | None = None,
     modified_files: Any = None,
@@ -579,12 +597,27 @@ def build_compaction_input(
     # the thread transcript and tool evidence only. Harness state is not model
     # history and must not be smuggled back into a Session=Thread summary.
     _ = task_state, work_cursor, current_status
-    messages = []
+    message_candidates: list[tuple[int, dict[str, Any]]] = []
     raw_old_messages = list(old_messages or [])
-    for item in raw_old_messages[-24:]:
+    for index, item in enumerate(raw_old_messages):
         turn = _compact_turn_for_compaction(item)
         if turn:
-            messages.append(turn)
+            message_candidates.append((index, turn))
+    user_candidates = [
+        item for item in message_candidates if str(item[1].get("role") or "") == "user"
+    ]
+    if len(user_candidates) > 32:
+        user_candidates = [*user_candidates[:16], *user_candidates[-16:]]
+    non_user_candidates = [
+        item
+        for item in message_candidates
+        if str(item[1].get("role") or "") not in {"user", "tool"}
+    ][-64:]
+    selected_messages = sorted(
+        {index: turn for index, turn in [*user_candidates, *non_user_candidates]}.items(),
+        key=lambda item: item[0],
+    )
+    messages = [turn for _index, turn in selected_messages]
     evidence = _normalize_compaction_tool_evidence(tool_evidence)
     files = _unique_strings(
         list(modified_files or []),
@@ -603,7 +636,19 @@ def build_compaction_input(
         limit=12,
         max_chars=500,
     )
+    previous_structured = None
+    previous_text = ""
+    if isinstance(previous_summary, (dict, CompactionSummary)):
+        previous_structured = dump_model(normalize_compaction_summary(previous_summary))
+    elif str(previous_summary or "").strip():
+        previous_text = str(previous_summary or "").strip()
+        parsed_previous = parse_compaction_summary_text(previous_text)
+        if parsed_previous is not None:
+            previous_structured = dump_model(parsed_previous)
+            previous_text = ""
     return {
+        **({"previous_summary": previous_structured} if previous_structured else {}),
+        **({"previous_summary_text": _truncate(previous_text, 10_000)} if previous_text else {}),
         "old_messages": messages,
         "tool_evidence": evidence,
         "modified_files": files,
@@ -646,12 +691,56 @@ def parse_compaction_summary_text(text: str) -> CompactionSummary | None:
         except Exception:
             continue
         if isinstance(decoded, dict):
+            nested = decoded.get("summary")
+            if isinstance(nested, dict):
+                return normalize_compaction_summary(nested)
             return normalize_compaction_summary(decoded)
     return None
 
 
+def merge_compaction_summary(
+    previous: CompactionSummary | None,
+    current: CompactionSummary,
+) -> CompactionSummary:
+    if previous is None:
+        return current
+
+    def merge_values(old: list[str], new: list[str], *, limit: int) -> list[str]:
+        combined = _unique_strings([*old, *new], limit=max(limit * 2, limit), max_chars=500)
+        if len(combined) <= limit:
+            return combined
+        # Preserve durable early constraints while reserving half of the
+        # bounded memory for the newest evidence and decisions.
+        old_budget = max(1, limit // 2)
+        return _unique_strings(
+            [*combined[:old_budget], *combined[-(limit - old_budget) :]],
+            limit=limit,
+            max_chars=500,
+        )
+
+    return CompactionSummary(
+        user_requirements=merge_values(previous.user_requirements, current.user_requirements, limit=12),
+        confirmed_facts=merge_values(previous.confirmed_facts, current.confirmed_facts, limit=12),
+        files_touched=merge_values(previous.files_touched, current.files_touched, limit=16),
+        decisions=merge_values(previous.decisions, current.decisions, limit=10),
+        failed_attempts=merge_values(previous.failed_attempts, current.failed_attempts, limit=12),
+        current_state=str(current.current_state or previous.current_state or "").strip()[:1000],
+        next_steps=merge_values(previous.next_steps, current.next_steps, limit=12),
+        open_questions=merge_values(previous.open_questions, current.open_questions, limit=8),
+        do_not_repeat=merge_values(previous.do_not_repeat, current.do_not_repeat, limit=8),
+    )
+
+
 def build_structured_compaction_summary(compaction_input: dict[str, Any] | None) -> CompactionSummary:
     payload = dict(compaction_input or {})
+    previous_summary = None
+    raw_previous = payload.get("previous_summary")
+    if isinstance(raw_previous, dict):
+        previous_summary = normalize_compaction_summary(raw_previous)
+    elif str(payload.get("previous_summary_text") or "").strip():
+        previous_summary = parse_compaction_summary_text(
+            str(payload.get("previous_summary_text") or "")
+        )
     evidence = [dict(item) for item in list(payload.get("tool_evidence") or []) if isinstance(item, dict)]
     confirmed: list[str] = []
     user_requirements: list[str] = []
@@ -701,7 +790,7 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
     current_state = ""
     if assistant_messages:
         current_state = "Earlier assistant response (unverified): " + assistant_messages[-1]
-    return CompactionSummary(
+    current_summary = CompactionSummary(
         user_requirements=_unique_strings(user_requirements, limit=12, max_chars=500),
         confirmed_facts=_unique_strings(confirmed, limit=12, max_chars=500),
         files_touched=_unique_strings(
@@ -716,6 +805,7 @@ def build_structured_compaction_summary(compaction_input: dict[str, Any] | None)
         open_questions=[],
         do_not_repeat=_unique_strings(do_not_repeat, limit=8, max_chars=500),
     )
+    return merge_compaction_summary(previous_summary, current_summary)
 
 
 def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
@@ -735,6 +825,7 @@ def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
         "You are compacting a coding-agent thread. Return only strict JSON matching this schema.\n"
         "Do not include raw tool output, raw traces, provider payloads, secrets, or stack traces.\n"
         "The result is unverified continuation memory, not Harness task state.\n"
+        "If previous_summary is present, merge it with the new evidence. Never discard durable earlier requirements, facts, decisions, failures, or open questions merely because they are older.\n"
         "Use only the supplied transcript and source-marked tool evidence. Never invent plan status, completion, or verification.\n"
         "Use only concise durable facts needed to continue the task.\n\n"
         "schema:\n"
@@ -746,32 +837,44 @@ def render_compaction_prompt(compaction_input: dict[str, Any]) -> str:
 
 def render_compaction_summary(summary: CompactionSummary | dict[str, Any], *, generation: int | None = None) -> str:
     payload = normalize_compaction_summary(summary)
-    sections: list[tuple[str, list[str] | str]] = [
-        ("user_requirements", payload.user_requirements),
-        ("confirmed_facts", payload.confirmed_facts),
-        ("files_touched", payload.files_touched),
-        ("decisions", payload.decisions),
-        ("failed_attempts", payload.failed_attempts),
-        ("current_state", payload.current_state),
-        ("next_steps", payload.next_steps),
-        ("open_questions", payload.open_questions),
-        ("do_not_repeat", payload.do_not_repeat),
-    ]
-    lines = ["Compacted thread history."]
-    if generation is not None:
-        lines.append(f"generation: {max(0, int(generation))}")
-    for title, values in sections:
-        if isinstance(values, str):
-            text = _truncate(values, 1000)
-            if text:
-                lines.append(f"{title}: {text}")
-            continue
-        clean_values = _summary_strings(values, limit=16, max_chars=500)
-        if not clean_values:
-            continue
-        lines.append(f"{title}:")
-        lines.extend(f"- {item}" for item in clean_values)
-    return _clean_text("\n".join(lines), limit=4000)
+    summary_payload = dump_model(payload)
+    for key, value in list(summary_payload.items()):
+        if isinstance(value, list):
+            summary_payload[key] = [str(item or "").strip()[:400] for item in value if str(item or "").strip()]
+        elif isinstance(value, str):
+            summary_payload[key] = value.strip()[:800]
+    envelope = {
+        "type": "compacted_thread_history",
+        "generation": max(0, int(generation or 0)),
+        "summary": summary_payload,
+    }
+    # Keep valid machine-readable JSON in the persisted summary. This lets the
+    # next generation merge the prior memory instead of replacing it with only
+    # the newest compacted segment.
+    prefix = "Compacted thread history. "
+    rendered = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), default=str)
+    while len(prefix) + len(rendered) > 10_000:
+        list_keys = [
+            key
+            for key, value in summary_payload.items()
+            if isinstance(value, list) and len(value) > 1
+        ]
+        if list_keys:
+            largest_key = max(
+                list_keys,
+                key=lambda key: sum(len(str(item or "")) for item in summary_payload[key]),
+            )
+            summary_payload[largest_key].pop()
+        else:
+            for key, value in list(summary_payload.items()):
+                if isinstance(value, list):
+                    summary_payload[key] = [str(item or "")[:200] for item in value]
+                elif isinstance(value, str):
+                    summary_payload[key] = value[:400]
+            rendered = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), default=str)
+            break
+        rendered = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), default=str)
+    return prefix + rendered
 
 
 def _has_context_manager_data(payload: dict[str, Any]) -> bool:

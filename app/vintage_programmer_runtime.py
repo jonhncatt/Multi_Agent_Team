@@ -4108,6 +4108,7 @@ class VintageProgrammerRuntime:
         locale: str,
         trace_events: list[dict[str, Any]],
         allow_llm: bool = True,
+        previous_summary: str = "",
     ) -> str:
         compacted_old_messages = list(old_messages or [])
         if end_index <= start_index and not compacted_old_messages:
@@ -4117,6 +4118,7 @@ class VintageProgrammerRuntime:
             old_messages=compacted_old_messages,
             tool_evidence=[dump_model(item) for item in compacted_events],
             modified_files=extract_modified_files_from_events(compacted_events),
+            previous_summary=previous_summary,
         )
         fallback_summary = build_structured_compaction_summary(compaction_input)
         prompt = render_compaction_prompt(compaction_input)
@@ -4386,6 +4388,7 @@ class VintageProgrammerRuntime:
         locale: str,
         trace_events: list[dict[str, Any]],
         context_window_status: ContextWindowStatus,
+        previous_summary: str = "",
         retained_context_tokens: int = DEFAULT_RETAINED_CONTEXT_TOKENS,
     ) -> tuple[list[Any], int, bool, ContextWindowStatus]:
         if not self._messages_at_tool_boundary(messages):
@@ -4440,7 +4443,28 @@ class VintageProgrammerRuntime:
             token_budget=retained_context_tokens,
         )
         if len(tail_messages) >= len(dynamic_messages):
-            return messages, compacted_until, False, live_status
+            dynamic_transactions = self._live_message_transactions(dynamic_messages)
+            if len(dynamic_transactions) == 1:
+                transaction_tokens = count_tokens(
+                    json.dumps(
+                        [
+                            self._serialize_model_message(message)
+                            for message in dynamic_transactions[0]
+                        ],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ),
+                    model,
+                )
+                oversized_floor = max(
+                    int(retained_context_tokens or DEFAULT_RETAINED_CONTEXT_TOKENS),
+                    int(live_status.auto_compact_token_limit * 0.5),
+                )
+                if transaction_tokens >= oversized_floor:
+                    tail_messages = []
+            if len(tail_messages) >= len(dynamic_messages):
+                return messages, compacted_until, False, live_status
         retained_tool_results = sum(1 for message in tail_messages if self._message_role(message) == "tool")
         end_index = max(compacted_until, len(tool_events) - retained_tool_results)
         if end_index <= compacted_until:
@@ -4456,6 +4480,8 @@ class VintageProgrammerRuntime:
             run_id=run_id,
             locale=locale,
             trace_events=trace_events,
+            allow_llm=False,
+            previous_summary=previous_summary,
         )
         if not summary:
             return messages, compacted_until, False, live_status
@@ -4844,6 +4870,8 @@ class VintageProgrammerRuntime:
             notes.append("image_attachment_context")
         tool_events: list[ToolEvent] = []
         stream_items: list[dict[str, Any]] = []
+        compaction_checkpoint_required = False
+        mid_turn_compaction_summary = ""
         effective_model = requested_model
         plan_state: list[dict[str, Any]] = [
             dict(item)
@@ -5552,6 +5580,7 @@ class VintageProgrammerRuntime:
             nonlocal base_message_count
             nonlocal replay_end_index
             nonlocal context_window_status
+            nonlocal compaction_checkpoint_required
 
             if request_too_large_recovery.get("attempted"):
                 return False
@@ -5647,6 +5676,7 @@ class VintageProgrammerRuntime:
                 return False
 
             messages = compacted_messages
+            compaction_checkpoint_required = True
             message_count_delta = len(messages) - original_count
             base_message_count = max(0, base_message_count + message_count_delta)
             replay_end_index = max(
@@ -6528,6 +6558,7 @@ class VintageProgrammerRuntime:
                     if downgrade_note not in notes:
                         notes.append(downgrade_note)
                 if downgrade_compacted:
+                    compaction_checkpoint_required = True
                     base_message_count = len(messages)
                     live_compaction_status["generation"] = int(live_compaction_status.get("generation") or 0) + 1
                     live_compaction_status["last_compaction_phase"] = "model_downgrade"
@@ -7856,7 +7887,16 @@ class VintageProgrammerRuntime:
                         locale=locale,
                         trace_events=trace_events,
                         context_window_status=context_window_status,
+                        previous_summary=mid_turn_compaction_summary,
                     )
+                    if compacted:
+                        try:
+                            mid_turn_compaction_summary = str(
+                                getattr(messages[base_message_count], "content", "") or ""
+                            )
+                        except Exception:
+                            mid_turn_compaction_summary = ""
+                        compaction_checkpoint_required = True
                 context_window_status = live_window_status
                 live_compaction_status.update(live_window_status.to_dict())
                 live_compaction_status["context_window_status"] = live_window_status.to_dict()
@@ -8624,6 +8664,7 @@ class VintageProgrammerRuntime:
                 else None
             ),
             "compaction_status": dict(live_compaction_status),
+            "compaction_checkpoint_required": bool(compaction_checkpoint_required),
             "answer_stream": dict(answer_stream),
             "tool_events": [dump_model(item) for item in tool_events],
             "transcript_delta": self._transcript_delta(

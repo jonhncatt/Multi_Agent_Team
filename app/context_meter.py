@@ -14,6 +14,7 @@ from app.context_pack import (
     CompactionSummary,
     build_compaction_input,
     build_structured_compaction_summary,
+    merge_compaction_summary,
     normalize_compaction_summary,
     parse_compaction_summary_text,
     render_compaction_summary,
@@ -55,7 +56,7 @@ _STATIC_OVERHEAD_TOKENS = 1200
 DEFAULT_RETAINED_CONTEXT_TOKENS = 20_000
 _MAX_RETAINED_ITEM_IDS = 96
 _COMPACTED_HISTORY_DIGEST_LIMIT = 12
-_COMPACTED_HISTORY_CHAR_LIMIT = 6000
+_COMPACTED_HISTORY_CHAR_LIMIT = 12_000
 _K_WINDOW_PATTERN = re.compile(r"(?<!\d)(\d{1,4})k(?![a-z0-9])", re.IGNORECASE)
 _RAW_WINDOW_PATTERN = re.compile(r"(?<!\d)(32768|65536|131072|262144|1048576)(?!\d)")
 
@@ -414,6 +415,7 @@ def _default_compaction_state() -> dict[str, Any]:
     return {
         "generation": 0,
         "compacted_history": "",
+        "compacted_until_item_id": "",
         "compacted_until_turn_id": "",
         "retained_turn_ids": [],
         "last_compacted_at": "",
@@ -474,6 +476,11 @@ def ensure_compaction_state(session: dict[str, Any] | None) -> dict[str, Any]:
     normalized = {
         "generation": max(0, int(payload.get("generation") or 0)),
         "compacted_history": str(payload.get("compacted_history") or ""),
+        "compacted_until_item_id": str(
+            payload.get("compacted_until_item_id")
+            or payload.get("compacted_until_turn_id")
+            or ""
+        ),
         "compacted_until_turn_id": str(payload.get("compacted_until_turn_id") or ""),
         "retained_turn_ids": [
             str(item).strip()
@@ -588,17 +595,71 @@ def _model_visible_transcript_items(items: list[dict[str, Any]]) -> list[dict[st
     return [dict(item) for item in list(items or []) if not bool(item.get("ui_only"))]
 
 
-def _transcript_transactions(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    transactions: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
+def _transcript_transactions(
+    items: list[dict[str, Any]],
+) -> list[tuple[list[dict[str, Any]], bool]]:
+    """Split history at model-protocol boundaries, not whole user Turns.
+
+    An Assistant tool-call message and every matching Tool result remain one
+    atomic transaction. Plain user/assistant messages are independently
+    compactable, while an unfinished tool batch is marked incomplete and must
+    stay in the live tail.
+    """
+
+    transactions: list[tuple[list[dict[str, Any]], bool]] = []
+    pending_group: list[dict[str, Any]] = []
+    pending_ids: set[str] = set()
     for item in list(items or []):
-        if str(item.get("role") or "") == "user" and current:
-            transactions.append(current)
-            current = []
-        current.append(item)
-    if current:
-        transactions.append(current)
-    return transactions
+        role = str(item.get("role") or "")
+        if pending_group:
+            tool_call_id = str(item.get("tool_call_id") or "").strip()
+            if role == "tool" and tool_call_id in pending_ids:
+                pending_group.append(item)
+                pending_ids.discard(tool_call_id)
+                if not pending_ids:
+                    transactions.append((pending_group, True))
+                    pending_group = []
+                continue
+            transactions.append((pending_group, False))
+            pending_group = []
+            pending_ids = set()
+
+        call_ids = {
+            str(call.get("id") or "").strip()
+            for call in list(item.get("tool_calls") or [])
+            if isinstance(call, dict) and str(call.get("id") or "").strip()
+        }
+        if role == "assistant" and call_ids:
+            leading_user: list[dict[str, Any]] = []
+            if (
+                transactions
+                and transactions[-1][1]
+                and len(transactions[-1][0]) == 1
+                and str(transactions[-1][0][0].get("role") or "") == "user"
+            ):
+                leading_user, _leading_complete = transactions.pop()
+            pending_group = [*leading_user, item]
+            pending_ids = set(call_ids)
+        else:
+            transactions.append(([item], role != "tool"))
+    if pending_group:
+        transactions.append((pending_group, False))
+    paired: list[tuple[list[dict[str, Any]], bool]] = []
+    for group, complete in transactions:
+        if (
+            complete
+            and len(group) == 1
+            and str(group[0].get("role") or "") == "assistant"
+            and paired
+            and paired[-1][1]
+            and len(paired[-1][0]) == 1
+            and str(paired[-1][0][0].get("role") or "") == "user"
+        ):
+            previous_group, _previous_complete = paired.pop()
+            paired.append(([*previous_group, *group], True))
+            continue
+        paired.append((group, complete))
+    return paired
 
 
 def _retained_transcript_items(
@@ -612,7 +673,13 @@ def _retained_transcript_items(
     token_budget = max(1, int(retained_history_tokens or DEFAULT_RETAINED_CONTEXT_TOKENS))
     retained_groups: list[list[dict[str, Any]]] = []
     retained_tokens = 0
-    for group in reversed(transactions):
+    for group, complete in reversed(transactions):
+        if not complete:
+            retained_groups.append(group)
+            retained_tokens += quick_count_tokens(
+                json.dumps(group, ensure_ascii=False, separators=(",", ":"))
+            )
+            continue
         group_tokens = quick_count_tokens(json.dumps(group, ensure_ascii=False, separators=(",", ":")))
         if retained_groups and retained_tokens + group_tokens > token_budget:
             break
@@ -763,6 +830,12 @@ def build_compaction_status(
         if str(item.get("id") or "").strip()
         and str(item.get("id") or "").strip() not in retained_ids
     ]
+    protocol_transactions = _transcript_transactions(
+        list(runtime_view.get("uncovered_turns") or [])
+    )
+    incomplete_protocol_transactions = sum(
+        1 for _group, complete in protocol_transactions if not complete
+    )
     history_noise_tokens = quick_count_tokens(
         json.dumps(compactable_turns, ensure_ascii=False, separators=(",", ":"))
     )
@@ -788,6 +861,11 @@ def build_compaction_status(
         "generation": max(0, int(compaction_state.get("generation") or 0)),
         "compacted_history_present": bool(str(compaction_state.get("compacted_history") or "").strip()),
         "compacted_history_chars": len(str(compaction_state.get("compacted_history") or "")),
+        "compacted_until_item_id": str(
+            compaction_state.get("compacted_until_item_id")
+            or compaction_state.get("compacted_until_turn_id")
+            or ""
+        ),
         "compacted_until_turn_id": str(compaction_state.get("compacted_until_turn_id") or ""),
         "retained_turn_ids": retained_turn_ids,
         "retained_turn_count": len(retained_turn_ids),
@@ -798,6 +876,7 @@ def build_compaction_status(
         "danger_compact_token_limit": int(window_status.effective_context_window),
         "history_soft_limit_tokens": int(normalized_history_soft_limit),
         "history_noise_tokens": int(history_noise_tokens),
+        "incomplete_protocol_transactions": int(incomplete_protocol_transactions),
         "observed_input_tokens": observed_input_tokens,
         "observed_projected_tokens": int(observed_projected_tokens),
         "estimated_static_tokens": int(estimated_static_tokens),
@@ -1034,6 +1113,15 @@ def _build_compaction_summary_with_optional_llm(
     if summary is None or not _compaction_summary_has_content(summary):
         meta["fallback_reason"] = "llm_output_invalid"
         return fallback_summary, meta
+    previous_summary = build_structured_compaction_summary(
+        {
+            key: compaction_input.get(key)
+            for key in ("previous_summary", "previous_summary_text")
+            if compaction_input.get(key) not in (None, "", {}, [])
+        }
+    )
+    if _compaction_summary_has_content(previous_summary):
+        summary = merge_compaction_summary(previous_summary, summary)
     meta["source"] = source or "llm"
     meta["llm_used"] = True
     meta["fallback_reason"] = ""
@@ -1123,11 +1211,17 @@ def maybe_auto_compact_session(
         if str(item.get("id") or "").strip() and str(item.get("id") or "").strip() not in retained_ids
     ]
     if not compacted_turns:
+        no_compaction_reason = (
+            "pending_protocol_transaction"
+            if int(status_before.get("incomplete_protocol_transactions") or 0) > 0
+            else "retained_tail_only"
+        )
         return {
             "compacted": False,
             "status_before": status_before,
             "status_after": status_before,
             "compacted_turn_count": 0,
+            "reason": no_compaction_reason,
         }
 
     state = ensure_compaction_state(session)
@@ -1177,6 +1271,7 @@ def maybe_auto_compact_session(
     compaction_input = build_compaction_input(
         old_messages=compacted_messages or compacted_turns,
         tool_evidence=compacted_tool_evidence,
+        previous_summary=str(state.get("compacted_history") or ""),
     )
     compaction_summary, compaction_meta = _build_compaction_summary_with_optional_llm(
         compaction_input,
@@ -1192,11 +1287,21 @@ def maybe_auto_compact_session(
         compact_limit = int(status_before.get("danger_compact_token_limit") or compact_limit)
     elif compact_reason == "history_soft_limit":
         compact_limit = int(status_before.get("history_soft_limit_tokens") or compact_limit)
+    normalized_trigger = str(trigger or "auto").strip() or "auto"
+    state_reason = (
+        "manual"
+        if normalized_trigger == "manual"
+        else (
+            normalized_trigger
+            if normalized_trigger in {"runtime_checkpoint", "request_too_large_recovery"}
+            else compact_reason
+        )
+    )
     last_compaction_reason = (
         "manual"
-        if force or str(trigger or "") == "manual"
+        if state_reason == "manual"
         else (
-            f"{compact_reason}:"
+            f"{state_reason}:"
             f"{int(status_before.get('estimated_context_tokens') or 0)}/"
             f"{compact_limit}"
         )
@@ -1205,13 +1310,14 @@ def maybe_auto_compact_session(
         {
             "generation": next_generation,
             "compacted_history": compacted_history,
+            "compacted_until_item_id": last_turn_id,
             "compacted_until_turn_id": last_turn_id,
             "retained_turn_ids": [str(item.get("id") or "").strip() for item in retained_turns if str(item.get("id") or "").strip()],
             "last_compacted_at": _now_iso(),
             "last_compaction_reason": last_compaction_reason,
             "last_compaction_phase": str(phase or "pre_turn"),
             "phase": str(phase or "pre_turn"),
-            "reason": "manual" if force or str(trigger or "") == "manual" else compact_reason,
+            "reason": state_reason,
             "before_tokens": int(status_before.get("estimated_context_tokens") or 0),
             "mode": "token_budget",
             "compaction_source": str(compaction_meta.get("source") or ""),

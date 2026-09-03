@@ -23,7 +23,8 @@ def test_pre_turn_compaction_emits_started_before_running_compactor() -> None:
         '"reason": "pending_turn_resume"',
         "if not pre_compaction_started_item:",
         "elif pre_compaction_started_item:",
-        '\"summary\": translate(locale, \"chat.replacement_history_compaction_checked\")',
+        '\"chat.replacement_history_compaction_deferred\"',
+        '\"chat.replacement_history_compaction_checked\"',
     )
     for token in required_tokens:
         assert token in source, token
@@ -39,6 +40,7 @@ def test_pre_turn_compaction_progress_strings_are_localized() -> None:
     for key in (
         "chat.replacement_history_compacting",
         "chat.replacement_history_compaction_checked",
+        "chat.replacement_history_compaction_deferred",
     ):
         assert source.count(f'"{key}"') == 3
 

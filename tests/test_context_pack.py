@@ -59,6 +59,40 @@ def test_structured_compaction_summary_omits_raw_trace() -> None:
     assert "未经验证" not in " ".join(summary.confirmed_facts)
 
 
+def test_compaction_input_keeps_early_user_constraints_and_failures_when_bounded() -> None:
+    old_messages = [
+        {"role": "user", "text": "You must preserve the earliest constraint ORION-742."},
+        *[
+            {"role": "assistant", "text": f"intermediate assistant observation {index}"}
+            for index in range(140)
+        ],
+    ]
+    tool_evidence = [
+        {"name": "read_file", "status": "ok", "summary": f"successful observation {index}"}
+        for index in range(120)
+    ]
+    tool_evidence.insert(
+        60,
+        {"name": "exec_command", "status": "failed", "summary": "critical failure NEBULA-19"},
+    )
+
+    compaction_input = build_compaction_input(
+        old_messages=old_messages,
+        tool_evidence=tool_evidence,
+    )
+
+    assert any(
+        "ORION-742" in str(item.get("text") or "")
+        for item in compaction_input["old_messages"]
+    )
+    assert any(
+        "NEBULA-19" in str(item.get("summary") or "")
+        for item in compaction_input["tool_evidence"]
+    )
+    assert len(compaction_input["old_messages"]) <= 96
+    assert len(compaction_input["tool_evidence"]) <= 96
+
+
 def test_context_manager_does_not_read_unscoped_legacy_fields() -> None:
     manager = ContextManager.from_context_payload(
         {
