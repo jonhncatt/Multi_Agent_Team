@@ -181,6 +181,25 @@ def test_duplicate_tool_result_is_idempotent() -> None:
     assert len([item for item in transcript["items"] if item["role"] == "tool"]) == 1
 
 
+def test_transcript_preserves_ui_only_user_message_marker() -> None:
+    transcript = default_thread_transcript()
+    append_transcript_items(
+        transcript,
+        [
+            {
+                "id": "visible-choice",
+                "role": "user",
+                "content": "Markdown",
+                "ui_only": True,
+            }
+        ],
+    )
+
+    [item] = normalize_thread_transcript(transcript)["items"]
+    assert item["content"] == "Markdown"
+    assert item["ui_only"] is True
+
+
 def test_transcript_preserves_bounded_turn_change_summary() -> None:
     transcript = {
         "schema_version": 2,

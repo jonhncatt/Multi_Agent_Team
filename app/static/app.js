@@ -7745,7 +7745,10 @@ function App() {
         setActiveRunThreadId(runOwnerThreadId);
       }
 
-      const userMessage = isTurnResume ? null : createMessage("user", messageText);
+      const displayStructuredUserInput = String(structuredUserInputResponse.type || "") === "request_user_input";
+      const userMessage = (!isTurnResume || displayStructuredUserInput)
+        ? createMessage("user", messageText)
+        : null;
       const runModelName = String(
         chatSettings.model ||
         (activeProviderProfile && activeProviderProfile.default_model) ||

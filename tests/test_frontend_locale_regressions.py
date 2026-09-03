@@ -883,7 +883,8 @@ def test_command_execution_approval_runtime_control_and_payload_are_wired() -> N
     assert 'approval_token: approvalToken' in script
     assert 'tool_call_id: toolCallId' in script
     assert 'const isTurnResume = ["command_execution", "task_update", "request_user_input"]' in script
-    assert 'const userMessage = isTurnResume ? null : createMessage("user", messageText);' in script
+    assert 'const displayStructuredUserInput = String(structuredUserInputResponse.type || "") === "request_user_input";' in script
+    assert 'const userMessage = (!isTurnResume || displayStructuredUserInput)' in script
     assert 'event === "request_user_input"' in script
     assert 'pending_approval: nextApproval' in script
     assert 'markPendingAsRuntimeNotice' in script
@@ -955,6 +956,7 @@ def test_runtime_input_options_can_resume_the_pending_turn_directly() -> None:
     assert 'type: "request_user_input"' in script
     assert "tool_call_id: String(activePendingInput.tool_call_id" in script
     assert "const allQuestionsAnswered = pendingRuntimeQuestions.every" in script
+    assert 'const displayStructuredUserInput = String(structuredUserInputResponse.type || "") === "request_user_input";' in script
     assert 'onClick=${() => handleRuntimeInputOption(item, option)}' in script
     assert 'className=${`runtime-input-option ${selected ? "is-selected" : ""}`}' in script
     assert "option.description" in script

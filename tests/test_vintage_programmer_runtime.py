@@ -1163,6 +1163,38 @@ def test_thread_messages_include_hidden_background_subagent_mailbox_item(tmp_pat
     ]
 
 
+def test_thread_messages_skip_ui_only_user_input_response(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([])
+    runtime = VintageProgrammerRuntime(
+        config=load_config(),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=backend,
+    )
+
+    _, messages = runtime._thread_messages(
+        {
+            "thread_transcript": {
+                "schema_version": 3,
+                "items": [
+                    {"id": "u1", "role": "user", "content": "Prepare the report."},
+                    {
+                        "id": "choice",
+                        "role": "user",
+                        "content": "Markdown",
+                        "ui_only": True,
+                    },
+                    {"id": "a1", "role": "assistant", "content": "Done."},
+                ],
+            }
+        }
+    )
+
+    assert [message.content for message in messages] == ["Prepare the report.", "Done."]
+
+
 def test_thread_messages_apply_compaction_summary(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

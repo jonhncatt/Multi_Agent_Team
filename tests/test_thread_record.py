@@ -194,3 +194,30 @@ def test_model_only_subagent_mailbox_item_is_persisted_but_hidden_from_ui_turns(
 
     assert encoded["thread_transcript"]["items"][-1]["model_only"] is True
     assert [turn["text"] for turn in project_turns_from_thread(encoded)] == ["start", "parent done"]
+
+
+def test_ui_only_user_input_response_is_persisted_and_visible_in_ui_turns() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 3,
+            "items": [
+                {"id": "u1", "role": "user", "content": "Prepare the report."},
+                {
+                    "id": "choice",
+                    "role": "user",
+                    "content": "Markdown",
+                    "ui_only": True,
+                },
+                {"id": "a1", "role": "assistant", "content": "Done."},
+            ],
+        }
+    }
+
+    encoded = encode_thread_record(session)
+
+    assert encoded["thread_transcript"]["items"][1]["ui_only"] is True
+    assert [turn["text"] for turn in project_turns_from_thread(encoded)] == [
+        "Prepare the report.",
+        "Markdown",
+        "Done.",
+    ]

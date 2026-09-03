@@ -211,6 +211,8 @@ def normalize_transcript_item(raw: Any) -> dict[str, Any] | None:
         item["task_context"] = dict(task_context)
     if bool(raw.get("model_only")):
         item["model_only"] = True
+    if role == "user" and bool(raw.get("ui_only")):
+        item["ui_only"] = True
     return item
 
 

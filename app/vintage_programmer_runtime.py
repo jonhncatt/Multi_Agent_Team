@@ -676,6 +676,10 @@ class VintageProgrammerRuntime:
         )
         messages: list[Any] = []
         for item in items:
+            # request_user_input answers already exist as Tool messages. Their
+            # ui_only user copy must not be replayed to the model a second time.
+            if bool(item.get("ui_only")):
+                continue
             role = str(item.get("role") or "")
             content = str(item.get("content") or "")
             if role == "user":

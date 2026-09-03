@@ -584,6 +584,10 @@ def _serializable_transcript_item(item: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _model_visible_transcript_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(item) for item in list(items or []) if not bool(item.get("ui_only"))]
+
+
 def _transcript_transactions(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     transactions: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -630,6 +634,7 @@ def _build_runtime_context_view(
         legacy_turns=payload.get("turns") or [],
     )
     _summary, active_items = transcript_items_after_compaction(transcript, compaction_state)
+    active_items = _model_visible_transcript_items(active_items)
     uncovered_turns = [_serializable_transcript_item(item) for item in active_items]
     retained_turns = _retained_transcript_items(
         uncovered_turns,
@@ -650,7 +655,10 @@ def _build_runtime_context_view(
         "history_turns": retained_turns,
         "uncovered_turns": uncovered_turns,
         "retained_turn_ids": retained_turn_ids,
-        "all_turns": [_serializable_transcript_item(item) for item in list(transcript.get("items") or [])],
+        "all_turns": [
+            _serializable_transcript_item(item)
+            for item in _model_visible_transcript_items(list(transcript.get("items") or []))
+        ],
         "compaction_state": compaction_state,
     }
 
@@ -669,6 +677,7 @@ def _build_serialized_context(
         transcript,
         ensure_compaction_state(payload),
     )
+    items = _model_visible_transcript_items(items)
     serialized = {
         "compacted_history": compacted_summary,
         "thread_transcript": items,
@@ -1128,6 +1137,7 @@ def maybe_auto_compact_session(
         legacy_turns=(session or {}).get("turns") or [],
     )
     _previous_summary, active_transcript_items = transcript_items_after_compaction(transcript, state)
+    active_transcript_items = _model_visible_transcript_items(active_transcript_items)
     last_turn_id = str(compacted_turns[-1].get("id") or "").strip()
     transcript_items_to_compact: list[dict[str, Any]] = []
     for item in active_transcript_items:

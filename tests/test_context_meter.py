@@ -454,6 +454,28 @@ def test_history_retention_uses_token_budget_without_a_turn_count_cap() -> None:
     assert len(runtime_view["history_turns"]) == 40
 
 
+def test_ui_only_user_input_response_is_not_counted_as_model_context() -> None:
+    session = {
+        "thread_transcript": {
+            "schema_version": 3,
+            "items": [
+                {"id": "u1", "role": "user", "content": "Prepare the report."},
+                {
+                    "id": "choice",
+                    "role": "user",
+                    "content": "Markdown",
+                    "ui_only": True,
+                },
+                {"id": "a1", "role": "assistant", "content": "Done."},
+            ],
+        }
+    }
+
+    runtime_view = build_runtime_context_payload(session=session)
+
+    assert [turn["id"] for turn in runtime_view["history_turns"]] == ["u1", "a1"]
+
+
 def test_maybe_auto_compact_session_uses_llm_compactor_when_available() -> None:
     captured: dict[str, object] = {}
     session = {

@@ -4067,23 +4067,78 @@ def _process_chat_request(
                 get_task_store().mark_loaded(requested_task_id, thread_id=session_id)
         session_store.save(session)
 
+        expected_pending_tool_call = (
+            dict(pending_turn_for_resume.get("tool_call") or {})
+            if isinstance(pending_turn_for_resume.get("tool_call"), dict)
+            else {}
+        )
+        expected_pending_call_id = str(
+            pending_turn_for_resume.get("tool_call_id")
+            or expected_pending_tool_call.get("id")
+            or ""
+        ).strip()
+        visible_user_input_response = (
+            str((req.user_input_response or {}).get("response") or req.message or "").strip()
+            if response_type == "request_user_input"
+            else ""
+        )
+        visible_user_input_item_id = (
+            "user-input-response-"
+            + hashlib.sha1(
+                f"{session_id}:{expected_pending_call_id}".encode("utf-8")
+            ).hexdigest()[:20]
+            if expected_pending_call_id and visible_user_input_response
+            else ""
+        )
+
+        def persist_visible_user_input_response() -> bool:
+            if not visible_user_input_item_id or not visible_user_input_response:
+                return False
+            transcript = dict(session.get("thread_transcript") or {})
+            transcript_items = [
+                dict(value)
+                for value in [
+                    *list(transcript.get("items") or []),
+                    *list(transcript.get("deferred_items") or []),
+                ]
+                if isinstance(value, dict)
+            ]
+            if any(
+                str(value.get("id") or "") == visible_user_input_item_id
+                for value in transcript_items
+            ):
+                return True
+            if not any(
+                str(value.get("role") or "") == "tool"
+                and str(value.get("tool_call_id") or "") == expected_pending_call_id
+                for value in transcript_items
+            ):
+                return False
+            session_store.append_thread_items(
+                session,
+                [
+                    {
+                        # The matching Tool result is the model-visible answer.
+                        # This second copy exists only so the user's choice is
+                        # visible and auditable in the conversation UI.
+                        "id": visible_user_input_item_id,
+                        "turn_id": logical_turn_id,
+                        "role": "user",
+                        "content": visible_user_input_response,
+                        "ui_only": True,
+                    }
+                ],
+            )
+            return True
+
         def persist_resolved_pending_tool_result(*, item: dict[str, Any]) -> bool:
             if not is_turn_resume or not isinstance(item, dict):
                 return False
-            expected_tool_call = (
-                dict(pending_turn_for_resume.get("tool_call") or {})
-                if isinstance(pending_turn_for_resume.get("tool_call"), dict)
-                else {}
-            )
-            expected_call_id = str(
-                pending_turn_for_resume.get("tool_call_id")
-                or expected_tool_call.get("id")
-                or ""
-            ).strip()
             resolved_call_id = str(item.get("tool_call_id") or "").strip()
-            if not expected_call_id or resolved_call_id != expected_call_id:
+            if not expected_pending_call_id or resolved_call_id != expected_pending_call_id:
                 return False
             session_store.append_thread_items(session, [item])
+            persist_visible_user_input_response()
             current_pending = dict((session.get("pending_interaction") or {}).get("turn") or {})
             current_tool_call = (
                 dict(current_pending.get("tool_call") or {})
@@ -4363,6 +4418,7 @@ def _process_chat_request(
                     del transcript_delta[index]
                 break
         session_store.append_thread_items(session, transcript_delta)
+        persist_visible_user_input_response()
         intermediate_turns = [
             dict(item)
             for item in list(runtime_result.get("intermediate_turns") or [])

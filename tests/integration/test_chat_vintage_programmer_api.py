@@ -505,6 +505,116 @@ class _ResumableCommandApprovalRuntime(_PendingCommandApprovalRuntime):
         return result
 
 
+class _ResumableRequestUserInputRuntime(_FakeVintageRuntime):
+    def run(self, *, message, settings, context, progress_cb=None):
+        response = dict(context.get("user_input_response") or {})
+        result = super().run(
+            message=message,
+            settings=settings,
+            context=context,
+            progress_cb=progress_cb,
+        )
+        if str(response.get("type") or "") != "request_user_input":
+            summary = "Choose the target format."
+            pending_input = {
+                "type": "request_user_input",
+                "tool_call_id": "request-input-tool-call",
+                "summary": summary,
+                "questions": [
+                    {
+                        "id": "format",
+                        "header": "Format",
+                        "question": "Which format?",
+                        "options": [{"label": "Markdown"}, {"label": "JSON"}],
+                    }
+                ],
+            }
+            pending_turn = {
+                "schema_version": 1,
+                "type": "request_user_input",
+                "turn_id": str(context.get("logical_turn_id") or context.get("run_id") or "turn-input"),
+                "request_message": str(message or ""),
+                "triggering_user_turn_id": str(context.get("triggering_user_turn_id") or ""),
+                "tool_call_id": "request-input-tool-call",
+                "tool_call": {
+                    "id": "request-input-tool-call",
+                    "name": "request_user_input",
+                    "args": {"questions": pending_input["questions"]},
+                },
+                "plan": [],
+            }
+            result.update(
+                {
+                    "text": summary,
+                    "final_answer": "",
+                    "model_draft": "",
+                    "turn_status": "needs_user_input",
+                    "pending_user_input": pending_input,
+                    "pending_approval": {},
+                    "pending_turn": pending_turn,
+                    "tool_events": [],
+                    "answer_bundle": {"summary": "", "claims": [], "citations": [], "warnings": []},
+                    "transcript_delta": [
+                        {
+                            "id": "request-input-model-call",
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "request-input-tool-call",
+                                    "name": "request_user_input",
+                                    "args": {"questions": pending_input["questions"]},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        else:
+            assert response.get("tool_call_id") == "request-input-tool-call"
+            tool_result = {
+                "ok": True,
+                "answered": True,
+                "response": str(response.get("response") or ""),
+                "summary": "The user supplied the requested input.",
+            }
+            tool_item = {
+                "role": "tool",
+                "content": json.dumps(tool_result),
+                "tool_call_id": "request-input-tool-call",
+                "name": "request_user_input",
+            }
+            persist = context.get("persist_resolved_pending_tool_result")
+            assert callable(persist)
+            assert persist(item=tool_item)
+            result.update(
+                {
+                    "text": "I will deliver the report as Markdown.",
+                    "final_answer": "I will deliver the report as Markdown.",
+                    "turn_status": "completed",
+                    "pending_user_input": {},
+                    "pending_approval": {},
+                    "pending_turn": {},
+                    "transcript_delta": [tool_item],
+                }
+            )
+        inspector = dict(result.get("inspector") or {})
+        run_state = dict(inspector.get("run_state") or {})
+        run_state.update(
+            {
+                "turn_status": result["turn_status"],
+                "pending_user_input": dict(result.get("pending_user_input") or {}),
+                "pending_approval": dict(result.get("pending_approval") or {}),
+                "pending_turn": dict(result.get("pending_turn") or {}),
+                "final_answer": str(result.get("final_answer") or ""),
+                "model_draft": str(result.get("model_draft") or ""),
+            }
+        )
+        inspector["run_state"] = run_state
+        result["inspector"] = inspector
+        return result
+
+
 class _PersistThenFailApprovalRuntime(_PendingCommandApprovalRuntime):
     def run(self, *, message, settings, context, progress_cb=None):
         response = dict(context.get("user_input_response") or {})
@@ -2744,6 +2854,73 @@ def test_command_approval_decision_resumes_same_turn_without_new_human_message(m
     assert transcript_items[2]["tool_call_id"] == "approval-tool-call"
     assert "user_declined" in transcript_items[2]["content"]
     assert not any("command_execution_cancelled" in str(item.get("content") or "") for item in transcript_items)
+    assert session["pending_interaction"] == {}
+
+
+def test_request_user_input_choice_is_a_visible_user_message_but_not_a_second_model_input(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(main_app, "vintage_programmer_runtime", _ResumableRequestUserInputRuntime())
+    client = TestClient(main_app.app)
+
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "Prepare the report.",
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "session_id": session_id,
+            "message": "Markdown",
+            "user_input_response": {
+                "type": "request_user_input",
+                "tool_call_id": "request-input-tool-call",
+                "response": "Markdown",
+            },
+            "settings": {
+                "model": "gpt-test",
+                "max_output_tokens": 1024,
+                "max_context_turns": 20,
+                "enable_tools": True,
+                "response_style": "short",
+            },
+        },
+    )
+
+    assert second.status_code == 200
+    session = main_app.session_store.load(session_id)
+    assert session is not None
+    assert [turn["role"] for turn in session["turns"]] == ["user", "user", "assistant"]
+    assert [turn["text"] for turn in session["turns"]] == [
+        "Prepare the report.",
+        "Markdown",
+        "I will deliver the report as Markdown.",
+    ]
+    transcript_items = session["thread_transcript"]["items"]
+    assert [item["role"] for item in transcript_items] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
+    assert transcript_items[2]["tool_call_id"] == "request-input-tool-call"
+    assert transcript_items[3]["content"] == "Markdown"
+    assert transcript_items[3]["ui_only"] is True
     assert session["pending_interaction"] == {}
 
 
