@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import openai
@@ -50,6 +51,32 @@ class _RunnerWithSharedClient(_BlockingRunner):
     def __init__(self, shared_client: _SharedClient) -> None:
         super().__init__()
         self.root_client = shared_client
+
+
+def test_build_llm_forwards_explicit_reasoning_effort() -> None:
+    captured: dict[str, Any] = {}
+    backend = object.__new__(VPRuntimeBackend)
+    backend.config = SimpleNamespace(
+        openai_use_responses_api=False,
+        openai_temperature=None,
+        openai_base_url="",
+        openai_ca_cert_path="",
+    )
+    backend._new_owned_http_client = lambda: None
+
+    def fake_chat_openai(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    backend._chat_openai_cls = lambda: fake_chat_openai
+    backend._build_llm_direct_fallback(
+        auth=SimpleNamespace(api_key="test-key"),
+        model="gpt-5.6-sol",
+        max_output_tokens=1024,
+        reasoning_effort="xhigh",
+    )
+
+    assert captured["reasoning_effort"] == "xhigh"
 
 
 def test_model_invocation_returns_cancelled_sentinel_without_waiting_for_provider() -> None:

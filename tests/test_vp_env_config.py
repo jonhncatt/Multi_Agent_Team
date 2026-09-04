@@ -343,6 +343,12 @@ def test_chat_settings_max_context_turns_default_remains_2000() -> None:
     assert ChatSettings().max_context_turns == 2000
 
 
+def test_chat_settings_accept_supported_reasoning_efforts() -> None:
+    assert ChatSettings().reasoning_effort is None
+    assert ChatSettings(reasoning_effort="none").reasoning_effort == "none"
+    assert ChatSettings(reasoning_effort="max").reasoning_effort == "max"
+
+
 def test_resolve_python_command_prefers_python_on_windows() -> None:
     which = lambda name: f"/fake/{name}" if name in {"python", "py", "python3"} else None
 

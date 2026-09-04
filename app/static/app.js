@@ -34,6 +34,7 @@ const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
+const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
 const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
 const DEFAULT_PROJECT_LIST_HEIGHT = 140;
 const MIN_PROJECT_LIST_HEIGHT = 72;
@@ -43,6 +44,7 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
+const ACTIVITY_CLOCK_INTERVAL_MS = 5_000;
 const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const APP_UPDATE_INITIAL_DELAY_MS = 30 * 1_000;
 const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
@@ -61,7 +63,7 @@ const COMPACT_PLAN_ITEM_LIMIT = 6;
 const MAIN_CARD_TRACE_EVENT_LIMIT = 50;
 const RECENT_TOOL_TIMELINE_LIMIT = 24;
 const LIVE_PROGRESS_STALE_AFTER_MS = 5_000;
-const STREAM_UI_FLUSH_INTERVAL_MS = 100;
+const STREAM_UI_FLUSH_INTERVAL_MS = 250;
 const CHAT_AUTO_SCROLL_THRESHOLD_PX = 100;
 const NORMALIZED_ACTIVITY_MARKER = Symbol("normalizedActivity");
 const THEME_COLOR_OPTIONS = [
@@ -82,8 +84,10 @@ const DEFAULT_SETTINGS = {
   enable_tools: true,
   debug_raw: false,
   permission_profile: "auto",
+  reasoning_effort: null,
   response_style: "normal",
 };
+const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
 const SLASH_COMMANDS = [
   { command: "/status", labelKey: "slash.status.label", descriptionKey: "slash.status.description" },
   { command: "/compact", labelKey: "slash.compact.label", descriptionKey: "slash.compact.description" },
@@ -127,6 +131,11 @@ function normalizePermissionProfile(raw) {
   };
   const normalized = aliases[value] || value;
   return ["default", "auto", "full_access"].includes(normalized) ? normalized : "auto";
+}
+
+function normalizeReasoningEffort(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  return REASONING_EFFORTS.includes(value) ? value : "";
 }
 
 function normalizeLocaleValue(raw, supportedLocales = I18nRuntime.SUPPORTED_LOCALES, fallbackLocale = "ja-JP") {
@@ -4301,6 +4310,9 @@ function App() {
   const [chatSettings, setChatSettings] = useState(() => ({
     ...DEFAULT_SETTINGS,
     locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
+    reasoning_effort: normalizeReasoningEffort(
+      window.localStorage.getItem(REASONING_EFFORT_STORAGE_KEY),
+    ) || null,
   }));
   const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [modelTouched, setModelTouched] = useState(false);
@@ -4714,6 +4726,15 @@ function App() {
     window.localStorage.setItem(THEME_COLOR_STORAGE_KEY, option.id);
   }, [themeColor]);
 
+  useEffect(() => {
+    const effort = normalizeReasoningEffort(chatSettings.reasoning_effort);
+    if (effort) {
+      window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort);
+    } else {
+      window.localStorage.removeItem(REASONING_EFFORT_STORAGE_KEY);
+    }
+  }, [chatSettings.reasoning_effort]);
+
   useEffect(() => () => {
     if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
   }, []);
@@ -4977,7 +4998,10 @@ function App() {
       if (document.visibilityState !== "hidden") syncActivityClock();
     };
     syncActivityClock();
-    const intervalId = window.setInterval(() => setActivityClockMs(Date.now()), 1000);
+    const intervalId = window.setInterval(
+      () => setActivityClockMs(Date.now()),
+      ACTIVITY_CLOCK_INTERVAL_MS,
+    );
     window.addEventListener("focus", syncActivityClock);
     document.addEventListener("visibilitychange", syncVisibleActivityClock);
     return () => {
@@ -9633,6 +9657,12 @@ function App() {
   const selectedPermissionProfileClass = selectedPermissionProfile.replaceAll("_", "-");
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
+  const selectedReasoningEffort = normalizeReasoningEffort(chatSettings.reasoning_effort);
+  const selectedReasoningLabel = t(
+    `settings.reasoning_effort.${selectedReasoningEffort || "default"}`,
+  );
+  const selectedReasoningDescription = t("settings.reasoning_effort.help");
+  const selectedReasoningAriaLabel = `${t("settings.reasoning_effort")}: ${selectedReasoningLabel}. ${selectedReasoningDescription}`;
   const activePermissionProfile = normalizePermissionProfile(
     (hasLiveRuntimeState ? runState.permission_profile : "")
     || selectedPermissionProfile
@@ -11670,6 +11700,35 @@ function App() {
                   <option value="default" title=${t("settings.permission_profile.default.help")}>${t("settings.permission_profile.default")}</option>
                   <option value="auto" title=${t("settings.permission_profile.auto.help")}>${t("settings.permission_profile.auto")}</option>
                   <option value="full_access" title=${t("settings.permission_profile.full_access.help")}>${t("settings.permission_profile.full_access")}</option>
+                </select>
+              </label>
+              <label
+                className=${`composer-reasoning-effort effort-${selectedReasoningEffort || "default"}`}
+                title=${selectedReasoningDescription}
+              >
+                <span className="composer-reasoning-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
+                  </svg>
+                </span>
+                <select
+                  className="composer-reasoning-select"
+                  value=${selectedReasoningEffort}
+                  onChange=${(event) => {
+                    const nextValue = normalizeReasoningEffort(event.currentTarget.value);
+                    setChatSettings((prev) => ({
+                      ...prev,
+                      reasoning_effort: nextValue || null,
+                    }));
+                  }}
+                  disabled=${currentThreadBusy}
+                  title=${selectedReasoningDescription}
+                  aria-label=${selectedReasoningAriaLabel}
+                >
+                  <option value="">${t("settings.reasoning_effort.default")}</option>
+                  ${REASONING_EFFORTS.map((effort) => html`
+                    <option key=${effort} value=${effort}>${t(`settings.reasoning_effort.${effort}`)}</option>
+                  `)}
                 </select>
               </label>
             </div>

@@ -1242,7 +1242,8 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "hasConnectionHeartbeat" in script
     clock_body = script.split("const activeRunBelongsToCurrentThread = Boolean(", 1)[1].split("if (!shouldTickActivityClock)", 1)[0]
     assert "hasLiveTurnState" not in clock_body
-    assert "window.setInterval(() => setActivityClockMs(Date.now()), 1000)" in script
+    assert "const ACTIVITY_CLOCK_INTERVAL_MS = 5_000;" in script
+    assert "ACTIVITY_CLOCK_INTERVAL_MS," in script
     assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now(), locale)" in script
     assert 'window.addEventListener("focus", syncActivityClock)' in script
     assert 'document.addEventListener("visibilitychange", syncVisibleActivityClock)' in script
@@ -1257,6 +1258,16 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "const liveAssistantMessageId = hasLiveRuntimeState" in script
 
     assert 'onMouseLeave=${() => setContextMeterOpen(false)}' not in script
+
+
+def test_frontend_batches_live_rendering_and_avoids_persistent_shell_blurs() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
+
+    assert "const STREAM_UI_FLUSH_INTERVAL_MS = 250;" in script
+    assert re.search(r"\.thread-rail\s*\{[^}]*backdrop-filter", styles, re.S) is None
+    assert re.search(r"\.workspace-head\s*\{[^}]*backdrop-filter", styles, re.S) is None
+    assert re.search(r"\.composer-shell\s*\{[^}]*backdrop-filter", styles, re.S) is None
 
 
 def test_runtime_control_center_prioritizes_live_state_and_interactions() -> None:
@@ -1477,6 +1488,19 @@ def test_frontend_uses_large_context_default_max_output_tokens_and_server_bootst
     assert "max_output_tokens: 16384" in script
     assert "health.default_max_output_tokens" in script
     assert "setChatSettings((prev) =>" in script
+
+
+def test_reasoning_effort_selector_is_wired_into_the_composer() -> None:
+    script = APP_JS_PATH.read_text(encoding="utf-8")
+    locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]' in script
+    assert 'className="composer-reasoning-select"' in script
+    assert "reasoning_effort: nextValue || null" in script
+    assert 'const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";' in script
+    assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
+    assert '"settings.reasoning_effort.xhigh": "极高"' in locales
+    assert '"settings.reasoning_effort.max": "Max"' in locales
 
 
 def test_context_turns_help_text_is_wired_into_frontend() -> None:
@@ -2663,7 +2687,7 @@ def test_optimistic_thread_messages_are_idempotent_by_message_id() -> None:
 def test_assistant_stream_deltas_are_batched_before_react_updates() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert "const STREAM_UI_FLUSH_INTERVAL_MS = 100;" in script
+    assert "const STREAM_UI_FLUSH_INTERVAL_MS = 250;" in script
     assert 'let assistantDeltaBuffer = "";' in script
     assert "const flushAssistantDelta = () => {" in script
     assert 'const queueAssistantDelta = (delta, itemId = "") => {' in script

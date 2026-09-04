@@ -516,13 +516,20 @@ class VPRuntimeBackend:
             self._ChatOpenAI = ChatOpenAI
             return self._ChatOpenAI
 
-    def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
+    def _build_llm(
+        self,
+        model: str,
+        max_output_tokens: int,
+        use_responses_api: bool | None = None,
+        reasoning_effort: str | None = None,
+    ):
         auth = self._auth_manager.require()
         return self._build_llm_direct_fallback(
             auth=auth,
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=use_responses_api,
+            reasoning_effort=reasoning_effort,
         )
 
     def build_llm(
@@ -531,11 +538,13 @@ class VPRuntimeBackend:
         model: str,
         max_output_tokens: int,
         use_responses_api: bool | None = None,
+        reasoning_effort: str | None = None,
     ):
         return self._build_llm(
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=use_responses_api,
+            reasoning_effort=reasoning_effort,
         )
 
     def _build_llm_direct_fallback(
@@ -545,6 +554,7 @@ class VPRuntimeBackend:
         model: str,
         max_output_tokens: int,
         use_responses_api: bool | None = None,
+        reasoning_effort: str | None = None,
     ):
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
@@ -555,6 +565,9 @@ class VPRuntimeBackend:
         }
         if self.config.openai_temperature is not None:
             kwargs["temperature"] = self.config.openai_temperature
+        normalized_reasoning_effort = str(reasoning_effort or "").strip().lower()
+        if normalized_reasoning_effort:
+            kwargs["reasoning_effort"] = normalized_reasoning_effort
         if self.config.openai_base_url:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:
@@ -575,6 +588,7 @@ class VPRuntimeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         candidates = self._build_model_candidates(model)
         notes: list[str] = []
@@ -596,6 +610,7 @@ class VPRuntimeBackend:
                     enable_tools=enable_tools,
                     tool_names=tool_names,
                     event_cb=event_cb,
+                    reasoning_effort=reasoning_effort,
                 )
                 self._mark_model_success(candidate)
                 if candidate != model:
@@ -621,6 +636,7 @@ class VPRuntimeBackend:
                 enable_tools=enable_tools,
                 tool_names=tool_names,
                 event_cb=event_cb,
+                reasoning_effort=reasoning_effort,
             )
             notes.extend(invoke_notes)
             return response, runner, primary, notes
@@ -638,6 +654,7 @@ class VPRuntimeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[Any, Any, str, list[str]]:
         try:
             return self._invoke_runner(runner, messages, event_cb=event_cb), runner, model, []
@@ -651,6 +668,7 @@ class VPRuntimeBackend:
                 enable_tools=enable_tools,
                 tool_names=tool_names,
                 event_cb=event_cb,
+                reasoning_effort=reasoning_effort,
             )
             prefix = f"模型 {model} 在持续推理阶段失败（{self._shorten(exc, 200)}），已自动恢复重试。"
             return recovered_msg, recovered_runner, recovered_model, [prefix, *notes]
@@ -663,9 +681,14 @@ class VPRuntimeBackend:
         enable_tools: bool,
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
-        llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
+        llm = self._build_llm(
+            model=model,
+            max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
+        )
         runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
             return self._invoke_runner(runner, messages, event_cb=event_cb), runner, notes
@@ -681,6 +704,7 @@ class VPRuntimeBackend:
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=fallback_use_responses,
+            reasoning_effort=reasoning_effort,
         )
         runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
         return self._invoke_runner(runner_fb, messages, event_cb=event_cb), runner_fb, notes

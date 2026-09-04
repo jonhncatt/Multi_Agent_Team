@@ -4503,12 +4503,17 @@ class VintageProgrammerRuntime:
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         **kwargs: Any,
     ) -> Any:
-        if event_cb is not None:
-            try:
-                signature = inspect.signature(method)
-            except (TypeError, ValueError):
-                signature = None
-            if signature is not None and "event_cb" in signature.parameters:
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            if "reasoning_effort" not in signature.parameters:
+                # Older test/dynamic backends may not expose the new optional
+                # parameter yet. Keep those adapters compatible without
+                # hiding unrelated argument mistakes.
+                kwargs.pop("reasoning_effort", None)
+            if event_cb is not None and "event_cb" in signature.parameters:
                 kwargs["event_cb"] = event_cb
         return method(**kwargs)
 
@@ -4616,6 +4621,11 @@ class VintageProgrammerRuntime:
             or spec.default_model
             or self._config.default_model
         ).strip() or self._config.default_model
+        selected_reasoning_effort = str(
+            getattr(settings, "reasoning_effort", None) or ""
+        ).strip().lower()
+        if selected_reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+            selected_reasoning_effort = ""
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         if subagent_spec_payload and settings.enable_tools:
             explicit_subagent_tools = [
@@ -6264,6 +6274,7 @@ class VintageProgrammerRuntime:
                 status="running",
                 payload={
                     "model": requested_model,
+                    "reasoning_effort": selected_reasoning_effort or "provider_default",
                     "phase": "initial_model_response",
                     "tool_round": 0,
                     "tools_available": bool(runnable_tools),
@@ -6301,6 +6312,7 @@ class VintageProgrammerRuntime:
                     max_output_tokens=int(settings.max_output_tokens),
                     enable_tools=bool(runnable_tools),
                     tool_names=runnable_tools if runnable_tools else None,
+                    reasoning_effort=selected_reasoning_effort or None,
                     event_cb=self._make_model_stream_observer(
                         progress_cb=progress_cb,
                         run_id=run_id,
@@ -6370,6 +6382,7 @@ class VintageProgrammerRuntime:
                             max_output_tokens=int(settings.max_output_tokens),
                             enable_tools=bool(runnable_tools),
                             tool_names=runnable_tools if runnable_tools else None,
+                            reasoning_effort=selected_reasoning_effort or None,
                             event_cb=self._make_model_stream_observer(
                                 progress_cb=progress_cb,
                                 run_id=run_id,
@@ -6648,6 +6661,7 @@ class VintageProgrammerRuntime:
                         max_output_tokens=int(settings.max_output_tokens),
                         enable_tools=bool(runnable_tools),
                         tool_names=runnable_tools if runnable_tools else None,
+                        reasoning_effort=selected_reasoning_effort or None,
                         event_cb=self._make_model_stream_observer(
                             progress_cb=progress_cb,
                             run_id=run_id,
@@ -8035,6 +8049,7 @@ class VintageProgrammerRuntime:
                         max_output_tokens=int(settings.max_output_tokens),
                         enable_tools=True,
                         tool_names=runnable_tools,
+                        reasoning_effort=selected_reasoning_effort or None,
                         event_cb=self._make_model_stream_observer(
                             progress_cb=progress_cb,
                             run_id=run_id,
@@ -8151,6 +8166,7 @@ class VintageProgrammerRuntime:
                                 max_output_tokens=int(settings.max_output_tokens),
                                 enable_tools=True,
                                 tool_names=runnable_tools,
+                                reasoning_effort=selected_reasoning_effort or None,
                                 event_cb=self._make_model_stream_observer(
                                     progress_cb=progress_cb,
                                     run_id=run_id,

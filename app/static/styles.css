@@ -157,7 +157,6 @@ html[data-vp-desktop-shell="true"] .workspace-main {
   min-height: 0;
   border-right: 1px solid var(--line);
   background: rgba(248, 250, 252, 0.94);
-  backdrop-filter: blur(14px);
 }
 
 .rail-brand {
@@ -688,7 +687,6 @@ body.project-list-resizing * {
   padding: 8px 16px 7px;
   border-bottom: 1px solid var(--line);
   background: rgba(247, 248, 250, 0.92);
-  backdrop-filter: blur(12px);
 }
 
 .head-left {
@@ -882,8 +880,8 @@ body.project-list-resizing * {
   height: 9px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(17, 24, 39, 0.22);
   animation: live-run-pulse 1.35s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .live-run-dot.status-completed {
@@ -927,14 +925,13 @@ body.project-list-resizing * {
 }
 
 @keyframes live-run-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(17, 24, 39, 0.22);
+  0%, 100% {
+    opacity: 0.58;
+    transform: scale(0.86);
   }
-  70% {
-    box-shadow: 0 0 0 8px rgba(17, 24, 39, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(17, 24, 39, 0);
+  50% {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
@@ -2058,8 +2055,8 @@ body.project-list-resizing * {
   height: 9px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(17, 24, 39, 0.22);
   animation: live-run-pulse 1.35s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .message-article.error .message-card {
@@ -2073,7 +2070,6 @@ body.project-list-resizing * {
   max-width: 100%;
   border-top: 1px solid var(--line);
   background: rgba(247, 248, 250, 0.95);
-  backdrop-filter: blur(12px);
   padding: 8px 16px 10px;
   position: relative;
   z-index: 2;
@@ -2286,6 +2282,54 @@ body.project-list-resizing * {
 .composer-permission-profile {
   display: inline-flex;
   align-items: center;
+}
+
+.composer-reasoning-effort {
+  --reasoning-accent: var(--ink-soft);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--reasoning-accent);
+}
+
+.composer-reasoning-effort:not(.effort-default) {
+  --reasoning-accent: #c47a05;
+}
+
+.composer-reasoning-icon {
+  position: absolute;
+  left: 10px;
+  z-index: 1;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+.composer-reasoning-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+
+.composer-toolbar select.composer-reasoning-select {
+  min-width: 92px;
+  padding-left: 31px;
+  color: var(--reasoning-accent);
+  border-color: color-mix(in srgb, var(--reasoning-accent) 34%, var(--line));
+  background: var(--panel);
+  font-weight: 600;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.composer-toolbar select.composer-reasoning-select:hover,
+.composer-toolbar select.composer-reasoning-select:focus {
+  border-color: color-mix(in srgb, var(--reasoning-accent) 72%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--reasoning-accent) 14%, transparent);
+  outline: none;
 }
 
 .composer-toolbar select.composer-profile-select {
