@@ -11801,7 +11801,7 @@ function App() {
                 ${reasoningEffortOpen
                   ? html`
                       <section
-                        className=${`reasoning-effort-panel ${reasoningEffortSupported ? "" : "is-locked"}`}
+                        className=${`reasoning-effort-panel ${reasoningEffortSupported ? "" : "is-locked"} ${reasoningEffortSupported && selectedReasoningEffort === "max" ? "is-max" : ""}`}
                         role="dialog"
                         aria-label="Reasoning effort"
                         style=${{

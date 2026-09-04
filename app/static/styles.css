@@ -2424,7 +2424,7 @@ body.project-list-resizing * {
   border-radius: 6px;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   text-align: center;
   text-overflow: ellipsis;
@@ -2464,7 +2464,7 @@ body.project-list-resizing * {
 
 .reasoning-slider-wrap {
   position: relative;
-  height: 46px;
+  height: 50px;
   display: flex;
   align-items: center;
 }
@@ -2473,7 +2473,7 @@ body.project-list-resizing * {
   position: relative;
   z-index: 2;
   width: 100%;
-  height: 20px;
+  height: 24px;
   margin: 0;
   appearance: none;
   -webkit-appearance: none;
@@ -2489,8 +2489,8 @@ body.project-list-resizing * {
 }
 
 .reasoning-effort-slider::-webkit-slider-thumb {
-  width: 42px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   appearance: none;
   -webkit-appearance: none;
   border: 1px solid rgba(15, 23, 42, 0.12);
@@ -2501,8 +2501,8 @@ body.project-list-resizing * {
 }
 
 .reasoning-effort-slider::-moz-range-thumb {
-  width: 42px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 999px;
   background: #ffffff;
@@ -2520,6 +2520,39 @@ body.project-list-resizing * {
 
 .reasoning-effort-slider:focus-visible {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--reasoning-level-color) 18%, transparent);
+}
+
+.reasoning-effort-panel.is-max .reasoning-effort-slider:not(:disabled) {
+  background: linear-gradient(
+    105deg,
+    #f97316 0%,
+    #facc15 17%,
+    #fff7c2 31%,
+    #fb7185 46%,
+    #ef4444 63%,
+    #facc15 81%,
+    #f97316 100%
+  );
+  background-size: 240% 100%;
+  box-shadow: 0 0 14px rgba(249, 115, 22, 0.34);
+  animation: reasoning-max-flow 2.6s linear infinite;
+}
+
+.reasoning-effort-panel.is-max .reasoning-effort-slider::-webkit-slider-thumb {
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.2), 0 0 18px rgba(250, 204, 21, 0.46);
+}
+
+.reasoning-effort-panel.is-max .reasoning-effort-slider::-moz-range-thumb {
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.2), 0 0 18px rgba(250, 204, 21, 0.46);
+}
+
+@keyframes reasoning-max-flow {
+  from {
+    background-position: 180% 50%;
+  }
+  to {
+    background-position: -60% 50%;
+  }
 }
 
 .reasoning-effort-slider:disabled {
@@ -2558,6 +2591,12 @@ body.project-list-resizing * {
   color: var(--ink-faint);
   font-size: 11px;
   letter-spacing: 0.03em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-effort-panel.is-max .reasoning-effort-slider:not(:disabled) {
+    animation: none;
+  }
 }
 
 .composer-toolbar select.composer-profile-select {
