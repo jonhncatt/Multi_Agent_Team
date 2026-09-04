@@ -1493,6 +1493,7 @@ def test_frontend_uses_large_context_default_max_output_tokens_and_server_bootst
 def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
+    styles = STYLES_CSS_PATH.read_text(encoding="utf-8")
 
     assert 'value: "xhigh", label: "X-High", color: "#f97316"' in script
     assert 'className="reasoning-effort-slider"' in script
@@ -1506,6 +1507,8 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert 'const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";' in script
     assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
     assert "window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model)" in script
+    assert "width: min(480px, calc(100vw - 24px));" in styles
+    assert "height: 20px;" in styles
     assert '"settings.reasoning_effort.xhigh"' not in locales
     assert '"settings.reasoning_effort.max"' not in locales
 
