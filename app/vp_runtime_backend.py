@@ -566,7 +566,10 @@ class VPRuntimeBackend:
         if self.config.openai_temperature is not None:
             kwargs["temperature"] = self.config.openai_temperature
         normalized_reasoning_effort = str(reasoning_effort or "").strip().lower()
-        if normalized_reasoning_effort:
+        reasoning_model_supported = bool(
+            re.search(r"(?:^|[/:])gpt-5\.6(?:[-.:]|$)", str(model or ""), flags=re.IGNORECASE)
+        )
+        if normalized_reasoning_effort and reasoning_model_supported:
             kwargs["reasoning_effort"] = normalized_reasoning_effort
         if self.config.openai_base_url:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)

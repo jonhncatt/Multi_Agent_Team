@@ -4626,6 +4626,8 @@ class VintageProgrammerRuntime:
         ).strip().lower()
         if selected_reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
             selected_reasoning_effort = ""
+        if not re.search(r"(?:^|[/:])gpt-5\.6(?:[-.:]|$)", requested_model, flags=re.IGNORECASE):
+            selected_reasoning_effort = ""
         selected_tools = list(spec.allowed_tools if settings.enable_tools else ())
         if subagent_spec_payload and settings.enable_tools:
             explicit_subagent_tools = [

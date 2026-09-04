@@ -935,6 +935,68 @@ def test_runtime_does_not_create_a_second_semantic_task_completion_state(tmp_pat
     assert "task_completion" not in result["inspector"]["run_state"]
 
 
+def test_runtime_only_forwards_reasoning_effort_to_gpt_56_models(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+
+    class _ReasoningBackend(_FakeBackend):
+        def __init__(self) -> None:
+            super().__init__([_FakeMessage(content="ok")])
+            self.reasoning_efforts: list[str | None] = []
+
+        def _invoke_chat_with_runner(
+            self,
+            *,
+            messages: list[Any],
+            model: str,
+            max_output_tokens: int,
+            enable_tools: bool,
+            tool_names: list[str] | None = None,
+            reasoning_effort: str | None = None,
+        ) -> tuple[Any, Any, str, list[str]]:
+            self.reasoning_efforts.append(reasoning_effort)
+            return super()._invoke_chat_with_runner(
+                messages=messages,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                enable_tools=enable_tools,
+                tool_names=tool_names,
+            )
+
+    supported_backend = _ReasoningBackend()
+    supported_runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=supported_backend,
+    )
+    supported_runtime.run(
+        message="say ok",
+        settings=ChatSettings(
+            model="company/gpt-5.6-sol",
+            reasoning_effort="xhigh",
+            enable_tools=False,
+        ),
+        context={"session_id": "thread-reasoning-supported", "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)}},
+    )
+
+    locked_backend = _ReasoningBackend()
+    locked_runtime = VintageProgrammerRuntime(
+        config=_isolated_config(tmp_path),
+        kernel_runtime=object(),
+        agent_dir=agent_dir,
+        backend=locked_backend,
+    )
+    locked_runtime.run(
+        message="say ok",
+        settings=ChatSettings(model="gpt-5.4", reasoning_effort="max", enable_tools=False),
+        context={"session_id": "thread-reasoning-locked", "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)}},
+    )
+
+    assert supported_backend.reasoning_efforts == ["xhigh"]
+    assert locked_backend.reasoning_efforts == [None]
+
+
 def test_runtime_finishes_as_cancelled_when_model_invocation_is_detached(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)

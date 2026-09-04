@@ -35,6 +35,7 @@ const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
+const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";
 const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
 const DEFAULT_PROJECT_LIST_HEIGHT = 140;
 const MIN_PROJECT_LIST_HEIGHT = 72;
@@ -44,7 +45,7 @@ const CUSTOM_MODEL_VALUE = "__custom__";
 const WORKBENCH_TABS = ["run", "tools", "skills", "agent", "settings"];
 const RUNTIME_STATUS_ACTIVE_INTERVAL_MS = 5_000;
 const RUNTIME_STATUS_IDLE_INTERVAL_MS = 30_000;
-const ACTIVITY_CLOCK_INTERVAL_MS = 5_000;
+const ACTIVITY_CLOCK_INTERVAL_MS = 1_000;
 const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1_000;
 const APP_UPDATE_INITIAL_DELAY_MS = 30 * 1_000;
 const DESKTOP_HOST = String(window.__VP_DESKTOP_HOST__ || "").trim().toLowerCase();
@@ -87,7 +88,15 @@ const DEFAULT_SETTINGS = {
   reasoning_effort: null,
   response_style: "normal",
 };
-const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"];
+const REASONING_EFFORT_OPTIONS = [
+  { value: "none", label: "None", color: "#94a3b8" },
+  { value: "low", label: "Low", color: "#3b82f6" },
+  { value: "medium", label: "Medium", color: "#10b981" },
+  { value: "high", label: "High", color: "#f59e0b" },
+  { value: "xhigh", label: "X-High", color: "#f97316" },
+  { value: "max", label: "Max", color: "#ef4444" },
+];
+const REASONING_EFFORTS = REASONING_EFFORT_OPTIONS.map((item) => item.value);
 const SLASH_COMMANDS = [
   { command: "/status", labelKey: "slash.status.label", descriptionKey: "slash.status.description" },
   { command: "/compact", labelKey: "slash.compact.label", descriptionKey: "slash.compact.description" },
@@ -136,6 +145,11 @@ function normalizePermissionProfile(raw) {
 function normalizeReasoningEffort(raw) {
   const value = String(raw || "").trim().toLowerCase();
   return REASONING_EFFORTS.includes(value) ? value : "";
+}
+
+function supportsReasoningEffort(model) {
+  const normalized = String(model || "").trim();
+  return /(?:^|[/:])gpt-5\.6(?:[-.:]|$)/i.test(normalized);
 }
 
 function normalizeLocaleValue(raw, supportedLocales = I18nRuntime.SUPPORTED_LOCALES, fallbackLocale = "ja-JP") {
@@ -4403,6 +4417,7 @@ function App() {
   const [loadingEarlierTurns, setLoadingEarlierTurns] = useState(false);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [contextMeterOpen, setContextMeterOpen] = useState(false);
+  const [reasoningEffortOpen, setReasoningEffortOpen] = useState(false);
   const [slashCommandActiveIndex, setSlashCommandActiveIndex] = useState(0);
   const [projectMenu, setProjectMenu] = useState(null);
   const [threadMenu, setThreadMenu] = useState(null);
@@ -4426,6 +4441,7 @@ function App() {
   const autoScrollEnabledRef = useRef(true);
   const chatScrollRafRef = useRef(0);
   const contextMeterRef = useRef(null);
+  const reasoningEffortRef = useRef(null);
   const contextMeterCloseTimerRef = useRef(null);
   const bootReadyRef = useRef(false);
   const permissionProfileInitializedRef = useRef(false);
@@ -4734,6 +4750,42 @@ function App() {
       window.localStorage.removeItem(REASONING_EFFORT_STORAGE_KEY);
     }
   }, [chatSettings.reasoning_effort]);
+
+  useEffect(() => {
+    const model = String(chatSettings.model || "").trim();
+    if (!model) return;
+    if (supportsReasoningEffort(model)) {
+      window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model);
+      return;
+    }
+    setReasoningEffortOpen(false);
+    setChatSettings((prev) => (
+      normalizeReasoningEffort(prev.reasoning_effort)
+        ? { ...prev, reasoning_effort: null }
+        : prev
+    ));
+  }, [chatSettings.model]);
+
+  useEffect(() => {
+    if (!reasoningEffortOpen) return undefined;
+    const closeReasoningPanel = (event) => {
+      if (reasoningEffortRef.current && reasoningEffortRef.current.contains(event.target)) return;
+      setReasoningEffortOpen(false);
+    };
+    const closeReasoningPanelOnEscape = (event) => {
+      if (event.key === "Escape") setReasoningEffortOpen(false);
+    };
+    window.addEventListener("pointerdown", closeReasoningPanel);
+    window.addEventListener("keydown", closeReasoningPanelOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeReasoningPanel);
+      window.removeEventListener("keydown", closeReasoningPanelOnEscape);
+    };
+  }, [reasoningEffortOpen]);
+
+  useEffect(() => {
+    if (currentThreadBusy) setReasoningEffortOpen(false);
+  }, [currentThreadBusy]);
 
   useEffect(() => () => {
     if (copiedMessageTimerRef.current) window.clearTimeout(copiedMessageTimerRef.current);
@@ -9658,11 +9710,34 @@ function App() {
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
   const selectedReasoningEffort = normalizeReasoningEffort(chatSettings.reasoning_effort);
-  const selectedReasoningLabel = t(
-    `settings.reasoning_effort.${selectedReasoningEffort || "default"}`,
+  const reasoningEffortSupported = supportsReasoningEffort(chatSettings.model);
+  const selectedReasoningOption = REASONING_EFFORT_OPTIONS.find(
+    (item) => item.value === selectedReasoningEffort,
+  ) || null;
+  const displayedReasoningOption = selectedReasoningOption
+    || REASONING_EFFORT_OPTIONS.find((item) => item.value === "medium");
+  const selectedReasoningIndex = Math.max(
+    0,
+    REASONING_EFFORT_OPTIONS.findIndex((item) => item.value === displayedReasoningOption.value),
   );
-  const selectedReasoningDescription = t("settings.reasoning_effort.help");
-  const selectedReasoningAriaLabel = `${t("settings.reasoning_effort")}: ${selectedReasoningLabel}. ${selectedReasoningDescription}`;
+  const selectedReasoningLabel = reasoningEffortSupported
+    ? (selectedReasoningOption ? selectedReasoningOption.label : "Default")
+    : "Locked";
+  const selectedReasoningColor = selectedReasoningOption
+    ? selectedReasoningOption.color
+    : "#64748b";
+  const selectedReasoningProgress = `${
+    (selectedReasoningIndex / Math.max(1, REASONING_EFFORT_OPTIONS.length - 1)) * 100
+  }%`;
+  const selectedReasoningDescription = reasoningEffortSupported
+    ? "Reasoning effort for the main Agent and Subagents."
+    : "Select a GPT-5.6 model to unlock reasoning effort.";
+  const selectedReasoningAriaLabel = `Reasoning effort: ${selectedReasoningLabel}. ${selectedReasoningDescription}`;
+  const reasoningPanelModelOptions = dedupeStrings([
+    String(chatSettings.model || "").trim(),
+    String(window.localStorage.getItem(REASONING_MODEL_STORAGE_KEY) || "").trim(),
+    ...modelOptions,
+  ]);
   const activePermissionProfile = normalizePermissionProfile(
     (hasLiveRuntimeState ? runState.permission_profile : "")
     || selectedPermissionProfile
@@ -11702,35 +11777,104 @@ function App() {
                   <option value="full_access" title=${t("settings.permission_profile.full_access.help")}>${t("settings.permission_profile.full_access")}</option>
                 </select>
               </label>
-              <label
-                className=${`composer-reasoning-effort effort-${selectedReasoningEffort || "default"}`}
-                title=${selectedReasoningDescription}
+              <div
+                className=${`composer-reasoning-control ${reasoningEffortOpen ? "is-open" : ""}`}
+                ref=${reasoningEffortRef}
               >
-                <span className="composer-reasoning-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false">
-                    <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
-                  </svg>
-                </span>
-                <select
-                  className="composer-reasoning-select"
-                  value=${selectedReasoningEffort}
-                  onChange=${(event) => {
-                    const nextValue = normalizeReasoningEffort(event.currentTarget.value);
-                    setChatSettings((prev) => ({
-                      ...prev,
-                      reasoning_effort: nextValue || null,
-                    }));
-                  }}
+                <button
+                  className=${`composer-reasoning-trigger effort-${selectedReasoningEffort || "default"}`}
+                  type="button"
+                  onClick=${() => setReasoningEffortOpen((current) => !current)}
                   disabled=${currentThreadBusy}
                   title=${selectedReasoningDescription}
                   aria-label=${selectedReasoningAriaLabel}
+                  aria-haspopup="dialog"
+                  aria-expanded=${reasoningEffortOpen ? "true" : "false"}
                 >
-                  <option value="">${t("settings.reasoning_effort.default")}</option>
-                  ${REASONING_EFFORTS.map((effort) => html`
-                    <option key=${effort} value=${effort}>${t(`settings.reasoning_effort.${effort}`)}</option>
-                  `)}
-                </select>
-              </label>
+                  <span className="composer-reasoning-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" focusable="false">
+                      <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
+                    </svg>
+                  </span>
+                  <span>${selectedReasoningLabel}</span>
+                </button>
+                ${reasoningEffortOpen
+                  ? html`
+                      <section
+                        className=${`reasoning-effort-panel ${reasoningEffortSupported ? "" : "is-locked"}`}
+                        role="dialog"
+                        aria-label="Reasoning effort"
+                        style=${{
+                          "--reasoning-level-color": selectedReasoningColor,
+                          "--reasoning-progress": selectedReasoningProgress,
+                        }}
+                      >
+                        <div className="reasoning-effort-panel-head">
+                          <span className="reasoning-effort-panel-bolt" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                              <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
+                            </svg>
+                          </span>
+                          <span className="reasoning-effort-current">
+                            <strong>${reasoningEffortSupported ? (selectedReasoningOption ? selectedReasoningOption.label : "Default") : "Locked"}</strong>
+                            <select
+                              className="reasoning-effort-model-select"
+                              value=${String(chatSettings.model || "")}
+                              onChange=${(event) => updateModelSelection(event.currentTarget.value)}
+                              aria-label="Model"
+                              title="Model"
+                            >
+                              ${reasoningPanelModelOptions.map((model) => html`
+                                <option key=${model} value=${model}>${model}</option>
+                              `)}
+                            </select>
+                          </span>
+                          <button
+                            className="reasoning-effort-reset"
+                            type="button"
+                            onClick=${() => setChatSettings((prev) => ({ ...prev, reasoning_effort: null }))}
+                            disabled=${!reasoningEffortSupported || !selectedReasoningOption}
+                            title="Use provider default"
+                            aria-label="Use provider default"
+                          >↻</button>
+                        </div>
+                        <div className="reasoning-slider-wrap">
+                          <input
+                            className="reasoning-effort-slider"
+                            type="range"
+                            min="0"
+                            max=${String(REASONING_EFFORT_OPTIONS.length - 1)}
+                            step="1"
+                            value=${String(selectedReasoningIndex)}
+                            disabled=${!reasoningEffortSupported}
+                            onChange=${(event) => {
+                              const nextIndex = Math.max(
+                                0,
+                                Math.min(
+                                  REASONING_EFFORT_OPTIONS.length - 1,
+                                  Math.round(Number(event.currentTarget.value || 0)),
+                                ),
+                              );
+                              const nextValue = REASONING_EFFORT_OPTIONS[nextIndex].value;
+                              setChatSettings((prev) => ({ ...prev, reasoning_effort: nextValue }));
+                            }}
+                            aria-label="Reasoning effort"
+                            aria-valuetext=${selectedReasoningOption ? selectedReasoningOption.label : "Default"}
+                          />
+                          <div className="reasoning-slider-dots" aria-hidden="true">
+                            ${REASONING_EFFORT_OPTIONS.map((item) => html`
+                              <span key=${item.value}></span>
+                            `)}
+                          </div>
+                        </div>
+                        <div className="reasoning-slider-scale" aria-hidden="true">
+                          <span>None</span>
+                          <span>Max</span>
+                        </div>
+                      </section>
+                    `
+                  : null}
+              </div>
             </div>
             <div className="composer-toolbar-right">
               ${currentThreadBusy && activeRunId && String(activeRunThreadId || "").trim() === String(sessionId || "").trim()

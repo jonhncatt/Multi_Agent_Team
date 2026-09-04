@@ -1242,7 +1242,7 @@ def test_frontend_live_timer_uses_local_interval_for_running_turns() -> None:
     assert "hasConnectionHeartbeat" in script
     clock_body = script.split("const activeRunBelongsToCurrentThread = Boolean(", 1)[1].split("if (!shouldTickActivityClock)", 1)[0]
     assert "hasLiveTurnState" not in clock_body
-    assert "const ACTIVITY_CLOCK_INTERVAL_MS = 5_000;" in script
+    assert "const ACTIVITY_CLOCK_INTERVAL_MS = 1_000;" in script
     assert "ACTIVITY_CLOCK_INTERVAL_MS," in script
     assert "formatElapsedFromStartedAt(activeRunStartedAt, activityClockMs || Date.now(), locale)" in script
     assert 'window.addEventListener("focus", syncActivityClock)' in script
@@ -1490,17 +1490,24 @@ def test_frontend_uses_large_context_default_max_output_tokens_and_server_bootst
     assert "setChatSettings((prev) =>" in script
 
 
-def test_reasoning_effort_selector_is_wired_into_the_composer() -> None:
+def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model() -> None:
     script = APP_JS_PATH.read_text(encoding="utf-8")
     locales = LOCALES_JS_PATH.read_text(encoding="utf-8")
 
-    assert 'const REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]' in script
-    assert 'className="composer-reasoning-select"' in script
-    assert "reasoning_effort: nextValue || null" in script
+    assert 'value: "xhigh", label: "X-High", color: "#f97316"' in script
+    assert 'className="reasoning-effort-slider"' in script
+    assert "reasoning-effort-panel ${reasoningEffortSupported" in script
+    assert "supportsReasoningEffort(chatSettings.model)" in script
+    assert 'className="reasoning-effort-model-select"' in script
+    assert "Select a GPT-5.6 model to unlock reasoning effort." in script
+    assert "disabled=${!reasoningEffortSupported}" in script
+    assert "reasoning_effort: nextValue" in script
     assert 'const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";' in script
+    assert 'const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";' in script
     assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
-    assert '"settings.reasoning_effort.xhigh": "极高"' in locales
-    assert '"settings.reasoning_effort.max": "Max"' in locales
+    assert "window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model)" in script
+    assert '"settings.reasoning_effort.xhigh"' not in locales
+    assert '"settings.reasoning_effort.max"' not in locales
 
 
 def test_context_turns_help_text_is_wired_into_frontend() -> None:
