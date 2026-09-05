@@ -11836,7 +11836,11 @@ function App() {
                             disabled=${!reasoningEffortSupported || !selectedReasoningOption}
                             title="Use provider default"
                             aria-label="Use provider default"
-                          >↻</button>
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                              <path d="M3 11a9 9 0 1 1 2.65 7.36M3 4v7h7"></path>
+                            </svg>
+                          </button>
                         </div>
                         <div className="reasoning-slider-wrap">
                           <input
@@ -11866,10 +11870,6 @@ function App() {
                               <span key=${item.value}></span>
                             `)}
                           </div>
-                        </div>
-                        <div className="reasoning-slider-scale" aria-hidden="true">
-                          <span>None</span>
-                          <span>Max</span>
                         </div>
                       </section>
                     `

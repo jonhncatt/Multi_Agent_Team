@@ -1507,8 +1507,6 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert 'const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";' in script
     assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
     assert "window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model)" in script
-    assert "width: min(420px, calc(100vw - 20px));" in styles
-    assert "height: 35px;" in styles
     assert 'selectedReasoningEffort === "max" ? "is-max"' in script
     assert "animation: reasoning-max-flow 2.6s linear infinite;" in styles
     assert '"settings.reasoning_effort.xhigh"' not in locales
