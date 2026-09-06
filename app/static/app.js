@@ -37,6 +37,7 @@ const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
 const SERVICE_TIER_STORAGE_KEY = "vintage_programmer.service_tier";
 const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";
+const DEFAULT_REASONING_MODEL = "gpt-5.6-sol";
 const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
 const DEFAULT_PROJECT_LIST_HEIGHT = 140;
 const MIN_PROJECT_LIST_HEIGHT = 72;
@@ -152,6 +153,14 @@ function normalizeReasoningEffort(raw) {
 function supportsReasoningEffort(model) {
   const normalized = String(model || "").trim();
   return /(?:^|[/:])gpt-5\.6(?:[-.:]|$)/i.test(normalized);
+}
+
+function supportsPriorityMode(model) {
+  const normalized = String(model || "").trim();
+  return (
+    /(?:^|[/:])gpt-5\.6(?:[-.:]|$)/i.test(normalized)
+    || /(?:^|[/:])gpt-6-astra(?:[-.:]|$)/i.test(normalized)
+  );
 }
 
 function normalizeLocaleValue(raw, supportedLocales = I18nRuntime.SUPPORTED_LOCALES, fallbackLocale = "ja-JP") {
@@ -4766,14 +4775,20 @@ function App() {
     if (!model) return;
     if (supportsReasoningEffort(model)) {
       window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model);
-      return;
+    } else {
+      setChatSettings((prev) => (
+        normalizeReasoningEffort(prev.reasoning_effort)
+          ? { ...prev, reasoning_effort: null }
+          : prev
+      ));
     }
-    setReasoningEffortOpen(false);
-    setChatSettings((prev) => (
-      normalizeReasoningEffort(prev.reasoning_effort)
-        ? { ...prev, reasoning_effort: null }
-        : prev
-    ));
+    if (!supportsPriorityMode(model)) {
+      setChatSettings((prev) => (
+        prev.service_tier === "priority"
+          ? { ...prev, service_tier: "default" }
+          : prev
+      ));
+    }
   }, [chatSettings.model]);
 
   useEffect(() => {
@@ -7926,12 +7941,10 @@ function App() {
           settings: {
             ...chatSettings,
             provider: activeProvider,
-            model: String(
-              chatSettings.model ||
-              (activeProviderProfile && activeProviderProfile.default_model) ||
-              (health && health.default_model) ||
-              "",
-            ).trim(),
+            model: runModelName,
+            service_tier: supportsPriorityMode(runModelName) && chatSettings.service_tier === "priority"
+              ? "priority"
+              : "default",
           },
         }),
       });
@@ -9721,12 +9734,15 @@ function App() {
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
   const selectedReasoningEffort = normalizeReasoningEffort(chatSettings.reasoning_effort);
-  const priorityModeEnabled = chatSettings.service_tier === "priority";
-  const priorityModeTitle = priorityModeEnabled
-    ? "Priority mode on. Click for standard processing."
-    : "Priority mode off. Request faster processing where supported; provider pricing may be higher.";
+  const priorityModeSupported = supportsPriorityMode(chatSettings.model);
+  const priorityModeEnabled = priorityModeSupported && chatSettings.service_tier === "priority";
+  const priorityModeTitle = !priorityModeSupported
+    ? "Fast mode is unavailable for this model."
+    : (priorityModeEnabled
+      ? "Fast mode on. Click for standard processing."
+      : "Fast mode off. Request faster processing where supported; provider pricing may be higher.");
   const togglePriorityMode = () => {
-    if (currentThreadBusy) return;
+    if (currentThreadBusy || !priorityModeSupported) return;
     setChatSettings((prev) => ({
       ...prev,
       service_tier: prev.service_tier === "priority" ? "default" : "priority",
@@ -9758,6 +9774,7 @@ function App() {
   const reasoningPanelModelOptions = dedupeStrings([
     String(chatSettings.model || "").trim(),
     String(window.localStorage.getItem(REASONING_MODEL_STORAGE_KEY) || "").trim(),
+    ...(allowCustomModel ? [DEFAULT_REASONING_MODEL] : []),
     ...modelOptions,
   ]);
   const activePermissionProfile = normalizePermissionProfile(
@@ -11812,7 +11829,7 @@ function App() {
                     className="composer-priority-toggle"
                     type="button"
                     onClick=${togglePriorityMode}
-                    disabled=${currentThreadBusy}
+                    disabled=${currentThreadBusy || !priorityModeSupported}
                     title=${priorityModeTitle}
                     aria-label="Priority mode"
                     aria-pressed=${priorityModeEnabled}
@@ -11850,7 +11867,7 @@ function App() {
                             className="reasoning-effort-panel-bolt"
                             type="button"
                             onClick=${togglePriorityMode}
-                            disabled=${currentThreadBusy}
+                            disabled=${currentThreadBusy || !priorityModeSupported}
                             title=${priorityModeTitle}
                             aria-label="Priority mode"
                             aria-pressed=${priorityModeEnabled}

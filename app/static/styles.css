@@ -2621,7 +2621,8 @@ body.project-list-resizing * {
   display: flex;
   width: 200%;
   height: 100%;
-  animation: reasoning-priority-drift 8s linear infinite;
+  animation: reasoning-priority-drift 4.8s linear infinite;
+  will-change: transform;
 }
 
 .reasoning-priority-star-tile {
@@ -2647,8 +2648,8 @@ body.project-list-resizing * {
 .reasoning-priority-star-tile span:nth-child(8) { left: 93%; top: 76%; width: 3px; height: 3px; }
 
 @keyframes reasoning-priority-drift {
-  from { transform: translateX(-50%); }
-  to { transform: translateX(0); }
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-50%, 0, 0); }
 }
 
 @keyframes reasoning-priority-glow {
@@ -2686,9 +2687,12 @@ body.project-list-resizing * {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .reasoning-priority-stars,
   .reasoning-priority-track::before {
     animation: none;
+  }
+
+  .reasoning-priority-stars {
+    animation-duration: 8s;
   }
 }
 

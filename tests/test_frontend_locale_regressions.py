@@ -1499,18 +1499,28 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert 'className="reasoning-effort-slider"' in script
     assert "reasoning-effort-panel ${reasoningEffortSupported" in script
     assert "supportsReasoningEffort(chatSettings.model)" in script
+    assert "supportsPriorityMode(chatSettings.model)" in script
+    assert '/(?:^|[/:])gpt-6-astra(?:[-.:]|$)/i.test(normalized)' in script
     assert 'className="reasoning-effort-model-select"' in script
     assert "Select a GPT-5.6 model to unlock reasoning effort." in script
     assert "disabled=${!reasoningEffortSupported}" in script
     assert "reasoning_effort: nextValue" in script
     assert 'const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";' in script
     assert 'const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";' in script
+    assert 'const DEFAULT_REASONING_MODEL = "gpt-5.6-sol";' in script
     assert "window.localStorage.setItem(REASONING_EFFORT_STORAGE_KEY, effort)" in script
     assert "window.localStorage.setItem(REASONING_MODEL_STORAGE_KEY, model)" in script
+    assert "...(allowCustomModel ? [DEFAULT_REASONING_MODEL] : [])" in script
+    assert "setReasoningEffortOpen(false);\n    setChatSettings" not in script
+    assert 'prev.service_tier === "priority"' in script
+    assert 'disabled=${currentThreadBusy || !priorityModeSupported}' in script
+    assert 'service_tier: supportsPriorityMode(runModelName) && chatSettings.service_tier === "priority"' in script
     assert "width: min(350px, calc(100vw - 24px));" in styles
     assert "height: 32px;" in styles
     assert 'className="reasoning-slider-scale"' not in script
     assert ".reasoning-effort-panel::after" not in styles
+    assert "animation: reasoning-priority-drift 4.8s linear infinite;" in styles
+    assert "animation-duration: 8s;" in styles
     assert '"settings.reasoning_effort.xhigh"' not in locales
     assert '"settings.reasoning_effort.max"' not in locales
 
