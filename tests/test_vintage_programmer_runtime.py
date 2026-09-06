@@ -623,6 +623,18 @@ class _FakeBackend:
         return self._next(), object(), model, []
 
 
+class _TierRecordingBackend(_FakeBackend):
+    def _invoke_chat_with_runner(self, *, service_tier="default", reasoning_effort=None, **kwargs):
+        result = super()._invoke_chat_with_runner(**kwargs)
+        self.invocations[-1]["service_tier"] = service_tier
+        return result
+
+    def _invoke_with_runner_recovery(self, *, service_tier="default", reasoning_effort=None, **kwargs):
+        result = super()._invoke_with_runner_recovery(**kwargs)
+        self.invocations[-1]["service_tier"] = service_tier
+        return result
+
+
 class _FakeBackendWithoutModelKwarg(_FakeBackend):
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         super().__init__(scripted_messages)
@@ -2078,21 +2090,21 @@ def test_runtime_accepts_steer_after_tool_batch_before_next_model_request(
     assert accepted_index < next_model_index
 
 
+@pytest.mark.parametrize("service_tier", ["default", "priority"])
 def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     monkeypatch,
     tmp_path: Path,
+    service_tier: str,
 ) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
     _write_builtin_subagent_spec(agent_dir.parent)
     child_tools = _BoundaryCapturingTools()
     child_summary = "Found the entry point in app/main.py.\n" + ("detail " * 2500) + "TAIL_MARKER"
-    child_backend = _FakeBackendWithTools(
-        [_FakeMessage(content=child_summary)],
-        child_tools,
-    )
+    child_backend = _TierRecordingBackend([_FakeMessage(content=child_summary)])
+    child_backend.tools = child_tools
     monkeypatch.setattr(runtime_module, "create_vp_runtime_backend", lambda _config: child_backend)
-    parent_backend = _FakeBackend(
+    parent_backend = _TierRecordingBackend(
         [
             _FakeMessage(
                 content="",
@@ -2131,7 +2143,7 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
 
     result = runtime.run(
         message="Use a subagent to locate the request entry point.",
-        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short"),
+        settings=ChatSettings(model="gpt-test", enable_tools=True, response_style="short", service_tier=service_tier),
         context={
             "session_id": "s-subagent",
             "run_id": "run-subagent",
@@ -2143,6 +2155,8 @@ def test_runtime_subagent_uses_isolated_read_only_context_and_returns_summary(
     )
 
     assert result["text"] == "The subagent found the request entry point."
+    assert [call["service_tier"] for call in parent_backend.invocations] == [service_tier] * 3
+    assert [call["service_tier"] for call in child_backend.invocations] == [service_tier]
     assert [item[0] for item in parent_backend.tools.calls[:2]] == [
         "spawn_subagent",
         "wait_subagents",

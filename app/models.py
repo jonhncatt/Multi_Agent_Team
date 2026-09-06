@@ -20,6 +20,7 @@ class ChatSettings(BaseModel):
     execution_mode: Literal["host", "docker"] | None = None
     permission_profile: str = "auto"
     reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
+    service_tier: Literal["default", "priority"] = "default"
     debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
 

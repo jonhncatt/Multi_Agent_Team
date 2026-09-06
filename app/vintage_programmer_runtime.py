@@ -4508,11 +4508,11 @@ class VintageProgrammerRuntime:
         except (TypeError, ValueError):
             signature = None
         if signature is not None:
-            if "reasoning_effort" not in signature.parameters:
-                # Older test/dynamic backends may not expose the new optional
-                # parameter yet. Keep those adapters compatible without
-                # hiding unrelated argument mistakes.
-                kwargs.pop("reasoning_effort", None)
+            # Older adapters may forward **kwargs to a legacy implementation.
+            # Pass new optional settings only when explicitly supported.
+            for optional_name in ("reasoning_effort", "service_tier"):
+                if optional_name not in signature.parameters:
+                    kwargs.pop(optional_name, None)
             if event_cb is not None and "event_cb" in signature.parameters:
                 kwargs["event_cb"] = event_cb
         return method(**kwargs)
@@ -4624,6 +4624,9 @@ class VintageProgrammerRuntime:
         selected_reasoning_effort = str(
             getattr(settings, "reasoning_effort", None) or ""
         ).strip().lower()
+        selected_service_tier = (
+            "priority" if getattr(settings, "service_tier", "default") == "priority" else "default"
+        )
         if selected_reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
             selected_reasoning_effort = ""
         if not re.search(r"(?:^|[/:])gpt-5\.6(?:[-.:]|$)", requested_model, flags=re.IGNORECASE):
@@ -5568,6 +5571,7 @@ class VintageProgrammerRuntime:
                 "round": int(llm_exchange_round),
                 "phase": str(phase or ""),
                 "model": str(model_name or ""),
+                "service_tier_requested": selected_service_tier,
                 "status": "running",
                 "started_at": time.time(),
                 "_started_perf": time.perf_counter(),
@@ -6277,6 +6281,7 @@ class VintageProgrammerRuntime:
                 payload={
                     "model": requested_model,
                     "reasoning_effort": selected_reasoning_effort or "provider_default",
+                    "service_tier_requested": selected_service_tier,
                     "phase": "initial_model_response",
                     "tool_round": 0,
                     "tools_available": bool(runnable_tools),
@@ -6315,6 +6320,7 @@ class VintageProgrammerRuntime:
                     enable_tools=bool(runnable_tools),
                     tool_names=runnable_tools if runnable_tools else None,
                     reasoning_effort=selected_reasoning_effort or None,
+                    service_tier=selected_service_tier,
                     event_cb=self._make_model_stream_observer(
                         progress_cb=progress_cb,
                         run_id=run_id,
@@ -6385,6 +6391,7 @@ class VintageProgrammerRuntime:
                             enable_tools=bool(runnable_tools),
                             tool_names=runnable_tools if runnable_tools else None,
                             reasoning_effort=selected_reasoning_effort or None,
+                            service_tier=selected_service_tier,
                             event_cb=self._make_model_stream_observer(
                                 progress_cb=progress_cb,
                                 run_id=run_id,
@@ -6664,6 +6671,7 @@ class VintageProgrammerRuntime:
                         enable_tools=bool(runnable_tools),
                         tool_names=runnable_tools if runnable_tools else None,
                         reasoning_effort=selected_reasoning_effort or None,
+                        service_tier=selected_service_tier,
                         event_cb=self._make_model_stream_observer(
                             progress_cb=progress_cb,
                             run_id=run_id,
@@ -8052,6 +8060,7 @@ class VintageProgrammerRuntime:
                         enable_tools=True,
                         tool_names=runnable_tools,
                         reasoning_effort=selected_reasoning_effort or None,
+                        service_tier=selected_service_tier,
                         event_cb=self._make_model_stream_observer(
                             progress_cb=progress_cb,
                             run_id=run_id,
@@ -8169,6 +8178,7 @@ class VintageProgrammerRuntime:
                                 enable_tools=True,
                                 tool_names=runnable_tools,
                                 reasoning_effort=selected_reasoning_effort or None,
+                                service_tier=selected_service_tier,
                                 event_cb=self._make_model_stream_observer(
                                     progress_cb=progress_cb,
                                     run_id=run_id,

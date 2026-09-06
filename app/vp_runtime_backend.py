@@ -522,6 +522,7 @@ class VPRuntimeBackend:
         max_output_tokens: int,
         use_responses_api: bool | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ):
         auth = self._auth_manager.require()
         return self._build_llm_direct_fallback(
@@ -530,6 +531,7 @@ class VPRuntimeBackend:
             max_output_tokens=max_output_tokens,
             use_responses_api=use_responses_api,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     def build_llm(
@@ -539,12 +541,14 @@ class VPRuntimeBackend:
         max_output_tokens: int,
         use_responses_api: bool | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ):
         return self._build_llm(
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=use_responses_api,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
     def _build_llm_direct_fallback(
@@ -555,6 +559,7 @@ class VPRuntimeBackend:
         max_output_tokens: int,
         use_responses_api: bool | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ):
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
@@ -562,6 +567,7 @@ class VPRuntimeBackend:
             "api_key": auth.api_key,
             "max_tokens": max_output_tokens,
             "use_responses_api": selected_use_responses,
+            "service_tier": "priority" if service_tier == "priority" else "default",
         }
         if self.config.openai_temperature is not None:
             kwargs["temperature"] = self.config.openai_temperature
@@ -592,6 +598,7 @@ class VPRuntimeBackend:
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ) -> tuple[Any, Any, str, list[str]]:
         candidates = self._build_model_candidates(model)
         notes: list[str] = []
@@ -614,6 +621,7 @@ class VPRuntimeBackend:
                     tool_names=tool_names,
                     event_cb=event_cb,
                     reasoning_effort=reasoning_effort,
+                    service_tier=service_tier,
                 )
                 self._mark_model_success(candidate)
                 if candidate != model:
@@ -640,6 +648,7 @@ class VPRuntimeBackend:
                 tool_names=tool_names,
                 event_cb=event_cb,
                 reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             )
             notes.extend(invoke_notes)
             return response, runner, primary, notes
@@ -658,6 +667,7 @@ class VPRuntimeBackend:
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ) -> tuple[Any, Any, str, list[str]]:
         try:
             return self._invoke_runner(runner, messages, event_cb=event_cb), runner, model, []
@@ -672,6 +682,7 @@ class VPRuntimeBackend:
                 tool_names=tool_names,
                 event_cb=event_cb,
                 reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
             )
             prefix = f"模型 {model} 在持续推理阶段失败（{self._shorten(exc, 200)}），已自动恢复重试。"
             return recovered_msg, recovered_runner, recovered_model, [prefix, *notes]
@@ -685,12 +696,14 @@ class VPRuntimeBackend:
         tool_names: list[str] | None = None,
         event_cb: Callable[[dict[str, Any]], None] | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str = "default",
     ) -> tuple[Any, Any, list[str]]:
         notes: list[str] = []
         llm = self._build_llm(
             model=model,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
         runner = llm.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm
         try:
@@ -708,6 +721,7 @@ class VPRuntimeBackend:
             max_output_tokens=max_output_tokens,
             use_responses_api=fallback_use_responses,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
         runner_fb = llm_fb.bind_tools(self._select_langchain_tools(tool_names)) if enable_tools else llm_fb
         return self._invoke_runner(runner_fb, messages, event_cb=event_cb), runner_fb, notes

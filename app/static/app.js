@@ -35,6 +35,7 @@ const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
+const SERVICE_TIER_STORAGE_KEY = "vintage_programmer.service_tier";
 const REASONING_MODEL_STORAGE_KEY = "vintage_programmer.reasoning_model";
 const PROJECT_LIST_HEIGHT_STORAGE_KEY = "vintage_programmer.project_list_height";
 const DEFAULT_PROJECT_LIST_HEIGHT = 140;
@@ -86,6 +87,7 @@ const DEFAULT_SETTINGS = {
   debug_raw: false,
   permission_profile: "auto",
   reasoning_effort: null,
+  service_tier: "default",
   response_style: "normal",
 };
 const REASONING_EFFORT_OPTIONS = [
@@ -4327,6 +4329,7 @@ function App() {
     reasoning_effort: normalizeReasoningEffort(
       window.localStorage.getItem(REASONING_EFFORT_STORAGE_KEY),
     ) || null,
+    service_tier: window.localStorage.getItem(SERVICE_TIER_STORAGE_KEY) === "priority" ? "priority" : "default",
   }));
   const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [modelTouched, setModelTouched] = useState(false);
@@ -4750,6 +4753,13 @@ function App() {
       window.localStorage.removeItem(REASONING_EFFORT_STORAGE_KEY);
     }
   }, [chatSettings.reasoning_effort]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SERVICE_TIER_STORAGE_KEY,
+      chatSettings.service_tier === "priority" ? "priority" : "default",
+    );
+  }, [chatSettings.service_tier]);
 
   useEffect(() => {
     const model = String(chatSettings.model || "").trim();
@@ -7794,6 +7804,7 @@ function App() {
     let uiFinalized = false;
     let shouldStartNextQueuedTurn = false;
     let authoritativeRunId = "";
+    let latestActivity = {};
     try {
       if (isTempThreadId(sid) && pendingThreadCreationPromiseRef.current) {
         sid = await pendingThreadCreationPromiseRef.current;
@@ -7962,7 +7973,7 @@ function App() {
       let latestSessionTokenTotals = {};
       let latestGlobalTokenTotals = {};
       let completedTurnPayload = null;
-      let latestActivity = normalizeMessageActivity(pendingMessage.activity);
+      latestActivity = normalizeMessageActivity(pendingMessage.activity);
       ownerThreadVisible = () => String(activeSessionIdRef.current || "").trim() === runOwnerThreadId;
       updateOwnerMessages = (value) => {
         if (ownerThreadVisible()) {
@@ -9710,6 +9721,17 @@ function App() {
   const selectedPermissionDescription = t(`settings.permission_profile.${selectedPermissionProfile}.help`);
   const selectedPermissionAriaLabel = `${t("settings.permission_profile")}: ${selectedPermissionDescription}`;
   const selectedReasoningEffort = normalizeReasoningEffort(chatSettings.reasoning_effort);
+  const priorityModeEnabled = chatSettings.service_tier === "priority";
+  const priorityModeTitle = priorityModeEnabled
+    ? "Priority mode on. Click for standard processing."
+    : "Priority mode off. Request faster processing where supported; provider pricing may be higher.";
+  const togglePriorityMode = () => {
+    if (currentThreadBusy) return;
+    setChatSettings((prev) => ({
+      ...prev,
+      service_tier: prev.service_tier === "priority" ? "default" : "priority",
+    }));
+  };
   const reasoningEffortSupported = supportsReasoningEffort(chatSettings.model);
   const selectedReasoningOption = REASONING_EFFORT_OPTIONS.find(
     (item) => item.value === selectedReasoningEffort,
@@ -11781,27 +11803,41 @@ function App() {
                 className=${`composer-reasoning-control ${reasoningEffortOpen ? "is-open" : ""}`}
                 ref=${reasoningEffortRef}
               >
-                <button
-                  className=${`composer-reasoning-trigger effort-${selectedReasoningEffort || "default"}`}
-                  type="button"
-                  onClick=${() => setReasoningEffortOpen((current) => !current)}
-                  disabled=${currentThreadBusy}
-                  title=${selectedReasoningDescription}
-                  aria-label=${selectedReasoningAriaLabel}
-                  aria-haspopup="dialog"
-                  aria-expanded=${reasoningEffortOpen ? "true" : "false"}
+                <div
+                  className=${`composer-reasoning-trigger effort-${selectedReasoningEffort || "default"} ${priorityModeEnabled ? "is-priority" : ""} ${currentThreadBusy ? "is-disabled" : ""}`}
+                  role="group"
+                  aria-label="Model and speed"
                 >
-                  <span className="composer-reasoning-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" focusable="false">
-                      <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
-                    </svg>
-                  </span>
-                  <span>${selectedReasoningLabel}</span>
-                </button>
+                  <button
+                    className="composer-priority-toggle"
+                    type="button"
+                    onClick=${togglePriorityMode}
+                    disabled=${currentThreadBusy}
+                    title=${priorityModeTitle}
+                    aria-label="Priority mode"
+                    aria-pressed=${priorityModeEnabled}
+                  >
+                    <span className="composer-reasoning-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" focusable="false">
+                        <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
+                      </svg>
+                    </span>
+                  </button>
+                  <button
+                    className="composer-reasoning-menu-trigger"
+                    type="button"
+                    onClick=${() => setReasoningEffortOpen((current) => !current)}
+                    disabled=${currentThreadBusy}
+                    title=${selectedReasoningDescription}
+                    aria-label=${selectedReasoningAriaLabel}
+                    aria-haspopup="dialog"
+                    aria-expanded=${reasoningEffortOpen ? "true" : "false"}
+                  >${selectedReasoningLabel}</button>
+                </div>
                 ${reasoningEffortOpen
                   ? html`
                       <section
-                        className=${`reasoning-effort-panel ${reasoningEffortSupported ? "" : "is-locked"} ${reasoningEffortSupported && selectedReasoningEffort === "max" ? "is-max" : ""}`}
+                        className=${`reasoning-effort-panel ${reasoningEffortSupported ? "" : "is-locked"} ${priorityModeEnabled ? "is-priority" : ""}`}
                         role="dialog"
                         aria-label="Reasoning effort"
                         style=${{
@@ -11810,11 +11846,19 @@ function App() {
                         }}
                       >
                         <div className="reasoning-effort-panel-head">
-                          <span className="reasoning-effort-panel-bolt" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" focusable="false">
+                          <button
+                            className="reasoning-effort-panel-bolt"
+                            type="button"
+                            onClick=${togglePriorityMode}
+                            disabled=${currentThreadBusy}
+                            title=${priorityModeTitle}
+                            aria-label="Priority mode"
+                            aria-pressed=${priorityModeEnabled}
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                               <path d="M13.4 2.8 5.8 13h5l-.6 8.2L18.3 10h-5.1l.2-7.2Z"></path>
                             </svg>
-                          </span>
+                          </button>
                           <span className="reasoning-effort-current">
                             <strong>${reasoningEffortSupported ? (selectedReasoningOption ? selectedReasoningOption.label : "Default") : "Locked"}</strong>
                             <select
@@ -11836,13 +11880,22 @@ function App() {
                             disabled=${!reasoningEffortSupported || !selectedReasoningOption}
                             title="Use provider default"
                             aria-label="Use provider default"
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                              <path d="M3 11a9 9 0 1 1 2.65 7.36M3 4v7h7"></path>
-                            </svg>
-                          </button>
+                          >↻</button>
                         </div>
                         <div className="reasoning-slider-wrap">
+                          ${priorityModeEnabled ? html`
+                            <div className="reasoning-priority-track" aria-hidden="true">
+                              <div className="reasoning-priority-stars">
+                                ${[0, 1].map((tile) => html`
+                                  <div className="reasoning-priority-star-tile" key=${tile}>
+                                    ${[0, 1, 2, 3, 4, 5, 6, 7].map((star) => html`
+                                      <span key=${star}></span>
+                                    `)}
+                                  </div>
+                                `)}
+                              </div>
+                            </div>
+                          ` : null}
                           <input
                             className="reasoning-effort-slider"
                             type="range"
@@ -11870,6 +11923,10 @@ function App() {
                               <span key=${item.value}></span>
                             `)}
                           </div>
+                        </div>
+                        <div className="reasoning-slider-scale" aria-hidden="true">
+                          <span>None</span>
+                          <span>Max</span>
                         </div>
                       </section>
                     `
