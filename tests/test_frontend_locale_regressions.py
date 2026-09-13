@@ -850,7 +850,8 @@ def test_permission_profile_selector_lives_in_composer_not_settings() -> None:
     assert '"settings.permission_profile.auto": "自动"' in locales
     assert '"settings.permission_profile.full_access": "完全访问"' in locales
     assert '"settings.permission_profile.full_access.help": "可读写完整本机文件系统、执行安全命令并访问网络；执行网络来源代码需要单次确认。请仅在信任任务时使用。"' in locales
-    assert "settings: {\n            ...chatSettings," in script
+    assert "settings: {\n            ...runSettings," in script
+    assert "const runSettings = { ...threadSettingsStore.get(targetSessionId) };" in script
     assert 'className="drawer-input"\n                      value=${chatSettings.permission_profile || "code"}' not in script
     assert '|| "code",' not in script
     selector_styles = re.search(
@@ -1514,7 +1515,7 @@ def test_reasoning_effort_slider_is_wired_into_the_composer_and_locked_by_model(
     assert "setReasoningEffortOpen(false);\n    setChatSettings" not in script
     assert 'prev.service_tier === "priority"' in script
     assert 'disabled=${currentThreadBusy || !priorityModeSupported}' in script
-    assert 'service_tier: supportsPriorityMode(runModelName) && chatSettings.service_tier === "priority"' in script
+    assert 'service_tier: supportsPriorityMode(runModelName) && runSettings.service_tier === "priority"' in script
     assert "width: min(350px, calc(100vw - 24px));" in styles
     assert "height: 32px;" in styles
     assert 'className="reasoning-slider-scale"' not in script

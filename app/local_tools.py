@@ -7795,14 +7795,11 @@ class LocalToolExecutor:
             return {"ok": False, "error": f"fact_check_file failed: {exc}"}
 
     def search_codebase(
-        self,
-        query: str,
-        root: str = ".",
-        max_matches: int = 20,
-        file_glob: str = "",
-        use_regex: bool = False,
-        case_sensitive: bool = False,
+        self, query: str, root: str = ".", max_matches: int = 20,
+        file_glob: str = "", use_regex: bool = False, case_sensitive: bool = False,
     ) -> dict[str, Any]:
+        from app.code_search import MAX_FILE_BYTES, SKIP_DIRS, run_search
+
         try:
             cleaned_query = str(query or "").strip()
             if not cleaned_query:
@@ -7812,272 +7809,63 @@ class LocalToolExecutor:
                 return {"ok": False, "error_kind": "path_not_found", "error": f"Path not found: {root}"}
             if not real_root.is_dir():
                 return {"ok": False, "error_kind": "not_a_directory", "error": f"Not a directory: {root}"}
-
             limit = max(1, min(100, int(max_matches)))
-            collection_limit = limit + 1
-            matches: list[dict[str, Any]] = []
-            parser_mode = "json"
-            if shutil.which("rg"):
-                argv_core = ["-n", "--color", "never", "--max-count", str(collection_limit)]
-                if not use_regex:
-                    argv_core.append("-F")
-                if case_sensitive:
-                    argv_core.append("-s")
-                else:
-                    argv_core.append("-i")
-                if file_glob.strip():
-                    argv_core.extend(["-g", file_glob.strip()])
-                argv_tail = [cleaned_query, str(real_root)]
-
-                proc = subprocess.run(["rg", "--json", *argv_core, *argv_tail], capture_output=True, text=True, timeout=20)
-                stderr_text = (proc.stderr or "").strip()
-                if proc.returncode not in {0, 1} and "--json" in stderr_text.lower():
-                    parser_mode = "text_fallback"
-                    proc = subprocess.run(
-                        ["rg", *argv_core, "--no-heading", *argv_tail],
-                        capture_output=True,
-                        text=True,
-                        timeout=20,
-                    )
-
-                if proc.returncode not in {0, 1}:
-                    return {"ok": False, "error": (proc.stderr or proc.stdout or "rg failed").strip()}
-
-                if parser_mode == "json":
-                    for raw_line in (proc.stdout or "").splitlines():
-                        try:
-                            event = json.loads(raw_line)
-                        except Exception:
-                            continue
-                        if str(event.get("type") or "") != "match":
-                            continue
-                        data = event.get("data") if isinstance(event.get("data"), dict) else {}
-                        path_block = data.get("path") if isinstance(data.get("path"), dict) else {}
-                        lines_block = data.get("lines") if isinstance(data.get("lines"), dict) else {}
-                        file_path = str(path_block.get("text") or "").strip()
-                        if not file_path:
-                            continue
-                        resolved_file = Path(file_path)
-                        if not resolved_file.is_absolute():
-                            resolved_file = (real_root / resolved_file).resolve()
-                        try:
-                            line_no = int(data.get("line_number") or 0)
-                        except Exception:
-                            line_no = 0
-                        text_line = str(lines_block.get("text") or "").rstrip("\r\n")
-                        matches.append(
-                            {
-                                "path": _display_model_path(resolved_file, project_root=self._current_project_root(), cwd=real_root),
-                                "resolved_path": str(resolved_file.resolve()),
-                                "line": line_no,
-                                "text": text_line.strip(),
-                            }
-                        )
-                        if len(matches) >= collection_limit:
-                            break
-                else:
-                    for line in (proc.stdout or "").splitlines():
-                        parts = line.rsplit(":", 2)
-                        if len(parts) != 3:
-                            continue
-                        file_path, line_no_raw, text_line = parts
-                        try:
-                            line_no = int(line_no_raw)
-                        except Exception:
-                            line_no = 0
-                        resolved_file = Path(file_path)
-                        if not resolved_file.is_absolute():
-                            resolved_file = (real_root / resolved_file).resolve()
-                        matches.append(
-                            {
-                                "path": _display_model_path(resolved_file, project_root=self._current_project_root(), cwd=real_root),
-                                "resolved_path": str(resolved_file.resolve()),
-                                "line": line_no,
-                                "text": text_line.strip(),
-                            }
-                        )
-                        if len(matches) >= collection_limit:
-                            break
-            else:
-                parser_mode = "python_fallback"
-                if use_regex:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    pattern = re.compile(cleaned_query, flags)
-                else:
-                    needle = cleaned_query if case_sensitive else cleaned_query.lower()
-                    pattern = None
-
-                for file_path in real_root.rglob("*"):
-                    if not file_path.is_file():
-                        continue
-                    if file_glob.strip():
-                        rel = file_path.relative_to(real_root).as_posix()
-                        if not fnmatch.fnmatch(rel, file_glob.strip()):
-                            continue
-                    try:
-                        text = file_path.read_text(encoding="utf-8", errors="ignore")
-                    except Exception:
-                        continue
-                    if "\x00" in text:
-                        continue
-                    for idx, line in enumerate(text.splitlines(), start=1):
-                        hay = line if case_sensitive else line.lower()
-                        matched = bool(pattern.search(line)) if pattern is not None else needle in hay
-                        if not matched:
-                            continue
-                        matches.append(
-                            {
-                                "path": _display_model_path(file_path, project_root=self._current_project_root(), cwd=real_root),
-                                "resolved_path": str(file_path.resolve()),
-                                "line": idx,
-                                "text": line.strip(),
-                            }
-                        )
-                        if len(matches) >= collection_limit:
-                            break
-                    if len(matches) >= collection_limit:
-                        break
-
-            existing_paths = {
-                str(item.get("resolved_path") or item.get("path") or "").strip()
-                for item in matches
-                if str(item.get("resolved_path") or item.get("path") or "").strip()
-            }
-            path_match_count = 0
-            # Filename matches are evaluated independently so abundant content
-            # matches cannot starve a directly relevant path from the result.
-            if cleaned_query:
-                query_for_path = cleaned_query if case_sensitive else cleaned_query.lower()
-                query_for_stem = query_for_path.rsplit(".", 1)[0] if "." in query_for_path else query_for_path
-                path_pattern: re.Pattern[str] | None = None
-                if use_regex:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    try:
-                        path_pattern = re.compile(cleaned_query, flags)
-                    except Exception:
-                        path_pattern = None
-
-                file_candidates: list[Path] = []
-                if shutil.which("rg"):
-                    proc_files = subprocess.run(
-                        ["rg", "--files", str(real_root)],
-                        capture_output=True,
-                        text=True,
-                        timeout=20,
-                    )
-                    if proc_files.returncode == 0:
-                        for raw_line in (proc_files.stdout or "").splitlines():
-                            raw_item = str(raw_line or "").strip()
-                            if not raw_item:
-                                continue
-                            candidate = Path(raw_item)
-                            if not candidate.is_absolute():
-                                candidate = (real_root / raw_item).resolve()
-                            if candidate.is_file():
-                                file_candidates.append(candidate)
-                if not file_candidates:
-                    file_candidates = [item for item in real_root.rglob("*") if item.is_file()]
-
-                for candidate in file_candidates:
-                    if path_match_count >= collection_limit:
-                        break
-                    try:
-                        rel = candidate.relative_to(real_root).as_posix()
-                    except Exception:
-                        rel = candidate.as_posix()
-                    if file_glob.strip() and not fnmatch.fnmatch(rel, file_glob.strip()):
-                        continue
-
-                    rel_text = rel if case_sensitive else rel.lower()
-                    stem_text = candidate.stem if case_sensitive else candidate.stem.lower()
-                    matched = False
-                    if path_pattern is not None:
-                        matched = bool(path_pattern.search(rel))
-                    else:
-                        matched = (
-                            (query_for_path in rel_text)
-                            or (query_for_path in stem_text)
-                            or (query_for_stem and query_for_stem in stem_text)
-                        )
-                    if not matched:
-                        continue
-
-                    candidate_path = str(candidate)
-                    if candidate_path in existing_paths:
-                        for existing in matches:
-                            if str(existing.get("resolved_path") or "") == candidate_path:
-                                existing["match_type"] = "path_and_content"
-                                path_match_count += 1
-                                break
-                        continue
-                    existing_paths.add(candidate_path)
-                    path_match_count += 1
-                    matches.append(
-                        {
-                            "path": _display_model_path(candidate, project_root=self._current_project_root(), cwd=real_root),
-                            "resolved_path": str(candidate.resolve()),
-                            "line": 0,
-                            "text": "[filename match]",
-                            "match_type": "path",
-                        }
-                    )
-            path_matches = [
-                item
-                for item in matches
-                if str(item.get("match_type") or "") in {"path", "path_and_content"}
-            ]
-            content_matches = [
-                item
-                for item in matches
-                if str(item.get("match_type") or "") not in {"path", "path_and_content"}
-            ]
-            combined_matches = [*path_matches, *content_matches]
-            visible_matches = combined_matches[:limit]
-            truncated = bool(
-                len(path_matches) > limit
-                or len(content_matches) > limit
-                or len(combined_matches) > limit
+            rg = shutil.which("rg")
+            payload = run_search(
+                {"root": str(real_root), "query": cleaned_query, "limit": limit,
+                 "file_glob": file_glob.strip(), "use_regex": bool(use_regex),
+                 "case_sensitive": bool(case_sensitive), "rg": rg},
+                cancelled=self._current_cancel_requested,
+                creation_kwargs=self._command_process_creation_kwargs(),
+                terminate=self._terminate_command_process_tree,
             )
+            matches = payload["matches"]
+            content_paths = {item["resolved_path"]: item for item in matches if item.get("match_type") != "path"}
+            combined = []
+            for item in matches:
+                if item.get("match_type") != "path":
+                    continue
+                content = content_paths.get(item["resolved_path"])
+                if content is not None:
+                    content["match_type"] = "path_and_content"
+                else:
+                    combined.append(item)
+            combined = [*combined,
+                        *(item for item in matches if item.get("match_type") == "path_and_content"),
+                        *(item for item in matches if not item.get("match_type"))]
+            visible = combined[:limit]
+            for item in visible:
+                path = Path(item["resolved_path"])
+                item["path"] = _display_model_path(path, project_root=self._current_project_root(), cwd=real_root)
+            reason = payload.get("stop_reason", "")
+            incomplete = bool(reason or payload.get("skipped_files") or len(combined) > limit)
             root_payload = _path_payload(real_root, project_root=self._current_project_root(), cwd=Path(self._current_cwd_hint()))
-            return {
-                "ok": True,
-                "root": root_payload["path"],
-                "root_ref": root_payload["root_ref"],
-                "resolved_root": str(real_root.resolve()),
-                "query": cleaned_query,
-                "match_count": len(visible_matches),
-                "returned_count": len(visible_matches),
-                "total_matches": None if truncated else len(visible_matches),
-                "max_matches": limit,
-                "matches": visible_matches,
-                "path_match_count": len(path_matches),
-                "content_match_count": len(content_matches),
-                "returned_path_match_count": sum(
-                    1
-                    for item in visible_matches
-                    if str(item.get("match_type") or "") in {"path", "path_and_content"}
-                ),
-                "returned_content_match_count": sum(
-                    1
-                    for item in visible_matches
-                    if str(item.get("match_type") or "") not in {"path", "path_and_content"}
-                ),
-                "parser_mode": parser_mode,
-                "truncated": truncated,
-                "has_more": truncated,
-                "source_complete": not truncated,
-                "search_complete": not truncated,
-                "continuation": (
-                    {
-                        "strategy": "refine_query_or_scope",
-                        "message": "More matches exist. Narrow query, root, or file_glob before concluding the remaining codebase has no matches.",
-                    }
-                    if truncated
-                    else None
-                ),
+            result = {
+                "ok": reason not in {"cancelled", "worker_failed"},
+                "root": root_payload["path"], "root_ref": root_payload["root_ref"],
+                "resolved_root": str(real_root), "query": cleaned_query,
+                "match_count": len(visible), "returned_count": len(visible),
+                "total_matches": None if incomplete else len(visible),
+                "max_matches": limit, "matches": visible,
+                "path_match_count": sum(bool(item.get("match_type")) for item in combined),
+                "content_match_count": sum(item.get("match_type") != "path" for item in combined),
+                "returned_path_match_count": sum(bool(item.get("match_type")) for item in visible),
+                "returned_content_match_count": sum(item.get("match_type") != "path" for item in visible),
+                "parser_mode": "json" if rg else "python_fallback",
+                "duration_ms": payload.get("duration_ms", 0),
+                "stop_reason": reason, "skipped_files": payload.get("skipped_files", 0),
+                "search_scope": {"excluded_directories": sorted(SKIP_DIRS), "max_file_bytes": MAX_FILE_BYTES,
+                                 "note": "Results cover eligible text files; specify an excluded directory as root to search it."},
+                "truncated": incomplete, "has_more": incomplete,
+                "source_complete": not incomplete, "search_complete": not incomplete,
+                "continuation": ({"strategy": "refine_query_or_scope",
+                                  "message": "Search is incomplete. Narrow query, root, or file_glob before concluding no other matches exist."}
+                                 if incomplete else None),
             }
-        except FileNotFoundError:
-            return {"ok": False, "error": "rg not found"}
+            if reason in {"cancelled", "worker_failed"}:
+                result["error_kind"] = "cancelled" if reason == "cancelled" else "search_failed"
+                result["error"] = payload.get("error") or ("Search cancelled by user." if reason == "cancelled" else "Search worker exited without a result.")
+            return result
         except Exception as exc:
             return {"ok": False, "error": f"search_codebase failed: {exc}"}
 

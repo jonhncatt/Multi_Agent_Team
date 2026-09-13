@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
+from concurrent.futures import Future
+import time
+
+import pytest
 
 from app.thread_subagents import ThreadSubagentManager
 
@@ -28,6 +32,49 @@ def _create(manager: ThreadSubagentManager, *, thread_id: str, subagent_id: str)
         item=_queued_item(subagent_id),
         cancel_event=threading.Event(),
     )
+
+
+@pytest.mark.parametrize("outcome,status", [("exception", "failed"), ("cancel", "cancelled"), ("result", "completed"), ("missing", "failed")])
+def test_finished_future_repairs_and_persists_missing_terminal_state(tmp_path: Path, outcome: str, status: str) -> None:
+    root = tmp_path / "subagents"
+    manager = ThreadSubagentManager(root, runtime_id="first")
+    _create(manager, thread_id="thread-a", subagent_id="child")
+    future = Future()
+    manager.attach_handles(thread_id="thread-a", subagent_id="child", future=future)
+    if outcome == "exception":
+        future.set_exception(RuntimeError("worker failed outside normal finish"))
+    elif outcome == "cancel":
+        future.cancel()
+    else:
+        future.set_result({"ok": True, "status": "completed", "summary": "saved finding"} if outcome == "result" else None)
+    started = time.monotonic()
+    records, unknown = manager.records(thread_id="thread-a", subagent_ids=["child"], timeout_seconds=10)
+    assert time.monotonic() - started < 1
+    assert not unknown
+    assert records[0]["status"] == status
+    reloaded = ThreadSubagentManager(root, runtime_id="second")
+    result, _ = reloaded.collect(thread_id="thread-a", subagent_id="child")
+    assert result["status"] == status
+    assert result["subagent_id"] == "child"
+
+
+def test_stopping_wait_does_not_invent_a_terminal_child_state(tmp_path: Path) -> None:
+    manager = ThreadSubagentManager(tmp_path / "subagents", runtime_id="first")
+    _create(manager, thread_id="thread-a", subagent_id="child")
+    future = Future()
+    future.set_running_or_notify_cancel()
+    manager.attach_handles(thread_id="thread-a", subagent_id="child", future=future)
+    cancelled = threading.Event()
+    cancelled.set()
+    started = time.monotonic()
+    records, _ = manager.records(thread_id="thread-a", subagent_ids=["child"], timeout_seconds=10, cancel_event=cancelled)
+    assert time.monotonic() - started < 1
+    assert records[0]["status"] == "queued"
+    assert not future.done()
+    snapshot = manager.model_snapshot(thread_id="thread-a")
+    assert snapshot[0]["subagent_id"] == "child"
+    assert snapshot[0]["task"] == "Inspect the lifecycle."
+    assert snapshot[0]["result_available"] is False
 
 
 def test_thread_subagent_result_is_idempotent_and_terminal_state_cannot_be_overwritten(
@@ -163,11 +210,14 @@ def test_active_subagent_is_marked_interrupted_after_runtime_restart(tmp_path: P
     records, unknown_ids = restarted_runtime.records(
         thread_id="thread-a",
         subagent_ids=[subagent_id],
+        timeout_seconds=10,
     )
 
     assert unknown_ids == []
     assert records[0]["status"] == "interrupted_by_restart"
     assert records[0]["result"]["error_kind"] == "subagent_interrupted_by_restart"
+    assert restarted_runtime.model_snapshot(thread_id="thread-a")[0]["status"] == "interrupted_by_restart"
+    assert restarted_runtime.model_snapshot(thread_id="unrelated-thread") == []
     result, usage = restarted_runtime.collect(thread_id="thread-a", subagent_id=subagent_id)
     assert result is not None
     assert result["status"] == "interrupted_by_restart"

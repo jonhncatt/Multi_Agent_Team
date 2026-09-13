@@ -32,6 +32,58 @@ const SESSION_STORAGE_KEY = "vintage_programmer.session_id";
 const PROJECT_STORAGE_KEY = "vintage_programmer.project_id";
 const PROVIDER_STORAGE_KEY = "vintage_programmer.last_provider";
 const MODEL_STORAGE_KEY = "vintage_programmer.last_model";
+const THREAD_MODEL_STORAGE_KEY = "vintage_programmer.thread_models.v1";
+
+function createThreadSettingsStore(storage, initialSettings) {
+  const scopedKeys = ["model", "provider", "reasoning_effort", "service_tier"];
+  const pick = (value) => Object.fromEntries(scopedKeys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+  let shared = { ...initialSettings };
+  const defaults = pick(initialSettings);
+  let saved = {};
+  try { saved = JSON.parse(storage.getItem(THREAD_MODEL_STORAGE_KEY) || "{}"); } catch {}
+  const selections = new Map(Object.entries(saved && typeof saved === "object" ? saved : {})
+    .filter(([, value]) => value && typeof value === "object")
+    .map(([id, value]) => [id, { ...defaults, ...pick(value) }]));
+  const persist = () => {
+    try { storage.setItem(THREAD_MODEL_STORAGE_KEY, JSON.stringify(Object.fromEntries(selections))); } catch {}
+  };
+  return {
+    get(id) {
+      const key = String(id || "");
+      if (!selections.has(key)) selections.set(key, { ...defaults });
+      return { ...shared, ...selections.get(key) };
+    },
+    update(id, update) {
+      const previous = this.get(id);
+      const next = typeof update === "function" ? update(previous) : update;
+      if (!next || Object.keys(next).every((key) => next[key] === previous[key])) return false;
+      shared = { ...shared, ...next };
+      selections.set(String(id || ""), pick({ ...previous, ...next }));
+      persist();
+      return true;
+    },
+    copy(from, to) {
+      selections.set(String(to), pick(this.get(from)));
+      persist();
+    },
+    move(from, to) {
+      this.copy(from, to);
+      selections.delete(String(from || ""));
+      persist();
+    },
+    remove(id) { selections.delete(String(id)); persist(); },
+  };
+}
+
+function useThreadChatSettings(threadId, initialize) {
+  const storeRef = useRef(null);
+  if (!storeRef.current) storeRef.current = createThreadSettingsStore(window.localStorage, initialize());
+  const [, redraw] = useState(0);
+  const store = storeRef.current;
+  const settings = store.get(threadId);
+  const update = (value) => { if (store.update(threadId, value)) redraw((revision) => revision + 1); };
+  return [settings, update, store];
+}
 const LOCALE_STORAGE_KEY = "vintage_programmer.locale";
 const THEME_COLOR_STORAGE_KEY = "vintage_programmer.theme_color";
 const REASONING_EFFORT_STORAGE_KEY = "vintage_programmer.reasoning_effort";
@@ -666,6 +718,17 @@ function renderMessageHtml(text, messageId = "") {
       FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select"],
       FORBID_ATTR: ["style", "onerror", "onload", "onclick"],
     });
+    const template = document.createElement("template");
+    template.innerHTML = htmlValue;
+    for (const link of template.content.querySelectorAll("a[href]")) {
+      const href = String(link.getAttribute("href") || "").trim();
+      // Keep same-page anchors usable. Every other answer link leaves the VP
+      // window intact, including relative document/download links.
+      if (!href || href.startsWith("#")) continue;
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noopener noreferrer");
+    }
+    htmlValue = template.innerHTML;
   } catch {
     htmlValue = escapeHtml(raw).replaceAll("\n", "<br />");
   }
@@ -4332,7 +4395,7 @@ function App() {
   const liveRunLogs = appState.activeTurn.liveRunLogs;
   const lastResponse = appState.activeTurn.lastResponse;
   const [pendingUploads, setPendingUploads] = useState([]);
-  const [chatSettings, setChatSettings] = useState(() => ({
+  const [chatSettings, setChatSettings, threadSettingsStore] = useThreadChatSettings(sessionId, () => ({
     ...DEFAULT_SETTINGS,
     locale: readStoredLocale(I18nRuntime.SUPPORTED_LOCALES),
     reasoning_effort: normalizeReasoningEffort(
@@ -4932,8 +4995,8 @@ function App() {
     const storedProvider = window.localStorage.getItem(PROVIDER_STORAGE_KEY) || "";
     const currentProvider = String(chatSettings.provider || "").trim();
     const preferredProvider =
-      (storedProvider && availableProviders.includes(storedProvider) ? storedProvider : "") ||
       (currentProvider && availableProviders.includes(currentProvider) ? currentProvider : "") ||
+      (storedProvider && availableProviders.includes(storedProvider) ? storedProvider : "") ||
       String((health && health.llm_provider) || "").trim() ||
       availableProviders[0] ||
       "";
@@ -4980,11 +5043,11 @@ function App() {
   }, [chatSettings.provider]);
 
   useEffect(() => {
-    if (!health || modelTouched) return;
+    if (!health || String(chatSettings.model || "").trim()) return;
     const storedModel = window.localStorage.getItem(modelStorageKeyForProvider(activeProvider)) || "";
     const preferredModel = String(
-      storedModel ||
       chatSettings.model ||
+      storedModel ||
       (activeProviderProfile && activeProviderProfile.default_model) ||
       (health && health.default_model) ||
       modelOptions[0] ||
@@ -6306,6 +6369,7 @@ function App() {
   function removeThreadRow(targetThreadId) {
     const normalizedThreadId = String(targetThreadId || "").trim();
     if (!normalizedThreadId) return;
+    threadSettingsStore.remove(normalizedThreadId);
     threadDetailCacheRef.current.delete(threadCacheKey(normalizedThreadId));
     setSessions((prev) => (Array.isArray(prev) ? prev : []).filter(
       (entry) => String(entry.thread_id || entry.session_id || "").trim() !== normalizedThreadId,
@@ -6852,6 +6916,7 @@ function App() {
     }
     setLoadingSession(false);
     if (resolvedTargetProjectId) setProjectId(resolvedTargetProjectId);
+    threadSettingsStore.copy(previousSnapshot.sessionId, tempId);
     setSessionId(tempId);
     resetItemDomain();
     setMessages([]);
@@ -6910,6 +6975,7 @@ function App() {
           activity_kind: "created",
           status: "idle",
         });
+        threadSettingsStore.move(tempId, sid);
         if (activeSessionIdRef.current === tempId) activeSessionIdRef.current = sid;
         setSessionId((current) => (current === tempId ? sid : current));
         if (resolvedProjectId) setProjectId(resolvedProjectId);
@@ -7681,6 +7747,9 @@ function App() {
     const options = arguments[2] && typeof arguments[2] === "object" ? arguments[2] : {};
     const targetProjectId = String(options.projectIdOverride || projectId || "").trim();
     const targetSessionId = String(options.sessionIdOverride || sessionId || "").trim();
+    const runSettings = { ...threadSettingsStore.get(targetSessionId) };
+    const runProvider = String(runSettings.provider || (health && health.llm_provider) || activeProvider || "");
+    const runProviderProfile = providerOptions.find((item) => item.provider === runProvider) || null;
     const followupDelivery = String(options.delivery || "queue").trim() === "steer"
       ? "steer"
       : "queue";
@@ -7854,8 +7923,8 @@ function App() {
         ? createMessage("user", messageText)
         : null;
       const runModelName = String(
-        chatSettings.model ||
-        (activeProviderProfile && activeProviderProfile.default_model) ||
+        runSettings.model ||
+        (runProviderProfile && runProviderProfile.default_model) ||
         (health && health.default_model) ||
         "",
       ).trim();
@@ -7871,7 +7940,7 @@ function App() {
       });
       const nextInitialRuntimeState = {
         goal: isTurnResume ? String(sessionRuntimeState.goal || messageText) : messageText,
-        permission_profile: normalizePermissionProfile(chatSettings.permission_profile || "auto"),
+        permission_profile: normalizePermissionProfile(runSettings.permission_profile || "auto"),
         turn_status: "running",
         plan: isTurnResume && Array.isArray(sessionRuntimeState.plan) ? sessionRuntimeState.plan : [],
         pending_user_input: {},
@@ -7939,10 +8008,10 @@ function App() {
           attachment_ids: readyAttachmentIds,
           user_input_response: structuredUserInputResponse,
           settings: {
-            ...chatSettings,
-            provider: activeProvider,
+            ...runSettings,
+            provider: runProvider,
             model: runModelName,
-            service_tier: supportsPriorityMode(runModelName) && chatSettings.service_tier === "priority"
+            service_tier: supportsPriorityMode(runModelName) && runSettings.service_tier === "priority"
               ? "priority"
               : "default",
           },
@@ -8742,8 +8811,8 @@ function App() {
         run_id: String(((completedTurnPayload || {}).id) || activeRunId || ""),
         agent_id: "vintage_programmer",
         effective_model: String(
-          chatSettings.model ||
-          (activeProviderProfile && activeProviderProfile.default_model) ||
+          runSettings.model ||
+          (runProviderProfile && runProviderProfile.default_model) ||
           (health && health.default_model) ||
           "",
         ).trim(),
@@ -8756,7 +8825,7 @@ function App() {
             ? latestRunSnapshot.tool_boundary_clean
             : null,
         tool_events: latestToolEvents,
-        permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+        permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || runSettings.permission_profile || "auto"),
         turn_status: String(((completedTurnPayload || {}).status) || latestRunSnapshot.turn_status || "completed"),
         plan: Array.isArray(latestRunSnapshot.plan) ? latestRunSnapshot.plan : [],
         pending_user_input: latestRunSnapshot.pending_user_input || {},
@@ -8935,7 +9004,7 @@ function App() {
                 updateThreadStatus(latestThreadId, "active");
               }
               applySnapshot({
-                permission_profile: normalizePermissionProfile(payload.permission_profile || chatSettings.permission_profile || "auto"),
+                permission_profile: normalizePermissionProfile(payload.permission_profile || runSettings.permission_profile || "auto"),
                 turn_status: "running",
               });
               updateOwnerLiveHeartbeat({
@@ -8949,7 +9018,7 @@ function App() {
               applySnapshot({ plan: nextPlan });
               updateOwnerSessionRuntimeState((prev) => ({
                 ...(prev || {}),
-                permission_profile: normalizePermissionProfile((latestRunSnapshot.permission_profile) || chatSettings.permission_profile || "auto"),
+                permission_profile: normalizePermissionProfile((latestRunSnapshot.permission_profile) || runSettings.permission_profile || "auto"),
                 turn_status: String((latestRunSnapshot.turn_status) || "running"),
                 plan: nextPlan,
               }));
@@ -9123,14 +9192,14 @@ function App() {
                 };
                 const nextApproval = Object.keys(itemApprovalRequest).length ? itemApprovalRequest : {};
                 applySnapshot({
-                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || runSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                   pending_approval: nextApproval,
                 });
                 updateOwnerSessionRuntimeState((prev) => ({
                   ...(prev || {}),
-                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                  permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || runSettings.permission_profile || "auto"),
                   turn_status: "needs_user_input",
                   pending_user_input: nextPending,
                   pending_approval: nextApproval,
@@ -9159,14 +9228,14 @@ function App() {
                 ? payload.pending_approval
                 : ((nextPending.approval_request && typeof nextPending.approval_request === "object") ? nextPending.approval_request : {});
               applySnapshot({
-                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || runSettings.permission_profile || "auto"),
                 turn_status: String(payload.turn_status || "needs_user_input"),
                 pending_user_input: nextPending,
                 pending_approval: nextApproval,
               });
               updateOwnerSessionRuntimeState((prev) => ({
                 ...(prev || {}),
-                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || chatSettings.permission_profile || "auto"),
+                permission_profile: normalizePermissionProfile(latestRunSnapshot.permission_profile || runSettings.permission_profile || "auto"),
                 turn_status: String(payload.turn_status || "needs_user_input"),
                 pending_user_input: nextPending,
                 pending_approval: nextApproval,
@@ -9314,7 +9383,7 @@ function App() {
         lastResponse: finalPayload,
         liveTurnState: mergeRunSnapshot(prev.liveTurnState || {}, {
           ...(((finalPayload.inspector || {}).run_state) || {}),
-          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
+          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || runSettings.permission_profile || "auto"),
           turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
           model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
           final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),
@@ -9351,7 +9420,7 @@ function App() {
           agent_title: String((((finalPayload.inspector || {}).agent) || {}).title || sessionRuntimeState.agent_title || "Vintage Programmer"),
           goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
           current_goal: String((((finalPayload.inspector || {}).run_state || {}).goal) || messageText),
-          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || chatSettings.permission_profile || "auto"),
+          permission_profile: normalizePermissionProfile(finalPayload.permission_profile || (((finalPayload.inspector || {}).run_state || {}).permission_profile) || runSettings.permission_profile || "auto"),
           turn_status: String(finalPayload.turn_status || (((finalPayload.inspector || {}).run_state || {}).turn_status) || "completed"),
           model_draft: String(finalPayload.model_draft || (((finalPayload.inspector || {}).run_state || {}).model_draft) || ""),
           final_answer: String(finalPayload.final_answer || (((finalPayload.inspector || {}).run_state || {}).final_answer) || ""),

@@ -1570,6 +1570,38 @@ def test_runtime_answers_self_contained_text_tasks_without_forcing_tools(tmp_pat
     assert result["activity"]["trace_events"]
 
 
+def test_subagent_state_is_rebuilt_after_history_is_compacted(tmp_path: Path) -> None:
+    agent_dir = tmp_path / "agents" / "vintage_programmer"
+    _write_specs(agent_dir)
+    backend = _FakeBackend([_FakeMessage(content="Continue existing investigation.")])
+    runtime = VintageProgrammerRuntime(config=load_config(), kernel_runtime=object(), agent_dir=agent_dir, backend=backend)
+    runtime._thread_subagents = ThreadSubagentManager(tmp_path / "children", runtime_id="first")
+    manager = runtime._thread_subagents
+    child_id = "old-run:subagent:retain-exact-id"
+    manager.create(thread_id="s-memory", subagent_id=child_id, parent_run_id="old-run", role="explorer",
+                   item={"task": "Investigate code search cancellation", "status": "queued"}, cancel_event=threading.Event())
+    messages = [_FakeSystemMessage(content="System"), _FakeHumanMessage(content="Compacted summary without spawn history")]
+    assert runtime._refresh_subagent_model_state(messages, thread_id="s-memory") == 1
+    assert child_id in messages[1].content
+    assert "Investigate code search cancellation" in messages[1].content
+    assert runtime._refresh_subagent_model_state(messages, thread_id="s-memory") == 0
+    assert sum(child_id in str(message.content) for message in messages) == 1
+    # Simulate a compactor replacing all prior conversation, including the old snapshot.
+    messages[:] = [_FakeSystemMessage(content="System"), _FakeHumanMessage(content="Checkpoint")]
+    manager.finish(thread_id="s-memory", subagent_id=child_id, status="completed",
+                   item={"task": "Investigate code search cancellation"},
+                   result={"status": "completed", "summary": "Found the cause", "ok": True})
+    runtime._refresh_subagent_model_state(messages, thread_id="s-memory")
+    assert child_id in messages[1].content
+    assert '"status": "completed"' in messages[1].content
+    assert '"result_available": true' in messages[1].content
+    # Also verify the real model request path restores this state on a later run.
+    runtime.run(message="Continue", settings=ChatSettings(model="gpt-test", enable_tools=True),
+                context={"session_id": "s-memory", "project": {"project_root": str(tmp_path), "cwd": str(tmp_path)},
+                         "history_turns": [], "attachments": []})
+    assert any(child_id in str(message.content) for message in backend.invocations[0]["messages"])
+
+
 def test_runtime_answers_simple_greeting_without_tool_calls(tmp_path: Path) -> None:
     agent_dir = tmp_path / "agents" / "vintage_programmer"
     _write_specs(agent_dir)
@@ -6194,6 +6226,12 @@ def test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed(
         backend=_FakeBackend([]),
     )
     messages = [_FakeSystemMessage(content="system"), *[_FakeHumanMessage(content=f"m-{idx}") for idx in range(14)]]
+    runtime._thread_subagents = ThreadSubagentManager(tmp_path / "children", runtime_id="live")
+    runtime._thread_subagents.create(
+        thread_id="compacting-thread", subagent_id="original-investigator", parent_run_id="run-one",
+        role="explorer", item={"task": "Investigate the original bug"}, cancel_event=threading.Event(),
+    )
+    base_count = 1 + runtime._refresh_subagent_model_state(messages, thread_id="compacting-thread")
     tool_events = [
         ToolEvent(name="read_file", output_preview="ok", status="ok", summary=f"event-{idx}")
         for idx in range(20)
@@ -6214,7 +6252,7 @@ def test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed(
     monkeypatch.setattr(runtime, "_build_live_compaction_summary", compact_summary)
     compacted_messages, compacted_until, compacted, status = runtime._maybe_compact_live_messages(
         messages=messages,
-        base_message_count=1,
+        base_message_count=base_count,
         tool_events=tool_events,
         compacted_until=0,
         model="gpt-5.6-sol",
@@ -6233,10 +6271,13 @@ def test_mid_turn_compaction_runs_once_when_token_threshold_is_crossed(
     assert status.estimated_context_tokens == 1000
     assert calls["count"] == 1
     assert len(compacted_messages) < len(messages)
+    assert runtime._refresh_subagent_model_state(compacted_messages, thread_id="compacting-thread") == 0
+    assert "original-investigator" in compacted_messages[1].content
+    assert "Investigate the original bug" in compacted_messages[1].content
 
     repeated_messages, repeated_until, repeated, _ = runtime._maybe_compact_live_messages(
         messages=compacted_messages,
-        base_message_count=1,
+        base_message_count=base_count,
         tool_events=tool_events,
         compacted_until=compacted_until,
         model="gpt-5.6-sol",

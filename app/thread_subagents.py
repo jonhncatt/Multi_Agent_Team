@@ -224,6 +224,54 @@ class ThreadSubagentManager:
             if cancel_commands is not None:
                 handle["cancel_commands"] = cancel_commands
             self._condition.notify_all()
+        if future is not None and callable(getattr(future, "add_done_callback", None)):
+            future.add_done_callback(lambda completed: self._reconcile_future(key, completed))
+
+    def _reconcile_future(self, key: tuple[str, str], future: Any) -> None:
+        """Repair missing finish() only when the execution handle proves it ended."""
+        if not future.done():
+            return
+        with self._condition:
+            record = self._load_thread_locked(key[0]).get(key[1])
+            if not record or _record_status(record) not in _ACTIVE_STATUSES:
+                return
+            item = dict(record.get("item") or {})
+            try:
+                if future.cancelled():
+                    status, kind, message = "cancelled", "subagent_cancelled", "Subagent was cancelled before execution."
+                    result = None
+                else:
+                    result = future.result()  # done() above makes this non-blocking.
+                    status, kind, message = "failed", "subagent_result_missing", "Subagent ended without a valid result."
+            except BaseException as exc:
+                status, kind, message = "failed", "subagent_execution_failed", f"Subagent execution ended: {type(exc).__name__}: {exc}"
+                result = None
+            if isinstance(result, dict) and str(result.get("status") or "") in _TERMINAL_STATUSES:
+                result = copy.deepcopy(result)
+                status = str(result["status"])
+            else:
+                result = {"ok": False, "status": status, "error_kind": kind,
+                          "error": message, "summary": message, "token_usage": {}}
+            result.update({"subagent_id": key[1], "role": str(record.get("role") or "explorer")})
+            self.finish(thread_id=key[0], subagent_id=key[1], status=status,
+                        item={**item, "status": status, "summary": str(result.get("summary") or "")[:12000],
+                              "completed_at": time.time()}, result=result)
+
+    def model_snapshot(self, *, thread_id: str) -> list[dict[str, Any]]:
+        """Small authoritative state, regenerated independently of compacted history."""
+        with self._condition:
+            records = self._load_thread_locked(thread_id)
+            for key, handle in list(self._handles.items()):
+                if key[0] == thread_id and handle.get("future") is not None:
+                    self._reconcile_future(key, handle["future"])
+            active = [record for record in records.values() if _record_status(record) in _ACTIVE_STATUSES or not record.get("collected")]
+            recent = [record for record in records.values() if _record_status(record) not in _ACTIVE_STATUSES and record.get("collected")][-32:]
+            return [{"subagent_id": record["id"], "status": _record_status(record),
+                     "role": record.get("role", "explorer"), "parent_run_id": record.get("parent_run_id", ""),
+                     "task": str((record.get("item") or {}).get("task") or "")[:1000],
+                     "collected": bool(record.get("collected")),
+                     "result_available": isinstance(record.get("result"), dict)}
+                    for record in [*active, *recent]]
 
     def mark_running(
         self,
@@ -284,6 +332,7 @@ class ThreadSubagentManager:
         thread_id: str,
         subagent_ids: list[str],
         timeout_seconds: float = 0,
+        cancel_event: Any | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         normalized_thread_id = str(thread_id or "").strip()
         normalized_ids = list(
@@ -299,14 +348,18 @@ class ThreadSubagentManager:
             unknown_ids = [item for item in normalized_ids if item not in records]
             if unknown_ids:
                 return [], unknown_ids
+            for subagent_id in normalized_ids:
+                future = (self._handles.get((normalized_thread_id, subagent_id)) or {}).get("future")
+                if future is not None:
+                    self._reconcile_future((normalized_thread_id, subagent_id), future)
             while normalized_ids and any(
                 _record_status(records[item]) in _ACTIVE_STATUSES
                 for item in normalized_ids
             ):
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
                     break
-                self._condition.wait(timeout=remaining)
+                self._condition.wait(timeout=min(remaining, 0.1) if cancel_event is not None else remaining)
                 records = self._load_thread_locked(normalized_thread_id)
             return [copy.deepcopy(records[item]) for item in normalized_ids], []
 
